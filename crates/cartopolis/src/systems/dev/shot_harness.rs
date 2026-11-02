@@ -2965,12 +2965,20 @@ pub fn open_scripted_ui(
                 .and_then(|s| crate::systems::geo_nav::parse_lat_lng(&s))
                 .unwrap_or(default)
         };
-        route
-            .from
-            .set("Route start", seed("CARTO_ROUTE_FROM", (53.2194, 6.5665)));
-        route
-            .to
-            .set("Route end", seed("CARTO_ROUTE_TO", (53.2109, 6.5642)));
+        // The start reads as a planner's start nearly always does, "My
+        // position". `CARTO_ROUTE_TO=none` leaves the destination empty, which
+        // is the planner as it opens; `CARTO_ROUTE_TO_LABEL` names it.
+        route.from.set(
+            crate::systems::navigation::HERE_LABEL,
+            seed("CARTO_ROUTE_FROM", (53.2194, 6.5665)),
+        );
+        if std::env::var("CARTO_ROUTE_TO").as_deref() != Ok("none") {
+            let label =
+                std::env::var("CARTO_ROUTE_TO_LABEL").unwrap_or_else(|_| "Route end".into());
+            route
+                .to
+                .set(label, seed("CARTO_ROUTE_TO", (53.2109, 6.5642)));
+        }
     }
     // `--ui places` needs saved places for the same reason `--ui route` needs a
     // route: a scripted run never loads `user.json`, so the panel would otherwise

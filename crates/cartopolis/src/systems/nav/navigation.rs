@@ -318,7 +318,7 @@ pub struct RouteState {
     /// Endpoint awaiting a click on the map, if the user armed "pick on map".
     pub picking: Option<Endpoint>,
     /// The start is shown as an editable field rather than a one-line footnote.
-    /// See [`start_row`] — the destination is the primary field, and the start
+    /// See [`start_line`] — the destination is the primary field, and the start
     /// only becomes one while it is being changed.
     pub from_editing: bool,
     /// How much of the planner's sheet is up. See [`SheetDetent`].
@@ -578,11 +578,43 @@ impl RouteState {
         self.from.set(HERE_LABEL, here);
         true
     }
+
+    /// Keep a start that reads "My position" at the position, once that is the
+    /// avatar's.
+    ///
+    /// `default_start` fills the start once and never again, and the planner
+    /// keeps its endpoints when it closes. So "My position" stayed wherever the
+    /// camera was the first time the sheet opened: after a search had flown the
+    /// map to Winsum and back, "My position → Winsum" refused as "the same place"
+    /// from the far side of Groningen (2026-11-02). Only a start still wearing
+    /// [`HERE_LABEL`] follows, and only once it is more than
+    /// [`HERE_REFRESH_M`] out, so a person walking re-solves every few dozen
+    /// metres rather than every frame. The caller passes only the avatar's
+    /// position: refreshed from the camera, every pan of the map to look at the
+    /// route would re-solve it.
+    pub fn follow_here(&mut self, here: (f64, f64)) -> bool {
+        if self.from.label != HERE_LABEL {
+            return false;
+        }
+        let Some(at) = self.from.coord else {
+            return false;
+        };
+        if crate::systems::driver::metres_between([at.0, at.1], [here.0, here.1]) <= HERE_REFRESH_M {
+            return false;
+        }
+        self.from.coord = Some(here);
+        self.invalidate();
+        true
+    }
 }
 
+/// How far the avatar walks before a "My position" start follows it
+/// ([`RouteState::follow_here`]).
+const HERE_REFRESH_M: f64 = 30.0;
+
 /// What the start field says when it is the user's own position. Compared against
-/// as well as written, so re-running `default_start` after the camera has moved
-/// can refresh the coordinate without stamping over a place the user typed.
+/// as well as written, so `follow_here` can refresh the coordinate after the
+/// avatar has moved without stamping over a place the user typed.
 pub const HERE_LABEL: &str = "My position";
 
 // ─── Geocoding the endpoint fields ───────────────────────────────────────────
@@ -938,7 +970,7 @@ pub fn drive_route_solver(
                     // driver mode paints the failure over it rather than ending the
                     // trip. An ordinary failed solve has nothing held anyway.
                     route.route = None;
-                    route.status = SolveStatus::Failed(e.to_string());
+                    route.status = SolveStatus::Failed(failure_message(&route, &e));
                 }
             }
             route.generation = route.generation.wrapping_add(1);
@@ -1010,6 +1042,34 @@ pub fn drive_route_solver(
             }
         })
         .detach();
+}
+
+/// What the planner says about a failed solve.
+///
+/// The router's own words, except where the planner knows more than the router
+/// does. "Start and destination are the same place" under "My position →
+/// Winsum" read as a broken router; saying how far apart the two ends are
+/// shows which of them is wrong.
+fn failure_message(route: &RouteState, e: &RouteError) -> String {
+    let RouteError::TooClose = e else {
+        return e.to_string();
+    };
+    let to = route.to.label.trim_start_matches(PICKED_PREFIX).trim();
+    let apart = route
+        .from
+        .coord
+        .zip(route.to.coord)
+        .map(|(a, b)| crate::systems::driver::metres_between([a.0, a.1], [b.0, b.1]));
+    match apart {
+        Some(m) if route.from.label == HERE_LABEL && !to.is_empty() => {
+            format!("You are already at {to} ({} away)", format_distance(m))
+        }
+        Some(m) => format!(
+            "Start and destination are {} apart, on the same stretch of road",
+            format_distance(m)
+        ),
+        None => e.to_string(),
+    }
 }
 
 /// Where a detached solve leaves its answer: empty until it lands.
@@ -1921,8 +1981,13 @@ const SHEET_MAX_FRACTION: f32 = 0.55;
 /// the height budget to size the *scrolling* body, so being a few points out
 /// moves where that body starts scrolling, never the sheet's edge.
 const SHEET_HEADER_PTS: f32 = 150.0;
+/// The same with no route yet: the grabber and the mode chips only, since the
+/// summary and the action row are not drawn. Charged the full 150 pt, an empty
+/// planner on a 610 pt phone viewport had a 113 pt body, and the card's
+/// "Choose on map" and the reason a route failed were cut off its bottom.
+const SHEET_HEADER_BARE_PTS: f32 = 72.0;
 /// The body never shrinks below this, even on a viewport too short to honour
-/// [`SHEET_MAX_FRACTION`]. Same rule as [`waypoint_field_width`]'s floor:
+/// [`SHEET_MAX_FRACTION`]. The rule a narrow control follows here:
 /// overflow visibly rather than collapse a control to nothing.
 const SHEET_BODY_MIN_PTS: f32 = 96.0;
 
@@ -1940,9 +2005,18 @@ const GRABBER_FLICK_PTS: f32 = 3.0;
 
 /// How tall the scrolling body may be, given the viewport and how far up from
 /// the bottom edge the sheet is sitting.
+/// What the parts above and below the body cost.
+fn sheet_header(has_route: bool) -> f32 {
+    if has_route {
+        SHEET_HEADER_PTS
+    } else {
+        SHEET_HEADER_BARE_PTS
+    }
+}
+
 #[must_use]
-fn sheet_body_height(viewport_h: f32, bottom: f32) -> f32 {
-    (viewport_h * SHEET_MAX_FRACTION - bottom - SHEET_HEADER_PTS).max(SHEET_BODY_MIN_PTS)
+fn sheet_body_height(viewport_h: f32, bottom: f32, has_route: bool) -> f32 {
+    (viewport_h * SHEET_MAX_FRACTION - bottom - sheet_header(has_route)).max(SHEET_BODY_MIN_PTS)
 }
 
 /// Which detent the sheet is actually drawn at, which is not always the one the
@@ -2087,6 +2161,7 @@ pub fn render_route_sheet(
     mut walk_guide: ResMut<crate::systems::walk_guide::WalkGuide>,
     mut camera_state: ResMut<crate::resources::CameraState>,
     bodies: Query<(), With<crate::components::Avatar>>,
+    avatar: Res<crate::resources::AvatarState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     globe: Res<GlobeState>,
     camera: AnchoredCamera,
@@ -2102,16 +2177,32 @@ pub fn render_route_sheet(
         return;
     }
 
-    // Where "My position" resolves to — the same definition the HUD reads out.
-    let here = camera
-        .get()
-        .zip(map_anchor.geo)
-        .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
+    // Where "My position" resolves to: the avatar, when there is one — it is
+    // where the person is in the world, and a device fix moves it there — and
+    // the camera only with no avatar to ask (offline, a scripted capture).
+    let avatar_here = map_anchor
+        .geo
+        .filter(|_| !bodies.is_empty())
+        .map(|anchor| {
+            let p = avatar.position;
+            world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.z))
+        });
+    let here = avatar_here.or_else(|| {
+        camera
+            .get()
+            .zip(map_anchor.geo)
+            .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf))
+    });
 
     // Fill the start in the moment the panel can see one, so the user only ever
-    // has a destination to supply. Only when it is *empty* — refreshing it as the
-    // camera drifts would re-invalidate and re-solve the route every frame.
-    route.default_start(here);
+    // has a destination to supply; and keep it on the avatar as it walks. Not
+    // while a route is being followed: the driver and the walk guide move the
+    // start themselves, through `reroute_from`.
+    if !route.default_start(here) && !driver.active && !walk_guide.active {
+        if let Some(at) = avatar_here {
+            route.follow_here(at);
+        }
+    }
 
     // Live fetch progress, for the status line.
     if let SolveStatus::Fetching(..) = route.status {
@@ -2126,7 +2217,7 @@ pub fn render_route_sheet(
 
     let viewport = egui.viewport_pts();
     let bottom = sheet_bottom(&egui, &keyboard);
-    let body_height = sheet_body_height(viewport.y, bottom);
+    let body_height = sheet_body_height(viewport.y, bottom, route.route.is_some());
     // The width the *content* gets. The frame's own margins are outside it, so
     // they come off first — sized against the raw viewport the sheet reaches both
     // screen edges on a phone and reads as a slab rather than as a card lying on
@@ -2167,7 +2258,15 @@ pub fn render_route_sheet(
 
                 // The one line the planner exists to produce, or what is standing
                 // between us and it.
-                summary_line(ui, &route, clock.hms());
+                // Open, with no route, the card below is the whole question and a
+                // failure is said under it, beside the end that caused it; the
+                // summary is for a route, or for the wait for one.
+                let body_says_it = detent == SheetDetent::Full
+                    && route.route.is_none()
+                    && matches!(route.status, SolveStatus::Idle | SolveStatus::Failed(_));
+                if !body_says_it {
+                    summary_line(ui, &route, clock.hms());
+                }
 
                 // The map-pick prompt lives *outside* the body, because arming a
                 // pick is what collapses the sheet: the instruction has to survive
@@ -2202,17 +2301,23 @@ pub fn render_route_sheet(
                             // made every route a two-field form where one field had
                             // an obvious answer, and left a blank start looking like
                             // a required step.
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.y = 4.0;
-                                start_row(ui, &mut route, here, &mut actions);
-                                endpoint_row(ui, &mut route, Endpoint::To, here, &mut actions);
-                            });
+                            endpoint_card(ui, &mut route, here, &mut actions);
                             if route.route.is_some() {
                                 ui.add_space(6.0);
                                 ui.separator();
                                 turn_list(ui, &route, &mut actions);
                             }
                         });
+                }
+
+                // Outside the scrolling body, like the action row: it is the
+                // answer to the question the card asks, and must not be the
+                // thing that scrolls out of sight.
+                if detent == SheetDetent::Full {
+                    if let SolveStatus::Failed(msg) = &route.status {
+                        ui.add_space(4.0);
+                        failure_notice(ui, msg);
+                    }
                 }
 
                 if route.route.is_some() {
@@ -2272,13 +2377,7 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
             }
         }
         (SolveStatus::Solving, _) => theme::busy(ui, "Finding the best route…"),
-        (SolveStatus::Failed(msg), _) => {
-            ui.label(
-                egui::RichText::new(msg.as_str())
-                    .size(theme::SIZE_SUB)
-                    .color(theme::ERROR),
-            );
-        }
+        (SolveStatus::Failed(msg), _) => failure_notice(ui, msg),
         (SolveStatus::Idle, Some(r)) => {
             // The reference's summary: the time big, the arrival clock opposite
             // it, and the distance and destination as one quiet line under them.
@@ -2327,6 +2426,36 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
             );
         }
     }
+}
+
+/// Why there is no route, on a faint error plate with the warning mark: bare
+/// salmon text above the fields read as a heading, not as the answer.
+fn failure_notice(ui: &mut egui::Ui, msg: &str) {
+    egui::Frame::NONE
+        .fill(theme::ERROR.gamma_multiply(0.12))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS_SM))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // One text, mark and words, rather than two widgets in a row: a
+            // wrapping label in a horizontal row reserves one line, and the
+            // second was clipped off the sheet.
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                icons::WARNING,
+                0.0,
+                egui::TextFormat::simple(
+                    egui::FontId::proportional(theme::SIZE_VALUE),
+                    theme::ERROR,
+                ),
+            );
+            job.append(
+                msg,
+                8.0,
+                egui::TextFormat::simple(egui::FontId::proportional(theme::SIZE_SUB), theme::TEXT),
+            );
+            ui.add(egui::Label::new(job).wrap());
+        });
 }
 
 /// What a solved route affords, along the bottom of the sheet.
@@ -2516,192 +2645,260 @@ struct PanelActions {
     collapse_start: bool,
 }
 
-/// The start, as a footnote above the destination.
+/// The two ends of the route, as one card: a rail down the left (a ring for the
+/// start, a dot for the destination, dots between), the two places beside it,
+/// and one swap button for both.
 ///
-/// It is a full endpoint row only while it is being *changed*: at rest it is one
-/// muted line reading where the route starts, because the answer is nearly always
-/// "here" and a text field invites filling in something that is already correct.
-/// Clicking it opens the field; the pin sets it back to the current position and
-/// the swap sends the current destination up here, which is how you say "route
-/// *from* that place" without retyping it.
-fn start_row(
+/// It was two form rows with five outlined buttons on them, "use my position",
+/// "pick on the map" and "clear" on each end, which on a phone left the
+/// destination a field narrower than the word in it and read as a dashboard
+/// (2026-11-02: "lelijk"). The card is the shape every map app's planner has:
+/// the places are the content and the actions are not repeated per row. The
+/// ways to fill an end without typing are chips under the card, shown for the
+/// end that is still empty or being changed ([`fill_chips`]), and a field's
+/// clear is a small ✕ inside it.
+fn endpoint_card(
     ui: &mut egui::Ui,
     route: &mut RouteState,
     here: Option<(f64, f64)>,
     actions: &mut PanelActions,
 ) {
-    let has_here = here.is_some();
-    // Editing sticks while the field has focus or the label is still unresolved —
-    // otherwise the row would snap shut mid-word the frame a suggestion arrived.
-    let editing = route.from_editing || route.from.coord.is_none();
-    if editing {
-        endpoint_row(ui, route, Endpoint::From, here, actions);
+    let mut rows = [egui::Rect::NOTHING; 2];
+    theme::list_group(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.add_space(14.0);
+            let swap = theme::close_button_size();
+            let body = ui.available_width() - swap - ui.spacing().item_spacing.x - 4.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(body, 2.0 * card_line_height()),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    rows[0] = start_line(ui, route, here, actions);
+                    let y = ui.cursor().top();
+                    let left = ui.min_rect().left() + RAIL_PTS;
+                    ui.painter().hline(
+                        left..=ui.max_rect().right(),
+                        y,
+                        egui::Stroke::new(1.0, theme::OVERLAY_LINE.gamma_multiply(0.6)),
+                    );
+                    rows[1] = endpoint_line(ui, route, Endpoint::To, here, actions);
+                },
+            );
+            // Centred on both rows by the horizontal layout: it is one act on
+            // the pair, not a control of either.
             if theme::action_button(ui, icons::SWAP)
                 .on_hover_text("Swap start and destination")
                 .clicked()
             {
                 actions.swap = true;
-            }
-            if route.from.coord.is_some()
-                && theme::action_button(ui, "Done")
-                    .on_hover_text("Collapse")
-                    .clicked()
-            {
-                actions.collapse_start = true;
-            }
-        });
-        return;
-    }
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
-        ui.label(
-            egui::RichText::new("From")
-                .size(theme::SIZE_CHIP)
-                .color(theme::TEXT_DIM),
-        );
-        let label = if route.from.label == HERE_LABEL {
-            // Say what it *means*, not what it is called: "My position" in a field
-            // is a value, but as a footnote it reads better as the default it is.
-            format!("{} {}", icons::HERE, HERE_LABEL)
-        } else {
-            route.from.label.clone()
-        };
-        if ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(label)
-                        .size(theme::SIZE_SUB)
-                        .color(theme::TEXT),
-                )
-                .truncate()
-                .sense(egui::Sense::click()),
-            )
-            .on_hover_text("Click to change the starting point")
-            .clicked()
-        {
-            actions.edit_start = true;
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::action_button(ui, icons::SWAP)
-                .on_hover_text("Swap start and destination")
-                .clicked()
-            {
-                actions.swap = true;
-            }
-            if theme::action_enabled_because(
-                ui,
-                has_here,
-                icons::HERE,
-                "No position yet — the map has not placed you",
-            )
-            .on_hover_text("Start from my position")
-            .clicked()
-            {
-                actions.use_here = Some(Endpoint::From);
             }
         });
     });
+    paint_rail(ui, rows);
+    fill_chips(ui, route, here, actions);
 }
 
-/// Points the endpoint row keeps clear to the right of the field, for the
-/// actions that live there: clear, pick-on-map and use-my-position, plus the
-/// spacing between them. Sized for the touch tier's buttons, which is the tier
-/// that cannot afford to be wrong — a pointer simply gets a slightly shorter
-/// field than it strictly needs.
-const WAYPOINT_ACTIONS_PTS: f32 = 108.0;
-/// Longest the field is allowed to get. Past this a wide window is spending
-/// screen on a place name that is almost always short, and the row stops
-/// reading as one control with its shortcuts beside it.
-const WAYPOINT_FIELD_MAX_PTS: f32 = 180.0;
-
-/// How wide the "Where to?" field may be, given what is left of the row.
-///
-/// It used to be a flat 180 pt, which on a compact panel (a phone's whole
-/// viewport, ~240 pt inside the margins) left about 40 pt for three buttons that
-/// need a hundred — so the actions that let you *avoid typing an address on a
-/// phone keyboard* were the first things off the edge, on the one device where
-/// they matter most.
-///
-/// The floor is what keeps this honest on an absurdly narrow window: the field
-/// stops shrinking and the row overflows, which is visible, rather than the
-/// field collapsing to nothing while everything still fits.
-#[must_use]
-fn waypoint_field_width(available: f32) -> f32 {
-    (available - WAYPOINT_ACTIONS_PTS).clamp(72.0, WAYPOINT_FIELD_MAX_PTS)
+/// The card's left gutter, where [`paint_rail`] draws.
+const RAIL_PTS: f32 = 26.0;
+/// One line of the card: tall enough for a finger on the touch tier.
+fn card_line_height() -> f32 {
+    theme::row_height().max(36.0)
 }
 
-/// One endpoint: the icon, the text field with its suggestion popup, and the two
-/// shortcuts that avoid typing at all.
-fn endpoint_row(
+/// The rail: start ring, destination dot, and three dots between them.
+fn paint_rail(ui: &egui::Ui, rows: [egui::Rect; 2]) {
+    if rows.iter().any(|r| !r.is_positive()) {
+        return;
+    }
+    let p = ui.painter();
+    let x = rows[0].left() + RAIL_PTS / 2.0;
+    let a = egui::pos2(x, rows[0].center().y);
+    let b = egui::pos2(x, rows[1].center().y);
+    p.circle_stroke(
+        a,
+        5.0,
+        egui::Stroke::new(2.0, marker_color(ROUTE_START_RGB)),
+    );
+    p.circle_filled(b, 5.5, marker_color(ROUTE_FINISH_RGB));
+    p.circle_stroke(b, 5.5, egui::Stroke::new(1.5, theme::CREAM));
+    let (top, bottom) = (a.y + 9.0, b.y - 9.0);
+    for i in 0..3 {
+        let y = top + (bottom - top) * (i as f32 + 0.5) / 3.0;
+        p.circle_filled(egui::pos2(x, y), 1.3, theme::TEXT_DIM);
+    }
+}
+
+/// The start. At rest one line reading where the route starts — nearly always
+/// "My position", which is a fact and not a field to fill — and a tap opens it
+/// as a field. It folds back when a place is chosen or the field lets go of
+/// focus with a place in it.
+fn start_line(
+    ui: &mut egui::Ui,
+    route: &mut RouteState,
+    here: Option<(f64, f64)>,
+    actions: &mut PanelActions,
+) -> egui::Rect {
+    if route.from_editing || route.from.coord.is_none() {
+        return endpoint_line(ui, route, Endpoint::From, here, actions);
+    }
+    let mine = route.from.label == HERE_LABEL;
+    let (text, colour) = if mine {
+        (HERE_LABEL.to_string(), theme::ACCENT)
+    } else {
+        (
+            route.from.label.trim_start_matches(PICKED_PREFIX).to_string(),
+            theme::TEXT,
+        )
+    };
+    let h = card_line_height();
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        text,
+        egui::FontId::proportional(theme::SIZE_BODY),
+        colour,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(w - RAIL_PTS - 4.0);
+    let galley = ui.painter().layout_job(job);
+    let at = egui::pos2(rect.left() + RAIL_PTS, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(at, galley, colour);
+    if resp
+        .on_hover_text("Change the starting point")
+        .on_hover_cursor(egui::CursorIcon::Text)
+        .clicked()
+    {
+        actions.edit_start = true;
+    }
+    rect
+}
+
+/// One end as a field: frameless inside the card, with a spinner while its
+/// lookup runs and a ✕ while it holds anything.
+fn endpoint_line(
     ui: &mut egui::Ui,
     route: &mut RouteState,
     end: Endpoint,
-    // Where the viewer is: enables the "use my position" shortcut, and gives the
-    // suggestion rows the distance they quote.
     here: Option<(f64, f64)>,
     actions: &mut PanelActions,
-) {
-    let has_here = here.is_some();
-    let (glyph, colour, hint) = match end {
-        Endpoint::From => (icons::START, marker_color(ROUTE_START_RGB), "Start"),
-        // Phrased as the question rather than as a field name: this is the one
-        // thing the panel asks for, and "Destination" reads like a form label.
-        Endpoint::To => (icons::FINISH, marker_color(ROUTE_FINISH_RGB), "Where to?"),
+) -> egui::Rect {
+    // Phrased as the question rather than as a field name: this is the one
+    // thing the panel asks for, and "Destination" reads like a form label.
+    let hint = match end {
+        Endpoint::From => "Choose a start",
+        Endpoint::To => "Where to?",
     };
     let wp = match end {
         Endpoint::From => &mut route.from,
         Endpoint::To => &mut route.to,
     };
-
+    let h = card_line_height();
     let mut field_rect = egui::Rect::NOTHING;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(glyph)
-                .size(theme::SIZE_SUB)
-                .color(colour),
-        );
-        let field = crate::systems::text_touch::field(
-            ui,
-            egui::TextEdit::singleline(&mut wp.label)
-                .desired_width(waypoint_field_width(ui.available_width()))
-                .hint_text(hint),
-        );
-        field_rect = field.rect;
-        if field.changed() {
-            wp.coord = None;
-            wp.last_edit = Some(Instant::now());
-            actions.edited = Some(end);
-        }
-        if wp.in_flight {
-            ui.spinner();
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !wp.label.is_empty() && theme::action_button(ui, icons::CLEAR).clicked() {
-                actions.cleared = Some(end);
-            }
-            if theme::action_button(ui, icons::PICK_ON_MAP)
-                .on_hover_text("Pick this point on the map")
-                .clicked()
-            {
-                actions.pick = Some(end);
-            }
-            if theme::action_enabled_because(
-                ui,
-                has_here,
-                icons::HERE,
-                "No position yet — the map has not placed you",
-            )
-            .on_hover_text("Use my position")
-            .clicked()
-            {
-                actions.use_here = Some(end);
-            }
-        });
-    });
+    let line = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_height(h);
+                ui.add_space(RAIL_PTS);
+                let clear = theme::close_button_size();
+                let trailing = if wp.label.is_empty() { 0.0 } else { clear }
+                    + if wp.in_flight { 22.0 } else { 0.0 };
+                let field = crate::systems::text_touch::field(
+                    ui,
+                    egui::TextEdit::singleline(&mut wp.label)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(theme::SIZE_BODY))
+                        .desired_width((ui.available_width() - trailing).max(60.0))
+                        .hint_text(hint),
+                );
+                field_rect = field.rect;
+                if field.changed() {
+                    wp.coord = None;
+                    wp.last_edit = Some(Instant::now());
+                    actions.edited = Some(end);
+                }
+                if end == Endpoint::From && field.lost_focus() && wp.coord.is_some() {
+                    actions.collapse_start = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !wp.label.is_empty()
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(icons::CLEAR)
+                                        .size(theme::SIZE_VALUE)
+                                        .color(theme::TEXT_DIM),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(clear, clear)),
+                            )
+                            .on_hover_text("Clear")
+                            .clicked()
+                    {
+                        actions.cleared = Some(end);
+                    }
+                    if wp.in_flight {
+                        ui.add(egui::Spinner::new().size(theme::SIZE_BODY).color(theme::ACCENT));
+                    }
+                });
+            },
+        )
+        .response
+        .rect;
+    suggestions_popup(ui, wp, end, hint, field_rect, here, actions);
+    line
+}
 
+/// The ways to fill an end without typing, under the card: "My position" for a
+/// start, "Choose on map" for either. Only for the end that is still open — the
+/// start while it is being changed, the destination while it is empty — so a
+/// planned route carries no buttons it does not need.
+fn fill_chips(
+    ui: &mut egui::Ui,
+    route: &RouteState,
+    here: Option<(f64, f64)>,
+    actions: &mut PanelActions,
+) {
+    if route.picking.is_some() {
+        return;
+    }
+    let end = if route.from_editing || route.from.coord.is_none() {
+        Endpoint::From
+    } else if route.to.label.trim().is_empty() {
+        Endpoint::To
+    } else {
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        let mine = route.from.label == HERE_LABEL && route.from.coord.is_some();
+        if end == Endpoint::From
+            && here.is_some()
+            && !mine
+            && theme::chip(ui, &format!("{}  {HERE_LABEL}", icons::HERE), false).clicked()
+        {
+            actions.use_here = Some(end);
+        }
+        if theme::chip(ui, &format!("{}  Choose on map", icons::PICK_ON_MAP), false)
+            .on_hover_text("Tap the map to set this point")
+            .clicked()
+        {
+            actions.pick = Some(end);
+        }
+    });
+    ui.add_space(4.0);
+}
+
+/// The suggestions for a field, in a popup that opens away from the screen edge
+/// the field is nearest.
+fn suggestions_popup(
+    ui: &mut egui::Ui,
+    wp: &Waypoint,
+    end: Endpoint,
+    hint: &str,
+    field_rect: egui::Rect,
+    here: Option<(f64, f64)>,
+    actions: &mut PanelActions,
+) {
     if !wp.show_suggestions || wp.suggestions.is_empty() {
         return;
     }
@@ -2882,41 +3079,21 @@ fn frame_route(route: &RouteState) -> Option<Teleport> {
 mod tests {
     use super::*;
 
-    /// The endpoint field yields to the actions beside it rather than pushing
-    /// them off the edge. On a phone's whole viewport (~240 pt inside the panel
-    /// margins) the flat 180 pt this replaced left about 40 pt for three buttons
-    /// that need a hundred — so on the one device where "pick it on the map" and
-    /// "use my position" matter most, they were the first things to go.
-    #[test]
-    fn the_endpoint_field_leaves_room_for_its_actions() {
-        for row in [200.0_f32, 240.0, 260.0] {
-            let field = waypoint_field_width(row);
-            assert!(
-                row - field >= WAYPOINT_ACTIONS_PTS - 0.01,
-                "a {row} pt row left only {} pt for the actions",
-                row - field
-            );
-        }
-        // A wide window stops growing the field: past this the row stops reading
-        // as one control with its shortcuts beside it.
-        assert_eq!(waypoint_field_width(2000.0), WAYPOINT_FIELD_MAX_PTS);
-        // And an absurdly narrow one overflows visibly instead of collapsing the
-        // field to nothing.
-        assert!(waypoint_field_width(40.0) >= 72.0);
-    }
-
     /// The whole point of the sheet: whatever the screen, most of it is still map.
     ///
     /// The floor is the deliberate exception — on a viewport too short to honour
     /// the fraction the body overflows visibly rather than collapsing to nothing,
-    /// the same trade [`waypoint_field_width`] makes.
+    /// the trade every narrow control here makes.
     #[test]
     fn the_sheet_leaves_the_map_visible() {
         // A phone in portrait, a phone in landscape, a laptop, a big monitor.
-        for viewport_h in [640.0_f32, 320.0, 800.0, 1400.0] {
+        for (viewport_h, has_route) in [640.0_f32, 320.0, 800.0, 1400.0]
+            .into_iter()
+            .flat_map(|h| [(h, true), (h, false)])
+        {
             let bottom = 60.0;
-            let body = sheet_body_height(viewport_h, bottom);
-            let total = bottom + SHEET_HEADER_PTS + body;
+            let body = sheet_body_height(viewport_h, bottom, has_route);
+            let total = bottom + sheet_header(has_route) + body;
             assert!(
                 total <= viewport_h * SHEET_MAX_FRACTION + 0.01 || body == SHEET_BODY_MIN_PTS,
                 "a {viewport_h} pt viewport gave the sheet {total} pt"
@@ -3429,6 +3606,41 @@ mod tests {
         assert!(route.default_start(Some((53.22, 6.57))));
         assert_eq!(route.from.label, HERE_LABEL);
         assert_eq!(route.from.coord, Some((53.22, 6.57)));
+    }
+
+    /// "My position" is where the avatar is now, not where the camera was when
+    /// the sheet first opened: a start frozen at Winsum refused "My position →
+    /// Winsum" as the same place from Groningen (2026-11-02). A start the user
+    /// chose stays put, and a few metres of walking re-solve nothing.
+    #[test]
+    fn my_position_follows_the_avatar() {
+        let mut route = RouteState::default();
+        route.default_start(Some((53.3284, 6.5164)));
+        assert!(route.follow_here((53.2194, 6.5665)));
+        assert_eq!(route.from.coord, Some((53.2194, 6.5665)));
+        assert!(route.solved_for.is_none(), "a moved start re-solves");
+
+        assert!(!route.follow_here((53.21942, 6.56652)), "2 m is not a move");
+
+        route.from.set("Vismarkt", (53.2165, 6.5640));
+        assert!(!route.follow_here((53.3284, 6.5164)));
+        assert_eq!(route.from.coord, Some((53.2165, 6.5640)));
+    }
+
+    /// The planner, not the router, knows which end is "My position", so a
+    /// refusal for being too close says where you are rather than blaming the
+    /// pair.
+    #[test]
+    fn too_close_says_you_are_there() {
+        let mut route = RouteState::default();
+        route.default_start(Some((53.2194, 6.5665)));
+        route.to.set("Grote Markt", (53.2195, 6.5668));
+        let msg = failure_message(&route, &RouteError::TooClose);
+        assert!(msg.starts_with("You are already at Grote Markt"), "{msg}");
+        assert_eq!(
+            failure_message(&route, &RouteError::NoPath),
+            RouteError::NoPath.to_string()
+        );
     }
 
     /// `set_endpoint_at` fires the reverse geocode on the `IoTaskPool`, which a

@@ -84,6 +84,33 @@ A start that this device cannot offer ("Needs a GPS position") is a dim note in 
 button's place, not a disabled button — faded to half contrast over the glass it
 read as a rendering fault.
 
+## The two ends are one card, and "My position" is the avatar (2026-11-02)
+
+The endpoints were two form rows carrying five outlined buttons (use my position,
+pick on the map, clear, on each end, and swap), which on a phone left the
+destination a field narrower than the word in it; the person called it ugly. It is
+one card now (`endpoint_card`): a rail down the left, ring for the start and dot
+for the destination, the places beside it, one swap for the pair, a small ✕ inside
+a field that holds something. The ways to fill an end without typing are chips
+under the card ("My position", "Choose on map"), drawn only for the end still
+open. A failure is said under the card, on an error plate, not above it.
+
+Two things cut the chips and the failure off the sheet's bottom on a phone, and
+both had to go. The card's column of two lines is allocated at their height
+(`2 × card_line_height`), not at zero, which painted both lines but reserved
+neither. And with no route the body is no longer charged the 150 pt of summary
+and action row it does not draw (`SHEET_HEADER_BARE_PTS`): on a 610 pt phone
+viewport that left the body 113 pt. The failure is drawn outside the scrolling body, beside the action row, so it is never the thing that scrolls away; and as one text (mark and words in a `LayoutJob`), since a wrapping label in a horizontal row reserves one line.
+
+"My position" used to be the camera, filled once and kept. So it stayed wherever
+the camera was the first time the sheet opened: after the map had been at Winsum,
+"My position → Winsum" refused as "the same place" from Groningen. It is the
+avatar's position when there is an avatar, and a start still reading "My
+position" follows the avatar once it is 30 m out (`RouteState::follow_here`). The
+camera answers only offline, and does not follow there, or every pan of the map
+to look at the route would re-solve it. A too-close refusal under "My position"
+now reads "You are already at …", with the distance.
+
 ## Rejected: a shorter right panel
 
 The obvious smaller change was to stop `responsive_right_panel` filling the
