@@ -161,6 +161,13 @@ another figure of the same file keeps the loaded areas (`switch_figure`); only
 another file fetches. A scenario file may give itself a `question` (the
 shelf's heading) and each region state a `group` (the figures' heading).
 
+On the sheet the raised heights get out of the way (asked 2026-11-02: "the
+dialog is in the way on mobile"): a pick — a lens off the shelf, a figure
+from the list or the place card — drops it to the strip, and a drag that
+starts on the bare map (`EguiManager::map_dragged`, decided by where the
+press landed) lowers whatever is raised, as a flick down on the grabber
+does. The column, beside the map rather than over it, stays where it is.
+
 The lens answers back (asked 2026-11-01, "too static"): the area being read
 is outlined on the map — under the pointer on a desktop, with a card beside
 it, else under the crosshair; the scale's bands single theirs out (pointing

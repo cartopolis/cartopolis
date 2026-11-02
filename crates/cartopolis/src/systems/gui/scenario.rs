@@ -1054,7 +1054,7 @@ pub fn render_scenario_chrome(
 ) {
     let ctx = egui.ctx_mut().clone();
     let lens = layers.scenario.is_some();
-    let shown = view.sheet.shown(lens);
+    let mut shown = view.sheet.shown(lens);
     // Pointing at a band lasts while the scale is drawn under it; the map,
     // which painted already, catches up with a change next frame.
     let peeked = view.open.as_mut().and_then(|o| o.peek.take());
@@ -1082,6 +1082,17 @@ pub fn render_scenario_chrome(
             ctx.request_repaint();
         }
         return;
+    }
+    // On the sheet, a drag that starts on the map is someone looking at the
+    // map: whatever is raised drops to where it rests, as a flick down would.
+    let rest = if lens { Sheet::Strip } else { Sheet::Hidden };
+    if shape == Shape::Sheet && shown != rest && egui.map_dragged() {
+        view.sheet = rest;
+        shown = rest;
+        if shown == Sheet::Hidden {
+            ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
+            return;
+        }
     }
 
     let here = map_anchor.geo.and_then(|anchor| {
@@ -1154,6 +1165,12 @@ pub fn render_scenario_chrome(
         ctx.request_repaint();
     }
 
+    // On the sheet a pick is made to be seen: a lens off the shelf or a
+    // figure from the list drops the sheet to the strip, over the map it
+    // changed. The strip's name, or the grabber, raises the figures again.
+    if shape == Shape::Sheet && asked.open.is_some() {
+        asked.sheet = Some(Sheet::Strip);
+    }
     if let Some(key) = asked.open {
         if layers.scenario.as_deref() != Some(key.as_str()) {
             layers.scenario = Some(key);

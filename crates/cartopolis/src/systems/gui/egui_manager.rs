@@ -622,6 +622,21 @@ impl EguiManager {
         }
     }
 
+    /// Is a drag under way that started on the bare map — not on a panel or a
+    /// floating area? A sheet over the map steps aside for it: someone panning
+    /// is looking at the map. Decided by where the press landed, as
+    /// [`Self::owns_click`] decides a finger's tap.
+    pub fn map_dragged(&self) -> bool {
+        self.ctx
+            .input(|i| {
+                i.pointer
+                    .is_decidedly_dragging()
+                    .then(|| i.pointer.press_origin())
+                    .flatten()
+            })
+            .is_some_and(|at| !press_over_ui(&self.ctx, self.map_rect, at))
+    }
+
     /// Declare (each frame) whether a modal owns the screen — see the `modal`
     /// field. Written by `login_screen::render_login_screen`, read by
     /// [`Self::ui_owns_keyboard`].
