@@ -250,6 +250,7 @@ pub fn prim_picking(
     if mouse_buttons.just_pressed(MouseButton::Right) && !over_globe {
         context_menu.visible = true;
         context_menu.screen_pos = cursor_position;
+        context_menu.place = None;
 
         if let Some((_, prim, _)) = hit_prim {
             context_menu.hit_prim_id = Some(prim.id);

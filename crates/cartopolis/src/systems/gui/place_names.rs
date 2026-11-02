@@ -18,9 +18,13 @@
 //! **Which names show** follows distance from the camera, kind by kind
 //! ([`shows`]), and then room: names are placed biggest place first and one that
 //! would overlap a placed one is left out.
+//!
+//! **A name is a button.** Clicking or long-pressing one opens the map's ring of
+//! actions on the place (`ui::render_context_menu`): go there, route to or
+//! from it, save or share it under its own name, its municipality's plans.
 
 use crate::components::FreeCamera;
-use crate::resources::MapAnchor;
+use crate::resources::{ContextMenuState, MapAnchor, MapPlace};
 use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
 use crate::systems::theme;
@@ -227,7 +231,19 @@ pub fn render_place_names(
     route: Res<crate::systems::navigation::RouteState>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     driver: Res<crate::systems::driver::DriverState>,
+    // A name that is clicked opens the map's ring on it (`ui::render_context_menu`),
+    // and the ring's Go there comes back here to be flown.
+    mut menu: ResMut<ContextMenuState>,
+    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
 ) {
+    if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
+        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(
+            lat,
+            lng,
+            Some(altitude),
+        ));
+        nav.pending_label = Some(name);
+    }
     let mut anchored = WorldAnchored::new(egui.ctx(), "place_names");
     if driver.active || !layers.place_names || names.tiles.is_empty() {
         return;
@@ -301,30 +317,107 @@ pub fn render_place_names(
             true
         }
     };
+    let mut opened: Option<(&Place, egui::Pos2)> = None;
     for (p, at) in places {
-        match p.kind {
-            PlaceKind::City | PlaceKind::Town => {
-                if banner(&painter, at, p, &mut free) {
-                    anchored.at(at);
-                }
-            }
+        let drawn = match p.kind {
+            PlaceKind::City | PlaceKind::Town => banner(&painter, at, p, &mut free),
             PlaceKind::Station => {
                 let named = alt < 20_000.0 && towns.iter().any(|t| p.name.starts_with(t));
-                if station(&painter, at, p, named, &mut free) {
-                    anchored.at(at);
-                }
+                station(&painter, at, p, named, &mut free)
             }
             PlaceKind::Suburb | PlaceKind::Quarter | PlaceKind::Neighbourhood => {
-                if district(&painter, at, p, &mut free) {
-                    anchored.at(at);
-                }
+                district(&painter, at, p, &mut free)
+            }
+        };
+        let Some(drawn) = drawn else {
+            continue;
+        };
+        anchored.at(at);
+        let response = sense(&ctx, map_rect, p, drawn.hit);
+        if response.hovered() {
+            if let Some(pill) = drawn.pill {
+                painter.rect_stroke(
+                    pill,
+                    egui::CornerRadius::same(theme::RADIUS_PILL),
+                    egui::Stroke::new(1.5, theme::ACCENT),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
+        // A click and a long press open the same ring, so a long press firing
+        // `clicked()` as well is no second action here.
+        if response.clicked() || response.secondary_clicked() {
+            opened = Some((p, at));
+        }
+    }
+    if let Some((p, at)) = opened {
+        menu.visible = true;
+        // The ring stands on the place's dot, not wherever the pointer was.
+        menu.screen_pos = Vec2::new(at.x * ui_scale, at.y * ui_scale);
+        menu.hit_prim_id = None;
+        menu.lat_lng = Some((p.lat, p.lng));
+        menu.place = Some(MapPlace {
+            name: p.name.clone(),
+            detail: describe(p),
+            view_altitude_m: view_altitude_m(p.kind),
+        });
+    }
+}
+
+/// The label's click area: its own `Area`, as a saved place's pin has, so egui
+/// owns the press and the world's click handlers (`picking`, the building
+/// card) leave it alone. Keyed by the place, so egui keeps one per name.
+fn sense(ctx: &egui::Context, map_rect: egui::Rect, p: &Place, hit: egui::Rect) -> egui::Response {
+    egui::Area::new(egui::Id::new(("place_name", p.name.as_str(), p.kind)))
+        .fixed_pos(hit.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(map_rect);
+            ui.allocate_exact_size(hit.size(), egui::Sense::click()).1
+        })
+        .inner
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The pill under the ring: what the place is, and how many live there.
+fn describe(p: &Place) -> String {
+    let kind = match p.kind {
+        PlaceKind::City => "City",
+        PlaceKind::Town => "Town",
+        PlaceKind::Suburb => "District",
+        PlaceKind::Quarter => "Quarter",
+        PlaceKind::Neighbourhood => "Neighbourhood",
+        PlaceKind::Station => "Station",
+    };
+    if p.population > 0 {
+        format!("{kind} · {} inhabitants", population_label(p.population))
+    } else {
+        kind.to_string()
+    }
+}
+
+/// How high Go there leaves the camera: the whole of a city in view, a
+/// station's square in front of it.
+fn view_altitude_m(kind: PlaceKind) -> f64 {
+    match kind {
+        PlaceKind::City => 9_000.0,
+        PlaceKind::Town => 4_500.0,
+        PlaceKind::Suburb => 2_500.0,
+        PlaceKind::Quarter => 1_500.0,
+        PlaceKind::Neighbourhood => 900.0,
+        PlaceKind::Station => 400.0,
     }
 }
 
 /// The dark pill a banner and a station share.
 const CHIP: egui::Color32 = theme::LABEL_CHIP;
+
+/// What one name took on the screen: where it answers a click, and the pill
+/// to ring in the accent while the pointer is on it (a banner has one).
+struct Drawn {
+    hit: egui::Rect,
+    pill: Option<egui::Rect>,
+}
 
 /// A city or town: a dot where it is, and over it a pill with the population
 /// and the name.
@@ -333,7 +426,7 @@ fn banner(
     at: egui::Pos2,
     p: &Place,
     free: &mut impl FnMut(egui::Rect) -> bool,
-) -> bool {
+) -> Option<Drawn> {
     let big = p.kind == PlaceKind::City;
     let name_size = if big { 13.5 } else { 12.0 };
     let font = egui::FontId::new(name_size, theme::brand_family());
@@ -350,8 +443,9 @@ fn banner(
     let w = pop_w + name.size().x + if pop.is_some() { 15.0 } else { 18.0 };
     let rect =
         egui::Rect::from_min_size(egui::pos2(at.x - w / 2.0, at.y - h - 8.0), egui::vec2(w, h));
-    if !free(rect.union(egui::Rect::from_center_size(at, egui::vec2(10.0, 10.0)))) {
-        return false;
+    let hit = rect.union(egui::Rect::from_center_size(at, egui::vec2(10.0, 10.0)));
+    if !free(hit) {
+        return None;
     }
     painter.circle(at, 4.0, theme::CREAM, egui::Stroke::new(1.5, theme::INK));
     painter.rect(
@@ -377,7 +471,10 @@ fn banner(
     }
     let y = rect.center().y - name.size().y / 2.0;
     painter.galley(egui::pos2(x, y), name, theme::CREAM);
-    true
+    Some(Drawn {
+        hit,
+        pill: Some(rect),
+    })
 }
 
 /// A station: a dark disc with a ring and a train in it, and its name beside
@@ -388,7 +485,7 @@ fn station(
     p: &Place,
     named: bool,
     free: &mut impl FnMut(egui::Rect) -> bool,
-) -> bool {
+) -> Option<Drawn> {
     let r = 9.0;
     let name = named.then(|| {
         painter.layout_no_wrap(
@@ -402,7 +499,7 @@ fn station(
         .map_or(2.0 * r, |g| 2.0 * r + 4.0 + g.size().x);
     let rect = egui::Rect::from_min_size(egui::pos2(at.x - r, at.y - r), egui::vec2(w, 2.0 * r));
     if !free(rect) {
-        return false;
+        return None;
     }
     painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::ACCENT));
     // The train: a body, a window line, two wheels.
@@ -416,7 +513,10 @@ fn station(
         let pos = egui::pos2(at.x + r + 4.0, at.y - name.size().y / 2.0);
         haloed(painter, pos, name);
     }
-    true
+    Some(Drawn {
+        hit: rect,
+        pill: None,
+    })
 }
 
 /// A district: its name in spaced capitals, centred where it is.
@@ -425,7 +525,7 @@ fn district(
     at: egui::Pos2,
     p: &Place,
     free: &mut impl FnMut(egui::Rect) -> bool,
-) -> bool {
+) -> Option<Drawn> {
     let size = if p.kind == PlaceKind::Neighbourhood {
         9.5
     } else {
@@ -446,10 +546,15 @@ fn district(
     let rect = egui::Rect::from_center_size(at, galley.size());
     // Wide room around a district name: a town is not a word search.
     if !free(rect.expand2(egui::vec2(24.0, 10.0))) {
-        return false;
+        return None;
     }
     haloed(painter, rect.min, galley);
-    true
+    // A little more than the letters, so a small-capitals name is not a
+    // pixel hunt for a finger.
+    Some(Drawn {
+        hit: rect.expand2(egui::vec2(4.0, 5.0)),
+        pill: None,
+    })
 }
 
 /// Text with a dark halo, so it reads over roofs, water and fields alike.
@@ -487,5 +592,22 @@ mod tests {
         assert!(shows(PlaceKind::Town, 60_000, 60_000.0));
         assert!(shows(PlaceKind::City, 0, 200_000.0));
         assert!(!shows(PlaceKind::Neighbourhood, 0, 10_000.0));
+    }
+
+    #[test]
+    fn the_ring_says_what_the_place_is() {
+        let place = |kind, population| Place {
+            name: "Groningen".into(),
+            kind,
+            population,
+            lat: 53.22,
+            lng: 6.57,
+        };
+        assert_eq!(
+            describe(&place(PlaceKind::City, 233_000)),
+            "City · 233k inhabitants"
+        );
+        assert_eq!(describe(&place(PlaceKind::Station, 0)), "Station");
+        assert!(view_altitude_m(PlaceKind::City) > view_altitude_m(PlaceKind::Station));
     }
 }

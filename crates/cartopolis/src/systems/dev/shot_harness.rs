@@ -2505,6 +2505,8 @@ const UI_ELEMENTS: &[&str] = &[
     "placeslayers",
     // The ring of actions on a point in the middle of the view.
     "ring",
+    // The same ring opened on a place's name.
+    "placering",
     // The ring's Plans here, answered for the shot's point (`systems::plans`).
     "planshere",
     // The card of the notice nearest the shot's point that names council business.
@@ -2653,8 +2655,16 @@ pub fn open_scripted_ui(
     cards.sign_in.open = want("signin");
     // `--ui ring` opens the map's ring of actions on the middle of the view, as a
     // long press there would: it only ever opens from a gesture otherwise.
-    cards.context_menu.visible = want("ring");
-    if want("ring") {
+    // `--ui placering` is the same ring opened on a place's name
+    // (`systems::place_names`), named as the label under the shot's point would
+    // name it: the capture shows the place's actions and its pill.
+    cards.context_menu.visible = want("ring") || want("placering");
+    cards.context_menu.place = want("placering").then(|| crate::resources::MapPlace {
+        name: "Groningen".to_string(),
+        detail: "City · 201k inhabitants".to_string(),
+        view_altitude_m: 9_000.0,
+    });
+    if want("ring") || want("placering") {
         // The middle of the view. A headless run draws egui at scale 1, where
         // window points and ui points are the same.
         let size = egui.viewport_pts();

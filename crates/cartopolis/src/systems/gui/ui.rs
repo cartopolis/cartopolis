@@ -733,7 +733,9 @@ pub fn sync_dialog_to_selection(
 /// pointed at. It is reached from a point on the map rather than from a panel, so
 /// it is where the acts that take a *coordinate* live: route to or from here,
 /// save or share here as a place, build here. On an object the ring is the
-/// object's instead: touch it, edit it, script it, delete it, follow it.
+/// object's instead: touch it, edit it, script it, delete it, follow it. On a
+/// place's name (`systems::place_names`, a click or a long press) it is the
+/// place's: go there, route to or from it, save or share it under its name.
 ///
 /// At 16 system parameters this is at Bevy's cap. The next thing that needs world
 /// access here should be grouped into a `SystemParam` rather than added to the
@@ -777,6 +779,7 @@ pub fn render_context_menu(
             .map(|(_, p, _)| (id, p.name.clone()))
     });
     let lat_lng = context_menu.lat_lng;
+    let place = context_menu.place.clone();
 
     // The actions, primary first. No key hints in the labels: `E` is *interact*,
     // `D` strafes right, and a phone reaches this with no keyboard at all.
@@ -817,6 +820,48 @@ pub fn render_context_menu(
             icon: icons::DELETE,
             label: "Delete",
             hint: "Delete this object",
+        });
+    } else if let (Some(_), Some((lat, lng))) = (&place, lat_lng) {
+        // A name on the map seen from a distance: the first wish is to go and
+        // look, so Go there leads. Building and posting want a spot, not a
+        // whole town, and stay on the plain map ring.
+        actions.push(RingAction {
+            key: "go_there",
+            icon: icons::CAM_FLY,
+            label: "Go there",
+            hint: "Fly the camera to this place",
+        });
+        actions.push(RingAction {
+            key: "route_to",
+            icon: icons::ROUTE,
+            label: "Route here",
+            hint: "Set this place as the destination",
+        });
+        actions.push(RingAction {
+            key: "save",
+            icon: icons::BOOKMARK_ADD,
+            label: "Save",
+            hint: "Add this place to Places, under its name",
+        });
+        actions.push(RingAction {
+            key: "share",
+            icon: icons::SHARE,
+            label: "Share",
+            hint: "Share a link that opens the map over this place",
+        });
+        if crate::systems::plans::covers(lat, lng) {
+            actions.push(RingAction {
+                key: "plans_here",
+                icon: icons::FLAG,
+                label: "Plans here",
+                hint: "What the municipality has published here",
+            });
+        }
+        actions.push(RingAction {
+            key: "route_from",
+            icon: icons::START,
+            label: "Route from",
+            hint: "Set this place as the starting point",
         });
     } else if lat_lng.is_some() {
         // "Route to here" is the default act — a point on a map is a place you
@@ -883,10 +928,11 @@ pub fn render_context_menu(
         return;
     }
 
-    let (title, detail) = match (&prim, lat_lng) {
-        (Some((_, name)), _) => (name.clone(), "Object".to_string()),
-        (None, Some((lat, lng))) => ("This spot".to_string(), format!("{lat:.5}, {lng:.5}")),
-        (None, None) => (String::new(), String::new()),
+    let (title, detail) = match (&prim, &place, lat_lng) {
+        (Some((_, name)), _, _) => (name.clone(), "Object".to_string()),
+        (None, Some(p), _) => (p.name.clone(), p.detail.clone()),
+        (None, None, Some((lat, lng))) => ("This spot".to_string(), format!("{lat:.5}, {lng:.5}")),
+        (None, None, None) => (String::new(), String::new()),
     };
     // A new id per opening, so the press that opened it is not read as a press
     // off the ring (`action_ring::show`).
@@ -920,6 +966,29 @@ pub fn render_context_menu(
         }
         ("post_here", Some(at), _) => context_menu.post_here = Some(at),
         ("plans_here", Some(at), _) => context_menu.plans_here = Some(at),
+        ("go_there", Some((lat, lng)), _) => {
+            if let Some(p) = &place {
+                context_menu.go_there = Some((lat, lng, p.view_altitude_m, p.name.clone()));
+            }
+        }
+        ("save", Some((lat, lng)), _) if place.is_some() => {
+            // Named after the place itself: the reverse lookup the plain ring
+            // uses would call Groningen by whatever street its centre is on.
+            let p = place.as_ref().expect("guarded");
+            store.add_bookmark(
+                p.name.clone(),
+                lat,
+                lng,
+                p.view_altitude_m,
+                crate::systems::geo_nav::CameraPose::capture(&camera_state),
+            );
+            *right_panel = RightPanel::Places;
+        }
+        ("share", Some((lat, lng)), _) if place.is_some() => {
+            let alt = place.as_ref().expect("guarded").view_altitude_m;
+            let link = crate::systems::place_link::web_link(lat, lng, alt, None);
+            crate::systems::contacts::share(&link);
+        }
         ("save", Some((lat, lng)), _) => {
             // Altitude and pose come from the camera rather than from the hit
             // point, because a saved place is a remembered *view* as well as a

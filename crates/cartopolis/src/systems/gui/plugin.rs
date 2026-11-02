@@ -449,8 +449,9 @@ impl Plugin for GuiPlugin {
                     // map, culled against the leftover space as the pins are, and
                     // under them — a saved place stays on top of a notice.
                     // Cities, districts and stations named from a distance
-                    // (`systems::place_names`): painted, never sensing, under the
-                    // plans and the pins so a saved place stays on top.
+                    // (`systems::place_names`): each a click area that opens the
+                    // ring, under the plans and the pins so a saved place stays
+                    // on top and wins the tap.
                     // A scenario's region states and tracks
                     // (`systems::scenario`): painted under the names, so a city
                     // stays readable over a coloured province.

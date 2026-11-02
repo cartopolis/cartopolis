@@ -1073,8 +1073,19 @@ impl PrimTextureCache {
     }
 }
 
+/// A named place the ring was opened on: a city, district or station label
+/// (`systems::place_names`) rather than a bare point of the map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapPlace {
+    pub name: String,
+    /// What it is, for the pill under the ring: "City · 296k".
+    pub detail: String,
+    /// Camera height to look at it from: a city from higher than a station.
+    pub view_altitude_m: f64,
+}
+
 /// Context menu state for prim interaction (right-click menus)
-#[derive(Resource, Default, Debug, Clone, Copy)]
+#[derive(Resource, Default, Debug, Clone)]
 pub struct ContextMenuState {
     pub visible: bool,
     pub screen_pos: Vec2,
@@ -1095,6 +1106,12 @@ pub struct ContextMenuState {
     /// The ring's Plans here was chosen at this spot: taken by
     /// `plans::drive_plans`, which opens the list of notices around it.
     pub plans_here: Option<(f64, f64)>,
+    /// Set when the ring was opened on a place's name; `lat_lng` is then the
+    /// place itself, and the ring offers the place's actions.
+    pub place: Option<MapPlace>,
+    /// The ring's Go there was chosen: taken by `place_names::render_place_names`,
+    /// which hands it to `GeoNavState` as a teleport with the place's name.
+    pub go_there: Option<(f64, f64, f64, String)>,
 }
 
 /// Twist / taper / top-shear / slice parameters edited together in the dialog.

@@ -1,7 +1,7 @@
 ---
 topic: painted-far-map
 triggers: [painted.rs, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # The far tiles are a painted map, and names come from the same tiles
@@ -85,6 +85,12 @@ first with room around district names, because at 3 km a tile holds dozens of
 neighbourhoods and the first build wrote all of them. Villages, hamlets and
 localities are left out. A station gets its name only when it starts with a
 loaded town's name (rail stations do; metro and tram stops get the icon).
+
+Every drawn name is a click target (2026-11-02): a click or a long press opens
+the map's action ring on the place (`ContextMenuState::place`), with Go there
+first. Each name senses through its own `Area`, as a saved pin does, because a
+bare painter takes no clicks and the world's click handlers would then act on
+the ground underneath it.
 
 ## From above: clouds as a setting, the night side
 
