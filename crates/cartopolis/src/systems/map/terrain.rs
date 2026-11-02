@@ -1665,6 +1665,19 @@ pub fn update_terrain_field(
     let Some(anchor) = stream.geo_anchor() else {
         return;
     };
+    // A field answered for an earlier anchor measures ground in a frame that has
+    // moved: its samples are indexed by world metres from the *old* origin. Kept
+    // until the new bake lands, every cell built in between stood on the old
+    // place's hills at the new place — after a jump from Groningen (datum 7.2 m,
+    // relief to 19 m) to Winsum the buildings hung in the air (2026-11-02). Flat
+    // is the honest ground until this anchor's is measured, and clearing bumps
+    // the revision, so whatever was built on the old one rebuilds.
+    if field
+        .answered_gen
+        .is_some_and(|g| g != stream.anchor_generation)
+    {
+        field.clear();
+    }
     let mut wait = |why: &'static str, field: &TerrainField| {
         if *waiting != why {
             *waiting = why;

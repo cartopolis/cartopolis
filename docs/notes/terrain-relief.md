@@ -10,7 +10,7 @@ triggers:
     so the harness runs it too — see `the-harness-must-share-the-clients-geometry.md`)
   - files: systems/map/terrain.rs, terrain_refine.rs, terrain_tiles.rs, terrain_grade.rs,
     map_stream.rs, systems::ground_detail, ground_detail.wesl, height.rs
-updated: 2026-10-17
+updated: 2026-11-02
 ---
 
 # Terrain relief: what AHN actually holds, and the shape the field takes from it
@@ -210,6 +210,19 @@ was not stays where it was while the ground moves under it. Street labels
 (2026-08-10) were exactly that — the road surfaces beneath them were displaced,
 the names were not, and with the Height layer on the text sank into the road. A
 new thing standing on the ground is not done until it carries the revision.
+
+**A re-anchor clears the field at once (2026-11-02).** "`at()` returns 0 while the
+request is in flight" was true only for the first anchor. After a jump the old
+field stayed installed until the new one baked, and its samples are indexed by
+world metres from the *old* origin, so for those seconds every cell was built on
+the old place's hills at the new place. Groningen → Winsum (datum 7.2 m, relief
+−11…19 m, against Winsum's −2…4 m) left the buildings hanging in the air on a
+phone, and they stayed there after Winsum's field landed: some consumer built in
+that gap was not rebuilt by the bake's revision bump. Which one was not chased;
+`update_terrain_field` now clears a field answered for an older anchor
+generation, which bumps the revision and makes flat the ground in the gap, as
+it is at start-up. Seen in a `--shot-mode avatar` pair, Groningen then Winsum,
+against a fresh Winsum capture.
 
 ## The physics stays flat; only the picture stands on the ground
 
