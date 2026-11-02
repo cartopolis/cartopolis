@@ -182,6 +182,25 @@ clouds = 0.2
 rain = 0.0
 descend = { to = 40.0, seconds = 9.0 }
 
+[[scenario]]
+name = "climb"
+description = """
+The zoom the other way: from 150 m over Groningen out to 200 km in 10 s, through \
+the 3–45 km band where the street ring, the flat map and their props are still \
+held while almost nothing of them is visible, and across the globe's hand-over \
+near 50 km. Its windows are `climb` and `arrive` (the globe filling in); read \
+`frame_ms` and the worst frame of `climb`, `gpu_resident_kb` and `draws` at \
+arrival, and the `surface ring retear for detail` log lines — the altitude each \
+band of the ground ring was dropped at."""
+mode = "earth"
+at = [53.2194, 6.5665, 150]
+look = [-60.0, 0.0]
+time = 12.0
+fog = 0.1
+clouds = 0.2
+rain = 0.0
+climb = { to = 200000.0, seconds = 10.0 }
+
 # Six scenarios, and the first five have all been run. A route view is still missing and an
 # entry here is a claim that the viewpoint has been measured, so it stays out until
 # somebody measures it.

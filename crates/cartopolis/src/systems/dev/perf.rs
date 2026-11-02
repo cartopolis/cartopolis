@@ -304,15 +304,16 @@ pub struct PerfScenario {
     /// The patrol this stop was expanded from; never written in a manifest.
     #[serde(skip)]
     pub patrol: Option<String>,
-    /// Zoom in once the scenario has settled, as a person scrolling would, and
-    /// measure what is missing when the camera gets there. Replaces the `steady`
-    /// and `turn` windows with `descent` and `arrive`. Earth mode only: it drives
-    /// the zoom target the wheel drives.
-    #[serde(default)]
+    /// Zoom in (`descend`) or out (`climb`) once the scenario has settled, as a
+    /// person scrolling would, and measure what is missing when the camera gets
+    /// there. Replaces the `steady` and `turn` windows with `descent` (or
+    /// `climb`) and `arrive`. Earth mode only: it drives the zoom target the
+    /// wheel drives.
+    #[serde(default, alias = "climb")]
     pub descend: Option<Descend>,
 }
 
-/// A zoom from the scenario's pose down to `to`, in wall-clock time.
+/// A zoom from the scenario's pose down (or up) to `to`, in wall-clock time.
 ///
 /// **Wall clock, not frames, and that is the point of it.** Every other window
 /// here waits for the world; this one is the case where the world cannot keep
@@ -336,6 +337,16 @@ impl Descend {
     fn target_at(self, from: f64, t: f32) -> f64 {
         let f = f64::from((t / self.seconds.max(0.01)).clamp(0.0, 1.0));
         from * (self.to / from).powf(f)
+    }
+
+    /// Whether the camera, `distance` from the focus, has got to `to` — from
+    /// above on a descent, from below on a climb.
+    fn reached(self, from: f64, distance: f64) -> bool {
+        if self.to > from {
+            distance >= self.to / 1.03
+        } else {
+            distance <= self.to * 1.03
+        }
     }
 }
 
@@ -385,9 +396,9 @@ impl PerfManifest {
                         s.name
                     ));
                 }
-                if !(d.to > 0.0 && d.to < s.at[2] && d.seconds > 0.0) {
+                if !(d.to > 0.0 && d.to != s.at[2] && d.seconds > 0.0) {
                     return Err(format!(
-                        "{}: scenario {:?} must descend below its start, over a positive time",
+                        "{}: scenario {:?} must zoom away from its start, over a positive time",
                         path.display(),
                         s.name
                     ));
@@ -1581,6 +1592,7 @@ pub fn drive_perf_window(
     registry: Res<crate::systems::stream_watch::StreamRegistry>,
     target: Option<Res<crate::systems::shot_harness::ShotTarget>>,
     surfaces: Option<Res<crate::systems::map_geometry::MapSurfaces>>,
+    globe: Res<crate::systems::globe::GlobeState>,
 ) {
     // The report is out and the capture path is draining to exit. `placed` is not
     // cleared on the final viewpoint, so without this the `load` arm below opens a
@@ -1720,11 +1732,21 @@ pub fn drive_perf_window(
 
     if perf.phase == Phase::Descent {
         perf.flight.t += dt;
-        camera.orbit_distance_target = descend.target_at(perf.flight.from, perf.flight.t);
+        // A climb crosses `SPACE_ENTER_ALT`, where the orbit stops pivoting on
+        // the ground focus and pivots on the Earth's centre, and its distance
+        // with it. Writing a focus distance into the centre's frame pulled the
+        // camera into the ground, which handed back to the focus, which climbed
+        // again: a loop from 0 to 1,900 km, once a second.
+        let pivot = if camera.orbit_space {
+            f64::from(globe.radius)
+        } else {
+            0.0
+        };
+        camera.orbit_distance_target = pivot + descend.target_at(perf.flight.from, perf.flight.t);
         // There once the target has finished falling and the glide has caught up
         // with it. The cap is for a camera that cannot get there — a clamp in
         // `free_camera`, or a mode the harness did not leave it in.
-        let caught_up = camera.orbit_distance <= descend.to * 1.03;
+        let caught_up = descend.reached(perf.flight.from, camera.orbit_distance - pivot);
         if perf.flight.t < descend.seconds || !(caught_up || perf.flight.t > descend.seconds + 10.0)
         {
             return;
@@ -1734,11 +1756,16 @@ pub fn drive_perf_window(
                 scenario = %run.names.get(perf.index).map_or("", String::as_str),
                 distance_m = camera.orbit_distance as i64,
                 to_m = descend.to as i64,
-                "perf: the descent never reached its distance — is the camera in Earth mode?"
+                "perf: the zoom never reached its distance — is the camera in Earth mode?"
             );
         }
         perf.settled = true;
-        let window = close(&mut perf, "descent", &run, &readouts);
+        let name = if descend.to > perf.flight.from {
+            "climb"
+        } else {
+            "descent"
+        };
+        let window = close(&mut perf, name, &run, &readouts);
         perf.samples.push(window);
         perf.phase = Phase::Arrive;
         perf.base = take_base(&readouts);
@@ -2280,6 +2307,21 @@ mod tests {
         assert!((d.target_at(10_000.0, 1.0) - 1_000.0).abs() < 1e-6);
         assert!((d.target_at(10_000.0, 2.0) - 100.0).abs() < 1e-6);
         assert!((d.target_at(10_000.0, 9.0) - 100.0).abs() < 1e-6);
+    }
+
+    /// A climb is the same zoom the other way, and arrives from below.
+    #[test]
+    fn a_climb_rises_geometrically_and_arrives_from_below() {
+        let d = Descend {
+            to: 10_000.0,
+            seconds: 2.0,
+        };
+        assert!((d.target_at(100.0, 1.0) - 1_000.0).abs() < 1e-6);
+        assert!(!d.reached(100.0, 5_000.0));
+        assert!(d.reached(100.0, 9_800.0));
+        let down = Descend { to: 100.0, ..d };
+        assert!(!down.reached(10_000.0, 500.0));
+        assert!(down.reached(10_000.0, 102.0));
     }
 
     #[test]
