@@ -345,7 +345,12 @@ pub struct WorldDriveLine {
     pub flow: Flow,
     pub speed: f32,
     pub half_width: f32,
+    /// Who may use it — `drive` is the tile's answer ([`Self::kind_drives`]) less
+    /// the streets closed to cars ([`close_car_free_lines`]).
     pub uses: Uses,
+    /// Whether the tile's road kind takes cars, before any closure. Kept so a
+    /// closure that streams out again reopens the line.
+    pub kind_drives: bool,
     /// Cumulative length at each point, so a car can be advanced without walking
     /// the line from the start every frame.
     pub cumulative: Vec<f32>,
@@ -537,6 +542,7 @@ impl DriveNetwork {
                     speed: l.speed,
                     half_width: l.half_width,
                     uses: l.uses,
+                    kind_drives: l.uses.drive,
                     cumulative,
                     deck,
                     on_deck: l.on_deck,
@@ -619,6 +625,63 @@ impl DriveNetwork {
         out
     }
 }
+
+/// Keep cars off the streets closed to them.
+///
+/// The tile calls the Vismarkt a `residential` street like any other — its
+/// `motor_vehicle=no` reaches the client only through the street-detail Overpass
+/// query (`cartopolis_geo::traffic::cars_barred`). The two arrive on their own
+/// schedules, so this re-matches the loaded ring whenever either changes rather
+/// than when a cell is inserted, and recomputes `drive` from the tile's answer
+/// each time, so a closure that streams out reopens its street. Walkers keep the
+/// line, and with `drive` off they walk the middle of it, as people do on a
+/// pedestrianised street.
+pub fn close_car_free_lines(
+    mut net: ResMut<DriveNetwork>,
+    detail: Res<crate::systems::street_detail::StreetDetail>,
+    mut seen: Local<Option<(u32, u32)>>,
+) {
+    let now = (net.revision, detail.car_free_revision);
+    if *seen == Some(now) {
+        return;
+    }
+    *seen = Some(now);
+    let ways: Vec<((Vec2, Vec2), &[[f32; 2]])> = detail
+        .car_free_ways()
+        .map(|w| {
+            let bounds = w.iter().fold(
+                (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+                |(lo, hi), p| (lo.min(Vec2::from(*p)), hi.max(Vec2::from(*p))),
+            );
+            (bounds, w.as_slice())
+        })
+        .collect();
+    let net = &mut *net;
+    for line in net.cells.values_mut().flatten() {
+        let (lo, hi) = line.bounds;
+        let near: Vec<&[[f32; 2]]> = ways
+            .iter()
+            .filter(|((wlo, whi), _)| {
+                wlo.x <= hi.x + CAR_FREE_MARGIN_M
+                    && whi.x >= lo.x - CAR_FREE_MARGIN_M
+                    && wlo.y <= hi.y + CAR_FREE_MARGIN_M
+                    && whi.y >= lo.y - CAR_FREE_MARGIN_M
+            })
+            .map(|(_, w)| *w)
+            .collect();
+        let closed = line.kind_drives
+            && !near.is_empty()
+            && cartopolis_geo::traffic::runs_along_closed(
+                &line.points.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
+                &near,
+            );
+        line.uses.drive = line.kind_drives && !closed;
+    }
+}
+
+/// How far outside a line's bounding box a closed way is still considered, m —
+/// at least the match distance in `runs_along_closed`.
+const CAR_FREE_MARGIN_M: f32 = 6.0;
 
 /// Which line a car is on. Not a reference: the cell it names can be retired
 /// under it, and [`DriveNetwork::get`] answering `None` is how the car finds out.
@@ -1226,7 +1289,11 @@ pub fn drive_traffic(
             continue;
         }
         let mut key = car.line;
-        let mut line = key.and_then(|k| net.get(k));
+        // A line closed since the agent joined it (`close_car_free_lines`) is
+        // left at once: the closure is what the street is, not news to it.
+        let mut line = key
+            .and_then(|k| net.get(k))
+            .filter(|l| kind.may_use(l.uses));
         // What this frame's advance did, for the body's lean, the brake lamps
         // and the stride.
         let mut accel_now = 0.0;

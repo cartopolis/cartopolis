@@ -28,7 +28,8 @@ Standing facts, several of which a diff will not explain:
   cells never reach Overpass at all (`fetch_cell_text` short-circuits to the
   static host), so anything appended to that query would silently not exist in
   exactly the covered Dutch cities the client is pointed at. Hence a separate
-  query family with its own cache namespace (`cache/features/v1/…`,
+  query family with its own cache namespace (`cache/features/v2/…` since the
+  query grew the streets closed to cars, `ambient-traffic.md`;
   `cache/features/tall/v1/…`). The building cache moved to `buildings/v2/…`
   when the query grew `building:part` — an old cached cell would otherwise
   lack parts forever, because the cache key carries no query hash.

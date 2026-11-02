@@ -238,7 +238,8 @@ impl Plugin for NavPlugin {
                     .after(systems::free_camera::camera_controls),
                 // Ambient traffic: one transform write per car per frame, and no
                 // asset touched after startup (`systems::traffic`).
-                systems::traffic::drive_traffic,
+                systems::traffic::close_car_free_lines,
+                systems::traffic::drive_traffic.after(systems::traffic::close_car_free_lines),
                 // After it, because a passing walker can flush a feeding crow.
                 systems::crows::drive_crows.after(systems::traffic::drive_traffic),
             )

@@ -3,8 +3,8 @@ topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
   "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
-  agent_models.rs, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians"]
-updated: 2026-10-19
+  agent_models.rs, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle"]
+updated: 2026-11-02
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -33,6 +33,27 @@ is right to: a painted road is the same width whichever way it runs. Traffic
 cannot do that — the two send a car in opposite directions, and collapsing them
 would run every `oneway_reverse` street's traffic backwards. `traffic::flow_from`
 is a pure three-way function with a test on it for exactly this reason.
+
+## Streets closed to cars come from Overpass, not the tile (2026-11-02)
+
+Shortbread's `streets` layer has **no access tags** (its keys: `kind`, `link`,
+`rail`, `bridge`, `tunnel`, `oneway`, `oneway_reverse`, `surface`, `service`,
+`bicycle`, `horse`). Groningen's Vismarkt is `highway=residential` +
+`motor_vehicle=no`, as are Folkingestraat, Stoeldraaierstraat and most of the
+centre, so the tile served them as ordinary streets and cars drove between the
+market stalls. The BGT paving was checked as a stand-in and is not one: it calls
+most of the Vismarkt `voetgangersgebied` but one strip `rijbaan lokale weg`,
+where OSM closes all of it.
+
+The street-detail query (`systems::street_detail`) now also asks for every
+drivable-kind highway carrying `access`, `vehicle`, `motor_vehicle` or
+`motorcar`; `cartopolis_geo::traffic::cars_barred` reads the most specific of
+them, and `close_car_free_lines` turns `drive` off on any line whose samples lie
+mostly within 4 m of a barred way (`runs_along_closed`). The two arrive on their
+own schedules, so it re-matches on either revision, and recomputes from
+`kind_drives` so a closure that streams out reopens its street. Walkers keep the
+line and, with `drive` off, walk the middle of it. **The closures ride the street
+detail toggle**: with that layer off, closed streets carry cars again.
 
 ## Nothing may be built per frame
 

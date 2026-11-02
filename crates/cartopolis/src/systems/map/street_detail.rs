@@ -61,7 +61,7 @@ use crate::systems::vector_tiles::SurfaceGroup;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom for fetch + cache, matching the building cells so one mental
-/// model covers both. Cache keys are versioned (`features/v1/…`) because the
+/// model covers both. Cache keys are versioned (`features/v2/…`) because the
 /// combined query *will* grow tags over time, and a cached cell fetched under an
 /// older query would silently lack the new features forever.
 const DETAIL_ZOOM: u32 = 14;
@@ -178,6 +178,8 @@ struct DetailData {
     bollards: Vec<(f64, f64)>,
     /// Highway ways fetched as node context: (node ids, geometry, width m).
     roads: Vec<(Vec<i64>, Vec<(f64, f64)>, f32, bool)>,
+    /// Highway ways whose access tags keep cars off (`traffic::cars_barred`).
+    car_free: Vec<Vec<(f64, f64)>>,
 }
 
 /// The combined per-cell query. Signals and crossings are named sets so their
@@ -202,6 +204,10 @@ fn detail_query(bbox: &str) -> String {
             ".sig;.zeb;",
             "way(bn.sig)[\"highway\"];",
             "way(bn.zeb)[\"highway\"];",
+            // The streets closed to cars, for the ambient traffic: the tile's
+            // `streets` layer carries no access tags (`traffic::cars_barred`).
+            "way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service)$\"]",
+            "[~\"^(access|vehicle|motor_vehicle|motorcar)$\"~\".\"]({bb});",
             ");out geom;"
         ),
         bb = bbox
@@ -209,7 +215,7 @@ fn detail_query(bbox: &str) -> String {
 }
 
 fn cache_key(cx: i64, cy: i64) -> String {
-    format!("features/v1/{}/{}/{}.json", DETAIL_ZOOM, cx, cy)
+    format!("features/v2/{}/{}/{}.json", DETAIL_ZOOM, cx, cy)
 }
 
 /// Fetch one cell's text: disk cache, else the combined Overpass query
@@ -389,6 +395,9 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                 } {
                     out.waterway.push((kind, line));
                 } else if tag_str(tags, "highway").is_some() {
+                    if cartopolis_geo::traffic::cars_barred(|k| tag_str(tags, k)) {
+                        out.car_free.push(line.clone());
+                    }
                     let ids: Vec<i64> = el
                         .get("nodes")
                         .and_then(|n| n.as_array())
@@ -443,6 +452,8 @@ pub(crate) struct DetailCellBuild {
     /// Each signal's stop line — the node on the carriageway, world XZ — and
     /// its phase group, for the cars that stop at it (`systems::traffic`).
     signal_points: Vec<(Vec2, u8)>,
+    /// The ways closed to cars, world XZ (`systems::traffic`).
+    car_free: Vec<Vec<[f32; 2]>>,
 }
 
 type CellResult = Result<Option<DetailCellBuild>, String>;
@@ -1253,7 +1264,19 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         }
     }
 
-    if meshes.is_empty() && colliders.is_empty() && lamp_points.is_empty() {
+    // World XZ, the frame the drive network is in — like the signals' stop
+    // lines, not cell-local like the meshes.
+    let car_free: Vec<Vec<[f32; 2]>> = data
+        .car_free
+        .iter()
+        .map(|way| {
+            way.iter()
+                .map(|&(lat, lng)| ctx.local(lat, lng).to_array())
+                .collect()
+        })
+        .collect();
+
+    if meshes.is_empty() && colliders.is_empty() && lamp_points.is_empty() && car_free.is_empty() {
         return Ok(None);
     }
     Ok(Some(DetailCellBuild {
@@ -1262,6 +1285,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         colliders,
         lamp_points,
         signal_points,
+        car_free,
     }))
 }
 
@@ -1324,6 +1348,10 @@ pub struct StreetDetail {
     /// Signal stop lines (world XZ) and their phase groups per cell, for the
     /// traffic that stops at them.
     signals: HashMap<(i64, i64), Vec<(Vec2, u8)>>,
+    /// Ways closed to cars (world XZ) per cell, for the traffic that keeps off
+    /// them, and a revision bumped whenever that set changes.
+    car_free: HashMap<(i64, i64), Vec<Vec<[f32; 2]>>>,
+    pub car_free_revision: u32,
     /// Shared materials by class.
     solid_material: Option<Handle<StandardMaterial>>,
     linear_material: Option<Handle<StandardMaterial>>,
@@ -1360,6 +1388,8 @@ impl Default for StreetDetail {
             cell_entities: HashMap::new(),
             lamps: HashMap::new(),
             signals: HashMap::new(),
+            car_free: HashMap::new(),
+            car_free_revision: 0,
             solid_material: None,
             linear_material: None,
             paint_material: None,
@@ -1400,6 +1430,11 @@ impl StreetDetail {
             .flatten()
             .copied()
             .filter(move |(p, _)| p.distance_squared(at) <= r2)
+    }
+
+    /// Every loaded way closed to cars, world XZ.
+    pub fn car_free_ways(&self) -> impl Iterator<Item = &Vec<[f32; 2]>> + '_ {
+        self.car_free.values().flatten()
     }
 }
 
@@ -1448,6 +1483,10 @@ pub fn update_street_detail(
         sd.spawned_meshes = 0;
         sd.lamps.clear();
         sd.signals.clear();
+        if !sd.car_free.is_empty() {
+            sd.car_free.clear();
+            sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
+        }
         colliders.clear_features();
         let sd = &mut *sd;
         sd.cells.restart(&mut sd.cell_entities, &mut sd.anchor);
@@ -1584,6 +1623,10 @@ pub fn update_street_detail(
                 if !build.signal_points.is_empty() {
                     sd.signals.insert(cell, build.signal_points);
                 }
+                if !build.car_free.is_empty() {
+                    sd.car_free.insert(cell, build.car_free);
+                    sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
+                }
                 sd.cells.succeeded(&cell);
             }
             Ok(None) => sd.cells.succeeded(&cell),
@@ -1610,6 +1653,9 @@ pub fn update_street_detail(
         }
         sd.lamps.remove(&cell);
         sd.signals.remove(&cell);
+        if sd.car_free.remove(&cell).is_some() {
+            sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
+        }
         colliders.remove_feature_cell(cell);
         sd.cells.forget(&cell);
     }
@@ -2095,6 +2141,26 @@ mod tests {
         assert_eq!(data.piers.len(), 1);
         assert_eq!(data.roads.len(), 1);
         assert_eq!(data.roads[0].2, 6.5); // two lanes at 3.25 m
+    }
+
+    /// The Vismarkt's tags close it to cars; a plain street, and one open to
+    /// residents, are not closed.
+    #[test]
+    fn streets_closed_to_cars_are_kept() {
+        let text = r#"{"elements":[
+            {"type":"way","id":95134294,"nodes":[1,2],
+             "geometry":[{"lat":53.2174,"lon":6.5645},{"lat":53.2175,"lon":6.5655}],
+             "tags":{"highway":"residential","name":"Vismarkt","motor_vehicle":"no","vehicle":"yes"}},
+            {"type":"way","id":2,"nodes":[3,4],
+             "geometry":[{"lat":53.2,"lon":6.5},{"lat":53.2,"lon":6.6}],
+             "tags":{"highway":"residential"}},
+            {"type":"way","id":3,"nodes":[5,6],
+             "geometry":[{"lat":53.3,"lon":6.5},{"lat":53.3,"lon":6.6}],
+             "tags":{"highway":"residential","access":"no","motor_vehicle":"destination"}}
+        ]}"#;
+        let data = parse_detail(text).unwrap();
+        assert_eq!(data.car_free.len(), 1);
+        assert_eq!(data.car_free[0][0], (53.2174, 6.5645));
     }
 
     /// A buried feature is not drawn on the ground above it — the refusal

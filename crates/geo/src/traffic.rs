@@ -282,6 +282,77 @@ pub fn walk_ok(kind: &str) -> bool {
     )
 }
 
+/// Whether OSM's access tags on a highway way keep cars off it.
+///
+/// **The tile cannot answer this.** Shortbread's `streets` layer carries no
+/// access tags, so a street closed to cars arrives as an ordinary `residential`
+/// one — Groningen's Vismarkt and most of the shopping streets round it are
+/// `motor_vehicle=no`, and ambient cars drove through the market stalls. The
+/// tags come from the street-detail Overpass query instead
+/// (`systems::street_detail`), which is why this takes a lookup rather than a
+/// feature.
+///
+/// The most specific key present decides: `motorcar`, then `motor_vehicle`,
+/// then `vehicle`, then `access` — so `motor_vehicle=no` + `vehicle=yes` (bikes
+/// welcome, cars not) is closed, and `access=no` + `motor_vehicle=destination`
+/// is open. `destination` stays open: residents and visitors do drive it.
+#[must_use]
+pub fn cars_barred<'a>(tag: impl Fn(&str) -> Option<&'a str>) -> bool {
+    ["motorcar", "motor_vehicle", "vehicle", "access"]
+        .iter()
+        .find_map(|k| tag(k))
+        .is_some_and(|v| {
+            matches!(
+                v,
+                "no" | "private" | "delivery" | "agricultural" | "forestry" | "emergency"
+            )
+        })
+}
+
+/// How near a closed way a drive line's samples must lie to be on it, metres.
+/// Wider than the z14 quantisation and [`DRIVE_SIMPLIFY_M`]'s chord error,
+/// narrower than the gap between two parallel streets.
+const CLOSED_MATCH_M: f32 = 4.0;
+
+/// Whether most of `line` runs along one of `closed` — the barred ways of
+/// [`cars_barred`], in the same frame.
+///
+/// A drive line and an OSM way are the same road drawn twice — the tile's
+/// generalised, Overpass's exact — with no id in common, so they are matched by
+/// position: the line is sampled every few metres, and it is closed when more
+/// than half its samples lie within [`CLOSED_MATCH_M`] of a closed way. Half,
+/// not any: a line crossing the end of a closed street touches it at the
+/// junction and stays open.
+#[must_use]
+pub fn runs_along_closed(line: &[[f32; 2]], closed: &[&[[f32; 2]]]) -> bool {
+    let samples = densify(line, CLOSED_MATCH_M);
+    if samples.is_empty() || closed.is_empty() {
+        return false;
+    }
+    let r2 = CLOSED_MATCH_M * CLOSED_MATCH_M;
+    let near = |p: [f32; 2]| {
+        closed.iter().any(|way| {
+            way.windows(2)
+                .any(|s| segment_distance2(p, s[0], s[1]) <= r2)
+        })
+    };
+    let hits = samples.iter().filter(|p| near(**p)).count();
+    hits * 2 > samples.len()
+}
+
+/// Squared distance from `p` to the segment `a`–`b`.
+fn segment_distance2(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dz * dz;
+    let t = if len2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (ex, ez) = (a[0] + dx * t - p[0], a[1] + dz * t - p[1]);
+    ex * ex + ez * ez
+}
+
 /// Read a tile's `streets` layer as a travelable network.
 ///
 /// Takes the cell's already-parsed [`TileData`] rather than the tile body, for
@@ -635,6 +706,50 @@ mod tests {
         let residential = drive_speed("residential").expect("drivable");
         let living = drive_speed("living_street").expect("drivable");
         assert!(motorway > primary && primary > residential && residential > living);
+    }
+
+    /// The most specific access key decides, both ways round — the Vismarkt's
+    /// own tags are the first case.
+    #[test]
+    fn the_most_specific_access_key_decides() {
+        let tags = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| *v)
+        };
+        assert!(cars_barred(tags(&[
+            ("motor_vehicle", "no"),
+            ("vehicle", "yes")
+        ])));
+        assert!(!cars_barred(tags(&[
+            ("access", "no"),
+            ("motor_vehicle", "destination")
+        ])));
+        assert!(cars_barred(tags(&[("vehicle", "no")])));
+        assert!(cars_barred(tags(&[("access", "private")])));
+        assert!(!cars_barred(tags(&[("motorcar", "yes"), ("access", "no")])));
+        assert!(!cars_barred(tags(&[])));
+    }
+
+    /// A line on a closed way is closed; one that only crosses its end, or runs
+    /// beside it a street's width away, is not.
+    #[test]
+    fn a_line_is_closed_only_along_a_closed_way() {
+        let way: &[[f32; 2]] = &[[0.0, 0.0], [100.0, 0.0]];
+        let closed = [way];
+        assert!(runs_along_closed(
+            &[[0.0, 1.5], [60.0, 2.0], [100.0, 1.0]],
+            &closed
+        ));
+        assert!(!runs_along_closed(
+            &[[100.0, -50.0], [100.0, 50.0]],
+            &closed
+        ));
+        assert!(!runs_along_closed(&[[0.0, 12.0], [100.0, 12.0]], &closed));
+        // Mostly closed, then on into an open street: still closed.
+        assert!(runs_along_closed(
+            &[[0.0, 0.0], [100.0, 0.0], [140.0, 0.0]],
+            &closed
+        ));
+        assert!(!runs_along_closed(&[[0.0, 0.0], [100.0, 0.0]], &[]));
     }
 
     /// Simplification keeps both ends and never emits a zero-length step — a
