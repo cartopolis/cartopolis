@@ -1021,6 +1021,7 @@ mod tests {
             DevTab::Profiler,
             DevTab::Switches,
             DevTab::Precision,
+            DevTab::Midas,
         ] {
             assert!(DevTab::ALL.contains(&tab), "{tab:?} is not in the tab row");
             assert!(!tab.label().is_empty());

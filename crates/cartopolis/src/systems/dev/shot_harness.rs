@@ -2494,6 +2494,7 @@ const UI_ELEMENTS: &[&str] = &[
     "profiler",
     "switches",
     "precision",
+    "midas",
     "menu",
     "avatar",
     "appearance",
@@ -2638,7 +2639,8 @@ pub fn open_scripted_ui(
     let want = |k: &str| all || panels.iter().any(|u| u == k);
     // Written unconditionally (not only when opening) so each shot starts from
     // exactly the chrome it asked for.
-    dev.open = want("dev") || want("profiler") || want("switches") || want("precision");
+    dev.open =
+        want("dev") || want("profiler") || want("switches") || want("precision") || want("midas");
     // A tab, not just the window: `--ui dev` alone photographs whichever tab the
     // enum defaults to, which is the same trap `--ui graphics` exists to avoid
     // for Settings.
@@ -2648,6 +2650,8 @@ pub fn open_scripted_ui(
         crate::systems::dev_panel::DevTab::Switches
     } else if want("precision") {
         crate::systems::dev_panel::DevTab::Precision
+    } else if want("midas") {
+        crate::systems::dev_panel::DevTab::Midas
     } else {
         crate::systems::dev_panel::DevTab::Frame
     };

@@ -557,7 +557,7 @@ pub fn midas_tab(
     let message = link.shared().message.clone();
     if !link.config.paired() {
         theme::note(ui, "Pair this app with your Midas hub, and your sessions can ask it for screenshots, camera frames, the precision log and sensor recordings while it is open.");
-        theme::note(ui, "On the Midas page: Settings ▸ This device ▸ Paired apps ▸ Pair a device. Type the code it shows here.");
+        theme::note(ui, "On the Midas page: Settings > This device > Paired apps > Pair a device. Type the code it shows here.");
         ui.horizontal(|ui| {
             ui.label("hub");
             ui.text_edit_singleline(&mut link.hub_draft);
