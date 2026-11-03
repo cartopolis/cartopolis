@@ -17,7 +17,8 @@
 //! Building matching (to pin the anchor tighter than GNSS) is not built.
 //!
 //! Everything it does goes to the [`HighPrecisionLog`] — lens, sensor rates,
-//! frame brightness and age, GNSS, the tracker's state and the hand — which
+//! frame brightness and age, GNSS, the tracker's state, the hand and the
+//! magnetic field a second at a time ([`FieldReadings`]) — which
 //! Developer tools ▸ Precision shows and copies, so a phone's behaviour can be
 //! pasted into a chat.
 //!
@@ -100,6 +101,8 @@ pub struct HighPrecision {
     /// so a missing permission is said once rather than every second.
     gnss_try_at: Option<web_time::Instant>,
     gnss_refusal: Option<String>,
+    /// The magnetic field along the walk, for the log.
+    field: FieldReadings,
 }
 
 impl HighPrecision {
@@ -197,8 +200,13 @@ pub struct HighPrecisionLog {
     dirty: bool,
 }
 
-/// The most the log holds; the oldest lines go first.
-const LOG_MAX_BYTES: usize = 24 * 1024;
+/// The most the log holds; the oldest lines go first. A running mode writes
+/// about 130 bytes a second, so this is some twelve minutes: an indoor walk
+/// repeated three times, for the magnetic field to be compared across passes.
+const LOG_MAX_BYTES: usize = 96 * 1024;
+/// How much of it Developer tools ▸ Precision shows: the panel lays the text out
+/// every frame, and Copy takes the whole log anyway.
+const LOG_SHOWN_BYTES: usize = 8 * 1024;
 /// How often a running mode writes its rates to the log.
 const LOG_EVERY_S: f32 = 5.0;
 /// Where the log is kept between launches.
@@ -263,6 +271,26 @@ impl HighPrecisionLog {
         s
     }
 
+    /// Its newest lines, at most [`LOG_SHOWN_BYTES`] of them, as the panel shows.
+    #[must_use]
+    pub fn tail(&self) -> String {
+        let mut kept = 0;
+        let mut from = self.lines.len();
+        for (i, l) in self.lines.iter().enumerate().rev() {
+            if kept + l.len() + 1 > LOG_SHOWN_BYTES {
+                break;
+            }
+            kept += l.len() + 1;
+            from = i;
+        }
+        let mut s = String::with_capacity(kept);
+        for l in self.lines.range(from..) {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    }
+
     pub fn clear(&mut self) {
         self.lines.clear();
         self.bytes = 0;
@@ -303,6 +331,81 @@ fn utc_now() -> String {
     format!("{:02}:{:02}:{:02}", day / 3600, day / 60 % 60, day % 60)
 }
 
+/// The magnetic field, one reading a second, for telling whether this phone can
+/// recognise where it is indoors by the field (`docs/notes/indoor-positioning.md`):
+/// the steel in a building bends the Earth's field into a fixed pattern, so the
+/// same corridor walked twice should log the same sequence.
+///
+/// Each reading is the second's mean field vector, as two numbers that do not
+/// depend on how the phone is turned: its **strength**, and its **up**
+/// component — along the accelerometer's mean for the same second, which while
+/// held is the way up. In the Netherlands the field dips ~67° below the horizon,
+/// so outdoors that reads about −45 µT of the ~49. The field's heading is left
+/// out: it needs the compass, and indoors the compass is what the steel bends.
+#[derive(Default)]
+struct FieldReadings {
+    /// The second (`CLOCK_BOOTTIME`) the sums are for.
+    second: Option<i64>,
+    field: [f32; 3],
+    up: [f32; 3],
+    n: u32,
+    /// (strength, up) in µT, since the last log line.
+    readings: Vec<(f32, f32)>,
+}
+
+impl FieldReadings {
+    fn accel(&mut self, xyz: [f32; 3]) {
+        for (s, v) in self.up.iter_mut().zip(xyz) {
+            *s += v;
+        }
+    }
+
+    fn magnet(&mut self, t_ns: i64, xyz: [f32; 3]) {
+        let second = t_ns.div_euclid(1_000_000_000);
+        if self.second != Some(second) {
+            self.close();
+            self.second = Some(second);
+        }
+        for (s, v) in self.field.iter_mut().zip(xyz) {
+            *s += v;
+        }
+        self.n += 1;
+    }
+
+    /// End the second: its mean field becomes a reading.
+    fn close(&mut self) {
+        if self.n > 0 {
+            let f = self.field.map(|v| v / self.n as f32);
+            let strength = f.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let g = self.up.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let up = if g > 0.0 {
+                f.iter().zip(self.up).map(|(a, b)| a * b).sum::<f32>() / g
+            } else {
+                f32::NAN
+            };
+            self.readings.push((strength, up));
+        }
+        self.field = [0.0; 3];
+        self.up = [0.0; 3];
+        self.n = 0;
+    }
+
+    /// The readings since the last line, oldest first, or `None` when the phone
+    /// has no magnetometer. The second still being summed waits for the next.
+    fn line(&mut self) -> Option<String> {
+        if self.readings.is_empty() {
+            return None;
+        }
+        let mut strength = String::new();
+        let mut up = String::new();
+        for (s, u) in self.readings.drain(..) {
+            strength.push_str(&format!(" {s:.1}"));
+            up.push_str(&format!(" {u:.1}"));
+        }
+        Some(format!("field µT · strength{strength} · up{up}"))
+    }
+}
+
 /// How long after losing the camera the mode asks for it again. Long enough
 /// not to fight whatever took it on every frame; short enough that coming back
 /// to the app finds the camera running.
@@ -326,6 +429,7 @@ impl HighPrecision {
         self.last_gyro_t = None;
         self.gyro_gap_ms = 0.0;
         self.retry_at = None;
+        self.field = FieldReadings::default();
         // A new camera is a new tracker; the anchor is kept, marked stale, so
         // the new tracker's first pose continues from the last hand.
         self.tracker = None;
@@ -463,13 +567,11 @@ pub fn drive_high_precision(
                     f64::from(m.xyz[1]),
                     f64::from(m.xyz[2]),
                 );
-                tracker.imu(
-                    m.t_ns,
-                    match m.kind {
-                        MotionKind::Gyro => cartopolis_vio::Imu::Gyro(v),
-                        MotionKind::Accel => cartopolis_vio::Imu::Accel(v),
-                    },
-                );
+                match m.kind {
+                    MotionKind::Gyro => tracker.imu(m.t_ns, cartopolis_vio::Imu::Gyro(v)),
+                    MotionKind::Accel => tracker.imu(m.t_ns, cartopolis_vio::Imu::Accel(v)),
+                    MotionKind::Mag => {}
+                }
             }
             let [x, y, z] = m.xyz;
             let len = (x * x + y * y + z * z).sqrt();
@@ -484,7 +586,9 @@ pub fn drive_high_precision(
                 MotionKind::Accel => {
                     high.accel_sum += len;
                     high.accel_n += 1;
+                    high.field.accel(m.xyz);
                 }
+                MotionKind::Mag => high.field.magnet(m.t_ns, m.xyz),
             }
         }
 
@@ -527,11 +631,12 @@ pub fn drive_high_precision(
             let counts = sensors.counts();
             let rate = |a: u64, b: u64| (a - b) as f32 / span;
             let mut line = format!(
-                "t+{:.0}s · camera {:.1}/s · accel {:.0}/s · gyro {:.0}/s",
+                "t+{:.0}s · camera {:.1}/s · accel {:.0}/s · gyro {:.0}/s · magnet {:.0}/s",
                 running_s,
                 rate(counts.frames, high.last_counts.frames),
                 rate(counts.accel, high.last_counts.accel),
                 rate(counts.gyro, high.last_counts.gyro),
+                rate(counts.mag, high.last_counts.mag),
             );
             if let Some((w, h, mean)) = high.last_frame {
                 line.push_str(&format!(" · frame {w}×{h} brightness {mean:.0}"));
@@ -585,6 +690,9 @@ pub fn drive_high_precision(
                     ));
                 }
                 log.note(line);
+            }
+            if let Some(field) = high.field.line() {
+                log.note(field);
             }
             if let Some(gnss) = high.gnss.as_ref().filter(|g| g.running()) {
                 match high.gnss_stats.line(span) {
@@ -673,7 +781,7 @@ mod tests {
             dirty: false,
         };
         let line = "x".repeat(1000);
-        for _ in 0..40 {
+        for _ in 0..120 {
             log.push_line(line.clone());
         }
         assert!(log.bytes <= LOG_MAX_BYTES);
@@ -681,5 +789,42 @@ mod tests {
         assert_eq!(log.text().len(), log.bytes);
         log.clear();
         assert!(log.is_empty() && log.dirty);
+    }
+
+    #[test]
+    fn the_panel_shows_only_the_newest_lines() {
+        let mut log = HighPrecisionLog {
+            lines: VecDeque::new(),
+            bytes: 0,
+            dirty: false,
+        };
+        for i in 0..100 {
+            log.push_line(format!("{i:03} {}", "x".repeat(995)));
+        }
+        let tail = log.tail();
+        assert!(tail.len() <= LOG_SHOWN_BYTES);
+        assert!(tail.starts_with("092 ") && tail.ends_with("x\n"));
+        assert!(log.text().ends_with(&tail));
+    }
+
+    #[test]
+    fn the_field_is_read_a_second_at_a_time_however_the_phone_is_turned() {
+        let mut field = FieldReadings::default();
+        // A Dutch field, 20 µT north and 45 µT down, with the phone flat (z up)
+        // for the first second and on its side (x up) for the second.
+        for i in 0..50 {
+            field.accel([0.0, 0.0, 9.81]);
+            field.magnet(i * 20_000_000, [0.0, 20.0, -45.0]);
+        }
+        for i in 50..100 {
+            field.accel([9.81, 0.0, 0.0]);
+            field.magnet(i * 20_000_000, [-45.0, 0.0, 20.0]);
+        }
+        // The second second is still open: only the first is a reading yet.
+        assert_eq!(field.readings.len(), 1);
+        field.magnet(2_000_000_000, [0.0; 3]);
+        let line = field.line().unwrap();
+        assert_eq!(line, "field µT · strength 49.2 49.2 · up -45.0 -45.0");
+        assert!(field.line().is_none());
     }
 }

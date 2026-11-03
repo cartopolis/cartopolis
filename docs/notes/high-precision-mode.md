@@ -89,12 +89,16 @@ the map once by a GNSS fix and the compass, and not yet run on a phone.
 
 ## The log, for a phone nobody here can hold
 
-Developer tools ▸ **Precision** shows a small text log (24 KB at most, kept on
-the phone across launches in `app_data_root()/high_precision.log`) with
-**Copy** and **Clear**: the lens calibration as JSON when the camera opens,
-then every 5 s the camera, accelerometer and gyroscope rates, the newest
-frame's size and brightness, the GNSS fix and accuracy and the compass bearing
-and accuracy, plus any error. It is text so it can be pasted into a chat from
+Developer tools ▸ **Precision** shows a small text log (96 KB at most — about
+twelve minutes of a running mode — kept on the phone across launches in
+`app_data_root()/high_precision.log`; the panel shows only its newest 8 KB, Copy
+takes all of it) with **Copy** and **Clear**: the lens calibration as JSON when
+the camera opens, then every 5 s the camera, accelerometer, gyroscope and
+magnetometer rates, the newest frame's size and brightness, the GNSS fix and
+accuracy, the compass bearing and accuracy, the tracker and the hand, and the
+magnetic field a second at a time (strength and up component, µT — for
+[indoor-positioning.md](indoor-positioning.md)), plus any error. It was 24 KB
+until 2026-11-03, which held two minutes: too little for a walk repeated. It is text so it can be pasted into a chat from
 the phone; frames cannot travel that way and are not in it. The matcher's
 results will be added to it when it exists.
 

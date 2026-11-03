@@ -719,7 +719,7 @@ fn precision_tab(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(log.text())
+                egui::RichText::new(log.tail())
                     .monospace()
                     .size(theme::SIZE_CHIP),
             );

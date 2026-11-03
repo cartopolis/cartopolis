@@ -55,6 +55,9 @@ pub enum MotionKind {
     Accel,
     /// rad/s, device axes.
     Gyro,
+    /// µT, device axes, Android's calibrated field (the phone's own hard-iron
+    /// offset taken out). For the log's indoor field readings, not the tracker.
+    Mag,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,9 +67,10 @@ pub struct Motion {
     pub xyz: [f32; 3],
 }
 
-/// Motion events kept for a reader that has not come back: ten seconds of both
-/// sensors at 200 Hz. A stalled reader loses the oldest, never the phone's memory.
-const MAX_MOTION_KEPT: usize = 4_000;
+/// Motion events kept for a reader that has not come back: ten seconds of the
+/// two motion sensors at 200 Hz and the magnetometer at 50. A stalled reader
+/// loses the oldest, never the phone's memory.
+const MAX_MOTION_KEPT: usize = 4_500;
 
 #[derive(Default)]
 struct Shared {
@@ -81,6 +85,7 @@ struct Shared {
     frames: AtomicU64,
     accel: AtomicU64,
     gyro: AtomicU64,
+    mag: AtomicU64,
 }
 
 impl Shared {
@@ -96,6 +101,7 @@ impl Shared {
         match m.kind {
             MotionKind::Accel => self.accel.fetch_add(1, Ordering::Relaxed),
             MotionKind::Gyro => self.gyro.fetch_add(1, Ordering::Relaxed),
+            MotionKind::Mag => self.mag.fetch_add(1, Ordering::Relaxed),
         };
         let mut q = self.motion.lock().unwrap();
         if q.len() >= MAX_MOTION_KEPT {
@@ -116,6 +122,7 @@ pub struct Counts {
     pub frames: u64,
     pub accel: u64,
     pub gyro: u64,
+    pub mag: u64,
 }
 
 /// Nanoseconds of `CLOCK_BOOTTIME`. Elsewhere, a monotonic clock from the first
@@ -267,6 +274,7 @@ impl Sensors {
             frames: self.shared.frames.load(Ordering::Relaxed),
             accel: self.shared.accel.load(Ordering::Relaxed),
             gyro: self.shared.gyro.load(Ordering::Relaxed),
+            mag: self.shared.mag.load(Ordering::Relaxed),
         }
     }
 }
@@ -277,8 +285,8 @@ impl Drop for Sensors {
     }
 }
 
-/// The accelerometer and the gyroscope through the NDK's sensor manager, on a
-/// looper of this thread's own — the compass's shape
+/// The accelerometer, the gyroscope and the magnetometer through the NDK's
+/// sensor manager, on a looper of this thread's own — the compass's shape
 /// (`platform::orientation`), except that **every** event is kept: a tracker
 /// integrates them, so a dropped one is a gap in the motion, where the compass
 /// only ever wanted the newest.
@@ -290,6 +298,9 @@ mod motion {
     /// 5 ms: 200 Hz, the most Android 12+ grants an app that does not declare
     /// `HIGH_SAMPLING_RATE_SENSORS`.
     const SAMPLE_PERIOD_US: i32 = 5_000;
+    /// 20 ms: 50 Hz. The field is read for where it is strong or weak along a
+    /// walk, which changes over decimetres, not milliseconds.
+    const MAG_PERIOD_US: i32 = 20_000;
     const POLL_MS: i32 = 50;
     const QUEUE_IDENT: i32 = 2;
 
@@ -325,6 +336,12 @@ mod motion {
             if accel.is_null() || gyro.is_null() {
                 return Err("this phone has no gyroscope or no accelerometer".into());
             }
+            // Optional: a phone without one still tracks, and the log says
+            // "magnet 0/s".
+            let mag = ndk_sys::ASensorManager_getDefaultSensor(
+                manager,
+                ndk_sys::ASENSOR_TYPE_MAGNETIC_FIELD as i32,
+            );
             let queue = ndk_sys::ASensorManager_createEventQueue(
                 manager,
                 looper,
@@ -338,6 +355,10 @@ mod motion {
             for sensor in [accel, gyro] {
                 ndk_sys::ASensorEventQueue_enableSensor(queue, sensor);
                 ndk_sys::ASensorEventQueue_setEventRate(queue, sensor, SAMPLE_PERIOD_US);
+            }
+            if !mag.is_null() {
+                ndk_sys::ASensorEventQueue_enableSensor(queue, mag);
+                ndk_sys::ASensorEventQueue_setEventRate(queue, mag, MAG_PERIOD_US);
             }
             let mut events = [std::mem::zeroed::<ndk_sys::ASensorEvent>(); 64];
             while !shared.stop.load(Ordering::Relaxed) {
@@ -361,6 +382,8 @@ mod motion {
                         let d = e.__bindgen_anon_1.__bindgen_anon_1.data;
                         let kind = if e.type_ == ndk_sys::ASENSOR_TYPE_GYROSCOPE as i32 {
                             MotionKind::Gyro
+                        } else if e.type_ == ndk_sys::ASENSOR_TYPE_MAGNETIC_FIELD as i32 {
+                            MotionKind::Mag
                         } else {
                             MotionKind::Accel
                         };
@@ -374,6 +397,9 @@ mod motion {
             }
             for sensor in [accel, gyro] {
                 ndk_sys::ASensorEventQueue_disableSensor(queue, sensor);
+            }
+            if !mag.is_null() {
+                ndk_sys::ASensorEventQueue_disableSensor(queue, mag);
             }
             ndk_sys::ASensorManager_destroyEventQueue(manager, queue);
         }
