@@ -21,6 +21,10 @@ pub mod frame_pacing;
 pub mod frame_split;
 #[cfg(mcp)]
 pub mod mcp;
+/// This app paired to a developer's Midas hub, its tools relayed to their
+/// sessions (Developer tools ▸ Midas). The phone and desktop apps.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod midas_link;
 pub mod perf;
 pub mod pipeline_health;
 pub mod render_census;

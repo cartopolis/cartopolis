@@ -106,6 +106,41 @@ pub struct HighPrecision {
     /// Rounds of the indoor walk marked in the log (Developer tools ▸
     /// Precision ▸ Round), so passes can be lined up against each other.
     rounds: u32,
+    /// What the Midas device link (`systems::midas_link`) asked of the mode: a
+    /// copy of the next camera frame, and the motion and fixes for a while.
+    pub tap: LinkTap,
+}
+
+/// The device link's share of what the mode reads, taken only while asked for:
+/// the mode otherwise keeps nothing the camera sees.
+#[derive(Default)]
+pub struct LinkTap {
+    /// Copy the next frame into `frame`.
+    pub want_frame: bool,
+    pub frame: Option<crate::platform::precise_sensors::Frame>,
+    /// Motion and fixes as CSV rows, until `until`.
+    pub recording: Option<Recording>,
+}
+
+/// A recording for the device link: rows of `t_ns,kind,x,y,z` (the motion
+/// sensors, on their own clock) and `t_ns,lat,lng,accuracy_m` (each new fix).
+pub struct Recording {
+    pub until: web_time::Instant,
+    pub motion: String,
+    pub fixes: String,
+    last_fix: Option<(f64, f64, f64)>,
+}
+
+impl Recording {
+    #[must_use]
+    pub fn new(until: web_time::Instant) -> Self {
+        Self {
+            until,
+            motion: String::from("t_ns,kind,x,y,z\n"),
+            fixes: String::from("t_ns,lat,lng,accuracy_m\n"),
+            last_fix: None,
+        }
+    }
 }
 
 impl HighPrecision {
@@ -113,6 +148,12 @@ impl HighPrecision {
     #[must_use]
     pub const fn available() -> bool {
         Sensors::available()
+    }
+
+    /// The mode's own newest GNSS fix, while it runs.
+    #[must_use]
+    pub fn fix(&self) -> Option<crate::platform::location::GpsFix> {
+        self.location.as_ref().and_then(LocationWatch::latest)
     }
 
     /// Why the camera would not open, in a sentence, for the hand button's
@@ -554,6 +595,14 @@ pub fn drive_high_precision(
         // Until the matcher exists, frames and motion are looked at for the log
         // and dropped.
         if let Some(frame) = sensors.take_frame() {
+            if std::mem::take(&mut high.tap.want_frame) {
+                high.tap.frame = Some(crate::platform::precise_sensors::Frame {
+                    t_ns: frame.t_ns,
+                    width: frame.width,
+                    height: frame.height,
+                    luma: frame.luma.clone(),
+                });
+            }
             high.last_frame = Some((frame.width, frame.height, frame.mean()));
             let taken_off = crate::platform::precise_sensors::now_ns();
             high.frame_age_ms = Some((taken_off - frame.t_ns) as f64 / 1e6);
@@ -589,6 +638,16 @@ pub fn drive_high_precision(
             }
         }
         for m in sensors.drain_motion() {
+            if let Some(r) = &mut high.tap.recording {
+                let kind = match m.kind {
+                    MotionKind::Accel => "accel",
+                    MotionKind::Gyro => "gyro",
+                    MotionKind::Mag => "mag",
+                };
+                let [x, y, z] = m.xyz;
+                r.motion
+                    .push_str(&format!("{},{kind},{x},{y},{z}\n", m.t_ns));
+            }
             if let Some(tracker) = &high.tracker {
                 let v = bevy::math::DVec3::new(
                     f64::from(m.xyz[0]),
@@ -620,6 +679,22 @@ pub fn drive_high_precision(
             }
         }
 
+        // Each new fix, for a device link's recording, on the motion sensors' clock.
+        if let (Some(r), Some(f)) = (
+            &mut high.tap.recording,
+            high.location.as_ref().and_then(LocationWatch::latest),
+        ) {
+            if r.last_fix != Some((f.lat, f.lng, f.accuracy_m)) {
+                r.last_fix = Some((f.lat, f.lng, f.accuracy_m));
+                r.fixes.push_str(&format!(
+                    "{},{:.7},{:.7},{:.2}\n",
+                    crate::platform::precise_sensors::now_ns(),
+                    f.lat,
+                    f.lng,
+                    f.accuracy_m
+                ));
+            }
+        }
         // Raw GNSS: once a second, start the listener if it is not running
         // (the location permission may still be being asked) and count what it
         // delivered. A second is ample: the chip reports one epoch a second.

@@ -66,6 +66,26 @@ impl Plugin for DevPlugin {
             );
         }
 
+        // The Midas device link (`systems::midas_link`): kept linked as the panel
+        // says, its calls answered, and a chip over the map while it is up. The
+        // chip is a non-interactable `Area`, so it takes no click from a panel.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<systems::midas_link::MidasLink>()
+            .add_systems(
+                Update,
+                (
+                    (
+                        systems::midas_link::drive_link,
+                        systems::midas_link::serve_calls,
+                    )
+                        .chain()
+                        .in_set(ClientPhase::Input),
+                    systems::midas_link::draw_link_chip
+                        .in_set(ClientPhase::Present)
+                        .after(systems::locate::render_locate_arrow),
+                ),
+            );
+
         app.add_systems(
             Update,
             (

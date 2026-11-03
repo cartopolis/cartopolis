@@ -79,15 +79,18 @@ pub enum DevTab {
     Switches,
     /// The high-precision mode's log (`systems::high_precision`), to copy.
     Precision,
+    /// The link to a developer's Midas hub (`systems::midas_link`).
+    Midas,
 }
 
 impl DevTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Frame,
         Self::View,
         Self::Profiler,
         Self::Switches,
         Self::Precision,
+        Self::Midas,
     ];
 
     #[must_use]
@@ -98,6 +101,7 @@ impl DevTab {
             Self::Profiler => "Profiler",
             Self::Switches => "Switches",
             Self::Precision => "Precision",
+            Self::Midas => "Midas",
         }
     }
 }
@@ -187,6 +191,8 @@ pub fn render_dev_panel(
     mut precision_log: ResMut<crate::systems::high_precision::HighPrecisionLog>,
     mut precise_hand: ResMut<crate::systems::prim_hand::PreciseHand>,
     mut high: ResMut<crate::systems::high_precision::HighPrecision>,
+    #[cfg(not(target_arch = "wasm32"))] mut midas: ResMut<crate::systems::midas_link::MidasLink>,
+    mut commands: Commands,
 ) {
     if !dev.open {
         return;
@@ -261,6 +267,23 @@ pub fn render_dev_panel(
                     DevTab::Switches => switches_tab(ui, &mut edited),
                     DevTab::Precision => {
                         precision_tab(ui, &mut precision_log, &mut precise_hand, &mut high);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    DevTab::Midas => {
+                        crate::systems::midas_link::midas_tab(
+                            ui,
+                            &mut midas,
+                            &precision_log,
+                            &mut commands,
+                        );
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    DevTab::Midas => {
+                        let _ = &mut commands;
+                        theme::note(
+                            ui,
+                            "The link to Midas is in the phone and desktop apps, not the browser.",
+                        );
                     }
                 });
         });

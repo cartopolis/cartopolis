@@ -447,7 +447,7 @@ enum Wire {
 /// if a provider is already installed, which is not a problem — somebody got there
 /// first and any provider will serve — so the result is deliberately dropped.
 #[cfg(not(target_arch = "wasm32"))]
-fn install_crypto_provider() {
+pub(crate) fn install_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
