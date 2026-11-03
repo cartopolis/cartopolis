@@ -1,7 +1,7 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
-updated: 2026-11-02
+triggers: [painted.rs, map_light.wesl, home_country.rs, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+updated: 2026-11-03
 ---
 
 # The far tiles are a painted map, and names come from the same tiles
@@ -67,13 +67,27 @@ A footprint's shadow is `height / tan(sun elevation)` long, away from the sun
 the rendered tile's cache key: an unquantised sun would make every stored tile a
 miss each minute. A tile already drawn keeps its shadows until it is re-streamed.
 
-## Colours are the mockup's, lit
+## Colours are the mockup's, in a map light from 20 km out
 
-`palette::painted` holds the mockup's screen colours, used as albedo. Lit by the
-sun and seen through the atmosphere they come out darker and bluer than on the
-sheet (mac-1, 2026-10-31, noon, 40 km): the hues hold, the brightness does not.
-The haze is the larger difference at 10 km and below; it belongs to the
-distance fade, not to the palette.
+`palette::painted` holds the mockup's screen colours, used as albedo. Lit as
+ground they came out a fifth darker and greyer than the sheet (asked
+2026-11-03, "grauwer dan in de mockup"; mac-1, 350 km, 3 November 12:00 UTC:
+farmland 111,113,88 for the sheet's 143,141,95). Three causes, measured by
+turning each off: the **sun's angle** (~20° up that day) was most of it; the
+**tonemapping** (TonyMcMapface) lifts dark tones and pales everything; the
+**aerial perspective** added ~10 of blue.
+
+So `map_light.wesl`, called by `ground_detail.wesl` and `globe_ocean.wesl`
+after lighting, takes over between 20 and 60 km of camera distance: the same
+lights at their own colour and strength, but as if overhead wherever they are
+above the horizon, so the night side stays night and a sunset stays red. The
+colour goes in through a curve (`CURVE` 1.5, `GAIN` 1.5) against the
+tonemapping: farmland then measures 140,144,91, the Dutch mix of grass and
+towns a tenth brighter than the sheet, the sea 44,92,135 — bluer than the
+sheet's 40,74,104, which a sea-only change would have to fix. It replaces the
+lit colour outright, so the globe's sun glint is gone from 60 km out. The
+atmosphere's density at the globe threshold went from 0.12 to 0.03
+(`ATMOSPHERE_DENSITY_NEAR`) for the rest of the blue.
 
 ## Place names
 

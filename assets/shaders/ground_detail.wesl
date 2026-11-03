@@ -53,6 +53,7 @@ import super::water_common::{
 };
 import super::cloud_field as cf;
 import super::hex_grid;
+import super::map_light;
 
 import bevy_pbr::render::mesh_bindings::mesh;
 @if(BINDLESS)
@@ -696,6 +697,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
+    // From far, the painted map in its own colours, whatever the sun's angle.
+    out.color = map_light::apply(
+        out.color,
+        pbr_input.material.base_color.rgb,
+        pbr_input.material.emissive.rgb,
+        normalize(pbr_input.N),
+        length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+    );
 
     // The same stand-in sky the surface reflects where there is no environment
     // map, weighted by the mask; the land part of a coastal texel keeps all of

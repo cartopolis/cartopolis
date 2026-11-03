@@ -26,6 +26,7 @@ import bevy_pbr::render::mesh_bindings::mesh;
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 import bevy_pbr::render::mesh_view_bindings as view_bindings;
 import super::hex_grid;
+import super::map_light;
 
 // The material's two vectors, one buffer (`globe_ocean::GlobeOceanUniform`):
 //
@@ -202,6 +203,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color = apply_pbr_lighting(pbr_input);
+        // From far, the map in its own colours, whatever the sun's angle.
+        out.color = map_light::apply(
+            out.color,
+            pbr_input.material.base_color.rgb,
+            pbr_input.material.emissive.rgb,
+            normalize(pbr_input.N),
+            length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+        );
     } else {
         out.color = pbr_input.material.base_color;
     }

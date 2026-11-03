@@ -1140,7 +1140,10 @@ pub const SPACE_FULL_ALT: f32 = 3_000_000.0;
 /// so the aerial-perspective wash lifts off the detailed map at low orbit; it
 /// ramps up toward [`SPACE_ATMOSPHERE_DENSITY`] in deep space, where the fuller
 /// column is what makes the limb glow. See `update_globe_visibility`.
-const ATMOSPHERE_DENSITY_NEAR: f32 = 0.12;
+///
+/// 0.12 until 2026-11-03: under the map light (`map_light.wesl`) its ~10 of
+/// blue was what still kept the strategy map off the mockup's colours.
+const ATMOSPHERE_DENSITY_NEAR: f32 = 0.03;
 
 /// Atmosphere density multiplier in deep space (`space_factor` 1).
 ///

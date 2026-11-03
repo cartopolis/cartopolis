@@ -6,7 +6,7 @@ triggers: [globe.rs, sky.rs, free_camera.rs, render_features.rs, starfield.wesl,
   AtmosphereEnvironmentMapLight, ScatteringMedium, AtmosphereMedia, space_factor,
   in_space, apply_day_night_cycle, sun_light, SunDisk, sky_shell_radius, Bloom,
   "space tier", "black globe", "the limb", "maroon dawn", "stars from orbit"]
-updated: 2026-10-18
+updated: 2026-11-03
 ---
 
 # Bevy's atmosphere, from the street to orbit
@@ -145,7 +145,7 @@ the shell, the profile stretches with it. Density is rewritten on the shared
 `AtmosphereMedia` medium (`with_density_multiplier`, rebuilt only past a 0.05
 step, as it re-bakes LUTs) in three blended bands: full Earth density below
 `CITY_ATMOSPHERE_ALT` (15 km), because this is also the city's sky and dawn;
-down to `ATMOSPHERE_DENSITY_NEAR` (0.12) at the threshold so the aerial wash
+down to `ATMOSPHERE_DENSITY_NEAR` (0.03; 0.12 until the map light, `painted-far-map.md`) at the threshold so the aerial wash
 lifts off the detailed map — the old constant column buried it in blue; up to
 `SPACE_ATMOSPHERE_DENSITY` (0.15) in deep space. 0.4, one Earth column in the
 taller shell, drew the Sahara grey-lavender (Deck, 14,000 km, table in
