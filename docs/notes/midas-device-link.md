@@ -1,6 +1,6 @@
 ---
 topic: the Midas device link (the app answering a developer's agent sessions)
-triggers: [midas_link, MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "/v1/device/"]
+triggers: ["midas_link.rs", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device"]
 updated: 2026-11-03
 ---
 

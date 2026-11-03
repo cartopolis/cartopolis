@@ -124,6 +124,8 @@ pub struct LinkTap {
 
 /// A recording for the device link: rows of `t_ns,kind,x,y,z` (the motion
 /// sensors, on their own clock) and `t_ns,lat,lng,accuracy_m` (each new fix).
+// The link is native only; the web build reads none of this.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct Recording {
     pub until: web_time::Instant,
     pub motion: String,
@@ -131,6 +133,7 @@ pub struct Recording {
     last_fix: Option<(f64, f64, f64)>,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Recording {
     #[must_use]
     pub fn new(until: web_time::Instant) -> Self {
@@ -152,6 +155,7 @@ impl HighPrecision {
 
     /// The mode's own newest GNSS fix, while it runs.
     #[must_use]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn fix(&self) -> Option<crate::platform::location::GpsFix> {
         self.location.as_ref().and_then(LocationWatch::latest)
     }
