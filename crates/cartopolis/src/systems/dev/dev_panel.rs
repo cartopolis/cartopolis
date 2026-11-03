@@ -186,6 +186,7 @@ pub fn render_dev_panel(
     mut cache: Local<CensusCache>,
     mut precision_log: ResMut<crate::systems::high_precision::HighPrecisionLog>,
     mut precise_hand: ResMut<crate::systems::prim_hand::PreciseHand>,
+    mut high: ResMut<crate::systems::high_precision::HighPrecision>,
 ) {
     if !dev.open {
         return;
@@ -258,7 +259,9 @@ pub fn render_dev_panel(
                     }
                     DevTab::Profiler => profiler_tab(ui, &readouts.diagnostics),
                     DevTab::Switches => switches_tab(ui, &mut edited),
-                    DevTab::Precision => precision_tab(ui, &mut precision_log, &mut precise_hand),
+                    DevTab::Precision => {
+                        precision_tab(ui, &mut precision_log, &mut precise_hand, &mut high);
+                    }
                 });
         });
     if edited != *prefs {
@@ -683,13 +686,17 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
 /// spent four days with its own instrument built and unreachable by the person
 /// holding the device.
 /// The high-precision mode's log: what its sensors reported, as text to copy
-/// off the phone and paste into a chat. Long-press the locate button ▸ High
-/// precision to fill it.
+/// off the phone and paste into a chat — and, at the top, the indoor walk test
+/// (`docs/notes/indoor-positioning.md`) started from here, so it needs no avatar,
+/// no walk mode and no hidden button: the hand button only exists on foot.
 fn precision_tab(
     ui: &mut egui::Ui,
     log: &mut crate::systems::high_precision::HighPrecisionLog,
     hand: &mut crate::systems::prim_hand::PreciseHand,
+    high: &mut crate::systems::high_precision::HighPrecision,
 ) {
+    walk_test(ui, log, high);
+    ui.separator();
     theme::checkbox(ui, &mut hand.camera_stands_in, "Stand-in hand");
     theme::note(
         ui,
@@ -701,8 +708,8 @@ fn precision_tab(
     if log.is_empty() {
         theme::note(
             ui,
-            "Nothing yet. Long-press the locate button and switch on High precision; \
-             what the camera and sensors report is written here every few seconds.",
+            "Nothing yet. Start the walk test above; what the camera and sensors \
+             report is written here every few seconds.",
         );
         return;
     }
@@ -724,6 +731,84 @@ fn precision_tab(
                     .size(theme::SIZE_CHIP),
             );
         });
+}
+
+/// The indoor walk test: Start, what the tracking needs from you right now, a
+/// Round button that marks each pass in the log, and Stop.
+fn walk_test(
+    ui: &mut egui::Ui,
+    log: &mut crate::systems::high_precision::HighPrecisionLog,
+    high: &mut crate::systems::high_precision::HighPrecision,
+) {
+    use crate::systems::high_precision::{HandWord, HighPrecision};
+    theme::section(ui, "Indoor walk test");
+    let Some(word) = high.hand_word() else {
+        for step in [
+            "1. Start outside, under open sky.",
+            "2. Hold the phone still, then move it a little, until it says following.",
+            "3. Walk one indoor route three times. Tap Round at the start of each.",
+            "4. Copy the log below and paste it into the chat.",
+        ] {
+            ui.label(step);
+        }
+        ui.add_space(theme::OSD_GAP);
+        // Drawn on a desktop too, greyed, so a capture shows the test as a
+        // phone does.
+        let available = HighPrecision::available();
+        ui.add_enabled_ui(available, |ui| {
+            if theme::primary_button_sized(ui, "Start", 140.0).clicked() {
+                high.on = true;
+            }
+        });
+        if !available {
+            theme::note(
+                ui,
+                "Needs a phone: its back camera, motion sensors and magnetometer.",
+            );
+        }
+        theme::note(
+            ui,
+            "Uses the back camera and the motion sensors. Nothing the camera sees \
+             is kept. While it runs, things that sense hands near you feel yours.",
+        );
+        return;
+    };
+    let tone = match word {
+        HandWord::Following => theme::ACCENT_BRIGHT,
+        HandWord::CameraBusy => theme::WARN,
+        _ => theme::TEXT_DIM,
+    };
+    ui.label(
+        egui::RichText::new(word.text())
+            .size(theme::SIZE_TITLE)
+            .strong()
+            .color(tone),
+    );
+    if let Some(problem) = high.problem() {
+        ui.label(egui::RichText::new(problem).color(theme::WARN));
+    }
+    if let Some((ran, readings)) = high.running_for() {
+        let s = ran.as_secs();
+        theme::note(
+            ui,
+            &format!(
+                "{}:{:02} running · round {} · {readings} field readings",
+                s / 60,
+                s % 60,
+                high.rounds()
+            ),
+        );
+    }
+    ui.add_space(theme::OSD_GAP);
+    ui.horizontal(|ui| {
+        let next = format!("Round {}", high.rounds() + 1);
+        if theme::primary_button_sized(ui, &next, 140.0).clicked() {
+            high.mark_round(log);
+        }
+        if theme::secondary_button(ui, "", "Stop", 100.0).clicked() {
+            high.on = false;
+        }
+    });
 }
 
 fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {

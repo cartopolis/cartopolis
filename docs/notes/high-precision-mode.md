@@ -89,6 +89,12 @@ the map once by a GNSS fix and the compass, and not yet run on a phone.
 
 ## The log, for a phone nobody here can hold
 
+**The indoor walk test** starts the mode from the top of the same tab (Start,
+Round, Stop, the four steps and what the tracking needs right now), because the
+hand button exists only on foot, on touch, signed in: the person asked to run the
+test on 2026-11-03 and could not find the mode. Round writes `round N · starts
+here` into the log, so the passes line up.
+
 Developer tools ▸ **Precision** shows a small text log (96 KB at most — about
 twelve minutes of a running mode — kept on the phone across launches in
 `app_data_root()/high_precision.log`; the panel shows only its newest 8 KB, Copy

@@ -103,6 +103,9 @@ pub struct HighPrecision {
     gnss_refusal: Option<String>,
     /// The magnetic field along the walk, for the log.
     field: FieldReadings,
+    /// Rounds of the indoor walk marked in the log (Developer tools ▸
+    /// Precision ▸ Round), so passes can be lined up against each other.
+    rounds: u32,
 }
 
 impl HighPrecision {
@@ -175,6 +178,27 @@ impl HighPrecision {
             Some(TrackState::Starting { .. } | TrackState::Scaling { .. }) => HandWord::MoveALittle,
             Some(TrackState::Waiting) | None => HandWord::HoldStill,
         })
+    }
+
+    /// Mark the start of a round of the indoor walk in the log, so the field
+    /// readings of each pass can be lined up (`docs/notes/indoor-positioning.md`).
+    pub fn mark_round(&mut self, log: &mut HighPrecisionLog) {
+        self.rounds += 1;
+        log.note(format!("round {} · starts here", self.rounds));
+    }
+
+    /// The rounds marked since the mode was switched on.
+    #[must_use]
+    pub fn rounds(&self) -> u32 {
+        self.rounds
+    }
+
+    /// How long the sensors have run and how many field readings they gave, for
+    /// the Precision tab: `None` while the mode is off.
+    #[must_use]
+    pub fn running_for(&self) -> Option<(std::time::Duration, u64)> {
+        let started = self.started.filter(|_| self.sensors.is_some())?;
+        Some((started.elapsed(), self.field.total))
     }
 
     /// Start the tracking again from nothing — "hold still" — as the hand
@@ -351,6 +375,8 @@ struct FieldReadings {
     n: u32,
     /// (strength, up) in µT, since the last log line.
     readings: Vec<(f32, f32)>,
+    /// Every reading since the sensors started, for the Precision tab.
+    total: u64,
 }
 
 impl FieldReadings {
@@ -384,6 +410,7 @@ impl FieldReadings {
                 f32::NAN
             };
             self.readings.push((strength, up));
+            self.total += 1;
         }
         self.field = [0.0; 3];
         self.up = [0.0; 3];
@@ -475,6 +502,7 @@ pub fn drive_high_precision(
             high.gnss_status = -1;
             high.gnss_try_at = None;
             high.gnss_refusal = None;
+            high.rounds = 0;
             if let Some(chip) = RawGnss::hardware() {
                 log.note(format!("gnss chip · {chip}"));
             }
