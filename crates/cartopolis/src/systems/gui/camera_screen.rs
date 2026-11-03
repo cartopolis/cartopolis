@@ -1,4 +1,4 @@
-//! **The camera** (`docs/mockups/social-camera/`): the orange disc in the
+//! **The camera** (`docs/mockups/social-camera/`): the camera disc in the
 //! middle of the dock, Camera in a chat's + menu and in the post composer.
 //! Three modes, each with a selfie flip and an upload button beside the
 //! shutter:

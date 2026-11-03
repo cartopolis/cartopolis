@@ -255,11 +255,19 @@ pub fn render_dock(
                             // walks. It spent a day in the top right corner
                             // (2026-10-18) and was not found there.
                             mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
-                            // The camera, orange: taking a picture and posting it is
-                            // what the dock is for most, out walking
-                            // (`docs/mockups/social-camera/`). The same size as every
-                            // other disc.
-                            if has_camera && camera_disc(ui).clicked() {
+                            // The camera, dressed like every other disc: it wore the
+                            // brand orange from 2026-10-18 and read as switched on
+                            // when nothing was (2026-11-03). It takes the accent while
+                            // the camera is up, as the panel discs do while open.
+                            if has_camera
+                                && theme::bar_button(
+                                    ui,
+                                    crate::systems::icons::CAMERA,
+                                    "Camera",
+                                    camera.is_open(),
+                                )
+                                .clicked()
+                            {
                                 camera_clicked = true;
                             }
                             panel_disc(ui, RightPanel::Places);
@@ -343,27 +351,6 @@ pub fn render_dock(
         // rule would otherwise close it in the frame it opened.
         menu.toggled = true;
     }
-}
-
-/// The camera disc: a round button the size of every other, filled with the
-/// brand orange so the dock's one creative action reads as such.
-fn camera_disc(ui: &mut egui::Ui) -> egui::Response {
-    let size = egui::Vec2::splat(theme::ROUND_BUTTON_SIZE);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let r = theme::ROUND_BUTTON_SIZE * 0.5 - 1.0;
-    ui.painter().circle_filled(rect.center(), r, theme::BRAND);
-    if resp.hovered() {
-        ui.painter()
-            .circle_stroke(rect.center(), r, egui::Stroke::new(1.5, theme::CREAM));
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        crate::systems::icons::CAMERA,
-        egui::FontId::proportional(17.0),
-        egui::Color32::WHITE,
-    );
-    resp.on_hover_text("Camera")
 }
 
 /// The camera-mode disc: the current mode's glyph, a tap steps to the next mode

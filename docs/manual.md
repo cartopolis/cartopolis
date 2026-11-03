@@ -416,7 +416,7 @@ quietly doing nothing.
 
 ### The camera
 
-The orange disc in the middle of the dock opens the camera (also Camera in a
+The camera disc in the middle of the dock opens the camera (also Camera in a
 chat's + menu and in the post composer). Three modes, chosen beside the shutter:
 
 1. **In world**: a polaroid of the view, with the place and date on it. The map

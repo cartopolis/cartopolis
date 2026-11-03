@@ -80,7 +80,7 @@ Up to six discs along the bottom edge (`dock.rs`), left to right:
 | 🔍 Search | a panel (`geo_nav::render_search_panel`), field and hits, `Ctrl+L` |
 | 💬 Chat | only with a session |
 | view mode | Follow → Fly → Earth, one tap a step (`dock::mode_disc`) |
-| 📷 Camera | orange; not on the web, which has no camera (`camera_screen`) |
+| 📷 Camera | like every disc, the accent while open; not on the web, which has no camera (`camera_screen`) |
 | ★ Places | saved places — **and where a place is saved**, "+ Place" |
 | the mark | the main menu (`ui::render_main_menu`) |
 

@@ -6,7 +6,7 @@ updated: 2026-10-21
 
 # The camera: three modes, and the pose in every picture
 
-The dock's orange disc, Camera in a chat's + menu and in the post composer
+The dock's camera disc, Camera in a chat's + menu and in the post composer
 open one camera (`systems::camera_screen`, designed in
 `docs/mockups/social-camera/`): **In world** (a polaroid of the view),
 **Mixed** (the phone's photograph beside Cartopolis drawn from the phone's own
