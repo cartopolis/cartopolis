@@ -1145,9 +1145,7 @@ pub fn render_scenario_chrome(
                 asked.sheet = grabber(ui);
             }
             match (shown, open.as_mut()) {
-                (Sheet::Shelf, _) => {
-                    shelf_body(ui, layers.scenario.as_deref(), body_h, &mut asked)
-                }
+                (Sheet::Shelf, _) => shelf_body(ui, layers.scenario.as_deref(), body_h, &mut asked),
                 (Sheet::Figures, Some(o)) => figures_body(ui, o, here, body_h, &mut asked),
                 (Sheet::Place, Some(o)) => place_body(ui, o, here, body_h, &mut asked),
                 _ => waiting_body(
@@ -1961,12 +1959,7 @@ fn place_row(
 
 /// Shelf: the lenses there are, under the question each answers. A lens
 /// opens at the figure it had, or its first.
-fn shelf_body(
-    ui: &mut egui::Ui,
-    open_key: Option<&str>,
-    body_h: f32,
-    asked: &mut Asked,
-) {
+fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mut Asked) {
     ui.horizontal(|ui| {
         let w = ui.available_width() - theme::close_button_size() - ui.spacing().item_spacing.x;
         left_sized(
