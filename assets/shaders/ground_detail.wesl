@@ -515,6 +515,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let along_px = max(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
     let sharpest_px = min(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
     let metres_per_px = sqrt(along_px * sharpest_px);
+    // Where this texel is in Web Mercator, for the sea's sheen (`map_light`):
+    // the tile's key and its UV, as the hex grid finds it; none on a surface
+    // with no key or no UV. A derivative, so here.
+    var merc = vec2<f32>(-1.0);
+    @if(VERTEX_UVS_A)
+    if ground.tile.z > 0.5 {
+        merc = (ground.tile.xy + in.uv) / ground.tile.z;
+    }
+    let merc_px = length(fwidth(merc));
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
 
@@ -668,6 +677,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // behind the same fresnel, its roughness with every wave retired, its
     // reflectance. Blended by the mask, so a coastline's mip-softened edge is a
     // blend rather than a stair.
+    //
+    // The tile's own paint is kept for the map light below: from far the sea is
+    // the painted map's sea, which is what the globe's tiles past this one draw,
+    // and lit as the body colour it came out darker and drew the clipmap's edge
+    // across the sea as a straight seam (mac-1, 25 km over the North Sea).
+    let paint = pbr_input.material.base_color.rgb;
     var reflected = 0.0;
     if water > 0.0 {
         // **Water is level, whatever the tile under it is doing.** A relief tile's
@@ -700,10 +715,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // From far, the painted map in its own colours, whatever the sun's angle.
     out.color = map_light::apply(
         out.color,
-        pbr_input.material.base_color.rgb,
+        mix(pbr_input.material.base_color.rgb, paint, water),
         pbr_input.material.emissive.rgb,
         normalize(pbr_input.N),
         length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+    );
+    // …and the sun on the sea, which that takes away.
+    out.color = map_light::sea_sheen(
+        out.color,
+        normalize(pbr_input.N),
+        pbr_input.V,
+        water,
+        length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+        merc,
+        merc_px,
     );
 
     // The same stand-in sky the surface reflects where there is no environment

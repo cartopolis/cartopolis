@@ -2,8 +2,8 @@
 topic: globe-ocean
 triggers: [globe_ocean.rs, globe_ocean.wesl, systems::globe_ocean, tile_loader.rs,
   ocean_mask, GlobeOcean, GlobeSurfaceMaterial, GlobeOceanGloss, has_mask,
-  CARTO_NO_OCEAN, "ocean from orbit", "sun glint", "the sea from space"]
-updated: 2026-10-17
+  CARTO_NO_OCEAN, "ocean from orbit", "sun glint", "the sea from space", sea_sheen, map_light.wesl, sunglint]
+updated: 2026-11-03
 ---
 
 # The globe's ocean is a BRDF split, not water
@@ -56,3 +56,34 @@ water's F0 of 0.02; bevy's `F0 = 0.16 · reflectance²` makes it 0.01, the error
 `water-surface.md` corrected for the local surface and this one still carries.
 
 `CARTO_NO_OCEAN=1` strips the split, leaving the matte globe, for bisecting.
+
+## The glint survives the map light
+
+From 20 km of camera distance `map_light.wesl` relights the ground as if every
+light stood overhead (`painted-far-map.md`), and with the angle it took the whole
+specular term: from 60 km out to orbit the sea was the flat painted blue with no
+sun on it at all, and the split above drew nothing (mac-1, 2026-11-03, the
+Mediterranean from 700 km at 11:30 UTC). `map_light::sea_sheen` puts it back on
+the water texels at the strength the map light took over, so below 20 km the
+material's own specular is the glint and past 60 km this is.
+
+**It is painted, not specular.** The first cut added a GGX highlight to the flat
+sea, and it was a white hotspot with a smooth falloff that read as "plastic, or
+metal" (asked 2026-11-03). MODIS true colour of a real glint (Terra, 2026-07-15,
+the western Mediterranean, from NASA's Worldview snapshot API) has no white in
+it: a broad warm-grey sheen, crop mean sRGB 136,130,113, about as bright as the
+land beside it, broken into long patches where the wind is calmer or rougher. So
+the sea is mixed towards that colour, as an albedo through the same map light
+the land gets, over the *shape* of a GGX lobe (1 at its peak, 0.85 of the way),
+with the lobe's width wandering ±35 % over a value-noise field in Web Mercator
+(the tile key and UV the hex grid uses, so the globe and the flat tier draw one
+field). Its width is its own — Cox & Munk at 12 m/s, α 0.25 — not either
+surface's, and it reads the unramped mask on the globe, because the flat tier's
+water beside a globe tile has its sheen at every height and the two must match
+where they meet.
+
+The same pass found a seam: under the map light the flat tier's water texels were
+lit as their body colour (`water::far_water`, near-black) while the globe tiles
+past the clipmap's edge used the painted sea, so from 25 km a straight line ran
+across the North Sea at ~80 km out. `ground_detail.wesl` now hands the map light
+the tile's own paint for water; below 20 km nothing changes.

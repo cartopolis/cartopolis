@@ -194,6 +194,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         );
     }
 
+    // Where this texel is in Web Mercator, for the sheen's streaks: the tile's
+    // key and its UV, as the hex grid finds it. Outside any branch, because its
+    // footprint is a derivative.
+    var merc = vec2<f32>(-1.0);
+    @if(VERTEX_UVS_A)
+    if params.tile.z > 0.5 {
+        merc = (params.tile.xy + in.uv) / params.tile.z;
+    }
+    let merc_px = length(fwidth(merc));
+
     pbr_input.material.base_color = alpha_discard(
         pbr_input.material.flags,
         pbr_input.material.alpha_cutoff,
@@ -210,6 +220,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             pbr_input.material.emissive.rgb,
             normalize(pbr_input.N),
             length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+        );
+        // …and the sun on the sea, which that takes away. On the unramped
+        // mask: the flat tier's water beside these tiles has its sheen at every
+        // height, and the two must agree where they meet.
+        out.color = map_light::sea_sheen(
+            out.color,
+            normalize(pbr_input.N),
+            pbr_input.V,
+            water,
+            length(in.world_position.xyz - view_bindings::view.world_position.xyz),
+            merc,
+            merc_px,
         );
     } else {
         out.color = pbr_input.material.base_color;
