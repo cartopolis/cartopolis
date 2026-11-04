@@ -1686,12 +1686,14 @@ pub fn map_disc(
 
 /// Midas's gold: the hub's theme and its icon (midas `web/src/icon.svg`), which
 /// is [`WARN`]'s value because both are that theme's warning colour.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the link is native-only
 pub const MIDAS_GOLD: Color32 = WARN;
 
 /// The Midas mark — an M of five joined points, the hub and its machines — in
 /// [`MIDAS_GOLD`], drawn on a disc of `radius` at `c`. Its geometry is the
 /// icon's, in that SVG's 64-unit square centred on (32, 32); the gold square
 /// behind it there is the disc here.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn paint_midas_mark(p: &egui::Painter, c: egui::Pos2, radius: f32) {
     let s = radius / 26.0;
     let at = |x: f32, y: f32| c + egui::vec2(x - 32.0, y - 32.0) * s;
