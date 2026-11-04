@@ -3938,8 +3938,11 @@ fn inspect(state: &AgentState, w: &AgentWorld, id: i64) -> (AgentReply, Fetch) {
     // Its script, only to an account that may write it.
     let mut fetch = Fetch::No;
     let mut source = Value::Null;
-    if !prim.scripted {
-        text.push_str("\nIt has no script.");
+    // **`scripted` is "running", not "has a script".** The server sets it only
+    // for a script that defines a handler, so a bare `print` was reported as no
+    // script at all. Whoever may read the source asks for it either way.
+    if !prim.scripted && may_script != Some(true) {
+        text.push_str("\nNo script is running on it.");
     } else {
         match may_script {
             Some(true) if w.script.prim_id == Some(id) && w.script.fetched => {
