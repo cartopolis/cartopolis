@@ -37,9 +37,17 @@ so the server's `state` keeps its name.
 
 **A session is the account signed in on the phone.** There is no switch for
 it (the owner's call): while the link is on, a session can walk, talk and
-build as that person, under the same server checks a bot meets. The chip at
-the top of the map shows a robot while the link is up, so it is never on
-unseen. What the agent may *read* is still `mcp::agent::Audience`, empty by
+build as that person, under the same server checks a bot meets. So the map
+shows it: a round button in the top-right corner carrying the Midas mark (the
+gold M of midas's `web/src/icon.svg`, painted by `theme::paint_midas_mark`)
+with a green dot, there exactly while the link is on *and* up — no grey
+variant when it is down (the owner's call, 2026-11-04). A call coming in makes
+it glow; a tap opens a card with the newest call (`s579 · screenshot · just
+now`) and the account sessions act as. It replaced a text chip at the top
+centre and, on the phone, the editor's activity box (`mcp::overlay`), which
+together covered the top of the map with a socket path and a tool name
+wrapped a syllable a line. The phone registers no activity box at all: no
+editor drives it there. A desktop with both moves the box under the button. What the agent may *read* is still `mcp::agent::Audience`, empty by
 default and set in Settings ▸ General ▸ Editor access, and `view` and `film`
 drop the chrome while that list is narrower than everyone.
 

@@ -1684,6 +1684,33 @@ pub fn map_disc(
     )
 }
 
+/// Midas's gold: the hub's theme and its icon (midas `web/src/icon.svg`), which
+/// is [`WARN`]'s value because both are that theme's warning colour.
+pub const MIDAS_GOLD: Color32 = WARN;
+
+/// The Midas mark — an M of five joined points, the hub and its machines — in
+/// [`MIDAS_GOLD`], drawn on a disc of `radius` at `c`. Its geometry is the
+/// icon's, in that SVG's 64-unit square centred on (32, 32); the gold square
+/// behind it there is the disc here.
+pub fn paint_midas_mark(p: &egui::Painter, c: egui::Pos2, radius: f32) {
+    let s = radius / 26.0;
+    let at = |x: f32, y: f32| c + egui::vec2(x - 32.0, y - 32.0) * s;
+    let points = [
+        at(20.0, 43.0),
+        at(20.0, 21.0),
+        at(32.0, 33.0),
+        at(44.0, 21.0),
+        at(44.0, 43.0),
+    ];
+    p.add(egui::Shape::line(
+        points.to_vec(),
+        Stroke::new(5.0 * s, MIDAS_GOLD),
+    ));
+    for pt in points {
+        p.circle_filled(pt, 4.0 * s, MIDAS_GOLD);
+    }
+}
+
 /// The look of one icon disc, shared by [`round_button`] and the medallion a
 /// panel header wears — they have to be the same object at two sizes, or the
 /// header stops reading as "the dock button you just pressed".

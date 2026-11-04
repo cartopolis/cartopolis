@@ -92,7 +92,7 @@ pub struct Shared {
     pub state: String,
     pub linked: bool,
     pub calls: Vec<Call>,
-    /// The newest call: its tool, its session and when, for the chip.
+    /// The newest call: its tool, its session and when, for the map's button.
     pub last_call: Option<(String, String, web_time::Instant)>,
     /// The open sessions Send may go to: (id, title).
     pub sessions: Vec<(String, String)>,
@@ -137,6 +137,8 @@ pub struct MidasLink {
     linked_to: Option<(String, String)>,
     /// A push asked for from the panel: (what, needs a screenshot first).
     push_shot: Option<Arc<Mutex<Option<Result<Vec<u8>, String>>>>>,
+    /// The card beside the map's Midas button is open.
+    pub card_open: bool,
     /// The MCP server's job channel, for the worker's in-process session.
     #[cfg(mcp)]
     jobs: Option<McpJobs>,
@@ -159,6 +161,7 @@ impl Default for MidasLink {
             worker: None,
             linked_to: None,
             push_shot: None,
+            card_open: false,
             #[cfg(mcp)]
             jobs: None,
         }
@@ -172,7 +175,7 @@ impl MidasLink {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Whether the link is up now, for the map's chip.
+    /// Whether the link is up now, for the map's button.
     #[must_use]
     pub fn linked(&self) -> bool {
         self.shared().linked
@@ -184,6 +187,22 @@ impl MidasLink {
         let s = self.shared();
         let (tool, session, at) = s.last_call.as_ref()?;
         (at.elapsed().as_secs_f32() < within_s).then(|| (tool.clone(), session.clone()))
+    }
+
+    /// The link as it looks up, for `--ui midaslink` and `midascard`: a
+    /// scripted run is paired to no hub. Nothing is written, since `saved`
+    /// follows `config`, and with no token no worker starts.
+    pub fn stage_for_capture(&mut self, card: bool) {
+        self.loaded = true;
+        self.config.on = true;
+        self.saved = self.config.clone();
+        self.card_open = card;
+        let mut s = self.shared();
+        s.linked = true;
+        // Seconds old: past the glow, still "just now".
+        s.last_call = web_time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .map(|at| ("screenshot".to_string(), "s579".to_string(), at));
     }
 
     fn worker(&mut self) -> &worker::Worker {
@@ -694,37 +713,137 @@ pub fn midas_tab(
     }
 }
 
-/// The chip on the map while linked: a robot, because a session can now drive
-/// this app as its account — walk, talk, move the camera — and which session
-/// just asked for what.
-pub fn draw_link_chip(mut egui: crate::systems::egui_manager::EguiMut, link: Res<MidasLink>) {
-    if !link.config.on || !link.linked() {
+/// How long the button glows after a call comes in.
+const GLOW_S: f32 = 1.5;
+/// The card beside the button: fixed, because an anchored size-to-content
+/// `Area` grows a little every frame (`map-chrome.md`).
+const CARD_WIDTH: f32 = 230.0;
+
+/// The Midas disc in the top-right corner, there exactly while the link is up
+/// — not greyed when it is down, gone — because a session can then drive this
+/// app as its account: walk, talk, move the camera. A green dot says linked; a
+/// call coming in makes it glow rather than spell the call out, and a tap
+/// opens a card with which session asked for what, and as whom.
+///
+/// It replaced a text chip at the top centre and, on the phone, the editor's
+/// activity box (`mcp::overlay`), which between them covered the top of the
+/// map with a socket path and a tool name wrapped one syllable a line.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_link_button(
+    egui: crate::systems::egui_manager::EguiRef,
+    mut link: ResMut<MidasLink>,
+    identity: Option<Res<crate::resources::AuthIdentity>>,
+    right_panel: Res<crate::resources::RightPanel>,
+    driver: Res<crate::systems::driver::DriverState>,
+    mut seen: Local<(bool, Option<web_time::Instant>)>,
+) {
+    let up = link.config.on && link.linked();
+    let last = link.shared().last_call.clone();
+    // Both change on the worker's thread, which egui never hears of: without
+    // a repaint the button would appear, or glow, only at the next touch
+    // (`egui-quiet-frame-staleness.md`).
+    let now_seen = (up, last.as_ref().map(|(_, _, at)| *at));
+    if *seen != now_seen {
+        *seen = now_seen;
+        egui.ctx().request_repaint();
+    }
+    // Under an open panel, or in driver mode, whose trip strip has this corner.
+    if !up || !right_panel.is(crate::resources::RightPanel::None) || driver.active {
+        link.card_open = false;
         return;
     }
-    let recent = link.recent_call(4.0);
-    let agent = crate::systems::icons::AGENT;
-    let text = match &recent {
-        Some((tool, session)) => format!("{agent}  Midas · {session}: {tool}"),
-        None => format!("{agent}  Midas"),
-    };
-    if recent.is_some() {
+    let age = last.as_ref().map(|(_, _, at)| at.elapsed().as_secs_f32());
+    let glow = age.filter(|a| *a < GLOW_S).map(|a| 1.0 - a / GLOW_S);
+    if glow.is_some() {
         egui.animating();
     }
-    let ctx = egui.ctx_mut();
-    egui::Area::new(egui::Id::new("midas_link_chip"))
-        .anchor(egui::Align2::CENTER_TOP, [0.0, theme::OSD_MARGIN])
-        .interactable(false)
+    let ctx = egui.ctx();
+    let size = theme::ROUND_BUTTON_SIZE;
+    let mut toggle = false;
+    egui::Area::new(egui::Id::new("midas_link_button"))
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
+        )
         .show(ctx, |ui| {
-            theme::chip_frame().show(ui, |ui| {
-                ui.label(egui::RichText::new(text).size(theme::SIZE_CHIP).color(
-                    if recent.is_some() {
-                        theme::ACCENT_BRIGHT
-                    } else {
-                        theme::ACCENT
-                    },
-                ));
+            let (resp, face) =
+                theme::map_disc(ui, size, false, theme::ACCENT_RING, egui::Sense::click());
+            let p = ui.painter();
+            if let Some(g) = glow {
+                p.circle_stroke(
+                    face.center,
+                    face.radius + 2.0 + 6.0 * (1.0 - g),
+                    egui::Stroke::new(3.0 * g, theme::MIDAS_GOLD.gamma_multiply(g)),
+                );
+            }
+            theme::paint_midas_mark(p, face.center, face.radius);
+            let dot = face.center + egui::vec2(1.0, -1.0) * face.radius * 0.74;
+            p.circle_filled(dot, 5.0, theme::CALL_ACCEPT_GREEN);
+            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::INK));
+            toggle = resp.on_hover_text("Midas").clicked();
+        });
+    if !link.card_open {
+        link.card_open = toggle;
+        return;
+    }
+    let who = identity.as_ref().and_then(|i| i.username.clone());
+    let card = egui::Area::new(egui::Id::new("midas_link_card"))
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(
+                -(theme::OSD_MARGIN + size + theme::OSD_GAP),
+                theme::OSD_MARGIN,
+            ),
+        )
+        .show(ctx, |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                ui.set_width(CARD_WIDTH);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new("Midas linked")
+                        .size(theme::SIZE_SUB)
+                        .color(theme::CREAM)
+                        .strong(),
+                );
+                let call = match (&last, age) {
+                    (Some((tool, session, _)), Some(a)) => {
+                        format!("{session} · {tool} · {}", ago(a))
+                    }
+                    _ => "No requests yet".to_string(),
+                };
+                ui.label(
+                    egui::RichText::new(call)
+                        .size(theme::SIZE_CHIP)
+                        .color(theme::MIDAS_GOLD),
+                );
+                let acts = match who {
+                    Some(name) => format!("Sessions can act as {name}"),
+                    None => "Signed out: sessions act as nobody".to_string(),
+                };
+                ui.label(
+                    egui::RichText::new(acts)
+                        .size(theme::SIZE_TINY)
+                        .color(theme::TEXT_DIM),
+                );
             });
         });
+    if age.is_some() {
+        // "just now" turns into minutes on its own.
+        ctx.request_repaint_after(std::time::Duration::from_secs(30));
+    }
+    // A second tap closes it, on the button or on the card.
+    if toggle || card.response.interact(egui::Sense::click()).clicked() {
+        link.card_open = false;
+    }
+}
+
+/// How long ago, in the card's words.
+fn ago(secs: f32) -> String {
+    match secs as u64 {
+        0..60 => "just now".to_string(),
+        s @ 60..3600 => format!("{} min ago", s / 60),
+        s => format!("{} h ago", s / 3600),
+    }
 }
 
 mod worker {
@@ -1141,6 +1260,15 @@ mod tests {
             assert!(t["name"].as_str().is_some_and(|n| !n.is_empty()));
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
+    }
+
+    #[test]
+    fn the_card_says_how_long_ago_in_whole_units() {
+        assert_eq!(ago(0.0), "just now");
+        assert_eq!(ago(59.9), "just now");
+        assert_eq!(ago(60.0), "1 min ago");
+        assert_eq!(ago(3599.0), "59 min ago");
+        assert_eq!(ago(7300.0), "2 h ago");
     }
 
     #[test]

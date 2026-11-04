@@ -215,9 +215,6 @@ icons! {
     /// Something is wrong but the feature is still on — a denied permission, a
     /// sensor that will not answer.
     WARNING = "\u{f083}", "warning";
-    /// An agent can drive this app: the Midas device link is up.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the link is native-only
-    AGENT = "\u{f06c}", "smart_toy";
 
     // ─── Route planning ──────────────────────────────────────────────────────
     /// Swap the two endpoints.

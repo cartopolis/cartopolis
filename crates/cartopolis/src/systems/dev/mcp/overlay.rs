@@ -36,6 +36,7 @@ pub fn render_mcp_activity(
     right_panel: Res<crate::resources::RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
     real: Res<Time<Real>>,
+    link: Option<Res<crate::systems::midas_link::MidasLink>>,
 ) {
     // Driver mode owns the screen, and the top-right corner is where its trip
     // strip goes. There is no ambient "driver mode is on" that hides an `Area`,
@@ -59,6 +60,12 @@ pub fn render_mcp_activity(
     if bridge.busy() {
         egui.animating();
     }
+    // The Midas button holds the corner while the link is up; stand under it.
+    let below = if link.is_some_and(|l| l.config.on && l.linked()) {
+        theme::ROUND_BUTTON_SIZE + theme::OSD_GAP
+    } else {
+        0.0
+    };
 
     egui::Area::new(egui::Id::new("mcp_activity"))
         // Top-right: the compass, the locate button and the layers disc hold the
@@ -66,7 +73,7 @@ pub fn render_mcp_activity(
         // the corner nothing else draws in outside driver mode.
         .anchor(
             egui::Align2::RIGHT_TOP,
-            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
+            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + below),
         )
         // A readout over the map must not sense the taps meant for the world.
         .interactable(false)

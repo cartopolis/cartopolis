@@ -2599,6 +2599,10 @@ const UI_ELEMENTS: &[&str] = &[
     "callvideo",
     "callgroup",
     "callfolded",
+    // The Midas button as it stands while the device link is up, and its
+    // card open (`midas_link::draw_link_button`).
+    "midaslink",
+    "midascard",
     "all",
 ];
 
@@ -3104,6 +3108,31 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
         crate::systems::chat_overlay::ScriptedSpeaker,
         Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
     ));
+}
+
+/// `--ui midaslink` and `--ui midascard`: the Midas button as it stands while
+/// the device link is up, and with its card open. A scripted run is paired to
+/// no hub, so the link is staged (`MidasLink::stage_for_capture`), with the
+/// account the docs hand out as the one sessions act as.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn hold_scripted_midas(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut link: ResMut<crate::systems::midas_link::MidasLink>,
+    mut identity: ResMut<crate::resources::AuthIdentity>,
+    mut done: Local<Option<usize>>,
+) {
+    if *done == Some(progress.index) {
+        return;
+    }
+    *done = Some(progress.index);
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    let want = |k: &str| all || panels.iter().any(|u| u == k);
+    if want("midaslink") || want("midascard") {
+        link.stage_for_capture(want("midascard"));
+        identity.username = Some("jeroen".to_string());
+    }
 }
 
 /// Seed and hold the `--ui fire` demo: two prims in front of the camera, one

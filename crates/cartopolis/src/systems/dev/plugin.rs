@@ -67,8 +67,8 @@ impl Plugin for DevPlugin {
         }
 
         // The Midas device link (`systems::midas_link`): kept linked as the panel
-        // says, its calls answered, and a chip over the map while it is up. The
-        // chip is a non-interactable `Area`, so it takes no click from a panel.
+        // says, its calls answered, and the Midas button in the map's top-right
+        // corner while it is up.
         #[cfg(not(target_arch = "wasm32"))]
         app.init_resource::<systems::midas_link::MidasLink>()
             .add_systems(
@@ -80,7 +80,7 @@ impl Plugin for DevPlugin {
                     )
                         .chain()
                         .in_set(ClientPhase::Input),
-                    systems::midas_link::draw_link_chip
+                    systems::midas_link::draw_link_button
                         .in_set(ClientPhase::Present)
                         .after(systems::locate::render_locate_arrow),
                 ),
@@ -267,6 +267,11 @@ impl Plugin for ShotHarnessPlugin {
         // index would close every panel the user had open each time an editor
         // took a picture.
         if !live {
+            #[cfg(not(target_arch = "wasm32"))]
+            app.add_systems(
+                Update,
+                systems::shot_harness::hold_scripted_midas.in_set(ClientPhase::Input),
+            );
             app.add_systems(
                 Update,
                 (
@@ -531,7 +536,9 @@ impl Plugin for McpPlugin {
             app.init_resource::<systems::mcp::FrameStart>()
                 .add_systems(First, systems::mcp::mark_frame_start)
                 .add_systems(Last, systems::mcp::pace_idle);
-        } else {
+        } else if cfg!(not(target_os = "android")) {
+            // Not on a phone: no editor drives it, so all its calls come over
+            // the Midas link, whose button says so (`midas_link`).
             app.add_systems(
                 Update,
                 systems::mcp::overlay::render_mcp_activity
