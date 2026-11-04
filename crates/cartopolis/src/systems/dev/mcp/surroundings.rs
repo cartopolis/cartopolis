@@ -66,6 +66,17 @@ pub fn geo_step(from: (f64, f64), to: (f64, f64)) -> Vec2 {
     )
 }
 
+/// Where a step of metres east and south from a lat/lng lands: the inverse of
+/// [`geo_step`], on the same flat small-angle figure.
+#[must_use]
+pub fn geo_offset(from: (f64, f64), step: Vec2) -> (f64, f64) {
+    let scale = from.0.to_radians().cos();
+    (
+        from.0 - f64::from(step.y) / M_PER_DEG,
+        from.1 + f64::from(step.x) / (M_PER_DEG * scale),
+    )
+}
+
 /// Whether a point is inside a lat/lng ring (even-odd; open or closed ring).
 #[must_use]
 pub fn inside_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
@@ -601,6 +612,21 @@ mod tests {
         let east = geo_step(from, (53.2, 6.5001));
         assert!(east.x > 0.0 && east.y.abs() < 1e-3, "east is +x: {east}");
         assert!((north.length() - 11.13).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_geo_offset_undoes_a_geo_step() {
+        let from = (53.2193, 6.5665);
+        let to = geo_offset(from, Vec2::new(12.0, -7.5));
+        let back = geo_step(from, to);
+        assert!(
+            (back.x - 12.0).abs() < 1e-3 && (back.y + 7.5).abs() < 1e-3,
+            "{back}"
+        );
+        assert!(
+            to.0 > from.0 && to.1 > from.1,
+            "-z is north, +x is east: {to:?}"
+        );
     }
 
     #[test]
