@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../ui-directions/style.css"><link rel="stylesheet" href="../ui-directions/c.css">
+<style>
+  .pair { display:flex; align-items:flex-start; gap:22px; }
+  .pair .today { width:300px; height:655px; object-fit:cover; object-position:top; }
+  .arrow { align-self:center; color:var(--brand); font-size:34px; }
+  .lab { font-size:12px; letter-spacing:.6px; text-transform:uppercase; color:var(--sheet-dim); margin-bottom:8px; }
+  .lab.new { color:#FF9A66; }
+  .cell { width:860px; }
+  .grid2 { display:grid; grid-template-columns:860px 860px; gap:56px 64px; }
+  .dock { position:absolute; left:50%; transform:translateX(-50%); bottom:26px; display:flex; gap:4px; padding:6px 8px; border-radius:30px; }
+  .dock div { width:60px; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10.5px; color:var(--dim); padding:4px 0; }
+  .dock div.on { color:var(--accent); }
+  .field { height:44px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; align-items:center; padding:0 14px; color:var(--dim); font-size:14px; }
+  .field.f { border-color:var(--accent); color:var(--cream); }
+  .or { display:flex; align-items:center; gap:10px; color:var(--dim); font-size:12px; margin:14px 0; }
+  .or::before, .or::after { content:''; flex:1; height:1px; background:var(--gline); }
+  .prov { height:42px; border-radius:21px; border:1px solid var(--gline); display:flex; align-items:center; justify-content:center; gap:8px; font-weight:600; font-size:13.5px; }
+  .warn { border-radius:12px; padding:10px 12px; background:rgba(255,154,102,.12); border:1px solid rgba(255,154,102,.35); color:#FFC4A3; font-size:12.5px; }
+  .chip { display:inline-flex; flex-direction:column; align-items:center; justify-content:center; height:50px; flex:1; border-radius:14px; background:var(--raised); font-size:12px; color:var(--dim); }
+  .chip b { color:var(--cream); font-size:15px; }
+  .chip.on { background:var(--muted); outline:2px solid var(--accent); } .chip.on b { color:var(--accent); }
+  .chip.off { opacity:.5; }
+  .pop { position:absolute; border-radius:16px; padding:6px; width:230px; }
+  .pop div { display:flex; align-items:center; gap:10px; padding:10px; border-radius:10px; font-size:14px; }
+  .pop small { display:block; color:var(--dim); font-size:12px; }
+  .chores { border-left:3px solid #FF9A66; border-radius:14px; background:var(--raised); padding:10px 12px; display:flex; align-items:center; gap:10px; }
+  .seg { display:flex; background:var(--raised); border-radius:12px; padding:3px; }
+  .seg span { flex:1; text-align:center; padding:7px 0; border-radius:9px; font-size:13px; color:var(--dim); font-weight:600; }
+  .seg span.on { background:var(--muted); color:var(--cream); }
+  .mi { display:flex; align-items:center; gap:12px; padding:12px 4px; font-size:15px; }
+  .mi small { color:var(--dim); font-size:12px; display:block; }
+  .red { color:#FF7A6B; }
+  .b.r { background:#C8463A; color:#fff; }
+  .toast { position:absolute; left:16px; right:16px; height:46px; border-radius:23px; display:flex; align-items:center; padding:0 8px 0 18px; font-size:13.5px; }
+  .toast a { margin-left:auto; color:var(--accent); font-weight:600; padding:0 12px; }
+  .ladder { font-size:14px; color:var(--sheet-dim); }
+  .ladder div { margin:9px 0; }
+  .ladder code { background:#1F2829; border-radius:6px; padding:2px 8px; color:var(--sheet-cream); font-family:inherit; }
+  .words td:nth-child(2) { color:#5CC6C0; }
+  .words { font-size:13px; table-layout:fixed; } .words td { white-space:normal !important; word-break:break-word; } .words td:nth-child(3) code { font-size:12px; }
+  .prio { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin:0 0 40px; }
+  .prio div { background:#141A1C; border:1px solid rgba(255,255,255,.1); border-radius:14px; padding:14px 16px; }
+  .prio h3 { color:var(--sheet-cream); font-size:15px; margin-bottom:4px; font-weight:600; }
+  .prio h3 span { color:var(--brand); margin-right:6px; }
+  .prio p { color:var(--sheet-dim); font-size:13.5px; }
+</style></head>
+<body><script src="../ui-directions/icons.js"></script>
+<svg width="0" height="0" style="position:absolute"><symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.5"/></symbol><symbol id="logout" viewBox="0 0 24 24"><path d="M14 4H5v16h9M10 12h10M16.5 8.5L20 12l-3.5 3.5"/></symbol></svg>
+<h1>UX review · <b>what gets in the way</b>, and what to draw instead</h1>
+<p class="lede">Requested 2026-11-04: "analyse cartopolis ui/ux and suggest improvements, make mockups first". The 1 Nov round (<code>ui-directions/</code>) was about <strong>how it looks</strong>: accents, button weights, three skeletons. This one is about <strong>what a person runs into</strong>: the first launch, finding people, going somewhere, the community page, leaving safely. The "Today" screens were captured from <code>main</code> on 2026-11-04 with <code>docs/phone-ui-shots.toml</code> (412×900 at scale 1.5, mac-1). Every "After" is <span class="tag">new</span>, drawn in today's teal glass and today's dock, so each fix can land without direction C. C's tab bar would also solve problem 1.</p>
+
+<div class="prio">
+  <div><h3><span>1</span>The social half is invisible</h3><p>Signed out, nothing on the map says that people, chats or communities exist. Signing in takes 2 taps, then you have to <b>type a server name</b>, and the app has no way to make an account.</p></div>
+  <div><h3><span>2</span>Buttons say how it works, not what you'll get</h3><p>From / To / Beam, "to Route end", "Needs a GPS position", "Offline — the map only", "simulator", "Under", "Polaroid". Each one makes you translate.</p></div>
+  <div><h3><span>3</span>Chores push the content down</h3><p>A community opens on its moderation queue, and a building card opens on nine numbers. What people come for is further down or behind a tab.</p></div>
+  <div><h3><span>4</span>Leaving is risky, and Back is unpredictable</h3><p>Log out, Block and Delete act at once and look like ordinary buttons. On Android, Back with a card open sends the whole app away, while on a page stack it drops every page at once.</p></div>
+</div>
+
+<div class="grid2 C">
+
+<!-- 1 · first run -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-none.jpg"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone" style="background-image:url(../ui-directions/map-phone.jpg)">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="caps glass" style="left:12px;top:60px"><div><svg class="i"><use href="#layers"/></svg></div><div><svg class="i"><use href="#grid"/></svg></div><div style="color:var(--accent)"><svg class="i"><use href="#north"/></svg></div></div>
+        <div class="mpin" style="left:210px;top:300px"><div class="av" style="background:#455A64">?</div></div>
+        <div class="mpin" style="left:120px;top:420px"><div class="av" style="background:#455A64">?</div></div>
+        <div class="mev" style="left:200px;top:470px"><svg class="i s"><use href="#cal"/></svg>Plant swap · Sat</div>
+        <div class="glass abs" style="left:12px;right:12px;bottom:112px;border-radius:22px;padding:16px">
+          <div style="display:flex;align-items:center;gap:12px"><div style="display:flex"><div class="av" style="background:#455A64">?</div><div class="av" style="background:#455A64;margin-left:-10px;border:2px solid var(--surface)">?</div><div class="av sq" style="background:#3D6FD6;margin-left:-6px">G</div></div>
+            <div style="flex:1"><b style="color:var(--cream)">3 people and 2 communities nearby</b><div class="sub">Sign in to see who they are, chat and join in.</div></div></div>
+          <div style="display:flex;gap:8px;margin-top:12px"><span class="b p" style="flex:1">Sign in</span><span class="b t" style="flex:1">Create account</span></div>
+          <div class="sub" style="text-align:center;margin-top:8px">Not now: just the map</div>
+        </div>
+        <div class="dock glass"><div><svg class="i"><use href="#search"/></svg>Search</div><div><svg class="i"><use href="#people"/></svg>People</div><div><svg class="i"><use href="#plane"/></svg>Fly</div><div><svg class="i"><use href="#bookmark"/></svg>Saved</div><div><svg class="i"><use href="#menu"/></svg>More</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>1</span>First launch: show that there are people, then ask</h2><ul>
+    <li>Today you get a silent offline map. Signing in is Menu ▸ Sign in…, and its only explanation is a hover tooltip, which a phone never shows (<code>ui.rs:177</code>).</li>
+    <li><b>One card, once</b>, over the map: what is around here (counts only, no names), Sign in, Create account, and "just the map". It stays closed after the first "not now" and comes back as the People disc.</li>
+    <li>The dock gets <b>labels</b> and a <b>People</b> disc that opens Community. Signed out, that disc opens this card. The Camera moves into More (it is already missing on the web), so the dock still has five places.</li>
+    <li>The left column becomes one capsule (layers, lens, compass). The clock moves into Layers, since it changes the light, not the view.</li>
+  </ul></div>
+</div>
+
+<!-- 2 · sign in -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-signin.jpg"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone solid">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="screen" style="padding:16px 22px">
+          <div class="top"><div class="ib"><svg class="i s"><use href="#left"/></svg></div><span style="flex:1"></span></div>
+          <h3 class="big" style="margin-top:16px">Sign in</h3>
+          <div class="sub" style="margin-top:2px">to <b style="color:var(--cream)">cartopolis.org</b> · <span style="color:var(--accent)">another server</span></div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:20px">
+            <div class="field f">jeroen</div>
+            <div class="field" style="justify-content:space-between">Password<svg class="i s"><use href="#eye"/></svg></div>
+          </div>
+          <div class="warn" style="margin-top:12px">Couldn't reach cartopolis.org. Check your internet connection and try again.</div>
+          <span class="b p" style="width:100%;height:46px;border-radius:23px;margin-top:14px;font-size:15px">Sign in</span>
+          <div class="sub" style="margin-top:10px;display:flex;justify-content:space-between"><span>☑ Stay signed in</span><span style="color:var(--accent)">Forgot password?</span></div>
+          <div class="or">or</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="prov">Continue with Mastodon</div>
+            <div class="prov">Continue with Codeberg</div>
+          </div>
+          <div style="text-align:center;margin-top:24px;font-size:14px">New here? <b style="color:var(--accent)">Create an account</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>2</span>Sign in: nothing to know beforehand, and a way in for newcomers</h2><ul>
+    <li>Today the Server field starts <b>empty</b> (<code>login_screen.rs:131</code>), with only a hint. The Today shot shows it filled in only because the capture seeds it (<code>seed_for_capture</code>). You have to know a server name before anything happens. The default becomes <b>cartopolis.org</b>, and choosing another server is a link.</li>
+    <li><b>Create an account</b>: the website already has a sign-up (<code>atlas/web/src/lib/signup.ts</code>). The app opens it, or shows the same form.</li>
+    <li>The provider buttons are shown at once, but only for the providers the server actually offers. None is set up yet (see the external sign-in memory), so today this list would be empty.</li>
+    <li>Errors are in plain words, on the card: never "No simulator is listening there" or a raw OS error (<code>net/network.rs:410</code>).</li>
+  </ul></div>
+</div>
+
+<!-- 3 · place -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-place.jpg"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone" style="background-image:url(../ui-directions/map-phone.jpg)">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="abs" style="left:176px;top:250px"><svg class="i" style="width:36px;height:36px;fill:#5CC6C0;stroke:#0F1416"><use href="#pin"/></svg></div>
+        <div class="pop glass" style="right:14px;bottom:250px">
+          <div><svg class="i s"><use href="#route"/></svg><span>Start a route here<small>Pick where it goes next</small></span></div>
+          <div><svg class="i s"><use href="#plane"/></svg><span>Jump there<small>Move your avatar at once</small></span></div>
+          <div><svg class="i s"><use href="#share"/></svg><span>Share this place</span></div>
+        </div>
+        <div class="sheet glass" style="bottom:0;padding:0 18px 30px">
+          <div class="handle"></div>
+          <div class="top"><div><h3>Martinitoren</h3><div class="sub">Tower · Martinikerkhof · 450 m from you</div></div><div class="ib"><svg class="i s"><use href="#close"/></svg></div></div>
+          <div style="display:flex;gap:8px;margin-top:14px"><span class="b p" style="flex:1;height:44px;border-radius:22px;font-size:14px"><svg class="i s"><use href="#walk"/></svg>Walk here · 6 min</span><span class="ib" style="width:44px;height:44px;color:var(--text)"><svg class="i s"><use href="#bookmark"/></svg></span><span class="ib" style="width:44px;height:44px;color:var(--accent);outline:2px solid var(--accent)"><svg class="i s"><use href="#more"/></svg></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>3</span>A place: one obvious next step</h2><ul>
+    <li>Today there are three buttons of equal weight: <b>From · To · Save</b>, and "Beam" for teleporting. "From" comes first, but the thing you most often want is to get there.</li>
+    <li>The main button names what will happen and how long it takes: <b>Walk here · 6 min</b> (walking first, as in the routing direction). Save is the bookmark icon. Everything else goes in ⋯, in words: "Start a route here" and "Jump there" instead of From and Beam.</li>
+    <li>The ring (long press) uses the <b>same words</b>. Today it says "Route here / Route from / Go there" (<code>ui.rs:831</code>) while the card says To / From / Beam.</li>
+  </ul></div>
+</div>
+
+<!-- 4 · route -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-route.jpg" style="object-position:bottom"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone" style="background-image:url(../ui-directions/map-phone.jpg)">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <svg class="abs" style="left:0;top:0" width="390" height="600"><path d="M120 520 C 150 470, 140 420, 190 380 S 230 300, 190 250" stroke="#5CC6C0" stroke-width="6" fill="none" stroke-linecap="round"/><circle cx="120" cy="520" r="9" fill="#fff" stroke="#0F1416" stroke-width="3"/></svg>
+        <div class="abs" style="left:176px;top:222px"><svg class="i" style="width:32px;height:32px;fill:#5CC6C0;stroke:#0F1416"><use href="#pin"/></svg></div>
+        <div class="sheet glass" style="bottom:0;padding:0 18px 30px">
+          <div class="handle"></div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <span class="chip on"><b>6 min</b>Walk</span><span class="chip"><b>3 min</b>Bike</span><span class="chip off"><b>—</b>Car</span>
+          </div>
+          <div class="sub" style="margin-top:6px;text-align:right;font-size:11.5px">Car routes need your real location: <span style="color:var(--accent)">turn on</span></div>
+          <div style="margin-top:12px"><h3 class="big">6 min <span class="sub" style="font-size:15px">· arrive 19:51</span></h3>
+            <div class="sub">450 m · from <b style="color:var(--text)">where you stand</b> to <b style="color:var(--text)">Martinitoren</b></div></div>
+          <div style="display:flex;gap:8px;margin-top:14px"><span class="b p" style="flex:1;height:44px;border-radius:22px;font-size:14px"><svg class="i s"><use href="#walk"/></svg>Start walking</span><span class="b t" style="height:44px;border-radius:22px">End route</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>4</span>A route: name both ends, and explain the greyed-out option</h2><ul>
+    <li>Today it says "1.8 km · to <b>Route end</b>", picks <b>car</b> first, and has a footnote, "Needs a GPS position", that does not say what needs it.</li>
+    <li>The modes are listed walk, bike, car. Car is greyed out, and the line under it says <b>why</b> and how to turn it on (a tap, not a hover).</li>
+    <li>Both ends have names, so you can read the route without looking at the map. The first action is to go: "Start walking", with "End route" beside it.</li>
+  </ul></div>
+</div>
+
+<!-- 5 · community -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-community.jpg"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone solid">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="screen">
+          <div class="top"><div class="ib"><svg class="i s"><use href="#left"/></svg></div><span style="flex:1"></span><div class="ib"><svg class="i s"><use href="#settings"/></svg></div></div>
+          <div style="display:flex;gap:12px;align-items:center;margin-top:12px"><div class="av sq" style="background:#3D6FD6;width:52px;height:52px;font-size:22px;border-radius:15px">G</div><div><h3>Garage 44</h3><div class="sub">Building cartopolis together · Grote Markt</div></div></div>
+          <div style="display:flex;gap:8px;margin-top:12px"><span class="b t"><svg class="i s"><use href="#people"/></svg>Members 5</span><span class="b t"><svg class="i s"><use href="#pin"/></svg>On the map</span></div>
+          <div class="chores" style="margin-top:14px"><div style="flex:1"><b style="color:var(--cream)">2 things wait for you</b><div class="sub">sanne wants to join · 1 report</div></div><span class="b p">Review</span></div>
+          <div class="seg" style="margin-top:14px"><span class="on">Posts</span><span>Topics 3</span><span>Plans 2</span></div>
+          <div class="item"><div class="av" style="background:#6B8E23">S</div><div class="t"><b>Plant swap on the corner this Saturday</b><small>sanne · 25 min · 12 likes · 6 replies</small></div></div>
+          <div class="item"><div class="av" style="background:#C26A1E">K</div><div class="t"><b>Who has a ladder for the mural?</b><small>karim · 2 h · 3 replies</small></div></div>
+          <div class="item"><div class="av" style="background:#8A3FB0">E</div><div class="t"><b>Photos from the opening</b><small>eva · yesterday · 4 photos</small></div></div>
+          <div class="sub" style="margin-top:6px;font-size:12px"><svg class="i s" style="vertical-align:-3px"><use href="#share"/></svg> Public: anyone can read these, on any server · 312 followers</div>
+        </div>
+        <div class="fab" style="right:18px;bottom:30px;width:auto;padding:0 18px;border-radius:26px;background:var(--accent);color:var(--ink);font-weight:600;gap:6px"><svg class="i s"><use href="#plus"/></svg>Write a post</div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>5</span>A community: what is said comes first, the chores take one row</h2><ul>
+    <li>Today the page opens on <b>Asking to join</b> and <b>Reports</b>, and the posts start below the fold. The buttons "People · Topic · 5 · Edit" read as four tabs, but they do four unrelated things, and "5" and "People" open the same list.</li>
+    <li>Moderators get <b>one orange row</b>, "2 things wait for you", and Review opens the queue. Members never see it.</li>
+    <li>Posts, Topics and Plans are one switch. "Write a post" stays at hand. Settings is the ⚙ in the corner, shown only to those allowed to edit.</li>
+  </ul></div>
+</div>
+
+<!-- 6 · menu and you -->
+<div class="cell">
+  <div class="pair">
+    <div><div class="lab">Today</div><img class="today" src="today-menu.jpg" style="object-position:bottom"></div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone" style="background-image:url(../ui-directions/map-phone.jpg)">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="sheet glass" style="bottom:0;padding:0 18px 110px">
+          <div class="handle"></div>
+          <div class="mi" style="border-bottom:1px solid var(--gline)"><div class="av" style="background:#22A08F;width:44px;height:44px">J</div><span style="flex:1"><b style="color:var(--cream)">jeroen</b><small>Signed in to cartopolis.org · your profile</small></span><svg class="i s chev"><use href="#right"/></svg></div>
+          <div class="mi"><svg class="i"><use href="#camera"/></svg><span style="flex:1">Camera</span></div>
+          <div class="mi"><svg class="i"><use href="#cal"/></svg><span style="flex:1">Calendar</span></div>
+          <div class="mi"><svg class="i"><use href="#settings"/></svg><span style="flex:1">Settings</span></div>
+          <div class="mi"><svg class="i"><use href="#info"/></svg><span style="flex:1">Help and about</span></div>
+          <div class="mi red" style="border-top:1px solid var(--gline)"><svg class="i"><use href="#logout"/></svg><span style="flex:1">Sign out…</span></div>
+        </div>
+        <div class="dock glass"><div><svg class="i"><use href="#search"/></svg>Search</div><div><svg class="i"><use href="#people"/></svg>People</div><div><svg class="i"><use href="#plane"/></svg>Fly</div><div><svg class="i"><use href="#bookmark"/></svg>Saved</div><div class="on"><svg class="i"><use href="#menu"/></svg>More</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>6</span>The menu: who you are, at the top; developer tools out of sight</h2><ul>
+    <li>Today the menu is <b>Sign in / Log out</b> first (with no confirmation, styled like Exit), then Settings and About, then <b>Developer tools</b> and <b>Share diagnostics</b> for everyone, then Exit. Who you're signed in as appears only in a tooltip (<code>ui.rs:169</code>).</li>
+    <li>The top row is <b>you</b>, written out, and it opens the You page. Sign out is last, in red, and asks first.</li>
+    <li>Developer tools and diagnostics move to Settings ▸ Advanced, off by default. Ctrl+Shift+D still works. Exit stays on desktop only, since Android apps don't quit.</li>
+    <li>One name for one thing: "Sign out" everywhere (today it is also "Log out"), "Avatar" everywhere (today it is also "Appearance"), and "Photo from the world" instead of "Polaroid".</li>
+  </ul></div>
+</div>
+
+<!-- 7 · leaving safely -->
+<div class="cell">
+  <div class="pair">
+    <div style="width:300px">
+      <div class="lab">Back, step by step</div>
+      <div class="ladder">
+        <div><code>Android Back</code></div>
+        <div>Today, with a place, building or person card open: <b style="color:#FF7A6B">the app goes to the background</b> (<code>dismiss.rs:421</code>).</div>
+        <div>Today, on Community ▸ You ▸ Contacts: <b style="color:#FF7A6B">all three pages close at once</b> (<code>dismiss.rs:243</code>).</div>
+        <div style="margin-top:16px"><b style="color:#5CC6C0">After:</b></div>
+        <div>card → map</div>
+        <div>Contacts → You → Community → map</div>
+        <div>map → (second press) leave the app</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div><div class="lab new">After</div>
+      <div class="phone solid">
+        <div class="status"><span>9:41</span><span class="notch"></span><span>●●● 82%</span></div>
+        <div class="screen" style="opacity:.35">
+          <div class="top"><div class="ib"><svg class="i s"><use href="#left"/></svg></div><div class="av" style="background:#6B8E23">S</div><h3>sanne</h3></div>
+          <div class="msg them" style="margin-top:20px">Where shall we have dinner Saturday?</div>
+          <div class="msg me" style="margin-top:8px">Somewhere near the Vismarkt?</div>
+        </div>
+        <div class="sheet glass" style="bottom:0;padding:0 22px 34px">
+          <div class="handle"></div>
+          <h3 style="margin-top:8px">Block sanne?</h3>
+          <ul class="sub" style="margin:10px 0 0 18px;font-size:13.5px;line-height:1.55">
+            <li>They can&rsquo;t message you or see where you are.</li>
+            <li>They aren&rsquo;t told that you blocked them.</li>
+            <li>You can undo it in Settings ▸ Privacy and safety.</li>
+          </ul>
+          <div style="display:flex;gap:8px;margin-top:18px"><span class="b t" style="flex:1;height:44px;border-radius:22px">Cancel</span><span class="b r" style="flex:1;height:44px;border-radius:22px">Block</span></div>
+          <div class="sub" style="text-align:center;margin-top:10px">Report them as well</div>
+        </div>
+        <div class="toast glass" style="top:60px"><svg class="i s" style="margin-right:8px"><use href="#check"/></svg>Left Garage 44<a>Undo</a></div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><h2><span>7</span>Leaving safely: say what happens, and let it be undone</h2><ul>
+    <li>Today <b>Block</b> is a plain button beside "Message privately", and it acts at once (<code>chat.rs:826</code>). The same goes for the ring's Delete and for Log out. Bookmarks, contacts and admin already arm first and confirm on a second tap. Destructive actions get <b>one</b> pattern, in red, saying what will happen.</li>
+    <li>Anything that can be undone shows a short <b>Undo</b> note at the top instead of asking first: leaving a community, removing a saved place. There is no undo note anywhere today.</li>
+    <li>Back closes the innermost thing, one step at a time, including cards. This is what <code>ui-vocabulary.md</code> already promises.</li>
+  </ul></div>
+</div>
+
+<!-- 8 · words -->
+<div class="cell">
+  <div class="lab">The words, today → after</div>
+  <table class="map-table words"><colgroup><col style="width:34%"><col style="width:38%"><col style="width:28%"></colgroup>
+    <tr><th>Today</th><th>After</th><th>Where</th></tr>
+    <tr><td>Offline — the map only</td><td>Not signed in</td><td>sign-in card, <code>login_screen.rs:841</code></td></tr>
+    <tr><td>…on a simulator you can reach</td><td>Meet people and chat</td><td>menu tooltip, <code>ui.rs:177</code></td></tr>
+    <tr><td>No simulator is listening there</td><td>Couldn't reach cartopolis.org</td><td><code>net/network.rs:410</code></td></tr>
+    <tr><td>Streaming the map… 3/9</td><td>Loading the map…</td><td>splash, <code>splash.rs</code></td></tr>
+    <tr><td>From · To · Beam</td><td>Start a route here · Walk here · Jump there</td><td><code>place_card.rs:209</code>, the ring</td></tr>
+    <tr><td>to Route end</td><td>to Martinitoren</td><td>route sheet</td></tr>
+    <tr><td>Needs a GPS position</td><td>Car routes need your real location: turn on</td><td>route sheet</td></tr>
+    <tr><td>Log out / Sign out</td><td>Sign out</td><td><code>ui.rs:168</code>, <code>chats.rs:2077</code></td></tr>
+    <tr><td>Appearance / Avatar</td><td>Avatar</td><td>menu, You page</td></tr>
+    <tr><td>Polaroid</td><td>Photo from the world</td><td>You page, <code>faces.rs:554</code></td></tr>
+    <tr><td>Under · Orbit · Moving</td><td>Underground · Space · Traffic</td><td>layer tabs, <code>layer_tiles.rs:46</code></td></tr>
+    <tr><td>BAG viewer</td><td>Official record ↗</td><td><code>building_card.rs:204</code></td></tr>
+    <tr><td>Right-click a prim and choose Edit script</td><td>Hold an object, then Script</td><td><code>script_editor.rs:278</code></td></tr>
+    <tr><td>Plans (three meanings)</td><td>Plans = meet-ups · Notices = municipal · "Plans here" = Plans here</td><td>calendar, layers, ring</td></tr>
+  </table>
+  <div class="cap"><h2><span>8</span>Words: one name per thing, in the person's terms</h2><ul>
+    <li>"World" also means three things: the Community | World switch, Settings ▸ World (time and weather), and a zoom-rail step. Settings ▸ World becomes <b>Time and weather</b>.</li>
+    <li>Every reason given only in a hover tooltip (seven of them: <code>bookmarks.rs:509</code>, <code>building_card.rs:206</code>, <code>data_layers.rs:1654</code>/<code>1662</code>, three in <code>geo_nav.rs</code>) becomes a line of text under the control, so a phone shows it too.</li>
+  </ul></div>
+</div>
+
+</div>
+</body></html>
