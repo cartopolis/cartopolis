@@ -433,10 +433,10 @@ pub struct AppPrefs {
     /// they read when they grow a second unit system.
     #[serde(default)]
     pub units: Units,
-    /// Hold the screen awake while driver mode is running. **No consumer yet**:
-    /// there is no wake-lock seam in `platform` — on the web that is
-    /// `navigator.wakeLock`, on Android a `FLAG_KEEP_SCREEN_ON` on the activity
-    /// window, and neither exists in this tree.
+    /// Hold the screen awake while the app is in front
+    /// (`frame_pacing::apply_screen_wakelock`, `platform::keep_awake`). Named
+    /// for driver mode, which was all it covered until 2026-11-04; the name
+    /// stays because it is the key in every saved settings file.
     #[serde(default = "crate::resources::yes")]
     pub keep_screen_on: bool,
     /// Play the turn chime (and, later, spoken guidance) while navigating.

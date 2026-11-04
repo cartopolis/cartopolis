@@ -744,27 +744,48 @@ pub(crate) fn frame_time_watchdog(
 /// iGPU; `draws` is the visible mesh count. Read `shadow_casters` beside it: a
 /// caster whose mesh is `RENDER_WORLD`-only contributes no triangles here and
 /// costs a pass anyway. Watch these against `frame_ms` to see what "too much" is.
-/// Hold the screen awake while navigating, and let the user say no.
+/// Hold the screen awake while the app is in front, and let the user say no.
 ///
-/// The window flag is derived from state rather than set at the two ends of
-/// driver mode, which is what makes the Settings toggle mean anything: turning
-/// it off mid-drive has to release the lock, and `enter`/`exit` cannot observe a
-/// preference changing while they are not being called. Deriving it also removes
-/// the pairing bug — there is no path that sets the flag and forgets to clear it,
-/// because nothing sets it, this only ever reports the current answer.
+/// In front means: not suspended (Android sends `WillSuspend` as it leaves,
+/// and a process kept alive by the background connection must not hold the
+/// screen of whatever app came up instead) and, on a desktop, a focused
+/// window. The phone and the browser do not count focus: a permission dialog
+/// takes it on the phone, and the browser drops the lock itself when the tab
+/// is hidden (`platform::keep_awake`).
 ///
-/// Edge-triggered on the answer, not the inputs: the platform call is a binder
-/// round-trip to `PowerManagerService`, and making it every frame for an unchanged
-/// value would be silly. The wake lock is deliberately *uncounted* on the other
-/// side, so this edge-triggering is a cost saving and not a correctness
-/// requirement — see `platform::android::new_wake_lock`.
+/// Derived from state every frame rather than set at edges, so turning the
+/// setting off releases the lock at once and there is no path that takes it
+/// and forgets to give it back. `platform::keep_awake::hold` is cheap for an
+/// unchanged answer, and is called with it every frame because the web arm
+/// has to ask again after the browser released the lock.
 pub(crate) fn apply_screen_wakelock(
-    driver: Res<systems::driver::DriverState>,
     prefs: Res<resources::AppPrefs>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    windows: Query<&Window>,
+    mut backgrounded: Local<bool>,
     mut held: Local<bool>,
 ) {
-    let want = driver.active && prefs.keep_screen_on;
+    for event in lifecycle.read() {
+        match event {
+            bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
+                *backgrounded = true;
+            }
+            bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
+                *backgrounded = false;
+            }
+            bevy::window::AppLifecycle::Idle => {}
+        }
+    }
+    let in_front = if cfg!(any(target_os = "android", target_arch = "wasm32")) {
+        !*backgrounded
+    } else {
+        !*backgrounded && windows.iter().any(|w| w.focused)
+    };
+    let want = in_front && prefs.keep_screen_on;
     if want == *held {
+        if want {
+            platform::keep_awake::hold(true);
+        }
         return;
     }
     // Not while a permission dialog is up. `*held` is deliberately left alone, so
@@ -778,8 +799,7 @@ pub(crate) fn apply_screen_wakelock(
         return;
     }
     *held = want;
-    #[cfg(target_os = "android")]
-    platform::android::set_keep_screen_on(want);
+    platform::keep_awake::hold(want);
 }
 
 /// Tell the watchdog a frame finished. See `platform::watchdog`.

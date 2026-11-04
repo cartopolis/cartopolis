@@ -957,22 +957,20 @@ fn general_tab(
 
     ui.add_space(8.0);
     ui.separator();
+    section(ui, "Screen");
+    theme::checkbox(
+        ui,
+        &mut prefs.keep_screen_on,
+        "Keep the screen on while Cartopolis is in front",
+    );
+
+    ui.add_space(8.0);
+    ui.separator();
     section(ui, "Navigation");
     theme::checkbox(
         ui,
         &mut prefs.voice_guidance,
         "Chime at turns while navigating",
-    );
-    theme::checkbox(
-        ui,
-        &mut prefs.keep_screen_on,
-        "Keep the screen on while driving",
-    );
-    // No wake-lock seam exists in `platform` — `navigator.wakeLock` on the web,
-    // `FLAG_KEEP_SCREEN_ON` on Android — so this one is a stored intention.
-    pending(
-        ui,
-        "The screen lock is the system's until this build can ask it to wait.",
     );
 
     // Android only, and **hidden rather than disabled** — the opposite call to

@@ -1163,6 +1163,13 @@ Two things about the wake lock are inference and need the device to settle:
   obeyed it. Watch the screen for thirty seconds of driving — that is the
   measurement, and it is the only one that counts here.
 
+**Since 2026-11-04 the lock is held whenever the app is in front, not only while
+driving** (tag `cartopolis:on-screen`, `platform::keep_awake`). It is let go on
+`AppLifecycle::WillSuspend`: the background connection keeps this process alive
+off screen, and a screen lock held then would keep whichever app came up instead
+lit. The power button still turns the screen off; that is `goToSleep`, which no
+wake lock overrides.
+
 ## The recovery *was* the crash, and the tier was a stand-in (Adreno 840, 2026-08-17)
 
 A new phone — a OnePlus on Android 16, Adreno 840, i.e. two GPU generations past

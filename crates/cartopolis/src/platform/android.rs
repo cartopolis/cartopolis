@@ -491,7 +491,7 @@ const SCREEN_BRIGHT_WAKE_LOCK: i32 = 0x0000_000a;
 /// Android wants `app:reason`, and logs a complaint about a tag that isn't shaped
 /// that way. It is also what shows up in `dumpsys power`, which is how anyone
 /// chasing a battery drain finds out it was us.
-const WAKE_LOCK_TAG: &str = "cartopolis:driving";
+const WAKE_LOCK_TAG: &str = "cartopolis:on-screen";
 
 /// The one thread that touches the wake lock. See [`set_keep_screen_on`].
 ///
@@ -499,8 +499,8 @@ const WAKE_LOCK_TAG: &str = "cartopolis:driving";
 /// awake, which costs a screen timeout rather than a frozen app.
 static WAKE_LOCK: OnceLock<Option<mpsc::Sender<bool>>> = OnceLock::new();
 
-/// Hold the screen awake while driving (driver mode's reason for existing: the
-/// phone otherwise blanks thirty seconds into a drive).
+/// Hold the screen awake while the app is in front (`platform::keep_awake`):
+/// the phone otherwise dims thirty seconds into looking at the map.
 ///
 /// ## Why this is a wake lock and not the window flag
 ///
@@ -637,8 +637,8 @@ fn set_wake_lock(lock: &mut Option<GlobalRef>, on: bool) -> Result<bool, String>
 /// `PowerManager.newWakeLock(SCREEN_BRIGHT_WAKE_LOCK, tag)`, reference counting
 /// off.
 ///
-/// Uncounted on purpose. The caller is edge-triggered (`lib.rs`'s
-/// `apply_screen_wakelock` only sends when the answer changes), so a counted lock
+/// Uncounted on purpose. The caller is edge-triggered (`platform::keep_awake`
+/// only sends when the answer changes), so a counted lock
 /// would balance — but *would* is doing the work in that sentence, and the failure
 /// mode of a miscount is a screen held awake until the process dies, which the user
 /// experiences as a flat battery and cannot attribute to anything. Uncounted,
@@ -690,7 +690,8 @@ fn hold_wake_lock(env: &mut JNIEnv, lock: &GlobalRef, on: bool) -> Result<bool, 
     env.with_local_frame::<_, _, Fail>(4, |env| {
         if on {
             // The untimed overload deliberately: a timeout would release the lock
-            // mid-drive, and the release here is driven by leaving driver mode.
+            // while the map is being looked at, and the release here is driven by
+            // the app leaving the screen (`frame_pacing::apply_screen_wakelock`).
             env.call_method(lock.as_obj(), "acquire", "()V", &[])?;
         } else {
             env.call_method(lock.as_obj(), "release", "()V", &[])?;
