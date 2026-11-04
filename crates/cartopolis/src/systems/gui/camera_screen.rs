@@ -1485,7 +1485,7 @@ mod native {
                             .as_ref()
                             .map(|p| vec![("CARTOPOLIS_POSE".to_string(), p.caption(""))])
                             .unwrap_or_default();
-                        match Recorder::start(aspect, mode == Mode::Mixed, tags) {
+                        match Recorder::start(aspect, mode == Mode::Mixed, true, tags) {
                             Ok(rec) => {
                                 session.error = None;
                                 session.clip_pose = session.live.clone();

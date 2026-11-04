@@ -481,6 +481,7 @@ impl Plugin for McpPlugin {
         app.insert_resource(cfg.clone())
             .insert_resource(systems::mcp::JobSender(tx))
             .init_resource::<systems::mcp::McpTrouble>()
+            .init_resource::<systems::mcp::film::Films>()
             .insert_resource(systems::mcp::McpBridge::new(rx, cfg.listen.clone()))
             .add_systems(
                 Update,
@@ -503,6 +504,12 @@ impl Plugin for McpPlugin {
                         .in_set(ClientPhase::Present),
                 )
                     .chain(),
+            )
+            // A `film`'s pictures: whatever the client is doing, so nothing to
+            // order against but the pump (in Input) that queued it.
+            .add_systems(
+                Update,
+                systems::mcp::film::drive_films.in_set(ClientPhase::Present),
             );
         if let Some(voice) = self.voice.clone() {
             tracing::info!(url = %voice.url, "mcp: voice agent on");

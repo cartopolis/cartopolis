@@ -35,6 +35,40 @@ pub enum Request {
     /// Something the signed-in account does: talk, walk, build
     /// (the client's `mcp::agent`).
     Agent(AgentRequest),
+    /// Record the screen as it plays for a few seconds (the client's `mcp::film`).
+    Film(FilmRequest),
+}
+
+/// One `film` call.
+#[derive(Debug, Clone)]
+pub struct FilmRequest {
+    pub seconds: f32,
+    /// Leave the UI out of every picture. The client forces it on when the
+    /// chrome would show chat the agent may not read, as `view` does.
+    pub hide_ui: bool,
+    /// Where the WebM is written; the reply carries the path either way.
+    pub out: Option<PathBuf>,
+}
+
+/// The longest clip `film` records, in seconds.
+pub const MAX_FILM_S: f32 = 20.0;
+
+/// The answer to a `film`: the clip, and stills from it an agent can look at.
+pub struct FilmReply {
+    /// The WebM (VP8, no sound).
+    pub webm: Vec<u8>,
+    pub path: PathBuf,
+    /// The screen it was recorded from; the clip is that, shrunk to what the
+    /// encoder takes.
+    pub width: u32,
+    pub height: u32,
+    pub seconds: f32,
+    /// Pictures in the clip, and those dropped because the encoder was busy.
+    pub pictures: u32,
+    pub dropped: u32,
+    /// Evenly spaced frames tiled into one JPEG, left to right, top to bottom:
+    /// a model cannot watch a video, and motion is the difference between them.
+    pub sheet: Option<Vec<u8>>,
 }
 
 /// One `view` / `view_here` call.
@@ -85,6 +119,7 @@ pub enum Reply {
     State(Box<WorldState>),
     View(Box<ViewReply>),
     Agent(Box<AgentReply>),
+    Film(Box<FilmReply>),
     /// The call could not be carried out. The string is written to be shown to
     /// whoever asked, because it is.
     Error(String),

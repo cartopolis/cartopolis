@@ -157,6 +157,11 @@ async function show(result: Json, out: string | undefined): Promise<void> {
       const path = out ?? "/tmp/cartopolis-mcp.jpg";
       await Bun.write(path, bytes);
       console.log(`image: ${bytes.length} bytes -> ${path}`);
+    } else if (block.type === "resource") {
+      // `film`'s clip; the client has saved it already, at the path its text names.
+      const r = (block.resource ?? {}) as Json;
+      const size = typeof r.blob === "string" ? Buffer.from(r.blob, "base64").length : 0;
+      console.log(`resource: ${r.uri} ${r.mimeType ?? ""} ${size} bytes`);
     }
   }
   if (result.structuredContent !== undefined) {

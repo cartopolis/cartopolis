@@ -48,7 +48,9 @@ use crate::args::{
     RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs, WalkArgs,
 };
 use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
-use crate::protocol::{ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE};
+use crate::protocol::{
+    FilmRequest, ImageFormat, Job, Reply, Request, ViewRequest, DEFAULT_MAX_EDGE, MAX_FILM_S,
+};
 use cartopolis_core::ShotEnv;
 
 // ---------------------------------------------------------------------------
@@ -373,6 +375,20 @@ pub struct ViewHereArgs {
     pub details: Option<bool>,
 }
 
+/// `film`'s arguments.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FilmArgs {
+    #[schemars(description = "How long to record, in seconds. Default 5, at most 20.")]
+    pub seconds: Option<f32>,
+    #[schemars(
+        description = "Leave the on-screen chrome out of every picture. It blinks on the \
+                       screen while recording, so leave it off unless the UI is in the way."
+    )]
+    pub hide_ui: Option<bool>,
+    #[schemars(description = "Write the WebM here as well.")]
+    pub out: Option<String>,
+}
+
 /// `look`'s arguments: what to turn to, and how to return the picture.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LookArgs {
@@ -502,9 +518,7 @@ impl Tools {
                 Ok(result)
             }
             Reply::Error(why) => Ok(refused(why)),
-            Reply::View(_) | Reply::Agent(_) => {
-                Err(ErrorData::internal_error("wrong reply kind", None))
-            }
+            _ => Err(ErrorData::internal_error("wrong reply kind", None)),
         }
     }
 
@@ -573,6 +587,58 @@ impl Tools {
             max_edge: args.max_edge_px.unwrap_or(DEFAULT_MAX_EDGE),
         };
         self.capture(req, args.details.unwrap_or(false)).await
+    }
+
+    #[tool(
+        description = "Record the screen as it plays for a few seconds, moving nothing: an \
+                       avatar walking, traffic, water, an animation you changed. Returns six \
+                       evenly spaced frames tiled into one picture (left to right, top to \
+                       bottom) for you to look at, and the clip itself as a WebM (VP8, no \
+                       sound) for a person to watch. Start a `walk_to` without `wait_s` first \
+                       to film the walk."
+    )]
+    async fn film(
+        &self,
+        Parameters(args): Parameters<FilmArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let req = FilmRequest {
+            seconds: args.seconds.unwrap_or(5.0).clamp(0.5, MAX_FILM_S),
+            hide_ui: args.hide_ui.unwrap_or(false),
+            out: args.out.map(Into::into),
+        };
+        match self.ask(Request::Film(req)).await? {
+            Reply::Film(f) => {
+                let mut content = Vec::new();
+                if let Some(sheet) = &f.sheet {
+                    let data = base64::engine::general_purpose::STANDARD.encode(sheet);
+                    content.push(ContentBlock::image(data, "image/jpeg"));
+                }
+                content.push(ContentBlock::text(format!(
+                    "{:.1} s of a {}×{} screen, {} pictures ({} dropped while the encoder \
+                     was busy), {} kB, saved to {}.",
+                    f.seconds,
+                    f.width,
+                    f.height,
+                    f.pictures,
+                    f.dropped,
+                    f.webm.len() / 1024,
+                    f.path.display()
+                )));
+                // MCP has no video block: the clip goes as an embedded resource.
+                let clip = serde_json::json!({"type": "resource", "resource": {
+                    "uri": "cartopolis://film/clip.webm",
+                    "mimeType": "video/webm",
+                    "blob": base64::engine::general_purpose::STANDARD.encode(&f.webm),
+                }});
+                content.push(
+                    serde_json::from_value(clip)
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+                );
+                Ok(CallToolResult::success(content))
+            }
+            Reply::Error(why) => Ok(refused(why)),
+            _ => Err(ErrorData::internal_error("wrong reply kind", None)),
+        }
     }
 
     // ── Being somebody ─────────────────────────────────────────────────────
@@ -1088,9 +1154,7 @@ impl Tools {
                     },
                     Reply::View(_) => return Ok(refused("The picture could not be taken.".into())),
                     Reply::Error(why) => return Ok(refused(why)),
-                    Reply::State(_) | Reply::Agent(_) => {
-                        return Err(ErrorData::internal_error("wrong reply kind", None))
-                    }
+                    _ => return Err(ErrorData::internal_error("wrong reply kind", None)),
                 }
             }
         };
@@ -1214,9 +1278,7 @@ impl Tools {
                 Ok(result)
             }
             Reply::Error(why) => Ok(refused(why)),
-            Reply::State(_) | Reply::Agent(_) => {
-                Err(ErrorData::internal_error("wrong reply kind", None))
-            }
+            _ => Err(ErrorData::internal_error("wrong reply kind", None)),
         }
     }
 
@@ -1283,9 +1345,7 @@ impl Tools {
                 data: serde_json::Value::Null,
                 error: true,
             }),
-            Reply::State(_) | Reply::View(_) => {
-                Err(ErrorData::internal_error("wrong reply kind", None))
-            }
+            _ => Err(ErrorData::internal_error("wrong reply kind", None)),
         }
     }
 
@@ -1317,9 +1377,7 @@ impl Tools {
                 Ok(result)
             }
             Reply::Error(why) => Ok(refused(why)),
-            Reply::State(_) | Reply::View(_) => {
-                Err(ErrorData::internal_error("wrong reply kind", None))
-            }
+            _ => Err(ErrorData::internal_error("wrong reply kind", None)),
         }
     }
 }

@@ -323,9 +323,16 @@ pub const FULL: &str = "The clip reached its longest; it was stopped there.";
 
 impl Recorder {
     /// Start recording pictures of shape `aspect` (one, or two side by side
-    /// in Mixed), with the clip's tags.
-    pub fn start(aspect: f32, mixed: bool, tags: Vec<(String, String)>) -> Result<Self, String> {
-        let sound = AudioInput::available();
+    /// in Mixed), with the microphone when `sound` and there is one, and with
+    /// the clip's tags. An agent's `film` (`mcp::film`) records no sound: what
+    /// is said beside the phone is not the screen.
+    pub fn start(
+        aspect: f32,
+        mixed: bool,
+        sound: bool,
+        tags: Vec<(String, String)>,
+    ) -> Result<Self, String> {
+        let sound = sound && AudioInput::available();
         let (tx, rx) = std::sync::mpsc::sync_channel::<(Source, u64)>(1);
         // The encoder is opened on its thread (a phone's codec can take a
         // moment) and decides the picture's size, which it gives the writer

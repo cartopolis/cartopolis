@@ -50,6 +50,7 @@
 //! quitting (`ShotHarness::live`).
 
 pub mod agent;
+pub mod film;
 pub mod overlay;
 pub mod relay;
 pub mod surroundings;
@@ -258,7 +259,10 @@ pub fn reconcile_listener(
     mut exit: MessageWriter<AppExit>,
     mut was: Local<Option<bool>>,
 ) {
-    let want = config.forced || prefs.mcp_enabled;
+    // The phone serves these tools through the Midas device link only: no
+    // editor runs beside an APK, and an app's sandbox has no runtime dir for
+    // the socket to live in.
+    let want = !cfg!(target_os = "android") && (config.forced || prefs.mcp_enabled);
     if *was == Some(want) && running.is_some() == want {
         return;
     }
@@ -487,6 +491,7 @@ pub fn pump(
     real: Res<Time<Real>>,
     audience: Res<agent::Audience>,
     session: Res<crate::systems::session::SessionState>,
+    mut films: ResMut<film::Films>,
 ) {
     let now = real.elapsed_secs_f64();
     // **A picture is text the allow-list cannot filter.** The chrome carries the
@@ -516,6 +521,13 @@ pub fn pump(
                 let _ = job.reply.send(Reply::State(Box::new(state)));
             }
             Request::Agent(req) => bridge.agent.push((req, job.reply)),
+            Request::Film(mut req) => {
+                // The same rule as `view`'s, though here it blinks the chrome.
+                if chrome_leaks {
+                    req.hide_ui = true;
+                }
+                films.push(req, job.reply);
+            }
             Request::View(mut req) => {
                 if chrome_leaks {
                     req.hide_ui = Some(true);
@@ -740,7 +752,16 @@ pub fn pace_idle(
 
 /// Where a capture goes when the caller did not say.
 fn default_out(index: usize) -> PathBuf {
-    std::env::temp_dir().join(format!("cartopolis-view-{index:04}.png"))
+    scratch_dir().join(format!("cartopolis-view-{index:04}.png"))
+}
+
+/// Where captures and clips go unless a call names a path.
+fn scratch_dir() -> PathBuf {
+    // Android's `temp_dir` is `/data/local/tmp`, which an app cannot write.
+    #[cfg(target_os = "android")]
+    return crate::utils::cache::cache_root();
+    #[cfg(not(target_os = "android"))]
+    std::env::temp_dir()
 }
 
 /// Turn a `ViewRequest` into a viewpoint on the harness, returning its index.
