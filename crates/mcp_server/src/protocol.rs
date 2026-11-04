@@ -6,6 +6,7 @@ use futures_channel::oneshot;
 use std::path::PathBuf;
 
 use crate::args::{AgentReply, AgentRequest};
+use crate::device::DeviceRequest;
 use cartopolis_core::ShotEnv;
 
 /// The longest edge of a returned image, unless the call asks for another.
@@ -37,6 +38,9 @@ pub enum Request {
     Agent(AgentRequest),
     /// Record the screen as it plays for a few seconds (the client's `mcp::film`).
     Film(FilmRequest),
+    /// Something about the app itself: its build, log, cost, settings, screen
+    /// (the client's `mcp::device` and `mcp::screen`). Answered as `Reply::Agent`.
+    Device(DeviceRequest),
 }
 
 /// One `film` call.

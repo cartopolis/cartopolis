@@ -411,6 +411,8 @@ pub enum AgentRequest {
     Forget(NoteIdArgs),
     SendPicture(PictureSend),
     SeePicture(SeePictureArgs),
+    /// One object in full, its script when the account may see it.
+    Inspect(IdArgs),
 }
 
 impl AgentRequest {
@@ -460,6 +462,7 @@ impl AgentRequest {
             Self::Forget(_) => "forget",
             Self::SendPicture(_) => "send picture",
             Self::SeePicture(_) => "see picture",
+            Self::Inspect(_) => "inspect object",
         }
     }
 }

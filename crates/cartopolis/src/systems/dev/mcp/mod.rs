@@ -50,14 +50,17 @@
 //! quitting (`ShotHarness::live`).
 
 pub mod agent;
+pub mod device;
 pub mod film;
 pub mod overlay;
 pub mod relay;
+pub mod screen;
 pub mod surroundings;
 pub mod voice;
 
 /// The job protocol — what crosses the channel between that crate's server
 /// thread and [`pump`]. Defined there, since the server builds and reads it.
+pub use cartopolis_mcp::device::DeviceRequest;
 pub use cartopolis_mcp::protocol::{
     ImageFormat, Job, Reply, Request, ViewReply, ViewRequest, WorldState,
 };
@@ -335,6 +338,10 @@ pub struct McpBridge {
     /// Agent requests drained this frame, for [`agent::serve`] — a queue of
     /// their own so the pump does not need that system's dozen parameters.
     agent: Vec<(agent::AgentRequest, oneshot::Sender<Reply>)>,
+    /// Questions about the app itself, for [`device::serve`], and the two about
+    /// its screen, for [`screen::serve`] — queued apart for the same reason.
+    device: Vec<(DeviceRequest, oneshot::Sender<Reply>)>,
+    screen: Vec<(DeviceRequest, oneshot::Sender<Reply>)>,
     /// Newest last. Bounded — this is a readout, not a record.
     pub log: VecDeque<Entry>,
     pub listen: PathBuf,
@@ -361,6 +368,8 @@ impl McpBridge {
             jobs,
             waiting: Vec::new(),
             agent: Vec::new(),
+            device: Vec::new(),
+            screen: Vec::new(),
             log: VecDeque::new(),
             listen,
             served: 0,
@@ -521,6 +530,8 @@ pub fn pump(
                 let _ = job.reply.send(Reply::State(Box::new(state)));
             }
             Request::Agent(req) => bridge.agent.push((req, job.reply)),
+            Request::Device(req) if req.is_screen() => bridge.screen.push((req, job.reply)),
+            Request::Device(req) => bridge.device.push((req, job.reply)),
             Request::Film(mut req) => {
                 // The same rule as `view`'s, though here it blinks the chrome.
                 if chrome_leaks {
@@ -725,6 +736,8 @@ pub fn pace_idle(
     progress: Res<ShotProgress>,
     bridge: Res<McpBridge>,
     agent: Res<agent::AgentState>,
+    device: Res<device::DevicePending>,
+    screen: Res<screen::ScreenPending>,
     streams: Res<crate::systems::stream_watch::StreamRegistry>,
     calls: Res<crate::systems::calls::Calls>,
 ) {
@@ -736,6 +749,10 @@ pub fn pace_idle(
     let idle = !crate::systems::shot_harness::shot_in_progress(harness, progress)
         && !bridge.busy()
         && !agent.is_working()
+        // A perf window measures frames, and an idle frame is not one.
+        && !device.is_working()
+        // A press lands over a few frames, which at the idle rate is seconds.
+        && !screen.is_working()
         && streams.busy().is_empty()
         // Nor in a phone call: a voice agent's tool calls are answered on
         // the next frame, and half a second of idle frame is half a second of
@@ -850,7 +867,9 @@ fn measure_state(
         lng,
         altitude_m,
         pitch_deg: pitch.to_degrees(),
-        yaw_deg: yaw.to_degrees(),
+        // A compass heading, as `view` takes one; the camera's own yaw turns
+        // the other way (`ShotSpec::yaw_deg`).
+        yaw_deg: (-yaw.to_degrees()).rem_euclid(360.0),
         camera_mode: crate::systems::geo_nav::mode_name(cam_state.mode).to_string(),
         anchor: anchor.geo.map(|(lat, lng, _)| [lat, lng]),
         settled: busy.is_empty(),

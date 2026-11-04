@@ -13,6 +13,8 @@ mod components;
 mod crash;
 mod debug_switches;
 mod grid;
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+mod log_ring;
 mod login;
 mod phase;
 mod platform;
@@ -329,17 +331,32 @@ fn run_client() {
                     .with_filter(stderr_filter()),
             )
             .with(systems::dev::system_timings::SystemTimings.with_filter(span_filter))
+            .with(log_ring::layer())
             .init();
     }
 
+    // The same stderr log, and a copy of it in memory for the MCP `app_log`
+    // (`log_ring`), which cannot see this process's stderr.
     #[cfg(all(
         not(feature = "perf"),
         not(target_arch = "wasm32"),
         not(target_os = "android")
     ))]
-    tracing_subscriber::fmt()
-        .with_env_filter(stderr_filter())
-        .init();
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        use tracing_subscriber::Layer as _;
+        // stdout, as `tracing_subscriber::fmt()` here always wrote, whatever
+        // the filter's name says.
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stdout)
+                    .with_filter(stderr_filter()),
+            )
+            .with(log_ring::layer())
+            .init();
+    }
 
     let mut app = App::new();
     // **A stale entity must not be able to kill the app on a phone.**

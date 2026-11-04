@@ -483,6 +483,26 @@ impl Plugin for McpPlugin {
                 )
                     .in_set(ClientPhase::Input),
             );
+        app.init_resource::<systems::mcp::device::DevicePending>()
+            .add_systems(
+                Update,
+                (
+                    // The app's questions about itself, drained by the pump as
+                    // the agent's are.
+                    systems::mcp::device::serve.after(systems::mcp::pump),
+                    systems::mcp::device::answer_diagnostics.after(systems::mcp::device::serve),
+                )
+                    .in_set(ClientPhase::Input),
+            );
+        // `ui_tree` and `press`: egui through a plugin of its own, so no place
+        // in the panel chain — only after the pump that queues them.
+        app.init_resource::<systems::mcp::screen::ScreenPending>()
+            .add_systems(
+                Update,
+                systems::mcp::screen::serve
+                    .after(systems::mcp::pump)
+                    .in_set(ClientPhase::Input),
+            );
         app.insert_resource(cfg.clone())
             .insert_resource(systems::mcp::JobSender(tx))
             .init_resource::<systems::mcp::McpTrouble>()

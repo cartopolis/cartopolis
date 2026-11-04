@@ -81,6 +81,14 @@ fn crash_report_path() -> std::path::PathBuf {
     utils::cache::app_data_root().join("last-crash.txt")
 }
 
+/// The last report [`offer_last_crash`] handed to the share sheet, with the
+/// exit reasons and the log excerpt it added — what the MCP `last_crash` reads.
+/// Replaced by the next one; nothing else removes it.
+#[cfg(target_os = "android")]
+pub(crate) fn shared_crash_path() -> std::path::PathBuf {
+    utils::cache::app_data_root().join("last-crash-shared.txt")
+}
+
 /// Record a fatal event for the next launch, **keeping the first one**.
 ///
 /// Both writers into this file — [`install_android_panic_hook`] and
@@ -216,6 +224,10 @@ pub(crate) fn offer_last_crash() {
         ),
     };
     tracing::error!(%report, "the previous run ended badly");
+    // Kept for `last_crash`, which a session asks for long after this sheet was
+    // dismissed. Under another name than the panic report's, so it never reads
+    // as a crash of this run.
+    let _ = std::fs::write(shared_crash_path(), &report);
     match platform::android::share_text("Cartopolis crash report", &report) {
         Ok(()) => tracing::info!("offered the previous crash report to the share sheet"),
         Err(e) => tracing::warn!(error = %e, "could not offer the crash report"),

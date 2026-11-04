@@ -17,6 +17,7 @@
 //! depend on `bevy` or on `cartopolis`.
 
 pub mod args;
+pub mod device;
 mod guide;
 /// The tools through an in-process MCP session, for a caller in this process.
 #[cfg(unix)]

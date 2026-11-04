@@ -156,7 +156,7 @@ pub(crate) fn share_diagnostics(
 }
 
 /// The live half of the report — everything measured at the moment of the tap.
-fn compose(s: &DiagnosticsSources) -> String {
+pub(crate) fn compose(s: &DiagnosticsSources) -> String {
     let budget = crate::quality::budget();
     let (meshes, rendered) = s.readout.counts();
     let avatar = s.avatars.single().map(|(e, ..)| e).ok();
