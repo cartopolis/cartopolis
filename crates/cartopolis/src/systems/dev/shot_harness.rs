@@ -2428,6 +2428,9 @@ pub struct ScriptedCards<'w, 's> {
     tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
     /// The first-launch card (`--ui welcome`), kept off every other shot.
     welcome: ResMut<'w, crate::systems::welcome::Welcome>,
+    /// The place card, closed on every shot that does not ask for it: once
+    /// `--ui place` had opened it, it stayed over every shot after.
+    place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
 }
 
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
@@ -2672,6 +2675,9 @@ pub fn open_scripted_ui(
     // scripted run reads no `user.json` and would otherwise show it on every
     // shot as a fresh install does.
     cards.welcome.capture = Some(want("welcome"));
+    if !want("place") {
+        cards.place_card.place = None;
+    }
     // `--ui ring` opens the map's ring of actions on the middle of the view, as a
     // long press there would: it only ever opens from a gesture otherwise.
     // `--ui placering` is the same ring opened on a place's name

@@ -629,15 +629,33 @@ fn card_ui(
     // server has a different answer to it than the one filled in.
     if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
         field(ui, "Server", |ui| {
-            ui.label(
-                egui::RichText::new(screen.server.trim())
-                    .size(theme::SIZE_BODY)
-                    .color(theme::CREAM),
-            );
+            // Change takes its corner first and the name what is left, for
+            // the reason the header gives: laid out the other way round the
+            // two were drawn over each other on a phone.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new("Change").frame(false)).clicked() {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Change")
+                                .size(theme::SIZE_SUB)
+                                .color(theme::ACCENT),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
                     screen.edit_server = true;
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(screen.server.trim())
+                                .size(theme::SIZE_BODY)
+                                .color(theme::CREAM),
+                        )
+                        .truncate(),
+                    );
+                });
             });
         });
     } else {

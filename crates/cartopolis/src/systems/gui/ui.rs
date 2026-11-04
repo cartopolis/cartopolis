@@ -176,12 +176,18 @@ pub fn render_main_menu(
                                     close = true;
                                 }
                                 // What signing in is for, in words a phone shows:
-                                // this was a tooltip about "a simulator".
-                                ui.label(
-                                    egui::RichText::new("Meet people, chat and join communities")
+                                // this was a tooltip about "a simulator". Out of the
+                                // justified layout, which spreads a wrapped line's
+                                // words across the card.
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Meet people, chat and join communities",
+                                        )
                                         .size(theme::SIZE_SUB)
                                         .color(theme::TEXT_DIM),
-                                );
+                                    );
+                                });
                             }
                             // **Why a session failure is reported here.** The
                             // sign-in card used to raise itself whenever one
