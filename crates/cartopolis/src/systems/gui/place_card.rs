@@ -188,35 +188,22 @@ pub fn render_place_card(
                 });
                 ui.add_space(6.0);
 
-                // The verbs. One row, justified, so the targets line up and stay
-                // finger-sized; each is icon + word because four bare icons in a
-                // row is a puzzle, and four sentences do not fit.
+                // The verbs: one that is plainly the next step, and the rest
+                // behind ⋯. They were four equal plates — From · To · Save ·
+                // Beam — with From first, though getting *to* a place is what a
+                // search for it is nearly always for (`docs/mockups/ux-review`).
                 let saved = saved_at.is_some_and(|at| at.elapsed().as_secs_f32() < 1.5);
                 ui.horizontal(|ui| {
-                    let n = if session.is_online() { 4.0 } else { 3.0 };
-                    let w = (ui.available_width() - (n - 1.0) * ui.spacing().item_spacing.x) / n;
-                    let verb = |ui: &mut egui::Ui, icon: &str, label: &str, hover: &str| {
-                        ui.add_sized(
-                            egui::vec2(w, ui.spacing().interact_size.y),
-                            egui::Button::new(format!("{icon} {label}")),
-                        )
-                        .on_hover_text(hover)
-                        .clicked()
-                    };
-                    if verb(
+                    let side = theme::PRIMARY_BUTTON_HEIGHT;
+                    let gap = ui.spacing().item_spacing.x;
+                    let main = ui.available_width() - 2.0 * (side + gap);
+                    if theme::primary_button_sized(
                         ui,
-                        icons::START,
-                        "From",
-                        "Route from here — make this the start",
-                    ) {
-                        nav.route_from(&place.name, place.lat, place.lng);
-                    }
-                    if verb(
-                        ui,
-                        icons::FINISH,
-                        "To",
-                        "Route here — make this the destination",
-                    ) {
+                        &format!("{}  Route here", icons::FINISH),
+                        main,
+                    )
+                    .clicked()
+                    {
                         nav.route_to(&place.name, place.lat, place.lng);
                     }
                     let save_icon = if saved {
@@ -224,7 +211,12 @@ pub fn render_place_card(
                     } else {
                         icons::BOOKMARK_ADD
                     };
-                    if verb(ui, save_icon, "Save", "Add this place to Places") && !saved {
+                    let save = ui.add_sized(egui::vec2(side, side), egui::Button::new(save_icon));
+                    if theme::named(ui, save, "Save")
+                        .on_hover_text("Save this place")
+                        .clicked()
+                        && !saved
+                    {
                         // The name the user just read, not a reverse lookup —
                         // the row's name is the better one. Altitude and pose
                         // come from the camera, as every saved place's do: a
@@ -238,15 +230,25 @@ pub fn render_place_card(
                         );
                         *saved_at = Some(Instant::now());
                     }
-                    // Signed in only: a body in a shared world is what makes
-                    // "go there" distinct from looking. Offline the pick has
-                    // already moved the view.
-                    if session.is_online()
-                        && verb(ui, icons::CAM_FOLLOW, "Beam", "Teleport the avatar here")
-                    {
-                        nav.pending_label = Some(place.name.clone());
-                        nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
-                    }
+                    let more = ui.add_sized(egui::vec2(side, side), egui::Button::new(icons::MORE));
+                    let more = theme::named(ui, more, "More");
+                    egui::Popup::menu(&more).show(|ui| {
+                        if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
+                            nav.route_from(&place.name, place.lat, place.lng);
+                            ui.close();
+                        }
+                        // Signed in only: a body in a shared world is what makes
+                        // "go there" distinct from looking. Offline the pick has
+                        // already moved the view. "Jump there", the ring's word
+                        // for it too, rather than "Beam".
+                        if session.is_online()
+                            && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
+                        {
+                            nav.pending_label = Some(place.name.clone());
+                            nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
+                            ui.close();
+                        }
+                    });
                 });
             });
         });

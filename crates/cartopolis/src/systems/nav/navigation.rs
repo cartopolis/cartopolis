@@ -354,7 +354,10 @@ impl Default for RouteState {
         Self {
             from: Waypoint::default(),
             to: Waypoint::default(),
-            mode: TravelMode::default(),
+            // Walking first: it is what the app does in the world, and riding
+            // or driving needs a location fix most devices here do not have
+            // (`docs/mockups/ux-review`, `routing-redesign-direction`).
+            mode: TravelMode::Foot,
             route: None,
             by_mode: Vec::new(),
             following: None,
@@ -2109,7 +2112,8 @@ fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
 /// Maps"). Icon *and* time: the picture is read at a glance, and the three times
 /// side by side say "walk it" or "take the bike" without another tap.
 fn mode_chips(ui: &mut egui::Ui, route: &RouteState, reserved: f32, actions: &mut PanelActions) {
-    let labels: Vec<(TravelMode, String)> = TravelMode::ALL
+    // Walk, bike, car: the order of the default and of what needs least.
+    let labels: Vec<(TravelMode, String)> = [TravelMode::Foot, TravelMode::Bike, TravelMode::Car]
         .into_iter()
         .map(|m| (m, chip_label(m, route.duration_for(m))))
         .collect();
@@ -2148,7 +2152,8 @@ fn start_action(mode: TravelMode, gps: bool, avatar: bool) -> Result<&'static st
         TravelMode::Foot => Err("Sign in to walk it"),
         TravelMode::Bike if gps => Ok("Ride"),
         TravelMode::Car if gps => Ok("Drive"),
-        TravelMode::Bike | TravelMode::Car => Err("Needs a GPS position"),
+        TravelMode::Bike => Err("Riding follows your real position, which this device cannot give"),
+        TravelMode::Car => Err("Driving follows your real position, which this device cannot give"),
     }
 }
 
@@ -2565,21 +2570,19 @@ fn start_button(
         // A note, not a greyed-out button. Disabled, the primary button faded to
         // a ghost of its words over the glass — "Needs a GPS position" at half
         // contrast read as a rendering fault rather than as the reason.
+        // The reason is the label itself, wrapped: it was a short phrase with
+        // the explanation in a hover tooltip, which a phone never shows.
         Err(_) => {
-            ui.add_sized(
-                [width, theme::row_height()],
-                egui::Label::new(
-                    egui::RichText::new(&label)
-                        .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
-                )
-                .sense(egui::Sense::hover()),
-            )
-            .on_hover_text(if mode == TravelMode::Foot {
-                "Walking happens in the world, as your avatar, which needs a session."
-            } else {
-                "Riding and driving follow this device's position, and it has no \
-                     location source. Plan here and read the turns; navigate on a phone."
+            ui.allocate_ui(egui::vec2(width, theme::row_height()), |ui| {
+                ui.set_width(width);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&label)
+                            .size(theme::SIZE_SUB)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .wrap(),
+                );
             });
         }
     }
