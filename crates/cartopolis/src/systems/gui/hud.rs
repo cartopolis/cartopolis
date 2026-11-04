@@ -92,6 +92,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             // treatment it was designed with instead: the brightest ring in the
             // palette, drawn a second time at 2 pt, plus the padlock below.
             let (resp, face) = theme::map_disc(ui, COMPASS_SIZE, false, lock_color, sense);
+            let resp = theme::named(ui, resp, "Compass");
             let p = ui.painter();
             let c = face.center;
             let r = face.radius;
@@ -270,6 +271,7 @@ fn locate_overlay(
             // amber ring — which is exactly how the compass says "north-up held"
             // one disc above. Both are states the app is *holding* for you.
             let (resp, face) = theme::map_disc(ui, LOCATE_SIZE, on, tone, egui::Sense::click());
+            let resp = theme::named(ui, resp, "Locate me");
             let p = ui.painter();
             let c = face.center;
             // Navigation "location arrow" (a kite), pointing up.
@@ -396,6 +398,7 @@ fn light_overlay(
         .show(ctx, |ui| {
             let (resp, face) =
                 theme::map_disc(ui, size, *open, theme::ACCENT_RING, egui::Sense::click());
+            let resp = theme::named(ui, resp, "Light");
             let behind = if *open { theme::ACCENT } else { theme::OVERLAY };
             paint_light_icon(
                 ui.painter(),

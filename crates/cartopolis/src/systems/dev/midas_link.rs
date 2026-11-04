@@ -1218,6 +1218,7 @@ pub fn draw_link_button(
         .show(ctx, |ui| {
             let (resp, face) =
                 theme::map_disc(ui, size, false, theme::ACCENT_RING, egui::Sense::click());
+            let resp = theme::named(ui, resp, "Midas");
             let p = ui.painter();
             if let Some(g) = glow {
                 p.circle_stroke(

@@ -89,7 +89,7 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
             Vec2::new(cell, rect.height()),
         );
         let id = ui.id().with(("layer_cat", i));
-        let resp = ui.interact(col, id, Sense::click());
+        let resp = theme::named(ui, ui.interact(col, id, Sense::click()), cat.label());
         if resp.clicked() {
             *selected = *cat;
         }
@@ -185,7 +185,11 @@ pub fn tile_grid(
                 Pos2::new(rect.right() - 66.0, rect.top() + 2.0),
                 Vec2::new(30.0, 28.0),
             );
-            let resp = ui.interact(rect, ui.id().with(("tile", tile.label)), Sense::click());
+            let resp = theme::named(
+                ui,
+                ui.interact(rect, ui.id().with(("tile", tile.label)), Sense::click()),
+                tile.label,
+            );
             // The ⋯ corner *after* the tile: egui gives a press to the widget
             // registered last, so this is what lets the corner win its patch.
             let more_resp = tile.more.then(|| {
@@ -350,7 +354,11 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
             Pos2::new(row.left() + i as f32 * (card_w + GAP), row.top()),
             Vec2::new(card_w, row.height()),
         );
-        let resp = ui.interact(rect, ui.id().with(("basemap", i)), Sense::click());
+        let resp = theme::named(
+            ui,
+            ui.interact(rect, ui.id().with(("basemap", i)), Sense::click()),
+            label,
+        );
         if resp.clicked() && current != choice {
             picked = Some(choice);
         }
@@ -399,6 +407,7 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
         .layout_no_wrap(label.to_string(), font, theme::TEXT);
     let size = Vec2::new(galley.size().x + 30.0, 26.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let resp = theme::named(ui, resp, label);
     if resp.clicked() {
         *on = !*on;
     }

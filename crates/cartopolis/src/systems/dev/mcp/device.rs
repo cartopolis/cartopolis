@@ -288,7 +288,12 @@ fn land(bridge: &mut McpBridge, pending: &mut DevicePending, w: &mut DeviceWorld
         if flight.reply.is_canceled() {
             continue;
         }
-        let landed = w.camera.flight.is_none() && w.nav.pending_teleport.is_none();
+        // Not landed until the glide down is over too: a flight comes down to
+        // 47 km over the place and the zoom rail takes it the rest of the way
+        // (`geo_nav`'s landing sets `rail_goal`).
+        let landed = w.camera.flight.is_none()
+            && w.nav.pending_teleport.is_none()
+            && w.camera.rail_goal.is_none();
         if landed || now >= flight.until {
             let text = if landed {
                 format!("Landed over {:.5}, {:.5}.", flight.to.0, flight.to.1)

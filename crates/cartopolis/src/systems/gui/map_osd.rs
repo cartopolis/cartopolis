@@ -657,7 +657,7 @@ fn zoom_rail_control(
                         egui::Sense::click_and_drag(),
                     );
                     paint_mark(ui.painter(), face.center, RAIL_DISC * 0.2, mark, face.ink);
-                    resp
+                    theme::named(ui, resp, mark.label())
                 };
                 let resp = disc(ui, Mark::Minus);
                 if held(&resp, reach(resp.rect, true, false)) {
@@ -953,6 +953,7 @@ fn hand_button(
         )
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
+            let resp = theme::named(ui, resp, Mark::Hand.label());
             paint_mark(
                 ui.painter(),
                 face.center,
@@ -1203,7 +1204,23 @@ fn round_button(ui: &mut egui::Ui, mark: Mark, on: bool) -> egui::Response {
         mark,
         face.ink,
     );
-    resp
+    theme::named(ui, resp, mark.label())
+}
+
+impl Mark {
+    /// What the control does, for egui's widget info (`theme::named`).
+    fn label(self) -> &'static str {
+        match self {
+            Self::Plus => "Zoom in",
+            Self::Minus => "Zoom out",
+            Self::Up => "Climb",
+            Self::Down => "Descend",
+            Self::Jump => "Jump",
+            Self::Wings => "Fly",
+            Self::Face => "Expressions",
+            Self::Hand => "Hand",
+        }
+    }
 }
 
 fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::Color32) {

@@ -1501,7 +1501,20 @@ fn round_button_on(
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
-    resp.on_hover_text(tooltip)
+    named(ui, resp, tooltip).on_hover_text(tooltip)
+}
+
+/// Give a painted control its name, as egui's own `Button` gives its text.
+///
+/// A control allocated with `allocate_exact_size` and painted by hand is,
+/// to egui, a clickable rectangle with no name: screen readers and the MCP
+/// `ui_tree` (`mcp::screen`) saw the dock and the map controls as sixteen
+/// unlabelled areas. The name goes into egui's widget info, nowhere visible.
+pub fn named(ui: &egui::Ui, resp: egui::Response, label: &str) -> egui::Response {
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    resp
 }
 
 /// Hang-up red: the one control in the app that is red at rest, because
@@ -1585,7 +1598,7 @@ pub fn call_button(
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
-    resp.on_hover_text(tooltip)
+    named(ui, resp, tooltip).on_hover_text(tooltip)
 }
 
 // The dock's menu disc used to be `mark_button` — [the mark](paint_mark) at
@@ -2115,6 +2128,7 @@ fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
 pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(egui::Vec2::splat(close_button_size()), egui::Sense::click());
+    let resp = named(ui, resp, "Close");
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
@@ -2162,6 +2176,7 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
 pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     let side = close_button_size();
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
+    let resp = named(ui, resp, "More");
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
         (ACCENT_MUTED, ACCENT_RING, CREAM)
     } else if resp.hovered() {

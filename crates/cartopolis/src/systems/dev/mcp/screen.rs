@@ -337,8 +337,25 @@ fn snapshot(ctx: &egui::Context, update: &accesskit::TreeUpdate, hide_text: bool
             tap,
         });
     }
+    drop_shadows(&mut out.controls);
     reading_order(&mut out.controls);
     out
+}
+
+/// Drop a nameless control lying inside a named one: the `Area` or frame a
+/// map button stands in senses the same click, and listed it twice over, once
+/// with the button's name and once as an unlabelled area at the same place.
+fn drop_shadows(controls: &mut Vec<Control>) {
+    let named: Vec<egui::Rect> = controls
+        .iter()
+        .filter(|c| !c.label.is_empty() || c.withheld)
+        .map(|c| c.rect)
+        .collect();
+    controls.retain(|c| {
+        !c.label.is_empty()
+            || c.withheld
+            || !named.iter().any(|r| r.expand(1.0).contains_rect(c.rect))
+    });
 }
 
 // ---------------------------------------------------------------------------
