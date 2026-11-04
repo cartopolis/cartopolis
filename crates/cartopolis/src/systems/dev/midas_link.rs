@@ -50,7 +50,24 @@ const FRAME_WAIT_S: f32 = 15.0;
 /// The longest recording a call may ask for.
 const RECORD_MAX_S: u64 = 120;
 /// A screenshot's longest side: enough to read the UI, small enough to send.
+/// A colour still is shrunk to the same.
 const SHOT_MAX_PX: u32 = 1600;
+/// How long a colour still's camera runs before its newest picture is taken:
+/// the first pictures off Camera2 come before auto-exposure has settled, dark
+/// or blown out.
+const STILL_SETTLE_S: f32 = 1.0;
+/// How long `gnss` and `device_state` wait for a first fix when none is in. A
+/// fresh watch on Android answers with the system's last known location within
+/// a second or two; a cold GNSS start can take minutes, which no call waits for.
+const FIX_WAIT_S: f32 = 10.0;
+/// How long a fresh compass is given for its first reading.
+const COMPASS_WAIT_S: f32 = 1.0;
+/// How long the link keeps its own location watch and compass after the last
+/// call that asked, so a session asking again finds them warm.
+const SENSE_HOLD_S: f32 = 120.0;
+
+/// The slot a job off the frame loop answers into.
+type Slot<T> = Arc<Mutex<Option<T>>>;
 
 /// What is kept between runs.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
@@ -117,8 +134,82 @@ enum Waiting {
     },
     Shot {
         call: Call,
-        out: Arc<Mutex<Option<Result<Vec<u8>, String>>>>,
+        out: Slot<Result<Vec<u8>, String>>,
     },
+    /// `gnss` or `device_state`, waiting for a first fix and compass reading.
+    Fix {
+        call: Call,
+        since: web_time::Instant,
+    },
+    /// A colour still: the back camera, opened for this call only, until its
+    /// exposure has settled.
+    Still {
+        call: Call,
+        camera: crate::platform::camera::Camera,
+        until: web_time::Instant,
+        first_at: Option<web_time::Instant>,
+        picture: Option<cartopolis_calls::video::I420>,
+    },
+    /// A colour still being encoded off the frame loop: (JPEG, caption).
+    Encoding {
+        call: Call,
+        out: Slot<Result<(Vec<u8>, String), String>>,
+    },
+}
+
+/// The link's own watch on the phone's location and its compass, opened by a
+/// call that asks where the phone is and kept [`SENSE_HOLD_S`] after the last
+/// one. The location watch is the one subscription every holder shares
+/// (`platform::location`), so while the locate button or precision mode runs
+/// this only joins it; the compass is a subscription of its own.
+#[derive(Default)]
+struct Sense {
+    watch: Option<crate::platform::location::LocationWatch>,
+    compass: Option<crate::platform::orientation::OrientationWatch>,
+    until: Option<web_time::Instant>,
+    /// The fix last seen, when it changed, and whether that change was seen
+    /// happen (else its age is only a lower bound: `GpsFix` carries no
+    /// timestamp).
+    last: Option<crate::platform::location::GpsFix>,
+    changed_at: Option<web_time::Instant>,
+    seen_arrive: bool,
+}
+
+impl Sense {
+    /// Open the watches if they are not, and keep them for a while.
+    fn hold(&mut self, now: web_time::Instant) {
+        use crate::platform::{location::LocationWatch, orientation::OrientationWatch};
+        if self.watch.is_none() && LocationWatch::available() {
+            self.watch = Some(LocationWatch::start());
+            self.last = None;
+            self.changed_at = None;
+            self.seen_arrive = false;
+        }
+        if self.compass.is_none() && OrientationWatch::available() {
+            self.compass = Some(OrientationWatch::start());
+        }
+        self.until = Some(now + std::time::Duration::from_secs_f32(SENSE_HOLD_S));
+    }
+
+    /// Note when the fix changes; let go once the hold is over and nothing waits.
+    fn tick(&mut self, now: web_time::Instant, waiting: bool) {
+        if !waiting && self.until.is_some_and(|u| now >= u) {
+            *self = Self::default();
+            return;
+        }
+        let Some(watch) = &self.watch else { return };
+        let fix = watch.latest();
+        if fix != self.last {
+            if fix.is_some() {
+                self.changed_at = Some(now);
+                // Only a change from one fix to the next is seen arriving: the
+                // first may have been in for long (a joined watch), or be the
+                // system's last known location (a fresh one on Android).
+                self.seen_arrive = self.last.is_some();
+            }
+            self.last = fix;
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -132,6 +223,7 @@ pub struct MidasLink {
     pub hub_draft: String,
     pub text_draft: String,
     waiting: Vec<Waiting>,
+    sense: Sense,
     worker: Option<worker::Worker>,
     /// What the worker was last told to link to, so a change re-links once.
     linked_to: Option<(String, String)>,
@@ -158,6 +250,7 @@ impl Default for MidasLink {
             hub_draft: DEFAULT_HUB.to_string(),
             text_draft: String::new(),
             waiting: Vec::new(),
+            sense: Sense::default(),
             worker: None,
             linked_to: None,
             push_shot: None,
@@ -226,13 +319,14 @@ impl MidasLink {
 pub fn tools() -> Value {
     let none = json!({"type": "object", "properties": {}});
     json!([
-        {"name": "device_state", "description": "What the app is doing: its build, the platform, precision mode and what it says, the newest GNSS fix and the external receiver.", "inputSchema": none},
+        {"name": "device_state", "description": "What the app is doing: its build (version and commit), the platform, precision mode and what it says, and where the phone is — the newest location fix (precision mode's, or the phone's ordinary location when that is off), its accuracy, age, speed and course, and the compass. Waits a few seconds for a first fix when none is in.", "inputSchema": none},
         {"name": "screenshot", "description": "The app's window as it is now, UI and all, as a PNG.", "inputSchema": none},
-        {"name": "camera_frame", "description": "One frame from the back camera, greyscale as the tracker sees it, as a PNG. Switches precision mode on for the call when it is off (the camera takes a second or two to open) and off again after.", "inputSchema": none},
+        {"name": "camera_frame", "description": "One frame from the back camera. By default greyscale as the tracker sees it, as a PNG: switches precision mode on for the call when it is off (the camera takes a second or two to open) and off again after. With colour, a colour still from the back camera as a JPEG instead (at most 1600 px), the camera opened for the call and closed after; refused while precision mode or the camera screen has the camera.",
+         "inputSchema": {"type": "object", "properties": {"colour": {"type": "boolean", "description": "a colour still instead of the tracker's grey frame"}}}},
         {"name": "precision_log", "description": "The precision mode's log (Developer tools ▸ Precision): the camera, motion, magnetometer and GNSS lines the indoor walk test writes.", "inputSchema": none},
         {"name": "record", "description": "Record the motion sensors (accelerometer, gyroscope, magnetometer; device axes, on CLOCK_BOOTTIME) and each new GNSS fix for a while: two CSV files. Runs precision mode for the recording.",
          "inputSchema": {"type": "object", "properties": {"seconds": {"type": "integer", "description": format!("how long, at most {RECORD_MAX_S}")}}, "required": ["seconds"]}},
-        {"name": "gnss", "description": "The newest GNSS fix and the external RTK receiver's report (its settings, state and events).", "inputSchema": none},
+        {"name": "gnss", "description": "The newest location fix — precision mode's, or the phone's ordinary location when that is off, saying which — with its accuracy, age, speed, course and the compass, and the external RTK receiver's report (its settings, state and events).", "inputSchema": none},
     ])
 }
 
@@ -251,11 +345,71 @@ fn refusal(t: impl Into<String>) -> Value {
 }
 
 fn png_result(png: &[u8], caption: &str) -> Value {
+    picture_result(png, "image/png", caption)
+}
+
+fn picture_result(bytes: &[u8], mime: &str, caption: &str) -> Value {
     use base64::Engine as _;
     json!({"content": [
-        {"type": "image", "mimeType": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(png)},
+        {"type": "image", "mimeType": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes)},
         {"type": "text", "text": caption},
     ]})
+}
+
+/// A camera picture as packed RGB, three bytes a pixel.
+fn rgb_from_i420(picture: &cartopolis_calls::video::I420) -> Vec<u8> {
+    picture
+        .to_rgba()
+        .chunks_exact(4)
+        .flat_map(|px| [px[0], px[1], px[2]])
+        .collect()
+}
+
+/// A colour still, shrunk to [`SHOT_MAX_PX`], as a JPEG and its caption. Run
+/// off the frame loop: a 1920×1440 picture is a tenth of a second or more.
+fn still_jpeg(picture: &cartopolis_calls::video::I420) -> Result<(Vec<u8>, String), String> {
+    let rgb = image::RgbImage::from_raw(picture.width, picture.height, rgb_from_i420(picture))
+        .ok_or("a picture of the wrong size")?;
+    let dynamic = image::DynamicImage::ImageRgb8(rgb);
+    let dynamic = if dynamic.width().max(dynamic.height()) > SHOT_MAX_PX {
+        dynamic.resize(
+            SHOT_MAX_PX,
+            SHOT_MAX_PX,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        dynamic
+    };
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .encode_image(&dynamic.to_rgb8())
+        .map_err(|e| e.to_string())?;
+    let caption = format!(
+        "back camera, {}×{} colour (taken at {}×{})",
+        dynamic.width(),
+        dynamic.height(),
+        picture.width,
+        picture.height
+    );
+    Ok((jpeg, caption))
+}
+
+/// Why a colour still cannot be taken now, if it cannot. Only one camera can
+/// be open on the phone, and this does not take one from its holder.
+fn colour_refusal(
+    precision_on: bool,
+    screen_has_camera: bool,
+    still_pending: bool,
+) -> Option<&'static str> {
+    if still_pending {
+        Some("A colour picture is being taken already: ask again in a moment.")
+    } else if precision_on {
+        Some("Precision mode has the back camera, so no colour picture now: switch it off (the hand button), or ask without colour for the tracker's grey frame.")
+    } else if screen_has_camera {
+        Some("The camera screen has the camera open, so no colour picture now: close it first.")
+    } else {
+        None
+    }
 }
 
 /// A greyscale frame as a PNG.
@@ -396,26 +550,37 @@ pub fn drive_link(
 }
 
 /// Answer the calls the hub relayed, and those that waited for a frame, a
-/// recording or a screenshot once they have it.
+/// recording, a screenshot, a fix or a colour still once they have it.
 pub fn serve_calls(
     mut commands: Commands,
     mut link: ResMut<MidasLink>,
     mut high: ResMut<HighPrecision>,
     log: Res<HighPrecisionLog>,
     store: Res<crate::systems::user_store::UserStore>,
+    locate: Option<Res<crate::systems::locate::LocateTracking>>,
+    screen: Option<Res<crate::systems::camera_screen::CameraScreen>>,
 ) {
     let link = &mut *link;
+    let now = web_time::Instant::now();
     let calls = std::mem::take(&mut link.shared().calls);
     let mut answers: Vec<(Call, Value)> = Vec::new();
     for call in calls {
+        let still_pending = link
+            .waiting
+            .iter()
+            .any(|w| matches!(w, Waiting::Still { .. } | Waiting::Encoding { .. }));
         let answer = match call.tool.as_str() {
-            "device_state" => Some(text(state(&high))),
+            // Answered below, once there is a fix (or plainly none) to report.
+            "device_state" | "gnss" => {
+                link.sense.hold(now);
+                link.waiting.push(Waiting::Fix { call: call.clone(), since: now });
+                None
+            }
             "precision_log" => Some(if log.is_empty() {
                 text("The log is empty: precision mode has not run since the app started (Developer tools ▸ Precision ▸ Start, or camera_frame / record).")
             } else {
                 text(log.text())
             }),
-            "gnss" => Some(text(gnss(&high, &store.data.gnss_receiver))),
             "screenshot" => {
                 let out = capture(&mut commands);
                 link.waiting.push(Waiting::Shot { call: call.clone(), out });
@@ -423,6 +588,23 @@ pub fn serve_calls(
             }
             "camera_frame" | "record" if !HighPrecision::available() => {
                 Some(refusal("This device has no back camera and motion sensors the app can use: that takes the Android app on a phone."))
+            }
+            "camera_frame" if call.args["colour"].as_bool() == Some(true) => {
+                let screen_has_camera = screen.as_ref().is_some_and(|s| s.phone_hold().is_some());
+                match colour_refusal(high.on, screen_has_camera, still_pending) {
+                    Some(why) => Some(refusal(why)),
+                    None => {
+                        // Opened for this call only, and dropped (closed) as
+                        // soon as it has its picture or gives up.
+                        let camera = crate::platform::camera::Camera::open_still(false);
+                        let until = now + std::time::Duration::from_secs_f32(FRAME_WAIT_S);
+                        link.waiting.push(Waiting::Still { call: call.clone(), camera, until, first_at: None, picture: None });
+                        None
+                    }
+                }
+            }
+            "camera_frame" | "record" if still_pending => {
+                Some(refusal("The back camera is taking a colour picture for another call: ask again in a moment."))
             }
             "camera_frame" => {
                 let started_mode = !high.on;
@@ -453,10 +635,85 @@ pub fn serve_calls(
     }
 
     // Those waiting: done, or still waiting.
-    let now = web_time::Instant::now();
+    let fix_waiting = link
+        .waiting
+        .iter()
+        .any(|w| matches!(w, Waiting::Fix { .. }));
+    link.sense.tick(now, fix_waiting);
     let mut still = Vec::new();
     for w in std::mem::take(&mut link.waiting) {
         match w {
+            Waiting::Fix { call, since } => {
+                let waited_s = (now - since).as_secs_f32();
+                let w = whereabouts(&high, &link.sense, locate.as_deref(), now, waited_s);
+                if w.settled(waited_s) {
+                    let t = if call.tool == "gnss" {
+                        gnss(&w, &store.data.gnss_receiver)
+                    } else {
+                        state(&high, &w)
+                    };
+                    answers.push((call, text(t)));
+                } else {
+                    still.push(Waiting::Fix { call, since });
+                }
+            }
+            Waiting::Still {
+                call,
+                camera,
+                until,
+                mut first_at,
+                mut picture,
+            } => {
+                if let Some(p) = camera.take_preview() {
+                    picture = Some(p);
+                    first_at.get_or_insert(now);
+                }
+                let settled = first_at.is_some_and(|t| (now - t).as_secs_f32() >= STILL_SETTLE_S);
+                if let Some(p) = picture.take_if(|_| settled) {
+                    // The camera closes here, before the encode: nothing more
+                    // of what it sees is wanted.
+                    drop(camera);
+                    let out: Slot<Result<(Vec<u8>, String), String>> = Arc::default();
+                    let slot = out.clone();
+                    crate::platform::workers::submit(
+                        "midas_link_still",
+                        Box::new(move || {
+                            let r = still_jpeg(&p);
+                            *slot
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
+                        }),
+                    );
+                    still.push(Waiting::Encoding { call, out });
+                } else if let Some(e) = camera.error() {
+                    answers.push((
+                        call,
+                        refusal(format!(
+                            "The back camera would not give a colour picture: {e}"
+                        )),
+                    ));
+                } else if now >= until {
+                    answers.push((call, refusal(format!("No colour picture within {FRAME_WAIT_S:.0} s: no picture came from the back camera. Is the app in front, and the camera not taken by another app?"))));
+                } else {
+                    still.push(Waiting::Still {
+                        call,
+                        camera,
+                        until,
+                        first_at,
+                        picture,
+                    });
+                }
+            }
+            Waiting::Encoding { call, out } => match take(&out) {
+                Some(Ok((jpeg, caption))) => {
+                    answers.push((call, picture_result(&jpeg, "image/jpeg", &caption)));
+                }
+                Some(Err(e)) => answers.push((
+                    call,
+                    refusal(format!("the colour picture could not be encoded: {e}")),
+                )),
+                None => still.push(Waiting::Encoding { call, out }),
+            },
             Waiting::Shot { call, out } => match take(&out) {
                 Some(Ok(png)) => answers.push((call, png_result(&png, "the app's window"))),
                 Some(Err(e)) => answers.push((
@@ -548,34 +805,227 @@ pub fn serve_calls(
     }
 }
 
-fn state(high: &HighPrecision) -> String {
-    let fix = high.fix().map_or_else(
-        || "none (precision mode is off, or no fix yet)".to_string(),
-        |f| format!("{:.7},{:.7} ±{:.1} m", f.lat, f.lng, f.accuracy_m),
-    );
+fn state(high: &HighPrecision, w: &Whereabouts) -> String {
     format!(
-        "build {} ({})\nplatform {}\ndevice {}\nprecision mode {}{}\ngnss {fix}",
-        env!("CARGO_PKG_VERSION"),
-        option_env!("CARTO_BUILD_SHA").unwrap_or("no commit"),
+        "{}\nplatform {}\ndevice {}\nprecision mode {}{}\n{}",
+        build_line(env!("CARGO_PKG_VERSION"), option_env!("CARTO_BUILD_SHA")),
         std::env::consts::OS,
         crate::platform::precise_sensors::device_name(),
         if high.on { "on" } else { "off" },
         high.hand_word()
             .map(|w| format!(" · {}", w.text()))
             .unwrap_or_default(),
+        w.text(),
     )
 }
 
-fn gnss(high: &HighPrecision, prefs: &crate::systems::gnss_receiver::ReceiverPrefs) -> String {
-    let mut out = match high.fix() {
-        Some(f) => format!(
-            "fix {:.7},{:.7} ±{:.1} m (precision mode's own watch)\n",
-            f.lat, f.lng, f.accuracy_m
-        ),
-        None => "no fix: precision mode is off, or has none yet\n".to_string(),
-    };
+/// The build in words: the version and the commit. `CARTO_BUILD_SHA` is what
+/// [`build`] sends the hub, and the APK's is `version+commit`
+/// (`build-apk.sh`), so the commit is what follows the `+`.
+fn build_line(version: &str, sha: Option<&str>) -> String {
+    match sha {
+        Some(sha) => {
+            let commit = sha.rsplit_once('+').map_or(sha, |(_, c)| c);
+            format!("build {version} · commit {commit}")
+        }
+        None => format!("build {version} · commit unknown (built without CARTO_BUILD_SHA)"),
+    }
+}
+
+fn gnss(w: &Whereabouts, prefs: &crate::systems::gnss_receiver::ReceiverPrefs) -> String {
+    let mut out = w.text();
+    out.push('\n');
     out.push_str(&crate::systems::gnss_receiver::report(prefs));
     out
+}
+
+/// Whose watch the fix came through. One provider answers them all
+/// (`platform::location`), so this says who is holding the receiver open,
+/// and whether the fix is precision mode's or the phone's ordinary location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixSource {
+    /// An external receiver switched on in Settings, whose fresh fix wins.
+    Receiver,
+    Precision,
+    Locate,
+    /// The link's own watch, opened for a call.
+    Link,
+}
+
+impl FixSource {
+    const fn words(self) -> &'static str {
+        match self {
+            Self::Receiver => "the external receiver",
+            Self::Precision => "precision mode's watch",
+            Self::Locate => "ordinary location, the locate button's watch",
+            Self::Link => "ordinary location, opened for this call",
+        }
+    }
+}
+
+/// A compass reading: the bearing of the screen's top, its stated accuracy,
+/// and where the back camera looks (heading, pitch).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CompassReading {
+    bearing_deg: f64,
+    accuracy_deg: Option<f64>,
+    camera: (f64, f64),
+    /// Whose compass: the locate button's, or the link's own.
+    locate: bool,
+}
+
+/// Where the phone is, as `gnss` and `device_state` say it: gathered from the
+/// ECS, written by [`Whereabouts::text`], which is pure.
+#[derive(Clone, Debug, PartialEq)]
+struct Whereabouts {
+    /// This build has a location provider at all.
+    provider: bool,
+    fix: Option<crate::platform::location::GpsFix>,
+    source: FixSource,
+    /// Seconds since the fix last changed, and whether the change was seen
+    /// (else it is only a lower bound).
+    age: Option<(f32, bool)>,
+    error: Option<String>,
+    compass_available: bool,
+    compass: Option<CompassReading>,
+    compass_error: Option<String>,
+    waited_s: f32,
+}
+
+fn whereabouts(
+    high: &HighPrecision,
+    sense: &Sense,
+    locate: Option<&crate::systems::locate::LocateTracking>,
+    now: web_time::Instant,
+    waited_s: f32,
+) -> Whereabouts {
+    use crate::platform::{location::LocationWatch, orientation::OrientationWatch};
+    let locate_on = locate.is_some_and(|l| l.active);
+    let precision = high.fix();
+    let fix = sense
+        .watch
+        .as_ref()
+        .and_then(LocationWatch::latest)
+        .or(precision);
+    let source = if crate::platform::gnss_receiver::fresh_fix().is_some() {
+        FixSource::Receiver
+    } else if precision.is_some() {
+        FixSource::Precision
+    } else if locate_on {
+        FixSource::Locate
+    } else {
+        FixSource::Link
+    };
+    let read = |a: crate::platform::orientation::DeviceAttitude, locate: bool| {
+        let (heading, pitch, _) = a.view_angles(false);
+        CompassReading {
+            bearing_deg: a.bearing_deg(),
+            accuracy_deg: a.accuracy_deg,
+            camera: (heading, pitch),
+            locate,
+        }
+    };
+    let compass = locate
+        .filter(|_| locate_on)
+        .and_then(|l| l.heading)
+        .map(|a| read(a, true))
+        .or_else(|| {
+            sense
+                .compass
+                .as_ref()
+                .and_then(OrientationWatch::latest)
+                .map(|a| read(a, false))
+        });
+    Whereabouts {
+        provider: LocationWatch::available(),
+        fix,
+        source,
+        age: sense
+            .changed_at
+            .filter(|_| fix.is_some())
+            .map(|t| ((now - t).as_secs_f32(), sense.seen_arrive)),
+        error: sense.watch.as_ref().and_then(LocationWatch::error),
+        compass_available: OrientationWatch::available(),
+        compass,
+        compass_error: sense.compass.as_ref().and_then(OrientationWatch::error),
+        waited_s,
+    }
+}
+
+impl Whereabouts {
+    /// Whether there is enough to answer with after `waited_s`: a fix, or
+    /// plainly none (no provider, an error, waited long enough), and a compass
+    /// reading or a second for one.
+    fn settled(&self, waited_s: f32) -> bool {
+        let fix =
+            !self.provider || self.fix.is_some() || self.error.is_some() || waited_s >= FIX_WAIT_S;
+        let compass = !self.compass_available
+            || self.compass.is_some()
+            || self.compass_error.is_some()
+            || waited_s >= COMPASS_WAIT_S;
+        fix && compass
+    }
+
+    fn text(&self) -> String {
+        let fix = match (&self.fix, &self.error) {
+            (Some(f), _) => {
+                let age = self.age.map(|(s, seen)| {
+                    if seen {
+                        format!("{s:.0} s old")
+                    } else if s < 1.0 {
+                        "age unknown (the first fix seen: it may be the phone's last known one)"
+                            .to_string()
+                    } else {
+                        format!("at least {s:.0} s old")
+                    }
+                });
+                let quality = crate::systems::driver::gps_quality(
+                    true,
+                    false,
+                    Some(f.accuracy_m),
+                    self.age.map(|(s, _)| s),
+                );
+                let quality = match quality {
+                    crate::systems::driver::GpsQuality::Stale => "stale: no new fix lately",
+                    crate::systems::driver::GpsQuality::Poor(_) => "poor",
+                    _ => "good",
+                };
+                let speed = match (f.speed_ms, f.heading_deg) {
+                    (None, None) => "speed and course not reported (standing still, or not moved far enough yet)".to_string(),
+                    (s, c) => format!(
+                        "speed {} · course {}",
+                        s.map_or_else(|| "not reported".to_string(), |s| format!("{s:.1} m/s")),
+                        c.map_or_else(|| "not reported".to_string(), |c| format!("{c:.0}°")),
+                    ),
+                };
+                format!(
+                    "fix {:.7},{:.7} ±{:.1} m ({}) · {} · {quality}\n{speed}",
+                    f.lat,
+                    f.lng,
+                    f.accuracy_m,
+                    self.source.words(),
+                    age.unwrap_or_else(|| "age unknown".to_string()),
+                )
+            }
+            (None, Some(e)) => format!("no fix: {e}"),
+            (None, None) if !self.provider => "no fix: this build has no location provider (that takes a phone, a browser, or an external receiver switched on in Settings)".to_string(),
+            (None, None) => format!("no fix yet: none came within {:.0} s (a cold GNSS start can take a minute or more, indoors longer)", self.waited_s),
+        };
+        let compass = match (&self.compass, &self.compass_error) {
+            (Some(c), _) => format!(
+                "compass {:.0}°{} at the screen's top · back camera looks {:.0}°, pitch {:+.0}° ({})",
+                c.bearing_deg,
+                c.accuracy_deg.map(|a| format!(" ±{a:.0}°")).unwrap_or_default(),
+                c.camera.0,
+                c.camera.1,
+                if c.locate { "the locate button's compass" } else { "a compass opened for this call" },
+            ),
+            (None, Some(e)) => format!("compass: {e}"),
+            (None, None) if !self.compass_available => "compass: none in this build".to_string(),
+            (None, None) => "compass: no reading yet".to_string(),
+        };
+        format!("{fix}\n{compass}")
+    }
 }
 
 /// Send words and files to the chosen session.
@@ -1269,6 +1719,188 @@ mod tests {
         assert_eq!(ago(60.0), "1 min ago");
         assert_eq!(ago(3599.0), "59 min ago");
         assert_eq!(ago(7300.0), "2 h ago");
+    }
+
+    #[test]
+    fn camera_frame_takes_an_optional_colour() {
+        let tools = tools();
+        let frame = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "camera_frame")
+            .unwrap();
+        assert_eq!(
+            frame["inputSchema"]["properties"]["colour"]["type"],
+            "boolean"
+        );
+        assert!(frame["inputSchema"]["required"].is_null());
+    }
+
+    fn picture(width: u32, height: u32, y: u8, u: u8, v: u8) -> cartopolis_calls::video::I420 {
+        let c = (width.div_ceil(2) * height.div_ceil(2)) as usize;
+        cartopolis_calls::video::I420 {
+            width,
+            height,
+            y: vec![y; (width * height) as usize],
+            u: vec![u; c],
+            v: vec![v; c],
+        }
+    }
+
+    #[test]
+    fn a_camera_picture_turns_into_rgb() {
+        let mut p = picture(2, 2, 128, 128, 128);
+        p.y = vec![16, 235, 128, 128];
+        let rgb = rgb_from_i420(&p);
+        assert_eq!(rgb.len(), 2 * 2 * 3);
+        assert_eq!(&rgb[0..3], &[0, 0, 0], "video black");
+        assert_eq!(&rgb[3..6], &[255, 255, 255], "video white");
+        assert!(rgb[6] == rgb[7] && rgb[7] == rgb[8], "no chroma is grey");
+        // BT.601 red.
+        let red = rgb_from_i420(&picture(2, 2, 81, 90, 240));
+        assert!(red[0] > 240 && red[1] < 20 && red[2] < 20, "{red:?}");
+    }
+
+    #[test]
+    fn a_colour_still_is_a_jpeg() {
+        let (jpeg, caption) = still_jpeg(&picture(4, 2, 120, 100, 160)).unwrap();
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
+        assert_eq!(caption, "back camera, 4×2 colour (taken at 4×2)");
+    }
+
+    #[test]
+    fn colour_is_refused_while_another_holds_the_camera() {
+        assert!(colour_refusal(false, false, false).is_none());
+        assert!(colour_refusal(true, false, false)
+            .unwrap()
+            .starts_with("Precision mode has the back camera"));
+        assert!(colour_refusal(false, true, false)
+            .unwrap()
+            .starts_with("The camera screen"));
+        assert!(colour_refusal(true, true, true)
+            .unwrap()
+            .contains("being taken already"));
+    }
+
+    #[test]
+    fn the_build_names_its_commit() {
+        assert_eq!(
+            build_line("1.0.0", Some("1.0.0+fc24fd3d")),
+            "build 1.0.0 · commit fc24fd3d"
+        );
+        assert_eq!(
+            build_line("1.0.0", Some("fc24fd3d")),
+            "build 1.0.0 · commit fc24fd3d"
+        );
+        assert!(build_line("1.0.0", None).contains("commit unknown"));
+    }
+
+    fn somewhere() -> Whereabouts {
+        Whereabouts {
+            provider: true,
+            fix: Some(crate::platform::location::GpsFix {
+                lat: 53.219_383_3,
+                lng: 6.566_5,
+                accuracy_m: 4.0,
+                speed_ms: Some(1.5),
+                heading_deg: None,
+            }),
+            source: FixSource::Link,
+            age: Some((3.2, true)),
+            error: None,
+            compass_available: true,
+            compass: Some(CompassReading {
+                bearing_deg: 92.4,
+                accuracy_deg: Some(10.0),
+                camera: (88.0, 4.0),
+                locate: true,
+            }),
+            compass_error: None,
+            waited_s: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_ordinary_location_is_said_as_such() {
+        let t = somewhere().text();
+        assert_eq!(
+            t,
+            "fix 53.2193833,6.5665000 ±4.0 m (ordinary location, opened for this call) · 3 s old · good\n\
+             speed 1.5 m/s · course not reported\n\
+             compass 92° ±10° at the screen's top · back camera looks 88°, pitch +4° (the locate button's compass)"
+        );
+        let precise = Whereabouts {
+            source: FixSource::Precision,
+            ..somewhere()
+        };
+        assert!(precise.text().contains("(precision mode's watch)"));
+    }
+
+    #[test]
+    fn a_fix_of_unknown_age_says_so() {
+        let first = Whereabouts {
+            age: Some((0.0, false)),
+            ..somewhere()
+        };
+        assert!(first.text().contains("age unknown"));
+        let old = Whereabouts {
+            age: Some((40.0, false)),
+            ..somewhere()
+        };
+        assert!(
+            old.text().contains("at least 40 s old · stale"),
+            "{}",
+            old.text()
+        );
+    }
+
+    #[test]
+    fn no_fix_says_why() {
+        let none = Whereabouts {
+            fix: None,
+            age: None,
+            waited_s: 10.0,
+            compass: None,
+            ..somewhere()
+        };
+        assert!(none.text().starts_with("no fix yet: none came within 10 s"));
+        assert!(none.text().ends_with("compass: no reading yet"));
+        let refused = Whereabouts {
+            error: Some("Location access was refused.".into()),
+            ..none.clone()
+        };
+        assert!(refused
+            .text()
+            .starts_with("no fix: Location access was refused."));
+        let desktop = Whereabouts {
+            provider: false,
+            compass_available: false,
+            ..none
+        };
+        assert!(desktop.text().contains("no location provider"));
+        assert!(desktop.text().ends_with("compass: none in this build"));
+        assert!(desktop.settled(0.0), "nothing to wait for");
+    }
+
+    #[test]
+    fn a_call_waits_a_little_for_a_fix_and_a_compass() {
+        let waiting = Whereabouts {
+            fix: None,
+            age: None,
+            compass: None,
+            ..somewhere()
+        };
+        assert!(!waiting.settled(0.5));
+        assert!(!waiting.settled(COMPASS_WAIT_S + 0.1), "still no fix");
+        assert!(waiting.settled(FIX_WAIT_S));
+        let fix_only = Whereabouts {
+            compass: None,
+            ..somewhere()
+        };
+        assert!(!fix_only.settled(0.0));
+        assert!(fix_only.settled(COMPASS_WAIT_S));
+        assert!(somewhere().settled(0.0));
     }
 
     #[test]
