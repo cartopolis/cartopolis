@@ -1213,6 +1213,7 @@ fn grabber(ui: &mut egui::Ui) -> Option<Sheet> {
         egui::vec2(ui.available_width(), GRABBER_ROW_PTS),
         egui::Sense::click_and_drag(),
     );
+    let resp = theme::named(ui, resp, "Put the sheet away");
     let live = resp.hovered() || resp.dragged();
     ui.painter().rect_filled(
         egui::Rect::from_center_size(rect.center(), egui::vec2(GRABBER_W, 4.0)),
@@ -1290,9 +1291,16 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
         );
         let id = ui.id().with(("lens_band", i));
         // Taller than it looks, so a finger finds it.
-        let resp = ui
-            .interact(seg.expand2(egui::vec2(0.0, 8.0)), id, egui::Sense::click())
-            .on_hover_text(&s.label);
+        let resp = ui.interact(seg.expand2(egui::vec2(0.0, 8.0)), id, egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                singled == Some(i),
+                &s.label,
+            )
+        });
+        let resp = resp.on_hover_text(&s.label);
         if resp.hovered() {
             peek = Some(i);
         }
@@ -1545,6 +1553,7 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
     let rung = o.play.layer_areas(o.layer).map_or("", |s| s.rung.label());
     let (r, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::click());
+    let resp = theme::named(ui, resp, &name);
     let hot = ui
         .ctx()
         .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
@@ -1617,6 +1626,9 @@ fn figure_row(
         egui::vec2(ui.available_width(), ROW_PTS),
         egui::Sense::click(),
     );
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, label)
+    });
     let ctx = ui.ctx();
     let hot = ctx.animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
     let lit = ctx.animate_bool_with_time(resp.id.with("on"), on, 0.18);
@@ -1906,6 +1918,11 @@ fn place_row(
         egui::Sense::click()
     };
     let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), sense);
+    if !head {
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
+        });
+    }
     let p = ui.painter();
     if on {
         p.rect(
@@ -2043,7 +2060,8 @@ fn shelf_card(ui: &mut egui::Ui, s: &Shelved, is_open: bool) -> egui::Response {
             });
         });
     ui.add_space(6.0);
-    inner.response.interact(egui::Sense::click())
+    let resp = inner.response.interact(egui::Sense::click());
+    theme::named(ui, resp, &s.name)
 }
 
 /// A lens on its way, or one that would not open, with the way out.
@@ -2119,10 +2137,11 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
                 ui.label(egui::RichText::new(n.to_string()).size(theme::SIZE_SUB));
             });
         });
-        let resp = row
-            .response
-            .interact(egui::Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let resp = row.response.interact(egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, &s.label)
+        });
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         if resp.clicked() {
             tapped = Some(si);
         }
@@ -2237,6 +2256,7 @@ fn speeds(o: &Open) -> &'static [(f64, &'static str)] {
 fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
     let d = theme::close_button_size().max(32.0);
     let (r, resp) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::click());
+    let resp = theme::named(ui, resp, if playing { "Pause" } else { "Play" });
     let hot = ui
         .ctx()
         .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);

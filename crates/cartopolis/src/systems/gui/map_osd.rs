@@ -668,6 +668,7 @@ fn zoom_rail_control(
                     egui::vec2(RAIL_DISC, track_len),
                     egui::Sense::click_and_drag(),
                 );
+                let resp = theme::named(ui, resp, "Zoom");
                 let x = rect.center().x;
                 let y_at = |pos: f32| rect.top() + pos * track_len;
                 let grab = rect.expand(6.0);
@@ -1357,6 +1358,7 @@ fn thumbstick(
         .show(ctx, |ui| {
             let (rect, resp) =
                 ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::click_and_drag());
+            let resp = theme::named(ui, resp, "Move");
             let centre = rect.center();
             // The miss band: a grab that lands just past the well still takes
             // the stick (nothing borders it but map), and `stick_wish` clamps

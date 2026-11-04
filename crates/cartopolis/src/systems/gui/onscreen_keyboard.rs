@@ -1026,6 +1026,7 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fi
             // A tap landing in the gap between two keys would otherwise fall
             // through to picking, the gizmo or the globe's zoom-to-cursor, i.e.
             // typing would move the map.
+            // unnamed: the backdrop only claims taps between keys; it does nothing.
             let _backdrop = ui.allocate_rect(slab.rect, egui::Sense::click());
 
             let held: Vec<Cap> = fingers
@@ -1038,7 +1039,8 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fi
                 // typed* comes from [`track_fingers`]. An explicit id per slot,
                 // not `allocate_rect`'s auto-id: the auto-ids shift by one every
                 // time the layer swaps to a row with a different key count.
-                let _ = ui.interact(rect, id.with((r, c)), egui::Sense::click());
+                let key = ui.interact(rect, id.with((r, c)), egui::Sense::click());
+                let _ = theme::named(ui, key, &cap_name(cap, shift.alt()));
                 paint_key(
                     ui,
                     rect,
@@ -1224,6 +1226,23 @@ fn paint_key(
         Cap::Layer => "123".to_owned(),
     };
     p.text(rect.center(), egui::Align2::CENTER_CENTER, label, font, ink);
+}
+
+/// A key's name for egui's widget info (`theme::named`): the character it
+/// types, or in words what it does — the drawn keys carry no text of their own.
+fn cap_name(cap: Cap, alt: bool) -> String {
+    match cap {
+        Cap::Char { base, alt: shifted } => (if alt { shifted } else { base }).to_string(),
+        Cap::Space => "Space".into(),
+        Cap::Backspace => "Backspace".into(),
+        Cap::Enter => "Enter".into(),
+        Cap::Shift => "Shift".into(),
+        Cap::Layer => "123".into(),
+        Cap::Hide => "Hide the keyboard".into(),
+        Cap::Left => "Left".into(),
+        Cap::Right => "Right".into(),
+        Cap::SelectAll => "Select all".into(),
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

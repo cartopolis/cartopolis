@@ -381,7 +381,8 @@ fn sense(ctx: &egui::Context, map_rect: egui::Rect, p: &Place, hit: egui::Rect) 
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             ui.set_clip_rect(map_rect);
-            ui.allocate_exact_size(hit.size(), egui::Sense::click()).1
+            let resp = ui.allocate_exact_size(hit.size(), egui::Sense::click()).1;
+            theme::named(ui, resp, &p.name)
         })
         .inner
         .on_hover_cursor(egui::CursorIcon::PointingHand)

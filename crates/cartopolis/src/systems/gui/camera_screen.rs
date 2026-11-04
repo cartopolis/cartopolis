@@ -1799,6 +1799,7 @@ mod native {
                         // frame is still the map, to be framed by dragging.
                     }
                     Mode::Real => {
+                        // unnamed: the backdrop only swallows touches, it does nothing.
                         ui.allocate_rect(full, egui::Sense::click_and_drag());
                         painter.rect_filled(full, 0.0, theme::INK);
                         if let Some((id, size)) = photo {
@@ -1811,6 +1812,7 @@ mod native {
                         }
                     }
                     Mode::Mixed => {
+                        // unnamed: the backdrop only swallows touches, it does nothing.
                         ui.allocate_rect(full, egui::Sense::click_and_drag());
                         // Two panes of the photograph's shape, one in each
                         // half: the photograph in the first, and the world,
@@ -1878,7 +1880,16 @@ mod native {
                 // Close, top left.
                 if !world
                     && !recording
-                    && round(ui, &painter, close, icons::CLEAR, false, "camera_close").clicked()
+                    && round(
+                        ui,
+                        &painter,
+                        close,
+                        icons::CLEAR,
+                        false,
+                        "camera_close",
+                        "Close",
+                    )
+                    .clicked()
                     && !session.busy()
                 {
                     session.close = true;
@@ -1917,6 +1928,17 @@ mod native {
                     shutter,
                     egui::Id::new("camera_shutter"),
                     egui::Sense::click(),
+                );
+                let sresp = theme::named(
+                    ui,
+                    sresp,
+                    if session.recording() {
+                        "Stop"
+                    } else if session.video {
+                        "Record"
+                    } else {
+                        "Take the picture"
+                    },
                 );
                 painter.circle_stroke(
                     shutter.center(),
@@ -2006,9 +2028,18 @@ mod native {
                         shutter_c - step,
                         egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE),
                     );
-                    if round(ui, &painter, upload, icons::UPLOAD, false, "camera_upload")
-                        .on_hover_text("Upload a picture from the phone")
-                        .clicked()
+                    let label = "Upload a picture";
+                    if round(
+                        ui,
+                        &painter,
+                        upload,
+                        icons::UPLOAD,
+                        false,
+                        "camera_upload",
+                        label,
+                    )
+                    .on_hover_text("Upload a picture from the phone")
+                    .clicked()
                         && !session.busy()
                     {
                         session.pick_upload = true;
@@ -2025,6 +2056,7 @@ mod native {
                     icons::FLIP_CAMERA,
                     session.front,
                     "camera_flip",
+                    "Selfie",
                 )
                 .on_hover_text("Selfie")
                 .clicked()
@@ -2058,12 +2090,17 @@ mod native {
                         },
                     );
                     let hit = rect.expand(8.0);
-                    if ui
-                        .interact(hit, egui::Id::new(("camera_mode", i)), egui::Sense::click())
-                        .clicked()
-                        && !on
-                        && !session.busy()
-                    {
+                    let resp =
+                        ui.interact(hit, egui::Id::new(("camera_mode", i)), egui::Sense::click());
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            on,
+                            m.label(),
+                        )
+                    });
+                    if resp.clicked() && !on && !session.busy() {
                         session.switch = Some(m);
                     }
                 }
@@ -2127,12 +2164,15 @@ mod native {
                 egui::FontId::proportional(14.0),
                 if on { theme::INK } else { egui::Color32::WHITE },
             );
-            if ui
-                .interact(
-                    half,
-                    egui::Id::new(("camera_photo_video", i)),
-                    egui::Sense::click(),
-                )
+            let resp = ui.interact(
+                half,
+                egui::Id::new(("camera_photo_video", i)),
+                egui::Sense::click(),
+            );
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
+            });
+            if resp
                 .on_hover_text(if is_video {
                     "Record clips"
                 } else {
@@ -2252,6 +2292,7 @@ mod native {
             .show(ctx, |ui| {
                 ui.set_min_size(full.size());
                 let painter = ui.painter().clone();
+                // unnamed: the backdrop only swallows touches, it does nothing.
                 ui.allocate_rect(full, egui::Sense::click_and_drag());
                 painter.rect_filled(full, 0.0, theme::INK);
 
@@ -2424,6 +2465,7 @@ mod native {
             egui::Sense::hover()
         };
         let resp = ui.interact(col, egui::Id::new(("camera_action", label)), sense);
+        let resp = theme::named(ui, resp, label);
         let disc = egui::pos2(col.center().x, col.top() + ACTION_DISC / 2.0);
         let (fill, ring, ink) = if hot {
             (theme::BRAND, theme::BRAND, egui::Color32::WHITE)
@@ -2559,8 +2601,12 @@ mod native {
         icon: &str,
         on: bool,
         id: &str,
+        label: &str,
     ) -> egui::Response {
         let resp = ui.interact(rect, egui::Id::new(id), egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
+        });
         let fill = if on {
             theme::ACCENT
         } else {

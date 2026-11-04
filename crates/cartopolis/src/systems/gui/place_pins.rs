@@ -644,6 +644,7 @@ fn pin(
                 egui::vec2(2.0 * HEAD_R, (HEAD_LIFT + 1.0) * HEAD_R),
                 egui::Sense::click(),
             );
+            let response = theme::named(ui, response, name);
             let scale = if response.hovered() { HOVER_SCALE } else { 1.0 };
             let r = HEAD_R * scale;
             // Paint from the *exact* projected tip, not the allocated rect's bottom
@@ -729,6 +730,7 @@ fn point_pin(
                 egui::vec2(head_w, HEAD_H + STEM + DOT_R * 2.0),
                 egui::Sense::click(),
             );
+            let response = theme::named(ui, response, name);
             // Painted from the exact tip, as [`pin`] is, so it does not step a
             // whole pixel at a time over a map that is sliding smoothly.
             let p = ui.painter();

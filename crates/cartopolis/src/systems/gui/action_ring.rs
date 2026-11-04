@@ -104,9 +104,8 @@ pub fn show(
             for (i, action) in actions.iter().enumerate() {
                 let p = c + slot(i, actions.len());
                 let hit = Rect::from_center_size(p, Vec2::splat(BUTTON_R * 2.0));
-                let resp = ui
-                    .interact(hit, id.with(action.key), Sense::click())
-                    .on_hover_text(action.hint);
+                let resp = ui.interact(hit, id.with(action.key), Sense::click());
+                let resp = theme::named(ui, resp, action.label).on_hover_text(action.hint);
                 let primary = i == 0;
                 let fill = match (primary, resp.hovered()) {
                     (true, false) => theme::BRAND,
@@ -142,6 +141,7 @@ pub fn show(
                 id.with("close"),
                 Sense::click(),
             );
+            let close = theme::named(ui, close, "Close");
             painter.circle_filled(
                 c,
                 CLOSE_R,

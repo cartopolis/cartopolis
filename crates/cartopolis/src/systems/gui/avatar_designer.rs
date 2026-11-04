@@ -1645,6 +1645,9 @@ fn slider(
 fn disc(ui: &mut egui::Ui, c: [u8; 3], chosen: bool, hover: &str) -> egui::Response {
     let d = theme::row_height().max(32.0);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, hover)
+    });
     let p = ui.painter();
     let centre = rect.center();
     let r = d * 0.5 - 4.0;

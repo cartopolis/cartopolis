@@ -1680,6 +1680,14 @@ fn render_texture_picker(
                                                     egui::Image::new(sized)
                                                         .sense(egui::Sense::click()),
                                                 );
+                                                resp.widget_info(|| {
+                                                    egui::WidgetInfo::selected(
+                                                        egui::WidgetType::Button,
+                                                        ui.is_enabled(),
+                                                        selected,
+                                                        &entry.name,
+                                                    )
+                                                });
                                                 if selected {
                                                     ui.painter().rect_stroke(
                                                         resp.rect,

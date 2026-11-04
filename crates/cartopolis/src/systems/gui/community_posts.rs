@@ -554,18 +554,27 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
         {
             cs.posts.on_map = if pins { None } else { Some(id) };
         }
-        if theme::secondary_button(ui, icons::REFRESH, "", side)
+        let again = theme::secondary_button(ui, icons::REFRESH, "", side);
+        if theme::named(ui, again, "Read again")
             .on_hover_text("Read again")
             .clicked()
         {
             cs.posts.refresh(id);
         }
-        if role.moderates()
-            && theme::secondary_toggle(ui, icons::SETTINGS, "", side, cs.posts.settings_open)
-                .on_hover_text("Settings")
-                .clicked()
-        {
-            cs.posts.settings_open = !cs.posts.settings_open;
+        if role.moderates() {
+            let open = cs.posts.settings_open;
+            let settings = theme::secondary_toggle(ui, icons::SETTINGS, "", side, open);
+            settings.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    open,
+                    "Settings",
+                )
+            });
+            if settings.on_hover_text("Settings").clicked() {
+                cs.posts.settings_open = !open;
+            }
         }
     });
     ui.add_space(4.0);
@@ -847,14 +856,14 @@ fn post_card(
             }
         }
     });
-    if tappable
-        && frame
-            .response
-            .interact(egui::Sense::click())
+    if tappable {
+        let card = frame.response.interact(egui::Sense::click());
+        if theme::named(ui, card, &p.author.name)
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
-    {
-        tapped = true;
+        {
+            tapped = true;
+        }
     }
     tapped
 }

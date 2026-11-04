@@ -742,6 +742,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
         });
     let rect = inner.response.rect;
     let resp = ui.interact(rect, ui.id().with(("report", r.id)), egui::Sense::click());
+    let resp = theme::named(ui, resp, &r.subject_username);
     if resp.hovered() {
         ui.painter().rect_stroke(
             rect,

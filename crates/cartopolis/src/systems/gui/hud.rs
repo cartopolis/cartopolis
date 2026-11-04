@@ -440,6 +440,14 @@ fn light_overlay(
                                 egui::vec2(pill_h + text_w + 12.0, pill_h),
                                 egui::Sense::click(),
                             );
+                            resp.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    on,
+                                    label,
+                                )
+                            });
                             let (fill, ink) = match (on, resp.hovered()) {
                                 (true, _) => (theme::CREAM, theme::INK),
                                 (false, true) => (theme::SURFACE_HOVER, theme::CREAM),

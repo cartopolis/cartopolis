@@ -422,6 +422,7 @@ pub fn render_login_screen(
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(&ctx, |ui| {
             let (rect, resp) = ui.allocate_exact_size(viewport, egui::Sense::click_and_drag());
+            let resp = theme::named(ui, resp, "Dismiss");
             let p = ui.painter();
             p.rect_filled(rect, 0.0, dim(theme::INK, 0.78 * t));
             // A soft accent-tinted glow behind the card, built from nested rounded

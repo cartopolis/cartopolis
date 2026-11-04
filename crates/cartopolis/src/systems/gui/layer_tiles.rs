@@ -193,11 +193,12 @@ pub fn tile_grid(
             // The ⋯ corner *after* the tile: egui gives a press to the widget
             // registered last, so this is what lets the corner win its patch.
             let more_resp = tile.more.then(|| {
-                ui.interact(
+                let resp = ui.interact(
                     more_rect,
                     ui.id().with(("tile_more", tile.label)),
                     Sense::click(),
-                )
+                );
+                theme::named(ui, resp, &format!("More: {}", tile.label))
             });
             let more_hit = more_resp.as_ref().is_some_and(|r| r.clicked());
             if more_hit {

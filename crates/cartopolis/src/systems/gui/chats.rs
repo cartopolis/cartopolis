@@ -557,6 +557,13 @@ pub(crate) fn segmented(
             egui::vec2(w, inner.height()),
         );
         let resp = ui.interact(r, id.with(i), egui::Sense::click());
+        let name = match seg {
+            Seg::Community => left,
+            Seg::World => "World",
+        };
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), seg == on, name)
+        });
         if resp.clicked() && seg != on {
             picked = Some(seg);
         }
@@ -625,6 +632,7 @@ pub(crate) fn top_bar(
         let w = ui.available_width() - disc - ui.spacing().item_spacing.x;
         out.seg = segmented(ui, "Community", w, on, unread, false);
         let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(disc), egui::Sense::click());
+        let resp = theme::named(ui, resp, "You");
         let p = ui.painter();
         p.circle_stroke(
             rect.center(),
@@ -656,6 +664,7 @@ pub(crate) fn circle_button(
     hint: &str,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, hint));
     let (fill, ink) = match (hot, enabled) {
         (true, true) => (theme::ACCENT, theme::INK),
         (true, false) => (theme::ACCENT_MUTED, theme::TEXT_DIM),
@@ -710,6 +719,7 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     let h = 70.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let resp = theme::named(ui, resp, &row.name);
     // Each row is a soft card, with a little air between them.
     ui.add_space(6.0);
     let p = ui.painter();
@@ -1537,13 +1547,12 @@ fn list_screen(
         panel.right_bottom() - egui::vec2(56.0 + 6.0, 56.0 + 12.0),
         egui::Vec2::splat(56.0),
     );
-    let resp = ui
-        .interact(
-            fab,
-            egui::Id::new("chats_new_chat_fab"),
-            egui::Sense::click(),
-        )
-        .on_hover_text("New: a person, a group or a community");
+    let resp = ui.interact(
+        fab,
+        egui::Id::new("chats_new_chat_fab"),
+        egui::Sense::click(),
+    );
+    let resp = theme::named(ui, resp, "New").on_hover_text("New: a person, a group or a community");
     let p = ui.painter();
     p.add(
         egui::epaint::Shadow {
@@ -1587,6 +1596,7 @@ fn list_screen(
 /// share one row instead of taking two (`docs/mockups/home-and-profile/v1`).
 fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 66.0), egui::Sense::click());
+    let resp = theme::named(ui, resp, &row.name);
     let p = ui.painter();
     let card = egui::CornerRadius::same(16);
     theme::paint_card(
@@ -1697,8 +1707,8 @@ fn new_choice(ui: &mut egui::Ui, icon: &str, title: &str, line: &str, brand: boo
                 });
             });
         });
-    ui.interact(inner.response.rect, id, egui::Sense::click())
-        .clicked()
+    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
+    theme::named(ui, resp, title).clicked()
 }
 
 /// The "+" sheet: one question — a person, a group, or a community — and then
@@ -1727,6 +1737,7 @@ fn new_sheet(
                 egui::Id::new("chats_new_scrim"),
                 egui::Sense::click(),
             );
+            let scrim = theme::named(ui, scrim, "Dismiss");
             ui.painter()
                 .rect_filled(panel, 0.0, egui::Color32::from_black_alpha(150));
             if scrim.clicked() {
@@ -1755,6 +1766,7 @@ fn new_sheet(
                     // the rows, because egui hands a tap to the last widget
                     // under it: registered after, this took every tap and no
                     // choice on the sheet could be picked.
+                    // unnamed: the sheet's body only keeps taps off the scrim.
                     let _ = ui.interact(
                         room,
                         egui::Id::new("chats_new_sheet_body"),
@@ -2092,15 +2104,16 @@ fn chat_header(
     // the name over one line of status.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        if ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(icons::CHEVRON_LEFT)
-                        .size(26.0)
-                        .color(theme::TEXT),
-                )
-                .sense(egui::Sense::click()),
+        let back = ui.add(
+            egui::Label::new(
+                egui::RichText::new(icons::CHEVRON_LEFT)
+                    .size(26.0)
+                    .color(theme::TEXT),
             )
+            .sense(egui::Sense::click()),
+        );
+        // The glyph is its only text, so it is named for what it does.
+        if theme::named(ui, back, "All chats")
             .on_hover_text("All chats")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
@@ -2680,6 +2693,14 @@ fn meeting_card(
                         egui::vec2(ui.available_width(), 34.0),
                         egui::Sense::click(),
                     );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Checkbox,
+                            ui.is_enabled(),
+                            picked,
+                            option.to_string(),
+                        )
+                    });
                     let p = ui.painter();
                     p.rect(
                         rect,
@@ -3463,7 +3484,7 @@ fn picture_tile(
                         .sense(egui::Sense::click()),
                 )
                 .on_hover_text("Open full size");
-            if response.clicked() {
+            if theme::named(ui, response, "Open full size").clicked() {
                 act.view_picture = Some(picture.clone());
             }
         }
@@ -3633,6 +3654,7 @@ fn point_card(
         + GO_H
         + 12.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, img_h + meta_h), egui::Sense::click());
+    let resp = theme::named(ui, resp, title_g.text());
     let (r, t) = (BUBBLE_R, TAIL_R);
     let corners = if mine {
         egui::CornerRadius {
@@ -4244,21 +4266,23 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
                         // what the camera is looking at. Private chats only —
                         // a point never goes into a public one.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ChatState::is_private(key)
-                                && ui
-                                    .add(
-                                        egui::Label::new(
-                                            egui::RichText::new(icons::PIN)
-                                                .size(18.0)
-                                                .color(theme::TEXT_DIM),
-                                        )
-                                        .sense(egui::Sense::click()),
+                            if ChatState::is_private(key) {
+                                let pin = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(icons::PIN)
+                                            .size(18.0)
+                                            .color(theme::TEXT_DIM),
                                     )
+                                    .sense(egui::Sense::click()),
+                                );
+                                // The glyph is its only text: named for what it does.
+                                if theme::named(ui, pin, "Send this view")
                                     .on_hover_text("Send this view")
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .clicked()
-                            {
-                                act.view_to = Some(key.to_string());
+                                {
+                                    act.view_to = Some(key.to_string());
+                                }
                             }
                             crate::systems::text_touch::field(
                                 ui,

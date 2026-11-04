@@ -911,6 +911,7 @@ pub fn row(
     let h = 50.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let resp = theme::named(ui, resp, &item.title());
     let p = ui.painter_at(rect);
     if resp.hovered() {
         p.rect_filled(rect, egui::CornerRadius::same(10), theme::SURFACE_HOVER);
@@ -1124,6 +1125,10 @@ fn week_strip(ui: &mut egui::Ui, today: i64, chosen: i64, items: &[Item]) -> Opt
             tapped = Some(d);
         }
         let on = d == chosen;
+        resp.widget_info(|| {
+            let day = civil(d).strftime("%A %-d %B").to_string();
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, day)
+        });
         let p = ui.painter();
         if on {
             p.rect_filled(r, egui::CornerRadius::same(12), theme::ACCENT);
@@ -1327,15 +1332,17 @@ fn month(
             egui::vec2(cell, 46.0),
         )
         .shrink(2.0);
-        if ui
-            .interact(r, ui.id().with(("month", d)), egui::Sense::click())
-            .clicked()
-        {
+        let resp = ui.interact(r, ui.id().with(("month", d)), egui::Sense::click());
+        if resp.clicked() {
             cal.day = Some(d);
         }
         let date = civil(d);
         let inside = date.month() == m;
         let on = d == chosen;
+        resp.widget_info(|| {
+            let day = date.strftime("%A %-d %B").to_string();
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, day)
+        });
         let p = ui.painter();
         if on {
             p.rect_filled(r, egui::CornerRadius::same(12), theme::ACCENT);

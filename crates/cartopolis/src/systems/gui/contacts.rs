@@ -1221,6 +1221,7 @@ pub fn requests_row(ui: &mut egui::Ui, contacts: &Contacts) -> bool {
         .response
         .interact(egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let resp = theme::named(ui, resp, "Message requests");
     ui.add_space(6.0);
     resp.clicked()
 }
@@ -1393,15 +1394,16 @@ fn title_row(
     right: impl FnOnce(&mut egui::Ui, &mut Act),
 ) {
     ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(icons::CHEVRON_LEFT)
-                        .size(26.0)
-                        .color(theme::TEXT),
-                )
-                .sense(egui::Sense::click()),
+        let back = ui.add(
+            egui::Label::new(
+                egui::RichText::new(icons::CHEVRON_LEFT)
+                    .size(26.0)
+                    .color(theme::TEXT),
             )
+            .sense(egui::Sense::click()),
+        );
+        // The glyph is its only text, so it is named for what it does.
+        if theme::named(ui, back, "Back")
             .on_hover_text("Back")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
@@ -1480,7 +1482,8 @@ fn person_row(
             person_row_body(ui, name, sub, sub_color, online, right);
         });
     ui.add_space(6.0);
-    ui.interact(inner.response.rect, id, egui::Sense::click())
+    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
+    theme::named(ui, resp, name)
 }
 
 fn person_row_body(
@@ -2003,6 +2006,9 @@ pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
             })
             .response
             .interact(egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, title)
+        });
         if resp.clicked() && !on {
             s.policy = policy;
             act.settings = true;

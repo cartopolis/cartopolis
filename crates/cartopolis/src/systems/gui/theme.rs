@@ -1331,6 +1331,11 @@ pub fn secondary_toggle(
         min_width.max(height)
     };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    // An icon-only one (`label` empty) is named again by its caller, from its
+    // tooltip: a later `widget_info` replaces this one.
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
+    });
     if !ui.is_rect_visible(rect) {
         return resp;
     }
@@ -1481,6 +1486,7 @@ fn round_button_on(
 ) -> egui::Response {
     let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let resp = named(ui, resp, tooltip);
     let hovered = resp.hovered();
     let (fill, ring, ink) = match (selected, hovered) {
         (true, _) => (ACCENT, ACCENT_RING, INK),
@@ -1501,7 +1507,7 @@ fn round_button_on(
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
-    named(ui, resp, tooltip).on_hover_text(tooltip)
+    resp.on_hover_text(tooltip)
 }
 
 /// Give a painted control its name, as egui's own `Button` gives its text.
@@ -1556,6 +1562,7 @@ pub fn call_button(
 ) -> egui::Response {
     let size = egui::Vec2::splat(diameter);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let resp = named(ui, resp, tooltip);
     let hovered = resp.hovered();
     let pressed = resp.is_pointer_button_down_on();
     let solid = |c: Color32| {
@@ -1598,7 +1605,7 @@ pub fn call_button(
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
-    named(ui, resp, tooltip).on_hover_text(tooltip)
+    resp.on_hover_text(tooltip)
 }
 
 // The dock's menu disc used to be `mark_button` — [the mark](paint_mark) at
@@ -2026,6 +2033,9 @@ fn menu_entry_full(
             egui::Sense::hover()
         },
     );
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
+    });
     let hovered = enabled && resp.hovered();
     let ink = match (enabled, selected, hovered) {
         (false, _, _) => TEXT_DIM.gamma_multiply(0.6),
@@ -2427,6 +2437,7 @@ pub fn list_row(
     let h = if sub.is_some() { 58.0 } else { 50.0 };
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let resp = named(ui, resp, title);
     let p = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
         p.rect_filled(rect, egui::CornerRadius::same(8), SURFACE_HOVER);
@@ -2700,6 +2711,9 @@ pub fn segmented<T: PartialEq + Copy>(
             .interact(r, base.with(i), egui::Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         let on = *value == *option;
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, *label)
+        });
         let (fill, ink) = if on {
             (SURFACE_RAISED, CREAM)
         } else if resp.is_pointer_button_down_on() {
@@ -3003,6 +3017,14 @@ pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
         );
 
         let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(eye), egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Checkbox,
+                ui.is_enabled(),
+                shown,
+                "Show the password",
+            )
+        });
         let ink = if resp.is_pointer_button_down_on() || shown {
             ACCENT
         } else {

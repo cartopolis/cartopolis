@@ -140,6 +140,7 @@ pub fn marker(
             ui.set_clip_rect(map_rect);
             let (_rect, response) =
                 ui.allocate_exact_size(egui::vec2(DISC + 2.0 * RING, height), egui::Sense::click());
+            let response = theme::named(ui, response, name);
             // Painted from the exact tip, as `place_pins` paints its pins, so
             // the marker does not step a whole pixel at a time.
             let p = ui.painter();

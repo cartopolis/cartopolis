@@ -2074,6 +2074,7 @@ fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
         egui::vec2(ui.available_width(), GRABBER_ROW_PTS),
         egui::Sense::click_and_drag(),
     );
+    let resp = theme::named(ui, resp, "Expand or collapse");
     let live = resp.hovered() || resp.dragged();
     ui.painter().rect_filled(
         egui::Rect::from_center_size(
@@ -2609,7 +2610,8 @@ fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) 
                 });
             })
             .response;
-        if resp.interact(egui::Sense::click()).clicked() {
+        let resp = resp.interact(egui::Sense::click());
+        if theme::named(ui, resp, &step.instruction()).clicked() {
             actions.goto_step = Some(i);
         }
         ui.add_space(3.0);
@@ -2755,6 +2757,7 @@ fn start_line(
     let h = card_line_height();
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let resp = theme::named(ui, resp, "Change the starting point");
     let mut job = egui::text::LayoutJob::simple_singleline(
         text,
         egui::FontId::proportional(theme::SIZE_BODY),

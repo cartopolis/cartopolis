@@ -428,7 +428,7 @@ pub fn render_plans(
                     ));
                 }
             }
-            if dot(&ctx, map_rect, i, tip, is_open) {
+            if dot(&ctx, map_rect, i, tip, is_open, &n.title) {
                 tapped = Some(Card::Notice(i));
             }
         }
@@ -445,7 +445,7 @@ pub fn render_plans(
                         continue;
                     }
                     anchored.at(at);
-                    if council_square(&ctx, map_rect, (i, j), at, c.decided) {
+                    if council_square(&ctx, map_rect, (i, j), at, c.decided, &c.title) {
                         tapped = Some(Card::Council(i));
                     }
                 }
@@ -466,7 +466,14 @@ pub fn render_plans(
 
 /// One notice's dot; whether it was tapped. Its own `Area`, so egui owns the
 /// tap and the map's click handlers leave it alone (`place_pins::pin`).
-fn dot(ctx: &egui::Context, map_rect: egui::Rect, i: usize, at: egui::Pos2, open: bool) -> bool {
+fn dot(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    i: usize,
+    at: egui::Pos2,
+    open: bool,
+    title: &str,
+) -> bool {
     let r = if open { OPEN_R } else { DOT_R };
     let side = 2.0 * r + 8.0;
     egui::Area::new(egui::Id::new(("plan_dot", i)))
@@ -476,6 +483,7 @@ fn dot(ctx: &egui::Context, map_rect: egui::Rect, i: usize, at: egui::Pos2, open
         .show(ctx, |ui| {
             ui.set_clip_rect(map_rect);
             let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+            let resp = theme::named(ui, resp, title);
             let r = if resp.hovered() { r * 1.25 } else { r };
             let p = ui.painter();
             // Painted at the exact projected point, not the rounded rect.
@@ -497,6 +505,7 @@ fn council_square(
     id: (usize, usize),
     at: egui::Pos2,
     decided: bool,
+    title: &str,
 ) -> bool {
     let side = 2.0 * COUNCIL_R + 6.0;
     egui::Area::new(egui::Id::new(("plan_council", id)))
@@ -506,6 +515,7 @@ fn council_square(
         .show(ctx, |ui| {
             ui.set_clip_rect(map_rect);
             let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+            let resp = theme::named(ui, resp, title);
             let r = if resp.hovered() {
                 COUNCIL_R * 1.2
             } else {

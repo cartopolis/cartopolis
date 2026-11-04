@@ -333,6 +333,7 @@ fn fold_arrow(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
         12.0
     });
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
+    let response = theme::named(ui, response, if collapsed { "Expand" } else { "Collapse" });
     if ui.is_rect_visible(rect) {
         let c = rect.center();
         let r = 4.0;
@@ -783,6 +784,7 @@ fn folder_row(
                         egui::vec2(ui.available_width(), theme::row_height()),
                         egui::Sense::click_and_drag(),
                     );
+                    let name = theme::named(ui, name, &label);
                     ui.scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(rect)
@@ -1095,6 +1097,11 @@ fn marker_slot(
         egui::vec2(MARKER_SLOT, MARKER_SLOT.max(theme::row_height())),
         sense,
     );
+    if texture.is_some() {
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Open the photo")
+        });
+    }
     let tile = egui::Rect::from_center_size(slot.center(), egui::Vec2::splat(MARKER_SLOT));
 
     let Some((stem, texture)) = texture else {

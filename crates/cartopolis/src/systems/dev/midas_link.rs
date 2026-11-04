@@ -1283,7 +1283,9 @@ pub fn draw_link_button(
         ctx.request_repaint_after(std::time::Duration::from_secs(30));
     }
     // A second tap closes it, on the button or on the card.
-    if toggle || card.response.interact(egui::Sense::click()).clicked() {
+    let tap = card.response.interact(egui::Sense::click());
+    tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+    if toggle || tap.clicked() {
         link.card_open = false;
     }
 }

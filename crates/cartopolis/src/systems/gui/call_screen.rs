@@ -204,6 +204,7 @@ pub fn render_call_screen(
                 // Swallow every touch the controls do not take, so nothing
                 // reaches the map or the panels underneath.
                 let backdrop = ui.allocate_rect(full, egui::Sense::click());
+                let backdrop = theme::named(ui, backdrop, "Show or hide the controls");
                 ui.painter().rect_filled(full, 0.0, theme::INK);
                 match mode {
                     Mode::Incoming(r) => {
@@ -487,8 +488,8 @@ fn fold_button(ui: &mut egui::Ui, full: egui::Rect) -> bool {
     let d = 40.0;
     let c = egui::pos2(full.min.x + EDGE + d * 0.5, full.min.y + EDGE + d * 0.5);
     let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(d));
-    let resp = ui
-        .interact(rect, egui::Id::new("call_fold"), egui::Sense::click())
+    let resp = ui.interact(rect, egui::Id::new("call_fold"), egui::Sense::click());
+    let resp = theme::named(ui, resp, "Back to the app")
         .on_hover_text("Back to the app — the call carries on");
     let p = ui.painter();
     if resp.hovered() {
@@ -952,6 +953,7 @@ fn in_call_screen(
             egui::Id::new("call_sheet_shade"),
             egui::Sense::click(),
         );
+        let shade = theme::named(ui, shade, "Dismiss");
         p.rect_filled(full, 0.0, egui::Color32::from_black_alpha(140));
         let width = full.width().min(520.0);
         let left = full.center().x - width * 0.5;
@@ -1171,9 +1173,8 @@ fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
     let d = 40.0;
     let c = egui::pos2(full.max.x - EDGE - d * 0.5, full.min.y + EDGE + d * 0.5);
     let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(d));
-    let resp = ui
-        .interact(rect, egui::Id::new("call_people"), egui::Sense::click())
-        .on_hover_text("People in the call");
+    let resp = ui.interact(rect, egui::Id::new("call_people"), egui::Sense::click());
+    let resp = theme::named(ui, resp, "People in the call").on_hover_text("People in the call");
     let p = ui.painter();
     p.circle_filled(
         c,
@@ -1953,7 +1954,7 @@ fn folded_bar(
 ) -> bool {
     let h = CALL_BUTTON_SMALL + 12.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::click());
-    let resp = resp.on_hover_text("Back to the call");
+    let resp = theme::named(ui, resp, "Back to the call").on_hover_text("Back to the call");
     let p = ui.painter().clone();
     let fill = if resp.hovered() {
         theme::CALL_ACCEPT_GREEN.gamma_multiply(1.12)
@@ -2025,6 +2026,7 @@ fn ringing_banner(
 ) -> bool {
     let h = 64.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::click());
+    let resp = theme::named(ui, resp, "Incoming call");
     let p = ui.painter().clone();
     p.rect_filled(
         rect,
@@ -2102,6 +2104,7 @@ fn notice_chip(ui: &mut egui::Ui, width: f32, text: &str) -> bool {
     );
     let h = galley.size().y + 20.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::click());
+    let resp = theme::named(ui, resp, text);
     let p = ui.painter();
     p.rect_filled(
         rect,
@@ -2299,10 +2302,8 @@ fn meeting_chips(
             theme::CALL_END_RED.gamma_multiply(0.85),
         );
         p.galley(rect.min + egui::vec2(10.0, 6.0), galley, theme::CREAM);
-        if ui
-            .interact(rect, ui.id().with("stop_sharing"), egui::Sense::click())
-            .clicked()
-        {
+        let stop = ui.interact(rect, ui.id().with("stop_sharing"), egui::Sense::click());
+        if theme::named(ui, stop, "Stop sharing your screen").clicked() {
             *request = Some(CallRequest::Share(false));
         }
         y += 34.0;
@@ -2345,6 +2346,7 @@ fn meeting_chips(
             egui::vec2(110.0, rect.height()),
         );
         let resp = ui.interact(back, egui::Id::new("call_room_back"), egui::Sense::click());
+        let resp = theme::named(ui, resp, "Back to the call");
         p.rect_filled(
             back,
             egui::CornerRadius::same(theme::RADIUS_PILL),

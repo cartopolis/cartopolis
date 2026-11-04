@@ -849,16 +849,15 @@ fn draw_run(
             // follows, so a reply to an Everyone line goes to Everyone without
             // a trip round the chip's ring. Senses only while composing, so an
             // ambient transcript leaves the map its taps.
-            if interactive
-                && ui
-                    .interact(
-                        frame.response.rect,
-                        egui::Id::new(("chat_line", line.seq)),
-                        egui::Sense::click(),
-                    )
-                    .clicked()
-            {
-                *hit = RunHit::Reply;
+            if interactive {
+                let resp = ui.interact(
+                    frame.response.rect,
+                    egui::Id::new(("chat_line", line.seq)),
+                    egui::Sense::click(),
+                );
+                if theme::named(ui, resp, &line.body).clicked() {
+                    *hit = RunHit::Reply;
+                }
             }
         }
     };
@@ -1074,6 +1073,7 @@ pub fn render_chat_composer(
                         // hint says in words what the disc says in a picture.
                         let (rect, scope) =
                             ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
+                        let scope = theme::named(ui, scope, &format!("To {scope_name}"));
                         crate::systems::chats::paint_avatar(
                             ui.painter(),
                             rect.center(),

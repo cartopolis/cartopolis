@@ -547,15 +547,16 @@ fn people(s: &str) -> Vec<String> {
 fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
     let mut back = false;
     ui.horizontal(|ui| {
-        back = ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(icons::CHEVRON_LEFT)
-                        .size(26.0)
-                        .color(theme::TEXT),
-                )
-                .sense(egui::Sense::click()),
+        let chevron = ui.add(
+            egui::Label::new(
+                egui::RichText::new(icons::CHEVRON_LEFT)
+                    .size(26.0)
+                    .color(theme::TEXT),
             )
+            .sense(egui::Sense::click()),
+        );
+        // The glyph is its only text, so it is named for what it does.
+        back = theme::named(ui, chevron, "Back")
             .on_hover_text("Back")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked();
@@ -655,7 +656,8 @@ fn card_row_with(
             });
         });
     ui.add_space(6.0);
-    ui.interact(inner.response.rect, id, egui::Sense::click())
+    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
+    theme::named(ui, resp, name)
 }
 
 fn badge(ui: &mut egui::Ui, text: &str, tone: egui::Color32) {
@@ -1432,7 +1434,8 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                             .push(CommunityOp::Decide(id, r.address.clone(), true));
                     }
                     let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-                    if theme::secondary_button(ui, icons::CLEAR, "", side)
+                    let turn_down = theme::secondary_button(ui, icons::CLEAR, "", side);
+                    if theme::named(ui, turn_down, "Turn down")
                         .on_hover_text("Turn down")
                         .clicked()
                     {
