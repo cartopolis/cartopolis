@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose]
-updated: 2026-10-21
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to]
+updated: 2026-11-04
 ---
 
 # Driving the client from an editor
@@ -424,9 +424,57 @@ container on the VPS, running a Remote Control Claude session told to loop
 (`viberbot-mcp-tunnel.service`) to a bearer-token HTTP listener the socket
 transport above has since removed.
 
+## The app about itself, and its screen (2026-11-04)
+
+The phone's first day on the Midas link was spent working round missing
+tools: the build it ran read off the hub's device list, logs copied off the
+phone by hand, "slowly back to Oosterpark" as six `view` jumps, Start and
+Round in the indoor walk test tapped by the person. So `mcp::device` answers
+about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
+`diagnostics`, `settings`/`set_setting`, `layers`/`set_layer`, `route`,
+`fly_to`. And `mcp::screen` works the screen: `ui_tree` and `press`.
+
+- **The desktop log is copied into memory** (`log_ring`), because a session
+  on the socket cannot see the process's stdout. Its filter is its own,
+  `warn,cartopolis=info`: the stdout one is `off` outside this crate, and a
+  wgpu or naga warning is what a session asks the log for. Android reads its
+  own logcat back instead.
+- **`set_setting` is a list, not `AppPrefs`.** What the agent may read
+  (Editor access), the background connection (a permanent notification and
+  the battery), the debug switches and the microphone's gain stay the
+  person's. A value goes through serde, as a saved file does.
+- **`ui_tree` reads egui's AccessKit output**, switched on only while a call
+  waits, so an idle client pays nothing. `press` puts a finger into egui's
+  next input, so egui's own hit test decides what it reaches and a covered
+  control cannot be pressed. Typed text is never read.
+- **A hand-drawn control is a nameless rectangle to egui.** The dock and the
+  map controls first listed as sixteen "clickable area (no label)".
+  `theme::named` gives one its name, and
+  `source_rules::hand_drawn_controls_are_named` fails the build for one
+  without it (or an `// unnamed:` saying why).
+- **`view`'s `yaw_deg` is a compass heading.** It was passed straight to
+  the harness, which turns counter-clockwise, under a description saying
+  clockwise; s584's eastward shots faced west. `state` reports a heading too.
+- **`fly_to` is not landed when the flight is.** A flight comes down to
+  47 km over the place and the zoom rail glides the rest (`rail_goal`); the
+  first version answered "landed" at 45 km.
+- **`inspect_object`'s `scripted` is "running".** The server sets the flag
+  only for a script with a handler, so a bare `print` read as no script; the
+  source is fetched for whoever may script it either way.
+- **A `walk_to` goal inside a building moves to its nearest door**, or
+  failing one the nearest point outside its walls: the route's last leg ran
+  straight from the footpath into the wall (s584, 12 m short).
+
+Checked on mac-2 that day against a headless client, and signed in to a
+local simulator for `walk_to` and `inspect_object`; not yet on the phone.
+
 ## What is not built yet
 
 The geometry checker that would answer "does anything float or intersect"
 without a render, and a server-side record of an
 account's prim ids (export drops them by design, so `my_builds` is this
 installation's memory of what it made).
+
+A build previewed before anyone else sees it: nothing can be shown to one
+player only (scripts run on the server, and every prim is everybody's), so
+it waits on the server holding private prims.

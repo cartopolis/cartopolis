@@ -61,6 +61,19 @@ switch, not in the menu". This is that switch: `HighPrecision::tap` copies one
 frame, or records for a while, only for a pending call. A call that needs the
 camera switches precision mode on for itself, and off after if it was off.
 
+**`gnss` and `device_state` fall back to the ordinary location
+(2026-11-04).** They read only precision mode's fix, so they said "no fix"
+whenever that mode was off. A call now opens a location watch and the
+compass for itself (kept 120 s after the last call; the phone has one
+location subscription, so this joins it when locate or precision mode has it
+open) and says which source each value came from. A fix carries no time, so
+its age is "at least N s" until the link has seen it change.
+
+**`camera_frame` takes `colour`**: a still from the back camera, opened for
+that call only, rather than the tracker's grey frame. It is refused while
+precision mode or the camera screen holds the camera, since only one may be
+open; it does not close theirs to take its picture.
+
 **The token is `X-Midas-Device`, never `Authorization`.** Caddy strips
 `Authorization` from every request to the hub, so a bearer token arrives as
 nothing and the link reads as unpaired. A 401 on the link or a push means
