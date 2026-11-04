@@ -586,6 +586,10 @@ pub struct AppPrefs {
     /// (`docs/mockups/ux-review`). Ctrl+Shift+D opens the tools either way.
     #[serde(default)]
     pub developer_menu: bool,
+    /// The first-launch card (`systems::welcome`) has been answered, or a
+    /// session has come up: either way it does not come back.
+    #[serde(default)]
+    pub welcome_seen: bool,
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -632,6 +636,7 @@ impl Default for AppPrefs {
             debug_switches: DebugSwitches::default(),
             mcp_enabled: yes(),
             developer_menu: false,
+            welcome_seen: false,
         }
     }
 }
@@ -2201,6 +2206,7 @@ mod tests {
             // field missing from the document entirely.
             background_connection: true,
             developer_menu: true,
+            welcome_seen: true,
             // Set, for the same reason the two `Some(..)` above are: a nested
             // object that round-trips only while it is all-default proves nothing
             // about the nesting.

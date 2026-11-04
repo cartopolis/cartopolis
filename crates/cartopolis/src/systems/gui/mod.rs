@@ -53,4 +53,5 @@ pub mod ui;
 /// checked-in stylesheet and nothing at run time reads it).
 #[cfg(test)]
 mod web_theme;
+pub mod welcome;
 pub mod zoom_rail;

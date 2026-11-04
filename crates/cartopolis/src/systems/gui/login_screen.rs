@@ -100,6 +100,9 @@ const FADE_S: f32 = 0.18;
 /// Default port of a `simulator`, appended when the user types a bare host.
 const DEFAULT_PORT: u16 = 4747;
 
+/// The server a fresh install offers to sign in to.
+pub const DEFAULT_SERVER: &str = "cartopolis.org";
+
 #[derive(Resource)]
 pub struct LoginScreen {
     pub open: bool,
@@ -118,6 +121,10 @@ pub struct LoginScreen {
     remember: bool,
     /// A request is in flight and this card is waiting to see how it lands.
     awaiting: bool,
+    /// The Server field is open. It folds to one line naming the server once
+    /// there is one, since almost everybody signs in to [`DEFAULT_SERVER`]
+    /// and a field asking for it was the card's first question.
+    edit_server: bool,
     /// Signing in with Discord, Google and the rest, through the browser
     /// (`external_signin`): what the server offers, and a round trip out.
     external: crate::systems::external_signin::External,
@@ -133,6 +140,7 @@ impl Default for LoginScreen {
             password: String::new(),
             remember: true,
             awaiting: false,
+            edit_server: false,
             external: Default::default(),
         }
     }
@@ -169,7 +177,14 @@ impl LoginScreen {
     /// the first frame).
     pub fn from_prefs(prefs: &SessionPrefs) -> Self {
         Self {
-            server: prefs.server.clone(),
+            // A fresh install signs in to the public server unless told
+            // otherwise: an empty field here was a dead end for anyone who did
+            // not already know a server name (`docs/mockups/ux-review`).
+            server: if prefs.server.trim().is_empty() {
+                DEFAULT_SERVER.to_string()
+            } else {
+                prefs.server.clone()
+            },
             username: prefs.username.clone(),
             // A remembered *server* session is the only one that was signed in
             // to, so it is the only one whose tick means anything here.
@@ -230,6 +245,17 @@ impl LoginScreen {
             return None;
         }
         crate::systems::model_assets::derive_api_base(&server)
+    }
+
+    /// Where the server signs people up — its web page's `/register` — or
+    /// `None` where there is no web page to send anybody to (a dev simulator)
+    /// or no way to open one.
+    #[must_use]
+    pub fn register_url(&self) -> Option<String> {
+        if !crate::systems::data_layers::open_url_supported() {
+            return None;
+        }
+        self.api_base().map(|base| format!("{base}/register"))
     }
 
     /// The request for a session the browser's round trip left for the app.
@@ -585,7 +611,7 @@ fn card_ui(
                 };
                 theme::wordmark_ui(ui, brand);
                 ui.label(
-                    egui::RichText::new("Sign in to share a world with other people")
+                    egui::RichText::new("Meet people, chat and join communities")
                         .size(theme::SIZE_SUB)
                         .color(theme::TEXT_DIM),
                 );
@@ -598,28 +624,46 @@ fn card_ui(
     ui.add_space(10.0);
 
     // ── The one question ─────────────────────────────────────────────────────
-    field(ui, "Server", |ui| {
-        crate::systems::text_touch::field(
-            ui,
-            egui::TextEdit::singleline(&mut screen.server)
-                // A bare hostname, because that is now what works and what
-                // the docs hand out. A hint carrying `:4747` taught the one
-                // shape that cannot reach a TLS sim.
-                //
-                // **"e.g." is not decoration.** egui paints a hint in
-                // `weak_text_color`, which this palette sets to `TEXT_DIM` —
-                // 15 % darker than body text, and at this size on this surface
-                // that is not a difference anybody reads as "empty". The hint
-                // was *exactly* the string a filled field would hold, so an
-                // untouched Server field was indistinguishable from one
-                // containing the right answer, and the button below it then
-                // refused the form without a word (`build_request` returns
-                // `None`). A hint that is an example rather than an impostor
-                // cannot be mistaken for a value however dim the theme is.
-                .hint_text("e.g. cartopolis.org")
-                .desired_width(f32::INFINITY),
-        );
-    });
+    // Folded to a line once there is a server, with a way to change it: the
+    // field was the card's first question, and only somebody running their own
+    // server has a different answer to it than the one filled in.
+    if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
+        field(ui, "Server", |ui| {
+            ui.label(
+                egui::RichText::new(screen.server.trim())
+                    .size(theme::SIZE_BODY)
+                    .color(theme::CREAM),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new("Change").frame(false)).clicked() {
+                    screen.edit_server = true;
+                }
+            });
+        });
+    } else {
+        field(ui, "Server", |ui| {
+            crate::systems::text_touch::field(
+                ui,
+                egui::TextEdit::singleline(&mut screen.server)
+                    // A bare hostname, because that is now what works and what
+                    // the docs hand out. A hint carrying `:4747` taught the one
+                    // shape that cannot reach a TLS sim.
+                    //
+                    // **"e.g." is not decoration.** egui paints a hint in
+                    // `weak_text_color`, which this palette sets to `TEXT_DIM` —
+                    // 15 % darker than body text, and at this size on this surface
+                    // that is not a difference anybody reads as "empty". The hint
+                    // was *exactly* the string a filled field would hold, so an
+                    // untouched Server field was indistinguishable from one
+                    // containing the right answer, and the button below it then
+                    // refused the form without a word (`build_request` returns
+                    // `None`). A hint that is an example rather than an impostor
+                    // cannot be mistaken for a value however dim the theme is.
+                    .hint_text("e.g. cartopolis.org")
+                    .desired_width(f32::INFINITY),
+            );
+        });
+    }
 
     // ── Other ways in ────────────────────────────────────────────────────────
     // While the browser is out, the card is about that and nothing else: the
@@ -714,6 +758,34 @@ fn card_ui(
                 .color(theme::ERROR)
                 .strong(),
         );
+    }
+
+    // ── A way in for somebody with no account ────────────────────────────────
+    // The card assumed one: "User" with nothing to say where an account comes
+    // from. The server's own web page signs people up (`/register`, the atlas
+    // web UI); a dev simulator has no web page, and then there is no link.
+    if let Some(url) = screen.register_url().filter(|_| !busy) {
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("New here?")
+                    .size(theme::SIZE_SUB)
+                    .color(theme::TEXT_DIM),
+            );
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Create an account")
+                            .size(theme::SIZE_SUB)
+                            .color(theme::ACCENT),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                crate::systems::data_layers::open_url(&url);
+            }
+        });
     }
     close
 }
@@ -838,7 +910,7 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
                 None => session.mode.where_(),
             },
         ),
-        SessionStatus::Offline => (theme::TEXT_DIM, "Offline — the map only".to_string()),
+        SessionStatus::Offline => (theme::TEXT_DIM, "Not signed in".to_string()),
         busy => (theme::WARN, busy.label().to_string()),
     };
     ui.horizontal(|ui| {

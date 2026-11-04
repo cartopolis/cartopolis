@@ -40,6 +40,7 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::ui::MainMenu>()
             // The place card a picked search result opens (`systems::place_card`).
             .init_resource::<systems::place_card::PlaceCard>()
+            .init_resource::<systems::welcome::Welcome>()
             // Layers ▸ Places ▸ Plans, and the card a dot opens (`systems::plans`).
             .init_resource::<systems::plans::Plans>()
             .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
@@ -222,6 +223,12 @@ impl Plugin for GuiPlugin {
                 // panel, and doing it before the chain runs means the panel never
                 // draws a frame over the card it just opened.
                 systems::place_card::render_place_card.before(systems::ui::render_main_menu),
+                // The first-launch card (`systems::welcome`): floating above the
+                // dock on the place card's terms. After it, since it stands
+                // aside for an open card.
+                systems::welcome::render_welcome
+                    .after(systems::place_card::render_place_card)
+                    .before(systems::ui::render_main_menu),
                 // The building card, on the same terms and for the same reasons: a
                 // floating `Area` above the dock, outside the panel chain,
                 // suppressed by whatever owns the bottom of the screen. **After**

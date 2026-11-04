@@ -231,6 +231,13 @@ time = 12.0
 ui = ["signin"]
 
 [[shot]]
+name = "welcome"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["welcome"]
+
+[[shot]]
 name = "dev"
 at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]

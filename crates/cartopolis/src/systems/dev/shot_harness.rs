@@ -2426,6 +2426,8 @@ pub struct ScriptedCards<'w, 's> {
     admin: ResMut<'w, crate::systems::admin::AdminState>,
     /// Settings ▸ Access tokens (`--ui tokens`).
     tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
+    /// The first-launch card (`--ui welcome`), kept off every other shot.
+    welcome: ResMut<'w, crate::systems::welcome::Welcome>,
 }
 
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
@@ -2527,6 +2529,8 @@ const UI_ELEMENTS: &[&str] = &[
     "audio",
     "world",
     "signin",
+    // The first-launch card over the map (`systems::welcome`).
+    "welcome",
     "chat",
     "chats",
     "communities",
@@ -2664,6 +2668,10 @@ pub fn open_scripted_ui(
     // is here for the reason `--ui menu` is: a card nothing can screenshot is a
     // card nobody reviews, and this one is a form that only opens by hand.
     cards.sign_in.open = want("signin");
+    // `--ui welcome`: the first-launch card. Forced either way, since a
+    // scripted run reads no `user.json` and would otherwise show it on every
+    // shot as a fresh install does.
+    cards.welcome.capture = Some(want("welcome"));
     // `--ui ring` opens the map's ring of actions on the middle of the view, as a
     // long press there would: it only ever opens from a gesture otherwise.
     // `--ui placering` is the same ring opened on a place's name
