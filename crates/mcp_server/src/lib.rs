@@ -18,6 +18,9 @@
 
 pub mod args;
 mod guide;
+/// The tools through an in-process MCP session, for a caller in this process.
+#[cfg(unix)]
+pub mod local;
 pub mod protocol;
 /// Unix only: the listener is a Unix domain socket, and Windows has no MCP for
 /// now (`docs/notes/driving-the-client-from-an-ide.md`).

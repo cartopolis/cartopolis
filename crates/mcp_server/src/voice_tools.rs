@@ -4,31 +4,22 @@
 //! **Not a second tool surface.** The voice agent could have been given its
 //! own table of functions mapped onto `AgentRequest`s; that table would drift
 //! from the MCP tools the text agent uses, in names, in argument schemas and in
-//! how a reply is worded. Instead each voice call opens an MCP session on an
-//! in-memory pipe to a fresh [`Tools`], exactly as an editor's session on the
-//! socket gets one, and lists and calls tools through it. Whatever the text
+//! how a reply is worded. Instead each voice call opens an in-process MCP
+//! session ([`local::open`]) and lists and calls tools through it. Whatever the text
 //! agent can do, the voice agent does the same way, through the same job
 //! channel and the same checks in the client.
-
-use std::sync::Arc;
 
 use cartopolis_voice::{BoxFuture, ToolHost, ToolOutput, ToolSpec};
 use futures_channel::mpsc::UnboundedSender;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
-use rmcp::service::RunningService;
-use rmcp::{RoleClient, ServiceExt as _};
 
+use crate::local::{self, Session};
 use crate::protocol::Job;
-use crate::server::Tools;
-
-/// The pipe's buffer: a picture is the largest message, and a reader on the
-/// other end drains it as it comes.
-const PIPE_BYTES: usize = 1 << 20;
 
 /// A [`ToolHost`] backed by this client's MCP tools.
 pub struct McpTools {
     jobs: UnboundedSender<Job>,
-    session: tokio::sync::OnceCell<Result<Arc<RunningService<RoleClient, ()>>, String>>,
+    session: tokio::sync::OnceCell<Result<Session, String>>,
 }
 
 impl McpTools {
@@ -42,24 +33,9 @@ impl McpTools {
 
     /// The session, opened on first use — on the voice agent's runtime, which
     /// is where its tasks must run.
-    async fn session(&self) -> Result<Arc<RunningService<RoleClient, ()>>, String> {
+    async fn session(&self) -> Result<Session, String> {
         self.session
-            .get_or_init(|| async {
-                let (ours, theirs) = tokio::io::duplex(PIPE_BYTES);
-                let tools = Tools::new(self.jobs.clone());
-                tokio::spawn(async move {
-                    match tools.serve(theirs).await {
-                        Ok(s) => {
-                            let _ = s.waiting().await;
-                        }
-                        Err(e) => tracing::warn!(error = %e, "voice tools: no session"),
-                    }
-                });
-                ().serve(ours)
-                    .await
-                    .map(Arc::new)
-                    .map_err(|e| format!("cannot open the tools: {e}"))
-            })
+            .get_or_init(|| local::open(self.jobs.clone()))
             .await
             .clone()
     }

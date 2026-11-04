@@ -1306,6 +1306,26 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
     ui.add_space(8.0);
     ui.separator();
     section(ui, "Editor access");
+    // The phone never opens the socket: its tools go through the Midas device
+    // link, so only whom the agent may hear is left to set.
+    if cfg!(target_os = "android") {
+        theme::note(
+            ui,
+            "Your Midas sessions can drive this app as you while the device link is on \
+             (Developer tools ▸ Midas): walk, talk, move the camera, photograph it.",
+        );
+    } else {
+        desktop_listener_rows(ui, prefs, serving);
+        if !matches!(serving, EditorServing::At(_)) {
+            return;
+        }
+    }
+    allow_list_rows(ui, editor);
+}
+
+/// The desktop's socket: the switch, and while it serves, where an editor attaches.
+#[cfg(mcp)]
+fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &EditorServing) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(
@@ -1383,7 +1403,11 @@ fn editor_access_section(ui: &mut egui::Ui, prefs: &mut AppPrefs, editor: &mut E
         "Paste the editor line into its MCP configuration. From another machine, \
          run `ssh this-machine cartopolis mcp` as the command instead.",
     );
+}
 
+/// Whose chat an agent driving this client may read.
+#[cfg(mcp)]
+fn allow_list_rows(ui: &mut egui::Ui, editor: &mut EditorRow) {
     // Whose words the agent reads. Worded around the risk rather than the
     // mechanism: the person filling this in is deciding who gets to put text in
     // front of their model.

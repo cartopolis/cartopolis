@@ -115,7 +115,7 @@ A Cargo workspace of seventeen crates. Each row's note has the history and numbe
 | `cartopolis_viewer` (`crates/viewer`, `carto-view`) | Draws what `cartopolis_geo` builds, in seconds, with stock materials; must not depend on `cartopolis`, and is a second Bevy binary in every workspace build |
 | `cartopolis` | The Bevy 0.20 client: rendering, ECS systems, egui 0.36 UI |
 | `cartopolis_android` | The APK's `cdylib`; both dependencies target-gated, so empty off Android (`android-build.md`) |
-| `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server, Unix desktops only. **No `bevy` or `cartopolis`** (`driving-the-client-from-an-ide.md`) |
+| `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server: a socket on Unix desktops, the Midas device link on Android. **No `bevy` or `cartopolis`** (`driving-the-client-from-an-ide.md`) |
 | `cartopolis_materials` (`crates/materials`) | The custom material types and `MaterialsPlugin` only, split for build cost; never depends on `cartopolis` |
 | `big_space` | Vendored fork of `big_space` 0.10 (floating origin); upstream stops at Bevy 0.18, so re-sync `bevy_compat.rs` on every Bevy bump (`vendored-big-space.md`) |
 | `web-task` (`crates/web_task`) | Vendored `web-task` 1.1.3, the browser executor under `bevy_tasks`, patched for a freed-callback bug; drop it when upstream fixes it (`web-task-stale-waiters.md`) |

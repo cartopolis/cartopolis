@@ -14,8 +14,9 @@ doctest = false
 # crate. Do not add `bevy` or `cartopolis` here.
 #
 # The client depends on this crate only on the predicate its `build.rs` sets the
-# `mcp` cfg on — Unix desktops (`crates/cartopolis/Cargo.toml` says why) — so
-# nothing here is built for Android, the web or Windows.
+# `mcp` cfg on — Unix, Android included (`crates/cartopolis/Cargo.toml` says
+# why) — so nothing here is built for the web or Windows. On Android the socket
+# is never opened: the tools are reached in-process (`local`).
 [dependencies]
 # `ShotEnv`, which a `view` call builds, and the script API catalogue the
 # `scripting_guide` tool lists.

@@ -1,7 +1,7 @@
 ---
 topic: the Midas device link (the app answering a developer's agent sessions)
-triggers: ["midas_link.rs", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device"]
-updated: 2026-11-03
+triggers: ["midas_link.rs", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "mcp/film.rs", "mcp_server/src/local.rs", LocalTools]
+updated: 2026-11-04
 ---
 
 # The Midas device link
@@ -20,10 +20,30 @@ is the revisit, but the relay is the hub, not the sim. So there is no wire
 revision, no megabyte PNG beside the snapshot stream, and it works offline: it
 needs the internet, not a sim.
 
-**Its own tools, not `cartopolis_mcp`'s.** That crate is Unix desktops only,
-and what a phone is asked for is sensors, not editing. Six tools behind one
-match in `serve_calls` are less seam than moving the job channel to Android. A
-tool a build lacks is refused with "run the session's code on a build node",
+**Its sensors, and every tool of `cartopolis_mcp` beside them (2026-11-04).**
+The six sensor tools (`device_state`, `screenshot`, `camera_frame`,
+`precision_log`, `record`, `gnss`) are answered in `serve_calls`. Everything
+else the link offers is the MCP server's — `view`, `view_here`, `state`,
+`film`, `me`, `walk_to`, `read_chat`, `say` and the rest — relayed by the
+worker to an in-process session of that server (`cartopolis_mcp::local`, the
+seam the voice agent already used). The first version kept only the sensors,
+because that crate was Unix desktops only and "a phone is asked for sensors,
+not editing"; the owner wanted to watch a session walk the phone's avatar, and
+a second table of walk and chat tools mapped onto the link would drift from
+the bots' in names, schemas and wording. So the crate now builds for Android
+(`build.rs` sets `cfg(mcp)` on all of Unix), and the phone never opens its
+socket (`mcp::reconcile_listener`). The sensors' `state` became `device_state`
+so the server's `state` keeps its name.
+
+**A session is the account signed in on the phone.** There is no switch for
+it (the owner's call): while the link is on, a session can walk, talk and
+build as that person, under the same server checks a bot meets. The chip at
+the top of the map shows a robot while the link is up, so it is never on
+unseen. What the agent may *read* is still `mcp::agent::Audience`, empty by
+default and set in Settings ▸ General ▸ Editor access, and `view` and `film`
+drop the chrome while that list is narrower than everyone.
+
+A tool a build lacks is refused with "run the session's code on a build node",
 which is what the agent should do then (the hub's bridge says the same when the
 phone is offline).
 
@@ -39,6 +59,7 @@ nothing and the link reads as unpaired. A 401 on the link or a push means
 Forget was pressed on the page: the app drops its token and asks to be paired
 again.
 
-**Unverified on a phone as of 2026-11-03.** The link was compiled for Android
-and its pieces unit-tested, and the hub's side was tested end to end with a
-stand-in device. No phone had linked through Caddy yet.
+**First linked from a phone on 2026-11-04** (a OnePlus CPH2747, through
+Caddy): a session's `screenshot` came back as the app's window. The MCP tools
+on the link were compiled for Android and unit-tested that day, and had not
+yet run on a phone.

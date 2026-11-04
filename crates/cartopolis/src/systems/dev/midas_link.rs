@@ -22,10 +22,15 @@
 //! asked for one, and goes only to the developer's own hub. A call that needs
 //! the camera switches precision mode on for itself and off again after.
 //!
-//! The tools are this module's own rather than the desktop MCP server's
-//! (`cartopolis_mcp`, Unix desktops only): a phone needs a different handful —
-//! sensors, not editing — and a Bevy-free crate's job channel for six tools
-//! would be more seam than tool.
+//! **Two sets of tools.** The sensors — screenshot, camera frame, precision
+//! log, recording, GNSS — are this module's own, answered in [`serve_calls`].
+//! Beside them the link offers every tool of the client's MCP server
+//! (`cartopolis_mcp`: `view`, `walk_to`, `me`, `read_chat`, …), which the
+//! worker relays to an in-process session of that server
+//! (`cartopolis_mcp::local`) and answers itself. So a session drives the phone
+//! exactly as a bot drives a headless client, as the account signed in here,
+//! through the same job channel and the same checks; the phone never opens the
+//! desktop's socket.
 
 use std::sync::{Arc, Mutex};
 
@@ -132,7 +137,13 @@ pub struct MidasLink {
     linked_to: Option<(String, String)>,
     /// A push asked for from the panel: (what, needs a screenshot first).
     push_shot: Option<Arc<Mutex<Option<Result<Vec<u8>, String>>>>>,
+    /// The MCP server's job channel, for the worker's in-process session.
+    #[cfg(mcp)]
+    jobs: Option<McpJobs>,
 }
+
+#[cfg(mcp)]
+type McpJobs = futures_channel::mpsc::UnboundedSender<cartopolis_mcp::protocol::Job>;
 
 impl Default for MidasLink {
     fn default() -> Self {
@@ -148,6 +159,8 @@ impl Default for MidasLink {
             worker: None,
             linked_to: None,
             push_shot: None,
+            #[cfg(mcp)]
+            jobs: None,
         }
     }
 }
@@ -175,17 +188,26 @@ impl MidasLink {
 
     fn worker(&mut self) -> &worker::Worker {
         let shared = self.shared.clone();
+        #[cfg(mcp)]
+        let tools = self
+            .jobs
+            .clone()
+            .map(|jobs| Arc::new(cartopolis_mcp::local::LocalTools::new(jobs)));
+        #[cfg(not(mcp))]
+        let tools: Option<worker::Tools> = None;
         self.worker
-            .get_or_insert_with(|| worker::Worker::start(shared))
+            .get_or_insert_with(|| worker::Worker::start(shared, tools))
     }
 }
 
-/// The tools this app offers a session, as MCP lists them.
+/// This module's own tools, as MCP lists them; the link offers the MCP
+/// server's beside them. `device_state` rather than `state`, which is the
+/// server's (where the camera is, whether the map has settled).
 #[must_use]
 pub fn tools() -> Value {
     let none = json!({"type": "object", "properties": {}});
     json!([
-        {"name": "state", "description": "What the app is doing: its build, the platform, precision mode and what it says, the newest GNSS fix and the external receiver.", "inputSchema": none},
+        {"name": "device_state", "description": "What the app is doing: its build, the platform, precision mode and what it says, the newest GNSS fix and the external receiver.", "inputSchema": none},
         {"name": "screenshot", "description": "The app's window as it is now, UI and all, as a PNG.", "inputSchema": none},
         {"name": "camera_frame", "description": "One frame from the back camera, greyscale as the tracker sees it, as a PNG. Switches precision mode on for the call when it is off (the camera takes a second or two to open) and off again after.", "inputSchema": none},
         {"name": "precision_log", "description": "The precision mode's log (Developer tools ▸ Precision): the camera, motion, magnetometer and GNSS lines the indoor walk test writes.", "inputSchema": none},
@@ -281,8 +303,17 @@ fn take<T>(slot: &Arc<Mutex<Option<T>>>) -> Option<T> {
 }
 
 /// Load the saved link once, keep it saved, and keep the worker linked to what it says.
-pub fn drive_link(mut link: ResMut<MidasLink>) {
+pub fn drive_link(
+    mut link: ResMut<MidasLink>,
+    #[cfg(mcp)] jobs: Option<Res<crate::systems::mcp::JobSender>>,
+) {
     let link = &mut *link;
+    // Before anything can start the worker: it opens its session with these.
+    // None in a run with no MCP server (a scripted capture, `--no-mcp`).
+    #[cfg(mcp)]
+    if link.jobs.is_none() {
+        link.jobs = jobs.map(|j| j.0.clone());
+    }
     if !link.loaded {
         if let crate::platform::storage::Cached::Ready(bytes) =
             crate::platform::storage::read_now(crate::platform::storage::Namespace::Data, STORE_KEY)
@@ -359,7 +390,7 @@ pub fn serve_calls(
     let mut answers: Vec<(Call, Value)> = Vec::new();
     for call in calls {
         let answer = match call.tool.as_str() {
-            "state" => Some(text(state(&high))),
+            "device_state" => Some(text(state(&high))),
             "precision_log" => Some(if log.is_empty() {
                 text("The log is empty: precision mode has not run since the app started (Developer tools ▸ Precision ▸ Start, or camera_frame / record).")
             } else {
@@ -663,16 +694,18 @@ pub fn midas_tab(
     }
 }
 
-/// The chip on the map while linked: says the link is open, and which session
+/// The chip on the map while linked: a robot, because a session can now drive
+/// this app as its account — walk, talk, move the camera — and which session
 /// just asked for what.
 pub fn draw_link_chip(mut egui: crate::systems::egui_manager::EguiMut, link: Res<MidasLink>) {
     if !link.config.on || !link.linked() {
         return;
     }
     let recent = link.recent_call(4.0);
+    let agent = crate::systems::icons::AGENT;
     let text = match &recent {
-        Some((tool, session)) => format!("Midas · {session}: {tool}"),
-        None => "Midas linked".to_string(),
+        Some((tool, session)) => format!("{agent}  Midas · {session}: {tool}"),
+        None => format!("{agent}  Midas"),
     };
     if recent.is_some() {
         egui.animating();
@@ -687,7 +720,7 @@ pub fn draw_link_chip(mut egui: crate::systems::egui_manager::EguiMut, link: Res
                     if recent.is_some() {
                         theme::ACCENT_BRIGHT
                     } else {
-                        theme::TEXT_DIM
+                        theme::ACCENT
                     },
                 ));
             });
@@ -707,6 +740,12 @@ mod worker {
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
     use super::{Call, Shared};
+
+    /// The MCP server's tools, in-process; nothing where the client has none.
+    #[cfg(mcp)]
+    pub type Tools = Arc<cartopolis_mcp::local::LocalTools>;
+    #[cfg(not(mcp))]
+    pub type Tools = std::convert::Infallible;
 
     enum Cmd {
         Link(String, String),
@@ -771,9 +810,10 @@ mod worker {
     }
 
     impl Worker {
-        pub fn start(shared: Arc<Mutex<Shared>>) -> Self {
+        pub fn start(shared: Arc<Mutex<Shared>>, tools: Option<Tools>) -> Self {
             let (tx, rx) = unbounded_channel();
             let s = shared.clone();
+            let answers = tx.clone();
             std::thread::Builder::new()
                 .name("midas-link".into())
                 .spawn(move || {
@@ -784,7 +824,7 @@ mod worker {
                         lock(&s).state = "could not start the link's runtime".into();
                         return;
                     };
-                    rt.block_on(run(rx, s));
+                    rt.block_on(run(rx, answers, s, tools));
                 })
                 .ok();
             Self { tx, shared }
@@ -799,9 +839,7 @@ mod worker {
         }
 
         pub fn reply(&self, id: u64, response: &Value) {
-            let _ = self.tx.send(Cmd::Send(
-                json!({"type": "result", "id": id, "response": response}).to_string(),
-            ));
+            let _ = self.tx.send(Cmd::Send(result_message(id, response)));
         }
 
         pub fn pair(&self, hub: &str, code: &str, name: &str) {
@@ -901,8 +939,70 @@ mod worker {
         }
     }
 
+    /// The hub's message for a call's answer: its JSON-RPC response.
+    fn result_message(id: u64, response: &Value) -> String {
+        json!({"type": "result", "id": id, "response": response}).to_string()
+    }
+
+    /// What the hello offers: this module's tools, then every MCP tool whose
+    /// name they do not already take.
+    fn offered(own: &Value, mcp: &[Value]) -> Value {
+        let mut all = own.as_array().cloned().unwrap_or_default();
+        for t in mcp {
+            if !all.iter().any(|o| o["name"] == t["name"]) {
+                all.push(t.clone());
+            }
+        }
+        Value::Array(all)
+    }
+
+    /// The MCP server's tools as the hello lists them; none if it will not say.
+    #[cfg(mcp)]
+    async fn mcp_tools(tools: Option<&Tools>) -> Vec<Value> {
+        let Some(tools) = tools else {
+            return Vec::new();
+        };
+        tools.list().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "midas link: the MCP tools are not offered");
+            Vec::new()
+        })
+    }
+    #[cfg(not(mcp))]
+    async fn mcp_tools(_: Option<&Tools>) -> Vec<Value> {
+        Vec::new()
+    }
+
+    /// Answer a call to an MCP tool from the in-process session, on a task of
+    /// its own: a `read_chat` or a walk may wait minutes, and must hold up
+    /// neither the socket nor the next call.
+    #[cfg(mcp)]
+    fn relay(tools: &Tools, call: Call, answers: &UnboundedSender<Cmd>) {
+        let (tools, answers) = (tools.clone(), answers.clone());
+        tokio::spawn(async move {
+            let result = tools
+                .call(call.tool.clone(), call.args.clone())
+                .await
+                .unwrap_or_else(
+                    |e| json!({"content": [{"type": "text", "text": e}], "isError": true}),
+                );
+            let response = json!({"jsonrpc": "2.0", "id": call.rpc, "result": result});
+            let _ = answers.send(Cmd::Send(result_message(call.id, &response)));
+        });
+    }
+
     /// Hold the link the panel asks for, until told otherwise.
-    async fn run(mut cmds: UnboundedReceiver<Cmd>, shared: Arc<Mutex<Shared>>) {
+    async fn run(
+        mut cmds: UnboundedReceiver<Cmd>,
+        answers: UnboundedSender<Cmd>,
+        shared: Arc<Mutex<Shared>>,
+        tools: Option<Tools>,
+    ) {
+        #[cfg(not(mcp))]
+        let _ = &answers;
+        let own = super::tools();
+        // Listed once: the server's tools are fixed for the life of the build.
+        let mcp = mcp_tools(tools.as_ref()).await;
+        let offer = offered(&own, &mcp);
         let mut target: Option<(String, String)> = None;
         let mut backoff = 2u64;
         loop {
@@ -924,8 +1024,7 @@ mod worker {
                 Ok(socket) => {
                     backoff = 2;
                     let (mut sink, mut stream) = socket.split();
-                    let hello =
-                        json!({"type": "hello", "tools": super::tools(), "build": super::build()});
+                    let hello = json!({"type": "hello", "tools": offer, "build": super::build()});
                     if sink
                         .send(Message::Text(hello.to_string().into()))
                         .await
@@ -954,6 +1053,15 @@ mod worker {
                                         };
                                         let mut s = lock(&shared);
                                         s.last_call = Some((call.tool.clone(), call.session.clone(), web_time::Instant::now()));
+                                        let ours = own.as_array().is_some_and(|o| o.iter().any(|t| t["name"] == call.tool.as_str()));
+                                        #[cfg(mcp)]
+                                        if let (false, Some(tools)) = (ours, &tools) {
+                                            drop(s);
+                                            relay(tools, call, &answers);
+                                            continue;
+                                        }
+                                        #[cfg(not(mcp))]
+                                        let _ = ours;
                                         s.calls.push(call);
                                     }
                                 }

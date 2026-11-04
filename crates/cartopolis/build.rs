@@ -10,12 +10,13 @@
 //!    target it's a no-op. Non-fatal: a missing resource compiler just omits the
 //!    icon rather than failing the build.
 //!
-//! 2. Set the `mcp` cfg on Unix desktops (Linux, macOS), so `#[cfg(mcp)]` says
-//!    "this is a machine an IDE can drive" in one word instead of repeating
-//!    `all(unix, not(target_os = "android"))` at every site. It matches the
-//!    dependency table in `Cargo.toml`, which puts `cartopolis_mcp` under
-//!    exactly that target predicate. Windows is not on it: the listener is a
-//!    Unix domain socket (`docs/notes/driving-the-client-from-an-ide.md`).
+//! 2. Set the `mcp` cfg on Unix (Linux, macOS, Android), so `#[cfg(mcp)]` says
+//!    "an agent can drive this client" in one word. It matches the dependency
+//!    table in `Cargo.toml`, which puts `cartopolis_mcp` under exactly that
+//!    target predicate. A desktop serves the tools on a socket; the phone
+//!    serves them through the Midas device link (`systems::midas_link`) and
+//!    never opens the socket. Windows is not on it: the listener is a Unix
+//!    domain socket (`docs/notes/driving-the-client-from-an-ide.md`).
 //!
 //!    Why not a cargo feature: Android and the web both build
 //!    `--no-default-features`, so a default feature would be dropped there — which
@@ -48,7 +49,7 @@ fn main() {
         println!("cargo:rustc-cfg=heap_labels");
     }
     println!("cargo::rustc-check-cfg=cfg(mcp)");
-    if target_family.split(',').any(|f| f == "unix") && target_os != "android" {
+    if target_family.split(',').any(|f| f == "unix") {
         println!("cargo::rustc-cfg=mcp");
     }
 

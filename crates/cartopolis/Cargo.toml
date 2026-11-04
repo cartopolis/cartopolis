@@ -304,10 +304,11 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # `--mcp-listen`), so an IDE can drive it: move the camera, photograph what it
 # sees, read the scene's metrics.
 #
-# **Unix desktops only.** A phone has no IDE pointed at it and a browser tab
-# cannot listen on a socket at all, so neither target gains anything from a
-# server — while both would pay for a second JSON-RPC stack in a binary whose
-# size is a shipping constraint. Windows is out because the listener is a Unix
+# **Unix only, Android included.** The phone has no IDE pointed at it, but a
+# developer's agent sessions reach it through the Midas device link, which
+# relays these same tools in-process (`systems::midas_link`, 2026-11-04); it
+# never opens the socket. A browser tab cannot listen at all, and the web pays
+# for no second JSON-RPC stack. Windows is out because the listener is a Unix
 # domain socket and the socket's directory is the whole of the access control
 # (`docs/notes/driving-the-client-from-an-ide.md`); a named-pipe arm is what it
 # would take. `build.rs` sets the `mcp` cfg on exactly this predicate, so the
@@ -320,7 +321,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # The listener, the tool surface and the SDK are in their own Bevy-free crate,
 # `crates/mcp_server`, so that heavy async generic code is compiled outside
 # this crate; the two talk only through its job channel.
-[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+[target.'cfg(unix)'.dependencies]
 cartopolis_mcp = { path = "../mcp_server" }
 # The voice agent (`systems::mcp::voice`): a call answered by OpenAI's
 # Realtime model, with the MCP tools as its functions. Bevy-free, like the

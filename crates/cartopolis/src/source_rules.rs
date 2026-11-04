@@ -159,7 +159,7 @@ fn the_clock_is_web_time_where_the_web_runs() {
         "platform/http.rs",        // inside its native `mod`
         "platform/workers.rs",     // each call `cfg`-gated beside it
         "systems/dev/aerial_reference.rs", // `cfg(not(wasm32))`
-        "systems/dev/mcp/",        // `cfg(mcp)`, Unix desktops only
+        "systems/dev/mcp/",        // `cfg(mcp)`, Unix (and Android) only
         "systems/dev/system_timings.rs", // feature `perf`, never on the web
         "systems/gui/camera_screen.rs", // its `mod native`
         "systems/gui/camera_screen/recorder.rs", // `cfg(not(wasm32))`
