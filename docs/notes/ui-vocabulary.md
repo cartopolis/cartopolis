@@ -232,6 +232,16 @@ the client unreachable code — and the moment Escape *is* forwarded, four
 independent reads of one key with no order between them close two things per
 press. Escape and Tab are now the two keys exempt from that gate.
 
+**A page inside a panel is a rung, and so is each card on the map** (since
+2026-11-04). The pages kept their own state, out of the ladder's sight, so a
+press on Community ▸ You ▸ Contacts closed all three; and the place, building
+and person cards were not on it at all, so Back with only a card up found
+nothing open and sent the app to the background. Every back chevron now goes
+through `theme::page_back`, which records that it was drawn and takes a press
+the ladder leaves for it (`Rung::PanelPage`, before `RightPanel`); the cards
+come after the panel, since on a phone the panel covers them. A new page with
+its own chevron has to call `page_back` too, or Back skips it.
+
 One subtlety that is not obvious and will bite anyone reordering the ladder:
 **egui's `Memory` consumes Escape to clear widget focus whatever this code
 decides.** So "a text field had focus when the frame began" is a rung the ladder

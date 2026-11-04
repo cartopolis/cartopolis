@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
-updated: 2026-10-20
+updated: 2026-11-04
 ---
 
 # The map chrome
@@ -73,16 +73,19 @@ What it cost:
 
 ## What it is now: the dock owns the chrome
 
-Up to six discs along the bottom edge (`dock.rs`), left to right:
+Up to six discs along the bottom edge (`dock.rs`), left to right, each with its
+word under it in `SIZE_TINY` (`dock::labelled`, since 2026-11-04: bare glyphs
+left the view-mode disc and Saved for a person to guess, `docs/mockups/ux-review`;
+`reserved_bottom` includes the word's 12 pt):
 
 | | |
 |---|---|
 | 🔍 Search | a panel (`geo_nav::render_search_panel`), field and hits, `Ctrl+L` |
-| 💬 Chat | only with a session |
+| 💬 Say | only with a session; raises the composer over the map, opens no panel |
 | view mode | Follow → Fly → Earth, one tap a step (`dock::mode_disc`) |
 | 📷 Camera | like every disc, the accent while open; not on the web, which has no camera (`camera_screen`) |
-| ★ Places | saved places — **and where a place is saved**, "+ Place" |
-| the mark | the main menu (`ui::render_main_menu`) |
+| ★ Saved | saved places — **and where a place is saved**, "+ Place" |
+| ☰ Menu | the main menu (`ui::render_main_menu`) |
 
 Layers went the other way, to a disc in the **top-left corner** above the compass
 (`dock::reserved_top`, read by `hud::render_map_controls`). It is the map's own
@@ -99,12 +102,17 @@ opens is anchored to the bottom centre rather than to the disc, because the dock
 width depends on whether there is a session (Chat comes and goes) and a card
 measured from the disc would move under a menu that should not move.
 
-**One menu on every viewport**, and it holds what has nowhere else to be: the
-account (first, and a single **Log out** once there is a session), the camera
-mode, Appearance, the Assistant, Settings, About, developer tools, diagnostics,
-Exit. A menu whose contents depend on the window width is two menus.
+**One menu on every viewport**, and it holds what has nowhere else to be. Since
+2026-11-04: who you are, as text at the top (it was the hover text of a "Log
+out" first row, which a phone never shows), or Sign in… with a line saying what
+for; Avatar, Community, Models, Settings, About; Developer tools and Share
+diagnostics only with Settings ▸ General ▸ Developer on (`AppPrefs::developer_menu`,
+off by default, Ctrl+Shift+D either way); then **Sign out**, last, arming before
+it acts; and Exit on the desktop only — an Android app does not quit and a
+browser tab is the browser's. A menu whose contents depend on the window width
+is two menus.
 
-**Three entries are session-bound**: Nearby chat, Models and — since
+**Three entries are session-bound**: Community, Models and — since
 2026-09-10 — Appearance. The first two are obvious (there is nobody to have said
 anything, and an inventory belongs to an account). Appearance is the arguable
 one, and it costs something real: an offline avatar is on screen wearing whatever

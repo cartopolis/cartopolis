@@ -180,6 +180,9 @@ pub struct Communities {
     /// Which of the community screen's two forms is open.
     adding: bool,
     starting_topic: bool,
+    /// A moderator has opened the join requests and reports, which the
+    /// page otherwise folds into one row above the posts.
+    reviewing: bool,
     admin: AdminInbox,
     /// Where the person is looking, for Near you and for pinning a place.
     pub here: Option<(f64, f64)>,
@@ -1304,7 +1307,9 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     ui.horizontal(|ui| {
         let w = theme::equal_width(ui, shown_actions);
         if moderates
-            && theme::secondary_toggle(ui, icons::ADD, "People", w, cs.adding)
+            // "Invite", not "People": the count beside it is who is in it,
+            // and two buttons that read "People" did two different things.
+            && theme::secondary_toggle(ui, icons::ADD, "Invite", w, cs.adding)
                 .on_hover_text("Add people")
                 .clicked()
         {
@@ -1402,7 +1407,19 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             }
         });
     }
-    if moderates && !c.requests.is_empty() {
+    // What waits for a moderator, as one row: the queue opened the page,
+    // and the posts the page is for started below the fold
+    // (`docs/mockups/ux-review`). Members never see it.
+    let waiting = if moderates {
+        c.requests.len() + c.reports.len()
+    } else {
+        0
+    };
+    if waiting > 0 {
+        review_row(ui, cs, &c, waiting);
+    }
+    let reviewing = cs.reviewing && waiting > 0;
+    if reviewing && !c.requests.is_empty() {
         theme::section(ui, &format!("Asking to join ({})", c.requests.len()));
         for r in &c.requests {
             let who = shown(&r.address, &c.home);
@@ -1451,7 +1468,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             "Letting someone in adds them to every topic. A refusal stands for a week.",
         );
     }
-    if moderates && !c.reports.is_empty() {
+    if reviewing && !c.reports.is_empty() {
         theme::section(ui, &format!("Reports ({})", c.reports.len()));
         for r in &c.reports {
             raised_frame().show(ui, |ui| {
@@ -1488,10 +1505,12 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                             .push(CommunityOp::ModerateDelete(r.group.clone(), r.seq));
                         cs.ops.push(CommunityOp::ResolveReport(id, r.id));
                     }
-                    if theme::secondary_button(ui, icons::LOGOUT, "Remove", w)
-                        .on_hover_text("Remove them from the community")
-                        .clicked()
-                    {
+                    if theme::confirm_button(
+                        ui,
+                        egui::Id::new(("report_remove", r.id)),
+                        "Remove",
+                        "Remove them?",
+                    ) {
                         cs.ops.push(CommunityOp::Remove {
                             id,
                             who: r.reported.clone(),
@@ -1537,6 +1556,53 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         cs.screen = None;
     }
     let _ = me;
+}
+
+/// The one row that stands for a moderator's queue: how much waits, of what,
+/// and the button that opens it.
+fn review_row(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, waiting: usize) {
+    let mut parts = Vec::new();
+    match c.requests.len() {
+        0 => {}
+        1 => parts.push("1 asking to join".to_string()),
+        n => parts.push(format!("{n} asking to join")),
+    }
+    match c.reports.len() {
+        0 => {}
+        1 => parts.push("1 report".to_string()),
+        n => parts.push(format!("{n} reports")),
+    }
+    ui.add_space(8.0);
+    raised_frame().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let side = theme::PRIMARY_BUTTON_HEIGHT;
+            let label = if cs.reviewing { "Hide" } else { "Review" };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::secondary_toggle(ui, "", label, 0.0, cs.reviewing).clicked() {
+                    cs.reviewing = !cs.reviewing;
+                }
+                ui.add_space(4.0);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_min_height(side);
+                    let title = if waiting == 1 {
+                        "1 thing waits for you".to_string()
+                    } else {
+                        format!("{waiting} things wait for you")
+                    };
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(theme::SIZE_BODY)
+                            .color(theme::WARN),
+                    );
+                    ui.label(
+                        egui::RichText::new(parts.join(" · "))
+                            .size(theme::SIZE_SUB)
+                            .color(theme::TEXT_DIM),
+                    );
+                });
+            });
+        });
+    });
 }
 
 /// The encrypted half of a community page.

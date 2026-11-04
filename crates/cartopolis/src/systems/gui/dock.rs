@@ -109,11 +109,38 @@ const ENTRIES: [RightPanel; 2] = [RightPanel::Search, RightPanel::Places];
 /// arithmetic is how the two would drift when the dock grows another entry.
 #[must_use]
 pub fn reserved_bottom() -> f32 {
-    BOTTOM_MARGIN + theme::ROUND_BUTTON_SIZE + 2.0 * BAR_PAD
+    BOTTOM_MARGIN + theme::ROUND_BUTTON_SIZE + LABEL_H + 2.0 * BAR_PAD
 }
 
 /// The glass bar's margin round the discs, where there is room for it.
 const BAR_PAD: f32 = 4.0;
+
+/// The word under each disc. The dock was six bare glyphs, and two of them
+/// (the view mode, Saved) said nothing a person could guess
+/// (`docs/mockups/ux-review`).
+const LABEL_H: f32 = 12.0;
+
+/// A disc with its word under it, in the disc's width.
+fn labelled<R>(ui: &mut egui::Ui, word: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE + LABEL_H),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let r = add(ui);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(word)
+                        .size(theme::SIZE_TINY)
+                        .color(theme::TEXT_DIM),
+                )
+                .selectable(false),
+            );
+            r
+        },
+    )
+    .inner
+}
 
 /// The bar's margin at this viewport: [`BAR_PAD`], or what is left once the
 /// discs and their tightest gaps are placed — so the bar gives up its own edge
@@ -223,27 +250,32 @@ pub fn render_dock(
                     .inner_margin(egui::Margin::same(pad.round() as i8))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let mut panel_disc = |ui: &mut egui::Ui, panel: RightPanel| {
-                                let open = right_panel.is(panel);
-                                if theme::bar_button(ui, panel.icon(), panel.label(), open)
+                            let mut panel_disc =
+                                |ui: &mut egui::Ui, panel: RightPanel, word: &str| {
+                                    let open = right_panel.is(panel);
+                                    if labelled(ui, word, |ui| {
+                                        theme::bar_button(ui, panel.icon(), panel.label(), open)
+                                    })
                                     .clicked()
-                                {
-                                    clicked = Some(panel);
-                                }
-                            };
-                            panel_disc(ui, RightPanel::Search);
+                                    {
+                                        clicked = Some(panel);
+                                    }
+                                };
+                            panel_disc(ui, RightPanel::Search, "Search");
                             // Say — the one disc here that opens no panel. A tap raises
                             // the composer over the map; the log, the rooms and the
                             // blocks are in ☰ ▸ Nearby chat. It carries the accent while
                             // the composer is up, the same "this is the live one" the
                             // panel discs wear.
                             if has_session
-                                && theme::bar_button(
-                                    ui,
-                                    crate::systems::icons::CHAT,
-                                    "Say something",
-                                    say.composing,
-                                )
+                                && labelled(ui, "Say", |ui| {
+                                    theme::bar_button(
+                                        ui,
+                                        crate::systems::icons::CHAT,
+                                        "Say something",
+                                        say.composing,
+                                    )
+                                })
                                 .clicked()
                             {
                                 say_clicked = true;
@@ -260,17 +292,19 @@ pub fn render_dock(
                             // when nothing was (2026-11-03). It takes the accent while
                             // the camera is up, as the panel discs do while open.
                             if has_camera
-                                && theme::bar_button(
-                                    ui,
-                                    crate::systems::icons::CAMERA,
-                                    "Camera",
-                                    camera.is_open(),
-                                )
+                                && labelled(ui, "Camera", |ui| {
+                                    theme::bar_button(
+                                        ui,
+                                        crate::systems::icons::CAMERA,
+                                        "Camera",
+                                        camera.is_open(),
+                                    )
+                                })
                                 .clicked()
                             {
                                 camera_clicked = true;
                             }
-                            panel_disc(ui, RightPanel::Places);
+                            panel_disc(ui, RightPanel::Places, "Saved");
                             // The menu closes the row: everything that is not a place.
                             //
                             // A hamburger, not the app mark. The mark is the brand, and a
@@ -278,8 +312,15 @@ pub fn render_dock(
                             // decoration — nothing about it said there was a menu behind
                             // it, which is a problem for the one disc that is the only
                             // route to Settings, sign-in and Exit.
-                            if theme::bar_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
-                                .clicked()
+                            if labelled(ui, "Menu", |ui| {
+                                theme::bar_button(
+                                    ui,
+                                    crate::systems::icons::MENU,
+                                    "Menu",
+                                    menu.open,
+                                )
+                            })
+                            .clicked()
                             {
                                 menu_clicked = true;
                             }
@@ -384,12 +425,21 @@ fn mode_disc(
         name = "First person";
     }
     let (_, next_name) = badge(next);
-    if theme::bar_button(
-        ui,
-        icon,
-        &format!("{name} view — switch to {next_name}"),
-        false,
-    )
+    // The word under the disc is the view you are in; "First person" is too
+    // wide for it and shortens.
+    let word = if name == "First person" {
+        "1st person"
+    } else {
+        name
+    };
+    if labelled(ui, word, |ui| {
+        theme::bar_button(
+            ui,
+            icon,
+            &format!("{name} view — switch to {next_name}"),
+            false,
+        )
+    })
     .clicked()
     {
         enter_mode(camera_state, next);
