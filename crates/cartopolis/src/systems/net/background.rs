@@ -64,7 +64,14 @@ pub fn apply_background_connection(
     session: Option<Res<OnlineSession>>,
     mut applied: Local<Option<bool>>,
 ) {
-    let want = prefs.background_connection && session.is_some();
+    // The Midas device link holds the process too, setting or no: a phone a
+    // session is using must not drop its link whenever the person leaves the
+    // app to read the session (`systems::midas_link`).
+    #[cfg(not(target_arch = "wasm32"))]
+    let midas = crate::systems::midas_link::holds_process();
+    #[cfg(target_arch = "wasm32")]
+    let midas = false;
+    let want = (prefs.background_connection && session.is_some()) || midas;
     if *applied == Some(want) {
         return;
     }

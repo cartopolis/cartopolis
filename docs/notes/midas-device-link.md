@@ -84,3 +84,26 @@ again.
 Caddy): a session's `screenshot` came back as the app's window. The MCP tools
 on the link were compiled for Android and unit-tested that day, and had not
 yet run on a phone.
+
+**The link outlives leaving the app (2026-11-04).** The person follows the
+session on the Midas page, usually on the same phone, so every result they read
+took them out of the app. The process was frozen, the link dropped (fifteen
+links that day, most under two minutes) and a call in flight failed with "went
+while it worked". So, while the link is on, `systems::background` keeps the
+process alive with the same foreground service the "stay connected" setting
+uses (`midas_link::holds_process`). The app still answers nothing off screen,
+because `bevy_winit` runs no update while suspended (`should_update` asks
+`lifecycle.is_active()`). Instead the worker tells the hub
+`{"type":"away","away":true}`. The hub then tells the person a session wants
+the phone, and the call it holds is answered the moment the app is opened,
+with no reconnect.
+
+**Each call is acknowledged as it arrives** (`"ack": true` in the hello, then
+`{"type":"ack"}` before anything else), so the hub drops a dead socket in 5 s
+rather than waiting out the call's 60 s. The worker also gives up a link the
+hub has been silent on for 70 s (it pings every 25), opens one again at once
+when the app returns after 30 s of quiet, and waits at most 10 s between tries,
+spread by a quarter. The hub waits 90 s for a phone that is away, and the old
+cap of 60 s on its own was enough to miss that. Screenshots and colour stills
+are encoded to base64 off the frame loop, give up after 30 s, and replies are
+made into messages on the link's thread.

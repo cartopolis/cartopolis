@@ -75,6 +75,7 @@ impl Plugin for DevPlugin {
                 Update,
                 (
                     (
+                        systems::midas_link::follow_lifecycle,
                         systems::midas_link::drive_link,
                         systems::midas_link::serve_calls,
                     )

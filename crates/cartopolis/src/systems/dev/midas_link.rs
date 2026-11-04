@@ -62,6 +62,10 @@ const STILL_SETTLE_S: f32 = 1.0;
 const FIX_WAIT_S: f32 = 10.0;
 /// How long a fresh compass is given for its first reading.
 const COMPASS_WAIT_S: f32 = 1.0;
+/// How long a screenshot or a colour still may take from the call to its
+/// answer. Neither had a limit, and one whose capture never came (the app
+/// suspended under it) waited for good while the hub gave up.
+const PICTURE_WAIT_S: f32 = 30.0;
 /// How long the link keeps its own location watch and compass after the last
 /// call that asked, so a session asking again finds them warm.
 const SENSE_HOLD_S: f32 = 120.0;
@@ -134,7 +138,8 @@ enum Waiting {
     },
     Shot {
         call: Call,
-        out: Slot<Result<Vec<u8>, String>>,
+        out: Slot<Result<Value, String>>,
+        until: web_time::Instant,
     },
     /// `gnss` or `device_state`, waiting for a first fix and compass reading.
     Fix {
@@ -150,10 +155,11 @@ enum Waiting {
         first_at: Option<web_time::Instant>,
         picture: Option<cartopolis_calls::video::I420>,
     },
-    /// A colour still being encoded off the frame loop: (JPEG, caption).
+    /// A colour still being encoded off the frame loop, into its answer.
     Encoding {
         call: Call,
-        out: Slot<Result<(Vec<u8>, String), String>>,
+        out: Slot<Result<Value, String>>,
+        until: web_time::Instant,
     },
 }
 
@@ -445,20 +451,26 @@ fn shot_png(image: &bevy::image::Image) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-/// Ask for the window as it is; the PNG arrives in the slot returned.
-fn capture(commands: &mut Commands) -> Arc<Mutex<Option<Result<Vec<u8>, String>>>> {
+/// Ask for the window as it is; what `done` makes of its PNG arrives in the
+/// slot returned, off the frame loop.
+fn capture<T: Send + 'static>(
+    commands: &mut Commands,
+    done: impl Fn(Vec<u8>) -> T + Send + Sync + 'static,
+) -> Slot<Result<T, String>> {
     use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
-    let out: Arc<Mutex<Option<Result<Vec<u8>, String>>>> = Arc::default();
+    let out: Slot<Result<T, String>> = Arc::default();
+    let done = Arc::new(done);
     let slot = out.clone();
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>| {
             let image = captured.image.clone();
-            let slot = slot.clone();
-            // Encoding a phone's screen is a quarter second: not on the frame.
+            let (slot, done) = (slot.clone(), done.clone());
+            // Encoding a phone's screen is a quarter second, and its base64 a
+            // megabyte more: not on the frame.
             crate::platform::workers::submit(
                 "midas_link_shot",
                 Box::new(move || {
-                    let r = shot_png(&image);
+                    let r = shot_png(&image).map(|png| done(png));
                     *slot
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
@@ -473,6 +485,37 @@ fn take<T>(slot: &Arc<Mutex<Option<T>>>) -> Option<T> {
     slot.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
+}
+
+/// Whether the link is wanted (paired and on), for the background service
+/// (`systems::background`): while it is, Android must not freeze the process,
+/// or the link dies each time the person leaves the app to read what a session
+/// made of it — on the phone they follow Midas on, which is every time.
+static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[must_use]
+pub fn holds_process() -> bool {
+    HELD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Tell the hub when the app leaves the screen and comes back. Off screen
+/// the link stays, but nothing is answered — Bevy runs no update while the
+/// app is suspended — so the hub tells the person a call waits for them.
+pub fn follow_lifecycle(
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    link: Res<MidasLink>,
+) {
+    use bevy::window::AppLifecycle;
+    for event in lifecycle.read() {
+        let away = match event {
+            AppLifecycle::WillSuspend | AppLifecycle::Suspended => true,
+            AppLifecycle::WillResume | AppLifecycle::Running => false,
+            AppLifecycle::Idle => continue,
+        };
+        if let Some(w) = &link.worker {
+            w.away(away);
+        }
+    }
 }
 
 /// Load the saved link once, keep it saved, and keep the worker linked to what it says.
@@ -536,6 +579,7 @@ pub fn drive_link(
         .clone()
         .filter(|_| link.config.on)
         .map(|t| (link.config.hub.clone(), t));
+    HELD.store(want.is_some(), std::sync::atomic::Ordering::Relaxed);
     if want != link.linked_to {
         match &want {
             Some((hub, token)) => link.worker().link(hub, token),
@@ -582,8 +626,9 @@ pub fn serve_calls(
                 text(log.text())
             }),
             "screenshot" => {
-                let out = capture(&mut commands);
-                link.waiting.push(Waiting::Shot { call: call.clone(), out });
+                let out = capture(&mut commands, |png| png_result(&png, "the app's window"));
+                let until = now + std::time::Duration::from_secs_f32(PICTURE_WAIT_S);
+                link.waiting.push(Waiting::Shot { call: call.clone(), out, until });
                 None
             }
             "camera_frame" | "record" if !HighPrecision::available() => {
@@ -673,18 +718,21 @@ pub fn serve_calls(
                     // The camera closes here, before the encode: nothing more
                     // of what it sees is wanted.
                     drop(camera);
-                    let out: Slot<Result<(Vec<u8>, String), String>> = Arc::default();
+                    let out: Slot<Result<Value, String>> = Arc::default();
                     let slot = out.clone();
                     crate::platform::workers::submit(
                         "midas_link_still",
                         Box::new(move || {
-                            let r = still_jpeg(&p);
+                            let r = still_jpeg(&p).map(|(jpeg, caption)| {
+                                picture_result(&jpeg, "image/jpeg", &caption)
+                            });
                             *slot
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
                         }),
                     );
-                    still.push(Waiting::Encoding { call, out });
+                    let until = now + std::time::Duration::from_secs_f32(PICTURE_WAIT_S);
+                    still.push(Waiting::Encoding { call, out, until });
                 } else if let Some(e) = camera.error() {
                     answers.push((
                         call,
@@ -704,23 +752,23 @@ pub fn serve_calls(
                     });
                 }
             }
-            Waiting::Encoding { call, out } => match take(&out) {
-                Some(Ok((jpeg, caption))) => {
-                    answers.push((call, picture_result(&jpeg, "image/jpeg", &caption)));
-                }
+            Waiting::Encoding { call, out, until } => match take(&out) {
+                Some(Ok(answer)) => answers.push((call, answer)),
                 Some(Err(e)) => answers.push((
                     call,
                     refusal(format!("the colour picture could not be encoded: {e}")),
                 )),
-                None => still.push(Waiting::Encoding { call, out }),
+                None if now >= until => answers.push((call, refusal(format!("The colour picture was not encoded within {PICTURE_WAIT_S:.0} s.")))),
+                None => still.push(Waiting::Encoding { call, out, until }),
             },
-            Waiting::Shot { call, out } => match take(&out) {
-                Some(Ok(png)) => answers.push((call, png_result(&png, "the app's window"))),
+            Waiting::Shot { call, out, until } => match take(&out) {
+                Some(Ok(answer)) => answers.push((call, answer)),
                 Some(Err(e)) => answers.push((
                     call,
                     refusal(format!("the window could not be captured: {e}")),
                 )),
-                None => still.push(Waiting::Shot { call, out }),
+                None if now >= until => answers.push((call, refusal(format!("No screenshot within {PICTURE_WAIT_S:.0} s: the window was not drawn. Is the app on screen?")))),
+                None => still.push(Waiting::Shot { call, out, until }),
             },
             Waiting::Frame {
                 call,
@@ -783,7 +831,7 @@ pub fn serve_calls(
     for (call, result) in answers {
         let response = json!({"jsonrpc": "2.0", "id": call.rpc, "result": result});
         if let Some(w) = &link.worker {
-            w.reply(call.id, &response);
+            w.reply(call.id, response);
         }
     }
 
@@ -1144,7 +1192,7 @@ pub fn midas_tab(
             push(link, "The precision log.", vec![file]);
         }
         if ui.button("Screenshot").clicked() && link.push_shot.is_none() {
-            link.push_shot = Some(capture(commands));
+            link.push_shot = Some(capture(commands, |png| png));
         }
         if ui.button("Words only").clicked() && !link.text_draft.trim().is_empty() {
             push(link, "", vec![]);
@@ -1322,7 +1370,32 @@ mod worker {
     enum Cmd {
         Link(String, String),
         Unlink,
-        Send(String),
+        /// A call's JSON-RPC response, made into its message on this thread:
+        /// a screenshot's is a megabyte of base64, not for the frame loop.
+        Answer(u64, Value),
+        /// The app left the screen (`true`) or came back.
+        Away(bool),
+    }
+
+    /// The hub pings every 25 s: a link that has heard nothing for this long
+    /// is dead, however it looks. A network change leaves a socket that reads
+    /// nothing until the OS gives up on it, minutes on, with the button green.
+    const SILENT_S: u64 = 70;
+    /// Coming back to the screen, a link silent this long is opened again at
+    /// once rather than trusted: the phone may have changed networks meanwhile.
+    const RESUME_SILENT_S: u64 = 30;
+    /// The longest wait between tries. The hub waits 90 s for a phone that a
+    /// session wants; this was 60 s, which one unlucky wait used up.
+    const BACKOFF_MAX_S: f32 = 10.0;
+
+    /// The next wait, doubled up to [`BACKOFF_MAX_S`], and spread by up to a
+    /// quarter so phones that lost one network do not all come back at once.
+    fn next_backoff(backoff: f32) -> f32 {
+        let nanos = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let spread = 0.75 + 0.5 * (nanos % 1000) as f32 / 1000.0;
+        (backoff * 2.0).min(BACKOFF_MAX_S) * spread
     }
 
     pub struct Worker {
@@ -1410,8 +1483,14 @@ mod worker {
             let _ = self.tx.send(Cmd::Unlink);
         }
 
-        pub fn reply(&self, id: u64, response: &Value) {
-            let _ = self.tx.send(Cmd::Send(result_message(id, response)));
+        pub fn reply(&self, id: u64, response: Value) {
+            let _ = self.tx.send(Cmd::Answer(id, response));
+        }
+
+        /// The app left the screen or came back: the hub is told, and a link
+        /// that may have died meanwhile is opened again.
+        pub fn away(&self, away: bool) {
+            let _ = self.tx.send(Cmd::Away(away));
         }
 
         pub fn pair(&self, hub: &str, code: &str, name: &str) {
@@ -1558,7 +1637,7 @@ mod worker {
                     |e| json!({"content": [{"type": "text", "text": e}], "isError": true}),
                 );
             let response = json!({"jsonrpc": "2.0", "id": call.rpc, "result": result});
-            let _ = answers.send(Cmd::Send(result_message(call.id, &response)));
+            let _ = answers.send(Cmd::Answer(call.id, response));
         });
     }
 
@@ -1576,7 +1655,8 @@ mod worker {
         let mcp = mcp_tools(tools.as_ref()).await;
         let offer = offered(&own, &mcp);
         let mut target: Option<(String, String)> = None;
-        let mut backoff = 2u64;
+        let mut backoff = 1.0f32;
+        let mut away = false;
         loop {
             let Some((hub, token)) = target.clone() else {
                 {
@@ -1586,6 +1666,7 @@ mod worker {
                 }
                 match cmds.recv().await {
                     Some(Cmd::Link(h, t)) => target = Some((h, t)),
+                    Some(Cmd::Away(a)) => away = a,
                     Some(_) => {}
                     None => return,
                 }
@@ -1594,62 +1675,51 @@ mod worker {
             lock(&shared).state = format!("connecting to {hub}…");
             match connect(&hub, &token).await {
                 Ok(socket) => {
-                    backoff = 2;
+                    backoff = 1.0;
                     let (mut sink, mut stream) = socket.split();
-                    let hello = json!({"type": "hello", "tools": offer, "build": super::build()});
-                    if sink
-                        .send(Message::Text(hello.to_string().into()))
-                        .await
-                        .is_err()
-                    {
-                        continue;
+                    // `ack`: each call is acknowledged as it arrives, so the
+                    // hub can tell a dead socket in seconds rather than at the
+                    // call's timeout. `away` follows, if the app is off screen.
+                    let hello = json!({"type": "hello", "tools": offer, "build": super::build(), "ack": true});
+                    let mut greeting = vec![hello];
+                    if away {
+                        greeting.push(json!({"type": "away", "away": true}));
                     }
-                    {
-                        let mut s = lock(&shared);
-                        s.linked = true;
-                        s.state = "linked: your sessions can reach this app".into();
+                    let mut sent = true;
+                    for m in greeting {
+                        sent = sent && sink.send(Message::Text(m.to_string().into())).await.is_ok();
                     }
-                    loop {
-                        tokio::select! {
-                            msg = stream.next() => match msg {
-                                Some(Ok(Message::Text(t))) => {
-                                    let v: Value = serde_json::from_str(t.as_str()).unwrap_or(Value::Null);
-                                    if v["type"] == "call" {
-                                        let req = &v["request"];
-                                        let call = Call {
-                                            id: v["id"].as_u64().unwrap_or(0),
-                                            session: v["session"].as_str().unwrap_or("").to_string(),
-                                            tool: req["params"]["name"].as_str().unwrap_or("").to_string(),
-                                            args: req["params"]["arguments"].clone(),
-                                            rpc: req["id"].clone(),
-                                        };
-                                        let mut s = lock(&shared);
-                                        s.last_call = Some((call.tool.clone(), call.session.clone(), web_time::Instant::now()));
-                                        let ours = own.as_array().is_some_and(|o| o.iter().any(|t| t["name"] == call.tool.as_str()));
-                                        #[cfg(mcp)]
-                                        if let (false, Some(tools)) = (ours, &tools) {
-                                            drop(s);
-                                            relay(tools, call, &answers);
-                                            continue;
-                                        }
-                                        #[cfg(not(mcp))]
-                                        let _ = ours;
-                                        s.calls.push(call);
-                                    }
-                                }
-                                Some(Ok(Message::Ping(p))) => { let _ = sink.send(Message::Pong(p)).await; }
-                                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                                Some(Ok(_)) => {}
-                            },
-                            cmd = cmds.recv() => match cmd {
-                                Some(Cmd::Send(t)) => if sink.send(Message::Text(t.into())).await.is_err() { break },
-                                Some(Cmd::Link(h, t)) => { target = Some((h, t)); break }
-                                Some(Cmd::Unlink) => { target = None; let _ = sink.send(Message::Close(None)).await; break }
-                                None => return,
-                            },
+                    if sent {
+                        {
+                            let mut s = lock(&shared);
+                            s.linked = true;
+                            s.state = "linked: your sessions can reach this app".into();
+                        }
+                        hold(
+                            &mut sink,
+                            &mut stream,
+                            &mut cmds,
+                            &mut target,
+                            &mut away,
+                            &own,
+                            tools.as_ref(),
+                            &answers,
+                            &shared,
+                        )
+                        .await;
+                        if target
+                            .as_ref()
+                            .is_some_and(|t| *t != (hub.clone(), token.clone()))
+                        {
+                            // Told to link elsewhere: at once.
+                            lock(&shared).linked = false;
+                            continue;
                         }
                     }
                     lock(&shared).linked = false;
+                    if lock(&shared).state.starts_with("linked") {
+                        lock(&shared).state = "the link dropped; linking again".into();
+                    }
                 }
                 Err(e) if e == "unpaired" => {
                     let mut s = lock(&shared);
@@ -1659,25 +1729,113 @@ mod worker {
                     continue;
                 }
                 Err(e) => {
-                    lock(&shared).state = format!("not linked ({e}); trying again in {backoff} s");
+                    lock(&shared).state =
+                        format!("not linked ({e}); trying again in {backoff:.0} s");
                 }
             }
             if target.is_none() {
                 continue;
             }
-            // Wait before trying again, still listening: Off or a new hub must not wait.
-            let sleep = tokio::time::sleep(std::time::Duration::from_secs(backoff));
+            // Wait before trying again, still listening: Off, a new hub or the
+            // app coming back to the screen must not wait.
+            let sleep = tokio::time::sleep(std::time::Duration::from_secs_f32(backoff));
             tokio::pin!(sleep);
             tokio::select! {
-                () = &mut sleep => {}
+                () = &mut sleep => backoff = next_backoff(backoff),
                 cmd = cmds.recv() => match cmd {
                     Some(Cmd::Link(h, t)) => target = Some((h, t)),
                     Some(Cmd::Unlink) => target = None,
-                    Some(Cmd::Send(_)) => {}
+                    Some(Cmd::Away(a)) => { away = a; backoff = 1.0; }
+                    // Answers to calls of a link that is gone: the hub has
+                    // failed them already.
+                    Some(Cmd::Answer(..)) => {}
                     None => return,
                 },
             }
-            backoff = (backoff * 2).min(60);
+        }
+    }
+
+    /// Carry calls on one open link until it ends: closed, silent for
+    /// [`SILENT_S`], or left for another target.
+    #[allow(clippy::too_many_arguments)]
+    async fn hold(
+        sink: &mut futures_util::stream::SplitSink<Socket, Message>,
+        stream: &mut futures_util::stream::SplitStream<Socket>,
+        cmds: &mut UnboundedReceiver<Cmd>,
+        target: &mut Option<(String, String)>,
+        away: &mut bool,
+        own: &Value,
+        tools: Option<&Tools>,
+        answers: &UnboundedSender<Cmd>,
+        shared: &Arc<Mutex<Shared>>,
+    ) {
+        #[cfg(not(mcp))]
+        let _ = (tools, answers);
+        let mut heard = web_time::Instant::now();
+        let mut check = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = check.tick() => if heard.elapsed().as_secs() >= SILENT_S {
+                    lock(shared).state = format!("the hub went quiet for {SILENT_S} s; linking again");
+                    return;
+                },
+                msg = stream.next() => match msg {
+                    Some(Ok(Message::Text(t))) => {
+                        heard = web_time::Instant::now();
+                        let v: Value = serde_json::from_str(t.as_str()).unwrap_or(Value::Null);
+                        if v["type"] == "call" {
+                            // Before anything else, so a call that waits for
+                            // the screen still reads as received.
+                            let ack = json!({"type": "ack", "id": v["id"]});
+                            if sink.send(Message::Text(ack.to_string().into())).await.is_err() { return }
+                            let req = &v["request"];
+                            let call = Call {
+                                id: v["id"].as_u64().unwrap_or(0),
+                                session: v["session"].as_str().unwrap_or("").to_string(),
+                                tool: req["params"]["name"].as_str().unwrap_or("").to_string(),
+                                args: req["params"]["arguments"].clone(),
+                                rpc: req["id"].clone(),
+                            };
+                            let mut s = lock(shared);
+                            s.last_call = Some((call.tool.clone(), call.session.clone(), web_time::Instant::now()));
+                            let ours = own.as_array().is_some_and(|o| o.iter().any(|t| t["name"] == call.tool.as_str()));
+                            #[cfg(mcp)]
+                            if let (false, Some(tools)) = (ours, tools) {
+                                drop(s);
+                                relay(tools, call, answers);
+                                continue;
+                            }
+                            #[cfg(not(mcp))]
+                            let _ = ours;
+                            s.calls.push(call);
+                        }
+                    }
+                    Some(Ok(Message::Ping(p))) => {
+                        heard = web_time::Instant::now();
+                        let _ = sink.send(Message::Pong(p)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                    Some(Ok(_)) => heard = web_time::Instant::now(),
+                },
+                cmd = cmds.recv() => match cmd {
+                    Some(Cmd::Answer(id, response)) => {
+                        if sink.send(Message::Text(result_message(id, &response).into())).await.is_err() { return }
+                    }
+                    Some(Cmd::Away(a)) => {
+                        *away = a;
+                        // Back on screen after a while: the phone may be on
+                        // another network, so a quiet link is not trusted.
+                        if !a && heard.elapsed().as_secs() >= RESUME_SILENT_S {
+                            return;
+                        }
+                        let m = json!({"type": "away", "away": a});
+                        if sink.send(Message::Text(m.to_string().into())).await.is_err() { return }
+                    }
+                    Some(Cmd::Link(h, t)) => { *target = Some((h, t)); return }
+                    Some(Cmd::Unlink) => { *target = None; let _ = sink.send(Message::Close(None)).await; return }
+                    None => { *target = None; return }
+                },
+            }
         }
     }
 
@@ -1699,6 +1857,64 @@ mod worker {
                 http_base("midas.cartopolis.org"),
                 "https://midas.cartopolis.org"
             );
+        }
+
+        #[test]
+        fn the_backoff_stays_short_and_spread() {
+            let mut b = 1.0;
+            for _ in 0..20 {
+                b = next_backoff(b);
+                assert!((0.75..=BACKOFF_MAX_S * 1.25).contains(&b), "{b}");
+            }
+        }
+
+        /// The next text message the stand-in hub gets, as JSON.
+        async fn heard(
+            ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ) -> Value {
+            loop {
+                if let Message::Text(t) = ws.next().await.unwrap().unwrap() {
+                    return serde_json::from_str(t.as_str()).unwrap();
+                }
+            }
+        }
+
+        /// The worker against a stand-in hub: its hello offers acks, it
+        /// acknowledges a call before anything answers it, and it says when
+        /// the app leaves the screen, on the link it keeps.
+        #[test]
+        fn a_call_is_acknowledged_and_leaving_the_screen_is_said() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let hub = format!("http://{}", listener.local_addr().unwrap());
+                let shared: Arc<Mutex<Shared>> = Arc::default();
+                let worker = Worker::start(shared.clone(), None);
+                worker.link(&hub, "a-token-of-the-right-length-000000");
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let hello = heard(&mut ws).await;
+                assert_eq!((hello["type"].as_str(), hello["ack"].as_bool()), (Some("hello"), Some(true)));
+
+                let call = json!({"type": "call", "id": 7, "session": "s1", "request":
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "gnss", "arguments": {}}}});
+                ws.send(Message::Text(call.to_string().into())).await.unwrap();
+                assert_eq!(heard(&mut ws).await, json!({"type": "ack", "id": 7}));
+
+                worker.away(true);
+                assert_eq!(heard(&mut ws).await, json!({"type": "away", "away": true}));
+                // After the ack, and on the link's one thread after the call: handed on by now.
+                assert_eq!(lock(&shared).calls.len(), 1, "handed on to be answered");
+                worker.away(false);
+                assert_eq!(heard(&mut ws).await, json!({"type": "away", "away": false}), "a fresh link is kept");
+
+                worker.reply(7, json!({"jsonrpc": "2.0", "id": 1, "result": {"content": []}}));
+                let answer = heard(&mut ws).await;
+                assert_eq!((answer["type"].as_str(), answer["id"].as_u64()), (Some("result"), Some(7)));
+            });
         }
     }
 }
