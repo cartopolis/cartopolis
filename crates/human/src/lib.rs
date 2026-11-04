@@ -20,6 +20,7 @@
 //! in Blender's frame (Z up) and converted once ([`rig`]).
 
 pub mod build;
+pub mod crowd;
 pub mod face;
 pub mod fit;
 pub mod hands;

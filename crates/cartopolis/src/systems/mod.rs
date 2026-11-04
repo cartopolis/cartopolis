@@ -80,8 +80,8 @@ pub use map::{
     vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
 pub use nav::{
-    crows, driver, geo_nav, gnss_receiver, locate, meetup, navigation, place_link, route_ahead,
-    traffic, transit_live, transit_vehicles, walk_guide,
+    crowd, crows, driver, geo_nav, gnss_receiver, locate, meetup, navigation, place_link,
+    route_ahead, traffic, transit_live, transit_vehicles, walk_guide,
 };
 pub use nav::{high_precision, precise_tracker};
 #[cfg(target_os = "android")]

@@ -10,6 +10,7 @@ use bevy::prelude::*;
 
 pub mod building_fade;
 pub mod building_windows;
+pub mod crowd;
 pub mod data_layers;
 pub mod globe_ocean;
 pub mod grass;
@@ -59,6 +60,9 @@ impl Plugin for MaterialsPlugin {
             // ending the city at a cell edge (`systems::building_fade`).
             .add_plugins(MaterialPlugin::<building_fade::FarBuildingMaterial>::default())
             .add_plugins(MaterialPlugin::<grass::GrassMaterial>::default())
+            // The street walkers: their walk is baked poses the vertex stage plays
+            // (`systems::crowd`).
+            .add_plugins(MaterialPlugin::<crowd::CrowdMaterial>::default())
             // Roads and their casings. The ladder that decides which of two
             // overlapping ribbons is on top rides in a vertex attribute, so the road
             // groups need a pipeline that declares it (`systems::road_depth`).

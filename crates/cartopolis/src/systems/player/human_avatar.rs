@@ -29,7 +29,7 @@ use crate::systems::avatar::ClipGait;
 use crate::systems::user_store::{AvatarAppearance, HumanLook};
 
 /// Where the pack and its textures live under `assets/`.
-const PACK_DIR: &str = "models/avatar/human";
+pub(crate) const PACK_DIR: &str = "models/avatar/human";
 
 #[derive(Asset, TypePath)]
 pub(crate) struct HumanPackAsset(pub Arc<HumanPack>);
@@ -180,6 +180,13 @@ fn human_texture(bytes: &[u8]) -> std::io::Result<Image> {
 
 #[derive(Resource)]
 pub(crate) struct HumanPackHandle(Handle<HumanPackAsset>);
+
+impl HumanPackHandle {
+    /// The pack, once it has loaded.
+    pub(crate) fn get(&self, packs: &Assets<HumanPackAsset>) -> Option<Arc<HumanPack>> {
+        packs.get(&self.0).map(|p| p.0.clone())
+    }
+}
 
 /// Start loading the pack.
 pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -780,17 +787,28 @@ pub(crate) fn spawn_human(
 /// one, else the colour the pack recorded for it; `None` for an authored
 /// texture, which takes none.
 fn tint_for(part: &HumanPart, tints: Tints) -> Option<[u8; 3]> {
+    tint_of(part.kind, part.region, part.default_tint, tints)
+}
+
+/// [`tint_for`] for a part as the body builder made it, which the crowd
+/// (`systems::crowd`) paints from without spawning it.
+pub(crate) fn tint_of(
+    kind: PartKind,
+    region: u8,
+    default_tint: Option<[u8; 3]>,
+    tints: Tints,
+) -> Option<[u8; 3]> {
     use cartopolis_human::ProxyKind;
-    let chosen = match part.kind {
+    let chosen = match kind {
         PartKind::Proxy(
             ProxyKind::Hair | ProxyKind::Eyebrows | ProxyKind::Eyelashes | ProxyKind::Beard,
         ) => tints.hair,
-        PartKind::Proxy(ProxyKind::Outfit) if part.region == 0 => tints.top,
+        PartKind::Proxy(ProxyKind::Outfit) if region == 0 => tints.top,
         PartKind::Proxy(ProxyKind::Outfit | ProxyKind::Bottom) => tints.bottom,
         PartKind::Proxy(ProxyKind::Top) => tints.top,
         _ => None,
     };
-    chosen.or(part.default_tint)
+    chosen.or(default_tint)
 }
 
 fn base_colour(part: &HumanPart, tints: Tints) -> Color {
@@ -804,7 +822,7 @@ fn base_colour(part: &HumanPart, tints: Tints) -> Color {
 /// a full step either way is a factor of [`SKIN_TONE_RANGE`], so the families'
 /// own paintings overlap and between them every skin is reachable. Lighter
 /// goes past 1 — a texture can only be brightened by a factor above one.
-fn skin_colour(tone: i8) -> Color {
+pub(crate) fn skin_colour(tone: i8) -> Color {
     let k = SKIN_TONE_RANGE.powf(f32::from(tone.clamp(-100, 100)) / 100.0);
     Color::linear_rgb(k, k, k)
 }

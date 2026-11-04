@@ -19,6 +19,8 @@ pub mod place_link;
 pub mod precise_tracker;
 pub mod route_ahead;
 pub mod traffic;
+// The walkers drawn as MakeHuman people, cut down for a crowd.
+pub mod crowd;
 // Crows over the camera and on its lawns, on the traffic's fixed-pool terms.
 pub mod crows;
 pub mod transit_live;

@@ -1,7 +1,7 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, DesignerTurn]
-updated: 2026-10-27
+triggers: [crates/human, crowd.rs, crowd_pose.wesl, CrowdMaterial, CrowdSwatch, starter_looks, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, DesignerTurn]
+updated: 2026-11-04
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
@@ -283,6 +283,47 @@ before `skin_tone`; `from_bytes` fails rather than defaulting, and the old
 as the default body. `AvatarLook::from_stored` reads each older layout
 (`AvatarLookV42`, frozen) and carries it forward; the next field added needs
 the next frozen layout. The client's own copy is JSON, where defaults work.
+
+## The crowd: the street walkers are these people too (2026-11-04)
+
+The walkers `systems::traffic` moves (220 at most) are MakeHuman bodies, made
+by `cartopolis_human::crowd` and drawn by `systems::crowd`. An avatar would not
+do: ~33 000 triangles, ~5 MB of textures and a skeleton animated every frame
+each, so 220 of them is ~7 M triangles before shadows. A crowd body is:
+
+- **The designer's fourteen starters** (`avatar_designer::starter_looks`), with
+  the skin families dealt out in turn and the tone spread ±30, built from the
+  pack at startup on `workers::FAR`.
+- **Cut down by half-edge collapse under quadric error**, to 3 000 triangles
+  (nearer than 30 m, kept to 34) and 600. A vertex is only ever merged into a
+  neighbour, so every survivor is one of the body's own and keeps its skin
+  weights, and the poses are skinned after the cut. Boundaries (hems, skin
+  hidden under clothes) carry a heavy plane so they keep their line. Brows,
+  lashes and glasses are left off; a cut-out (hair) face is kept where the
+  material's `Mask(0.5)` would have drawn it.
+- **Coloured per vertex**, from 128 px swatches of the pack's textures
+  (`CrowdSwatchLoader`, which claims no extension and is found by asset type,
+  so the avatars' loaders keep their files), averaged over everything merged
+  into the vertex. Neutral garments are baked grey with their region in the
+  vertex alpha, and the shader tints them with the walker's own top and
+  bottom from `crowd::COAT_COLOURS` / `TROUSER_COLOURS`.
+- **Walking without a skeleton**: 16 poses through the captured walk plus one
+  standing, baked into an `Rgba16Float` texture (position and normal a vertex a
+  pose). `crowd_pose.wesl` blends between neighbouring poses by the phase in
+  the walker's `MeshTag` and toward standing as it slows; the colour pass and
+  the prepass both pose the body, so its shadow steps with it. The vertex's
+  own index is `vertex_index - mesh[i].first_vertex_index`: the mesh allocator
+  shares vertex buffers between meshes.
+
+Measured 2026-11-04 on vps-1 (debug build): the fourteen bodies took 2.6 s of
+worker time to shape, 11.1 s to cut and bake, and 2.0 s to decode swatches,
+and upload 0.7–1.6 MB each (12 MB in all, meshes and pose textures); the
+release-built test cuts one body in 0.43 s. Every walker wearing a body shares
+its mesh and material, so the crowd is at most 28 instanced draws, and nothing
+is uploaded once it is made. A walker whose body is not made yet walks unseen.
+**Not measured: frame time on the phone.** The worst case is 220 × 3 000
+triangles if every walker were near; at a street's usual few dozen near,
+it is ~100–200 k.
 
 ## Rejected: Quaternius's animation library (2026-10-17)
 

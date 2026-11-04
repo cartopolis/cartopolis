@@ -3,8 +3,8 @@ topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
   "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
-  agent_models.rs, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle"]
-updated: 2026-11-02
+  agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle"]
+updated: 2026-11-04
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -116,11 +116,14 @@ Three things are specific to people:
   on the street in view while the metrics reported all 220 placed. That is also
   the clearest lesson about the metric itself — see below.
 
-The head is deliberately grey rather than a skin tone. A crowd rendered in one
-complexion is a claim about a city's people that a road centreline cannot support,
-and six would be a worse claim rather than a better one. It reads as a figure, not
-as somebody identifiable, which is the honest resolution for something inferred
-from "a pavement exists here".
+**Walkers are MakeHuman people since 2026-11-04** ("The crowd" in
+`makehuman-avatars.md`). Until then the head was a deliberate grey, on the
+argument that a crowd in one complexion is a claim about a city's people that a
+road centreline cannot support. Asked for real people instead, the owner chose
+**every MakeHuman skin family dealt out evenly** (African, Asian and Caucasian
+in turn over the bodies, the tone spread ±30) over keeping the people grey:
+an even mix makes no claim about *this* street, and a grey person among
+realistic avatars read as a placeholder.
 
 **Walk animation since 2026-10-19** — see "Looks" below. Before that a walker
 was three boxes sliding along a line, on the argument that from tens of metres an
@@ -387,14 +390,14 @@ line, the *opposite approach's* line beyond the junction — same road, same gro
 signals and nothing stops: a car only obeys a light you can see. Queues form
 behind the stopped car through the existing headway.
 
-**People walk.** A walker is a torso with the head and four child limbs hung
-from hip and shoulder; `agent_models::gait` swings legs in opposition and each
-arm against its own leg, with a small dip as the legs pass. The phase advances
-by **distance** (one cycle per 1.4 m, scaled by height), so the feet keep pace at
-any speed. Heights vary ±8 %, trousers have their own palette, and walkers use
+**People walk.** The phase advances by **distance** — one cycle per stride of
+the body's captured walk (about 1.5 m), scaled by height — so the feet keep
+pace at any speed. (From 2026-10-19 to 2026-11-04 the figure was a box torso
+with swinging box limbs, `agent_models::gait`; now the walk is the motion
+capture the avatars use, baked per body — `systems::crowd`.) Walkers use
 **both pavements in both directions** with up to a metre of spread — before, all
 walkers kept to the pavement on their own right, so each side of a street was a
-one-way stream. The head is still the neutral grey, for the reason above.
+one-way stream.
 
 **People keep off the grass.** Two causes put them there. On a path, a walker
 used the street rule — half the width plus 1.6 m out — so everybody in a park

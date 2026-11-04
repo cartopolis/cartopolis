@@ -836,6 +836,12 @@ impl Starter {
     }
 }
 
+/// Every starter's look: the people the street crowd is made of
+/// (`systems::crowd`), which recolours and re-skins them.
+pub(crate) fn starter_looks() -> Vec<HumanLook> {
+    STARTERS.iter().map(Starter::look).collect()
+}
+
 /// What the camera does while the designer is open: which way the model
 /// turns from the camera, and whether to come close to the face.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]

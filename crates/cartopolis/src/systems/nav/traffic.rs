@@ -16,12 +16,13 @@
 //! * **Nothing may be built per frame.** The documented device-loss failure in
 //!   this tree is mass mesh churn (`docs/notes/upload-bursts.md`), and a moving
 //!   object is the obvious way to reintroduce it. So the models — four car
-//!   bodies and one walker, a handful of meshes in all
-//!   (`cartopolis_geo::agent_models`) — are built once at startup and shared by
-//!   the whole pool; an agent is an entity with a `Transform` and a few child
-//!   parts, and moving it writes those transforms (and a braking car's tail-lamp
-//!   material handle) and nothing else. After startup this layer uploads
-//!   nothing, ever. `systems::grass` reached the same
+//!   bodies (`cartopolis_geo::agent_models`) and the crowd's people
+//!   (`systems::crowd`), a handful of meshes in all — are built once and shared
+//!   by the whole pool; an agent is an entity with a `Transform` and a few child
+//!   parts, and moving it writes those transforms (and a braking car's
+//!   tail-lamp material handle, a walker's `MeshTag` and level of detail) and
+//!   nothing else. Once the crowd is made this layer uploads nothing, ever.
+//!   `systems::grass` reached the same
 //!   shape from the same constraint — a fixed pool that slides rather than a
 //!   stream that rebuilds.
 //! * **The pool is fixed and the cars are recycled.** [`MAX_CARS`] entities are
@@ -50,6 +51,7 @@
 //! standing next to is not invisible at all — see [`signal_speed`].
 
 use bevy::prelude::*;
+use bevy::render::mesh::MeshTag;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
@@ -843,8 +845,8 @@ pub struct Car {
     /// A walker's distance out from the pavement's own line, so a pavement's
     /// people are not threaded on one string. Zero for a car.
     lateral: f32,
-    /// A walker's gait phase, radians; one cycle per
-    /// [`agent_models::STRIDE_M`] walked.
+    /// A walker's gait phase, radians; one cycle per stride of its crowd
+    /// body's walk (`systems::crowd`), walked.
     phase: f32,
     /// A car's body pitch and roll, radians, eased — see [`body_tilt`].
     tilt: Vec2,
@@ -854,8 +856,8 @@ pub struct Car {
     signal_grace: f32,
     /// Whether the brake lamps are lit, as last written.
     braking: bool,
-    /// A car's tail-lamp child (whose material braking swaps), or a walker's
-    /// four limbs: left leg, right leg, left arm, right arm.
+    /// A car's tail-lamp child (whose material braking swaps); a walker's
+    /// body is on the agent itself (`crowd::CrowdFigure`).
     parts: AgentParts,
 }
 
@@ -863,12 +865,8 @@ pub struct Car {
 #[derive(Clone, Copy)]
 enum AgentParts {
     Car { tail: Entity },
-    Walker { limbs: [Entity; 4] },
+    Walker,
 }
-
-/// Marks a walker's limb, so the limb query is disjoint from the agents'.
-#[derive(Component)]
-pub struct Limb;
 
 /// The two tail-lamp materials, swapped per car as it brakes.
 #[derive(Resource)]
@@ -922,20 +920,21 @@ fn rand01(seed: u64, a: u64, b: u64) -> f32 {
 /// [`drive_traffic`] on the first frame there is a network to place them on —
 /// which is not the first frame of the app, since the roads stream in.
 ///
-/// A car is three meshes (body, trim, tail lamps) and a walker five (torso,
-/// two legs, two arms); see `cartopolis_geo::agent_models` for why each part is
-/// its own. Every mesh is built here, once, and shared by the whole pool: four
-/// car bodies and one walker, **eight car meshes and three walker meshes in
-/// all**. After this nothing is uploaded — the parts are child entities, and
-/// driving or walking writes their transforms and, for a braking car, which of
-/// two materials its tail lamps hold.
+/// A car is three meshes (body, trim, tail lamps); see
+/// `cartopolis_geo::agent_models` for why each part is its own. Every car mesh
+/// is built here, once, and shared by the whole pool: four car bodies, **eight
+/// car meshes in all**. After this nothing is uploaded — the parts are child
+/// entities, and driving writes their transforms and, for a braking car, which
+/// of two materials its tail lamps hold. A walker is spawned bare, with the
+/// crowd body it is to wear (`crowd::CrowdFigure`); `crowd::dress_walkers` puts
+/// it on once that body is made, and until then the walker is not drawn.
 pub fn setup_traffic(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     roots: Query<Entity, With<BigSpace>>,
 ) {
-    use cartopolis_geo::agent_models::{self as models, CarBody};
+    use cartopolis_geo::agent_models::CarBody;
     let Ok(root) = roots.single() else {
         // Ordered `.after(setup_camera)` in `nav::plugin`, which is what spawns the
         // root — so this is unreachable, and it says so rather than returning in
@@ -959,14 +958,6 @@ pub fn setup_traffic(
         .map(|&rgb| colour(rgb, 0.32, 0.6))
         .collect();
     let white_paint = colour(VAN_WHITE, 0.32, 0.6);
-    let coats: Vec<Handle<StandardMaterial>> = COAT_COLOURS
-        .iter()
-        .map(|&rgb| colour(rgb, 0.85, 0.4))
-        .collect();
-    let trousers: Vec<Handle<StandardMaterial>> = TROUSER_COLOURS
-        .iter()
-        .map(|&rgb| colour(rgb, 0.9, 0.4))
-        .collect();
     // The trim's colours are per vertex; the material only says "fairly glossy"
     // so the glass catches the sky.
     let trim = materials.add(StandardMaterial {
@@ -1005,10 +996,6 @@ pub fn setup_traffic(
             )
         })
         .collect();
-    let figure = models::walker();
-    let torso = meshes.add(model_mesh_to_bevy(&figure.torso));
-    let leg = meshes.add(model_mesh_to_bevy(&figure.leg));
-    let arm = meshes.add(model_mesh_to_bevy(&figure.arm));
 
     let agent = |kind: AgentKind, i: usize, seed: u64, parts: AgentParts| {
         let walker = kind == AgentKind::Walker;
@@ -1083,65 +1070,27 @@ pub fn setup_traffic(
     }
 
     for i in 0..MAX_WALKERS {
-        let coat = coats[i % coats.len()].clone();
-        let legs = trousers[(i * 7 + 3) % trousers.len()].clone();
-        let limb = |mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, x: f32, y: f32| {
-            (
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_xyz(x, y, 0.0),
-                Limb,
-            )
-        };
-        let limbs = [
-            commands
-                .spawn(limb(&leg, &legs, -models::HIP_X, models::HIP_Y))
-                .id(),
-            commands
-                .spawn(limb(&leg, &legs, models::HIP_X, models::HIP_Y))
-                .id(),
-            commands
-                .spawn(limb(&arm, &coat, -models::SHOULDER_X, models::SHOULDER_Y))
-                .id(),
-            commands
-                .spawn(limb(&arm, &coat, models::SHOULDER_X, models::SHOULDER_Y))
-                .id(),
-        ];
-        // People are not all one height: ±8 % is roughly a city's spread of
-        // adults, and a crowd of identical figures is a crowd of clones.
-        let height = 0.92 + rand01(0x0FEE, i as u64, 14) * 0.16;
-        let walker = commands
-            .spawn((
-                Mesh3d(torso.clone()),
-                MeshMaterial3d(coat),
-                Visibility::Hidden,
-                Transform::from_scale(Vec3::splat(height)),
-                GridCell::default(),
-                ChildOf(root),
-                HideInSpace,
-                AgentKind::Walker,
-                agent(AgentKind::Walker, i, 0x0FEE, AgentParts::Walker { limbs }),
-            ))
-            .id();
-        for l in limbs {
-            commands.entity(l).insert(ChildOf(walker));
-        }
+        use crate::systems::crowd::{CrowdFigure, COAT_COLOURS, TROUSER_COLOURS};
+        // The crowd's bodies already differ in height as their people do;
+        // ±4 % more keeps two walkers wearing one body from matching.
+        let height = 0.96 + rand01(0x0FEE, i as u64, 14) * 0.08;
+        commands.spawn((
+            Visibility::Hidden,
+            Transform::from_scale(Vec3::splat(height)),
+            GridCell::default(),
+            ChildOf(root),
+            HideInSpace,
+            AgentKind::Walker,
+            agent(AgentKind::Walker, i, 0x0FEE, AgentParts::Walker),
+            CrowdFigure {
+                seed: i as u32,
+                top: (i % COAT_COLOURS.len()) as u8,
+                bottom: ((i * 7 + 3) % TROUSER_COLOURS.len()) as u8,
+                near: false,
+            },
+        ));
     }
 }
-
-/// Muted outerwear. The same judgement the parked cars' palette makes: a crowd in
-/// primary colours is the loudest thing on a pale cartographic street — but a
-/// Dutch street in a raincoat season does carry the odd rust, bottle green and
-/// trench beige among the greys.
-const COAT_COLOURS: &[u32] = &[
-    0x4A_4F_57, 0x6B_5E_52, 0x3E_4A_52, 0x7A_6E_63, 0x5A_4E_58, 0x86_7C_6E, 0x8C_4A_3A, 0x3F_5A_4A,
-    0xB4_A4_86, 0x2B_2D_31,
-];
-
-/// Trousers: denim, black, charcoal, navy, khaki — what a street wears.
-const TROUSER_COLOURS: &[u32] = &[
-    0x3A_48_60, 0x26_27_29, 0x45_47_4B, 0x2C_34_46, 0x84_7A_64, 0x52_5A_6A,
-];
 
 /// Most vans are white; see [`CarBody::fleet_white`](cartopolis_geo::agent_models::CarBody::fleet_white).
 const VAN_WHITE: u32 = 0xEC_EC_EA;
@@ -1171,6 +1120,13 @@ pub fn drive_traffic(
             &AgentKind,
             &mut Transform,
             &mut GridCell,
+            // A walker's body, once `crowd::dress_walkers` has put it on.
+            Option<(
+                &mut crate::systems::crowd::CrowdFigure,
+                &mut Mesh3d,
+                &mut MeshMaterial3d<crate::systems::crowd::CrowdMaterial>,
+                &mut MeshTag,
+            )>,
             &mut Visibility,
         ),
         Without<FreeCamera>,
@@ -1178,7 +1134,7 @@ pub fn drive_traffic(
     detail: Res<crate::systems::street_detail::StreetDetail>,
     tail_materials: Option<Res<TailLampMaterials>>,
     mut tails: Query<&mut MeshMaterial3d<StandardMaterial>, Without<Car>>,
-    mut limbs: Query<&mut Transform, (With<Limb>, Without<Car>, Without<FreeCamera>)>,
+    crowd: Res<crate::systems::crowd::Crowd>,
     mut frame: Local<u64>,
 ) {
     // One toggle per pool (Layers ▸ Life ▸ Traffic / People). A pool that is off
@@ -1275,7 +1231,7 @@ pub fn drive_traffic(
         Vec::new()
     };
 
-    for (i, (mut car, &kind, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
+    for (i, (mut car, &kind, mut tf, mut cell, dressed, mut vis)) in cars.iter_mut().enumerate() {
         if !showing(kind) {
             *vis = Visibility::Hidden;
             continue;
@@ -1541,20 +1497,36 @@ pub fn drive_traffic(
                     }
                 }
             }
-            AgentParts::Walker { limbs: limb_ids } => {
+            AgentParts::Walker => {
+                use crate::systems::crowd;
+                // Its body is not made yet: it walks, unseen.
+                let Some((mut figure, mut mesh, mut material, mut tag)) = dressed else {
+                    vis.set_if_neq(Visibility::Hidden);
+                    continue;
+                };
+                let Some(body) = crowd.body(figure.body(&crowd)) else {
+                    vis.set_if_neq(Visibility::Hidden);
+                    continue;
+                };
                 // The stride is walked, not timed: the phase advances by distance,
                 // so the feet keep pace with the ground at every speed. A taller
                 // figure takes longer steps.
-                let stride = cartopolis_geo::agent_models::STRIDE_M * tf.scale.y;
+                let stride = body.stride * tf.scale.y;
                 car.phase =
                     (car.phase + stepped / stride * std::f32::consts::TAU) % std::f32::consts::TAU;
-                let (ll, rl, la, ra, lift) =
-                    cartopolis_geo::agent_models::gait(car.phase, car.speed / WALK_SPEED);
-                tf.translation.y += lift * tf.scale.y;
-                for (e, angle) in limb_ids.into_iter().zip([ll, rl, la, ra]) {
-                    if let Ok(mut limb) = limbs.get_mut(e) {
-                        limb.rotation = Quat::from_rotation_x(angle);
-                    }
+                let near = crowd::wants_near(&figure, (pos - cam).length());
+                if near != figure.near {
+                    figure.near = near;
+                    let level = if near { 0 } else { body.levels.len() - 1 };
+                    let (m, mat) = &body.levels[level];
+                    mesh.0 = m.clone();
+                    material.0 = mat.clone();
+                }
+                // Slowing to a stop eases from the stride into standing.
+                let standing = 1.0 - (car.speed / (WALK_SPEED * 0.5)).clamp(0.0, 1.0);
+                let t = crowd::tag(car.phase, standing, &figure);
+                if tag.value != t {
+                    tag.value = t;
                 }
             }
         }
@@ -2572,9 +2544,7 @@ mod tests {
             tilt: Vec2::ZERO,
             signal_grace: 0.0,
             braking: false,
-            parts: AgentParts::Walker {
-                limbs: [Entity::PLACEHOLDER; 4],
-            },
+            parts: AgentParts::Walker,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -2597,9 +2567,7 @@ mod tests {
             tilt: Vec2::ZERO,
             signal_grace: 0.0,
             braking: false,
-            parts: AgentParts::Walker {
-                limbs: [Entity::PLACEHOLDER; 4],
-            },
+            parts: AgentParts::Walker,
         }
     }
 

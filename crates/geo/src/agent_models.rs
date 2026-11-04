@@ -1,4 +1,5 @@
-//! The moving models: four car bodies, a walker with limbs, and a crow.
+//! The moving models: four car bodies and a crow. (The street's walkers are
+//! MakeHuman people, `cartopolis_human::crowd`.)
 //!
 //! The same bodies serve two very different costs. The ambient pool
 //! (`cartopolis`'s `systems::traffic`) is a fixed set of entities sharing **one
@@ -19,10 +20,8 @@
 //!   under one neutral material, so a red car's windscreen is not red;
 //! * **tail** — the rear lamps alone, so a braking car can swap its material.
 //!
-//! A walker is a torso (with the head), and a leg and an arm mesh each hung from
-//! its pivot, so the client can swing them. The head stays the neutral grey of
-//! [`crate::furniture::form::PERSON`], for the reason given there. A crow
-//! (`systems::crows`) is a body and a head with two jointed wings ([`crow`]).
+//! A crow (`systems::crows`) is a body and a head with two jointed wings
+//! ([`crow`]).
 //!
 //! All models: origin on the ground, +y up, **+z the front**.
 
@@ -624,102 +623,6 @@ const fn st(
     }
 }
 
-// ─── Walkers ─────────────────────────────────────────────────────────────────
-
-/// Hip joint: height above the ground and half the gap between the legs.
-pub const HIP_Y: f32 = 0.92;
-pub const HIP_X: f32 = 0.09;
-/// Shoulder joint.
-pub const SHOULDER_Y: f32 = 1.42;
-pub const SHOULDER_X: f32 = 0.215;
-
-/// The neutral head of [`crate::furniture::form::PERSON`].
-const HEAD: u32 = crate::vector_tiles::palette::FURNITURE_METAL;
-const SHOE: u32 = 0x2A_28_27;
-
-/// A 1.75 m walker in four meshes: the torso and head, one leg hung from its
-/// hip and one arm hung from its shoulder. Each limb's origin is its joint, so
-/// a rotation about x swings it.
-#[derive(Debug, Clone)]
-pub struct WalkerModel {
-    pub torso: ModelMesh,
-    pub leg: ModelMesh,
-    pub arm: ModelMesh,
-}
-
-#[must_use]
-pub fn walker() -> WalkerModel {
-    let mut torso = ModelMesh::default();
-    // Hips to shoulders, narrowing to the waist and out again.
-    torso.frustum(
-        [0.0, HIP_Y - 0.04, 0.0],
-        [0.17, 0.11],
-        [0.0, 1.16, 0.0],
-        [0.16, 0.10],
-        WHITE,
-    );
-    torso.frustum(
-        [0.0, 1.16, 0.0],
-        [0.16, 0.10],
-        [0.0, 1.47, 0.0],
-        [0.205, 0.11],
-        WHITE,
-    );
-    // Neck and head, the head a little forward of the spine.
-    let head = lin(HEAD);
-    torso.cuboid([0.0, 1.51, 0.01], [0.05, 0.04, 0.05], head);
-    torso.frustum(
-        [0.0, 1.54, 0.02],
-        [0.075, 0.09],
-        [0.0, 1.74, 0.01],
-        [0.08, 0.095],
-        head,
-    );
-
-    let mut leg = ModelMesh::default();
-    // Thigh and shin as one taper, then a shoe that points forward.
-    leg.frustum(
-        [0.0, -0.84, 0.0],
-        [0.055, 0.06],
-        [0.0, 0.0, 0.0],
-        [0.08, 0.09],
-        WHITE,
-    );
-    leg.cuboid([0.0, -0.87, 0.04], [0.055, 0.035, 0.13], lin(SHOE));
-
-    let mut arm = ModelMesh::default();
-    arm.frustum(
-        [0.0, -0.60, 0.0],
-        [0.04, 0.045],
-        [0.0, 0.03, 0.0],
-        [0.055, 0.06],
-        WHITE,
-    );
-    arm.cuboid([0.0, -0.65, 0.0], [0.035, 0.05, 0.04], head);
-
-    WalkerModel { torso, leg, arm }
-}
-
-/// One full gait cycle (two steps), metres. A step is about 0.7 m at an
-/// ordinary walking pace.
-pub const STRIDE_M: f32 = 1.4;
-
-/// The limb angles and body lift at `phase` (radians, one cycle per
-/// [`STRIDE_M`]) for a walker going at `pace` of its normal speed.
-///
-/// Returns `(left leg, right leg, left arm, right arm, lift)`: the legs swing
-/// in opposition, each arm against the leg on its own side, and the body is
-/// highest when the legs pass each other. At `pace` 0 everything rests at zero,
-/// so a walker that stops stands straight rather than freezing mid-stride.
-#[must_use]
-pub fn gait(phase: f32, pace: f32) -> (f32, f32, f32, f32, f32) {
-    let k = pace.clamp(0.0, 1.3);
-    let swing = phase.sin() * 0.42 * k;
-    let arm = phase.sin() * 0.30 * k;
-    let lift = (2.0 * phase).cos() * 0.5 + 0.5;
-    (swing, -swing, -arm, arm, (lift - 1.0) * 0.035 * k)
-}
-
 // ─── Crows ───────────────────────────────────────────────────────────────────
 
 /// The crow's neck joint on its body, which is where the head mesh's origin
@@ -1108,40 +1011,6 @@ mod tests {
         }
         assert!(seen.iter().all(|&n| n >= 15), "{seen:?}");
         assert!(seen[0] > seen[3], "more hatchbacks than vans: {seen:?}");
-    }
-
-    #[test]
-    fn a_stopped_walker_stands_straight() {
-        for phase in [0.0, 1.0, 2.5, 4.0] {
-            let (l, r, la, ra, lift) = gait(phase, 0.0);
-            assert_eq!((l, r, la, ra, lift), (0.0, 0.0, 0.0, 0.0, 0.0));
-        }
-        let (l, r, la, _, _) = gait(std::f32::consts::FRAC_PI_2, 1.0);
-        assert!(l > 0.3 && r < -0.3, "legs swing in opposition");
-        assert!(la * l < 0.0, "an arm swings against its own leg");
-    }
-
-    #[test]
-    fn the_walker_is_a_person_high() {
-        let w = walker();
-        let top = w
-            .torso
-            .positions
-            .iter()
-            .map(|p| p[1])
-            .fold(0.0f32, f32::max);
-        assert!((1.7..1.8).contains(&top), "{top}");
-        let foot = w
-            .leg
-            .positions
-            .iter()
-            .map(|p| p[1])
-            .fold(f32::MAX, f32::min);
-        assert!(
-            (HIP_Y + foot).abs() < 0.03,
-            "the foot reaches the ground: {}",
-            HIP_Y + foot
-        );
     }
 
     #[test]

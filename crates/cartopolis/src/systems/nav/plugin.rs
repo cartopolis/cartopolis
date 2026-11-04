@@ -32,7 +32,10 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::high_precision::HighPrecision>()
             .init_resource::<systems::high_precision::HighPrecisionLog>()
             .init_resource::<systems::route_ahead::RouteAhead>()
-            .init_resource::<systems::traffic::DriveNetwork>();
+            .init_resource::<systems::traffic::DriveNetwork>()
+            .init_resource::<systems::crowd::Crowd>()
+            .init_asset::<systems::crowd::CrowdSwatch>()
+            .init_asset_loader::<systems::crowd::CrowdSwatchLoader>();
 
         // The car pool. One mesh, a handful of materials and a fixed number of
         // entities, all built once — after which this layer uploads nothing
@@ -238,6 +241,10 @@ impl Plugin for NavPlugin {
                     .after(systems::free_camera::camera_controls),
                 // Ambient traffic: one transform write per car per frame, and no
                 // asset touched after startup (`systems::traffic`).
+                // The walkers' bodies: made a step a frame once the avatar pack is
+                // in, and put on each walker as its body comes up (`systems::crowd`).
+                systems::crowd::build_crowd,
+                systems::crowd::dress_walkers.after(systems::crowd::build_crowd),
                 systems::traffic::close_car_free_lines,
                 systems::traffic::drive_traffic.after(systems::traffic::close_car_free_lines),
                 // After it, because a passing walker can flush a feeding crow.
