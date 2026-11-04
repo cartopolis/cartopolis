@@ -556,10 +556,11 @@ fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
             .sense(egui::Sense::click()),
         );
         // The glyph is its only text, so it is named for what it does.
-        back = theme::named(ui, chevron, "Back")
+        let clicked = theme::named(ui, chevron, "Back")
             .on_hover_text("Back")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked();
+        back = theme::page_back(ui.ctx(), clicked);
         ui.label(
             egui::RichText::new(title)
                 .font(egui::FontId::new(

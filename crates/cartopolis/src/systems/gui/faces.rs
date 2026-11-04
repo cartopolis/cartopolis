@@ -551,7 +551,7 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
         if crate::platform::photo::offers(Source::Selfie) {
             buttons.push((icons::CAMERA, "Camera", 1));
         }
-        buttons.push((icons::CAM_FOLLOW, "Polaroid", 2));
+        buttons.push((icons::CAM_FOLLOW, "From the world", 2));
         if has {
             buttons.push((icons::DELETE, "Remove", 3));
         }

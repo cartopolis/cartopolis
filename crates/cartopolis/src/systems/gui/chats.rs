@@ -2113,11 +2113,11 @@ fn chat_header(
             .sense(egui::Sense::click()),
         );
         // The glyph is its only text, so it is named for what it does.
-        if theme::named(ui, back, "All chats")
+        let clicked = theme::named(ui, back, "All chats")
             .on_hover_text("All chats")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
+            .clicked();
+        if theme::page_back(ui.ctx(), clicked) {
             act.back = true;
         }
         avatar(ui, name, kind, 34.0);
@@ -4772,7 +4772,7 @@ pub fn render_chats_switch(
     }
 }
 
-/// Sign out from the You page: the same path as the main menu's Log out.
+/// Sign out from the You page: the same path as the main menu's Sign out.
 pub fn apply_sign_out(
     mut view: ResMut<ChatsView>,
     mut session: ResMut<crate::systems::session::SessionState>,
@@ -4845,9 +4845,10 @@ pub fn render_chat_world(
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        if circle_button(ui, icons::BACK, false, true, "Back to the chats")
-                            .clicked()
-                        {
+                        let clicked =
+                            circle_button(ui, icons::BACK, false, true, "Back to the chats")
+                                .clicked();
+                        if theme::page_back(ui.ctx(), clicked) {
                             act.back = true;
                         }
                         ui.label(

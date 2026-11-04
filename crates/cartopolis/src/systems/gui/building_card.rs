@@ -201,7 +201,7 @@ pub fn render_building_card(
                     if ui
                         .add_enabled(
                             can_open,
-                            egui::Button::new(format!("BAG viewer {}", icons::OPEN_EXTERNAL)),
+                            egui::Button::new(format!("Official record {}", icons::OPEN_EXTERNAL)),
                         )
                         .on_disabled_hover_text(NO_BROWSER)
                         .clicked()

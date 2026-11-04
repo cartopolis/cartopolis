@@ -407,9 +407,17 @@ impl std::error::Error for Rejected {}
 fn friendly_error(e: &anyhow::Error) -> String {
     if let Some(io) = e.downcast_ref::<std::io::Error>() {
         return match io.kind() {
-            std::io::ErrorKind::ConnectionRefused => "No simulator is listening there".to_string(),
+            // Shown on the sign-in card after the server's name. "No
+            // simulator is listening there" named the program, not the
+            // problem, and anything else was the raw OS text.
+            std::io::ErrorKind::ConnectionRefused => {
+                "Nothing answered there. Check the server name".to_string()
+            }
             std::io::ErrorKind::TimedOut => "The server did not answer".to_string(),
-            _ => io.to_string(),
+            _ => {
+                tracing::info!("connection error: {io}");
+                "Couldn't reach it. Check your internet connection".to_string()
+            }
         };
     }
     e.to_string()

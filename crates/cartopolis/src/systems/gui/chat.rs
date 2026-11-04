@@ -816,82 +816,95 @@ pub fn person_menu(
     extras: &PersonExtras,
     mut act: impl FnMut(PersonAction),
 ) {
-    response.context_menu(|ui| {
-        ui.label(egui::RichText::new(sender).strong().color(theme::CREAM));
-        ui.separator();
-        if ui.button("Message privately").clicked() {
-            act(PersonAction::Message);
-            ui.close();
-        }
-        if ui.button("Block").clicked() {
-            act(PersonAction::Block);
-            ui.close();
-        }
-        if extras.community.is_some() && message.is_some() {
-            if ui.button("Report to the moderators…").clicked() {
-                act(PersonAction::ReportToModerators(
-                    message.map(str::to_string),
-                ));
+    // Clicks inside keep the menu open, so the acts that arm first
+    // (`theme::confirm_button`) can show their second step; every act closes
+    // it explicitly.
+    egui::Popup::context_menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.label(egui::RichText::new(sender).strong().color(theme::CREAM));
+            ui.separator();
+            if ui.button("Message privately").clicked() {
+                act(PersonAction::Message);
                 ui.close();
             }
-        }
-        if ui.button("Report to the server…").clicked() {
-            act(PersonAction::Report(message.map(str::to_string)));
-            ui.close();
-        }
-        if let (Some(topic), Some(community)) = (&extras.moderate_topic, &extras.community) {
-            ui.separator();
-            ui.label(
-                egui::RichText::new(format!("Moderator · {community}"))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
-            );
-            if message.is_some()
-                && ui
-                    .button(egui::RichText::new("Delete for everyone").color(theme::ERROR))
+            // Arms first, like every other act that changes what someone else can
+            // do (`theme::confirm_button`): a block sat one row under "Message
+            // privately" and took effect on a mis-tap.
+            if theme::confirm_button(ui, ui.id().with(("block", sender)), "Block", "Block them?") {
+                act(PersonAction::Block);
+                ui.close();
+            }
+            if extras.community.is_some() && message.is_some() {
+                if ui.button("Report to the moderators…").clicked() {
+                    act(PersonAction::ReportToModerators(
+                        message.map(str::to_string),
+                    ));
+                    ui.close();
+                }
+            }
+            if ui.button("Report to the server…").clicked() {
+                act(PersonAction::Report(message.map(str::to_string)));
+                ui.close();
+            }
+            if let (Some(topic), Some(community)) = (&extras.moderate_topic, &extras.community) {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("Moderator · {community}"))
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                );
+                if message.is_some()
+                    && theme::confirm_button(
+                        ui,
+                        ui.id().with(("delete-for-everyone", sender)),
+                        "Delete for everyone",
+                        "Delete it for everyone?",
+                    )
+                {
+                    act(PersonAction::DeleteForEveryone);
+                    ui.close();
+                }
+                if ui
+                    .button(egui::RichText::new(format!("Remove from {topic}")).color(theme::ERROR))
                     .clicked()
-            {
-                act(PersonAction::DeleteForEveryone);
-                ui.close();
+                {
+                    act(PersonAction::RemoveFromTopic);
+                    ui.close();
+                }
+                if ui
+                    .button(egui::RichText::new("Remove from the community").color(theme::ERROR))
+                    .clicked()
+                {
+                    act(PersonAction::RemoveFromCommunity);
+                    ui.close();
+                }
             }
-            if ui
-                .button(egui::RichText::new(format!("Remove from {topic}")).color(theme::ERROR))
-                .clicked()
-            {
-                act(PersonAction::RemoveFromTopic);
-                ui.close();
+            if extras.admin {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("On this server · you are an admin")
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                );
+                if theme::confirm_button(
+                    ui,
+                    ui.id().with(("suspend", sender)),
+                    "Suspend account",
+                    "Suspend them?",
+                ) {
+                    act(PersonAction::Suspend);
+                    ui.close();
+                }
+                if ui
+                    .button(egui::RichText::new("Delete account…").color(theme::ERROR))
+                    .clicked()
+                {
+                    act(PersonAction::DeleteAccount);
+                    ui.close();
+                }
             }
-            if ui
-                .button(egui::RichText::new("Remove from the community").color(theme::ERROR))
-                .clicked()
-            {
-                act(PersonAction::RemoveFromCommunity);
-                ui.close();
-            }
-        }
-        if extras.admin {
-            ui.separator();
-            ui.label(
-                egui::RichText::new("On this server · you are an admin")
-                    .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
-            );
-            if ui
-                .button(egui::RichText::new("Suspend account").color(theme::ERROR))
-                .clicked()
-            {
-                act(PersonAction::Suspend);
-                ui.close();
-            }
-            if ui
-                .button(egui::RichText::new("Delete account…").color(theme::ERROR))
-                .clicked()
-            {
-                act(PersonAction::DeleteAccount);
-                ui.close();
-            }
-        }
-    });
+        });
 }
 
 /// The voice controls: arm the microphone, hold to talk, and see that it works.

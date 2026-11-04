@@ -148,7 +148,7 @@ impl SettingsTab {
     fn hint(self) -> Option<&'static str> {
         match self {
             Self::General => Some("Units, navigation, connection"),
-            Self::World => Some("Time of day, weather"),
+            Self::World => None,
             Self::Graphics => None,
             Self::Audio => Some("Volume, microphone, camera"),
             Self::Account => None,
@@ -160,7 +160,7 @@ impl SettingsTab {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
-            Self::World => "World",
+            Self::World => "Time and weather",
             Self::Graphics => "Graphics",
             Self::Audio => "Sound and voice",
             Self::Account => "Account",
@@ -962,6 +962,15 @@ fn general_tab(
         ui,
         &mut prefs.keep_screen_on,
         "Keep the screen on while Cartopolis is in front",
+    );
+
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "Developer");
+    theme::checkbox(
+        ui,
+        &mut prefs.developer_menu,
+        "Show Developer tools and Share diagnostics in the menu",
     );
 
     ui.add_space(8.0);

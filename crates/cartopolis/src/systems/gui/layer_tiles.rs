@@ -42,9 +42,9 @@ impl LayerCategory {
             Self::Map => "Map",
             Self::City => "City",
             Self::Places => "Places",
-            Self::Moving => "Moving",
-            Self::Under => "Under",
-            Self::Orbit => "Orbit",
+            Self::Moving => "Traffic",
+            Self::Under => "Below",
+            Self::Orbit => "Space",
         }
     }
 

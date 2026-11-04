@@ -83,6 +83,7 @@ pub fn render_main_menu(
     mut sign_in: SignInMenu,
     // Written here, read and cleared by `diagnostics::share_diagnostics`.
     mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
+    prefs: Res<crate::resources::AppPrefs>,
 ) {
     let dismissed_by_disc = std::mem::take(&mut menu.toggled);
     if !menu.open {
@@ -144,42 +145,43 @@ pub fn render_main_menu(
                         // see that helper for what a card of full-width buttons
                         // looked like.
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                            // **The account is the first entry**, because it is the
-                            // one thing in this card that changes what the app *is*
-                            // rather than what it shows — and because signed out,
-                            // it is the only thing here anybody is looking for.
-                            //
-                            // Signed in it is a single verb. It used to read
-                            // "jeroen · cartopolis.org" and open the sign-in card
-                            // again, where a Sign out button sat beside a Sign in
-                            // one: a modal, to leave.
+                            // **Who you are comes first**, written out. It was the
+                            // hover text of a "Log out" entry here, which a
+                            // touchscreen never shows; and "Log out" was the
+                            // first row, one mis-tap from the top of the card,
+                            // with nothing asking first. Signing out is the last
+                            // row now and arms before it acts
+                            // (`docs/mockups/ux-review`).
                             if sign_in.session.is_online() {
-                                let who = match sign_in.identity.username.as_deref() {
-                                    Some(user) => {
-                                        format!(
-                                            "Signed in as {user} · {}",
-                                            sign_in.session.mode.where_()
-                                        )
-                                    }
-                                    None => {
-                                        format!("Signed in to {}", sign_in.session.mode.where_())
-                                    }
-                                };
-                                if theme::menu_entry(ui, icons::LOGOUT, "Log out")
-                                    .on_hover_text(who)
-                                    .clicked()
-                                {
-                                    log_out = true;
+                                let user = sign_in.identity.username.as_deref();
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(user.unwrap_or("Signed in"))
+                                            .size(theme::SIZE_TITLE)
+                                            .color(theme::CREAM),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Signed in to {}",
+                                        sign_in.session.mode.where_()
+                                    ))
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::TEXT_DIM),
+                                );
+                            } else {
+                                if theme::menu_entry(ui, icons::KEY, "Sign in…").clicked() {
+                                    sign_in.screen.open = true;
                                     close = true;
                                 }
-                            } else if theme::menu_entry(ui, icons::KEY, "Sign in…")
-                                .on_hover_text(
-                                    "Share a world with other people on a simulator you can reach",
-                                )
-                                .clicked()
-                            {
-                                sign_in.screen.open = true;
-                                close = true;
+                                // What signing in is for, in words a phone shows:
+                                // this was a tooltip about "a simulator".
+                                ui.label(
+                                    egui::RichText::new("Meet people, chat and join communities")
+                                        .size(theme::SIZE_SUB)
+                                        .color(theme::TEXT_DIM),
+                                );
                             }
                             // **Why a session failure is reported here.** The
                             // sign-in card used to raise itself whenever one
@@ -256,56 +258,91 @@ pub fn render_main_menu(
                                     close = true;
                                 }
                             }
-                            ui.separator();
-                            // The inspection surface. It was two entries — this
-                            // one and a "Status readout" that put time, position
-                            // and altitude in a box over the top-right of the map
-                            // — and the readout is gone (`systems::hud`'s module
-                            // note): the position and altitude are two taps into
-                            // this panel, where somebody asking where the camera
-                            // is already is, and the sun and weather chips it also
-                            // carried are in Settings ▸ World.
-                            //
-                            // It carries the accent when it is open rather than
-                            // renaming itself to "Hide …": a toggle that is lit
-                            // says the same thing in a word less, and it is the
-                            // state the panel entries above already show.
-                            if theme::menu_entry_selected(
-                                ui,
-                                dev_state.open,
-                                icons::TUNE,
-                                "Developer tools",
-                            )
-                            .clicked()
-                            {
-                                dev_state.open = !dev_state.open;
-                                close = true;
-                            }
-                            // Next to the developer tools because it is one — but
-                            // above the fold rather than inside the dev panel,
-                            // because the person who needs it is holding a phone
-                            // and reporting a bug, not inspecting the renderer.
-                            // It is the only way anything a device knows about
-                            // itself gets off that device short of a crash
-                            // (`systems::diagnostics`).
-                            if theme::menu_entry(ui, icons::COPY, "Share diagnostics…")
-                                .on_hover_text(
-                                    "The build, the GPU, the render tier and what the \
-                                     avatar is doing, plus this run's log — to the share \
-                                     sheet on a phone, to the clipboard everywhere else",
+                            if prefs.developer_menu {
+                                ui.separator();
+                                // The inspection surface. It was two entries — this
+                                // one and a "Status readout" that put time, position
+                                // and altitude in a box over the top-right of the map
+                                // — and the readout is gone (`systems::hud`'s module
+                                // note): the position and altitude are two taps into
+                                // this panel, where somebody asking where the camera
+                                // is already is, and the sun and weather chips it also
+                                // carried are in Settings ▸ World.
+                                //
+                                // It carries the accent when it is open rather than
+                                // renaming itself to "Hide …": a toggle that is lit
+                                // says the same thing in a word less, and it is the
+                                // state the panel entries above already show.
+                                if theme::menu_entry_selected(
+                                    ui,
+                                    dev_state.open,
+                                    icons::TUNE,
+                                    "Developer tools",
                                 )
                                 .clicked()
-                            {
-                                diagnostics.pending = true;
-                            }
-                            if let Some(result) = diagnostics.last.as_deref() {
-                                theme::note(ui, result);
+                                {
+                                    dev_state.open = !dev_state.open;
+                                    close = true;
+                                }
+                                // Next to the developer tools because it is one — but
+                                // above the fold rather than inside the dev panel,
+                                // because the person who needs it is holding a phone
+                                // and reporting a bug, not inspecting the renderer.
+                                // It is the only way anything a device knows about
+                                // itself gets off that device short of a crash
+                                // (`systems::diagnostics`).
+                                if theme::menu_entry(ui, icons::COPY, "Share diagnostics…")
+                                    .on_hover_text(
+                                        "The build, the GPU, the render tier and what the \
+                                     avatar is doing, plus this run's log — to the share \
+                                     sheet on a phone, to the clipboard everywhere else",
+                                    )
+                                    .clicked()
+                                {
+                                    diagnostics.pending = true;
+                                }
+                                if let Some(result) = diagnostics.last.as_deref() {
+                                    theme::note(ui, result);
+                                }
                             }
                             ui.separator();
+                            if sign_in.session.is_online() {
+                                // Arms in place, as `theme::confirm_button` does:
+                                // the first tap asks, the second signs out, and
+                                // a stray tap times out.
+                                let id = egui::Id::new("main_menu_sign_out");
+                                let now = ui.input(|i| i.time);
+                                let armed = ui
+                                    .memory(|m| m.data.get_temp::<f64>(id))
+                                    .is_some_and(|t| now - t < 3.0);
+                                let label = if armed {
+                                    "Sign out? Tap again"
+                                } else {
+                                    "Sign out"
+                                };
+                                if theme::menu_entry(ui, icons::LOGOUT, label).clicked() {
+                                    if armed {
+                                        ui.memory_mut(|m| m.data.remove::<f64>(id));
+                                        log_out = true;
+                                        close = true;
+                                    } else {
+                                        ui.memory_mut(|m| m.data.insert_temp(id, now));
+                                    }
+                                }
+                                if armed {
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+                            // Desktop only: an Android app does not quit (Back
+                            // from the map sends it to the background), and a
+                            // browser tab is closed by the browser.
+                            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
                             if theme::menu_entry(ui, icons::CLEAR, "Exit").clicked() {
                                 app_exit.write(AppExit::Success);
                                 close = true;
                             }
+                            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+                            let _ = &mut app_exit;
                         });
                     });
             });

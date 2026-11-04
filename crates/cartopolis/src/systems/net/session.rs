@@ -337,7 +337,7 @@ pub const fn can_simulate() -> bool {
     true
 }
 
-/// Leave the world and go back to the offline map — the app menu's **Log out**,
+/// Leave the world and go back to the offline map — the app menu's **Sign out**,
 /// which is the only place it is offered. The sign-in card had one too, for the
 /// case where a failure raised that card over a session that was still live; the
 /// card is opened from this same menu now and closes the moment a session comes

@@ -917,10 +917,10 @@ fn thread_view(
     post: Uuid,
     out: &mut Out,
 ) {
-    if ui
+    let clicked = ui
         .add(egui::Button::new(format!("{}  Posts", icons::CHEVRON_LEFT)).frame(false))
-        .clicked()
-    {
+        .clicked();
+    if theme::page_back(ui.ctx(), clicked) {
         cs.posts.thread_open = None;
         cs.posts.thread = None;
         return;

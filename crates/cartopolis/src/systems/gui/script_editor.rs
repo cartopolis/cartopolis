@@ -275,7 +275,7 @@ pub fn render_script_panel(
         |ui| {
             let Some(prim_id) = prim_id else {
                 ui.label(
-                    egui::RichText::new("Right-click a prim and choose Edit script.")
+                    egui::RichText::new("Hold or right-click an object and choose Script.")
                         .color(theme::TEXT_DIM),
                 );
                 return;

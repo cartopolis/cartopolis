@@ -97,7 +97,7 @@ impl RightPanel {
             // "Community", the word the web page's switch uses: the panel
             // holds communities, the public chats and people, not only chats.
             Self::Chat => "Community",
-            Self::Appearance => "Appearance",
+            Self::Appearance => "Avatar",
             Self::Script => "Script",
             Self::Models => "Models",
             Self::Settings => "Settings",
@@ -580,6 +580,12 @@ pub struct AppPrefs {
     /// between them.
     #[serde(default = "yes")]
     pub mcp_enabled: bool,
+    /// Developer tools and Share diagnostics in the main menu. Off by
+    /// default: they were the menu's middle third for everyone, between
+    /// About and Exit, and nobody but a developer or a bug report needs them
+    /// (`docs/mockups/ux-review`). Ctrl+Shift+D opens the tools either way.
+    #[serde(default)]
+    pub developer_menu: bool,
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -625,6 +631,7 @@ impl Default for AppPrefs {
             background_connection: false,
             debug_switches: DebugSwitches::default(),
             mcp_enabled: yes(),
+            developer_menu: false,
         }
     }
 }
@@ -2193,6 +2200,7 @@ mod tests {
             // `false`, so a round trip that left it `false` would pass with the
             // field missing from the document entirely.
             background_connection: true,
+            developer_menu: true,
             // Set, for the same reason the two `Some(..)` above are: a nested
             // object that round-trips only while it is all-default proves nothing
             // about the nesting.

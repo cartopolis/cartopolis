@@ -73,6 +73,9 @@ pub struct Dismissable<'w> {
     pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
     pub calls: ResMut<'w, crate::systems::calls::Calls>,
     pub camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
+    pub place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
+    pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    pub building: ResMut<'w, crate::systems::building_select::BuildingSelection>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -130,8 +133,20 @@ pub enum Rung {
     /// Driver mode. Below the menu because the menu draws over it, and a gesture
     /// should not step past something visibly on top.
     DriverMode,
+    /// A page inside a panel with a back chevron (Community ▸ You ▸ Contacts):
+    /// a press steps back one page, as the chevron does (`theme::page_back`),
+    /// instead of dropping the whole stack with the panel.
+    PanelPage,
     /// The open right panel.
     RightPanel,
+    /// A person's card over the map. The cards come after the panel because
+    /// on a phone the panel covers them; before, Back with a card up skipped
+    /// them and sent the app to the background.
+    PersonCard,
+    /// The place card a search pick opens.
+    PlaceCard,
+    /// The building card a tap on a building opens.
+    BuildingCard,
 }
 
 /// What is open right now — the ladder's whole input, as plain data.
@@ -156,6 +171,10 @@ pub struct OpenSurfaces {
     pub main_menu: bool,
     pub driver_mode: bool,
     pub right_panel: bool,
+    pub panel_page: bool,
+    pub person_card: bool,
+    pub place_card: bool,
+    pub building_card: bool,
 }
 
 impl OpenSurfaces {
@@ -188,8 +207,16 @@ impl OpenSurfaces {
             Some(Rung::MainMenu)
         } else if self.driver_mode {
             Some(Rung::DriverMode)
+        } else if self.panel_page {
+            Some(Rung::PanelPage)
         } else if self.right_panel {
             Some(Rung::RightPanel)
+        } else if self.person_card {
+            Some(Rung::PersonCard)
+        } else if self.place_card {
+            Some(Rung::PlaceCard)
+        } else if self.building_card {
+            Some(Rung::BuildingCard)
         } else {
             None
         }
@@ -201,7 +228,7 @@ impl Dismissable<'_> {
     /// already cleared the focus by the time this runs — the question is whether
     /// a field held the keyboard when the frame *began*.
     #[must_use]
-    pub fn surfaces(&self, text_focused: bool) -> OpenSurfaces {
+    pub fn surfaces(&self, text_focused: bool, ctx: &egui::Context) -> OpenSurfaces {
         OpenSurfaces {
             keyboard: self.keyboard.is_open(),
             text_focused,
@@ -216,14 +243,18 @@ impl Dismissable<'_> {
             main_menu: self.menu.open,
             driver_mode: self.driver.active,
             right_panel: *self.panel != RightPanel::None,
+            panel_page: crate::systems::theme::page_back_shown(ctx),
+            person_card: self.contacts.card.is_some(),
+            place_card: self.place_card.place.is_some(),
+            building_card: self.building.selected.is_some(),
         }
     }
 
     /// Put away the innermost open thing, and only that one. Returns the rung
     /// that fired, so `Back` can tell "nothing was open" from "something closed"
     /// and decide whether to quit.
-    pub fn dismiss_innermost(&mut self, text_focused: bool) -> Option<Rung> {
-        let rung = self.surfaces(text_focused).innermost()?;
+    pub fn dismiss_innermost(&mut self, text_focused: bool, ctx: &egui::Context) -> Option<Rung> {
+        let rung = self.surfaces(text_focused, ctx).innermost()?;
         match rung {
             Rung::Keyboard => self.keyboard.dismiss(),
             // egui already did it; claiming the press is the whole point.
@@ -240,7 +271,14 @@ impl Dismissable<'_> {
             Rung::SignIn => self.login.open = false,
             Rung::MainMenu => self.menu.open = false,
             Rung::DriverMode => self.driver.exit(),
+            Rung::PanelPage => crate::systems::theme::press_page_back(ctx),
             Rung::RightPanel => *self.panel = RightPanel::None,
+            Rung::PersonCard => {
+                self.contacts.card = None;
+                self.contacts.error = None;
+            }
+            Rung::PlaceCard => self.place_card.place = None,
+            Rung::BuildingCard => self.building.clear(),
         }
         Some(rung)
     }
@@ -254,7 +292,7 @@ pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, egui: EguiRef, mut d: Dism
         return;
     }
     let text_focused = egui.ctx.text_edit_focused();
-    let _ = d.dismiss_innermost(text_focused);
+    let _ = d.dismiss_innermost(text_focused, &egui.ctx);
 }
 
 #[cfg(test)]
@@ -277,6 +315,10 @@ mod tests {
             main_menu: true,
             driver_mode: true,
             right_panel: true,
+            panel_page: true,
+            person_card: true,
+            place_card: true,
+            building_card: true,
         }
     }
 
@@ -295,7 +337,11 @@ mod tests {
             Rung::SignIn => s.sign_in = false,
             Rung::MainMenu => s.main_menu = false,
             Rung::DriverMode => s.driver_mode = false,
+            Rung::PanelPage => s.panel_page = false,
             Rung::RightPanel => s.right_panel = false,
+            Rung::PersonCard => s.person_card = false,
+            Rung::PlaceCard => s.place_card = false,
+            Rung::BuildingCard => s.building_card = false,
         }
     }
 
@@ -312,7 +358,7 @@ mod tests {
         while let Some(rung) = s.innermost() {
             close(&mut s, rung);
             fired.push(rung);
-            assert!(fired.len() <= 16, "the ladder does not terminate");
+            assert!(fired.len() <= 20, "the ladder does not terminate");
         }
         assert_eq!(
             fired,
@@ -329,7 +375,11 @@ mod tests {
                 Rung::SignIn,
                 Rung::MainMenu,
                 Rung::DriverMode,
+                Rung::PanelPage,
                 Rung::RightPanel,
+                Rung::PersonCard,
+                Rung::PlaceCard,
+                Rung::BuildingCard,
             ]
         );
         assert_eq!(s, OpenSurfaces::default());
@@ -368,6 +418,46 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.innermost(), Some(Rung::TextFocus));
+    }
+
+    /// Back with only a card on the map closes the card. The cards were not on
+    /// the ladder, so the press found nothing open and the phone sent the app to
+    /// the background with a place still on screen.
+    #[test]
+    fn a_card_on_the_map_is_closed_before_the_app_goes() {
+        for s in [
+            OpenSurfaces {
+                place_card: true,
+                ..Default::default()
+            },
+            OpenSurfaces {
+                building_card: true,
+                ..Default::default()
+            },
+            OpenSurfaces {
+                person_card: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(s.innermost().is_some(), "{s:?}");
+        }
+    }
+
+    /// A page two levels into a panel steps back a page, and the panel itself
+    /// closes only once no page with a back chevron is left.
+    #[test]
+    fn a_page_steps_back_before_its_panel_closes() {
+        let s = OpenSurfaces {
+            panel_page: true,
+            right_panel: true,
+            ..Default::default()
+        };
+        assert_eq!(s.innermost(), Some(Rung::PanelPage));
+        let root = OpenSurfaces {
+            right_panel: true,
+            ..Default::default()
+        };
+        assert_eq!(root.innermost(), Some(Rung::RightPanel));
     }
 
     /// A sign-in request in flight disables the card's own close button; Escape
@@ -417,7 +507,10 @@ pub fn handle_back_gesture(
     // two gestures is this last rung, which is why it is the only thing written
     // here.
     let text_focused = egui.ctx.text_edit_focused();
-    if dismissable.dismiss_innermost(text_focused).is_none() {
+    if dismissable
+        .dismiss_innermost(text_focused, &egui.ctx)
+        .is_none()
+    {
         // On the phone the last rung is "to the background", not "quit": quitting
         // ends the process there, so coming back was a cold start that had
         // forgotten the tab, the open chat and any call (`move_task_to_back`).

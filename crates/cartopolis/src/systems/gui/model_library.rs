@@ -577,7 +577,7 @@ pub fn render_model_library_panel(
                      to show. An operator turns one on with --http-listen, or names it with \
                      api_base_url."
                 } else {
-                    "Models live on a simulator. Sign in to a server to see yours."
+                    "Models belong to your account. Sign in to see yours."
                 };
                 ui.label(egui::RichText::new(message).color(theme::TEXT_DIM));
                 return;

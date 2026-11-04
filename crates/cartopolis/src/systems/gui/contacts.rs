@@ -1403,11 +1403,11 @@ fn title_row(
             .sense(egui::Sense::click()),
         );
         // The glyph is its only text, so it is named for what it does.
-        if theme::named(ui, back, "Back")
+        let clicked = theme::named(ui, back, "Back")
             .on_hover_text("Back")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
+            .clicked();
+        if theme::page_back(ui.ctx(), clicked) {
             act.back = true;
         }
         ui.label(
