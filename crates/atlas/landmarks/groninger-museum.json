@@ -1,0 +1,771 @@
+{
+ "name": "Groninger Museum",
+ "pand": "0014100010910697",
+ "origin": [
+  53.2122888,
+  6.5661007
+ ],
+ "rotation_deg": 86.1,
+ "sources": [
+  "parts and heights: AHN surface model in the gather frame (tower 31 m, wings 11 m, east pavilion 13-18 m, Starck drum 7 m on a 3.5 m brick base), outline BAG",
+  "colours and parts: PDOK 8 cm aerial and Commons photographs (Jan Geerling 1510-001..012, CC BY-SA 4.0; '20140614 Groninger Museum Groningen NL.jpg', Wutsje, CC BY-SA 3.0)",
+  "the east pavilion's mosaic and steel plates are drawn as one pastel colour and three tilted plates; their positions follow the photographs, not a measurement",
+  "nothing is drawn on the station footbridge's line (local y -26..-18, and x -6..6 along the entrance pier); the low terraces either side are 3 m slabs"
+ ],
+ "materials": {
+  "gold": {
+   "rgb": [
+    214,
+    170,
+    46
+   ]
+  },
+  "mint": {
+   "rgb": [
+    170,
+    200,
+    178
+   ]
+  },
+  "window": {
+   "rgb": [
+    48,
+    60,
+    78
+   ]
+  },
+  "zinc": {
+   "rgb": [
+    128,
+    138,
+    148
+   ]
+  },
+  "mosaic": {
+   "rgb": [
+    188,
+    176,
+    196
+   ]
+  },
+  "glass": {
+   "rgb": [
+    110,
+    140,
+    165
+   ]
+  },
+  "steel": {
+   "rgb": [
+    38,
+    38,
+    42
+   ]
+  },
+  "rust": {
+   "rgb": [
+    170,
+    82,
+    44
+   ]
+  },
+  "brick": {
+   "rgb": [
+    150,
+    74,
+    58
+   ]
+  },
+  "silver": {
+   "rgb": [
+    198,
+    202,
+    206
+   ]
+  }
+ },
+ "parts": [
+  {
+   "name": "gold tower",
+   "material": "gold",
+   "shape": {
+    "rect": {
+     "w": 11,
+     "d": 20
+    }
+   },
+   "at": [
+    [
+     0.5,
+     0.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     30,
+     1
+    ]
+   ],
+   "openings": [
+    {
+     "faces": [
+      0,
+      2
+     ],
+     "kind": "rect",
+     "count": 2,
+     "w": 1.6,
+     "from": 25.5,
+     "to": 27.5,
+     "depth": 0.3,
+     "material": "window"
+    }
+   ]
+  },
+  {
+   "name": "north wing",
+   "material": "mint",
+   "shape": {
+    "rect": {
+     "w": 18,
+     "d": 19
+    }
+   },
+   "at": [
+    [
+     -15,
+     0.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     11,
+     1
+    ]
+   ],
+   "openings": [
+    {
+     "faces": [],
+     "kind": "rect",
+     "count": 4,
+     "w": 2.2,
+     "from": 3.6,
+     "to": 5.6,
+     "depth": 0.3,
+     "material": "window"
+    },
+    {
+     "faces": [],
+     "kind": "rect",
+     "count": 4,
+     "w": 2.2,
+     "from": 7.4,
+     "to": 9.4,
+     "depth": 0.3,
+     "material": "window"
+    }
+   ]
+  },
+  {
+   "name": "south wing",
+   "material": "mint",
+   "shape": {
+    "rect": {
+     "w": 15,
+     "d": 19
+    }
+   },
+   "at": [
+    [
+     16.5,
+     0.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     11,
+     1
+    ]
+   ],
+   "openings": [
+    {
+     "faces": [],
+     "kind": "rect",
+     "count": 3,
+     "w": 2.2,
+     "from": 3.6,
+     "to": 5.6,
+     "depth": 0.3,
+     "material": "window"
+    },
+    {
+     "faces": [],
+     "kind": "rect",
+     "count": 3,
+     "w": 2.2,
+     "from": 7.4,
+     "to": 9.4,
+     "depth": 0.3,
+     "material": "window"
+    }
+   ]
+  },
+  {
+   "name": "east pavilion",
+   "material": "mosaic",
+   "layers": [
+    {
+     "h": 0,
+     "points": [
+      [
+       -28,
+       28
+      ],
+      [
+       22,
+       28
+      ],
+      [
+       22,
+       68
+      ],
+      [
+       -28,
+       68
+      ]
+     ]
+    },
+    {
+     "h": 8,
+     "points": [
+      [
+       -23,
+       30
+      ],
+      [
+       18,
+       30
+      ],
+      [
+       18,
+       66
+      ],
+      [
+       -23,
+       66
+      ]
+     ]
+    },
+    {
+     "h": 13.5,
+     "points": [
+      [
+       -19,
+       32
+      ],
+      [
+       15,
+       32
+      ],
+      [
+       15,
+       64
+      ],
+      [
+       -19,
+       64
+      ]
+     ]
+    }
+   ],
+   "openings": [
+    {
+     "faces": [
+      0,
+      2
+     ],
+     "kind": "rect",
+     "count": 3,
+     "w": 3.0,
+     "from": 9,
+     "to": 11.5,
+     "depth": 0.3,
+     "material": "window"
+    }
+   ]
+  },
+  {
+   "name": "east glass box",
+   "material": "glass",
+   "shape": {
+    "rect": {
+     "w": 12,
+     "d": 14
+    }
+   },
+   "at": [
+    [
+     -2,
+     48
+    ]
+   ],
+   "rings": [
+    [
+     13.5,
+     1
+    ],
+    [
+     17.5,
+     1
+    ]
+   ],
+   "solid": false
+  },
+  {
+   "name": "black plate",
+   "material": "steel",
+   "solid": false,
+   "layers": [
+    {
+     "h": 7,
+     "points": [
+      [
+       -20,
+       26.5
+      ],
+      [
+       -5,
+       26.5
+      ],
+      [
+       -5,
+       27.1
+      ],
+      [
+       -20,
+       27.1
+      ]
+     ]
+    },
+    {
+     "h": 18,
+     "points": [
+      [
+       -20,
+       23.0
+      ],
+      [
+       -5,
+       23.0
+      ],
+      [
+       -5,
+       23.6
+      ],
+      [
+       -20,
+       23.6
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rust plate north",
+   "material": "rust",
+   "solid": false,
+   "layers": [
+    {
+     "h": 8,
+     "points": [
+      [
+       -28.6,
+       36
+      ],
+      [
+       -28,
+       36
+      ],
+      [
+       -28,
+       50
+      ],
+      [
+       -28.6,
+       50
+      ]
+     ]
+    },
+    {
+     "h": 19,
+     "points": [
+      [
+       -32.5,
+       36
+      ],
+      [
+       -31.9,
+       36
+      ],
+      [
+       -31.9,
+       50
+      ],
+      [
+       -32.5,
+       50
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rust plate south",
+   "material": "rust",
+   "solid": false,
+   "layers": [
+    {
+     "h": 7,
+     "points": [
+      [
+       22,
+       50
+      ],
+      [
+       22.6,
+       50
+      ],
+      [
+       22.6,
+       62
+      ],
+      [
+       22,
+       62
+      ]
+     ]
+    },
+    {
+     "h": 17,
+     "points": [
+      [
+       25.5,
+       50
+      ],
+      [
+       26.1,
+       50
+      ],
+      [
+       26.1,
+       62
+      ],
+      [
+       25.5,
+       62
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "starck base",
+   "material": "brick",
+   "shape": {
+    "rect": {
+     "w": 47,
+     "d": 39
+    }
+   },
+   "at": [
+    [
+     0.5,
+     -61.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.5,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "starck drum",
+   "material": "silver",
+   "shape": {
+    "ngon": {
+     "sides": 36,
+     "r": 15.5
+    }
+   },
+   "at": [
+    [
+     -1.5,
+     -60.5
+    ]
+   ],
+   "rings": [
+    [
+     3.5,
+     1
+    ],
+    [
+     7.0,
+     1
+    ],
+    [
+     7.0,
+     0.97
+    ],
+    [
+     7.6,
+     0.97
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "rect",
+     "count": 1,
+     "w": 1.2,
+     "from": 4.2,
+     "to": 6.4,
+     "depth": 0.25,
+     "material": "window",
+     "faces": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34
+     ]
+    }
+   ]
+  },
+  {
+   "name": "starck lantern",
+   "material": "silver",
+   "shape": {
+    "ngon": {
+     "sides": 8,
+     "r": 1.6
+    }
+   },
+   "at": [
+    [
+     -1.5,
+     -60.5
+    ]
+   ],
+   "rings": [
+    [
+     7.6,
+     1
+    ],
+    [
+     9.6,
+     1
+    ],
+    [
+     10.4,
+     0
+    ]
+   ],
+   "solid": false
+  },
+  {
+   "name": "plaza nw",
+   "material": "zinc",
+   "shape": {
+    "rect": {
+     "w": 15,
+     "d": 7
+    }
+   },
+   "at": [
+    [
+     -15.5,
+     -14.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.0,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "plaza sw",
+   "material": "zinc",
+   "shape": {
+    "rect": {
+     "w": 16,
+     "d": 7
+    }
+   },
+   "at": [
+    [
+     16.0,
+     -14.5
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.0,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "plaza ne",
+   "material": "zinc",
+   "shape": {
+    "rect": {
+     "w": 15,
+     "d": 8
+    }
+   },
+   "at": [
+    [
+     -15.5,
+     -30.0
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.0,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "plaza se",
+   "material": "zinc",
+   "shape": {
+    "rect": {
+     "w": 16,
+     "d": 8
+    }
+   },
+   "at": [
+    [
+     16.0,
+     -30.0
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.0,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "link",
+   "material": "zinc",
+   "shape": {
+    "rect": {
+     "w": 18,
+     "d": 14
+    }
+   },
+   "at": [
+    [
+     -1.0,
+     19.0
+    ]
+   ],
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     3.0,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "small dome",
+   "material": "zinc",
+   "shape": {
+    "ngon": {
+     "sides": 20,
+     "r": 5
+    }
+   },
+   "at": [
+    [
+     -1,
+     19
+    ]
+   ],
+   "rings": [
+    [
+     3.0,
+     1
+    ],
+    [
+     4.2,
+     1
+    ],
+    [
+     5.4,
+     0.62
+    ],
+    [
+     6.0,
+     0
+    ]
+   ],
+   "solid": false
+  }
+ ]
+}

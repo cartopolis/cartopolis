@@ -44,7 +44,9 @@ pub struct Material {
 pub struct Part {
     pub name: String,
     pub material: String,
-    pub shape: Shape,
+    /// The plan, scaled through `rings`. Absent when the part is `layers`.
+    #[serde(default)]
+    pub shape: Option<Shape>,
     /// Where copies of the part stand, local metres; one at `(0, 0)` when empty.
     #[serde(default)]
     pub at: Vec<[f64; 2]>,
@@ -54,7 +56,17 @@ pub struct Part {
     /// `(height above ground, scale of the plan shape)`, bottom to top. Two
     /// rings at one height are a step (a ledge or a set-back); a last scale of
     /// 0 closes the part to a point (a spire).
+    #[serde(default)]
     pub rings: Vec<[f64; 2]>,
+    /// Instead of `shape` and `rings`: the plan at each height, local metres,
+    /// bottom to top — for a part whose faces each lean their own way. Layers
+    /// with as many points as each other are joined point to point; otherwise
+    /// each is resampled to `samples` points by angle round the first layer's
+    /// centre, which needs every layer to be star-shaped about it.
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub samples: Option<usize>,
     #[serde(default)]
     pub openings: Vec<Opening>,
     /// Whether avatars bump into it. Its openings' panels never do.
@@ -64,6 +76,14 @@ pub struct Part {
 
 fn yes() -> bool {
     true
+}
+
+/// One plan of a `layers` part.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Layer {
+    pub h: f64,
+    pub points: Vec<[f64; 2]>,
 }
 
 /// A plan shape, centred on the part's position.
@@ -79,7 +99,9 @@ pub enum Shape {
     Polygon { points: Vec<[f64; 2]> },
 }
 
-/// Openings cut into a part's vertical faces, evenly spaced along each face.
+/// Openings cut into a part's faces, evenly spaced along each face. On a
+/// leaning face, `w` and the spacing are measured along its bottom edge and
+/// `from`/`to` are heights, so a window keeps its height above the street.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Opening {
@@ -171,10 +193,24 @@ impl Kit {
                     .ok_or_else(|| format!("part {}: no material {m:?}", part.name))
             };
             named(&part.material)?;
-            if part.rings.len() < 2 {
-                return Err(format!("part {}: needs two rings or more", part.name));
-            }
-            if part.rings.windows(2).any(|w| w[1][0] < w[0][0]) {
+            let heights: Vec<f64> = match (&part.shape, part.layers.is_empty()) {
+                (Some(_), true) if part.rings.len() >= 2 => {
+                    part.rings.iter().map(|r| r[0]).collect()
+                }
+                (None, false) if part.layers.len() >= 2 && part.rings.is_empty() => {
+                    if part.layers.iter().any(|l| l.points.len() < 3) {
+                        return Err(format!("part {}: a layer needs three points", part.name));
+                    }
+                    part.layers.iter().map(|l| l.h).collect()
+                }
+                _ => {
+                    return Err(format!(
+                        "part {}: give a shape with two rings or more, or two layers or more",
+                        part.name
+                    ))
+                }
+            };
+            if heights.windows(2).any(|w| w[1] < w[0]) {
                 return Err(format!("part {}: rings must go up", part.name));
             }
             for o in &part.openings {
@@ -182,9 +218,10 @@ impl Kit {
                 if o.to <= o.from || o.w <= 0.0 {
                     return Err(format!("part {}: an opening has no size", part.name));
                 }
-                if vertical_span(&part.rings, o.from, o.to).is_none() {
+                if span(&heights, o.from, o.to).is_none() {
                     return Err(format!(
-                        "part {}: an opening at {}–{} m is not on a vertical face",
+                        "part {}: an opening at {}–{} m does not fit within one stretch \
+                         between two rings",
                         part.name, o.from, o.to
                     ));
                 }
@@ -211,19 +248,29 @@ impl Kit {
             };
             for (k, pos) in at.iter().enumerate() {
                 let (s, c) = part.rotate_deg.to_radians().sin_cos();
-                let plan: Vec<[f64; 2]> = plan(&part.shape)?
-                    .into_iter()
-                    .map(|q| {
-                        self.to_en([q[0] * c - q[1] * s + pos[0], q[0] * s + q[1] * c + pos[1]])
-                    })
-                    .collect();
-                let centre = self.to_en(*pos);
+                let place = |q: [f64; 2]| {
+                    self.to_en([q[0] * c - q[1] * s + pos[0], q[0] * s + q[1] * c + pos[1]])
+                };
+                let stack: Vec<(f64, Vec<[f64; 2]>)> = match &part.shape {
+                    Some(shape) => {
+                        let plan: Vec<[f64; 2]> = plan(shape)?.into_iter().map(place).collect();
+                        let centre = self.to_en(*pos);
+                        part.rings
+                            .iter()
+                            .map(|r| (r[0], scaled(&plan, centre, r[1])))
+                            .collect()
+                    }
+                    None => layered(&part.layers, part.samples)?
+                        .into_iter()
+                        .map(|(h, ring)| (h, ring.into_iter().map(place).collect()))
+                        .collect(),
+                };
                 let name = if at.len() > 1 {
                     format!("{} {k}", part.name)
                 } else {
                     part.name.clone()
                 };
-                out.extend(loft(part, &name, &plan, centre)?);
+                out.extend(loft(part, &name, &stack)?);
             }
         }
         Ok(out)
@@ -271,12 +318,87 @@ fn plan(shape: &Shape) -> Result<Vec<[f64; 2]>, String> {
     Ok(ring)
 }
 
-/// The ring index `k` such that rings `k` and `k + 1` are one vertical stretch
-/// (same scale) holding `from..to`.
-fn vertical_span(rings: &[[f64; 2]], from: f64, to: f64) -> Option<usize> {
-    rings.windows(2).position(|w| {
-        (w[0][1] - w[1][1]).abs() < 1e-9 && w[0][0] <= from + 1e-6 && to <= w[1][0] + 1e-6
-    })
+/// The ring index `k` such that rings `k` and `k + 1` are one stretch (not a
+/// step) holding `from..to`.
+fn span(heights: &[f64], from: f64, to: f64) -> Option<usize> {
+    heights
+        .windows(2)
+        .position(|w| w[1] - w[0] > 1e-9 && w[0] <= from + 1e-6 && to <= w[1] + 1e-6)
+}
+
+fn ccw(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let area: f64 = (0..points.len())
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % points.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    if area < 0.0 {
+        points.iter().rev().copied().collect()
+    } else {
+        points.to_vec()
+    }
+}
+
+/// A `layers` part as rings of equal length, counter-clockwise.
+fn layered(layers: &[Layer], samples: Option<usize>) -> Result<Vec<(f64, Vec<[f64; 2]>)>, String> {
+    let rings: Vec<Vec<[f64; 2]>> = layers.iter().map(|l| ccw(&l.points)).collect();
+    let same = rings.iter().all(|r| r.len() == rings[0].len());
+    if same && samples.is_none() {
+        return Ok(layers.iter().map(|l| l.h).zip(rings).collect());
+    }
+    let n = samples.unwrap_or(32).max(3);
+    let c = {
+        let r = &rings[0];
+        let k = r.len() as f64;
+        [
+            r.iter().map(|q| q[0]).sum::<f64>() / k,
+            r.iter().map(|q| q[1]).sum::<f64>() / k,
+        ]
+    };
+    let mut out = Vec::new();
+    for (l, ring) in layers.iter().zip(&rings) {
+        let mut pts = Vec::with_capacity(n);
+        for i in 0..n {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            let d = [a.cos(), a.sin()];
+            // The nearest crossing of the ray from the centre with the ring.
+            let mut best: Option<f64> = None;
+            for e in 0..ring.len() {
+                let (p, q) = (ring[e], ring[(e + 1) % ring.len()]);
+                let s = [q[0] - p[0], q[1] - p[1]];
+                let den = d[0] * s[1] - d[1] * s[0];
+                if den.abs() < 1e-12 {
+                    continue;
+                }
+                let w = [p[0] - c[0], p[1] - c[1]];
+                let t = (w[0] * s[1] - w[1] * s[0]) / den;
+                let u = (w[0] * d[1] - w[1] * d[0]) / den;
+                if t > 0.0 && (-1e-9..=1.0 + 1e-9).contains(&u) {
+                    best = Some(best.map_or(t, |b: f64| b.min(t)));
+                }
+            }
+            let t = best.ok_or_else(|| {
+                format!(
+                    "the layer at {} m does not surround the first layer's centre",
+                    l.h
+                )
+            })?;
+            pts.push([c[0] + d[0] * t, c[1] + d[1] * t]);
+        }
+        out.push((l.h, pts));
+    }
+    Ok(out)
+}
+
+fn area(ring: &[[f64; 2]]) -> f64 {
+    (0..ring.len())
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f64>()
+        / 2.0
 }
 
 fn scaled(plan: &[[f64; 2]], centre: [f64; 2], s: f64) -> Vec<[f64; 2]> {
@@ -338,14 +460,12 @@ fn outline(kind: OpeningKind, u: f64, w: f64, from: f64, to: f64) -> Vec<[f64; 2
     }
 }
 
-/// One part at one position: the loft, its caps, and its openings.
-fn loft(
-    part: &Part,
-    name: &str,
-    plan: &[[f64; 2]],
-    centre: [f64; 2],
-) -> Result<Vec<Piece>, String> {
-    let n = plan.len();
+/// One part at one position: the loft through its rings, its caps, and its
+/// openings. `stack` is `(height, ring)` bottom to top, rings of one length,
+/// east/north, counter-clockwise.
+fn loft(part: &Part, name: &str, stack: &[(f64, Vec<[f64; 2]>)]) -> Result<Vec<Piece>, String> {
+    let n = stack[0].1.len();
+    let heights: Vec<f64> = stack.iter().map(|s| s.0).collect();
     let mut wall = Piece {
         name: if part.solid {
             format!("{name} wall")
@@ -358,25 +478,25 @@ fn loft(
     };
     // Openings' panels, one piece per material.
     let mut panels: BTreeMap<String, Piece> = BTreeMap::new();
-    let rings = &part.rings;
+    let point = |ring: &[[f64; 2]]| area(ring).abs() < 1e-9;
     // Bottom cap, facing down (clockwise seen from above).
-    if rings[0][1] > 0.0 {
-        let b = scaled(plan, centre, rings[0][1]);
-        let ring: Vec<[f64; 3]> = b.iter().rev().map(|q| [q[0], q[1], rings[0][0]]).collect();
+    let (h_bottom, bottom) = &stack[0];
+    if !point(bottom) {
+        let ring: Vec<[f64; 3]> = bottom
+            .iter()
+            .rev()
+            .map(|q| [q[0], q[1], *h_bottom])
+            .collect();
         wall.fan(&ring);
     }
-    for k in 0..rings.len() - 1 {
-        let ([h0, s0], [h1, s1]) = (rings[k], rings[k + 1]);
-        let lo = scaled(plan, centre, s0);
-        let hi = scaled(plan, centre, s1);
+    for k in 0..stack.len() - 1 {
+        let ((h0, lo), (h1, hi)) = (&stack[k], &stack[k + 1]);
+        let (h0, h1) = (*h0, *h1);
         if (h1 - h0).abs() < 1e-9 {
             // A step: the ring between two outlines at one height. Its facing
             // follows which is bigger — a ledge faces up, an overhang down.
-            let (outer, inner, up) = if s0 > s1 {
-                (&lo, &hi, true)
-            } else {
-                (&hi, &lo, false)
-            };
+            let up = area(lo) > area(hi);
+            let (outer, inner) = if up { (lo, hi) } else { (hi, lo) };
             for i in 0..n {
                 let j = (i + 1) % n;
                 let q = |p: [f64; 2]| [p[0], p[1], h0];
@@ -388,40 +508,41 @@ fn loft(
             }
             continue;
         }
-        let vertical = (s0 - s1).abs() < 1e-9;
         for i in 0..n {
             let j = (i + 1) % n;
             let here: Vec<&Opening> = part
                 .openings
                 .iter()
-                .filter(|o| vertical && vertical_span(rings, o.from, o.to) == Some(k))
+                .filter(|o| span(&heights, o.from, o.to) == Some(k))
                 .filter(|o| o.faces.is_empty() || o.faces.contains(&i))
                 .collect();
-            if here.is_empty() {
-                if s1 == 0.0 {
-                    let tip = [centre[0], centre[1], h1];
-                    let a = wall.add([lo[i][0], lo[i][1], h0]);
-                    let b = wall.add([lo[j][0], lo[j][1], h0]);
-                    let c = wall.add(tip);
-                    wall.t.push([a, b, c]);
-                } else {
-                    wall.quad(
-                        [lo[i][0], lo[i][1], h0],
-                        [lo[j][0], lo[j][1], h0],
-                        [hi[j][0], hi[j][1], h1],
-                        [hi[i][0], hi[i][1], h1],
-                    );
+            let tip = dist(hi[i], hi[j]) < 1e-9;
+            if here.is_empty() || tip {
+                let a = wall.add([lo[i][0], lo[i][1], h0]);
+                let b = wall.add([lo[j][0], lo[j][1], h0]);
+                let c = wall.add([hi[j][0], hi[j][1], h1]);
+                wall.t.push([a, b, c]);
+                if !tip {
+                    let d = wall.add([hi[i][0], hi[i][1], h1]);
+                    wall.t.push([a, c, d]);
                 }
                 continue;
             }
-            face_with_openings(&mut wall, &mut panels, lo[i], lo[j], h0, h1, &here)?;
+            let face = Face {
+                a0: lo[i],
+                b0: lo[j],
+                a1: hi[i],
+                b1: hi[j],
+                h0,
+                h1,
+            };
+            face_with_openings(&mut wall, &mut panels, &face, &here)?;
         }
     }
     // Top cap, facing up, unless the part closed to a point.
-    let [ht, st] = rings[rings.len() - 1];
-    if st > 0.0 {
-        let t = scaled(plan, centre, st);
-        let ring: Vec<[f64; 3]> = t.iter().map(|q| [q[0], q[1], ht]).collect();
+    let (h_top, top) = &stack[stack.len() - 1];
+    if !point(top) {
+        let ring: Vec<[f64; 3]> = top.iter().map(|q| [q[0], q[1], *h_top]).collect();
         wall.fan(&ring);
     }
     let mut out = vec![wall];
@@ -429,33 +550,72 @@ fn loft(
     Ok(out)
 }
 
-/// A vertical face from `a` to `b` (east/north), `h0..h1` high, with openings
-/// cut through it: the wall with holes, each hole's reveal, and its panel set
-/// `depth` behind the face (or in front of it).
+fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (b[0] - a[0]).hypot(b[1] - a[1])
+}
+
+/// One side of a stretch: its bottom edge `a0 → b0` at `h0` and its top edge
+/// `a1 → b1` at `h1`, east/north. Vertical when the edges coincide in plan.
+struct Face {
+    a0: [f64; 2],
+    b0: [f64; 2],
+    a1: [f64; 2],
+    b1: [f64; 2],
+    h0: f64,
+    h1: f64,
+}
+
+impl Face {
+    fn bottom_len(&self) -> f64 {
+        dist(self.a0, self.b0)
+    }
+
+    /// Outward unit normal: the bottom edge crossed with the rise.
+    fn normal(&self) -> [f64; 3] {
+        let e1 = [self.b0[0] - self.a0[0], self.b0[1] - self.a0[1], 0.0];
+        let e2 = [
+            self.a1[0] - self.a0[0],
+            self.a1[1] - self.a0[1],
+            self.h1 - self.h0,
+        ];
+        let n = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+        [n[0] / l, n[1] / l, n[2] / l]
+    }
+
+    /// A point of the face at `u` metres along the bottom edge's direction (as
+    /// a fraction of each edge) and height `v`, moved `off` along the normal.
+    fn at(&self, q: [f64; 2], off: f64, n: [f64; 3]) -> [f64; 3] {
+        let t = q[0] / self.bottom_len();
+        let s = (q[1] - self.h0) / (self.h1 - self.h0);
+        let lerp = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let (bot, top) = (lerp(self.a0, self.b0), lerp(self.a1, self.b1));
+        [
+            bot[0] + (top[0] - bot[0]) * s + n[0] * off,
+            bot[1] + (top[1] - bot[1]) * s + n[1] * off,
+            q[1] + n[2] * off,
+        ]
+    }
+}
+
+/// A face with openings cut through it: the wall with holes, each hole's
+/// reveal, and its panel set `depth` behind the face (or in front of it).
 fn face_with_openings(
     wall: &mut Piece,
     panels: &mut BTreeMap<String, Piece>,
-    a: [f64; 2],
-    b: [f64; 2],
-    h0: f64,
-    h1: f64,
+    face: &Face,
     openings: &[&Opening],
 ) -> Result<(), String> {
-    let along = [b[0] - a[0], b[1] - a[1]];
-    let len = (along[0] * along[0] + along[1] * along[1]).sqrt();
+    let len = face.bottom_len();
     if len < 1e-6 {
         return Ok(());
     }
-    let dir = [along[0] / len, along[1] / len];
-    // Outward, for a counter-clockwise plan: the right of the edge.
-    let out = [dir[1], -dir[0]];
-    let at = |q: [f64; 2], off: f64| {
-        [
-            a[0] + dir[0] * q[0] + out[0] * off,
-            a[1] + dir[1] * q[0] + out[1] * off,
-            q[1],
-        ]
-    };
+    let (h0, h1) = (face.h0, face.h1);
+    let n = face.normal();
     let mut holes: Vec<Vec<[f64; 2]>> = Vec::new();
     for o in openings {
         for c in 0..o.count {
@@ -484,23 +644,28 @@ fn face_with_openings(
             });
             let d = -o.depth;
             // The panel, facing out.
-            fill(panel, &ring, &[], |q| at(q, d))?;
+            fill(panel, &ring, &[], |q| face.at(q, d, n))?;
             // The reveal: the hole's sides from the face to the panel. One
             // winding serves both cases: it faces into the hole when recessed
             // and out of the plate when proud.
             for e in 0..ring.len() {
                 let (p, q) = (ring[e], ring[(e + 1) % ring.len()]);
-                panel.quad(at(p, 0.0), at(q, 0.0), at(q, d), at(p, d));
+                panel.quad(
+                    face.at(p, 0.0, n),
+                    face.at(q, 0.0, n),
+                    face.at(q, d, n),
+                    face.at(p, d, n),
+                );
             }
             holes.push(ring);
         }
     }
-    // The wall: the face rectangle with every hole cut out.
+    // The wall: the face with every hole cut out.
     fill(
         wall,
         &[[0.0, h0], [len, h0], [len, h1], [0.0, h1]],
         &holes,
-        |q| at(q, 0.0),
+        |q| face.at(q, 0.0, n),
     )
 }
 
@@ -604,16 +769,57 @@ mod tests {
     }
 
     #[test]
-    fn an_opening_off_a_vertical_face_is_refused() {
+    fn an_opening_across_a_step_is_refused() {
         let text = r#"{"name": "t", "pand": "0014100010924795", "origin": [53.2, 6.5],
             "materials": {"b": {"rgb": [1, 2, 3]}},
             "parts": [{"name": "p", "material": "b", "shape": {"rect": {"w": 4, "d": 4}},
-                       "rings": [[0, 1], [10, 0.5]],
+                       "rings": [[0, 1], [3, 1], [3, 0.8], [10, 0.8]],
                        "openings": [{"kind": "rect", "w": 1, "from": 2, "to": 4, "depth": 0.2,
                                      "material": "b"}]}]}"#;
         assert!(Kit::parse(text)
             .unwrap_err()
-            .contains("not on a vertical face"));
+            .contains("does not fit within one stretch"));
+    }
+
+    /// A window on a leaning face is cut out of it and backed, the wall and
+    /// the panel together covering the face exactly once.
+    #[test]
+    fn a_window_on_a_leaning_face_is_cut_and_backed() {
+        let k = kit(
+            r#"{"name": "s", "material": "brick", "shape": {"rect": {"w": 10, "d": 10}},
+                        "rings": [[0, 1], [10, 0.6]],
+                        "openings": [{"faces": [0], "kind": "rect", "w": 2, "from": 4, "to": 6,
+                                      "depth": 0.0, "material": "dark"}]}"#,
+        );
+        let pieces = k.mesh().unwrap();
+        let wall = pieces.iter().find(|p| p.material == "brick").unwrap();
+        let panel = pieces.iter().find(|p| p.material == "dark").unwrap();
+        // The south face: a trapezoid 10 m wide at the bottom, 6 m at the top,
+        // leaning in 2 m over 10 m of height.
+        let slant = (10f64 * 10.0 + 2.0 * 2.0).sqrt();
+        let face = (10.0 + 6.0) / 2.0 * slant;
+        let n = [0.0, -10.0 / slant, 2.0 / slant];
+        let (w, p) = (area_facing(wall, n), area_facing(panel, n));
+        assert!((w + p - face).abs() < 1e-6, "{w} + {p} != {face}");
+        assert!(p > 3.0 && p < 5.0, "{p}");
+    }
+
+    /// Layers of different point counts are resampled to a loft that keeps
+    /// each layer's extent: a 20 m square at the bottom, a 10 m one at the top.
+    #[test]
+    fn layers_of_any_shape_are_lofted() {
+        let k = kit(r#"{"name": "l", "material": "brick", "samples": 16,
+                        "layers": [{"h": 0, "points": [[-10, -10], [10, -10], [10, 10], [-10, 10]]},
+                                   {"h": 30, "points": [[-5, -5], [5, -5], [5, 5], [0, 7], [-5, 5]]}]}"#);
+        let p = &k.mesh().unwrap()[0];
+        let at = |h: f64| {
+            p.p.iter()
+                .filter(|q| (q[2] - h).abs() < 1e-9)
+                .map(|q| q[0])
+                .fold(0.0, f64::max)
+        };
+        assert!((at(0.0) - 10.0).abs() < 1e-6 && (at(30.0) - 5.0).abs() < 1e-6);
+        assert!(p.t.len() >= 16 * 2);
     }
 
     fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

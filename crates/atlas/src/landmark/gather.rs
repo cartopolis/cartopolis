@@ -283,6 +283,24 @@ pub fn gather(pand: &str, keywords: &[String], out: &Path) -> Result<String, Str
         );
         h += 2.0;
     }
+
+    // The plan at a few heights, as a kit's `layers` takes it: the convex hull
+    // of the cells reaching each height, with corners under 0.75 m dropped.
+    // A hull bridges a courtyard or a notch; the map above shows those.
+    let _ = writeln!(
+        md,
+        "\n## Plan by height, local metres (convex hull, for `layers`)\n"
+    );
+    for frac in [0.05, 0.3, 0.55, 0.8, 0.95] {
+        let h = (top * frac).round();
+        let at: Vec<[f64; 2]> = cells.iter().filter(|c| c.1 >= h).map(|c| c.0).collect();
+        let ring = simplify(&hull(&at), 0.75);
+        let pts: Vec<String> = ring
+            .iter()
+            .map(|q| format!("[{:.1}, {:.1}]", q[0], q[1]))
+            .collect();
+        let _ = writeln!(md, "- ≥ {h:.0} m: [{}]", pts.join(", "));
+    }
     std::fs::write(out.join("facts.md"), &md).map_err(|e| e.to_string())?;
 
     // The aerial photograph, 8 cm, square on the building plus 30 m.
@@ -471,6 +489,61 @@ fn photos(plane: Plane, keywords: &[String], out: &Path) -> Result<String, Strin
         );
     }
     Ok(md)
+}
+
+/// The convex hull of points, counter-clockwise (Andrew's monotone chain).
+fn hull(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut p = points.to_vec();
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    p.dedup();
+    if p.len() < 3 {
+        return p;
+    }
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut lower: Vec<[f64; 2]> = Vec::new();
+    for &q in &p {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(q);
+    }
+    let mut upper: Vec<[f64; 2]> = Vec::new();
+    for &q in p.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(q);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// Drop the corners of a ring that stand less than `tol` off the line
+/// between their neighbours, the least first, until none does.
+fn simplify(ring: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    let mut r = ring.to_vec();
+    while r.len() > 3 {
+        let n = r.len();
+        let off = |i: usize| {
+            let (a, p, b) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx.hypot(dy).max(1e-9);
+            ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx).abs() / l
+        };
+        let (i, d) = (0..n)
+            .map(|i| (i, off(i)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0, f64::INFINITY));
+        if d >= tol {
+            break;
+        }
+        r.remove(i);
+    }
+    r
 }
 
 fn strip_tags(s: &str) -> String {

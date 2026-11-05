@@ -37,6 +37,21 @@ fit was 15–30% too wide at every stage top because the stages taper
 (buttress set-backs). Fitted widths to the mid-stage area plus a set-back ring
 brought every height within ~10%, with a mean height error of −0.3 m.
 
+## Parts whose faces lean their own way
+
+A part is either a `shape` scaled through `rings`, or `layers`: the plan at
+each height. Layers of unequal point counts are resampled by angle round the
+first layer's centre (`samples`), so each must be star-shaped about it.
+`gather` writes the plan at five heights as convex hulls, which is what the
+Forum's layers are (2026-11-05: within 5% of the laser's area to 44 m). A
+hull bridges a courtyard, so the Forum's sunken roof terrace is not drawn.
+Openings sit on any face, leaning or not: width along the bottom edge,
+`from`/`to` as heights.
+
+The nearby-photo search matches titles, which fails for a name like "Forum":
+it found fridge magnets. A Commons category (`Category:Groninger Forum`) is
+the better source then.
+
 ## Traps
 
 - **Extent by height is a bounding box.** Pinnacles and galleries inflate
@@ -47,10 +62,9 @@ brought every height within ~10%, with a mean height error of −0.3 m.
 - **Photographs are scaled to the laser, not to themselves.** Even at 159 m
   the photograph's vertical scale drifts with height. Fix three ledges to
   their laser heights and read everything in between.
-- **Openings sit on vertical stretches only.** An opening on a tapering
-  stretch is refused, so a tapering stage is a vertical stretch holding its
-  arches plus a short set-back above it.
-- **Openings on one face must not overlap.** Clocks the tower hangs inside an
+- **An opening must fit one stretch between two rings.** One across a step
+  is refused.
+- **Openings on one face must not overlap**, nor a window row a glass band. Clocks the tower hangs inside an
   arch are drawn centred between two arches instead. That is a named
   simplification in the kit's sources.
 - **The AHN6 sheet index answered "Given layer does not exist"** on
@@ -79,7 +93,7 @@ landmark goes live through a person's signed-in app.
 ## Limits
 
 One flat colour per part and material, no textures (`building-models.md`).
-Parts are vertical lofts, so a thin disc facing sideways or a sloped roof
-plane must be cut as an opening or built from lofts. Solid parts are named
+A sideways disc or a tilted plate is built from `layers` (a thin plan
+shifted between two heights is a leaning plate, as on the Museum). Solid parts are named
 `… wall` and need the record's collision set to `walls`, so the panels behind
 openings stay walk-through.
