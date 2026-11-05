@@ -90,15 +90,26 @@ fn resolve_frame_rate(override_fps: Option<f32>, target_fps: f32) -> f32 {
     }
 }
 
+/// The idle rate for an uncapped rate chosen in Settings: half of the 120 Hz
+/// panels "No cap" runs at on a phone.
+const UNCAPPED_IDLE_FPS: f32 = 60.0;
+
 /// The idle rate for an active rate.
 ///
-/// Half, floored at [`IDLE_FPS_FLOOR`], and **never applied to a run that asked
-/// for no cap at all**: lifting the cap is how somebody measures what this device
-/// can do, and an idle throttle underneath that measurement would be measuring
-/// itself.
-fn idle_frame_rate(active_fps: f32) -> f32 {
+/// Half, floored at [`IDLE_FPS_FLOOR`]. **An uncapped run is idle-throttled only
+/// when the cap was lifted in Settings**, not by `CARTO_FPS_CAP=0`: lifting the
+/// cap that way is how somebody measures what this device can do, and an idle
+/// throttle underneath that measurement would be measuring itself. Settings ▸
+/// "No cap" used to be exempt too, and measured 2026-11-05 on the OnePlus 15 that
+/// was ~70 fps over a still, settled view for as long as the app was open — the
+/// phone got hot with nobody touching it.
+fn idle_frame_rate(active_fps: f32, debug_override: bool) -> f32 {
     if active_fps <= 0.0 {
-        return 0.0;
+        return if debug_override {
+            0.0
+        } else {
+            UNCAPPED_IDLE_FPS
+        };
     }
     (active_fps * 0.5).max(IDLE_FPS_FLOOR).min(active_fps)
 }
@@ -194,7 +205,7 @@ pub(crate) fn present_rate(
 
     let active = resolve_frame_rate(cap_override(), prefs.target_fps());
     let wanted = if watch.quiet_s >= IDLE_AFTER_S {
-        idle_frame_rate(active)
+        idle_frame_rate(active, cap_override().is_some())
     } else {
         active
     };
@@ -224,7 +235,7 @@ pub(crate) fn present_rate(
 
 #[cfg(test)]
 mod rate_tests {
-    use super::{idle_frame_rate, resolve_frame_rate, IDLE_FPS_FLOOR};
+    use super::{idle_frame_rate, resolve_frame_rate, IDLE_FPS_FLOOR, UNCAPPED_IDLE_FPS};
 
     /// **The regression this exists for.** `report_frame_to_scheduler` used to pass
     /// a hardcoded `0.0` — `ANativeWindow_setFrameRate`'s "the app will accept the
@@ -258,23 +269,30 @@ mod rate_tests {
     /// Idle halves the rate.
     #[test]
     fn idle_halves_the_rate() {
-        assert_eq!(idle_frame_rate(60.0), 30.0);
-        assert_eq!(idle_frame_rate(120.0), 60.0);
+        assert_eq!(idle_frame_rate(60.0, false), 30.0);
+        assert_eq!(idle_frame_rate(120.0, false), 60.0);
     }
 
     /// But never below the floor, and never *above* the active rate — a tier
     /// already at the floor must not be throttled up into asking for more.
     #[test]
     fn the_idle_rate_is_bounded_at_both_ends() {
-        assert_eq!(idle_frame_rate(IDLE_FPS_FLOOR), IDLE_FPS_FLOOR);
-        assert_eq!(idle_frame_rate(24.0), 24.0);
+        assert_eq!(idle_frame_rate(IDLE_FPS_FLOOR, false), IDLE_FPS_FLOOR);
+        assert_eq!(idle_frame_rate(24.0, false), 24.0);
     }
 
-    /// An uncapped run is left alone: the idle throttle must not quietly become the
-    /// cap that `CARTO_FPS_CAP=0` was set to remove.
+    /// A run uncapped by `CARTO_FPS_CAP=0` is left alone: the idle throttle must
+    /// not quietly become the cap that was set to remove.
     #[test]
-    fn an_uncapped_run_is_not_idle_throttled() {
-        assert_eq!(idle_frame_rate(0.0), 0.0);
+    fn a_debug_uncapped_run_is_not_idle_throttled() {
+        assert_eq!(idle_frame_rate(0.0, true), 0.0);
+    }
+
+    /// "No cap" in Settings still rests: a still view nobody is touching must not
+    /// run the phone flat out.
+    #[test]
+    fn a_settings_uncapped_run_rests_when_idle() {
+        assert_eq!(idle_frame_rate(0.0, false), UNCAPPED_IDLE_FPS);
     }
 }
 

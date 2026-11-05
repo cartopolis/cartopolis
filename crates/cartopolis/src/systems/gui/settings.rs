@@ -2095,7 +2095,7 @@ fn frame_rate_row(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
                 "Automatic — no cap for this device.".to_string()
             }
         }
-        Some(0) => "As fast as the device can draw. Uses the most battery.".to_string(),
+        Some(0) => "As fast as the device can draw while you use it, 60 fps when nothing moves. Uses the most battery.".to_string(),
         Some(_) => "Lower saves battery and heat.".to_string(),
     };
     ui.label(egui::RichText::new(note).small().color(theme::TEXT_DIM));
