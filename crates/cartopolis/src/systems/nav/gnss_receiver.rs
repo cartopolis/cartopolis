@@ -270,6 +270,10 @@ pub(crate) fn status_lines(status: &cartopolis_gnss::Status) -> Vec<(bool, Strin
     let mount = c.mountpoint.as_deref().unwrap_or("the caster");
     match &c.state {
         CasterState::Off => {}
+        CasterState::WaitingForReceiver => out.push((
+            false,
+            "Corrections: fetched once a receiver is connected".to_string(),
+        )),
         CasterState::WaitingForPosition => out.push((
             false,
             "Corrections: waiting for a position to choose the nearest station".to_string(),

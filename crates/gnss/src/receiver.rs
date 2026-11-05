@@ -16,6 +16,13 @@
 //! only worth anything fresh, and a backlog replayed into a receiver that has
 //! just come back would be seconds-old observations it has to discard.
 //!
+//! **No receiver, no stream.** The caster is not dialled until the port has
+//! opened, and a stream whose receiver has been gone for [`RECEIVER_GONE`] is
+//! closed until one is back. Measured 2026-11-05 on the OnePlus 15 with the
+//! setting on and nothing plugged in: ~2.4 kB/s from Kadaster for the whole
+//! session, every byte dropped, and a radio that never got to sleep. The grace
+//! is there for the cable wiggle the port thread reopens through.
+//!
 //! Everything either thread learns goes into one [`Status`], which the client
 //! clones out for its fix and its settings readout.
 //!
@@ -86,6 +93,8 @@ pub enum CasterState {
     /// No caster configured.
     #[default]
     Off,
+    /// No receiver is open, so nothing is fetched (module note).
+    WaitingForReceiver,
     /// The mountpoint is to be chosen by distance, and there is no position yet.
     WaitingForPosition,
     Connecting,
@@ -189,6 +198,8 @@ enum End {
     Stopped,
     /// The receiver's own fix names a nearer base than the hint did.
     Rechoose,
+    /// The receiver has been unplugged for [`RECEIVER_GONE`].
+    ReceiverGone,
 }
 
 impl Receiver {
@@ -673,6 +684,32 @@ pub fn gga_for_caster(s: &Solution) -> String {
 /// How long a stream may go without a byte before it is reconnected.
 const CASTER_SILENCE: Duration = Duration::from_secs(30);
 
+/// How long a stream outlives its receiver before it is closed (module note):
+/// longer than the port thread's reopen, so a wiggled cable keeps its base.
+const RECEIVER_GONE: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(30)
+};
+
+/// Whether the port thread has a receiver open.
+fn receiver_open(status: &Mutex<Status>) -> bool {
+    status.lock().is_ok_and(|s| matches!(s.link, Link::Open(_)))
+}
+
+/// Wait, fetching nothing, until a receiver is open. `true` once cancelled.
+fn wait_for_receiver(status: &Mutex<Status>, cancel: &AtomicBool) -> bool {
+    while !receiver_open(status) {
+        update(status, |s| {
+            s.corrections.state = CasterState::WaitingForReceiver;
+        });
+        if nap(cancel, Duration::from_millis(500)) {
+            return true;
+        }
+    }
+    cancel.load(Ordering::Relaxed)
+}
+
 fn caster_thread(
     caster: &Caster,
     tx: &SyncSender<Vec<u8>>,
@@ -683,10 +720,18 @@ fn caster_thread(
 ) {
     let mut backoff = Duration::from_secs(3);
     while !cancel.load(Ordering::Relaxed) {
+        if wait_for_receiver(status, cancel) {
+            return;
+        }
         let started = Instant::now();
         let e = match caster_session(caster, tx, position, hint, status, cancel) {
             Ok(End::Stopped) => return,
             Ok(End::Rechoose) => {
+                backoff = Duration::from_secs(3);
+                continue;
+            }
+            Ok(End::ReceiverGone) => {
+                event(status, "receiver gone: corrections closed until it is back");
                 backoff = Duration::from_secs(3);
                 continue;
             }
@@ -812,8 +857,14 @@ fn caster_session(
     let mut last_data = Instant::now();
     let mut framer = rtcm::Framer::default();
     let mut buf = [0u8; 4096];
+    let mut gone_since: Option<Instant> = None;
     let mut streaming = false;
     while !cancel.load(Ordering::Relaxed) {
+        if receiver_open(status) {
+            gone_since = None;
+        } else if gone_since.get_or_insert_with(Instant::now).elapsed() >= RECEIVER_GONE {
+            return Ok(End::ReceiverGone);
+        }
         // The base came from the hint and the receiver now knows better: keep
         // it if it is still the nearest, move if it is not.
         if let (Some((mounts, chosen)), Some((fix, _))) = (&table, current()) {
@@ -1195,11 +1246,9 @@ mod tests {
     fn indoors_the_hint_chooses_the_station() {
         let (port, heard_gga) = fake_caster();
         let receiver = indoors(port);
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(
-            receiver.status().corrections.state,
-            CasterState::WaitingForPosition
-        );
+        wait_for(&receiver, |s| {
+            s.corrections.state == CasterState::WaitingForPosition
+        });
         receiver.set_position_hint(Some((53.2194, 6.5665)));
         let s = wait_for(&receiver, |s| s.corrections.frames >= 3);
         assert_eq!(s.corrections.state, CasterState::Streaming);
@@ -1222,6 +1271,76 @@ mod tests {
             unreachable!()
         };
         assert!(why.contains("too far"), "{why}");
+    }
+
+    /// Nothing plugged in: the caster is never dialled, however long the
+    /// setting stays on (module note).
+    #[test]
+    fn no_receiver_fetches_no_corrections() {
+        let (port, _) = fake_caster();
+        let receiver = Receiver::start(
+            Box::new(|| Err("no USB receiver connected".to_string())),
+            Config {
+                configure: false,
+                rate_hz: 1,
+                caster: Some(Caster {
+                    host: "127.0.0.1".into(),
+                    port,
+                    ..Caster::default()
+                }),
+            },
+        );
+        receiver.set_position_hint(Some((53.2194, 6.5665)));
+        std::thread::sleep(Duration::from_millis(800));
+        let s = receiver.status();
+        assert_eq!(s.corrections.state, CasterState::WaitingForReceiver);
+        assert_eq!(
+            s.corrections.mountpoint, None,
+            "the sourcetable was fetched"
+        );
+        assert_eq!(s.corrections.bytes, 0);
+    }
+
+    /// Unplugged mid-stream, the stream closes once the grace is out, and
+    /// waits for a receiver again.
+    #[test]
+    fn an_unplugged_receiver_closes_the_stream() {
+        let (port, _) = fake_caster();
+        let plugged = Arc::new(AtomicBool::new(true));
+        let opener_plugged = plugged.clone();
+        let receiver = Receiver::start(
+            Box::new(move || {
+                if opener_plugged.load(Ordering::Relaxed) {
+                    Ok((Box::new(NoFix) as Box<dyn Port>, "indoors".to_string()))
+                } else {
+                    Err("no USB receiver connected".to_string())
+                }
+            }),
+            Config {
+                configure: false,
+                rate_hz: 1,
+                caster: Some(Caster {
+                    host: "127.0.0.1".into(),
+                    port,
+                    ..Caster::default()
+                }),
+            },
+        );
+        receiver.set_position_hint(Some((53.2194, 6.5665)));
+        wait_for(&receiver, |s| s.corrections.state == CasterState::Streaming);
+        // `NoFix` never fails a read, so the port thread holds it open; marking
+        // the link lost is what an unplug looks like to the caster thread.
+        plugged.store(false, Ordering::Relaxed);
+        update(&receiver.status, |s| {
+            s.link = Link::Failed("unplugged".into())
+        });
+        let s = wait_for(&receiver, |s| {
+            s.corrections.state == CasterState::WaitingForReceiver
+        });
+        assert!(s
+            .events
+            .iter()
+            .any(|(_, e)| e.contains("corrections closed")));
     }
 
     #[test]
