@@ -478,6 +478,7 @@ impl Mesh {
             p,
             part,
             rgb: Some(rgb),
+            finish: None,
             t: self.t,
         })
     }

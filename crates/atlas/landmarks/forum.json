@@ -10,7 +10,8 @@
   "street-level corners: the BAG outline (its two small kinks dropped); roof corners at 47 m: AHN surface model, the cells at 46 m and above; every side is one flat face between them, so the faces lean as the laser shows (north-east and south-west sides strongly)",
   "roof podium: the sunken terrace in the 8 cm aerial photo and the laser (40-44 m against 46-47 m), drawn as the opening the aerial photo shows (about 13 x 23 m, an elongated hexagon along the building), 5 m deep, where the laser's deepest part is 9 x 13 m; glass railing 1.5 m along the roof edge, Commons 'Forum Groningen, 22 Augustus 2022 - 06.jpg' (CC BY-SA 4.0); a 1.2 m glass railing round the podium",
   "facade: light natural stone, square windows and glass bands from Commons 'Category:Groninger Forum' (CC BY-SA 4.0); window rows every 3.1 m with faces and counts picked at random (seed 5), not measured",
-  "caf\u00e9 terrace on the south end, canopy, umbrellas and planters: Commons 'Forum-Groningen1-Kirschbluete-2026-04-msu7-3811.jpg' (CC BY-SA 4.0); their places along the face are read from it, not measured"
+  "caf\u00e9 terrace on the south end, canopy, umbrellas and planters: Commons 'Forum-Groningen1-Kirschbluete-2026-04-msu7-3811.jpg' (CC BY-SA 4.0); their places along the face are read from it, not measured",
+  "stone: large natural-stone slabs with open joints (Commons 'Groningen (Netherlands, July-August 2020) - 68' and 'Wageningen and Groningen ... - 67', CC BY-SA 2.0), drawn by the facade shader's cladding (1.2 x 0.6 m)"
  ],
  "materials": {
   "stone": {
@@ -18,7 +19,8 @@
     184,
     176,
     160
-   ]
+   ],
+   "finish": "slab"
   },
   "window": {
    "rgb": [

@@ -39,8 +39,10 @@ pub fn write(kit: &Kit, pieces: &[Piece]) -> Result<(Vec<u8>, (f64, f64)), Strin
     for (name, m) in &kit.materials {
         material_index.insert(name, materials.len());
         let c = m.rgb.map(|v| srgb_to_linear(v));
+        // A finish travels as the material's name, which is how the override
+        // store reads it off any GLB (`overrides::gltf_model`).
         materials.push(json!({
-            "name": name,
+            "name": m.finish.as_deref().unwrap_or(name),
             "pbrMetallicRoughness": {
                 "baseColorFactor": [c[0], c[1], c[2], 1.0],
                 "metallicFactor": 0.0, "roughnessFactor": 0.9
@@ -139,7 +141,7 @@ mod tests {
     fn the_override_store_reads_what_a_kit_writes() {
         let kit = Kit::parse(
             r#"{"name": "t", "pand": "0014100010924795", "origin": [53.2194, 6.5682],
-                "materials": {"brick": {"rgb": [150, 80, 60]}, "dark": {"rgb": [20, 20, 20]}},
+                "materials": {"brick": {"rgb": [150, 80, 60], "finish": "slab"}, "dark": {"rgb": [20, 20, 20]}},
                 "parts": [{"name": "stage", "material": "brick", "shape": {"rect": {"w": 10, "d": 10}},
                            "rings": [[0, 1], [20, 1]],
                            "openings": [{"kind": "arch", "w": 2, "from": 5, "to": 15, "depth": 0.6,
@@ -162,8 +164,10 @@ mod tests {
         assert_eq!(els.len(), 2);
         let wall = els.iter().find(|e| e.rgb == Some([150, 80, 60])).unwrap();
         assert_eq!(wall.class, "IfcWall");
+        assert_eq!(wall.finish.as_deref(), Some("slab"));
         let panel = els.iter().find(|e| e.rgb == Some([20, 20, 20])).unwrap();
         assert_eq!(panel.class, "IfcBuildingElementProxy");
+        assert_eq!(panel.finish, None);
         let top = wall.p.iter().map(|p| p.2).fold(0.0, f32::max);
         assert!((top - 20.0).abs() < 0.01, "{top}");
         // The footprint centre lands back on the kit's origin.

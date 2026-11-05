@@ -539,6 +539,9 @@ struct Bldg {
     /// A model element's own colour, sRGB (`lod3` only); `None` takes the
     /// building's palette.
     rgb: Option<[u8; 3]>,
+    /// What a model element's walls are faced with
+    /// (`formats::lod22::FINISHES`); `None` for a shell.
+    finish: Option<String>,
 }
 
 /// One parsed cell file: its elements, and — for an imported-model cell — the
@@ -2541,7 +2544,22 @@ fn build_lod22_from_body(
                 }
                 None => (wall, roof_tile),
             };
-            let wall = [wall[0], wall[1], wall[2], lit];
+            // A part faced with stone slabs (`formats::lod22::FINISHES`) says so
+            // to the facade shader the way a shell does: as the code of a clad
+            // block since 1990 — the shader's own test for cladding — with its
+            // eaves at its own top.
+            let code = match b.finish.as_deref() {
+                Some("slab") => crate::systems::building_windows::pack_facade(
+                    crate::systems::building_windows::Facade {
+                        occupancy: lit,
+                        era: 4,
+                        eave_m: Some(b.p.iter().map(|&(_, _, h)| h).fold(9.0, f32::max)),
+                        ..Default::default()
+                    },
+                ),
+                _ => lit,
+            };
+            let wall = [wall[0], wall[1], wall[2], code];
             let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
 
             let world_xz: Vec<Vec2> =
@@ -2905,6 +2923,7 @@ fn cell_file(cell: cartopolis_geo::lod22_cell::Cell) -> CellFile {
                 t,
                 class: el.class,
                 rgb: el.rgb,
+                finish: el.finish,
             });
         }
     }

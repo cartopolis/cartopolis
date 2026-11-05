@@ -617,6 +617,9 @@ pub mod gltf_model {
     struct Part {
         name: String,
         rgb: [u8; 3],
+        /// The material's name when it is one of `FINISHES`: what the walls
+        /// are faced with, which the client's facade shader draws.
+        finish: Option<String>,
         p: Vec<DVec3>,
         t: Vec<[u32; 3]>,
     }
@@ -683,10 +686,16 @@ pub mod gltf_model {
                     linear_to_srgb(base[1]),
                     linear_to_srgb(base[2]),
                 ];
+                let finish = prim
+                    .material()
+                    .name()
+                    .map(str::to_ascii_lowercase)
+                    .filter(|n| cartopolis_geo::formats::lod22::FINISHES.contains(&n.as_str()));
                 if !t.is_empty() {
                     out.push(Part {
                         name: name.clone(),
                         rgb,
+                        finish,
                         p,
                         t,
                     });
@@ -797,6 +806,7 @@ pub mod gltf_model {
                 p,
                 part: i as u32,
                 rgb: Some(part.rgb),
+                finish: part.finish.clone(),
                 t,
             });
         }

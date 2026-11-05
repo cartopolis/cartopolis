@@ -37,6 +37,11 @@ pub struct Kit {
 pub struct Material {
     /// sRGB, 0–255.
     pub rgb: [u8; 3],
+    /// What the walls are faced with, one of
+    /// `cartopolis_geo::formats::lod22::FINISHES` (`slab`: natural-stone
+    /// cladding), drawn by the client's facade shader over the colour.
+    #[serde(default)]
+    pub finish: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -198,6 +203,16 @@ impl Kit {
     fn check(&self) -> Result<(), String> {
         if !crate::designs::valid_pand(&self.pand) {
             return Err(format!("kit: {:?} is not a BAG building number", self.pand));
+        }
+        for (name, m) in &self.materials {
+            if let Some(f) = &m.finish {
+                if !cartopolis_geo::formats::lod22::FINISHES.contains(&f.as_str()) {
+                    return Err(format!(
+                        "kit: material {name}: no finish {f:?}; the client draws {:?}",
+                        cartopolis_geo::formats::lod22::FINISHES
+                    ));
+                }
+            }
         }
         for part in &self.parts {
             let named = |m: &str| {

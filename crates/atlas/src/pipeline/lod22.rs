@@ -505,6 +505,7 @@ fn element(pand: String, part: u32, p: &[[f64; 3]], t: &[[u32; 4]]) -> lod22_cel
         // The roof flag is 0 or 1 by construction.
         t: t.iter().map(|x| (x[0], x[1], x[2], x[3] as u8)).collect(),
         rgb: None,
+        finish: None,
     }
 }
 

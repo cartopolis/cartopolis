@@ -33,6 +33,11 @@ pub struct File {
     pub pands: Vec<String>,
 }
 
+/// The wall finishes a model element may name (`Element::finish`), which the
+/// client's facade shader draws: `slab` is natural-stone cladding, large slabs
+/// with open joints. Any other name is drawn from the element's colour alone.
+pub const FINISHES: &[&str] = &["slab"];
+
 /// One building part.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Element {
@@ -52,6 +57,10 @@ pub struct Element {
     /// before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rgb: Option<[u8; 3]>,
+    /// What the element's walls are faced with, on a model only: a name from
+    /// [`FINISHES`]. Absent from every shell cell, as `rgb` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish: Option<String>,
     #[serde(default)]
     pub t: Vec<Tri>,
 }
@@ -139,6 +148,7 @@ impl From<&lod22_cell::Element> for Element {
             p: e.p.clone(),
             part: e.part,
             rgb: e.rgb,
+            finish: e.finish.clone(),
             t: e.t.iter().map(|&(i, j, k, rf)| Tri(i, j, k, rf)).collect(),
         }
     }
@@ -152,6 +162,7 @@ impl From<Element> for lod22_cell::Element {
             class: e.class,
             p: e.p,
             rgb: e.rgb,
+            finish: e.finish,
             t: e.t
                 .into_iter()
                 .map(|Tri(i, j, k, rf)| (i, j, k, rf))
@@ -228,6 +239,7 @@ mod tests {
                     ],
                     t: vec![(0, 1, 2, 1), (2, 1, 0, 0)],
                     rgb: None,
+                    finish: None,
                 },
                 lod22_cell::Element {
                     id: "0014100010904219".into(),
@@ -240,6 +252,7 @@ mod tests {
                     ],
                     t: vec![(0, 1, 2, 0)],
                     rgb: None,
+                    finish: None,
                 },
             ],
             pands: Vec::new(),

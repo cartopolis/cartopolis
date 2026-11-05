@@ -1138,6 +1138,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     // A face too short for a window says so with a 1 cm bay.
     let windowless = laid_out && bay < 0.5;
+    // An imported model's walls carry the windowless marker with no layout
+    // behind it (`WINDOWLESS_UV`: x is 0 on every vertex), so its cladding
+    // slabs run along the world lattice instead of collapsing into bands.
+    if windowless && face_uv.x == 0.0 {
+        along = u;
+    }
     let cell = vec2<f32>(along / max(bay, 0.5), floor_f);
     // How much of the lattice one pixel spans. Where that reaches a whole window
     // the grid is below the sampling rate and point-sampling it aliases — into
