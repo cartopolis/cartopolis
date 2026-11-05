@@ -363,6 +363,43 @@ pub struct OutputArgs {
     pub id: Option<i64>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReplaceBuildingArgs {
+    #[schemars(description = "The building's BAG number: its 16-digit pand identificatie.")]
+    pub pand: String,
+    #[schemars(
+        description = "The model, a GLB (binary glTF: +Y up, the front toward −Z, one unit a \
+                       metre), base64-encoded. One flat colour per part; textures are dropped."
+    )]
+    pub glb_base64: String,
+    #[schemars(description = "What the building is called. Omit to keep the current name.")]
+    pub name: Option<String>,
+    #[schemars(
+        description = "Where the model's footprint centre stands. Give both or neither; \
+                       neither puts it on the centre of the building's outline."
+    )]
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    #[schemars(description = "Degrees clockwise from north the model's front faces. Default 0.")]
+    pub heading_deg: Option<f64>,
+    #[schemars(
+        description = "What stops a walker: `walls` (parts named wall, column or pillar; the \
+                       default), `parts` (every part) or `none`."
+    )]
+    pub collision: Option<String>,
+    #[schemars(
+        description = "`none` (the model is the whole building; the default) or `design` \
+                       (keep the building's rooms inside it)."
+    )]
+    pub interior: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PandArgs {
+    #[schemars(description = "The building's BAG number: its 16-digit pand identificatie.")]
+    pub pand: String,
+}
+
 #[derive(Debug)]
 pub enum AgentRequest {
     Me,
@@ -375,6 +412,10 @@ pub enum AgentRequest {
     Build(BuildArgs),
     SetScript(ScriptArgs),
     PlayVideo(VideoArgs),
+    /// Replace a building's outside with a model, through the operator API.
+    ReplaceBuilding(ReplaceBuildingArgs),
+    /// Delete that replacement: the survey's building comes back.
+    RestoreBuilding(PandArgs),
     Delete(IdsArgs),
     Touch(IdArgs),
     ScriptOutput(OutputArgs),
@@ -429,6 +470,8 @@ impl AgentRequest {
             Self::Build(_) => "build",
             Self::SetScript(_) => "script",
             Self::PlayVideo(_) => "play video",
+            Self::ReplaceBuilding(_) => "replace building",
+            Self::RestoreBuilding(_) => "restore building",
             Self::Delete(_) => "delete",
             Self::Touch(_) => "touch",
             Self::ScriptOutput(_) => "script output",

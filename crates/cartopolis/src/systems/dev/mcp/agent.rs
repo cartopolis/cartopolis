@@ -133,6 +133,32 @@ const VIDEO_WAIT_S: f64 = 300.0;
 type VideoUpload =
     crate::platform::sync::Arc<crate::platform::sync::Mutex<Option<Result<String, String>>>>;
 
+/// How long `replace_building` waits for atlas: the upload over a phone's
+/// uplink, then a compile and a republish of one cell.
+const BUILDING_WAIT_S: f64 = 180.0;
+
+const PAND_FORMAT: &str = "A BAG building number is 16 digits.";
+
+fn valid_pand(pand: &str) -> bool {
+    pand.len() == 16 && pand.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// What a refused operator request means, in words: `http::fetch` keeps the
+/// status and drops atlas's body.
+fn operator_refusal(why: &str) -> String {
+    if why.ends_with("status code 401") {
+        "The server did not take this session as an operator's. Sign in again.".into()
+    } else if why.ends_with("status code 403") {
+        "This account may not replace buildings (it needs building_override).".into()
+    } else if why.ends_with("status code 404") {
+        "That building has no replacement.".into()
+    } else if why.ends_with("status code 400") {
+        format!("Atlas refused it ({why}): the model or a setting is not acceptable.")
+    } else {
+        format!("The request failed: {why}")
+    }
+}
+
 /// How long `sign_in` waits for the session to come up before answering.
 const SIGN_IN_WAIT_S: f64 = 30.0;
 
@@ -515,6 +541,16 @@ enum Pending {
         upload: Option<VideoUpload>,
         asset: Option<String>,
         looped: bool,
+        until: f64,
+        reply: oneshot::Sender<Reply>,
+    },
+    /// A building replaced or restored through the operator API, waiting for
+    /// the answer.
+    Building {
+        pand: String,
+        restore: bool,
+        bytes: usize,
+        slot: VideoUpload,
         until: f64,
         reply: oneshot::Sender<Reply>,
     },
@@ -1343,6 +1379,105 @@ fn handle(
                     } else {
                         BUILD_WAIT_S
                     },
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::ReplaceBuilding(args) => {
+            if w.online.is_none() {
+                return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+            }
+            if !valid_pand(&args.pand) {
+                return Some((reply, AgentReply::refuse(PAND_FORMAT)));
+            }
+            use base64::Engine as _;
+            let glb = match base64::engine::general_purpose::STANDARD.decode(args.glb_base64.trim())
+            {
+                Ok(b) if b.starts_with(b"glTF") => b,
+                Ok(_) => {
+                    return Some((
+                        reply,
+                        AgentReply::refuse("That is not a GLB (binary glTF): it lacks the header."),
+                    ))
+                }
+                Err(e) => {
+                    return Some((
+                        reply,
+                        AgentReply::refuse(format!("glb_base64 is not base64: {e}")),
+                    ))
+                }
+            };
+            // The API's `Edit`: absent fields keep what the record holds.
+            let mut placement = json!({
+                "heading_deg": args.heading_deg.unwrap_or(0.0),
+                "scale": 1.0,
+                "base_m": 0.0,
+            });
+            if let (Some(lat), Some(lng)) = (args.lat, args.lng) {
+                placement["lat"] = json!(lat);
+                placement["lng"] = json!(lng);
+            }
+            let mut edit = json!({
+                "placement": placement,
+                "collision": args.collision.as_deref().unwrap_or("walls"),
+                "interior": args.interior.as_deref().unwrap_or("none"),
+            });
+            if let Some(name) = &args.name {
+                edit["name"] = json!(name);
+            }
+            let slot = VideoUpload::default();
+            let out = slot.clone();
+            let pand = args.pand.clone();
+            let bytes = glb.len();
+            bevy::tasks::IoTaskPool::get()
+                .spawn(async move {
+                    let got = crate::systems::model_assets::api_replace_building(
+                        &pand,
+                        glb,
+                        edit.to_string(),
+                    )
+                    .await;
+                    if let Ok(mut s) = out.lock() {
+                        *s = Some(got);
+                    }
+                })
+                .detach();
+            state.pending.push(Pending::Building {
+                pand: args.pand,
+                restore: false,
+                bytes,
+                slot,
+                until: now + BUILDING_WAIT_S,
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::RestoreBuilding(args) => {
+            if w.online.is_none() {
+                return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+            }
+            if !valid_pand(&args.pand) {
+                return Some((reply, AgentReply::refuse(PAND_FORMAT)));
+            }
+            let slot = VideoUpload::default();
+            let out = slot.clone();
+            let pand = args.pand.clone();
+            bevy::tasks::IoTaskPool::get()
+                .spawn(async move {
+                    let got = crate::systems::model_assets::api_restore_building(&pand)
+                        .await
+                        .map(|()| String::new());
+                    if let Ok(mut s) = out.lock() {
+                        *s = Some(got);
+                    }
+                })
+                .detach();
+            state.pending.push(Pending::Building {
+                pand: args.pand,
+                restore: true,
+                bytes: 0,
+                slot,
+                until: now + BUILDING_WAIT_S,
                 reply,
             });
             return None;
@@ -4658,6 +4793,53 @@ fn settle(
                 } else {
                     still.push(Pending::Contact { to, until, reply });
                 }
+            }
+            Pending::Building {
+                pand,
+                restore,
+                bytes,
+                slot,
+                until,
+                reply,
+            } => {
+                let label = if restore {
+                    "restore building"
+                } else {
+                    "replace building"
+                };
+                let answer = match slot.lock().ok().and_then(|mut s| s.take()) {
+                    None if now <= until => {
+                        still.push(Pending::Building {
+                            pand,
+                            restore,
+                            bytes,
+                            slot,
+                            until,
+                            reply,
+                        });
+                        continue;
+                    }
+                    None => AgentReply::refuse("Atlas did not answer in time."),
+                    Some(Err(why)) => AgentReply::refuse(operator_refusal(&why)),
+                    Some(Ok(_)) if restore => AgentReply::ok(
+                        format!(
+                            "Building {pand}'s replacement is deleted; the surveyed building \
+                             is back on the map within about 30 seconds."
+                        ),
+                        json!({ "pand": pand, "restored": true }),
+                    ),
+                    Some(Ok(body)) => {
+                        let saved: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        AgentReply::ok(
+                            format!(
+                                "Building {pand} is replaced ({bytes} bytes uploaded); everyone \
+                                 sees it within about 30 seconds. restore_building undoes it."
+                            ),
+                            json!({ "pand": pand, "saved": saved }),
+                        )
+                    }
+                };
+                finish(bridge, label, answer, reply, now);
             }
             Pending::Video {
                 id,

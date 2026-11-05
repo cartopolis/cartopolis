@@ -1,6 +1,6 @@
 ---
 topic: landmarks rebuilt from measurements and photographs — the kit
-triggers: [crates/atlas/src/landmark, crates/atlas/landmarks, kit.rs, gather.rs, score.rs, glb.rs, "atlas landmark", Martinitoren, landmark, "building model"]
+triggers: [crates/atlas/src/landmark, model_assets.rs, replace_building, crates/atlas/landmarks, kit.rs, gather.rs, score.rs, glb.rs, "atlas landmark", Martinitoren, landmark, "building model"]
 updated: 2026-11-05
 ---
 
@@ -65,6 +65,16 @@ stand-in host on the node that renders, passing every other path through to
 The file is placed by the outline's first vertex, while the store asks the
 published shells (`models::owner_cell`), so check the shell cell names the
 pand.
+
+## Publishing
+
+The app's `replace_building` tool (`systems::dev::mcp::agent`, over the
+Midas device link too) makes the Overrides tab's two requests as the
+signed-in account: the GLB to `/api/pipeline/overrides/{pand}/model`, then
+the name, placement (`placement.json` from `build`), `walls` collision and no
+interior. `restore_building` deletes it. The account needs
+`building_override`, and an agent holds no operator login of its own, so a
+landmark goes live through a person's signed-in app.
 
 ## Limits
 

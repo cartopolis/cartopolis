@@ -229,6 +229,39 @@ pub async fn api_upload_video(bytes: Vec<u8>) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
+/// Replace a building's outside with a GLB, through atlas's operator API
+/// (`/api/pipeline/overrides`, `docs/notes/building-models.md`), then save its
+/// name, placement and collision as `edit` (the API's `Edit`). Two requests,
+/// as the Overrides tab makes them: an upload creates the record with default
+/// placement, and the edit puts it where it belongs. Answers the edit's body.
+/// Only the agent tools call it, which exist where `mcp` is built.
+#[cfg(mcp)]
+pub async fn api_replace_building(
+    pand: &str,
+    glb: Vec<u8>,
+    edit: String,
+) -> Result<String, String> {
+    let path = format!("/api/pipeline/overrides/{pand}");
+    let request = api_request(http::Request::post, &format!("{path}/model"))
+        .ok_or("not signed in")?
+        .header("Content-Type", "model/gltf-binary")
+        .timeout(std::time::Duration::from_secs(120))
+        .body(glb);
+    http::fetch(request).await?;
+    api_put(&path, edit).await
+}
+
+/// Delete a building's override: the survey's building comes back.
+#[cfg(mcp)]
+pub async fn api_restore_building(pand: &str) -> Result<(), String> {
+    let request = api_request(
+        http::Request::delete,
+        &format!("/api/pipeline/overrides/{pand}"),
+    )
+    .ok_or("not signed in")?;
+    http::fetch(request).await.map(|_| ())
+}
+
 /// A clip's bytes: from the cache if this device has fetched it before (the
 /// name is its hash, so a cached copy is never stale), else from the server.
 #[cfg(not(target_arch = "wasm32"))]

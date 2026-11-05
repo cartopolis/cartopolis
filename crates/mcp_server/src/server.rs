@@ -47,7 +47,7 @@ use crate::args::{
     LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs,
     RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs, WalkArgs,
 };
-use crate::args::{PictureSend, SeePictureArgs, IMAGE_KEY};
+use crate::args::{PandArgs, PictureSend, ReplaceBuildingArgs, SeePictureArgs, IMAGE_KEY};
 use crate::device::{
     AppLogArgs, DeviceRequest, FlyToArgs, PerfArgs, PressArgs, RouteArgs, SetLayerArgs,
     SetSettingArgs, UiTreeArgs,
@@ -966,6 +966,30 @@ impl Tools {
         Parameters(args): Parameters<VideoArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::PlayVideo(args)).await
+    }
+
+    #[tool(
+        description = "Replace a building's outside with a model, for everyone: the same \
+                       upload as the Overrides tab on the operator site, made as the signed-in \
+                       account, which needs the building_override permission. The map shows it \
+                       within about 30 seconds; restore_building undoes it."
+    )]
+    async fn replace_building(
+        &self,
+        Parameters(args): Parameters<ReplaceBuildingArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::ReplaceBuilding(args)).await
+    }
+
+    #[tool(
+        description = "Delete a building's replacement model: the surveyed building comes back \
+                       for everyone. Needs the building_override permission."
+    )]
+    async fn restore_building(
+        &self,
+        Parameters(args): Parameters<PandArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::RestoreBuilding(args)).await
     }
 
     #[tool(
