@@ -556,7 +556,7 @@ second download.
 
 `Updater.java` reads `/apk/version.json` (written by `deploy/build/apk.sh`) on a
 return to the screen, at most every six hours, and fetches a higher code into the
-cache **on an unmetered network only**. Before installing it checks the file
+cache, **on mobile data too** (the owner's call: 80 MB is no problem). Before installing it checks the file
 against the published `.sha256` *and* asks Android to read the archive's package
 and code — the deploy writes the files one by one, so a check that lands
 mid-publish sees a pair that disagrees and tries again later. It installs from

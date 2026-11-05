@@ -5,8 +5,8 @@
 //
 // On every return to the screen, at most once in CHECK_EVERY_MS, a thread reads
 // `version.json` beside the APK (`deploy/build/apk.sh` writes it). A higher
-// version code than ours is downloaded into the cache — on an unmetered network
-// only, since it is 80 MB — and checked twice before anything is installed: its
+// version code than ours is downloaded into the cache — on any network, mobile
+// data included, by the owner's choice (2026-11-05) — and checked twice before anything is installed: its
 // sha256 against the published `cartopolis.apk.sha256`, and its package name and
 // version code as Android itself reads them out of the archive. Then it waits for
 // the person to leave the app, because installing an update ends the running
@@ -37,7 +37,6 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
 import android.os.Build;
 import android.app.PendingIntent;
 import android.util.Log;
@@ -159,11 +158,6 @@ final class Updater {
         }
         String want = text(BASE + "cartopolis.apk.sha256").trim().split("\\s+")[0];
         if (!(apk.isFile() && want.equals(sha256(apk)))) {
-            ConnectivityManager net = app.getSystemService(ConnectivityManager.class);
-            if (net == null || net.isActiveNetworkMetered()) {
-                Log.i(TAG, "update: build " + code + " is out; waiting for Wi-Fi to fetch it");
-                return null;
-            }
             download(BASE + "cartopolis.apk", apk);
             // Published between our two reads: the next check finds the pair whole.
             if (!want.equals(sha256(apk))) {
