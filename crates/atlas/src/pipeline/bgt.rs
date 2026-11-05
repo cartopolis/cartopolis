@@ -1338,7 +1338,12 @@ mod tests {
             .collect();
         assert_eq!(ramps.len(), 2, "{ramps:?}");
         for r in &ramps {
-            assert!(r.1 < -0.4 && r.2 > 0.5, "steps from {} to {} m NAP", r.1, r.2);
+            assert!(
+                r.1 < -0.4 && r.2 > 0.5,
+                "steps from {} to {} m NAP",
+                r.1,
+                r.2
+            );
         }
         let line = &centreline(&wall["geometry"])[0];
         println!(
