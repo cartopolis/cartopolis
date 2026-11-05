@@ -121,11 +121,14 @@ would otherwise leave a truncated file that `Restart=always` loops on forever.
 ## Deploying the simulator (updated 2026-10-16)
 
 **`midas deploy sim`**, from an agent container. It builds the tip of `main` on
-a VPS node — only a commit that landed, only with the landing gate's receipt —
+any free node — only a commit that landed, only with the landing gate's receipt —
 and publishes it here as root, after the same two checks the workflow ran:
 startup and migrations against an empty database, then this commit's migrations
 against a *copy* of the live one, as `cartosim`. A failing check leaves the old
-binary serving. The recipe is the `deploy.sim` section of the hub's
+binary serving. A Mac node builds it too: `deploy/build/server.sh` cross-links
+the x86_64 Linux binary with cargo-zigbuild on either kind (measured 2026-11-05
+on mac-2: atlas 2 m 49 s and the simulator 4 m 25 s from cold, both passing the
+recipe's checks on the VPS). The recipe is the `deploy.sim` section of the hub's
 `/etc/midas/hub.conf` (jeroen/midas, `docs/hub.md`); `midas deploy atlas` is the
 same for atlas. It is never automatic: publishing restarts a live service and
 drops every connection for a few seconds. So the server drifts behind `main`

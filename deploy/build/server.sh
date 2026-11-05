@@ -3,8 +3,10 @@
 #
 #   deploy/build/server.sh <package> <binary> <profile>
 #
-# A workshop node runs Arch and the deploy host Ubuntu, and a binary linked on the
-# node asks for the node's glibc: the first simulator built this way wanted
+# It runs on any node: a Linux one, or a Mac one (an arm64 macOS VM), which
+# cross-links the same x86_64 Linux binary. A Linux node runs Arch and the
+# deploy host Ubuntu, and a binary linked on the node asks for the node's glibc:
+# the first simulator built this way wanted
 # GLIBC_2.44 from a host with 2.43, and the deploy's own smoke test refused it.
 # So it is linked by cargo-zigbuild against an older glibc, $GLIBC — 2.38, what
 # the binaries the CI image built on Ubuntu 24.04 asked for — and checked here
@@ -13,10 +15,15 @@
 pkg=$1 bin=$2 profile=$3
 GLIBC=${GLIBC:-2.38}
 if ! command -v zig >/dev/null; then
-    # The node image carries zig; a node on an older image fetches it once.
+    # The Linux node image carries zig; a Mac node, or a Linux one on an older
+    # image, fetches the build for its own host once.
+    case "$(uname -sm)" in
+        "Darwin arm64") zig_host=aarch64-macos ;;
+        *) zig_host=x86_64-linux ;;
+    esac
     if [ ! -x "$TOOLS/zig/zig" ]; then
         mkdir -p "$TOOLS/zig"
-        curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz \
+        curl -fsSL "https://ziglang.org/download/0.16.0/zig-$zig_host-0.16.0.tar.xz" \
             | tar -xJ -C "$TOOLS/zig" --strip-components=1
     fi
     export PATH="$TOOLS/zig:$PATH"
