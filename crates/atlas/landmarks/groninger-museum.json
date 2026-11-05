@@ -7,7 +7,7 @@
  ],
  "rotation_deg": 86.1,
  "sources": [
-  "parts and heights: AHN surface model in the gather frame (tower 31 m, wings 11 m, east pavilion 13-18 m, Starck drum 7 m on a 3.5 m brick base), outline BAG",
+  "parts and heights: AHN surface model in the gather frame (tower 31 m, wings 11 m, east pavilion 13-18 m, Starck drum 7 m on a 3.5 m brick base), outline BAG; every height +1.1 m, because the app stands the model on the canal (0.8 m NAP) and the laser's ground is the bank's (1.93 m)",
   "colours and parts: PDOK 8 cm aerial and Commons photographs (Jan Geerling 1510-001..012, CC BY-SA 4.0; '20140614 Groninger Museum Groningen NL.jpg', Wutsje, CC BY-SA 3.0)",
   "the east pavilion's mosaic and steel plates are drawn as one pastel colour and three tilted plates; their positions follow the photographs, not a measurement",
   "nothing is drawn on the station footbridge's line (local y -26..-18, and x -6..6 along the entrance pier); the low terraces either side are 3 m slabs"
@@ -43,9 +43,9 @@
   },
   "mosaic": {
    "rgb": [
-    188,
-    176,
-    196
+    206,
+    200,
+    212
    ]
   },
   "glass": {
@@ -71,16 +71,30 @@
   },
   "brick": {
    "rgb": [
-    150,
-    74,
-    58
+    118,
+    62,
+    50
    ]
   },
   "silver": {
    "rgb": [
-    198,
-    202,
-    206
+    206,
+    210,
+    214
+   ]
+  },
+  "rib": {
+   "rgb": [
+    150,
+    156,
+    162
+   ]
+  },
+  "white": {
+   "rgb": [
+    232,
+    232,
+    228
    ]
   }
  },
@@ -106,7 +120,7 @@
      1
     ],
     [
-     30,
+     31.1,
      1
     ]
    ],
@@ -119,8 +133,8 @@
      "kind": "rect",
      "count": 2,
      "w": 1.6,
-     "from": 25.5,
-     "to": 27.5,
+     "from": 26.6,
+     "to": 28.6,
      "depth": 0.3,
      "material": "window"
     }
@@ -147,7 +161,7 @@
      1
     ],
     [
-     11,
+     12.1,
      1
     ]
    ],
@@ -157,8 +171,8 @@
      "kind": "rect",
      "count": 4,
      "w": 2.2,
-     "from": 3.6,
-     "to": 5.6,
+     "from": 4.7,
+     "to": 6.7,
      "depth": 0.3,
      "material": "window"
     },
@@ -167,8 +181,8 @@
      "kind": "rect",
      "count": 4,
      "w": 2.2,
-     "from": 7.4,
-     "to": 9.4,
+     "from": 8.5,
+     "to": 10.5,
      "depth": 0.3,
      "material": "window"
     }
@@ -195,7 +209,7 @@
      1
     ],
     [
-     11,
+     12.1,
      1
     ]
    ],
@@ -205,8 +219,8 @@
      "kind": "rect",
      "count": 3,
      "w": 2.2,
-     "from": 3.6,
-     "to": 5.6,
+     "from": 4.7,
+     "to": 6.7,
      "depth": 0.3,
      "material": "window"
     },
@@ -215,8 +229,8 @@
      "kind": "rect",
      "count": 3,
      "w": 2.2,
-     "from": 7.4,
-     "to": 9.4,
+     "from": 8.5,
+     "to": 10.5,
      "depth": 0.3,
      "material": "window"
     }
@@ -248,7 +262,7 @@
      ]
     },
     {
-     "h": 8,
+     "h": 9.1,
      "points": [
       [
        -23,
@@ -269,7 +283,7 @@
      ]
     },
     {
-     "h": 13.5,
+     "h": 14.6,
      "points": [
       [
        -19,
@@ -299,8 +313,8 @@
      "kind": "rect",
      "count": 3,
      "w": 3.0,
-     "from": 9,
-     "to": 11.5,
+     "from": 10.1,
+     "to": 12.6,
      "depth": 0.3,
      "material": "window"
     }
@@ -323,11 +337,11 @@
    ],
    "rings": [
     [
-     13.5,
+     14.6,
      1
     ],
     [
-     17.5,
+     18.6,
      1
     ]
    ],
@@ -339,7 +353,7 @@
    "solid": false,
    "layers": [
     {
-     "h": 7,
+     "h": 8.1,
      "points": [
       [
        -20,
@@ -360,7 +374,7 @@
      ]
     },
     {
-     "h": 18,
+     "h": 19.1,
      "points": [
       [
        -20,
@@ -388,7 +402,7 @@
    "solid": false,
    "layers": [
     {
-     "h": 8,
+     "h": 9.1,
      "points": [
       [
        -28.6,
@@ -409,7 +423,7 @@
      ]
     },
     {
-     "h": 19,
+     "h": 20.1,
      "points": [
       [
        -32.5,
@@ -437,7 +451,7 @@
    "solid": false,
    "layers": [
     {
-     "h": 7,
+     "h": 8.1,
      "points": [
       [
        22,
@@ -458,7 +472,7 @@
      ]
     },
     {
-     "h": 17,
+     "h": 18.1,
      "points": [
       [
        25.5,
@@ -501,7 +515,7 @@
      1
     ],
     [
-     3.5,
+     2.0,
      1
     ]
    ]
@@ -523,19 +537,19 @@
    ],
    "rings": [
     [
-     3.5,
+     2.0,
      1
     ],
     [
-     7.0,
+     8.1,
      1
     ],
     [
-     7.0,
+     8.1,
      0.97
     ],
     [
-     7.6,
+     8.7,
      0.97
     ]
    ],
@@ -543,11 +557,11 @@
     {
      "kind": "rect",
      "count": 1,
-     "w": 1.2,
-     "from": 4.2,
-     "to": 6.4,
-     "depth": 0.25,
-     "material": "window",
+     "w": 0.5,
+     "from": 2.6,
+     "to": 7.6,
+     "depth": 0.15,
+     "material": "rib",
      "faces": [
       0,
       2,
@@ -588,15 +602,15 @@
    ],
    "rings": [
     [
-     7.6,
+     8.7,
      1
     ],
     [
-     9.6,
+     10.7,
      1
     ],
     [
-     10.4,
+     11.5,
      0
     ]
    ],
@@ -623,7 +637,7 @@
      1
     ],
     [
-     3.0,
+     4.1,
      1
     ]
    ]
@@ -649,7 +663,7 @@
      1
     ],
     [
-     3.0,
+     4.1,
      1
     ]
    ]
@@ -675,7 +689,7 @@
      1
     ],
     [
-     3.0,
+     4.1,
      1
     ]
    ]
@@ -701,7 +715,7 @@
      1
     ],
     [
-     3.0,
+     4.1,
      1
     ]
    ]
@@ -727,7 +741,7 @@
      1
     ],
     [
-     3.0,
+     4.1,
      1
     ]
    ]
@@ -749,23 +763,170 @@
    ],
    "rings": [
     [
-     3.0,
+     4.1,
      1
     ],
     [
-     4.2,
+     5.3,
      1
     ],
     [
-     5.4,
+     6.5,
      0.62
     ],
     [
-     6.0,
+     7.1,
      0
     ]
    ],
    "solid": false
+  },
+  {
+   "name": "white plate",
+   "material": "white",
+   "solid": false,
+   "layers": [
+    {
+     "h": 9,
+     "points": [
+      [
+       -10,
+       68
+      ],
+      [
+       2,
+       68
+      ],
+      [
+       2,
+       68.6
+      ],
+      [
+       -10,
+       68.6
+      ]
+     ]
+    },
+    {
+     "h": 19.5,
+     "points": [
+      [
+       -12,
+       71.5
+      ],
+      [
+       0,
+       71.5
+      ],
+      [
+       0,
+       72.1
+      ],
+      [
+       -12,
+       72.1
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "black plate east",
+   "material": "steel",
+   "solid": false,
+   "layers": [
+    {
+     "h": 8,
+     "points": [
+      [
+       4,
+       68
+      ],
+      [
+       16,
+       68
+      ],
+      [
+       16,
+       68.6
+      ],
+      [
+       4,
+       68.6
+      ]
+     ]
+    },
+    {
+     "h": 18,
+     "points": [
+      [
+       5,
+       70.5
+      ],
+      [
+       17,
+       70.5
+      ],
+      [
+       17,
+       71.1
+      ],
+      [
+       5,
+       71.1
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rust plate west",
+   "material": "rust",
+   "solid": false,
+   "layers": [
+    {
+     "h": 6,
+     "points": [
+      [
+       -6,
+       26.4
+      ],
+      [
+       8,
+       26.4
+      ],
+      [
+       8,
+       27.0
+      ],
+      [
+       -6,
+       27.0
+      ]
+     ]
+    },
+    {
+     "h": 15.5,
+     "points": [
+      [
+       -5,
+       23.5
+      ],
+      [
+       9,
+       23.5
+      ],
+      [
+       9,
+       24.1
+      ],
+      [
+       -5,
+       24.1
+      ]
+     ]
+    }
+   ]
   }
  ]
 }
