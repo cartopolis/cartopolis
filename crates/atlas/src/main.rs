@@ -58,6 +58,33 @@ enum Command {
         #[arg(long, default_value = "site/areas")]
         out: PathBuf,
     },
+    /// Rebuild a landmark from measurements and photographs
+    /// (`landmark`, `docs/notes/landmark-kit.md`).
+    Landmark {
+        #[command(subcommand)]
+        step: LandmarkStep,
+    },
+}
+
+#[derive(Subcommand)]
+enum LandmarkStep {
+    /// Gather a building's outline, laser heights, aerial photograph and
+    /// nearby photographs, and a first kit, into a folder.
+    Gather {
+        /// The BAG identificatie.
+        pand: String,
+        /// Words a photograph's title must hold one of (`Martinitoren`).
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Build a kit into model.glb, placement.json and score.md.
+    Build {
+        kit: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 struct Stderr;
@@ -156,6 +183,16 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(Command::Landmark { step }) = &cli.command {
+        let said = match step {
+            LandmarkStep::Gather { pand, names, out } => {
+                cartopolis_atlas::landmark::gather::gather(pand, names, out)
+            }
+            LandmarkStep::Build { kit, out } => cartopolis_atlas::landmark::build(kit, out),
+        };
+        println!("{}", said.map_err(anyhow::Error::msg)?);
+        return Ok(());
+    }
     if let Some(Command::Areas { set, from, out }) = &cli.command {
         for (name, n, bytes) in cartopolis_atlas::official_areas::write(set, from.as_deref(), out)?
         {
