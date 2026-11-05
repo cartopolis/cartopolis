@@ -36,6 +36,7 @@ pub mod geotop;
 pub mod ground;
 pub mod http;
 pub mod lod22;
+pub mod lower_quay;
 pub mod models;
 pub mod pipelines;
 pub mod rd;

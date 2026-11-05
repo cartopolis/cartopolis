@@ -58,11 +58,26 @@ pub struct Objects {
     pub trees: Vec<LatLng>,
 }
 
+/// A walk below the street beside it: `[[ring, …], level]` — the rings of one of
+/// the file's surfaces, outer first, and its level in metres above NAP as AHN
+/// measured it.
+///
+/// A lower quay is paving like any other in the register, which says nothing of
+/// its height; atlas finds it by measuring the surfaces along a quay wall
+/// against AHN (`pipeline/lower_quay.rs`). A key of its own rather than a
+/// trailing element on [`Surface`], because a reader that predates it must
+/// still read the file: serde ignores an unknown key and refuses an unknown
+/// array element.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Terrace(pub Vec<Vec<LatLng>>, pub f64);
+
 /// The paving file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Paving {
     #[serde(default)]
     pub surfaces: Vec<Surface>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terraces: Vec<Terrace>,
 }
 
 /// Parse an objects file.
@@ -129,6 +144,7 @@ mod tests {
                     Some(4),
                 ),
             ],
+            terraces: Vec::new(),
         }
     }
 
@@ -148,6 +164,19 @@ mod tests {
         assert_eq!(parse_paving(PAVING).unwrap(), paving());
         assert_eq!(text(&objects()), OBJECTS);
         assert_eq!(text(&paving()), PAVING);
+    }
+
+    /// A lower quay rides beside the surfaces, and a file without one is written
+    /// exactly as before.
+    #[test]
+    fn terraces_round_trip_and_cost_nothing_when_absent() {
+        let mut p = paving();
+        p.terraces
+            .push(Terrace(vec![vec![(53.2, 6.5), (53.2, 6.501), (53.2001, 6.501)]], -0.82));
+        let t = text(&p);
+        assert!(t.contains(r#""terraces":[[[[[53.2,6.5]"#), "{t}");
+        assert_eq!(parse_paving(&t).unwrap(), p);
+        assert!(!text(&paving()).contains("terraces"));
     }
 
     /// A file with only some arrays, as a cell cached before the bridges existed
