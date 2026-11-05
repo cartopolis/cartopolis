@@ -289,7 +289,10 @@ pub fn measure(rings: &[Vec<Pt>], raster: &Raster) -> Option<LowerQuay> {
         }
         if point_in_rings(c[0], c[1], rings) {
             inside.push(f64::from(h));
-        } else if edges.iter().any(|&(a, b)| distance_to_segment(c, a, b) <= NEAR_M) {
+        } else if edges
+            .iter()
+            .any(|&(a, b)| distance_to_segment(c, a, b) <= NEAR_M)
+        {
             near.push(f64::from(h));
         }
     }
@@ -297,11 +300,17 @@ pub fn measure(rings: &[Vec<Pt>], raster: &Raster) -> Option<LowerQuay> {
         return None;
     }
     let level = median(inside.clone());
-    let flat = inside.iter().filter(|h| (*h - level).abs() <= FLAT_M).count();
+    let flat = inside
+        .iter()
+        .filter(|h| (*h - level).abs() <= FLAT_M)
+        .count();
     if (flat as f64) < FLAT_SHARE * inside.len() as f64 {
         return None;
     }
-    let behind: Vec<f64> = near.into_iter().filter(|h| *h >= level + MIN_FACE_M).collect();
+    let behind: Vec<f64> = near
+        .into_iter()
+        .filter(|h| *h >= level + MIN_FACE_M)
+        .collect();
     if behind.len() < MIN_SAMPLES / 2 {
         return None;
     }
@@ -439,7 +448,9 @@ pub fn parapet(line: &[Pt], dsm: &Raster, street: f64) -> Option<f64> {
         return None;
     }
     let rise = median(tops) - street;
-    (MIN_PARAPET_M..=MAX_PARAPET_M).contains(&rise).then_some(rise)
+    (MIN_PARAPET_M..=MAX_PARAPET_M)
+        .contains(&rise)
+        .then_some(rise)
 }
 
 #[cfg(test)]
@@ -504,10 +515,22 @@ mod tests {
     /// away does not, and is never asked of AHN.
     #[test]
     fn only_a_surface_along_a_quay_wall_is_measured() {
-        let wall = vec![[12.5, 5.0], [12.8, 5.0], [12.8, 55.0], [12.5, 55.0], [12.5, 5.0]];
+        let wall = vec![
+            [12.5, 5.0],
+            [12.8, 5.0],
+            [12.8, 55.0],
+            [12.5, 55.0],
+            [12.5, 5.0],
+        ];
         let quays = QuayIndex::new(vec![(wall, Vec::new())]);
         assert!(quays.along(&strip(12.5)[0]));
-        let across = vec![[20.0, 5.0], [24.0, 5.0], [24.0, 55.0], [20.0, 55.0], [20.0, 5.0]];
+        let across = vec![
+            [20.0, 5.0],
+            [24.0, 5.0],
+            [24.0, 55.0],
+            [20.0, 55.0],
+            [20.0, 5.0],
+        ];
         assert!(!quays.along(&across));
     }
 

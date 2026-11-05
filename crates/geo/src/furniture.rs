@@ -2648,7 +2648,10 @@ mod tests {
             &|_, _| 9.0,
             &|_, _| 1.5,
         ));
-        assert!((hi + 1.5).abs() < 1e-4 && (lo + 5.75).abs() < 1e-4, "{lo}..{hi}");
+        assert!(
+            (hi + 1.5).abs() < 1e-4 && (lo + 5.75).abs() < 1e-4,
+            "{lo}..{hi}"
+        );
     }
 
     /// Below the floor there is no wall to draw. The 3D product drapes its objects

@@ -454,7 +454,12 @@ pub fn centreline(geom: &Value) -> Vec<Vec<Pt>> {
         };
         out.push(
             line.iter()
-                .map(|p| [round(lat0 + p[1] / M_PER_DEG, 7), round(lng0 + p[0] / scale, 7)])
+                .map(|p| {
+                    [
+                        round(lat0 + p[1] / M_PER_DEG, 7),
+                        round(lng0 + p[0] / scale, 7),
+                    ]
+                })
                 .collect(),
         );
     }
@@ -507,7 +512,11 @@ fn strip_middle(ring: &[Pt]) -> Option<Vec<Pt>> {
         .collect();
     // Within about a width of a cut the two sides are still turning round the
     // end, and their midpoints hook towards the corner; those are dropped.
-    let width = a.iter().zip(&b).map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1])).sum::<f64>()
+    let width = a
+        .iter()
+        .zip(&b)
+        .map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
+        .sum::<f64>()
         / k as f64;
     let spacing = resample_length(&a) / (k - 1) as f64;
     let d = ((width / spacing.max(1e-9)).ceil() as usize + 1).min((mid.len() - 2) / 2);
@@ -523,7 +532,11 @@ fn strip_middle(ring: &[Pt]) -> Option<Vec<Pt>> {
         [end[0] + ux * reach, end[1] + uy * reach]
     };
     let first = carry(even[best.1 % k], inner[0], inner[1]);
-    let last = carry(even[best.2 % k], inner[inner.len() - 1], inner[inner.len() - 2]);
+    let last = carry(
+        even[best.2 % k],
+        inner[inner.len() - 1],
+        inner[inner.len() - 2],
+    );
     inner.insert(0, first);
     inner.push(last);
     let line = simplify(&inner, STRIP_SIMPLIFY_M);
@@ -540,7 +553,9 @@ const STRIP_SIMPLIFY_M: f64 = 0.1;
 
 /// The length of an open polyline.
 fn resample_length(line: &[Pt]) -> f64 {
-    line.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum()
+    line.windows(2)
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .sum()
 }
 
 /// `m ≥ 2` points spaced evenly along an open polyline, both ends included.
@@ -596,13 +611,20 @@ fn lower_quay_of(
     // are the ones the client reads.
     let rd: Vec<Vec<Pt>> = rings
         .iter()
-        .map(|r| r.iter().map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1])).collect())
+        .map(|r| {
+            r.iter()
+                .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1]))
+                .collect()
+        })
         .collect();
     if !super::lower_quay::wide_enough(&rd) {
         return Ok(None);
     }
     let (min, max) = super::lower_quay::window(&rd);
-    Ok(super::lower_quay::measure(&rd, &raster_of(ahn, crate::terrain::Model::Terrain, min, max)?))
+    Ok(super::lower_quay::measure(
+        &rd,
+        &raster_of(ahn, crate::terrain::Model::Terrain, min, max)?,
+    ))
 }
 
 /// AHN over a square at its own half metre, or coarser past [`QUAY_RASTER_MAX`].
@@ -909,10 +931,12 @@ fn collect_surfaces(
     let (mut n, mut dropped_level, mut n_material) = (0usize, 0usize, 0usize);
     // A walk along a quay wall is measured against AHN, and shipped with its
     // level where it lies below the street the wall holds up (`lower_quay`).
-    let ahn = ctx.data_dir().ok().map(|dir| {
-        crate::ahn6::Ahn6::new(dir, std::sync::Arc::new(crate::terrain::Pdok::new()))
-    });
-    let (mut n_terraces, mut n_measured, mut n_parapets, mut ahn_errors) = (0usize, 0usize, 0usize, 0usize);
+    let ahn = ctx
+        .data_dir()
+        .ok()
+        .map(|dir| crate::ahn6::Ahn6::new(dir, std::sync::Arc::new(crate::terrain::Pdok::new())));
+    let (mut n_terraces, mut n_measured, mut n_parapets, mut ahn_errors) =
+        (0usize, 0usize, 0usize, 0usize);
     let mut parapeted: HashSet<usize> = HashSet::new();
     for collection in ["wegdeel", "ondersteunendwegdeel", "onbegroeidterreindeel"] {
         ctx.log(format!("{collection}…"));
@@ -982,9 +1006,15 @@ fn collect_surfaces(
                             let Some(&at) = line.first() else { continue };
                             match parapet_of(ahn, line, q.street) {
                                 Ok(Some(h)) => {
-                                    cells.entry(lat_lng_to_cell(at[0], at[1])).or_default().lines.push(
-                                        Line(ix(&LINE_KINDS, "parapet"), pairs(line), Some(h)),
-                                    );
+                                    cells
+                                        .entry(lat_lng_to_cell(at[0], at[1]))
+                                        .or_default()
+                                        .lines
+                                        .push(Line(
+                                            ix(&LINE_KINDS, "parapet"),
+                                            pairs(line),
+                                            Some(h),
+                                        ));
                                     n_parapets += 1;
                                 }
                                 Ok(None) => {}
@@ -1017,7 +1047,9 @@ fn collect_surfaces(
          {n_parapets} walls stand above it"
     ));
     if ahn_errors > 0 {
-        ctx.log(format!("{ahn_errors} of them unmeasured: AHN did not answer"));
+        ctx.log(format!(
+            "{ahn_errors} of them unmeasured: AHN did not answer"
+        ));
     }
     Ok((n, n_terraces))
 }
@@ -1208,17 +1240,19 @@ mod tests {
         let along = quays.along_which(&rd(&poly[0]));
         assert!(!along.is_empty(), "the walk runs along a quay wall");
         let dir = tempfile::tempdir().unwrap();
-        let ahn = crate::ahn6::Ahn6::new(
-            dir.path(),
-            std::sync::Arc::new(crate::terrain::Pdok::new()),
-        );
+        let ahn =
+            crate::ahn6::Ahn6::new(dir.path(), std::sync::Arc::new(crate::terrain::Pdok::new()));
         let rings = simplified_rings(poly);
         let q = lower_quay_of(&ahn, &rings).unwrap().expect("a lower quay");
         let level = q.level;
         let parapets: Vec<(Vec<LatLng>, f64)> = along
             .iter()
             .flat_map(|&k| quays.lines(k).to_vec())
-            .filter_map(|l| parapet_of(&ahn, &l, q.street).unwrap().map(|h| (pairs(&l), h)))
+            .filter_map(|l| {
+                parapet_of(&ahn, &l, q.street)
+                    .unwrap()
+                    .map(|h| (pairs(&l), h))
+            })
             .collect();
         let wall = by_id(&walls, "G0014.404f925a61cc0015e053660013ac6945");
         let line = &centreline(&wall["geometry"])[0];
@@ -1242,7 +1276,9 @@ mod tests {
         // The wall under the street stands above it (0.38 m, 2026-11-05), and so
         // does its next length by the steps; the one on the water does not.
         assert!(
-            parapets.iter().any(|(l, h)| l[0] == pairs(line)[0] && (0.3..1.5).contains(h)),
+            parapets
+                .iter()
+                .any(|(l, h)| l[0] == pairs(line)[0] && (0.3..1.5).contains(h)),
             "{parapets:?}"
         );
         assert_eq!(parapets.len(), 2, "{parapets:?}");
@@ -1265,7 +1301,10 @@ mod tests {
     #[test]
     fn a_strip_round_a_corner_keeps_to_the_strip() {
         // 0.3 m thick, 20 m east then 20 m north, in degrees near 53°N.
-        let (x, y) = (1.0 / (M_PER_DEG * 53f64.to_radians().cos()), 1.0 / M_PER_DEG);
+        let (x, y) = (
+            1.0 / (M_PER_DEG * 53f64.to_radians().cos()),
+            1.0 / M_PER_DEG,
+        );
         let at = |e: f64, n: f64| json!([6.5 + e * x, 53.0 + n * y]);
         let l = json!({"type": "Polygon", "coordinates": [[
             at(0.0, 0.0), at(20.0, 0.0), at(20.0, 20.0), at(19.7, 20.0),

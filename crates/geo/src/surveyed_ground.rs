@@ -98,34 +98,34 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
         .collect();
     let areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)> = wire
         .surfaces
-            .into_iter()
-            // An outer ring under three points is not a surface. The extractor
-            // drops those; a truncated cache entry can produce one.
-            .filter(|s| s.1.first().is_some_and(|r| r.len() >= 3))
-            .filter(|WireSurface(k, rings, m)| {
-                seen.insert((
-                    *k,
-                    *m,
-                    rings
-                        .iter()
-                        .map(|r| {
-                            r.iter()
-                                .map(|&(lat, lng)| (lat.to_bits(), lng.to_bits()))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>(),
-                ))
-            })
-            .filter_map(|WireSurface(k, rings, m)| {
-                // An unknown *form* drops the surface — there is nothing to draw
-                // it as. An unknown *material* only drops the material: a
-                // vocabulary this reader is too old for still leaves a pavement,
-                // drawn the way it was drawn before materials existed.
-                let kind = *SURFACE_KINDS.get(k)?;
-                let material = m.and_then(|i| SURFACE_MATERIALS.get(i).copied());
-                Some((kind, material, rings))
-            })
-            .collect();
+        .into_iter()
+        // An outer ring under three points is not a surface. The extractor
+        // drops those; a truncated cache entry can produce one.
+        .filter(|s| s.1.first().is_some_and(|r| r.len() >= 3))
+        .filter(|WireSurface(k, rings, m)| {
+            seen.insert((
+                *k,
+                *m,
+                rings
+                    .iter()
+                    .map(|r| {
+                        r.iter()
+                            .map(|&(lat, lng)| (lat.to_bits(), lng.to_bits()))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .filter_map(|WireSurface(k, rings, m)| {
+            // An unknown *form* drops the surface — there is nothing to draw
+            // it as. An unknown *material* only drops the material: a
+            // vocabulary this reader is too old for still leaves a pavement,
+            // drawn the way it was drawn before materials existed.
+            let kind = *SURFACE_KINDS.get(k)?;
+            let material = m.and_then(|i| SURFACE_MATERIALS.get(i).copied());
+            Some((kind, material, rings))
+        })
+        .collect();
     Ok(SurveyedPaving { areas, terraces })
 }
 

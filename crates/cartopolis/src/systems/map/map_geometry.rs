@@ -5532,19 +5532,26 @@ impl Terrace {
     /// [`TERRACE_APRON_M`].
     fn off_its_water(&self, p: [f32; 2]) -> bool {
         let r = TERRACE_APRON_M;
-        if p[0] < self.min[0] - r || p[0] > self.max[0] + r || p[1] < self.min[1] - r || p[1] > self.max[1] + r {
+        if p[0] < self.min[0] - r
+            || p[0] > self.max[0] + r
+            || p[1] < self.min[1] - r
+            || p[1] > self.max[1] + r
+        {
             return false;
         }
         let Some(outer) = self.rings.first() else {
             return false;
         };
         let n = outer.len();
-        (0..n).filter(|&i| self.seaward.get(i).copied().unwrap_or(false)).any(|i| {
-            let (a, b) = (Vec2::from(outer[i]), Vec2::from(outer[(i + 1) % n]));
-            let ab = b - a;
-            let t = ((Vec2::from(p) - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
-            (a + ab * t).distance(Vec2::from(p)) <= r
-        })
+        (0..n)
+            .filter(|&i| self.seaward.get(i).copied().unwrap_or(false))
+            .any(|i| {
+                let (a, b) = (Vec2::from(outer[i]), Vec2::from(outer[(i + 1) % n]));
+                let ab = b - a;
+                let t =
+                    ((Vec2::from(p) - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+                (a + ab * t).distance(Vec2::from(p)) <= r
+            })
     }
 
     /// Even-odd over every ring, so a hole is not part of the walk.
@@ -6620,8 +6627,12 @@ mod tests {
             [12.0, 0.0, 5.0],
         ];
         let mut indices = vec![0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2, 4, 6, 7, 4, 7, 5];
-        let (mut uvs, mut normals, mut colors, mut rungs) =
-            (vec![[0.0; 2]; 8], vec![[0.0, 1.0, 0.0]; 8], Vec::new(), Vec::new());
+        let (mut uvs, mut normals, mut colors, mut rungs) = (
+            vec![[0.0; 2]; 8],
+            vec![[0.0, 1.0, 0.0]; 8],
+            Vec::new(),
+            Vec::new(),
+        );
         let walk = Terrace::new(
             vec![vec![[5.0, 0.0], [10.0, 0.0], [10.0, 5.0], [5.0, 5.0]]],
             -1.6,

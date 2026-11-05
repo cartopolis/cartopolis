@@ -179,8 +179,7 @@ mod tests {
     #[test]
     fn terraces_round_trip_and_cost_nothing_when_absent() {
         let mut p = paving();
-        p.terraces
-            .push(Terrace(
+        p.terraces.push(Terrace(
             vec![vec![(53.2, 6.5), (53.2, 6.501), (53.2001, 6.501)]],
             -0.82,
             vec![true, false, false],
