@@ -79,6 +79,14 @@ pub struct Terrace(
     pub Vec<bool>,
 );
 
+/// A flight of steps from a lower quay up to the street: `[[ring, …], low, high]`
+/// — the rings of one of the file's surfaces and the heights, metres above
+/// NAP, of its foot and its top as AHN measured them. Drawn flat, the steps at
+/// either end of a lower quay stood at the street's level with the walk 1.6 m
+/// below them; the client lays one as a slope from the walk it adjoins.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ramp(pub Vec<Vec<LatLng>>, pub f64, pub f64);
+
 /// The paving file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Paving {
@@ -86,6 +94,8 @@ pub struct Paving {
     pub surfaces: Vec<Surface>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terraces: Vec<Terrace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ramps: Vec<Ramp>,
 }
 
 /// Parse an objects file.
@@ -153,6 +163,7 @@ mod tests {
                 ),
             ],
             terraces: Vec::new(),
+            ramps: Vec::new(),
         }
     }
 

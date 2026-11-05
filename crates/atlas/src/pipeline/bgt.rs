@@ -627,6 +627,27 @@ fn lower_quay_of(
     ))
 }
 
+/// A flight of steps (`[lat, lng]` rings, as shipped) measured against AHN: its
+/// foot and its top, metres above NAP (`lower_quay::rise`).
+fn ramp_of(
+    ahn: &dyn crate::terrain::HeightSource,
+    rings: &[Vec<[f64; 2]>],
+) -> Result<Option<(f64, f64)>, String> {
+    let rd: Vec<Vec<Pt>> = rings
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1]))
+                .collect()
+        })
+        .collect();
+    let (min, max) = super::lower_quay::window(&rd);
+    Ok(super::lower_quay::rise(
+        &rd,
+        &raster_of(ahn, crate::terrain::Model::Terrain, min, max)?,
+    ))
+}
+
 /// AHN over a square at its own half metre, or coarser past [`QUAY_RASTER_MAX`].
 fn raster_of(
     ahn: &dyn crate::terrain::HeightSource,
@@ -672,6 +693,8 @@ struct CellData {
     bridges: Vec<bgt::BridgePart>,
     /// The lower quays, for the paving file (`lower_quay`).
     terraces: Vec<bgt::Terrace>,
+    /// The steps down to them.
+    ramps: Vec<bgt::Ramp>,
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -845,6 +868,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 || !c.lines.is_empty()
                 || !c.surfaces.is_empty()
                 || !c.terraces.is_empty()
+                || !c.ramps.is_empty()
                 || !c.bridges.is_empty()
         })
         .collect();
@@ -859,6 +883,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             surfaces,
             bridges,
             terraces,
+            ramps,
         } = data;
         // Two files, as the BAG splits its own: the paving is the heavy part.
         if !trees.is_empty() || !props.is_empty() || !lines.is_empty() || !bridges.is_empty() {
@@ -872,10 +897,14 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 },
             )?;
         }
-        if !surfaces.is_empty() || !terraces.is_empty() {
+        if !surfaces.is_empty() || !terraces.is_empty() || !ramps.is_empty() {
             ctx.write_doc(
                 &format!("bgt/{CACHE_ZOOM}/{cx}/{cy}.surfaces.json"),
-                &bgt::Paving { surfaces, terraces },
+                &bgt::Paving {
+                    surfaces,
+                    terraces,
+                    ramps,
+                },
             )?;
         }
     }
@@ -938,6 +967,9 @@ fn collect_surfaces(
     let (mut n_terraces, mut n_measured, mut n_parapets, mut ahn_errors) =
         (0usize, 0usize, 0usize, 0usize);
     let mut parapeted: HashSet<usize> = HashSet::new();
+    // The walks found, as quay walls are indexed, and every flight of steps.
+    let mut walks: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = Vec::new();
+    let mut stairs: Vec<(Cell, Vec<Vec<[f64; 2]>>, Vec<Pt>)> = Vec::new();
     for collection in ["wegdeel", "ondersteunendwegdeel", "onbegroeidterreindeel"] {
         ctx.log(format!("{collection}…"));
         items(ctx, extract, collection, |feat| {
@@ -989,6 +1021,7 @@ fn collect_surfaces(
                     _ => None,
                 };
                 let cell = lat_lng_to_cell(first[0], first[1]);
+                let walk = measured.is_some();
                 if let Some((ahn, q, along)) = measured {
                     cells.entry(cell).or_default().terraces.push(bgt::Terrace(
                         rings.clone(),
@@ -1023,6 +1056,19 @@ fn collect_surfaces(
                         }
                     }
                 }
+                let rd_outer = || -> Vec<Pt> {
+                    out_rings.first().map_or_else(Vec::new, |r| {
+                        r.iter()
+                            .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1]))
+                            .collect()
+                    })
+                };
+                if walk {
+                    walks.push((rd_outer(), Vec::new()));
+                }
+                if form == "steps" {
+                    stairs.push((cell, out_rings.clone(), rd_outer()));
+                }
                 cells
                     .entry(cell)
                     .or_default()
@@ -1032,6 +1078,29 @@ fn collect_surfaces(
                 n += 1;
             }
         })?;
+    }
+    // The steps up from a lower quay: a flight that runs along one is laid as a
+    // slope from its foot to its top (`formats::bgt::Ramp`).
+    let mut n_ramps = 0usize;
+    if let (Some(ahn), false) = (&ahn, walks.is_empty()) {
+        let walks = super::lower_quay::QuayIndex::new(walks);
+        for (cell, rings, outer) in stairs {
+            if !walks.along(&outer) {
+                continue;
+            }
+            match ramp_of(ahn, &rings) {
+                Ok(Some((low, high))) => {
+                    cells.entry(cell).or_default().ramps.push(bgt::Ramp(
+                        ring_pairs(&rings),
+                        round(low, 2),
+                        round(high, 2),
+                    ));
+                    n_ramps += 1;
+                }
+                Ok(None) => {}
+                Err(_) => ahn_errors += 1,
+            }
+        }
     }
     if dropped_level > 0 {
         ctx.log(format!("{dropped_level} surfaces above or below ground level were dropped (bridges and tunnels)"));
@@ -1044,7 +1113,7 @@ fn collect_surfaces(
     }
     ctx.log(format!(
         "{n_measured} surfaces along a quay wall measured, {n_terraces} lie below the street, \
-         {n_parapets} walls stand above it"
+         {n_parapets} walls stand above it, {n_ramps} flights of steps lead down"
     ));
     if ahn_errors > 0 {
         ctx.log(format!(
@@ -1235,7 +1304,8 @@ mod tests {
                 })
                 .collect(),
         );
-        let walk = by_id(&fetch("wegdeel"), "G0014.404f925c4b580015e053660013ac6945");
+        let paving = fetch("wegdeel");
+        let walk = by_id(&paving, "G0014.404f925c4b580015e053660013ac6945");
         let poly = &polygon_rings(&walk["geometry"])[0];
         let along = quays.along_which(&rd(&poly[0]));
         assert!(!along.is_empty(), "the walk runs along a quay wall");
@@ -1255,12 +1325,28 @@ mod tests {
             })
             .collect();
         let wall = by_id(&walls, "G0014.404f925a61cc0015e053660013ac6945");
+        // The steps at either end, from the walk up to the street.
+        let ramps: Vec<bgt::Ramp> = paving
+            .iter()
+            .filter(|f| f["properties"]["functie"] == "voetpad op trap")
+            .flat_map(|f| polygon_rings(&f["geometry"]))
+            .filter_map(|p| {
+                let rings = simplified_rings(&p);
+                let (low, high) = ramp_of(&ahn, &rings).unwrap()?;
+                Some(bgt::Ramp(ring_pairs(&rings), round(low, 2), round(high, 2)))
+            })
+            .collect();
+        assert_eq!(ramps.len(), 2, "{ramps:?}");
+        for r in &ramps {
+            assert!(r.1 < -0.4 && r.2 > 0.5, "steps from {} to {} m NAP", r.1, r.2);
+        }
         let line = &centreline(&wall["geometry"])[0];
         println!(
             "{}",
             json!({
                 "terrace": bgt::Terrace(ring_pairs(&rings), round(level, 2), q.seaward.clone()),
                 "parapets": parapets,
+                "ramps": ramps,
                 "walls": walls
                     .iter()
                     .filter(|f| f["properties"]["type"] == "kademuur")

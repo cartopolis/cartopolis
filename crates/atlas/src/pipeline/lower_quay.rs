@@ -453,6 +453,29 @@ pub fn parapet(line: &[Pt], dsm: &Raster, street: f64) -> Option<f64> {
         .then_some(rise)
 }
 
+/// Least rise a flight of steps must measure to be laid as one, metres.
+pub const MIN_RISE_M: f64 = 0.5;
+
+/// A flight of steps' foot and top, metres above NAP: the 10th and 90th
+/// percentiles of AHN inside it (RD metres, outer ring first), so the kerb at
+/// its top and a bin at its foot do not set either. `None` with too few
+/// measurements or under [`MIN_RISE_M`] of rise.
+#[must_use]
+pub fn rise(rings: &[Vec<Pt>], raster: &Raster) -> Option<(f64, f64)> {
+    let mut inside: Vec<f64> = raster
+        .samples()
+        .filter(|(c, h)| h.is_finite() && point_in_rings(c[0], c[1], rings))
+        .map(|(_, h)| f64::from(h))
+        .collect();
+    if inside.len() < 8 {
+        return None;
+    }
+    inside.sort_by(f64::total_cmp);
+    let at = |q: f64| inside[((inside.len() - 1) as f64 * q).round() as usize];
+    let (low, high) = (at(0.1), at(0.9));
+    (high - low >= MIN_RISE_M).then_some((low, high))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
