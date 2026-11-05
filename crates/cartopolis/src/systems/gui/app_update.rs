@@ -151,6 +151,7 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
             ui.painter()
                 .rect_filled(screen, 0.0, theme::INK.gamma_multiply(0.82));
             // Every tap on the veil is taken here, so none reaches the world.
+            // unnamed: a blocker under the card, not a control
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
         });
     let mut tapped = false;

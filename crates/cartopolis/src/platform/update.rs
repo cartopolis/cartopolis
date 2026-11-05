@@ -55,6 +55,8 @@ impl UpdateStatus {
 static TOO_OLD: AtomicU16 = AtomicU16::new(0);
 
 /// The server refused this build for speaking an older wire version than its own.
+/// Native only: the web client is published with the server it talks to.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn mark_too_old(server_version: u16) {
     TOO_OLD.store(server_version, Ordering::Relaxed);
 }
