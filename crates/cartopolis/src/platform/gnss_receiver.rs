@@ -217,6 +217,15 @@ mod native {
             heading_deg: s
                 .course_deg
                 .filter(|_| s.speed_ms.is_some_and(|v| v > MOVING_MS)),
+            // Carrier-phase solutions only: a code fix's height is metres off,
+            // which is a storey, and a storey wrong is worse than none.
+            height_m: s.altitude_m.filter(|_| {
+                matches!(
+                    s.quality,
+                    cartopolis_gnss::FixQuality::RtkFixed
+                        | cartopolis_gnss::FixQuality::RtkFloat
+                )
+            }),
         }
     }
 

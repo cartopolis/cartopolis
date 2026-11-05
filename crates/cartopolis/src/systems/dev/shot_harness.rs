@@ -4083,6 +4083,7 @@ pub fn track_scripted_device(
             accuracy_m: 8.0,
             speed_ms: Some(1.4),
             heading_deg: Some(45.0),
+            height_m: None,
         },
         Some(attitude),
     );

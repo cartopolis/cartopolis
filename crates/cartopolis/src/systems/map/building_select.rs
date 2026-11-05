@@ -502,7 +502,10 @@ pub fn track_indoors(
     let now = if avatars.is_empty() {
         None
     } else {
-        floors.building_at(here).cloned()
+        floors
+            .building_at(here)
+            .filter(|id| !floors.above_top_storey(id, avatar.floor_lift))
+            .cloned()
     };
     if now != selection.indoors {
         selection.indoors = now;

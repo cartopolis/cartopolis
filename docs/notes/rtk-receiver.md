@@ -1,7 +1,7 @@
 ---
 topic: rtk-receiver
 triggers: [gnss_receiver, cartopolis_gnss, UsbSerial.java, RTK, NTRIP, UM980, RTCM, NMEA, ttyUSB, "external receiver", "serial port", FT230X, crates/gnss]
-updated: 2026-10-17
+updated: 2026-11-05
 ---
 
 # An external RTK receiver as the position
@@ -26,6 +26,27 @@ fixed. The accuracy is the receiver's own GST (√(σlat² + σlng²), ≈ the 6
 radius Android reports) and only estimated from quality and HDOP when no GST
 arrives — so a fixed solution reads ±1–2 cm and the phone's ±4 m beside it
 compare like for like.
+
+## Its height stands the avatar on a roof
+
+The GGA height is the antenna above the receiver's mean sea level, and with an
+RTK float or fixed solution it is good to centimetres, so it is the one height
+the client trusts: `GpsFix::height_m` is set from it and from nothing else (the
+phone's own was ~10 m off, `high-precision-mode.md`). On the Forum's roof on
+2026-11-05 it read 53.60 m against 3DBAG's 52.15 m NAP for the roof terrace —
+the roof plus a phone held at the chest. Until then the app dropped the height
+and stood the avatar in the street under the person.
+
+`locate` turns it into metres above the ground there (minus
+`PHONE_HEIGHT_M`, against the terrain's `datum_m`) as
+`AvatarState::measured_level`, and while that is set `Footing::step` takes the
+floor from it instead of the step rule: the street or an interior storey when
+one is within `MEASURED_SNAP_M`, else the measurement itself — a roof, which
+nothing models as a floor and whose collider top is the ridge, metres over a
+flat roof's terrace. The offline eject backstop stands down meanwhile, and
+`track_indoors` does not count a level over the top storey as inside.
+**Online the lift is the client's alone**: the sim is flat, so other people
+still see the avatar at street level.
 
 ## The kit as found (2026-10-13)
 

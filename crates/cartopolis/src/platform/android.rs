@@ -2599,6 +2599,7 @@ fn read_provider(
                 accuracy_m,
                 speed_ms,
                 heading_deg,
+                height_m: None,
             },
             nanos,
         }))

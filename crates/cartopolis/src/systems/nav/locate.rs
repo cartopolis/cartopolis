@@ -132,6 +132,32 @@ const CARRY_MIN_MS: f32 = 0.5;
 /// fast.
 const CARRY_MAX_MS: f32 = 10.0;
 
+/// How far under the antenna the feet are, metres: a phone held in front of the
+/// chest. On the Forum's roof (2026-11-05) the receiver read 53.60 m against
+/// 3DBAG's 52.15 m NAP for the roof, 1.45 m; the floor snap
+/// (`interiors::measured_floor`) absorbs a hand held higher or lower.
+const PHONE_HEIGHT_M: f64 = 1.3;
+
+/// The level a receiver height `height_m` (above mean sea level) puts the feet
+/// at, metres above the ground at `(x, z)` in the anchored frame — or `None`
+/// before the terrain has landed, when there is no ground to measure from.
+///
+/// The receiver's sea level is its own geoid model, which in Groningen lies a
+/// few decimetres from NAP (NLGEO2018, `high-precision-mode.md`); the terrain's
+/// zero is `datum_m` above NAP.
+fn measured_level(
+    height_m: f64,
+    terrain: &crate::systems::terrain::TerrainField,
+    x: f32,
+    z: f32,
+) -> Option<f32> {
+    if !terrain.is_ready() {
+        return None;
+    }
+    let feet_nap = height_m - PHONE_HEIGHT_M;
+    Some((feet_nap - f64::from(terrain.datum_m) - f64::from(terrain.ground_at(x, z))) as f32)
+}
+
 /// Let the avatar's body follow one frame of a GPS walk from `from` to `to`
 /// (absolute anchored world metres): ease [`AvatarState::carried_speed`] toward the
 /// pace that step implies, and turn the avatar to face along it.
@@ -955,6 +981,8 @@ pub fn track_device_pose(
     globe: Res<crate::systems::globe::GlobeState>,
     // The frame's length, for the glide between two fixes.
     time: Res<Time>,
+    // The ground's height above NAP, which a receiver's height is measured from.
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     // Two ways this ends without the button being pressed again.
     //
@@ -986,6 +1014,10 @@ pub fn track_device_pose(
         // Nothing is carrying the avatar any more. Guarded for the same reason.
         if avatar_state.carried_speed != 0.0 {
             avatar_state.carried_speed = 0.0;
+        }
+        // Nor measuring its height: the floor goes back to the step rule.
+        if avatar_state.measured_level.is_some() {
+            avatar_state.measured_level = None;
         }
         return;
     }
@@ -1020,6 +1052,8 @@ pub fn track_device_pose(
     // Whether this frame walked the avatar along a fix (`carry_avatar`). Every
     // other outcome — a teleport, no fix yet, no anchor — leaves it standing.
     let mut carried = false;
+    // The level the fix's height puts the feet at; only the near write sets it.
+    let mut measured = None;
     if let (Some(fix), Some(anchor)) = (fix, map_anchor.geo) {
         // Near or far, exactly as driver mode decides it: a *move* is a write and
         // a *jump* is a teleport, because nothing on the write path re-anchors the
@@ -1074,6 +1108,10 @@ pub fn track_device_pose(
             );
             carry_avatar(&mut avatar_state, glided_from, (gx, gz), time.delta_secs());
             carried = true;
+            measured = fix.height_m.and_then(|h| {
+                let p = avatar_state.position;
+                measured_level(h, &terrain, p.x, p.z)
+            });
             // Where that put the avatar, in absolute world metres — recorded in
             // every mode, not only the two that read it below. Recording it only
             // while the camera needed it would leave a spell in Follow as a gap,
@@ -1112,6 +1150,9 @@ pub fn track_device_pose(
 
     if !carried && avatar_state.carried_speed != 0.0 {
         avatar_state.carried_speed = 0.0;
+    }
+    if avatar_state.measured_level != measured {
+        avatar_state.measured_level = measured;
     }
 
     // ── Heading ──

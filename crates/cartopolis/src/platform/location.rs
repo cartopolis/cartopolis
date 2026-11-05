@@ -54,6 +54,12 @@ pub struct GpsFix {
     pub speed_ms: Option<f64>,
     /// Course over ground, degrees clockwise from true north.
     pub heading_deg: Option<f64>,
+    /// The antenna's height above mean sea level, metres — only from an
+    /// external receiver with an RTK solution, whose height is good to
+    /// centimetres. A phone's own height is 2–3× worse than its horizontal and
+    /// was ~10 m off on the OnePlus (`docs/notes/high-precision-mode.md`), so the
+    /// platform providers leave this `None` rather than put a storey on a guess.
+    pub height_m: Option<f64>,
 }
 
 /// The slot a provider writes into. `Result` so a permission denial reaches the
@@ -286,6 +292,7 @@ mod wasm {
                     accuracy_m: c.accuracy(),
                     speed_ms: c.speed(),
                     heading_deg: c.heading(),
+                    height_m: None,
                 };
                 if let Ok(mut g) = sink.lock() {
                     *g = Some(Ok(fix));

@@ -656,6 +656,15 @@ impl InteriorFloors {
             .map(|r| &r.id)
     }
 
+    /// Whether `lift` is over the top storey of building `id` — on its roof,
+    /// where a receiver's height can put the avatar (`Footing::step`), and not in
+    /// it.
+    pub fn above_top_storey(&self, id: &str, lift: f32) -> bool {
+        self.placed(id)
+            .and_then(|r| r.levels.last())
+            .is_some_and(|(y, _)| lift > y + cartopolis_geo::building_design::STOREY_M)
+    }
+
     fn placed(&self, id: &str) -> Option<&Placed> {
         self.rooms.iter().find(|r| &*r.id == id)
     }
@@ -717,8 +726,37 @@ pub struct Footing<'w> {
 impl Footing<'_> {
     /// Advance the avatar's floor one frame. See [`step_floor_lift`].
     pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32) -> f32 {
+        if let Some(measured) = avatar.measured_level {
+            avatar.floor_lift = measured_floor(&self.floors, at, measured);
+            avatar.floor_drop_speed = 0.0;
+            return avatar.floor_lift;
+        }
         step_floor_lift(&self.floors, &self.tunnels, &self.terrain, avatar, at, dt)
     }
+}
+
+/// How far a measured level may be from a known floor and still be stood on it,
+/// metres. Covers what the measurement cannot know — how high the phone is held
+/// (`locate::PHONE_HEIGHT_M` is a typical hand, not this one's) and the receiver's
+/// geoid against NAP, a few decimetres — and stays under a storey (~3 m), so it
+/// never picks the floor above or below.
+const MEASURED_SNAP_M: f32 = 1.2;
+
+/// The floor under `at` for a receiver that measured the feet at `measured`
+/// metres above the ground: the street or a storey when one is within
+/// [`MEASURED_SNAP_M`], else the measurement itself.
+///
+/// **A roof is the "else".** Nothing here models a roof as a floor, and the
+/// collider's top is the ridge (3DBAG's maximum), metres over a flat roof's
+/// terrace on the Forum; the measurement is better than either. It is never
+/// below the ground: a tunnel's deck is the step rule's business.
+fn measured_floor(floors: &InteriorFloors, at: Vec2, measured: f32) -> f32 {
+    let storey = floors.support(at, measured);
+    [0.0, storey]
+        .into_iter()
+        .filter(|f| (f - measured).abs() <= MEASURED_SNAP_M)
+        .min_by(|a, b| (a - measured).abs().total_cmp(&(b - measured).abs()))
+        .unwrap_or(measured.max(0.0))
 }
 
 /// Advance the avatar's interior floor level one frame, and answer where it now
@@ -1140,6 +1178,27 @@ mod tests {
         assert!(
             floors.support(Vec2::new(-500.0, -500.0), 0.0) == 0.0,
             "outdoors"
+        );
+    }
+
+    /// A measured height stands the avatar on the floor it is near — the street,
+    /// or a storey reached by no flight — and on the measurement where it is near
+    /// none, as on a roof.
+    #[test]
+    fn a_measured_level_picks_the_floor_it_is_near() {
+        let (room, _, to_world) = house();
+        let floors = InteriorFloors { rooms: vec![room] };
+        let middle = to_world.point([3.0, 6.0]);
+        let first = STOREY_M + FLOOR_Y;
+        assert!((measured_floor(&floors, middle, first + 0.4) - first).abs() < 1e-4);
+        assert!((measured_floor(&floors, middle, FLOOR_Y + 0.5) - FLOOR_Y).abs() < 1e-4);
+        let outdoors = Vec2::new(-500.0, -500.0);
+        assert_eq!(measured_floor(&floors, outdoors, 0.8), 0.0, "the street");
+        assert_eq!(measured_floor(&floors, outdoors, 48.4), 48.4, "a roof");
+        assert_eq!(
+            measured_floor(&floors, outdoors, -3.0),
+            0.0,
+            "never underground"
         );
     }
 

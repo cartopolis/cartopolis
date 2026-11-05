@@ -1360,6 +1360,15 @@ pub struct AvatarState {
     /// that has to drop. Under the same gravity, so a storey and a kerb fall at
     /// the same rate.
     pub floor_drop_speed: f32,
+    /// The level a receiver *measured* the avatar's feet at, metres above the
+    /// ground under it — set by `locate` while it follows an RTK fix with a
+    /// height (`GpsFix::height_m`), `None` otherwise.
+    ///
+    /// While it is set it decides the floor (`interiors::Footing::step`) instead
+    /// of the step rule: somebody who took the lift to a roof did not climb a
+    /// ramp, and a floor reachable only by walking up to it would keep them in
+    /// the street forever.
+    pub measured_level: Option<f32>,
     /// The camera's `auto_yaw` when the movement input now held was pressed, and
     /// that input's direction on screen — what keeps a recentring camera from
     /// steering the walk it is following (`avatar::steer_azimuth`). `None` while
@@ -1520,6 +1529,7 @@ impl Default for AvatarState {
             terrain_lift: 0.0,
             floor_lift: 0.0,
             floor_drop_speed: 0.0,
+            measured_level: None,
             steer_latch: None,
             predicted_velocity: Vec3::ZERO,
             velocity: Vec3::ZERO,

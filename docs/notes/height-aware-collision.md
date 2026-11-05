@@ -51,7 +51,8 @@ solid is stepped over.
 
 Known gap: descending onto a roof passes into the building and is ejected; the
 sim is flat and cannot land the avatar on a roof, offline could (a `roof_under`
-clamp) but is not done.
+clamp) but is not done. A person on a real roof is stood there by their RTK
+receiver's height instead (`rtk-receiver.md`), which also stands the eject down.
 
 ## Collision is client-side prediction, and acts on whichever channel owns movement
 
