@@ -1,0 +1,545 @@
+{
+ "name": "Martinitoren",
+ "pand": "0014100010924795",
+ "origin": [
+  53.2193716,
+  6.5681926
+ ],
+ "rotation_deg": 70.9,
+ "sources": [
+  "outline: BAG pand 0014100010924795; frame from its tightest rectangle (atlas landmark gather)",
+  "stage tops and widths: AHN surface model, extent-by-height table \u2014 ledges at 40.5, 57, 69.5, 77.5, 84.5 m above the Grote Markt",
+  "height 96.8 m: the tower's published height; AHN does not resolve the spire",
+  "plinth top 17 m, arch heights, pinnacles, lantern arches: Commons 'Martinitoren Groningen 1510-036.jpg' (Jan Geerling, CC BY-SA 4.0), scaled to the laser ledges",
+  "clock faces: Commons '20141018 Wijzerplaat klok Martinitoren Groningen NL.jpg' (Wutsje, CC BY-SA 4.0); drawn centred on each face, where the tower hangs them in front of an arch",
+  "colours: Bentheimer sandstone and brick read from those photographs; the lanterns' green from 1510-036"
+ ],
+ "materials": {
+  "stone": {
+   "rgb": [
+    128,
+    116,
+    98
+   ]
+  },
+  "brick": {
+   "rgb": [
+    146,
+    90,
+    68
+   ]
+  },
+  "dark": {
+   "rgb": [
+    34,
+    33,
+    32
+   ]
+  },
+  "copper": {
+   "rgb": [
+    104,
+    152,
+    132
+   ]
+  },
+  "clock": {
+   "rgb": [
+    52,
+    46,
+    34
+   ]
+  },
+  "gold": {
+   "rgb": [
+    196,
+    158,
+    64
+   ]
+  }
+ },
+ "parts": [
+  {
+   "name": "plinth",
+   "material": "brick",
+   "shape": {
+    "polygon": {
+     "points": [
+      [
+       7.62,
+       4.03
+      ],
+      [
+       7.65,
+       9.77
+      ],
+      [
+       -9.1,
+       9.25
+      ],
+      [
+       -9.1,
+       4.03
+      ],
+      [
+       -8.44,
+       3.3
+      ],
+      [
+       -7.29,
+       3.29
+      ],
+      [
+       -7.28,
+       3.12
+      ],
+      [
+       -7.29,
+       0.62
+      ],
+      [
+       -7.28,
+       0.45
+      ],
+      [
+       -8.43,
+       0.48
+      ],
+      [
+       -9.09,
+       -0.15
+      ],
+      [
+       -9.16,
+       -6.53
+      ],
+      [
+       -2.77,
+       -6.56
+      ],
+      [
+       -2.11,
+       -5.78
+      ],
+      [
+       -2.12,
+       -4.66
+      ],
+      [
+       -1.99,
+       -4.6
+      ],
+      [
+       0.51,
+       -4.68
+      ],
+      [
+       0.63,
+       -4.65
+      ],
+      [
+       0.64,
+       -5.83
+      ],
+      [
+       1.31,
+       -6.6
+      ],
+      [
+       7.73,
+       -6.69
+      ],
+      [
+       7.64,
+       -0.35
+      ],
+      [
+       6.91,
+       0.32
+      ]
+     ]
+    }
+   },
+   "rings": [
+    [
+     0,
+     1
+    ],
+    [
+     17,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "lower stage",
+   "material": "stone",
+   "shape": {
+    "rect": {
+     "w": 14.9,
+     "d": 14.9
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     17,
+     1
+    ],
+    [
+     38.6,
+     1
+    ],
+    [
+     40.5,
+     0.95
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "arch",
+     "count": 3,
+     "w": 3.2,
+     "from": 19.5,
+     "to": 38.5,
+     "depth": 0.7,
+     "material": "dark"
+    }
+   ]
+  },
+  {
+   "name": "upper stage",
+   "material": "stone",
+   "shape": {
+    "rect": {
+     "w": 13.6,
+     "d": 13.6
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     40.5,
+     1
+    ],
+    [
+     55.8,
+     1
+    ],
+    [
+     57,
+     0.94
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "arch",
+     "count": 3,
+     "w": 2.9,
+     "from": 42.5,
+     "to": 54.8,
+     "depth": 0.7,
+     "material": "dark"
+    }
+   ]
+  },
+  {
+   "name": "clock stage",
+   "material": "stone",
+   "shape": {
+    "rect": {
+     "w": 10.8,
+     "d": 10.8
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     57,
+     1
+    ],
+    [
+     68.6,
+     1
+    ],
+    [
+     69.5,
+     0.93
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "arch",
+     "count": 2,
+     "w": 2.4,
+     "from": 58.3,
+     "to": 67.8,
+     "depth": 0.6,
+     "material": "dark"
+    },
+    {
+     "kind": "circle",
+     "count": 1,
+     "w": 2.6,
+     "from": 60.7,
+     "to": 63.3,
+     "depth": -0.2,
+     "material": "clock"
+    }
+   ]
+  },
+  {
+   "name": "lower lantern",
+   "material": "copper",
+   "shape": {
+    "ngon": {
+     "sides": 8,
+     "r": 4.55
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     69.5,
+     1
+    ],
+    [
+     76.6,
+     1
+    ],
+    [
+     77.6,
+     0.9
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "round",
+     "count": 1,
+     "w": 2.1,
+     "from": 70.3,
+     "to": 75.9,
+     "depth": 0.9,
+     "material": "dark"
+    }
+   ]
+  },
+  {
+   "name": "upper lantern",
+   "material": "copper",
+   "shape": {
+    "ngon": {
+     "sides": 8,
+     "r": 3.2
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     77.6,
+     1
+    ],
+    [
+     83.6,
+     1
+    ],
+    [
+     84.6,
+     0.8
+    ]
+   ],
+   "openings": [
+    {
+     "kind": "round",
+     "count": 1,
+     "w": 1.4,
+     "from": 78.3,
+     "to": 83.0,
+     "depth": 0.7,
+     "material": "dark"
+    }
+   ]
+  },
+  {
+   "name": "crown",
+   "material": "copper",
+   "shape": {
+    "ngon": {
+     "sides": 8,
+     "r": 1.6
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     84.6,
+     0.9
+    ],
+    [
+     85.6,
+     1.2
+    ],
+    [
+     86.8,
+     1.2
+    ],
+    [
+     88,
+     0.6
+    ],
+    [
+     89.4,
+     0.25
+    ]
+   ],
+   "solid": false
+  },
+  {
+   "name": "spire",
+   "material": "gold",
+   "shape": {
+    "ngon": {
+     "sides": 8,
+     "r": 0.4
+    }
+   },
+   "at": [
+    [
+     -1.3,
+     1.4
+    ]
+   ],
+   "rings": [
+    [
+     89.4,
+     1
+    ],
+    [
+     91.0,
+     0.6
+    ],
+    [
+     96.8,
+     0
+    ]
+   ],
+   "solid": false
+  },
+  {
+   "name": "lower pinnacle",
+   "material": "stone",
+   "shape": {
+    "rect": {
+     "w": 0.8,
+     "d": 0.8
+    }
+   },
+   "at": [
+    [
+     -8.05,
+     -5.35
+    ],
+    [
+     5.45,
+     -5.35
+    ],
+    [
+     5.45,
+     8.15
+    ],
+    [
+     -8.05,
+     8.15
+    ]
+   ],
+   "rings": [
+    [
+     40.5,
+     1
+    ],
+    [
+     42.8,
+     1
+    ],
+    [
+     45.2,
+     0
+    ]
+   ],
+   "solid": false
+  },
+  {
+   "name": "upper pinnacle",
+   "material": "stone",
+   "shape": {
+    "rect": {
+     "w": 0.7,
+     "d": 0.7
+    }
+   },
+   "at": [
+    [
+     -7.35,
+     -4.65
+    ],
+    [
+     4.75,
+     -4.65
+    ],
+    [
+     4.75,
+     7.449999999999999
+    ],
+    [
+     -7.35,
+     7.449999999999999
+    ]
+   ],
+   "rings": [
+    [
+     57,
+     1
+    ],
+    [
+     59,
+     1
+    ],
+    [
+     61.2,
+     0
+    ]
+   ],
+   "solid": false
+  }
+ ]
+}
