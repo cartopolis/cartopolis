@@ -54,6 +54,7 @@ public final class MainActivity extends NativeActivity {
         if (manager != null) {
             manager.cancel(PushReceiver.NOTIFICATION_ID);
         }
+        Updater.check(this);
     }
 
     /** The answer to the system's "share your screen?" dialog (`ScreenCapture`),
@@ -72,6 +73,15 @@ public final class MainActivity extends NativeActivity {
     protected void onPause() {
         onScreen = false;
         super.onPause();
+    }
+
+    /** Off screen: a downloaded update may now end this process to replace it.
+     *  Stop and not pause, which a dialog over the app or a split screen also
+     *  sends. */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        Updater.install(this);
     }
 
     @Override

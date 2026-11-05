@@ -200,6 +200,12 @@
          microphone still installs and simply cannot transmit. -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- The app updating itself from cartopolis.org/apk/ (Updater.java). The
+         permission only makes the request possible: the person still allows
+         "install unknown apps" for Cartopolis once, in the system's own dialog,
+         and confirms the first update. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- From API 30 an app sees only the packages it declares an interest in:
          without this, Push.java would find no distributor even with one installed. -->
     <queries>
@@ -341,5 +347,12 @@
                 <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
             </intent-filter>
         </receiver>
+
+        <!-- The package installer's answer to a self-update (UpdateReceiver.java).
+             Not exported: only the installer, through our own PendingIntent,
+             reaches it. -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="false" />
     </application>
 </manifest>

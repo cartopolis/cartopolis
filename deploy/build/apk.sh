@@ -92,4 +92,7 @@ vcode=$(printf '%s' "$badging" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
 sed -e "s|@VERSION_NAME@|$vname|g" -e "s|@VERSION_CODE@|$vcode|g" \
     -e "s|@COMMIT@|$(git rev-parse --short=8 HEAD)|g" -e "s|@BUILT@|$(date -u '+%Y-%m-%d %H:%M UTC')|g" \
     "$ROOT/deploy/build/apk-index.html" > "$out/index.html"
+# What an installed app reads to decide whether to update itself (Updater.java):
+# the code it compares, and the name for its log.
+printf '{"code":%s,"name":"%s"}\n' "$vcode" "$vname" > "$out/version.json"
 echo "staged $vname (code $vcode) in $out — the deploy host signs it"

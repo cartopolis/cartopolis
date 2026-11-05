@@ -1,7 +1,7 @@
 ---
 topic: android-build
-triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
-updated: 2026-10-17
+triggers: [cartopolis_android, Updater, UpdateReceiver, "self-update", build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
+updated: 2026-11-05
 ---
 
 # The Android app is a manifest, a `.so`, the assets directory and one Java class
@@ -551,6 +551,30 @@ zips from Google. Those are deliberately **not** cached: 124 MB fetched in secon
 against 124 MB living on the runner host indefinitely. The NDK *is* cached, under
 the same key the check lane uses, so on `main` it is a restore rather than a
 second download.
+
+## The app updates itself (2026-11-05)
+
+`Updater.java` reads `/apk/version.json` (written by `deploy/build/apk.sh`) on a
+return to the screen, at most every six hours, and fetches a higher code into the
+cache **on an unmetered network only**. Before installing it checks the file
+against the published `.sha256` *and* asks Android to read the archive's package
+and code — the deploy writes the files one by one, so a check that lands
+mid-publish sees a pair that disagrees and tries again later. It installs from
+`MainActivity.onStop`, never on screen, because an update ends the process.
+
+What Android allows a sideloaded app, which is the shape of the whole thing:
+
+- **No silent first update.** `USER_ACTION_NOT_REQUIRED` (API 31+) is honoured
+  only when the app is the *installer of record* of itself, which it becomes
+  through its first self-update. Until then the session answers
+  `STATUS_PENDING_USER_ACTION`, and its confirm screen also carries the one-time
+  "Allow from this source" step. `UpdateReceiver` opens it on screen, or posts a
+  notification off screen — an app in the background may not start an activity.
+- **Only builds from the page update.** A code under 20000 is a hand build
+  (`build-apk.sh` falls back to the commit count), signed with a debug key the
+  published APK can never install over, so `Updater` never starts.
+- **A phone with a build from before this section must install once by hand**:
+  nothing in it knows to look.
 
 ## Verification status, 2026-08-10 (superseded — see the hardware section below)
 
