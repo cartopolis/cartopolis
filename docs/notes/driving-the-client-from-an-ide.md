@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to]
-updated: 2026-11-04
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to, "mcp/avatar.rs", set_avatar]
+updated: 2026-11-05
 ---
 
 # Driving the client from an editor
@@ -458,6 +458,13 @@ about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
 - **`fly_to` is not landed when the flight is.** A flight comes down to
   47 km over the place and the zoom rail glides the rest (`rail_goal`); the
   first version answered "landed" at 45 km.
+- **`avatar`/`set_avatar` (2026-11-05)** let an agent model the avatar on a
+  photo, offline too (`mcp::avatar`). They take only what the Appearance panel
+  offers — its lists in `avatar_designer` are the one catalogue, so a name or
+  shape control the panel lacks is refused — and save as Apply does. A set
+  also reseeds the panel if it is open, or its draft's Apply would put the old
+  look back. `show` opens the panel for a picture (`view_here`, or the
+  phone's `screenshot`); its Face tab comes close to the face.
 - **`inspect_object`'s `scripted` is "running".** The server sets the flag
   only for a script with a handler, so a bare `print` read as no script; the
   source is fetched for whoever may script it either way.

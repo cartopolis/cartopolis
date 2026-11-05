@@ -143,6 +143,9 @@ pub struct DeviceWorld<'w> {
     uploads: Option<Res<'w, crate::systems::upload_meter::UploadMeter>>,
     anchor: Res<'w, crate::resources::MapAnchor>,
     avatar: Res<'w, crate::resources::AvatarState>,
+    looks: ResMut<'w, crate::systems::user_store::UserStore>,
+    panel: ResMut<'w, crate::resources::RightPanel>,
+    chooser: ResMut<'w, crate::resources::AvatarChooserState>,
 }
 
 /// Answer every question about the app that arrived this frame, and every one
@@ -241,6 +244,15 @@ fn handle(
                 }
                 _ => answer,
             }
+        }
+        DeviceRequest::Avatar(args) => super::avatar::avatar(
+            &w.looks,
+            &mut w.panel,
+            &mut w.chooser,
+            args.show == Some(true),
+        ),
+        DeviceRequest::SetAvatar(args) => {
+            super::avatar::set_avatar(&mut w.looks, &mut w.panel, &mut w.chooser, &args)
         }
         // The pump sends these to `screen`; one here is a routing mistake.
         DeviceRequest::UiTree(_) | DeviceRequest::Press(_) => {

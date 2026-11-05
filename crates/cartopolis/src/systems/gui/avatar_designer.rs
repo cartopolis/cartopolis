@@ -39,17 +39,17 @@ pub enum FacePart {
 
 /// One face slider: the MakeHuman modifier, its label, its ends, and whether
 /// it is one-sided (0 … 100 rather than -100 … 100).
-struct FaceSlider(
-    &'static str,
-    &'static str,
-    (&'static str, &'static str),
-    bool,
+pub(crate) struct FaceSlider(
+    pub(crate) &'static str,
+    pub(crate) &'static str,
+    pub(crate) (&'static str, &'static str),
+    pub(crate) bool,
 );
 
 /// About thirty of MakeHuman's hundred-odd face controls, five or six a part —
 /// the ones whose effect reads at the distance an avatar is seen. The pack
 /// carries them all; adding one here is a row.
-const FACE: [(FacePart, &[FaceSlider]); 6] = [
+pub(crate) const FACE: [(FacePart, &[FaceSlider]); 6] = [
     (
         FacePart::Head,
         &[
@@ -274,7 +274,7 @@ pub enum BodyPart {
 /// MakeHuman's body controls below the head, three or four a part: what the
 /// macro sliders cannot say — broad shoulders on a slim body, a belly, long
 /// legs. The pack carries every control of these groups (`human-pack`).
-const BODY: [(BodyPart, &[FaceSlider]); 5] = [
+pub(crate) const BODY: [(BodyPart, &[FaceSlider]); 5] = [
     (
         BodyPart::Torso,
         &[
@@ -405,14 +405,14 @@ const BODY: [(BodyPart, &[FaceSlider]); 5] = [
 ];
 
 /// The skin families, each with a colour to show it by.
-const SKINS: [(&str, [u8; 3]); 3] = [
+pub(crate) const SKINS: [(&str, [u8; 3]); 3] = [
     ("caucasian", [236, 200, 178]),
     ("asian", [222, 184, 146]),
     ("african", [112, 72, 52]),
 ];
 
 /// The pack's eye colours, each with a colour to show it by.
-const EYES: [(&str, [u8; 3]); 6] = [
+pub(crate) const EYES: [(&str, [u8; 3]); 6] = [
     ("brown", [92, 58, 34]),
     ("brownlight", [150, 108, 60]),
     ("green", [92, 128, 70]),
@@ -421,7 +421,7 @@ const EYES: [(&str, [u8; 3]); 6] = [
     ("lightblue", [130, 170, 210]),
 ];
 
-const HAIR: [(&str, &str); 20] = [
+pub(crate) const HAIR: [(&str, &str); 20] = [
     ("culturalibre_hair_05", "Crop"),
     ("elvs_maxwell_hair", "Swept"),
     ("elvs_micky_afro", "Afro puffs"),
@@ -445,7 +445,7 @@ const HAIR: [(&str, &str); 20] = [
 ];
 
 /// Named by their drawn shape (looked at 2026-10-27).
-const EYEBROWS: [(&str, &str); 12] = [
+pub(crate) const EYEBROWS: [(&str, &str); 12] = [
     ("eyebrow001", "Natural"),
     ("eyebrow002", "Soft arch"),
     ("eyebrow003", "High arch"),
@@ -460,7 +460,7 @@ const EYEBROWS: [(&str, &str); 12] = [
     ("eyebrow012", "Thick"),
 ];
 
-const OUTFITS: [(&str, &str); 12] = [
+pub(crate) const OUTFITS: [(&str, &str); 12] = [
     ("male_casualsuit01", "Denim shirt, jeans"),
     ("male_casualsuit03", "Striped shirt, jeans"),
     ("male_casualsuit05", "Jacket, jeans"),
@@ -475,7 +475,7 @@ const OUTFITS: [(&str, &str); 12] = [
     ("female_sportsuit01", "Sports top, leggings"),
 ];
 
-const DRESSES: [(&str, &str); 6] = [
+pub(crate) const DRESSES: [(&str, &str); 6] = [
     ("toigo_shift_dress", "Shift dress"),
     ("toigo_halter_dress_knee_length", "Halter dress"),
     ("toigo_halter_dress_midi", "Long halter"),
@@ -484,10 +484,11 @@ const DRESSES: [(&str, &str); 6] = [
     ("toigo_strapless_ruffle_top_dress", "Ruffle dress"),
 ];
 
-const HATS: [(&str, &str); 2] = [("fedora01", "Fedora"), ("fedora_cocked", "Fedora, tilted")];
+pub(crate) const HATS: [(&str, &str); 2] =
+    [("fedora01", "Fedora"), ("fedora_cocked", "Fedora, tilted")];
 
 /// Worn as `extras`, at most one of each list.
-const BEARDS: [(&str, &str); 5] = [
+pub(crate) const BEARDS: [(&str, &str); 5] = [
     ("rehmanpolanski_moustache_viking", "Moustache"),
     ("culturalibre_dal_moustache", "Curled moustache"),
     ("culturalibre_faun_beard", "Goatee"),
@@ -497,7 +498,7 @@ const BEARDS: [(&str, &str); 5] = [
 
 /// Separates: worn instead of an outfit (`outfit` empty), one of each, as
 /// extras; tinted with the top and bottom colours.
-const TOPS: [(&str, &str); 7] = [
+pub(crate) const TOPS: [(&str, &str); 7] = [
     ("elvs_crude_t-shirt_male", "T-shirt"),
     ("joepal_crude_t-shirt_female", "Fitted tee"),
     ("toigo_basic_tucked_t-shirt", "Tucked tee"),
@@ -507,13 +508,13 @@ const TOPS: [(&str, &str); 7] = [
     ("toigo_camisole_top", "Camisole"),
 ];
 
-const BOTTOMS: [(&str, &str); 3] = [
+pub(crate) const BOTTOMS: [(&str, &str); 3] = [
     ("toigo_wool_pants", "Trousers"),
     ("crude_loose_pants", "Loose trousers"),
     ("toigo_harem_pants", "Harem trousers"),
 ];
 
-const GLASSES: [(&str, &str); 8] = [
+pub(crate) const GLASSES: [(&str, &str); 8] = [
     ("punkduck_glasses_modern_form", "Sunglasses"),
     ("punkduck_sport-sunglasses", "Sport shades"),
     ("spamrakuen_tbm_glasses_frames_01", "Black frames"),
@@ -524,7 +525,7 @@ const GLASSES: [(&str, &str); 8] = [
     ("toigo_round_glasses_leopard", "Round"),
 ];
 
-const SHOES: [(&str, &str); 5] = [
+pub(crate) const SHOES: [(&str, &str); 5] = [
     ("shoes01", "Brown leather"),
     ("shoes02", "Grey trainers"),
     ("shoes03", "Boots"),
@@ -533,7 +534,7 @@ const SHOES: [(&str, &str); 5] = [
 ];
 
 /// Colours to pick for hair, over its neutral texture.
-const HAIR_COLOURS: [[u8; 3]; 9] = [
+pub(crate) const HAIR_COLOURS: [[u8; 3]; 9] = [
     [30, 24, 20],
     [70, 48, 34],
     [110, 76, 50],
@@ -546,7 +547,7 @@ const HAIR_COLOURS: [[u8; 3]; 9] = [
 ];
 
 /// Colours to pick for a garment half.
-const CLOTH_COLOURS: [[u8; 3]; 10] = [
+pub(crate) const CLOTH_COLOURS: [[u8; 3]; 10] = [
     [245, 245, 245],
     [40, 40, 44],
     [110, 114, 122],
@@ -561,8 +562,8 @@ const CLOTH_COLOURS: [[u8; 3]; 10] = [
 
 /// A ready-made person to start from: a whole look in one tap, to adjust
 /// rather than build from the default.
-struct Starter {
-    label: &'static str,
+pub(crate) struct Starter {
+    pub(crate) label: &'static str,
     body_shape: u8,
     age: u8,
     /// Height, weight, muscle.
@@ -582,7 +583,7 @@ struct Starter {
 /// Fourteen people across body shape, age, build, skin and dress, so that most
 /// looks are a starter and a few taps away. Only names the pack carries
 /// (the lists above).
-const STARTERS: [Starter; 14] = [
+pub(crate) const STARTERS: [Starter; 14] = [
     Starter {
         label: "Student",
         body_shape: 15,
@@ -817,7 +818,7 @@ const STARTERS: [Starter; 14] = [
 ];
 
 impl Starter {
-    fn look(&self) -> HumanLook {
+    pub(crate) fn look(&self) -> HumanLook {
         let mut look = HumanLook::default_for(self.body_shape < 50);
         look.body_shape = self.body_shape;
         look.age = self.age;

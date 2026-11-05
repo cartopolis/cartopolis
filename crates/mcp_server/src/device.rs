@@ -111,6 +111,85 @@ pub struct PressArgs {
     pub long: Option<bool>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AvatarArgs {
+    #[schemars(
+        description = "Also open the Appearance panel, which turns the camera onto the avatar \
+                       (its Face tab comes close to the face), for a picture of the screen. \
+                       Default false."
+    )]
+    pub show: Option<bool>,
+}
+
+/// A change to the saved look: every field left out stays as it is.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetAvatarArgs {
+    #[schemars(
+        description = "Start from one of `avatar`'s starters, by label, before the rest of \
+                       these apply."
+    )]
+    pub starter: Option<String>,
+    #[schemars(description = "0 feminine … 100 masculine; continuous.")]
+    pub body_shape: Option<u8>,
+    #[schemars(description = "Years, 18–90.")]
+    pub age: Option<u8>,
+    #[schemars(description = "0–100, 50 average.")]
+    pub height: Option<u8>,
+    #[schemars(description = "0–100, 50 average.")]
+    pub weight: Option<u8>,
+    #[schemars(description = "0–100, 50 average.")]
+    pub muscle: Option<u8>,
+    #[schemars(description = "0–100, 50 average: the body's proportions, ideal at 100.")]
+    pub proportions: Option<u8>,
+    #[schemars(description = "0–100, 50 average.")]
+    pub chest: Option<u8>,
+    #[schemars(description = "A skin family, as `avatar` lists them.")]
+    pub skin: Option<String>,
+    #[schemars(description = "-100 darker … 100 lighter, over the skin family's colour.")]
+    pub skin_tone: Option<i8>,
+    #[schemars(description = "An eye colour, as `avatar` lists them.")]
+    pub eyes: Option<String>,
+    #[schemars(description = "A hair style, as `avatar` lists them, or \"none\" for none.")]
+    pub hair: Option<String>,
+    #[schemars(description = "Hair colour [r, g, b], 0–255 each; [] for the style's own colour.")]
+    pub hair_colour: Option<Vec<u8>>,
+    #[schemars(description = "Eyebrows, as `avatar` lists them.")]
+    pub eyebrows: Option<String>,
+    #[schemars(
+        description = "An outfit or a dress, as `avatar` lists them, or \"none\" to wear a top \
+                       and a bottom from `extras` instead."
+    )]
+    pub outfit: Option<String>,
+    #[schemars(
+        description = "The outfit's upper half (or the top) [r, g, b]; [] for its own colour."
+    )]
+    pub top_colour: Option<Vec<u8>>,
+    #[schemars(
+        description = "The outfit's lower half (or the bottom) [r, g, b]; [] for its own colour."
+    )]
+    pub bottom_colour: Option<Vec<u8>>,
+    #[schemars(description = "Shoes, as `avatar` lists them.")]
+    pub shoes: Option<String>,
+    #[schemars(description = "A hat, as `avatar` lists them, or \"none\".")]
+    pub hat: Option<String>,
+    #[schemars(
+        description = "Everything worn beyond the outfit — a beard, glasses, a top and a \
+                       bottom — by name, at most one of each kind. Replaces the whole list; \
+                       [] wears none."
+    )]
+    pub extras: Option<Vec<String>>,
+    #[schemars(
+        description = "Face and body shape controls by modifier, as `avatar` lists them, \
+                       -100 … 100 (0 … 100 for a one-sided one). Merged into the ones set: 0 \
+                       resets one."
+    )]
+    pub shape: Option<std::collections::BTreeMap<String, i32>>,
+    #[schemars(description = "Reset every face and body shape control before `shape` applies.")]
+    pub reset_shape: Option<bool>,
+    #[schemars(description = "Also open the Appearance panel, as `avatar`'s `show` does.")]
+    pub show: Option<bool>,
+}
+
 #[derive(Debug)]
 pub enum DeviceRequest {
     AppInfo,
@@ -126,6 +205,8 @@ pub enum DeviceRequest {
     FlyTo(FlyToArgs),
     UiTree(UiTreeArgs),
     Press(PressArgs),
+    Avatar(AvatarArgs),
+    SetAvatar(Box<SetAvatarArgs>),
 }
 
 impl DeviceRequest {
@@ -145,6 +226,8 @@ impl DeviceRequest {
             Self::FlyTo(_) => "fly to",
             Self::UiTree(_) => "ui tree",
             Self::Press(_) => "press",
+            Self::Avatar(_) => "avatar",
+            Self::SetAvatar(_) => "set avatar",
         }
     }
 

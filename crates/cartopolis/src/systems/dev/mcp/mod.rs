@@ -50,6 +50,7 @@
 //! quitting (`ShotHarness::live`).
 
 pub mod agent;
+pub mod avatar;
 pub mod device;
 pub mod film;
 pub mod overlay;
