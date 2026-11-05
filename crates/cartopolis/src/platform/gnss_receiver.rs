@@ -222,8 +222,7 @@ mod native {
             height_m: s.altitude_m.filter(|_| {
                 matches!(
                     s.quality,
-                    cartopolis_gnss::FixQuality::RtkFixed
-                        | cartopolis_gnss::FixQuality::RtkFloat
+                    cartopolis_gnss::FixQuality::RtkFixed | cartopolis_gnss::FixQuality::RtkFloat
                 )
             }),
         }
