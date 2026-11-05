@@ -3599,3 +3599,57 @@ impl Drop for UsbSerial {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The app's own updates (`Updater.java`, `platform::update`)
+// ---------------------------------------------------------------------------
+
+const UPDATER_BINARY: &str = "eu.garage44.cartopolis.Updater";
+
+/// What `Updater.status()` says: `ready <name>`, `fetching <done> <total>`,
+/// `installing`, `failed <why>`, or `None` for nothing to tell.
+pub fn updater_status() -> Result<Option<String>, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach_current_thread_permanently: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, UPDATER_BINARY)?;
+        let s = env
+            .call_static_method(&class, "status", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if s.is_null() {
+            return Ok::<_, Fail>(None);
+        }
+        Ok(Some(env.get_string(&JString::from(s))?.into()))
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("Updater.status: {msg}")
+    })
+}
+
+/// The person tapped Install or Update now: `Updater.installNow`, which fetches
+/// first if it has nothing downloaded.
+pub fn updater_install_now() -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach_current_thread_permanently: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, UPDATER_BINARY)?;
+        env.call_static_method(
+            &class,
+            "installNow",
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(&activity)],
+        )?;
+        Ok::<_, Fail>(())
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("Updater.installNow: {msg}")
+    })
+}

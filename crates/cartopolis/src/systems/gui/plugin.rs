@@ -78,7 +78,19 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::camera_screen::CameraScreen>()
             .init_resource::<systems::admin::AdminState>()
             .init_resource::<systems::access_tokens::AccessTokens>()
-            .init_resource::<systems::calendar::Calendar>();
+            .init_resource::<systems::calendar::Calendar>()
+            .init_resource::<systems::app_update::AppUpdate>();
+
+        // The app's own updates (`systems::app_update`): a `Foreground` pill or
+        // card over everything, so not in the panel chain; last, so the too-old
+        // card's veil lies over every other area.
+        app.add_systems(
+            Update,
+            systems::app_update::render_app_update
+                .after(systems::calendar::render_reminder)
+                .after(systems::place_pins::render_place_pins)
+                .in_set(ClientPhase::Present),
+        );
 
         // The calendar (`systems::calendar`): its book takes in what the chats
         // hold before the Community panel draws it, and its reminder is its own

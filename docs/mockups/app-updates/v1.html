@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>The app tells you about an update — v1</title>
+<style>
+@font-face { font-family: 'Plus Jakarta Sans'; font-weight: 400; src: url('../../../assets/fonts/PlusJakartaSans-Regular.ttf'); }
+@font-face { font-family: 'Plus Jakarta Sans'; font-weight: 600 700; src: url('../../../assets/fonts/PlusJakartaSans-SemiBold.ttf'); }
+/* systems::theme */
+:root {
+  --ink:#0f1416; --glass:rgba(30,50,51,.92); --glass-core:rgba(30,50,51,.96); --rim:#2b5150;
+  --accent:#5cc6c0; --accent-pressed:#3fa9a2; --accent-muted:#263f42; --brand:#fd6012;
+  --text:#e2e9ea; --dim:#aac2c6; --line:rgba(255,255,255,.22);
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:36px; background:#0d1214; font-family:'Plus Jakarta Sans',system-ui,sans-serif; color:var(--text);
+       display:grid; grid-template-columns:repeat(2, 832px); gap:44px 36px; }
+.col { display:flex; flex-direction:column; gap:12px; }
+.col h2 { margin:0; font-size:22px; font-weight:600; color:#fff; }
+.col h2 .new { font-size:12px; font-weight:700; background:var(--brand); color:#fff; border-radius:6px; padding:2px 7px; margin-left:8px; vertical-align:3px; }
+.col p { margin:0; font-size:15px; color:var(--dim); line-height:1.45; max-width:800px; }
+.phone { width:832px; height:468px; border-radius:30px; overflow:hidden; position:relative;
+         background:url('map.png') center/cover; box-shadow:0 0 0 8px #050708, 0 24px 60px -20px #000; }
+svg.i { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+/* the notice: a glass pill at the top centre, clear of the left rail and the bottom bar */
+.notice { position:absolute; top:16px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:12px;
+          background:var(--glass); border:1px solid var(--rim); border-radius:26px; padding:7px 7px 7px 16px;
+          box-shadow:0 8px 24px -8px rgba(0,0,0,.6); white-space:nowrap; }
+.notice .t { display:flex; flex-direction:column; line-height:1.2; }
+.notice b { font-size:15px; font-weight:600; color:#fff; }
+.notice small { font-size:12px; color:var(--dim); }
+.btn { background:var(--accent); color:var(--ink); font-weight:700; font-size:15px; border-radius:20px; padding:9px 18px; display:flex; gap:7px; align-items:center; }
+.x { width:34px; height:34px; border-radius:17px; display:grid; place-items:center; color:var(--dim); }
+.tap { position:absolute; width:46px; height:46px; border-radius:50%; border:3px solid #fff; background:rgba(255,255,255,.25); box-shadow:0 0 0 6px rgba(255,255,255,.12); }
+
+/* required: the map dimmed, one card, nothing else answers */
+.veil { position:absolute; inset:0; background:rgba(10,15,16,.78); backdrop-filter:blur(3px); display:grid; place-items:center; }
+.card { width:430px; background:var(--glass-core); border:1px solid var(--rim); border-radius:22px; padding:26px 28px 24px;
+        display:flex; flex-direction:column; gap:12px; align-items:center; text-align:center; box-shadow:0 20px 50px -16px #000; }
+.card .badge { width:54px; height:54px; border-radius:16px; background:var(--accent-muted); color:var(--accent); display:grid; place-items:center; }
+.card .badge svg.i { width:30px; height:30px; }
+.card h3 { margin:2px 0 0; font-size:21px; font-weight:600; color:#fff; }
+.card p { margin:0; font-size:14.5px; color:var(--dim); line-height:1.45; }
+.card .big { width:100%; justify-content:center; padding:13px; font-size:16.5px; border-radius:14px; margin-top:6px; }
+.card .ver { font-size:12px; color:var(--dim); opacity:.8; }
+.bar { width:100%; height:10px; border-radius:5px; background:var(--accent-muted); overflow:hidden; margin-top:8px; }
+.bar i { display:block; height:100%; width:42%; background:var(--accent); border-radius:5px; }
+.row { width:100%; display:flex; justify-content:space-between; font-size:13px; color:var(--dim); }
+</style></head><body>
+
+<div class="col">
+  <h2>1 · An update is ready<span class="new">new</span></h2>
+  <p>A newer build was downloaded in the background. A pill at the top says so; one tap on <b>Install</b> installs it and
+  reopens the app. Ignored (or closed with ×), it installs by itself the next time you leave the app — this version keeps working meanwhile.</p>
+  <div class="phone">
+    <div class="notice">
+      <svg class="i" viewBox="0 0 24 24" style="color:var(--accent)"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+      <div class="t"><b>Update ready</b><small>Cartopolis 1.0.0 · build 22105</small></div>
+      <div class="btn">Install</div>
+      <div class="x"><svg class="i" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
+    </div>
+    <div class="tap" style="top:24px; left:497px"></div>
+  </div>
+</div>
+
+<div class="col">
+  <h2>2 · This version is too old<span class="new">new</span></h2>
+  <p>Only when the server refuses this app's version — today that shows as "connection reset". The map stays visible but
+  nothing answers except <b>Update now</b>: one tap downloads and installs the new build, and the app reopens on it.</p>
+  <div class="phone">
+    <div class="veil">
+      <div class="card">
+        <div class="badge"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></div>
+        <h3>Update Cartopolis to continue</h3>
+        <p>The server has moved on and this version can no longer talk to it. The update takes about a minute.</p>
+        <div class="btn big">Update now</div>
+        <div class="ver">You have build 22092 · the new one is 22105</div>
+      </div>
+    </div>
+    <div class="tap" style="top:281px; left:392px"></div>
+  </div>
+</div>
+
+<div class="col">
+  <h2>3 · Updating<span class="new">new</span></h2>
+  <p>After the tap, the same card shows the download (80 MB, also on mobile data). When it is in, Android installs it and the
+  app restarts. Had it already been downloaded in the background, this step is skipped.</p>
+  <div class="phone">
+    <div class="veil">
+      <div class="card">
+        <div class="badge"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></div>
+        <h3>Updating…</h3>
+        <div class="bar"><i></i></div>
+        <div class="row"><span>Downloading</span><span>34 of 80 MB</span></div>
+        <p style="margin-top:6px">Cartopolis restarts by itself when the update is installed.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="col">
+  <h2>4 · The very first update only</h2>
+  <p>Not ours to draw — Android's own screens, once per phone: it asks to allow Cartopolis to install apps
+  (a switch, then Back), then <b>Update</b>. From the second update on, on Android 12 and later, the one tap is all there is.</p>
+  <div class="phone" style="background:#1b1d1f; display:grid; place-items:center">
+    <div style="width:380px; background:#2a2d30; border-radius:26px; padding:24px 26px; color:#e6e6e6; font-family:system-ui">
+      <div style="font-size:15px; opacity:.75; margin-bottom:10px">Cartopolis</div>
+      <div style="font-size:19px; margin-bottom:22px">Do you want to update this app?</div>
+      <div style="display:flex; justify-content:flex-end; gap:30px; color:#a8c7fa; font-weight:600">Cancel <span>Update</span></div>
+    </div>
+  </div>
+</div>
+
+</body></html>

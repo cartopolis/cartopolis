@@ -78,7 +78,7 @@ use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 // The wire codec itself: only the native build owns a socket to speak it on.
 #[cfg(not(target_arch = "wasm32"))]
-use cartopolis_core::{decode_app_frame, encode_app_frame, PROTOCOL_VERSION};
+use cartopolis_core::{decode_app_frame, encode_app_frame, ProtocolError, PROTOCOL_VERSION};
 
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FRAME: usize = 32 * 1024 * 1024;
@@ -619,7 +619,20 @@ async fn client_loop(
             .await
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("closed before ServerHelloAck"))?;
-        let ack_msg = decode_app_frame(&ack_bytes)?;
+        // A server newer than this build answers in its own wire version, which
+        // this build cannot read — the refusal it carries included. That alone
+        // says the app is too old for it (`platform::update`).
+        let ack_msg = match decode_app_frame(&ack_bytes) {
+            Err(ProtocolError::UnsupportedVersion(v)) if v > PROTOCOL_VERSION => {
+                crate::platform::update::mark_too_old(v);
+                return Err(Rejected(
+                    "This version of Cartopolis is too old for the server. Update it to sign in."
+                        .to_string(),
+                )
+                .into());
+            }
+            other => other?,
+        };
         match &ack_msg {
             NetMessage::ServerHelloAck {
                 tick_hz,

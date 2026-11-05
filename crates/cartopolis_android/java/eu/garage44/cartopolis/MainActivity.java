@@ -81,7 +81,7 @@ public final class MainActivity extends NativeActivity {
     @Override
     protected void onStop() {
         super.onStop();
-        Updater.install(this);
+        Updater.onLeave(this);
     }
 
     @Override

@@ -2431,6 +2431,8 @@ pub struct ScriptedCards<'w, 's> {
     /// The place card, closed on every shot that does not ask for it: once
     /// `--ui place` had opened it, it stayed over every shot after.
     place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
+    /// The app's update pill and too-old card (`--ui updateready` …).
+    app_update: ResMut<'w, crate::systems::app_update::AppUpdate>,
 }
 
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
@@ -2534,6 +2536,11 @@ const UI_ELEMENTS: &[&str] = &[
     "signin",
     // The first-launch card over the map (`systems::welcome`).
     "welcome",
+    // The app's own updates (`systems::app_update`, `docs/mockups/app-updates`):
+    // the pill, the too-old card, and that card downloading — as on a phone.
+    "updateready",
+    "updatetooold",
+    "updating",
     "chat",
     "chats",
     "communities",
@@ -2675,6 +2682,31 @@ pub fn open_scripted_ui(
     // scripted run reads no `user.json` and would otherwise show it on every
     // shot as a fresh install does.
     cards.welcome.capture = Some(want("welcome"));
+    {
+        use crate::platform::update::UpdateStatus;
+        use crate::systems::app_update::Capture;
+        cards.app_update.capture = if want("updateready") {
+            Some(Capture {
+                status: UpdateStatus::Ready("1.0.0+3f2a91c0".into()),
+                too_old: false,
+            })
+        } else if want("updatetooold") {
+            Some(Capture {
+                status: UpdateStatus::None,
+                too_old: true,
+            })
+        } else if want("updating") {
+            Some(Capture {
+                status: UpdateStatus::Fetching {
+                    done: 34 << 20,
+                    total: 80 << 20,
+                },
+                too_old: true,
+            })
+        } else {
+            None
+        };
+    }
     if !want("place") {
         cards.place_card.place = None;
     }

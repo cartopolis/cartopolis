@@ -61,6 +61,8 @@ pub mod screen;
 pub mod storage;
 pub mod stream;
 pub mod sync;
+// The app's own updates; they install on Android only.
+pub mod update;
 pub mod warm;
 pub mod watchdog;
 #[cfg(target_arch = "wasm32")]

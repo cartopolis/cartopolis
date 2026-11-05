@@ -348,11 +348,15 @@
             </intent-filter>
         </receiver>
 
-        <!-- The package installer's answer to a self-update (UpdateReceiver.java).
-             Not exported: only the installer, through our own PendingIntent,
-             reaches it. -->
+        <!-- The package installer's answer to a self-update (UpdateReceiver.java),
+             and the system's word that it went in. Not exported: only the
+             installer, through our own PendingIntent, and the system reach it. -->
         <receiver
             android:name=".UpdateReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

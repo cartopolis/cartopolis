@@ -1,6 +1,6 @@
 ---
 topic: android-build
-triggers: [cartopolis_android, Updater, UpdateReceiver, "self-update", build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
+triggers: [cartopolis_android, app_update.rs, platform/update.rs, Updater, UpdateReceiver, "self-update", build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
 updated: 2026-11-05
 ---
 
@@ -556,11 +556,32 @@ second download.
 
 `Updater.java` reads `/apk/version.json` (written by `deploy/build/apk.sh`) on a
 return to the screen, at most every six hours, and fetches a higher code into the
-cache, **on mobile data too** (the owner's call: 80 MB is no problem). Before installing it checks the file
-against the published `.sha256` *and* asks Android to read the archive's package
-and code — the deploy writes the files one by one, so a check that lands
-mid-publish sees a pair that disagrees and tries again later. It installs from
-`MainActivity.onStop`, never on screen, because an update ends the process.
+cache, **on mobile data too** (the owner's call: 80 MB is no problem). The app
+then shows "Update ready" with an Install button (`systems::app_update`,
+`docs/mockups/app-updates`); untapped, it installs from `MainActivity.onStop`,
+never on screen uninvited, because an update ends the process.
+
+**Too old is the only hard stop.** A server on a newer wire version answers the
+hello in a frame this build cannot decode; `client_loop` takes that
+`UnsupportedVersion` above its own as "too old" (`platform::update::mark_too_old`)
+and the app shows a card over everything with **Update now**, which fetches if
+need be and installs at once. A newer *build* on the same wire version never
+blocks anything.
+
+Before installing, the file must match the published `.sha256` (the deploy
+writes its files one by one, so a check mid-publish sees a pair that disagrees
+and tries again later), be a newer `eu.garage44.cartopolis` as Android reads the
+archive, be **signed with the app's own certificate** (refused before any
+confirm screen; an Android that cannot read an archive's signers leaves it to
+its own check), and stay under 300 MB; only https to cartopolis.org, redirects
+refused.
+
+**The hole that is left, accepted by the owner (2026-11-05):** the release key
+lives on the vps that also serves the APK (`/data/cartopolis/android-key`,
+signed in the hub's `prepare`). Whoever takes the vps over can sign an update
+every phone installs, now without anyone tapping. The fixes, both costing a
+second machine in every deploy: sign on the mini instead, or have the app also
+require a second signature from a key the vps never sees.
 
 What Android allows a sideloaded app, which is the shape of the whole thing:
 
@@ -570,6 +591,10 @@ What Android allows a sideloaded app, which is the shape of the whole thing:
   `STATUS_PENDING_USER_ACTION`, and its confirm screen also carries the one-time
   "Allow from this source" step. `UpdateReceiver` opens it on screen, or posts a
   notification off screen — an app in the background may not start an activity.
+- **No reopening.** Android does not restart an app it has updated, and the new
+  build may not open itself from the background, so when the person had tapped
+  for it `UpdateReceiver` (on `MY_PACKAGE_REPLACED`) posts "Cartopolis is
+  updated — tap to open".
 - **Only builds from the page update.** A code under 20000 is a hand build
   (`build-apk.sh` falls back to the commit count), signed with a debug key the
   published APK can never install over, so `Updater` never starts.
