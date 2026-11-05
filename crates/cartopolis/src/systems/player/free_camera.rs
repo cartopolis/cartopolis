@@ -3660,6 +3660,12 @@ fn earth_mode(ctx: ModeCtx) {
 /// Take the avatar's own model out of shot while the camera is inside its head,
 /// and put it back on the way out.
 ///
+/// The camera screen's Mixed puts it there too, with the phone's back camera:
+/// the world camera is the phone, at eye height on the fix the avatar stands
+/// on, and drew the inside of its arms, the hand and the phone it holds over
+/// the picture. Only the selfie looks back at the avatar, so only it keeps it
+/// (`CameraScreen::phone_hold`).
+///
 /// The same two-level write `driver::update_driver_arrow` does and for the same
 /// reason, which its doc comment gives in full: the avatar entity carries no
 /// `Visibility` of its own, so each model holder under it is its own propagation
@@ -3678,6 +3684,7 @@ pub fn update_first_person_avatar(
     mut commands: Commands,
     camera_state: Res<CameraState>,
     driver: Res<crate::systems::driver::DriverState>,
+    screen: Res<crate::systems::camera_screen::CameraScreen>,
     avatars: Query<Entity, With<crate::components::Avatar>>,
     children: Query<&Children>,
     visibility: Query<&Visibility>,
@@ -3686,7 +3693,8 @@ pub fn update_first_person_avatar(
     if driver.active {
         return;
     }
-    let want = camera_state.first_person && camera_state.mode == CameraMode::Avatar;
+    let want = (camera_state.first_person && camera_state.mode == CameraMode::Avatar)
+        || screen.phone_hold() == Some(false);
     if !want && !*hidden {
         return;
     }

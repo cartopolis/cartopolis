@@ -57,6 +57,11 @@ made the Mixed picture (plus an aerial panel) and nothing else
 - **In Mixed the world camera is teleported only to arrive and after 200 m of
   walking**; every smaller step moves the camera directly, so a walk is not a
   stream of teleports or of map re-streams. Leaving Mixed puts the view back.
+- **In Mixed with the back camera the own avatar is hidden**: the world camera
+  stands at eye height on the fix the avatar stands on, so it drew the inside
+  of the arms, the hand and the held phone over the picture (s609's street
+  pairs, 2026-11-05). Only the selfie keeps it in view
+  (`free_camera::update_first_person_avatar`, on `phone_hold() == Some(false)`).
 - **The harness's yaw turns the other way from a compass**
   (`PhotoPose::harness_yaw_deg`): `--look`'s yaw is counter-clockwise seen from
   above; a compass heading is the negation.
