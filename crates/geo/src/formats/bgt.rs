@@ -58,9 +58,9 @@ pub struct Objects {
     pub trees: Vec<LatLng>,
 }
 
-/// A walk below the street beside it: `[[ring, …], level]` — the rings of one of
-/// the file's surfaces, outer first, and its level in metres above NAP as AHN
-/// measured it.
+/// A walk below the street beside it: `[[ring, …], level, [seaward, …]]` — the
+/// rings of one of the file's surfaces, outer first, its level in metres above
+/// NAP as AHN measured it, and which of its edges face the water.
 ///
 /// A lower quay is paving like any other in the register, which says nothing of
 /// its height; atlas finds it by measuring the surfaces along a quay wall
@@ -69,7 +69,15 @@ pub struct Objects {
 /// still read the file: serde ignores an unknown key and refuses an unknown
 /// array element.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Terrace(pub Vec<Vec<LatLng>>, pub f64);
+pub struct Terrace(
+    pub Vec<Vec<LatLng>>,
+    pub f64,
+    /// Per edge of the outer ring (vertex `i` to `i + 1`, wrapping), whether it
+    /// faces the water: the client lowers the ground between it and the map's
+    /// water to the walk too, since that water need not reach the register's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub Vec<bool>,
+);
 
 /// The paving file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -172,7 +180,11 @@ mod tests {
     fn terraces_round_trip_and_cost_nothing_when_absent() {
         let mut p = paving();
         p.terraces
-            .push(Terrace(vec![vec![(53.2, 6.5), (53.2, 6.501), (53.2001, 6.501)]], -0.82));
+            .push(Terrace(
+            vec![vec![(53.2, 6.5), (53.2, 6.501), (53.2001, 6.501)]],
+            -0.82,
+            vec![true, false, false],
+        ));
         let t = text(&p);
         assert!(t.contains(r#""terraces":[[[[[53.2,6.5]"#), "{t}");
         assert_eq!(parse_paving(&t).unwrap(), p);

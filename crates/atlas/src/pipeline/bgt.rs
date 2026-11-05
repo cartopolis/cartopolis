@@ -57,7 +57,7 @@ const PROP_KINDS: [&str; 12] = [
     "toilet",
 ];
 /// Linear forms in wire order, mirrored by `LINE_KINDS`.
-const LINE_KINDS: [&str; 4] = ["fence", "wall", "hedge", "quay"];
+const LINE_KINDS: [&str; 5] = ["fence", "wall", "hedge", "quay", "parapet"];
 /// Bridge parts in wire order, mirrored by `BRIDGE_PARTS` in the client.
 ///
 /// The BGT's `type_overbruggingsdeel` is `dek`, `pijler` (a pier) or `landhoofd`
@@ -590,26 +590,53 @@ const QUAY_RASTER_MAX: usize = 1024;
 /// which leaves the surface drawn on the field as it always was.
 fn lower_quay_of(
     ahn: &dyn crate::terrain::HeightSource,
-    poly: &[Vec<Pt>],
-) -> Result<Option<f64>, String> {
-    use cartopolis_geo::ahn::wgs84_to_rd;
-    let rd: Vec<Vec<Pt>> = poly
+    rings: &[Vec<[f64; 2]>],
+) -> Result<Option<super::lower_quay::LowerQuay>, String> {
+    // The rings as shipped, `[lat, lng]`, so the edges `measure` classifies
+    // are the ones the client reads.
+    let rd: Vec<Vec<Pt>> = rings
         .iter()
-        .map(|r| r.iter().map(|p| wgs84_to_rd(p[1], p[0])).collect())
+        .map(|r| r.iter().map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1])).collect())
         .collect();
     if !super::lower_quay::wide_enough(&rd) {
         return Ok(None);
     }
     let (min, max) = super::lower_quay::window(&rd);
+    Ok(super::lower_quay::measure(&rd, &raster_of(ahn, crate::terrain::Model::Terrain, min, max)?))
+}
+
+/// AHN over a square at its own half metre, or coarser past [`QUAY_RASTER_MAX`].
+fn raster_of(
+    ahn: &dyn crate::terrain::HeightSource,
+    model: crate::terrain::Model,
+    min: Pt,
+    max: Pt,
+) -> Result<super::lower_quay::Raster, String> {
     let n = (((max[0] - min[0]) / 0.5).ceil() as usize).clamp(8, QUAY_RASTER_MAX);
-    let h = ahn.raster(min, max, n)?;
-    let raster = super::lower_quay::Raster {
+    let h = ahn.raster_of(model, min, max, n)?;
+    Ok(super::lower_quay::Raster {
         min,
         cell: (max[0] - min[0]) / n as f64,
         n,
         h,
-    };
-    Ok(super::lower_quay::measure(&rd, &raster).map(|q| round(q.level, 2)))
+    })
+}
+
+/// How far a quay wall stands above the street it holds up, metres, where
+/// AHN's surface model sees it standing [`super::lower_quay::MIN_PARAPET_M`] or
+/// more (`lower_quay::parapet`). `line` is its centreline, `[lat, lng]`.
+fn parapet_of(
+    ahn: &dyn crate::terrain::HeightSource,
+    line: &[Pt],
+    street: f64,
+) -> Result<Option<f64>, String> {
+    let rd: Vec<Pt> = line
+        .iter()
+        .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[0], p[1]))
+        .collect();
+    let (min, max) = super::lower_quay::window(std::slice::from_ref(&rd));
+    let dsm = raster_of(ahn, crate::terrain::Model::Surface, min, max)?;
+    Ok(super::lower_quay::parapet(&rd, &dsm, street).map(|h| round(h, 2)))
 }
 
 #[derive(Default)]
@@ -712,26 +739,28 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     // A quay's outline is kept, in RD metres, for the paving below: a walk
     // that runs along one may lie below the street it holds up (`lower_quay`).
     ctx.log("muren als vlak…");
-    let mut quays: Vec<Vec<Pt>> = Vec::new();
+    let mut quays: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = Vec::new();
     items(ctx, extract, "scheiding_vlak", |feat| {
         let t = js_str(&feat["properties"]["type"]);
         let Some(form) = line_form(&t) else {
             return;
         };
         let id = js_str(&feat["properties"]["lokaal_id"]);
+        let lines = centreline(&feat["geometry"]);
         if form == "quay" {
             for poly in polygon_rings(&feat["geometry"]) {
                 if let Some(outer) = poly.first() {
-                    quays.push(
+                    quays.push((
                         outer
                             .iter()
                             .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[1], p[0]))
                             .collect(),
-                    );
+                        lines.clone(),
+                    ));
                 }
             }
         }
-        for pts in centreline(&feat["geometry"]) {
+        for pts in lines {
             push_line(&mut cells, form, &t, &id, &pts);
         }
     })?;
@@ -883,7 +912,8 @@ fn collect_surfaces(
     let ahn = ctx.data_dir().ok().map(|dir| {
         crate::ahn6::Ahn6::new(dir, std::sync::Arc::new(crate::terrain::Pdok::new()))
     });
-    let (mut n_terraces, mut n_measured, mut ahn_errors) = (0usize, 0usize, 0usize);
+    let (mut n_terraces, mut n_measured, mut n_parapets, mut ahn_errors) = (0usize, 0usize, 0usize, 0usize);
+    let mut parapeted: HashSet<usize> = HashSet::new();
     for collection in ["wegdeel", "ondersteunendwegdeel", "onbegroeidterreindeel"] {
         ctx.log(format!("{collection}…"));
         items(ctx, extract, collection, |feat| {
@@ -912,29 +942,62 @@ fn collect_surfaces(
                 let material = surface_material(props);
                 let kind = ix(&SURFACE_KINDS, form);
                 let rings = ring_pairs(&out_rings);
-                let level = match (&ahn, poly.first()) {
-                    (Some(ahn), Some(outer))
-                        if quays.along(
+                let measured = match (&ahn, poly.first()) {
+                    (Some(ahn), Some(outer)) => {
+                        let along = quays.along_which(
                             &outer
                                 .iter()
                                 .map(|p| cartopolis_geo::ahn::wgs84_to_rd(p[1], p[0]))
                                 .collect::<Vec<_>>(),
-                        ) =>
-                    {
-                        n_measured += 1;
-                        lower_quay_of(ahn, &poly).unwrap_or_else(|_| {
-                            ahn_errors += 1;
+                        );
+                        if along.is_empty() {
                             None
-                        })
+                        } else {
+                            n_measured += 1;
+                            lower_quay_of(ahn, &out_rings)
+                                .unwrap_or_else(|_| {
+                                    ahn_errors += 1;
+                                    None
+                                })
+                                .map(|q| (ahn, q, along))
+                        }
                     }
                     _ => None,
                 };
-                let cell = cells.entry(lat_lng_to_cell(first[0], first[1])).or_default();
-                if let Some(level) = level {
-                    cell.terraces.push(bgt::Terrace(rings.clone(), level));
+                let cell = lat_lng_to_cell(first[0], first[1]);
+                if let Some((ahn, q, along)) = measured {
+                    cells.entry(cell).or_default().terraces.push(bgt::Terrace(
+                        rings.clone(),
+                        round(q.level, 2),
+                        q.seaward,
+                    ));
                     n_terraces += 1;
+                    // The walls it runs along, where they stand above the
+                    // street they hold up: each once, whichever walk finds it.
+                    for k in along {
+                        if !parapeted.insert(k) {
+                            continue;
+                        }
+                        for line in quays.lines(k) {
+                            let Some(&at) = line.first() else { continue };
+                            match parapet_of(ahn, line, q.street) {
+                                Ok(Some(h)) => {
+                                    cells.entry(lat_lng_to_cell(at[0], at[1])).or_default().lines.push(
+                                        Line(ix(&LINE_KINDS, "parapet"), pairs(line), Some(h)),
+                                    );
+                                    n_parapets += 1;
+                                }
+                                Ok(None) => {}
+                                Err(_) => ahn_errors += 1,
+                            }
+                        }
+                    }
                 }
-                cell.surfaces.push(Surface(kind, rings, material));
+                cells
+                    .entry(cell)
+                    .or_default()
+                    .surfaces
+                    .push(Surface(kind, rings, material));
                 n_material += usize::from(material.is_some());
                 n += 1;
             }
@@ -950,7 +1013,8 @@ fn collect_surfaces(
         ));
     }
     ctx.log(format!(
-        "{n_measured} surfaces along a quay wall measured, {n_terraces} lie below the street"
+        "{n_measured} surfaces along a quay wall measured, {n_terraces} lie below the street, \
+         {n_parapets} walls stand above it"
     ));
     if ahn_errors > 0 {
         ctx.log(format!("{ahn_errors} of them unmeasured: AHN did not answer"));
@@ -1131,25 +1195,38 @@ mod tests {
             walls
                 .iter()
                 .filter(|f| f["properties"]["type"] == "kademuur")
-                .flat_map(|f| polygon_rings(&f["geometry"]))
-                .map(|p| rd(&p[0]))
+                .flat_map(|f| {
+                    let lines = centreline(&f["geometry"]);
+                    polygon_rings(&f["geometry"])
+                        .into_iter()
+                        .map(move |p| (rd(&p[0]), lines.clone()))
+                })
                 .collect(),
         );
         let walk = by_id(&fetch("wegdeel"), "G0014.404f925c4b580015e053660013ac6945");
         let poly = &polygon_rings(&walk["geometry"])[0];
-        assert!(quays.along(&rd(&poly[0])), "the walk runs along a quay wall");
+        let along = quays.along_which(&rd(&poly[0]));
+        assert!(!along.is_empty(), "the walk runs along a quay wall");
         let dir = tempfile::tempdir().unwrap();
         let ahn = crate::ahn6::Ahn6::new(
             dir.path(),
             std::sync::Arc::new(crate::terrain::Pdok::new()),
         );
-        let level = lower_quay_of(&ahn, poly).unwrap().expect("a lower quay");
+        let rings = simplified_rings(poly);
+        let q = lower_quay_of(&ahn, &rings).unwrap().expect("a lower quay");
+        let level = q.level;
+        let parapets: Vec<(Vec<LatLng>, f64)> = along
+            .iter()
+            .flat_map(|&k| quays.lines(k).to_vec())
+            .filter_map(|l| parapet_of(&ahn, &l, q.street).unwrap().map(|h| (pairs(&l), h)))
+            .collect();
         let wall = by_id(&walls, "G0014.404f925a61cc0015e053660013ac6945");
         let line = &centreline(&wall["geometry"])[0];
         println!(
             "{}",
             json!({
-                "terrace": bgt::Terrace(ring_pairs(&simplified_rings(poly)), level),
+                "terrace": bgt::Terrace(ring_pairs(&rings), round(level, 2), q.seaward.clone()),
+                "parapets": parapets,
                 "walls": walls
                     .iter()
                     .filter(|f| f["properties"]["type"] == "kademuur")
@@ -1161,6 +1238,14 @@ mod tests {
             })
         );
         assert!((-1.1..-0.5).contains(&level), "the walk at {level} m NAP");
+        assert!(q.seaward.iter().any(|s| *s), "an edge faces the water");
+        // The wall under the street stands above it (0.38 m, 2026-11-05), and so
+        // does its next length by the steps; the one on the water does not.
+        assert!(
+            parapets.iter().any(|(l, h)| l[0] == pairs(line)[0] && (0.3..1.5).contains(h)),
+            "{parapets:?}"
+        );
+        assert_eq!(parapets.len(), 2, "{parapets:?}");
         // Round the corner: every point of the line on the wall, none across
         // the walk. The wall is 0.34 m thick.
         let wall_rd = rd(&polygon_rings(&wall["geometry"])[0][0]);

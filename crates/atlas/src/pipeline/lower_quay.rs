@@ -35,15 +35,19 @@ const ALONG_M: f64 = 0.5;
 const BIN_M: f64 = 50.0;
 
 /// The quay walls' outlines, RD metres, binned for "does this surface run along
-/// one" asked of every surface in a city.
+/// one" asked of every surface in a city — each with its centrelines as the
+/// objects file carries them (`[lat, lng]`), for the parapet a walk below it
+/// is measured for.
 pub struct QuayIndex {
     rings: Vec<Vec<Pt>>,
+    lines: Vec<Vec<Vec<Pt>>>,
     bins: HashMap<(i64, i64), Vec<usize>>,
 }
 
 impl QuayIndex {
     #[must_use]
-    pub fn new(rings: Vec<Vec<Pt>>) -> Self {
+    pub fn new(quays: Vec<(Vec<Pt>, Vec<Vec<Pt>>)>) -> Self {
+        let (rings, lines): (Vec<_>, Vec<_>) = quays.into_iter().unzip();
         let mut bins: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
         for (k, ring) in rings.iter().enumerate() {
             let Some((min, max)) = bounds(ring) else {
@@ -55,16 +59,22 @@ impl QuayIndex {
                 }
             }
         }
-        Self { rings, bins }
+        Self { rings, lines, bins }
     }
 
     /// Whether a surface's outer ring comes within [`ALONG_M`] of a quay wall's.
     #[must_use]
     pub fn along(&self, ring: &[Pt]) -> bool {
+        !self.along_which(ring).is_empty()
+    }
+
+    /// The quay walls a surface's outer ring comes within [`ALONG_M`] of.
+    #[must_use]
+    pub fn along_which(&self, ring: &[Pt]) -> Vec<usize> {
         let Some((min, max)) = bounds(ring) else {
-            return false;
+            return Vec::new();
         };
-        let mut seen = Vec::new();
+        let (mut seen, mut out) = (Vec::new(), Vec::new());
         for bx in bin(min[0])..=bin(max[0]) {
             for by in bin(min[1])..=bin(max[1]) {
                 for &k in self.bins.get(&(bx, by)).into_iter().flatten() {
@@ -79,12 +89,18 @@ impl QuayIndex {
                             .any(|w| distance_to_segment(*p, w[0], w[1]) <= ALONG_M)
                     };
                     if ring.iter().any(|p| near(p, quay)) || quay.iter().any(|p| near(p, ring)) {
-                        return true;
+                        out.push(k);
                     }
                 }
             }
         }
-        false
+        out
+    }
+
+    /// Quay wall `k`'s centrelines, `[lat, lng]`.
+    #[must_use]
+    pub fn lines(&self, k: usize) -> &[Vec<Pt>] {
+        &self.lines[k]
     }
 }
 
@@ -124,6 +140,10 @@ const NEAR_M: f64 = 3.0;
 /// How far out a landward edge is probed, metres: past the wall's own top,
 /// short of the next thing.
 const PROBE_M: f64 = 1.0;
+
+/// How far out an edge looks for open water past a low margin, metres: past
+/// the margin a quay's own wall and its foot make.
+const WATER_PROBE_M: f64 = 2.5;
 
 /// Shortest wall run kept, metres.
 const MIN_RUN_M: f64 = 2.0;
@@ -173,6 +193,9 @@ pub struct LowerQuay {
     pub street: f64,
     /// The landward edge: runs of indices into the outer ring, in its order.
     pub walls: Vec<Vec<usize>>,
+    /// Per edge of the outer ring (vertex `i` to `i + 1`), whether it faces the
+    /// water: AHN has no ground just outside it.
+    pub seaward: Vec<bool>,
 }
 
 /// The outer ring without its closing repeat.
@@ -283,33 +306,48 @@ pub fn measure(rings: &[Vec<Pt>], raster: &Raster) -> Option<LowerQuay> {
         return None;
     }
     let street = median(behind);
-    // An edge is landward where the ground just outside it is nearer the street
-    // than the walk. Its outward side by probing 5 cm off it, never by winding.
-    let landward: Vec<bool> = edges
+    // The ground just outside each edge at `reach` — its outward side by probing
+    // 5 cm off it, never by winding — or `None` where AHN has nothing there:
+    // open water.
+    let outside_at = |reach: f64| -> Vec<Option<f64>> {
+        edges
+            .iter()
+            .map(|&(a, b)| {
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let len = dx.hypot(dy);
+                if len < 1e-6 {
+                    return Some(f64::NAN);
+                }
+                let mut n = [dy / len, -dx / len];
+                let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                if point_in_rings(mid[0] + n[0] * 0.05, mid[1] + n[1] * 0.05, rings) {
+                    n = [-n[0], -n[1]];
+                }
+                let steps = (len / 0.5).ceil().max(1.0) as usize;
+                let hs: Vec<f64> = (0..steps)
+                    .filter_map(|k| {
+                        let t = (k as f64 + 0.5) / steps as f64;
+                        raster.at([a[0] + dx * t + n[0] * reach, a[1] + dy * t + n[1] * reach])
+                    })
+                    .collect();
+                (!hs.is_empty()).then(|| median(hs))
+            })
+            .collect()
+    };
+    let (outside, beyond) = (outside_at(PROBE_M), outside_at(WATER_PROBE_M));
+    // An edge is landward where that ground is nearer the street than the walk.
+    // It faces the water where AHN has no ground there, or only a margin no
+    // higher than the walk with open water past it — never on the walk's level
+    // alone: the landing at a walk's end is as low, and the ground the client
+    // lowers off a water edge sank the street beside the steps there.
+    let landward: Vec<bool> = outside
         .iter()
-        .map(|&(a, b)| {
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let len = dx.hypot(dy);
-            if len < 1e-6 {
-                return false;
-            }
-            let mut n = [dy / len, -dx / len];
-            let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-            if point_in_rings(mid[0] + n[0] * 0.05, mid[1] + n[1] * 0.05, rings) {
-                n = [-n[0], -n[1]];
-            }
-            let steps = (len / 0.5).ceil().max(1.0) as usize;
-            let hs: Vec<f64> = (0..steps)
-                .filter_map(|k| {
-                    let t = (k as f64 + 0.5) / steps as f64;
-                    raster.at([
-                        a[0] + dx * t + n[0] * PROBE_M,
-                        a[1] + dy * t + n[1] * PROBE_M,
-                    ])
-                })
-                .collect();
-            !hs.is_empty() && median(hs) >= (level + street) / 2.0
-        })
+        .map(|h| h.is_some_and(|h| h >= (level + street) / 2.0))
+        .collect();
+    let seaward: Vec<bool> = outside
+        .iter()
+        .zip(&beyond)
+        .map(|(h, b)| h.is_none_or(|h| h <= level + FLAT_M && b.is_none()))
         .collect();
     // Runs of landward edges, as vertex indices, starting after a seaward edge
     // so that no run is cut where the ring wraps.
@@ -346,7 +384,62 @@ pub fn measure(rings: &[Vec<Pt>], raster: &Raster) -> Option<LowerQuay> {
         level,
         street,
         walls,
+        seaward,
     })
+}
+
+/// Least height a quay wall must stand above the street to be drawn standing
+/// there, metres: below it the surface model's noise and a kerb.
+pub const MIN_PARAPET_M: f64 = 0.3;
+
+/// Most a wall is believed to stand above the street, metres: past it the
+/// surface model saw a tree or a van, not masonry.
+const MAX_PARAPET_M: f64 = 2.5;
+
+/// How far either side of a wall's centreline its top is looked for, metres:
+/// half a wall and a sample.
+const WALL_REACH_M: f64 = 0.4;
+
+/// How far a quay wall's top stands above `street`, measured on AHN's surface
+/// model along its centreline (RD metres): at every half metre the highest
+/// return within [`WALL_REACH_M`], and the median of those, so a tree leaning
+/// over the wall or a bench against it does not count. `None` below
+/// [`MIN_PARAPET_M`] or above [`MAX_PARAPET_M`].
+///
+/// Under Gorechtkade the wall stands +1.2 to +1.9 m NAP over a street at
+/// +0.8 (2026-11-05): a walk-side face of 2.3–2.7 m, of which the register's
+/// 3D product measures 1.62 m, the part below the street.
+#[must_use]
+pub fn parapet(line: &[Pt], dsm: &Raster, street: f64) -> Option<f64> {
+    let mut tops = Vec::new();
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy);
+        if len < 1e-6 {
+            continue;
+        }
+        let (nx, ny) = (-dy / len, dx / len);
+        let steps = (len / 0.5).ceil() as usize;
+        for k in 0..steps {
+            let t = (k as f64 + 0.5) / steps as f64;
+            let c = [a[0] + dx * t, a[1] + dy * t];
+            let top = [-1.0, -0.5, 0.0, 0.5, 1.0]
+                .into_iter()
+                .filter_map(|s| {
+                    dsm.at([c[0] + nx * s * WALL_REACH_M, c[1] + ny * s * WALL_REACH_M])
+                })
+                .fold(f64::NAN, f64::max);
+            if top.is_finite() {
+                tops.push(top);
+            }
+        }
+    }
+    if tops.is_empty() {
+        return None;
+    }
+    let rise = median(tops) - street;
+    (MIN_PARAPET_M..=MAX_PARAPET_M).contains(&rise).then_some(rise)
 }
 
 #[cfg(test)]
@@ -398,6 +491,8 @@ mod tests {
         assert!((q.street - 0.8).abs() < 1e-6, "{q:?}");
         // One run, the east edge, and nothing along the water or the ends.
         assert_eq!(q.walls, vec![vec![1, 2]]);
+        // Only the water faces the water, not the walk carrying on past its ends.
+        assert_eq!(q.seaward, vec![false, false, false, true]);
     }
 
     #[test]
@@ -410,7 +505,7 @@ mod tests {
     #[test]
     fn only_a_surface_along_a_quay_wall_is_measured() {
         let wall = vec![[12.5, 5.0], [12.8, 5.0], [12.8, 55.0], [12.5, 55.0], [12.5, 5.0]];
-        let quays = QuayIndex::new(vec![wall]);
+        let quays = QuayIndex::new(vec![(wall, Vec::new())]);
         assert!(quays.along(&strip(12.5)[0]));
         let across = vec![[20.0, 5.0], [24.0, 5.0], [24.0, 55.0], [20.0, 55.0], [20.0, 5.0]];
         assert!(!quays.along(&across));
