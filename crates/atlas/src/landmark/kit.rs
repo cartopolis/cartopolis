@@ -67,6 +67,10 @@ pub struct Part {
     pub layers: Vec<Layer>,
     #[serde(default)]
     pub samples: Option<usize>,
+    /// A hole cut down into the top: a sunken roof terrace, or — as deep as
+    /// the part is tall — the inside of a thin ring such as a balustrade.
+    #[serde(default)]
+    pub hole: Option<Hole>,
     #[serde(default)]
     pub openings: Vec<Opening>,
     /// Whether avatars bump into it. Its openings' panels never do.
@@ -76,6 +80,16 @@ pub struct Part {
 
 fn yes() -> bool {
     true
+}
+
+/// A hole in a part's top, local metres like its plan, counter-clockwise.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hole {
+    pub points: Vec<[f64; 2]>,
+    /// How far down from the top its floor is. As deep as the part or more,
+    /// it has no floor and goes right through.
+    pub depth: f64,
 }
 
 /// One plan of a `layers` part.
@@ -270,7 +284,13 @@ impl Kit {
                 } else {
                     part.name.clone()
                 };
-                out.extend(loft(part, &name, &stack)?);
+                let hole = part.hole.as_ref().map(|h| {
+                    (
+                        ccw(&h.points).into_iter().map(place).collect::<Vec<_>>(),
+                        h.depth,
+                    )
+                });
+                out.extend(loft(part, &name, &stack, hole.as_ref())?);
             }
         }
         Ok(out)
@@ -463,7 +483,12 @@ fn outline(kind: OpeningKind, u: f64, w: f64, from: f64, to: f64) -> Vec<[f64; 2
 /// One part at one position: the loft through its rings, its caps, and its
 /// openings. `stack` is `(height, ring)` bottom to top, rings of one length,
 /// east/north, counter-clockwise.
-fn loft(part: &Part, name: &str, stack: &[(f64, Vec<[f64; 2]>)]) -> Result<Vec<Piece>, String> {
+fn loft(
+    part: &Part,
+    name: &str,
+    stack: &[(f64, Vec<[f64; 2]>)],
+    hole: Option<&(Vec<[f64; 2]>, f64)>,
+) -> Result<Vec<Piece>, String> {
     let n = stack[0].1.len();
     let heights: Vec<f64> = stack.iter().map(|s| s.0).collect();
     let mut wall = Piece {
@@ -481,7 +506,23 @@ fn loft(part: &Part, name: &str, stack: &[(f64, Vec<[f64; 2]>)]) -> Result<Vec<P
     let point = |ring: &[[f64; 2]]| area(ring).abs() < 1e-9;
     // Bottom cap, facing down (clockwise seen from above).
     let (h_bottom, bottom) = &stack[0];
-    if !point(bottom) {
+    let through = hole.filter(|(_, depth)| stack[stack.len() - 1].0 - depth <= stack[0].0);
+    if let Some((ring, _)) = through {
+        // A hole that goes right through is cut from the bottom too: the
+        // client draws both sides of a model's faces, so a whole bottom
+        // would lid whatever the ring stands round.
+        let mut cap = Piece::default();
+        fill(&mut cap, bottom, std::slice::from_ref(ring), |q| {
+            [q[0], q[1], *h_bottom]
+        })?;
+        let base = wall.p.len() as u32;
+        wall.p.extend(cap.p);
+        wall.t.extend(
+            cap.t
+                .into_iter()
+                .map(|[a, b, c]| [base + a, base + c, base + b]),
+        );
+    } else if !point(bottom) {
         let ring: Vec<[f64; 3]> = bottom
             .iter()
             .rev()
@@ -541,9 +582,34 @@ fn loft(part: &Part, name: &str, stack: &[(f64, Vec<[f64; 2]>)]) -> Result<Vec<P
     }
     // Top cap, facing up, unless the part closed to a point.
     let (h_top, top) = &stack[stack.len() - 1];
-    if !point(top) {
-        let ring: Vec<[f64; 3]> = top.iter().map(|q| [q[0], q[1], *h_top]).collect();
-        wall.fan(&ring);
+    let h_top = *h_top;
+    match hole {
+        Some((ring, depth)) if !point(top) => {
+            // The top with the hole cut out, the hole's sides facing into
+            // it, and its floor unless it goes right through.
+            fill(&mut wall, top, std::slice::from_ref(ring), |q| {
+                [q[0], q[1], h_top]
+            })?;
+            let floor = h_top - depth;
+            let bottom = floor.max(stack[0].0);
+            for e in 0..ring.len() {
+                let (p, q) = (ring[e], ring[(e + 1) % ring.len()]);
+                wall.quad(
+                    [p[0], p[1], h_top],
+                    [q[0], q[1], h_top],
+                    [q[0], q[1], bottom],
+                    [p[0], p[1], bottom],
+                );
+            }
+            if floor > stack[0].0 {
+                fill(&mut wall, ring, &[], |q| [q[0], q[1], floor])?;
+            }
+        }
+        _ if !point(top) => {
+            let ring: Vec<[f64; 3]> = top.iter().map(|q| [q[0], q[1], h_top]).collect();
+            wall.fan(&ring);
+        }
+        _ => {}
     }
     let mut out = vec![wall];
     out.extend(panels.into_values());
@@ -766,6 +832,47 @@ mod tests {
         let top = p.p.iter().map(|q| q[2]).fold(0.0, f64::max);
         assert_eq!(top, 20.0);
         assert_eq!(p.t.len(), 8 + 6);
+    }
+
+    /// A hole takes its area out of the top and puts it back as its floor,
+    /// lower down; one as deep as the part leaves a ring with no floor.
+    #[test]
+    fn a_hole_is_sunk_into_the_top() {
+        let k = kit(
+            r#"{"name": "b", "material": "brick", "shape": {"rect": {"w": 10, "d": 10}},
+                        "rings": [[0, 1], [20, 1]],
+                        "hole": {"points": [[-2, -2], [2, -2], [2, 2], [-2, 2]], "depth": 5}}"#,
+        );
+        let p = &k.mesh().unwrap()[0];
+        let up_at = |h: f64| {
+            p.t.iter()
+                .filter(|t| t.iter().all(|&i| (p.p[i as usize][2] - h).abs() < 1e-9))
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| p.p[i as usize]);
+                    cross(sub(b, a), sub(c, a))[2] / 2.0
+                })
+                .sum::<f64>()
+        };
+        assert!((up_at(20.0) - 84.0).abs() < 1e-6, "{}", up_at(20.0));
+        assert!((up_at(15.0) - 16.0).abs() < 1e-6, "{}", up_at(15.0));
+        let ring = kit(
+            r#"{"name": "r", "material": "brick", "shape": {"rect": {"w": 10, "d": 10}},
+                           "rings": [[0, 1], [1, 1]],
+                           "hole": {"points": [[-4.8, -4.8], [4.8, -4.8], [4.8, 4.8], [-4.8, 4.8]],
+                                    "depth": 1}}"#,
+        );
+        let r = &ring.mesh().unwrap()[0];
+        assert!(r.p.iter().all(|q| q[2] == 0.0 || q[2] == 1.0));
+        // Its bottom is a ring too, facing down: 100 m² less the 9.6 m hole.
+        let down: f64 =
+            r.t.iter()
+                .filter(|t| t.iter().all(|&i| r.p[i as usize][2] == 0.0))
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| r.p[i as usize]);
+                    -cross(sub(b, a), sub(c, a))[2] / 2.0
+                })
+                .sum();
+        assert!((down - (100.0 - 9.6 * 9.6)).abs() < 1e-6, "{down}");
     }
 
     #[test]
