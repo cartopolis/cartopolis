@@ -1556,6 +1556,10 @@ pub enum LineKind {
     /// is the ground at its line and its measured height is the face *below*
     /// that, so only the side where the ground or the water drops away shows.
     Quay,
+    /// The part of a retaining wall standing above the ground it holds up:
+    /// stood on the ground at its line at its measured height, never footed —
+    /// atlas measures it only along a lower quay (`pipeline/lower_quay.rs`).
+    Parapet,
     /// A kerbstone along a surveyed pavement edge (`paving_edges::kerb_lines`).
     /// **Not on the wire**: the BGT has no kerbs, so this is never parsed, only
     /// derived from the boundary between a raised surface and a carriageway.
@@ -1599,6 +1603,8 @@ impl LineKind {
             Self::Hedge => (1.1, 0.35, Tone::Foliage),
             // Only ever drawn at a measured height (atlas gates the type on one).
             Self::Quay => (0.9, 0.12, Tone::Stone),
+            // The wall it tops, so the two read as one.
+            Self::Parapet => (0.9, 0.12, Tone::Stone),
             // Standing 10 cm proud of the carriageway, the top face exactly over
             // the flat kerb band `paving_edges` cuts out of the pavement. The
             // pavement itself stays at grade: lifting it would bury the verge's
@@ -1748,6 +1754,8 @@ pub fn build_line_meshes_footed(
                 // sunk its whole height; any other measured wall finds its foot.
                 let sink = if line.kind == LineKind::Quay {
                     height + drop(mid, [ux, uz]).max(0.0)
+                } else if line.kind == LineKind::Parapet {
+                    0.0
                 } else if measured {
                     foot(mid, [ux, uz]).clamp(0.0, height)
                 } else {

@@ -72,8 +72,9 @@ pub struct SurveyedPaving {
     pub areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)>,
     /// The lower quays (`formats::bgt::Terrace`): the rings of a surface in
     /// `areas` — so the ground sheets already cut along its outline — and the
-    /// level, metres above NAP, the ground inside it is laid at.
-    pub terraces: Vec<(Vec<Vec<(f64, f64)>>, f32)>,
+    /// level, metres above NAP, the ground inside it is laid at, and which edges
+    /// of its outer ring face the water.
+    pub terraces: Vec<(Vec<Vec<(f64, f64)>>, f32, Vec<bool>)>,
 }
 
 /// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
@@ -89,11 +90,11 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
     // fixed upstream; this is the floor under it, because a cell cached before
     // the fix keeps its ghosts for as long as the cache lives.
     let mut seen = std::collections::HashSet::new();
-    let terraces: Vec<(Vec<Vec<(f64, f64)>>, f32)> = wire
+    let terraces: Vec<(Vec<Vec<(f64, f64)>>, f32, Vec<bool>)> = wire
         .terraces
         .into_iter()
         .filter(|t| t.0.first().is_some_and(|r| r.len() >= 3) && t.1.is_finite())
-        .map(|t| (t.0, t.1 as f32))
+        .map(|t| (t.0, t.1 as f32, t.2))
         .collect();
     let areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)> = wire
         .surfaces
@@ -213,7 +214,7 @@ pub fn surveyed_terraces(
     cx: i64,
     cy: i64,
     tile_m: f32,
-) -> Vec<(Vec<Vec<[f32; 2]>>, f32)> {
+) -> Vec<(Vec<Vec<[f32; 2]>>, f32, Vec<bool>)> {
     let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
         let out: Vec<[f32; 2]> = pts
             .iter()
@@ -224,10 +225,10 @@ pub fn surveyed_terraces(
     paving
         .terraces
         .iter()
-        .filter_map(|(rings, level)| {
+        .filter_map(|(rings, level, seaward)| {
             let mut local = vec![to_local(rings.first()?)?];
             local.extend(rings[1..].iter().filter_map(to_local));
-            Some((local, *level))
+            Some((local, *level, seaward.clone()))
         })
         .collect()
 }

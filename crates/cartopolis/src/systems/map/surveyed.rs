@@ -103,11 +103,12 @@ const PROP_KINDS: [FurnitureKind; 12] = [
 
 /// The linear forms, in wire order. Mirrors `LINE_KINDS` in
 /// atlas's `pipeline/bgt.rs` — **append, never renumber**.
-const LINE_KINDS: [LineKind; 4] = [
+const LINE_KINDS: [LineKind; 5] = [
     LineKind::Fence,
     LineKind::Wall,
     LineKind::Hedge,
     LineKind::Quay,
+    LineKind::Parapet,
 ];
 
 // The paving's parse and its local frame live in `cartopolis_geo`, where atlas
@@ -833,7 +834,8 @@ mod tests {
                 LineKind::Fence,
                 LineKind::Wall,
                 LineKind::Hedge,
-                LineKind::Quay
+                LineKind::Quay,
+                LineKind::Parapet
             ]
         );
     }

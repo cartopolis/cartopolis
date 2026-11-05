@@ -1,6 +1,6 @@
 ---
 topic: quay-walls
-triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
+triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, parapet, TERRACE_APRON_M, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
 updated: 2026-11-05
 ---
 
@@ -91,6 +91,26 @@ along the walk's outline because it is surveyed paving. Two walls follow from it
 * a surveyed quay line with a terrace on one side and water on the other holds
   up the walk, so its top drops to the walk (`build_line_meshes_footed`'s
   `drop`); the one under the street keeps its top at the street.
+
+**The map's water stops short of the register's walk.** OSM's water polygon
+ends one to three metres off the walk's water edge, and the strip between was
+ground at the street's level: a ledge along the water with a canal wall in
+front of it, seen from the water as a brown face up to the street. So atlas
+marks which of a walk's edges face the water (no AHN ground 1 m out, or only a
+margin no higher than the walk with none 2.5 m out), and the client lays the
+ground within `TERRACE_APRON_M` (3 m) of those edges at the walk too. Not on
+the walk's level alone: the landing at the walk's end, by the steps, is as low,
+and lowering off it sank the street beside the steps into a pit.
+
+**The wall stands above the street.** AHN's surface model puts its top at +1.2
+to +1.9 m NAP over a street at +0.8 — on the walk, above eye height, which is
+what the photographs show and the first fix did not: the register's 3D height
+(1.62 m) is the face below the street. Atlas measures the part above the street
+along the wall's centreline (median of the highest return within 0.4 m every
+half metre, so a tree over the wall does not count; 0.38 m here, 0.71 m on its
+length by the steps) and ships it as a line of its own, `parapet` (appended to
+`LINE_KINDS`, so an older client drops it), stood on the ground at its line
+and never footed. Only walls along a lower quay are measured.
 
 Not done: `TerrainSnapshot::at` still reads the field, so the avatar, a tree or
 an OSM bench placed on a lower quay stand on the field (between the walk and the
