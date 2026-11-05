@@ -51,9 +51,13 @@ deny-list, and which turns itself on the day a height source for lines exists.
 What *does* come through is `scheiding_vlak`, the same register's boundaries
 surveyed as areas, which this pipeline had never read. The client half had been
 waiting since 2026-08: `LINE_KINDS` position 1 was already `Wall`. The polygons
-are reduced to a centreline by the same principal-axis code the hedges use — a
+are reduced to a centreline by the same code the hedges use — a
 wall polygon is the same long thin strip, and walking its outline draws every
-wall as a hollow rectangle of wall.
+wall as a hollow rectangle of wall. Until 2026-11-05 that centreline was the
+principal axis — one straight segment — and the 65 m retaining wall under
+Gorechtkade, which turns a right angle, stood as a diagonal slab across the walk
+below it; it now follows the strip round its bends (`bgt::centreline`), and
+comes back as its two ends wherever the strip is straight.
 
 **The wall at the study pond in Groningen is recorded only as
 `scheiding_vlak`/`kademuur`**, which is why a 2.06 m wall a person can stand and

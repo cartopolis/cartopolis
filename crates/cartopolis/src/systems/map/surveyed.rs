@@ -239,14 +239,15 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
 /// ever see the fix was a new key. The `v1` entries age out through the ordinary
 /// sweep.
 fn objects_cache_key(cx: i64, cy: i64) -> String {
-    // `v3`: the objects file gained the bridge parts, and a cell cached before
-    // would otherwise never show a pier.
-    format!("bgt/v3/{BGT_ZOOM}/{cx}/{cy}.json")
+    // `v4`: a wall surveyed as an area follows its bends (`v3` gained the
+    // bridge parts); a cell cached before would otherwise keep its walls
+    // straight across every corner.
+    format!("bgt/v4/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
-/// The paving half's key.
+/// The paving half's key: `v3` since it carries the lower quays' levels.
 fn paving_cache_key(cx: i64, cy: i64) -> String {
-    format!("bgt/v2/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
+    format!("bgt/v3/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
 }
 
 /// Fetch one cell's **paving**, through the storage cache.
@@ -259,7 +260,7 @@ fn paving_cache_key(cx: i64, cy: i64) -> String {
 const PAVING: CellSource<SurveyedPaving> = CellSource {
     label: "bgt paving",
     gate: Some(|cx, cy| COVERAGE.covers(cx, cy)),
-    // `v2` for the reason `objects_cache_key` gives.
+    // Versioned for the reason `objects_cache_key` gives.
     key: paving_cache_key,
     url: Some(|cx, cy| format!("{}/bgt/{BGT_ZOOM}/{cx}/{cy}.surfaces.json", tdbag_url())),
     // Our own host: a failure here is our problem, not a third party's, and the
@@ -757,6 +758,7 @@ mod tests {
                     (mid_lat + 1e-5, mid_lng + 1e-5),
                 ]],
             )],
+            ..Default::default()
         };
         let built = surveyed_paving(&paving, &Default::default(), cx, cy, 1500.0);
         assert_eq!(built[0].material, Some(PavingMaterial::Brick));
@@ -795,6 +797,7 @@ mod tests {
                 (PavingKind::Footway, None, vec![inside]),
                 (PavingKind::Footway, None, vec![leaves]),
             ],
+            ..Default::default()
         };
         let built = surveyed_paving(&paving, &Default::default(), cx, cy, 1500.0);
         assert_eq!(built.len(), 1, "only the wholly-inside surface survives");

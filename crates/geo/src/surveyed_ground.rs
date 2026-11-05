@@ -70,6 +70,10 @@ const SURFACE_MATERIALS: [PavingMaterial; 12] = [
 #[derive(Clone, Debug, Default)]
 pub struct SurveyedPaving {
     pub areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)>,
+    /// The lower quays (`formats::bgt::Terrace`): the rings of a surface in
+    /// `areas` — so the ground sheets already cut along its outline — and the
+    /// level, metres above NAP, the ground inside it is laid at.
+    pub terraces: Vec<(Vec<Vec<(f64, f64)>>, f32)>,
 }
 
 /// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
@@ -85,9 +89,14 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
     // fixed upstream; this is the floor under it, because a cell cached before
     // the fix keeps its ghosts for as long as the cache lives.
     let mut seen = std::collections::HashSet::new();
-    Ok(SurveyedPaving {
-        areas: wire
-            .surfaces
+    let terraces: Vec<(Vec<Vec<(f64, f64)>>, f32)> = wire
+        .terraces
+        .into_iter()
+        .filter(|t| t.0.first().is_some_and(|r| r.len() >= 3) && t.1.is_finite())
+        .map(|t| (t.0, t.1 as f32))
+        .collect();
+    let areas: Vec<(PavingKind, Option<PavingMaterial>, Vec<Vec<(f64, f64)>>)> = wire
+        .surfaces
             .into_iter()
             // An outer ring under three points is not a surface. The extractor
             // drops those; a truncated cache entry can produce one.
@@ -115,8 +124,8 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
                 let material = m.and_then(|i| SURFACE_MATERIALS.get(i).copied());
                 Some((kind, material, rings))
             })
-            .collect(),
-    })
+            .collect();
+    Ok(SurveyedPaving { areas, terraces })
 }
 
 /// This cell's paving in the local metre frame, ready to triangulate.
@@ -193,6 +202,34 @@ pub fn surveyed_paving(
         });
     }
     out
+}
+
+/// This cell's lower quays in the local metre frame, each with its level in
+/// metres above NAP — on the rule [`surveyed_paving`] keeps a surface by, so a
+/// terrace is stood exactly where its walk was drawn.
+#[must_use]
+pub fn surveyed_terraces(
+    paving: &SurveyedPaving,
+    cx: i64,
+    cy: i64,
+    tile_m: f32,
+) -> Vec<(Vec<Vec<[f32; 2]>>, f32)> {
+    let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
+        let out: Vec<[f32; 2]> = pts
+            .iter()
+            .filter_map(|&(lat, lng)| to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| [x, z]))
+            .collect();
+        (out.len() == pts.len() && out.len() >= 3).then_some(out)
+    };
+    paving
+        .terraces
+        .iter()
+        .filter_map(|(rings, level)| {
+            let mut local = vec![to_local(rings.first()?)?];
+            local.extend(rings[1..].iter().filter_map(to_local));
+            Some((local, *level))
+        })
+        .collect()
 }
 
 /// Convert a lat/lng to the tile-local metre frame a cell is meshed in: metres

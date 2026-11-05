@@ -1645,7 +1645,7 @@ const MIN_SEGMENT_M: f32 = 0.15;
 /// layer is visible at.
 #[must_use]
 pub fn build_line_meshes(lines: &[SurveyedLine], max_bytes: Option<usize>) -> Vec<SurfaceMesh> {
-    build_line_meshes_footed(lines, max_bytes, &|_, _| 0.0)
+    build_line_meshes_footed(lines, max_bytes, &|_, _| 0.0, &|_, _| 0.0)
 }
 
 /// Longest box a measured wall is drawn in, metres. A straight surveyed segment
@@ -1669,11 +1669,19 @@ pub const WALL_PIECE_M: f32 = 6.0;
 /// never by more than its own height, so a freestanding wall on level ground is
 /// unchanged. Only measured walls are asked — a nominal height is a guess about
 /// a wall standing on the ground, and has no foot to find.
+///
+/// A retaining wall (`LineKind::Quay`) is never footed: its top is flush with
+/// the ground it holds up. `drop(mid, dir)` says how far that top lies below the
+/// ground at the wall's own line, metres (≥ 0) — nothing, except where the
+/// ground stood there is not the ground the wall holds up: the edge of a lower
+/// quay along the water holds up the walk, which the field cannot resolve and
+/// puts at the street's level (`map_geometry::Terrace`).
 #[must_use]
 pub fn build_line_meshes_footed(
     lines: &[SurveyedLine],
     max_bytes: Option<usize>,
     foot: &dyn Fn([f32; 2], [f32; 2]) -> f32,
+    drop: &dyn Fn([f32; 2], [f32; 2]) -> f32,
 ) -> Vec<SurfaceMesh> {
     if lines.is_empty() {
         return Vec::new();
@@ -1739,7 +1747,7 @@ pub fn build_line_meshes_footed(
                 // A retaining wall's top *is* the ground at its line, so it is
                 // sunk its whole height; any other measured wall finds its foot.
                 let sink = if line.kind == LineKind::Quay {
-                    height
+                    height + drop(mid, [ux, uz]).max(0.0)
                 } else if measured {
                     foot(mid, [ux, uz]).clamp(0.0, height)
                 } else {
@@ -2584,17 +2592,17 @@ mod tests {
                     (lo.min(p[1]), hi.max(p[1]))
                 })
         };
-        let level = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 0.0);
+        let level = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 0.0, &|_, _| 0.0);
         let (lo, hi) = span(&level);
         assert!(
             lo.abs() < 1e-4 && (hi - 2.06).abs() < 1e-4,
             "level ground: {lo}..{hi}"
         );
-        let bank = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 2.0);
+        let bank = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 2.0, &|_, _| 0.0);
         let (lo, hi) = span(&bank);
         assert!((lo + 2.0).abs() < 1e-4, "the foot is the water side: {lo}");
         assert!((hi - 0.06).abs() < 1e-4, "the top meets the walkway: {hi}");
-        let deep = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 9.0);
+        let deep = build_line_meshes_footed(&[wall.clone()], None, &|_, _| 9.0, &|_, _| 0.0);
         let (_, hi) = span(&deep);
         assert!(hi.abs() < 1e-4, "never sunk past its own height: {hi}");
         let pieces: usize = bank.iter().map(|m| m.positions.len()).sum::<usize>() / 24;
@@ -2607,6 +2615,7 @@ mod tests {
             &[unmeasured.clone()],
             None,
             &|_, _| 2.0,
+            &|_, _| 0.0,
         ));
         assert!(lo.abs() < 1e-4, "a nominal wall has no foot to find");
         // A quay wall is flush with the quay whatever the ground beside it says:
@@ -2616,8 +2625,22 @@ mod tests {
             height_m: Some(4.25),
             ..unmeasured
         };
-        let (lo, hi) = span(&build_line_meshes_footed(&[quay], None, &|_, _| 0.0));
+        let (lo, hi) = span(&build_line_meshes_footed(
+            &[quay.clone()],
+            None,
+            &|_, _| 0.0,
+            &|_, _| 0.0,
+        ));
         assert!(hi.abs() < 1e-4 && (lo + 4.25).abs() < 1e-4, "{lo}..{hi}");
+        // …and topped by the walk it holds up, where that lies under the ground
+        // at its line; the foot still plays no part.
+        let (lo, hi) = span(&build_line_meshes_footed(
+            &[quay],
+            None,
+            &|_, _| 9.0,
+            &|_, _| 1.5,
+        ));
+        assert!((hi + 1.5).abs() < 1e-4 && (lo + 5.75).abs() < 1e-4, "{lo}..{hi}");
     }
 
     /// Below the floor there is no wall to draw. The 3D product drapes its objects

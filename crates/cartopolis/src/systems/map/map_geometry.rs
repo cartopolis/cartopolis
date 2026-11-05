@@ -1552,6 +1552,17 @@ fn spawn_geometry_task(
                 GroundJob::Later(rx) => rx.await.unwrap_or((None, 0)),
             };
             let ground = ground.map(|g| (g, origin));
+            // The lower quays the paving file measured (`Terrace`): the ground
+            // is laid at them and their walls are topped by them.
+            let terraces: Vec<Terrace> = match ground.as_ref() {
+                Some((g, _)) => {
+                    cartopolis_geo::surveyed_ground::surveyed_terraces(&paving, cell.0, cell.1, tile_m)
+                        .into_iter()
+                        .map(|(rings, nap)| Terrace::new(rings, nap - g.datum_m()))
+                        .collect()
+                }
+                None => Vec::new(),
+            };
             // Torn down while it fetched or waited (`CellStream::live`): stop
             // before the meshing, which is the expensive half.
             if !live.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2170,8 +2181,40 @@ fn spawn_geometry_task(
                                             }
                                             base - low
                                         };
+                                        // A retaining wall between a lower quay
+                                        // and the water holds up the walk, not
+                                        // the street the field puts at its line.
+                                        // The wall at the walk's landward edge
+                                        // has the street on its other side and
+                                        // keeps its top there.
+                                        let drop = |mid: [f32; 2], dir: [f32; 2]| -> f32 {
+                                            let Some((g, origin)) = ground.as_ref() else {
+                                                return 0.0;
+                                            };
+                                            if terraces.is_empty() {
+                                                return 0.0;
+                                            }
+                                            let side = |s: f32, d: f32| {
+                                                [mid[0] - dir[1] * s * d, mid[1] + dir[0] * s * d]
+                                            };
+                                            let wet = |p: [f32; 2]| {
+                                                g.water_surface_at(origin.x + p[0], origin.y + p[1])
+                                                    .is_some()
+                                            };
+                                            for s in [-1.0f32, 1.0] {
+                                                let Some(walk) = terrace_at(&terraces, side(s, 1.0))
+                                                else {
+                                                    continue;
+                                                };
+                                                if [0.5, 1.0, 2.5].into_iter().any(|d| wet(side(-s, d))) {
+                                                    return g.land_at(origin.x + mid[0], origin.y + mid[1])
+                                                        - walk;
+                                                }
+                                            }
+                                            0.0
+                                        };
                                         meshes.extend(furniture::build_line_meshes_footed(
-                                            &lines, mesh_bytes, &foot,
+                                            &lines, mesh_bytes, &foot, &drop,
                                         ));
                                         // A bench or a lamppost standing in the
                                         // open cut has the same problem a tree
@@ -2531,6 +2574,7 @@ fn spawn_geometry_task(
                     &mut floating,
                     &decks,
                     &landings,
+                    &terraces,
                 );
                 lap.mark("ground");
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
@@ -2709,6 +2753,7 @@ fn stand_cell_on_ground(
     floating: &mut Vec<SurfaceMesh>,
     decks: &[BridgeDeck],
     landings: &[Landing],
+    terraces: &[Terrace],
 ) -> bool {
     let mut placed = false;
     if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground) {
@@ -2739,6 +2784,7 @@ fn stand_cell_on_ground(
                 &tunnels,
                 levels,
                 landings,
+                terraces,
             );
         }
         // **No water climbs a bridge's abutment.** Where the register's water
@@ -2779,7 +2825,7 @@ fn stand_cell_on_ground(
                 }
             }
         }
-        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground) {
+        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground, terraces) {
             meshes.push(walls);
         }
         // **The cap holds after the refinement, not only before it.** The
@@ -5083,6 +5129,7 @@ fn stand_surface(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> (Surfac
                 tunnels,
                 None,
                 &[],
+                &[],
             );
         }
     }
@@ -5439,6 +5486,136 @@ impl cartopolis_geo::terrain_refine::GroundField for Landed<'_> {
     }
 }
 
+/// **A lower quay, stood at its own measured height.** The walk at the foot of a
+/// retaining wall along the water — Gorechtkade's, by the Linnaeusplein, lies
+/// 1.6 m under the street and 2–3 m wide (2026-11-05) — is narrower than the
+/// field's spacing, so the field cannot hold it: `land_at` levels it with the
+/// street, and a walk people sit on beside the water was drawn as pavement at the
+/// top of the wall. It is surveyed paving, so the ground sheets already cut along
+/// its outline; atlas measures its level (`formats::bgt::Terrace`), every flat
+/// triangle inside it is laid there, and the quay wall the register surveys
+/// along its landward edge closes the step. Tile-local rings, the level in the field's frame.
+pub(crate) struct Terrace {
+    rings: Vec<Vec<[f32; 2]>>,
+    min: [f32; 2],
+    max: [f32; 2],
+    level: f32,
+}
+
+impl Terrace {
+    pub(crate) fn new(rings: Vec<Vec<[f32; 2]>>, level: f32) -> Self {
+        let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in rings.iter().flatten() {
+            min = [min[0].min(p[0]), min[1].min(p[1])];
+            max = [max[0].max(p[0]), max[1].max(p[1])];
+        }
+        Self {
+            rings,
+            min,
+            max,
+            level,
+        }
+    }
+
+    /// Even-odd over every ring, so a hole is not part of the walk.
+    fn contains(&self, p: [f32; 2]) -> bool {
+        if p[0] < self.min[0] || p[0] > self.max[0] || p[1] < self.min[1] || p[1] > self.max[1] {
+            return false;
+        }
+        let mut inside = false;
+        for ring in &self.rings {
+            let mut j = ring.len() - 1;
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[j]);
+                if (a[1] > p[1]) != (b[1] > p[1])
+                    && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+                {
+                    inside = !inside;
+                }
+                j = i;
+            }
+        }
+        inside
+    }
+}
+
+/// The level of the lower quay a tile-local point is on, if it is on one.
+fn terrace_at(terraces: &[Terrace], p: [f32; 2]) -> Option<f32> {
+    terraces.iter().find(|t| t.contains(p)).map(|t| t.level)
+}
+
+/// Lay every triangle whose centroid is on a lower quay at the quay's level, and
+/// give it vertices of its own where it shares one with ground that is not: a
+/// shared vertex can have only one height, and either answer draws the wall's
+/// step as a ramp a triangle wide. Returns, per vertex, the level it was laid at
+/// (`None`: stand it on the field as usual). The ground sheets cut along each
+/// quay's outline, so no triangle straddles one.
+#[allow(clippy::too_many_arguments)]
+fn split_terraces(
+    terraces: &[Terrace],
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut [u32],
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
+) -> Vec<Option<f32>> {
+    let mut level: Vec<Option<f32>> = vec![None; positions.len()];
+    if terraces.is_empty() {
+        return level;
+    }
+    // Which vertices ground off any quay still uses.
+    let mut off = vec![false; positions.len()];
+    let mut on: Vec<Option<f32>> = Vec::with_capacity(indices.len() / 3);
+    for t in indices.chunks_exact(3) {
+        let c = t.iter().fold([0.0f32; 2], |c, &i| {
+            let p = positions[i as usize];
+            [c[0] + p[0] / 3.0, c[1] + p[2] / 3.0]
+        });
+        let l = terrace_at(terraces, c);
+        if l.is_none() {
+            for &i in t {
+                off[i as usize] = true;
+            }
+        }
+        on.push(l);
+    }
+    if on.iter().all(Option::is_none) {
+        return level;
+    }
+    // One copy per (vertex, level) a quay triangle needs.
+    let mut copies: HashMap<(u32, u32), u32> = HashMap::new();
+    for (t, l) in indices.chunks_exact_mut(3).zip(&on) {
+        let Some(l) = *l else { continue };
+        for i in t.iter_mut() {
+            let v = *i as usize;
+            if !off[v] && level[v].is_none_or(|have| have == l) {
+                level[v] = Some(l);
+                continue;
+            }
+            *i = *copies.entry((*i, l.to_bits())).or_insert_with(|| {
+                let n = positions.len() as u32;
+                positions.push(positions[v]);
+                if uvs.len() > v {
+                    uvs.push(uvs[v]);
+                }
+                if normals.len() > v {
+                    normals.push(normals[v]);
+                }
+                if colors.len() > v {
+                    colors.push(colors[v]);
+                }
+                if rungs.len() > v {
+                    rungs.push(rungs[v]);
+                }
+                level.push(Some(l));
+                n
+            });
+        }
+    }
+    level
+}
+
 /// Whether a tile-local point is on `deck` or within `reach` of its outline.
 fn near_deck(deck: &BridgeDeck, p: [f32; 2], reach: f32) -> bool {
     if p[0] < deck.min[0] - reach
@@ -5501,6 +5678,11 @@ const QUAY_WALL_FOOT_M: f32 = 0.5;
 /// How far outside a water edge the "is there more water here" probe looks.
 const QUAY_PROBE_M: f32 = 0.4;
 
+/// How far out of the water an outline edge looks for a lower quay to stop its
+/// wall at, metres: past the metre or so by which OSM's water and the BGT's walk
+/// disagree, short of the walk's own width.
+const TERRACE_PROBE_M: f32 = 1.0;
+
 /// The walls a cell's water stands against: a vertical face along every edge of
 /// its water where the street beside it is higher than the surface, from just
 /// under the water up to the street.
@@ -5523,6 +5705,7 @@ fn quay_walls<G: MeasuredGround>(
     tile_m: f32,
     origin: Vec2,
     terrain: &G,
+    terraces: &[Terrace],
 ) -> Option<SurfaceMesh> {
     if !terrain.has_banks() {
         return None;
@@ -5598,7 +5781,17 @@ fn quay_walls<G: MeasuredGround>(
             if index.contains(mid + out_n * QUAY_PROBE_M) {
                 continue;
             }
-            let street = |p: [f32; 3]| terrain.land_at(origin.x + p[0], origin.y + p[2]);
+            // Off a lower quay the wall reaches the walk, not the street behind
+            // it. Asked once per edge, at its middle and a little out of the
+            // water, since the map's water and the register's walk need not share
+            // an outline — and an end of the edge can sit exactly on the walk's.
+            let walk = terrace_at(terraces, [mid.x, mid.y]).or_else(|| {
+                let off = mid + out_n * TERRACE_PROBE_M;
+                terrace_at(terraces, [off.x, off.y])
+            });
+            let street = |p: [f32; 3]| {
+                walk.unwrap_or_else(|| terrain.land_at(origin.x + p[0], origin.y + p[2]))
+            };
             let (ta, tb) = (street(pa), street(pb));
             let (ha, hb) = (ta - pa[1], tb - pb[1]);
             if ha.max(hb) < QUAY_WALL_MIN_M || ha.min(hb) > QUAY_WALL_MAX_M {
@@ -5742,6 +5935,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     tunnels: &crate::systems::tunnels::Tunnels,
     levels: Option<&cartopolis_geo::road_levels::LevelMap>,
     landings: &[Landing],
+    terraces: &[Terrace],
 ) {
     // Volumetric things keep their own normals and are not refined against the
     // field: a tree's normals describe the tree, and a tunnel's walls are vertical.
@@ -5860,9 +6054,20 @@ fn stand_on_terrain<G: MeasuredGround>(
         );
     }
     let t1 = bevy::platform::time::Instant::now();
+    // The lower quays, at their own level, after the refinement: it mints
+    // midpoints by index pair, and these vertices are split exactly so that
+    // the two sides of a quay's edge no longer share one.
+    let laid = if volumetric {
+        Vec::new()
+    } else {
+        split_terraces(terraces, positions, indices, uvs, normals, colors, rungs)
+    };
     {
-        for p in positions.iter_mut() {
-            p[1] += field.at(origin.x + p[0], origin.y + p[2]);
+        for (k, p) in positions.iter_mut().enumerate() {
+            p[1] += match laid.get(k).copied().flatten() {
+                Some(level) => level,
+                None => field.at(origin.x + p[0], origin.y + p[2]),
+            };
         }
     }
     for (i, p) in crate::systems::ground_probe::probes().iter().enumerate() {
@@ -5893,7 +6098,12 @@ fn stand_on_terrain<G: MeasuredGround>(
         // the trench's own slope would light a flat lid as though it still dipped.
         *normals = positions
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(k, p)| {
+                // A lower quay is laid level.
+                if laid.get(k).copied().flatten().is_some() {
+                    return [0.0, 1.0, 0.0];
+                }
                 let (x, z) = (origin.x + p[0], origin.y + p[2]);
                 let w = tunnels.fill_weight(Vec2::new(x, z), TUNNEL_DATUM_M);
                 let n = terrain.land_normal_at(x, z);
@@ -6288,7 +6498,7 @@ mod tests {
         // The tile runs z 0..90 (inside the ±100 m field), so the canal's two
         // short edges are on its border.
         let meshes = vec![water_rect(-10.0, 10.0, 0.0, 90.0, -3.0)];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground).expect("walls");
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[]).expect("walls");
         assert_eq!(walls.group, SurfaceGroup::QuayWall);
         assert_eq!(walls.positions.len(), 8, "two banks, one quad each");
         for (p, n) in walls.positions.iter().zip(&walls.normals) {
@@ -6316,14 +6526,69 @@ mod tests {
             water_rect(-10.0, 0.0, 0.0, 90.0, -3.0),
             water_rect(0.0, 10.0, 0.0, 90.0, -3.0),
         ];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground).expect("walls");
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[]).expect("walls");
         assert!(
             walls.positions.iter().all(|p| p[0].abs() > 9.99),
             "a wall down the middle of the canal"
         );
         // The same outline with its surface at the street: nothing to stand.
         let level = vec![water_rect(-10.0, 10.0, 0.0, 90.0, 2.0)];
-        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground).is_none());
+        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground, &[]).is_none());
+    }
+
+    /// A bank with a lower quay along it is walled up to the walk, not to the
+    /// street behind it — and a walk a hand's breadth above the water is no wall
+    /// at all. The walk starts half a metre off the map's water, as OSM's and
+    /// the register's outlines do.
+    #[test]
+    fn a_lower_quay_stops_the_canal_wall_at_the_walk() {
+        let ground = canal_ground();
+        let walk = Terrace::new(
+            vec![vec![[10.5, 0.0], [13.0, 0.0], [13.0, 90.0], [10.5, 90.0]]],
+            -2.8,
+        );
+        let meshes = vec![water_rect(-10.0, 10.0, 0.0, 90.0, -3.0)];
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[walk]).expect("walls");
+        assert_eq!(walls.positions.len(), 4, "only the far bank keeps its wall");
+        assert!(walls.positions.iter().all(|p| p[0] < -9.99));
+    }
+
+    /// Ground triangles inside a lower quay are laid at its level and the rest
+    /// stand on the field, with the vertices on the quay's edge split so the
+    /// step is a step, not a ramp.
+    #[test]
+    fn a_lower_quay_is_laid_level_with_its_own_edge() {
+        // Two quads sharing the edge x = 5: street to the west, walk to the east.
+        let mut positions = vec![
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [5.0, 0.0, 5.0],
+            [0.0, 0.0, 5.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 0.0, 5.0],
+        ];
+        let mut indices = vec![0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2];
+        let (mut uvs, mut normals, mut colors, mut rungs) =
+            (vec![[0.0; 2]; 6], vec![[0.0, 1.0, 0.0]; 6], Vec::new(), Vec::new());
+        let walk = Terrace::new(vec![vec![[5.0, 0.0], [10.0, 0.0], [10.0, 5.0], [5.0, 5.0]]], -1.6);
+        let laid = split_terraces(
+            &[walk],
+            &mut positions,
+            &mut indices,
+            &mut uvs,
+            &mut normals,
+            &mut colors,
+            &mut rungs,
+        );
+        assert_eq!(positions.len(), 8, "the two shared vertices, once more");
+        assert_eq!(uvs.len(), 8);
+        assert_eq!(laid.len(), 8);
+        for t in indices.chunks_exact(3) {
+            let east = t.iter().map(|&i| positions[i as usize][0]).sum::<f32>() / 3.0 > 5.0;
+            for &i in t {
+                assert_eq!(laid[i as usize], east.then_some(-1.6), "vertex {i}");
+            }
+        }
     }
 
     /// A square deck, `span` metres on a side, with its south-west corner at the
