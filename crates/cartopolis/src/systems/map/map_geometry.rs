@@ -1730,11 +1730,26 @@ fn spawn_geometry_task(
                                             .filter(|(di, _)| *di as usize == i)
                                             .map(|(_, m)| m)
                                             .collect();
+                                        // A path the survey draws has no
+                                        // carriageway on the deck, so each end
+                                        // of its stretch there stands in as an
+                                        // approach's abutment: one point, on the
+                                        // edge it leaves by.
                                         let runs: Vec<&[[f32; 2]]> = roads
                                             .approaches
                                             .iter()
                                             .filter(|a| a.deck as usize == i)
                                             .map(|a| a.points.as_slice())
+                                            .chain(
+                                                roads
+                                                    .paths_on_deck
+                                                    .iter()
+                                                    .filter(|p| p.deck as usize == i)
+                                                    .flat_map(|p| {
+                                                        let n = p.points.len();
+                                                        [&p.points[..1], &p.points[n - 1..]]
+                                                    }),
+                                            )
                                             .collect();
                                         if ways.is_empty() && runs.is_empty() {
                                             ways.clone_from(&ground_ways);

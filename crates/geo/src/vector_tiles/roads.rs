@@ -114,6 +114,9 @@ pub fn tessellate_roads_surveyed(
         (0..decks.len()).map(|_| Vec::new()).collect();
     // The ground stretches that run up to a deck — see [`Approach`].
     let mut approaches: Vec<Approach> = Vec::new();
+    // …and the paths on a deck that the survey draws — see
+    // [`RoadTessellation::paths_on_deck`].
+    let mut paths_on_deck: Vec<Approach> = Vec::new();
     // Where a bridge-flagged street ends *inside* a deck's outline, metres: the
     // street that carries on from there is still on the structure
     // ([`carried_onto_deck`]).
@@ -153,10 +156,45 @@ pub fn tessellate_roads_surveyed(
         // pedestrian street is a `RoadClass::Minor`, so a class-level rule left it
         // paving squares in tarmac. Everything else on the vehicle network stays
         // with OSM, marked and cased, everywhere.
+        let bridge = flag_of(feature, "bridge");
         if cover.supersedes(kind_of(feature).unwrap_or("")) {
+            if !decks.is_empty() {
+                let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
+                    Geometry::LineString(ls) => vec![ls],
+                    Geometry::MultiLineString(mls) => mls.iter().collect(),
+                    _ => Vec::new(),
+                };
+                paths_on_deck.extend(
+                    lines
+                        .into_iter()
+                        .flat_map(|ls| {
+                            let pts: Vec<[f32; 2]> =
+                                ls.0.iter()
+                                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                                    .map(|c| [c.x, c.y])
+                                    .collect();
+                            clip_polyline(&pts, 0.0, extent)
+                        })
+                        .flat_map(|run| {
+                            let metres: Vec<[f32; 2]> =
+                                run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+                            if bridge {
+                                split_by_deck(&metres, decks)
+                            } else {
+                                carried_onto_deck(metres, decks, &bridge_ends)
+                            }
+                        })
+                        .filter_map(|(deck, points)| {
+                            #[allow(clippy::cast_possible_truncation)]
+                            deck.filter(|_| points.len() >= 2).map(|d| Approach {
+                                deck: d as u32,
+                                points,
+                            })
+                        }),
+                );
+            }
             continue;
         }
-        let bridge = flag_of(feature, "bridge");
         // Traffic runs against the way's own direction, so the across-road axis
         // has to be mirrored before the (asymmetric) carriageway texture lands on
         // it. See the flip at the ribbon below.
@@ -575,6 +613,7 @@ pub fn tessellate_roads_surveyed(
             .collect(),
         on_deck,
         approaches: extend_approaches(tile, tile_m, decks, approaches),
+        paths_on_deck,
     })
 }
 
@@ -812,6 +851,12 @@ pub struct RoadTessellation {
     pub on_deck: Vec<(u32, SurfaceMesh)>,
     /// The ground stretches that run up to a deck, one per abutment.
     pub approaches: Vec<Approach>,
+    /// The stretches on a deck of the paths the survey draws instead
+    /// ([`SurveyedCover::supersedes`]): centre lines, no ribbon. Nothing is laid
+    /// for them, but where they leave the deck is still where its railing must
+    /// open — the H.N. Werkmanbrug's cycleway was one, and its railing ran
+    /// across the station end (2026-11-05).
+    pub paths_on_deck: Vec<Approach>,
 }
 
 /// A road that climbs onto a structure: the ground stretch of a bridge-flagged

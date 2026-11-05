@@ -566,6 +566,13 @@ const RAILING_MIN_M: f32 = 2.0;
 const RAILING_END_REACH_M: f32 = 8.0;
 const RAILING_END_PARALLEL: f32 = 0.9;
 
+/// How far an edge beside an end may stand in front of or behind that end's
+/// line, metres. A pavement set back from the carriageway steps a metre or so;
+/// the H.N. Werkmanbrug's side platforms face the same way as its end from
+/// 7.9 m along the deck, and opening them left a gap over the water on each
+/// side (2026-11-05).
+const RAILING_END_STEP_M: f32 = 3.0;
+
 /// **Where a deck's railings run**: the stretches of its outline that the
 /// carriageway does not cross, tile-local.
 ///
@@ -1014,7 +1021,10 @@ fn edge_kinds(
             }
             let cos =
                 ((b[0] - a[0]) * (d[0] - c[0]) + (b[1] - a[1]) * (d[1] - c[1])).abs() / (len * lj);
+            let step =
+                ((mid[0] - c[0]) * (d[1] - c[1]) - (mid[1] - c[1]) * (d[0] - c[0])).abs() / lj;
             cos >= RAILING_END_PARALLEL
+                && step <= RAILING_END_STEP_M
                 && segment_distance(mid, c, d)
                     .min(segment_distance(a, c, d))
                     .min(segment_distance(b, c, d))
@@ -1469,6 +1479,47 @@ mod tests {
             assert!(
                 r.iter()
                     .all(|p| (p[1] - 100.0).abs() < 1e-3 || (p[1] - 122.0).abs() < 1e-3),
+                "a railing closes an end: {r:?}"
+            );
+        }
+    }
+
+    /// **A footbridge whose path the survey draws is open where the path leaves
+    /// it, and railed past its side platforms.** The H.N. Werkmanbrug's shape:
+    /// a 4.5 × 37 m deck with a platform stepping out 1.9 m from each side, 8 m
+    /// in from the south end. No carriageway is laid on it; the ends of the
+    /// path's stretch over it stand in for the approaches (2026-11-05).
+    #[test]
+    fn a_surveyed_path_opens_its_ends_and_platforms_stay_railed() {
+        let deck = rect_deck(&[
+            [100.0, 100.0],
+            [104.5, 100.0],
+            [104.5, 107.9],
+            [106.4, 107.9],
+            [106.4, 115.9],
+            [104.5, 115.9],
+            [104.5, 137.0],
+            [100.0, 137.0],
+            [100.0, 115.9],
+            [98.1, 115.9],
+            [98.1, 107.9],
+            [100.0, 107.9],
+        ]);
+        let path = [[102.2, 100.0], [102.2, 136.9]];
+        let ends: [&[[f32; 2]]; 2] = [&path[..1], &path[1..]];
+        let runs = railing_runs(&deck, &[], &ends, 1465.0);
+        // One unbroken run down each side, end to end — a platform face opened
+        // as part of the end splits its side in two — and neither end crossed.
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        for r in &runs {
+            let (lo, hi) = r.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p[1]), hi.max(p[1]))
+            });
+            assert!(lo <= 100.0 + 1e-3 && hi >= 137.0 - 1e-3, "{r:?}");
+            assert!(
+                r.windows(2).all(|w| !((w[0][1] - 100.0).abs() < 1e-3
+                    && (w[1][1] - 100.0).abs() < 1e-3)
+                    && !((w[0][1] - 137.0).abs() < 1e-3 && (w[1][1] - 137.0).abs() < 1e-3)),
                 "a railing closes an end: {r:?}"
             );
         }
