@@ -131,6 +131,11 @@ pub const FURNITURE_METAL: u32 = 0x9A_98_93;
 pub const FURNITURE_ROOF: u32 = 0xC6_C1_B6;
 /// Masonry: a fountain rim, an artwork plinth.
 pub const FURNITURE_STONE: u32 = 0xC0_BA_AE;
+/// A surveyed retaining wall and its parapet: Dutch quay walls are laid in red
+/// brick, which the register does not record and the photographs of every one
+/// checked show (Gorechtkade, 2026-11-05) — the grey of [`FURNITURE_STONE`]
+/// read as concrete.
+pub const QUAY_BRICK: u32 = 0x9A_52_40;
 /// Glazing: a car's windows. Dark enough to read as a cabin against any body
 /// colour, and grey rather than blue — a tinted windscreen on a pale map is
 /// the same mistake a saturated bench is.

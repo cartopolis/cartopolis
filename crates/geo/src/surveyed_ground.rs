@@ -75,6 +75,9 @@ pub struct SurveyedPaving {
     /// level, metres above NAP, the ground inside it is laid at, and which edges
     /// of its outer ring face the water.
     pub terraces: Vec<(Vec<Vec<(f64, f64)>>, f32, Vec<bool>)>,
+    /// The steps up from them (`formats::bgt::Ramp`): a surface's rings, and
+    /// the heights of its foot and top, metres above NAP.
+    pub ramps: Vec<(Vec<Vec<(f64, f64)>>, f32, f32)>,
 }
 
 /// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
@@ -126,7 +129,19 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
             Some((kind, material, rings))
         })
         .collect();
-    Ok(SurveyedPaving { areas, terraces })
+    let ramps = wire
+        .ramps
+        .into_iter()
+        .filter(|r| {
+            r.0.first().is_some_and(|ring| ring.len() >= 3) && r.1.is_finite() && r.2.is_finite()
+        })
+        .map(|r| (r.0, r.1 as f32, r.2 as f32))
+        .collect();
+    Ok(SurveyedPaving {
+        areas,
+        terraces,
+        ramps,
+    })
 }
 
 /// This cell's paving in the local metre frame, ready to triangulate.
@@ -229,6 +244,34 @@ pub fn surveyed_terraces(
             let mut local = vec![to_local(rings.first()?)?];
             local.extend(rings[1..].iter().filter_map(to_local));
             Some((local, *level, seaward.clone()))
+        })
+        .collect()
+}
+
+/// This cell's steps up from its lower quays in the local metre frame, with the
+/// heights of each one's foot and top in metres above NAP — on the rule
+/// [`surveyed_paving`] keeps a surface by.
+#[must_use]
+pub fn surveyed_ramps(
+    paving: &SurveyedPaving,
+    cx: i64,
+    cy: i64,
+    tile_m: f32,
+) -> Vec<(Vec<Vec<[f32; 2]>>, f32, f32)> {
+    let to_local = |pts: &Vec<(f64, f64)>| -> Option<Vec<[f32; 2]>> {
+        let out: Vec<[f32; 2]> = pts
+            .iter()
+            .filter_map(|&(lat, lng)| to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| [x, z]))
+            .collect();
+        (out.len() == pts.len() && out.len() >= 3).then_some(out)
+    };
+    paving
+        .ramps
+        .iter()
+        .filter_map(|(rings, low, high)| {
+            let mut local = vec![to_local(rings.first()?)?];
+            local.extend(rings[1..].iter().filter_map(to_local));
+            Some((local, *low, *high))
         })
         .collect()
 }

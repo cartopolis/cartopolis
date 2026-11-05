@@ -1,6 +1,6 @@
 ---
 topic: quay-walls
-triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, parapet, TERRACE_APRON_M, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
+triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, parapet, TERRACE_APRON_M, wet_the_aprons, Ramp, ramps, QUAY_BRICK, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
 updated: 2026-11-05
 ---
 
@@ -93,14 +93,29 @@ along the walk's outline because it is surveyed paving. Two walls follow from it
   `drop`); the one under the street keeps its top at the street.
 
 **The map's water stops short of the register's walk.** OSM's water polygon
-ends one to three metres off the walk's water edge, and the strip between was
+ends one to four metres off the walk's water edge, and the strip between was
 ground at the street's level: a ledge along the water with a canal wall in
-front of it, seen from the water as a brown face up to the street. So atlas
-marks which of a walk's edges face the water (no AHN ground 1 m out, or only a
-margin no higher than the walk with none 2.5 m out), and the client lays the
-ground within `TERRACE_APRON_M` (3 m) of those edges at the walk too. Not on
-the walk's level alone: the landing at the walk's end, by the steps, is as low,
-and lowering off it sank the street beside the steps into a pit.
+front of it, seen from the water as a brown face up to the street. Laid at the
+walk's level it was still ground — a grey quay where the aerial shows the canal
+reaching the walk ("I don't see the water"). So atlas marks which of a walk's
+edges face the water (no AHN ground 1 m out, or only a margin no higher than
+the walk with none 2.5 m out), and the client moves every flat triangle within
+`TERRACE_APRON_M` (4 m) of such an edge, and nearest to it, into a water mesh
+of its own (`wet_the_aprons`). Two rules here were learnt the hard way: not on
+the walk's level alone, or the landing at the walk's end by the steps counts as
+water and sank the street beside the steps into a pit; and the *nearest* edge,
+not any in reach, because the walk is narrower than the reach and the street
+behind the wall stood up as a slope of "water" against it.
+
+**The steps are a slope.** The flights at either end are surveyed paving
+(`voetpad op trap`) and were drawn flat at the street's level. Atlas measures a
+flight that adjoins a walk (10th and 90th percentile of AHN inside it: −0.67 →
++0.78 and −0.50 → +0.82 m NAP here) and ships it as `ramps`; the client lays it
+from its foot at the walk's outline to its top at the flight's far end
+(`Ramp`). A slope, not treads — the register has no risers.
+
+**The walls are brick** (`palette::QUAY_BRICK`): the register gives no material,
+and grey read as concrete beside photographs of a red brick wall.
 
 **The wall stands above the street.** AHN's surface model puts its top at +1.2
 to +1.9 m NAP over a street at +0.8 — on the walk, above eye height, which is

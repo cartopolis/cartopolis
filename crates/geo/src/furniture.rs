@@ -888,6 +888,8 @@ pub enum Tone {
     Roof,
     /// Masonry: a fountain rim, an artwork plinth.
     Stone,
+    /// Red brick: a quay wall.
+    Brick,
     /// Standing water in a basin. The one saturated tone here, and it is
     /// [`palette::WATER`] — the same colour the canals are, so a fountain is
     /// recognisably the same substance.
@@ -913,6 +915,7 @@ impl Tone {
             Self::Metal => palette::FURNITURE_METAL,
             Self::Roof => palette::FURNITURE_ROOF,
             Self::Stone => palette::FURNITURE_STONE,
+            Self::Brick => palette::QUAY_BRICK,
             Self::Water => palette::WATER,
             Self::Glass => palette::VEHICLE_GLASS,
             Self::Tyre => palette::VEHICLE_TYRE,
@@ -1602,9 +1605,9 @@ impl LineKind {
             Self::Wall => (0.9, 0.09, Tone::Stone),
             Self::Hedge => (1.1, 0.35, Tone::Foliage),
             // Only ever drawn at a measured height (atlas gates the type on one).
-            Self::Quay => (0.9, 0.12, Tone::Stone),
+            Self::Quay => (0.9, 0.12, Tone::Brick),
             // The wall it tops, so the two read as one.
-            Self::Parapet => (0.9, 0.12, Tone::Stone),
+            Self::Parapet => (0.9, 0.12, Tone::Brick),
             // Standing 10 cm proud of the carriageway, the top face exactly over
             // the flat kerb band `paving_edges` cuts out of the pavement. The
             // pavement itself stays at grade: lifting it would bury the verge's
