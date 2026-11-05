@@ -64,7 +64,7 @@ const SETTINGS: &[(&str, &str)] = &[
         "sky_lighting",
         "light from the sky filling shadowed faces: true, false or null",
     ),
-    ("sky", "which sky to draw: auto, full or dome"),
+    ("sky", "which sky to draw: auto, full or simple"),
     (
         "effects_volume",
         "level of footsteps, wind and cues, 0-2 (1 as authored)",
@@ -413,7 +413,13 @@ fn app_log(args: &AppLogArgs) -> AgentReply {
             body.join("\n")
         )
     };
-    AgentReply::ok(text, json!({"last": last, "count": body.len()}))
+    // The lines ride in the data too: a host that shows a tool's structured
+    // data in place of its text (the Midas relay does) otherwise hands an agent
+    // a count and nothing to read.
+    AgentReply::ok(
+        text,
+        json!({"last": last, "count": body.len(), "lines": body}),
+    )
 }
 
 /// The lines a call asked for: at the level or worse, containing the text,

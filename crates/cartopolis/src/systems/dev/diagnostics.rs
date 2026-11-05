@@ -99,6 +99,10 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     /// there is no sim to be waiting for, and a row of zeroes must not read as a
     /// healthy connection.
     online: Option<Res<'w, crate::resources::OnlineSession>>,
+    /// The person's graphics settings, which override the tier line's defaults:
+    /// without them a report from a phone set to half scale and no shadows said
+    /// "render scale 1.00, shadows true".
+    prefs: Res<'w, crate::resources::AppPrefs>,
     store: Res<'w, crate::systems::user_store::UserStore>,
     sky: Option<Res<'w, crate::systems::sky_dome::SkyMode>>,
     adapter: Option<Res<'w, bevy::render::renderer::RenderAdapterInfo>>,
@@ -185,6 +189,21 @@ pub(crate) fn compose(s: &DiagnosticsSources) -> String {
     out.push_str(&format!(
         "quality: {:?} (render scale {:.2}, msaa {:?}, shadows {})\n",
         budget.tier, budget.render_scale, budget.msaa, budget.shadows,
+    ));
+    let p = &*s.prefs;
+    out.push_str(&format!(
+        "settings: render scale {}, frame rate {}, shadows {}, bloom {}, light shafts {}, sky {:?}\n",
+        p.render_scale
+            .map_or("auto".to_string(), |v| format!("{v:.2}")),
+        match p.frame_rate {
+            None => format!("auto ({:.0})", p.target_fps()),
+            Some(0) => "no cap".to_string(),
+            Some(fps) => fps.to_string(),
+        },
+        p.shadows_on(),
+        p.bloom_on(),
+        p.light_shafts_on(),
+        p.sky,
     ));
     // What the tier *asked for* is above; what the device *answered* is here, and
     // the two are separate lines because confusing them is what this whole seam
