@@ -131,6 +131,14 @@ const GLASS_ROUGHNESS: f32 = 0.14;
 /// incidence). Glass sits nearer 8%.
 const GLASS_REFLECTANCE: f32 = 0.72;
 
+/// How much of the sky a pane's reflection still gets when it is aimed level
+/// across a street, at the facades opposite, and the reflection's elevation
+/// (its direction's y) over which that opens back to the full sky. A street of
+/// four-storey houses, seen from across it, hides the sky up to about 30°.
+const GLASS_STREET_OPEN: f32 = 0.3;
+const GLASS_SKY_FROM: f32 = 0.05;
+const GLASS_SKY_TO: f32 = 0.55;
+
 /// Peak-to-peak spread of the wall's own roughness between lattice cells, around
 /// whatever the material asks for (0.95 on both building lanes).
 ///
@@ -685,6 +693,29 @@ fn door_surface(pbr_input: ptr<function, PbrInput>, uv: vec2<f32>) {
         vec3<f32>(GLASS_REFLECTANCE),
         glass,
     );
+    let street = street_reflection((*pbr_input).V, (*pbr_input).N, glass);
+    (*pbr_input).specular_occlusion *= street;
+    (*pbr_input).diffuse_occlusion *= street;
+}
+
+/// What a pane mirrors from the street is the other side of the street. The
+/// environment map holds only sky, so a reflection aimed across the street
+/// fetched the bright horizon haze, and every ground-floor window in the city
+/// read as one milky grey sheet. The facades opposite are far darker than that
+/// haze, so a ray aimed below the rooftops is occluded, opening back to the
+/// full sky as it climbs. The factor, by `glass`.
+///
+/// For `diffuse_occlusion` as well as `specular_occlusion`, because the veil
+/// was mostly not the environment map: bevy's `AmbientLight` carries its own
+/// specular lobe (`EnvBRDFApprox`), occluded only by the diffuse term, and at a
+/// grazing view it laid ~0.05 of linear grey over a pane that was black
+/// inside (mac-2, 2026-11-06, interior forced to 0 and the specular occlusion
+/// to 0). The room behind the glass dims with it, which is right too: it is
+/// lit by the same street.
+fn street_reflection(v: vec3<f32>, n: vec3<f32>, glass: f32) -> f32 {
+    let mirrored = reflect(-v, n);
+    let open_sky = smoothstep(GLASS_SKY_FROM, GLASS_SKY_TO, mirrored.y);
+    return mix(1.0, mix(GLASS_STREET_OPEN, 1.0, open_sky), glass);
 }
 
 // ─── Windows, up close ───────────────────────────────────────────────────────
@@ -1533,6 +1564,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             vec3<f32>(GLASS_REFLECTANCE),
             glass,
         );
+        let street = street_reflection(pbr_input.V, pbr_input.N, glass);
+        pbr_input.specular_occlusion *= street;
+        pbr_input.diffuse_occlusion *= street;
     } else if n.y > 0.0 && !door_part {
         var tone = 1.0;
         if n.y < FLAT_ROOF_Y {
