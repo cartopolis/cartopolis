@@ -781,7 +781,33 @@ pub struct Sessions {
     /// the rest (`signin`): what stands in for re-typing the password when an
     /// account has none. In memory only; a restart asks once more.
     reauthed: Mutex<HashMap<Uuid, std::time::Instant>>,
+    /// Wrong passwords per username, over the HTTP login and the wire's hello
+    /// alike ([`Self::password_login`]).
+    failed_logins: crate::registration::Throttle,
 }
+
+/// Wrong passwords a username may take in [`FAILED_LOGIN_WINDOW`] before its
+/// password sign-in is refused for the rest of the window. Per name, not per
+/// caller: guesses spread over many addresses still count against the one
+/// account they are aimed at. A saved session and a sign-in through another
+/// account are not affected, so the person whose name is being guessed is
+/// shut out of typing their password for at most the window.
+const FAILED_LOGIN_LIMIT: u32 = 10;
+const FAILED_LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// Why a password sign-in did not sign in.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PasswordRefusal {
+    /// Unknown name, disabled account or wrong password: one answer for all.
+    Wrong,
+    /// Too many wrong passwords for this name lately.
+    TooMany,
+}
+
+/// Something to verify against when the username is unknown, so that answer
+/// takes as long as a wrong password does and the timing names no accounts.
+static DUMMY_PHC: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| hash_password("not anybody's password").unwrap_or_default());
 
 impl Default for Sessions {
     fn default() -> Self {
@@ -802,6 +828,10 @@ impl Sessions {
             ttl,
             conn: None,
             reauthed: Mutex::new(HashMap::new()),
+            failed_logins: crate::registration::Throttle::new(
+                FAILED_LOGIN_LIMIT,
+                FAILED_LOGIN_WINDOW,
+            ),
         }
     }
 
@@ -838,6 +868,38 @@ impl Sessions {
             ttl,
             conn: Some(conn),
             reauthed: Mutex::new(HashMap::new()),
+            failed_logins: crate::registration::Throttle::new(
+                FAILED_LOGIN_LIMIT,
+                FAILED_LOGIN_WINDOW,
+            ),
+        }
+    }
+
+    /// Check a password against what [`lookup_credential`] found for
+    /// `username`, counting a wrong one against the name. The HTTP login and
+    /// the wire's hello both come through here, so neither is the way to guess
+    /// round the limit. An unknown name is verified against a stand-in hash,
+    /// so it takes as long to refuse as a wrong password.
+    pub async fn password_login(
+        &self,
+        username: &str,
+        password: String,
+        stored: Option<StoredCredential>,
+    ) -> Result<StoredCredential, PasswordRefusal> {
+        let key = username.trim().to_lowercase();
+        if self.failed_logins.spent(&key) {
+            return Err(PasswordRefusal::TooMany);
+        }
+        let phc = stored
+            .as_ref()
+            .map_or_else(|| DUMMY_PHC.clone(), |s| s.phc.clone());
+        let ok = verify_password_bounded(password, phc).await;
+        match stored {
+            Some(stored) if ok => Ok(stored),
+            _ => {
+                let _ = self.failed_logins.allow(&key);
+                Err(PasswordRefusal::Wrong)
+            }
         }
     }
 
@@ -1362,6 +1424,45 @@ mod tests {
     /// A disabled admin is not an admin. The API reads this on every request, so
     /// disabling an account is also how you take its admin rights away *now*
     /// rather than when its token expires.
+    /// Ten wrong passwords shut a name's password sign-in for the window —
+    /// the right one included, or the limit would only slow a guesser down
+    /// until they hit it — and an unknown name counts the same as a wrong
+    /// password.
+    #[tokio::test]
+    async fn wrong_passwords_shut_the_name_for_a_while() {
+        let conn = mem_db();
+        ensure_admin_account(&conn, "root", "hunter22").unwrap();
+        let sessions = Sessions::new();
+        let stored = || lookup_credential(&conn, "root").unwrap();
+        assert!(sessions
+            .password_login("root", "hunter22".into(), stored())
+            .await
+            .is_ok());
+        for _ in 0..FAILED_LOGIN_LIMIT {
+            assert_eq!(
+                sessions
+                    .password_login("Root", "guess".into(), stored())
+                    .await
+                    .unwrap_err(),
+                PasswordRefusal::Wrong
+            );
+        }
+        assert_eq!(
+            sessions
+                .password_login("root", "hunter22".into(), stored())
+                .await
+                .unwrap_err(),
+            PasswordRefusal::TooMany
+        );
+        assert_eq!(
+            sessions
+                .password_login("nobody", "x".into(), None)
+                .await
+                .unwrap_err(),
+            PasswordRefusal::Wrong
+        );
+    }
+
     #[test]
     fn a_disabled_admin_cannot_administer() {
         let conn = mem_db();

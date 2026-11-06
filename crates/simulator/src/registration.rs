@@ -437,6 +437,21 @@ impl Throttle {
         }
     }
 
+    /// Whether a key has used up its window, without counting an attempt: for
+    /// a limit on *failures*, checked before trying and counted with
+    /// [`Self::allow`] only when the try fails.
+    #[must_use]
+    pub fn spent(&self, key: &str) -> bool {
+        let now = SystemTime::now();
+        self.hits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .is_some_and(|(started, n)| {
+                now.duration_since(*started).unwrap_or_default() < self.window && *n >= self.limit
+            })
+    }
+
     /// Count one attempt against a key. `false` means over the limit.
     pub fn allow(&self, key: &str) -> bool {
         let now = SystemTime::now();

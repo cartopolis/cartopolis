@@ -830,10 +830,20 @@ pub(crate) async fn check_password_login(
             "wrong username or password".into(),
         )
     };
-    let stored = stored.ok_or_else(unauthorized)?;
-    if !auth::verify_password_bounded(body.password.clone(), stored.phc).await {
-        return Err(unauthorized());
-    }
+    let stored = match state
+        .sessions
+        .password_login(&body.username, body.password.clone(), stored)
+        .await
+    {
+        Ok(stored) => stored,
+        Err(auth::PasswordRefusal::Wrong) => return Err(unauthorized()),
+        Err(auth::PasswordRefusal::TooMany) => {
+            return Err(ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many wrong passwords for that name — wait a quarter of an hour".into(),
+            ))
+        }
+    };
     // The password is proved before the account's state is mentioned, for the
     // reason `net::authenticate` documents.
     if stored.email_pending {

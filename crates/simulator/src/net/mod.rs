@@ -203,10 +203,13 @@ async fn authenticate(
                 .await
                 .map_err(|_| AuthRefusal::BadCredential)?
                 .map_err(|_| AuthRefusal::BadCredential)?;
-            let stored = stored.ok_or(AuthRefusal::BadCredential)?;
-            if !crate::auth::verify_password_bounded(password.clone(), stored.phc).await {
-                return Err(AuthRefusal::BadCredential);
-            }
+            let stored = sessions
+                .password_login(username, password.clone(), stored)
+                .await
+                .map_err(|e| match e {
+                    crate::auth::PasswordRefusal::Wrong => AuthRefusal::BadCredential,
+                    crate::auth::PasswordRefusal::TooMany => AuthRefusal::TooManyTries,
+                })?;
             // Only now, with the password proved, may the account's state be
             // reported: telling an unauthenticated caller "confirm your email"
             // would answer "does this username have a pending registration?" for
@@ -256,12 +259,17 @@ enum AuthRefusal {
     /// time is up.
     GuestLinkEnded,
     GuestLinkFull,
+    /// Too many wrong passwords for this name lately (`Sessions::password_login`).
+    TooManyTries,
 }
 
 impl AuthRefusal {
     fn message(&self) -> &'static str {
         match self {
             Self::BadCredential => "authentication failed",
+            Self::TooManyTries => {
+                "too many wrong passwords for that name — wait a quarter of an hour"
+            }
             Self::GuestLinkEnded => "this meeting link has ended — ask for a new one",
             Self::GuestLinkFull => "this meeting link has let in all the guests it may",
             Self::EmailUnconfirmed => {
