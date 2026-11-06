@@ -878,8 +878,8 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new(format!(
-            "We opened {}'s sign-in in your browser. Come back here when it's done. \
-             The browser shows this code when it is finishing this sign-in:",
+            "We opened {}'s sign-in in your browser. When it asks for the app's code, \
+             type this one, then come back here:",
             p.provider.name
         ))
         .size(theme::SIZE_SUB)

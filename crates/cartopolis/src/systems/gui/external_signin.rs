@@ -9,8 +9,9 @@
 //! an Android app link does not reach an app that is already running
 //! (`platform::android::launch_url`), and this one always is.
 //!
-//! The code is on the card and on the browser's last page, so the person can
-//! see the browser is finishing *this* sign-in.
+//! The code is on the card, and the person types it on the browser's last
+//! page: only that hands the app the session, because whoever made a code
+//! also made the link carrying it (`signin::http::ticket_app`).
 
 use bevy::tasks::{IoTaskPool, Task};
 
