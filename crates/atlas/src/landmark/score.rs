@@ -37,8 +37,9 @@ pub struct Score {
     pub by_height: Vec<(f64, f64, f64)>,
 }
 
-/// Model tops over a grid, by drawing every non-vertical triangle from above.
-fn tops(pieces: &[Piece], min: [f64; 2], nx: usize, ny: usize) -> Vec<f64> {
+/// Model tops over a grid of `step`-metre cells from `min`, by drawing every
+/// non-vertical triangle from above.
+pub(crate) fn tops(pieces: &[Piece], min: [f64; 2], nx: usize, ny: usize, step: f64) -> Vec<f64> {
     let mut top = vec![f64::NEG_INFINITY; nx * ny];
     for piece in pieces {
         for t in &piece.t {
@@ -49,15 +50,15 @@ fn tops(pieces: &[Piece], min: [f64; 2], nx: usize, ny: usize) -> Vec<f64> {
             }
             let lo = [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1])];
             let hi = [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1])];
-            let c0 = (((lo[0] - min[0]) / STEP_M).floor().max(0.0)) as usize;
-            let r0 = (((lo[1] - min[1]) / STEP_M).floor().max(0.0)) as usize;
-            let c1 = ((((hi[0] - min[0]) / STEP_M).ceil()) as usize).min(nx);
-            let r1 = ((((hi[1] - min[1]) / STEP_M).ceil()) as usize).min(ny);
+            let c0 = (((lo[0] - min[0]) / step).floor().max(0.0)) as usize;
+            let r0 = (((lo[1] - min[1]) / step).floor().max(0.0)) as usize;
+            let c1 = ((((hi[0] - min[0]) / step).ceil()) as usize).min(nx);
+            let r1 = ((((hi[1] - min[1]) / step).ceil()) as usize).min(ny);
             for r in r0..r1 {
                 for col in c0..c1 {
                     let p = [
-                        min[0] + (col as f64 + 0.5) * STEP_M,
-                        min[1] + (r as f64 + 0.5) * STEP_M,
+                        min[0] + (col as f64 + 0.5) * step,
+                        min[1] + (r as f64 + 0.5) * step,
                     ];
                     let l1 = ((b[1] - c[1]) * (p[0] - c[0]) + (c[0] - b[0]) * (p[1] - c[1])) / det;
                     let l2 = ((c[1] - a[1]) * (p[0] - c[0]) + (a[0] - c[0]) * (p[1] - c[1])) / det;
@@ -101,7 +102,7 @@ pub fn score(pieces: &[Piece], outline: &[[f64; 2]], surface: &Surface, ground: 
     });
     let nx = ((hi[0] - lo[0]) / STEP_M).ceil() as usize;
     let ny = ((hi[1] - lo[1]) / STEP_M).ceil() as usize;
-    let top = tops(pieces, lo, nx, ny);
+    let top = tops(pieces, lo, nx, ny, STEP_M);
     let mut diffs = Vec::new();
     let mut pairs: Vec<(f64, f64)> = Vec::new();
     // (model − laser, laser above ground) per pixel; None outside or unmeasured.

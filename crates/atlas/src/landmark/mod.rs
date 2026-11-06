@@ -8,14 +8,24 @@
 //! - write a **kit** — the building as stacked parts with openings — from what
 //!   was gathered ([`kit`]);
 //! - **build** the kit into the GLB the override store takes, and **score** it
-//!   against the laser ([`glb`], [`score`]).
+//!   against the laser, from above and wall by wall ([`glb`], [`score`],
+//!   [`measure::walls`]).
+//!
+//! And the measuring a builder does between them: a **section** through the
+//! laser ([`measure`]), the **aerial** photograph as a measuring sheet in the
+//! kit's frame ([`aerial`]), and a photograph's camera solved from known
+//! points, so a wall can be measured on it, straightened into an elevation, and
+//! the kit drawn over it ([`photo`]).
 //!
 //! The GLB goes on the building through the override store's upload, like any
 //! other model, so a kit-built landmark is restored by deleting it.
 
+pub mod aerial;
 pub mod gather;
 pub mod glb;
 pub mod kit;
+pub mod measure;
+pub mod photo;
 pub mod score;
 
 use std::path::Path;
@@ -76,12 +86,26 @@ pub fn build(kit_path: &Path, dir: &Path) -> Result<String, String> {
     let ground =
         gather::ground(&dtm, &outline_en).ok_or("no bare-earth heights round the building")?;
     let s = score::score(&pieces, &outline_en, &dsm, ground);
+    let triangles = stats.triangles;
+    let name = kit.name.clone();
+    let count = pieces.len();
+    // Wall by wall, in the kit's frame: which face to move, and how far.
+    let mut site = measure::Site {
+        name: kit.name.clone(),
+        pand: kit.pand.clone(),
+        plane,
+        rotation_deg: kit.rotation_deg,
+        outline: Vec::new(),
+        dsm,
+        ground,
+        pieces,
+        kit: Some(kit),
+    };
+    site.outline = outline_en.iter().map(|&q| site.to_local(q)).collect();
     let report = format!(
-        "# {} — {} triangles in {} pieces\n\nground {ground:.2} m NAP\n\n{}",
-        kit.name,
-        stats.triangles,
-        pieces.len(),
-        s.report()
+        "# {name} — {triangles} triangles in {count} pieces\n\nground {ground:.2} m NAP\n\n{}\n{}",
+        s.report(),
+        measure::walls_report(&measure::walls(&site))
     );
     std::fs::write(dir.join("score.md"), &report).map_err(|e| e.to_string())?;
     Ok(report.lines().take(5).collect::<Vec<_>>().join("\n"))

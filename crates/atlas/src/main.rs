@@ -85,6 +85,105 @@ enum LandmarkStep {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Cut through the laser's surface (and the kit's, given one): heights
+    /// along a line in metres, its steps and levels, and a drawing to scale.
+    Section {
+        /// A kit file, or a BAG identificatie (in the frame `gather` uses).
+        target: String,
+        /// The line's compass heading in the local frame (0 along +y).
+        #[arg(long, default_value_t = 0.0)]
+        heading: f64,
+        /// A local point the line passes through, `x,y`. Default the origin.
+        #[arg(long)]
+        through: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// The aerial photograph in the local frame at a stated scale, with a
+    /// metre grid, the outline, the laser's contours and the kit's plan.
+    Aerial {
+        /// A kit file, or a BAG identificatie.
+        target: String,
+        #[arg(long, default_value_t = 5.0)]
+        cm_per_px: f64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Solve where a photograph was taken from, from four or more points
+    /// whose pixel and local position you know; writes pose.json and pose.md.
+    PhotoPose {
+        kit: PathBuf,
+        #[arg(long)]
+        photo: PathBuf,
+        /// `u,v=x,y,z`: a pixel and the local point it shows (z above the
+        /// ground). Repeat for every point; four at least.
+        #[arg(long = "point", required = true)]
+        points: Vec<String>,
+        /// Where the photograph says it was taken, `lat,lng` (its Commons
+        /// coordinate): a start for the search, not a constraint.
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// A magnified crop of a photograph round a pixel, with a pixel grid, to
+    /// place a pose's points to the pixel; writes zoom.png.
+    PhotoZoom {
+        #[arg(long)]
+        photo: PathBuf,
+        /// The pixel to centre on, `u,v`.
+        #[arg(long)]
+        at: String,
+        /// Source pixels either side.
+        #[arg(long, default_value_t = 40)]
+        half: u32,
+        /// How many times larger.
+        #[arg(long, default_value_t = 8)]
+        times: u32,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Measure on a wall in a solved photograph: each pixel's distance along
+    /// the wall and height, and the distance between consecutive ones.
+    PhotoMeasure {
+        #[arg(long)]
+        pose: PathBuf,
+        /// The wall: the vertical plane through two local points, `x1,y1:x2,y2`.
+        #[arg(long)]
+        wall: String,
+        /// `u,v`; repeat.
+        #[arg(long = "px", required = true)]
+        pixels: Vec<String>,
+    },
+    /// A wall straightened out of a solved photograph: an elevation at a
+    /// stated scale, with a metre grid; writes elevation.png and elevation.md.
+    PhotoRectify {
+        #[arg(long)]
+        pose: PathBuf,
+        #[arg(long)]
+        photo: PathBuf,
+        #[arg(long)]
+        wall: String,
+        #[arg(long, default_value_t = 0.0)]
+        bottom: f64,
+        #[arg(long)]
+        top: f64,
+        #[arg(long, default_value_t = 2.0)]
+        cm_per_px: f64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// The kit drawn over a solved photograph, its visible edges in red, and
+    /// how many of the photograph's edges it lands on; writes overlay.png.
+    PhotoOverlay {
+        kit: PathBuf,
+        #[arg(long)]
+        pose: PathBuf,
+        #[arg(long)]
+        photo: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 struct Stderr;
@@ -189,6 +288,69 @@ fn main() -> anyhow::Result<()> {
                 cartopolis_atlas::landmark::gather::gather(pand, names, out)
             }
             LandmarkStep::Build { kit, out } => cartopolis_atlas::landmark::build(kit, out),
+            LandmarkStep::Section {
+                target,
+                heading,
+                through,
+                out,
+            } => cartopolis_atlas::landmark::measure::section_cmd(
+                target,
+                through.as_deref(),
+                *heading,
+                out,
+            ),
+            LandmarkStep::Aerial {
+                target,
+                cm_per_px,
+                out,
+            } => cartopolis_atlas::landmark::aerial::aerial_cmd(target, *cm_per_px, out),
+            LandmarkStep::PhotoPose {
+                kit,
+                photo,
+                points,
+                from,
+                out,
+            } => match from
+                .as_deref()
+                .map(cartopolis_atlas::landmark::measure::parse_xy)
+                .transpose()
+            {
+                Ok(from) => cartopolis_atlas::landmark::photo::pose_cmd(
+                    kit,
+                    photo,
+                    points,
+                    from.map(|p| (p[0], p[1])),
+                    out,
+                ),
+                Err(e) => Err(format!("--from wants lat,lng: {e}")),
+            },
+            LandmarkStep::PhotoZoom {
+                photo,
+                at,
+                half,
+                times,
+                out,
+            } => cartopolis_atlas::landmark::photo::zoom_cmd(photo, at, *half, *times, out),
+            LandmarkStep::PhotoMeasure { pose, wall, pixels } => {
+                cartopolis_atlas::landmark::photo::measure_cmd(pose, wall, pixels)
+            }
+            LandmarkStep::PhotoRectify {
+                pose,
+                photo,
+                wall,
+                bottom,
+                top,
+                cm_per_px,
+                out,
+            } => cartopolis_atlas::landmark::photo::rectify_cmd(
+                pose, photo, wall, *bottom, *top, *cm_per_px, out,
+            ),
+            LandmarkStep::PhotoOverlay {
+                kit,
+                pose,
+                photo,
+                out,
+            } => cartopolis_atlas::landmark::photo::overlay_cmd(kit, pose, photo, out),
         };
         println!("{}", said.map_err(anyhow::Error::msg)?);
         return Ok(());

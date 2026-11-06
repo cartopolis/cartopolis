@@ -117,7 +117,7 @@ pub fn surfaces(plane: Plane, half: f64) -> Result<(Surface, Surface), String> {
     Ok((dsm, dtm))
 }
 
-fn get(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn get(url: &str) -> Result<Vec<u8>, String> {
     let r = ureq::get(url)
         .set("User-Agent", UA)
         .timeout(std::time::Duration::from_secs(60))
@@ -445,6 +445,7 @@ fn photos(plane: Plane, keywords: &[String], out: &Path) -> Result<String, Strin
         rows.push((
             dist,
             look,
+            (lat, lng),
             title.to_string(),
             licence,
             meta("Artist"),
@@ -463,9 +464,10 @@ fn photos(plane: Plane, keywords: &[String], out: &Path) -> Result<String, Strin
          a photo looking north (≈0°) shows the south face. Positions are the \
          uploader's, often a few metres off. Credit every photograph a kit uses \
          in its `sources`. People in a photograph are never what it is used for.\n\n\
-         | file | looks | from m | taken | licence | author |\n|---|---|---|---|---|---|\n",
+         | file | looks | from m | taken at (`--from`) | taken | licence | author |\n|---|---|---|---|---|---|---|\n",
     );
-    for (k, (dist, look, title, lic, artist, date, thumb, page)) in rows.iter().enumerate().take(40)
+    for (k, (dist, look, at, title, lic, artist, date, thumb, page)) in
+        rows.iter().enumerate().take(40)
     {
         let name = format!("{k:02}.jpg");
         let ok = !thumb.is_empty()
@@ -477,13 +479,15 @@ fn photos(plane: Plane, keywords: &[String], out: &Path) -> Result<String, Strin
         let artist = strip_tags(artist);
         let _ = writeln!(
             md,
-            "| {} [{}]({page}) | {look:.0}° | {dist:.0} | {} | {lic} | {} |",
+            "| {} [{}]({page}) | {look:.0}° | {dist:.0} | {:.6},{:.6} | {} | {lic} | {} |",
             if ok {
                 format!("`photos/{name}`")
             } else {
                 "—".into()
             },
             title.trim_start_matches("File:"),
+            at.0,
+            at.1,
             date.chars().take(10).collect::<String>(),
             artist.chars().take(40).collect::<String>()
         );

@@ -1,7 +1,7 @@
 ---
 topic: landmarks rebuilt from measurements and photographs — the kit
-triggers: [crates/atlas/src/landmark, model_assets.rs, replace_building, crates/atlas/landmarks, kit.rs, gather.rs, score.rs, glb.rs, "atlas landmark", Martinitoren, landmark, "building model"]
-updated: 2026-11-05
+triggers: [crates/atlas/src/landmark, model_assets.rs, replace_building, crates/atlas/landmarks, kit.rs, gather.rs, score.rs, glb.rs, "atlas landmark", Martinitoren, landmark, "building model", measure.rs, aerial.rs, photo.rs, "photo-pose", "landmark section"]
+updated: 2026-11-06
 ---
 
 # Landmarks: the kit
@@ -36,6 +36,58 @@ ratio says which stage is too wide or too short. The Martinitoren's first
 fit was 15–30% too wide at every stage top because the stages taper
 (buttress set-backs). Fitted widths to the mid-stage area plus a set-back ring
 brought every height within ~10%, with a mean height error of −0.3 m.
+
+## Measuring between the steps (2026-11-06)
+
+```bash
+atlas landmark section <kit|pand> --heading 90 --through x,y --out dir   # section.md/.png
+atlas landmark aerial  <kit|pand> --cm-per-px 5 --out dir                # aerial.png/.md
+atlas landmark photo-zoom    --photo p.jpg --at u,v --out dir            # zoom.png
+atlas landmark photo-pose    <kit> --photo p.jpg --point u,v=x,y,z … [--from lat,lng] --out dir
+atlas landmark photo-measure --pose pose.json --wall x1,y1:x2,y2 --px u,v …
+atlas landmark photo-rectify --pose pose.json --photo p.jpg --wall … --top 40 --out dir
+atlas landmark photo-overlay <kit> --pose pose.json --photo p.jpg --out dir
+```
+
+All in the kit's local frame, so a number read off one goes into the kit as
+it is. A pand instead of a kit uses the frame `gather` gives it.
+
+- **`section`** cuts the laser (and the kit, red) along a line: steps,
+  levels, a table every half metre and a drawing at 12 px a metre. Steps a
+  half metre apart are joined into one: the laser smears a tall wall over
+  several pixels, and the Martinitoren's flank read as thirty steps before.
+- **`aerial`** is PDOK's orthophoto turned into the local frame at a stated
+  scale, with a metre grid, the outline, the laser's contours (about ten over
+  the building's height) and the kit's plan. **PDOK answers a box whose shape
+  differs from the picture's with a blank white JPEG and a 200**, so the box
+  is made square. The orthophoto is not true-ortho: a tower's top leans off
+  its foot, so read a plan from the contours, not a roof's edge.
+- **`score.md` gains "Walls against the laser"**: for each solid wall, how far
+  to move it outward, and one line for the shift of the whole kit that best
+  explains them. The Martinitoren: every main wall within 0.6 m, and the kit
+  standing 0.4 m off the laser along its own +y (east-north-east); the Forum
+  0.25 m, the Groninger Museum 0.55 m. Only `solid` parts
+  count, and walls under a metre wide: an opening's panel or a pinnacle's face
+  is beyond the half-metre laser and was told to move 3 m.
+- **Photographs.** `photo-pose` solves where a photograph was taken from four
+  or more points whose pixel and local position you know (corners at the
+  laser's heights, from `facts.md` and `section`). It refuses a camera nobody
+  could have held — under the ground, kilometres off, a lens past 20 picture
+  widths — and names the closest fit refused: points that disagree otherwise
+  solve to a camera 30 km off at 0.2° across, where everything lines up as on
+  a drawing. `photos.md` gives each photograph's own coordinate for `--from`,
+  a start for the search and not a constraint (the uploader's, often tens of
+  metres off). Then `photo-measure` reads lengths on a wall, `photo-rectify`
+  straightens one into an elevation at a stated scale, and `photo-overlay`
+  draws the kit's visible edges over the photograph with a fit figure that
+  counts both ways (photo edges met, drawn edges landing on one).
+- **Place points with `photo-zoom`.** On the whole 1280 px thumbnail a
+  ledge's corner is a smudge: the first real try, Commons'
+  `20140621 Martinitoren en Mutua Fides…`, with five corners placed by eye,
+  solved to 38 px RMS and an overlay that missed the tower. Zoomed 8× the
+  same corner sat two pixels off where it had been placed. **Not yet done:
+  a real photograph solved to a few pixels** — the solver, measuring,
+  straightening and overlay are proven on synthetic photographs only.
 
 ## Parts whose faces lean their own way
 
