@@ -45,7 +45,12 @@ use crate::args::{
     AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
     EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, InboxArgs, LookAroundArgs,
     LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs,
-    RememberArgs, SavePlaceArgs, SayArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs, WalkArgs,
+    RememberArgs, SavePlaceArgs, SayToolArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs,
+    WalkArgs,
+};
+use crate::args::{
+    AnswerMeetingArgs, CalendarArgs, CommunitiesArgs, CommunityArgs, FindModelsArgs, PostIdArgs,
+    ReadPostsArgs,
 };
 use crate::args::{PandArgs, PictureSend, ReplaceBuildingArgs, SeePictureArgs, IMAGE_KEY};
 use crate::device::{
@@ -284,6 +289,12 @@ pub fn bind(path: &Path) -> Result<std::os::unix::net::UnixListener, String> {
 // The tools
 // ---------------------------------------------------------------------------
 
+/// The map's tools (`probe`, `building`, `departures` …), a router of their own
+/// added to this one's in [`Tools::new`]. A child module so it can use the
+/// private `answer` every tool ends in.
+#[path = "world_tools.rs"]
+mod world_tools;
+
 #[derive(Clone)]
 pub struct Tools {
     jobs: UnboundedSender<Job>,
@@ -502,7 +513,7 @@ impl Tools {
     pub fn new(jobs: UnboundedSender<Job>) -> Self {
         Self {
             jobs,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::world_router(),
         }
     }
 
@@ -790,15 +801,19 @@ impl Tools {
 
     #[tool(
         description = "Say something: out loud to the people around you (or everyone, with \
-                       scope 'global'), or privately to one person with `to`. A private \
-                       message to somebody you have not messaged before takes a few seconds \
-                       to open."
+                       scope 'global'), privately to one person with `to`, or into a group \
+                       chat or community topic with `channel`, named as `read_chat` names it. \
+                       A private message to somebody you have not messaged before takes a few \
+                       seconds to open."
     )]
     async fn say(
         &self,
-        Parameters(args): Parameters<SayArgs>,
+        Parameters(args): Parameters<SayToolArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.act(AgentRequest::Say(args)).await
+        match args.into_request() {
+            Ok(request) => self.act(request).await,
+            Err(why) => Ok(refused(why)),
+        }
     }
 
     #[tool(
@@ -934,9 +949,11 @@ impl Tools {
 
     #[tool(
         description = "Build objects in the world, owned by your account. Each object is a \
-                       shape with a size, a colour, a place and optionally a script. Returns \
-                       their ids; keep them — they are how you change or remove what you \
-                       built. Read `scripting_guide` before writing a script."
+                       shape with a size, a colour, a place and optionally a script — or a \
+                       model from the shared library (`find_models`) in place of the shape. \
+                       Returns their ids; keep them — they are how you change or remove what \
+                       you built, and `undo` takes the whole call back. Read `scripting_guide` \
+                       before writing a script."
     )]
     async fn build(
         &self,
@@ -1085,8 +1102,9 @@ impl Tools {
     #[tool(
         description = "Wait until something happens, instead of checking over and over: \
                        somebody you can hear speaks, somebody comes near, a call rings, a \
-                       contact request arrives, one of your objects prints, or your walk \
-                       ends. Answers with what happened (or that nothing did by the timeout) \
+                       contact request arrives, one of your objects prints, your walk ends, \
+                       or an object you name in `ids` changes or goes. Answers with what \
+                       happened (or that nothing did by the timeout) \
                        and costs nothing while it waits. Read the chat with `read_chat` after."
     )]
     async fn wait(
@@ -1310,6 +1328,103 @@ impl Tools {
         Parameters(args): Parameters<IdArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::Inspect(args)).await
+    }
+
+    #[tool(
+        description = "Take back your last change to the world: the last `build` call (every \
+                       object it made is removed), the last `edit_object` (the object goes \
+                       back to how it was), or the last `delete_objects` (the objects are \
+                       built again — with new ids, and without their scripts, which this \
+                       client never had). Call it again to go further back. Says what it \
+                       undid."
+    )]
+    async fn undo(&self) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Undo).await
+    }
+
+    #[tool(
+        description = "Search the server's shared library of 3D models — benches, lamps, \
+                       trees, statues people uploaded to share — by name or tag. Each answer \
+                       has its asset hash, which `build` takes as `model`, its category, its \
+                       size in triangles and its licence (credit whoever the attribution \
+                       names). `mine` also lists your own inventory."
+    )]
+    async fn find_models(
+        &self,
+        Parameters(args): Parameters<FindModelsArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::FindModels(args)).await
+    }
+
+    // ── Communities, meet-ups and the calendar ─────────────────────────────
+
+    #[tool(
+        description = "The communities you are in (or waiting to join), each with its topics \
+                       — encrypted group chats `read_chat` reads and `say` with `channel` \
+                       writes in. With `query`, also searches the server's directory for \
+                       communities to join."
+    )]
+    async fn communities(
+        &self,
+        Parameters(args): Parameters<CommunitiesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Communities(args)).await
+    }
+
+    #[tool(
+        description = "Join a community from the directory (`communities` with a query finds \
+                       it): at once for an open one; for one a moderator confirms, a request \
+                       with your `message`."
+    )]
+    async fn join_community(
+        &self,
+        Parameters(args): Parameters<CommunityArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::JoinCommunity(args)).await
+    }
+
+    #[tool(
+        description = "A community's public posts, newest first: who wrote each, where it is \
+                       about, when, how many replies, and its id. Only posts by people you can \
+                       hear are shown; the rest are counted. Posts are public — on the \
+                       community's page and the fediverse — unlike its topics."
+    )]
+    async fn read_posts(
+        &self,
+        Parameters(args): Parameters<ReadPostsArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::ReadPosts(args)).await
+    }
+
+    #[tool(description = "One post and its replies, by the id `read_posts` gave it.")]
+    async fn read_post(
+        &self,
+        Parameters(args): Parameters<PostIdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::ReadPost(args)).await
+    }
+
+    #[tool(
+        description = "What is coming up: meetings planned and meet-ups proposed in your chats \
+                       and topics, each with its time, who planned it, your answer and who is \
+                       going. A meeting's plan id is what `answer_meeting` takes."
+    )]
+    async fn calendar(
+        &self,
+        Parameters(args): Parameters<CalendarArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Calendar(args)).await
+    }
+
+    #[tool(
+        description = "Answer a meeting's invitation: going, maybe or no. Everybody in its chat \
+                       sees your answer."
+    )]
+    async fn answer_meeting(
+        &self,
+        Parameters(args): Parameters<AnswerMeetingArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::AnswerMeeting(args)).await
     }
 
     // ── The app itself ─────────────────────────────────────────────────────

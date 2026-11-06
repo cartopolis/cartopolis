@@ -165,13 +165,13 @@ impl BuildingSelection {
 }
 
 /// Everything one building's prism is built from, resolved once.
-struct Prism {
+pub(crate) struct Prism {
     /// The outline in anchored world XZ.
-    ring: Vec<Vec2>,
+    pub(crate) ring: Vec<Vec2>,
     /// Ground level under it, metres.
-    base: f32,
+    pub(crate) base: f32,
     /// Height above the ground, metres.
-    top: f32,
+    pub(crate) top: f32,
 }
 
 /// Resolve a building's outline and height into the anchored world frame.
@@ -180,7 +180,7 @@ struct Prism {
 /// convex hull `lod22` falls back to for the *collider* deliberately does not
 /// reach here, because a hull drawn as glass fills in the inner corner of every
 /// L-shaped building with a pane nobody can explain.
-fn prism(
+pub(crate) fn prism(
     id: &str,
     facts: &BuildingFacts,
     lod: &Lod22Buildings,
@@ -456,7 +456,7 @@ fn ray_prism(origin: Vec3, dir: Vec3, ring: &[Vec2], base: f32, top: f32) -> Opt
 
 /// Even-odd point-in-ring, in the same shape `collision::Footprint::contains`
 /// uses. Kept local because that one is private and is about collision.
-fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
+pub(crate) fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
     let n = ring.len();
     if n < 3 {
         return false;

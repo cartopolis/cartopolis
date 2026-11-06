@@ -504,6 +504,16 @@ impl Plugin for McpPlugin {
                     .after(systems::mcp::pump)
                     .in_set(ClientPhase::Input),
             );
+        // The map's questions: a point, a building, a stop, the sky. In
+        // `Input`, where a prim's `Transform` is in the sim's flat frame
+        // (`prim_geo::strip_prim_lift`), which `check_geometry` relies on.
+        app.init_resource::<systems::mcp::world::WorldPending>()
+            .add_systems(
+                Update,
+                systems::mcp::world::serve
+                    .after(systems::mcp::pump)
+                    .in_set(ClientPhase::Input),
+            );
         app.insert_resource(cfg.clone())
             .insert_resource(systems::mcp::JobSender(tx))
             .init_resource::<systems::mcp::McpTrouble>()

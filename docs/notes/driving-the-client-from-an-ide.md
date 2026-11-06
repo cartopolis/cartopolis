@@ -1,6 +1,6 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to, "mcp/avatar.rs", set_avatar]
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to, "mcp/avatar.rs", set_avatar, "mcp/world.rs", "world_tools", check_geometry, set_sky, read_posts, undo]
 updated: 2026-11-05
 ---
 
@@ -475,10 +475,59 @@ about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
 Checked on mac-2 that day against a headless client, and signed in to a
 local simulator for `walk_to` and `inspect_object`; not yet on the phone.
 
+## The map, and taking part (2026-11-05)
+
+Two gaps the device tools left. An agent that builds could only check its
+work with a picture — seconds to a minute, proof of only what the camera
+caught, and no number for *how far* something floats. And the app's
+community side (posts, meet-ups, the calendar, group chats) had screens and
+no tools, so a bot could talk to one person and never take part in a place.
+
+- **`mcp::world` reads the map, never draws it**: `probe`, `measure`,
+  `check_geometry`, `building`, `look_inside`, `set_sky`, `departures`,
+  `vehicles`, `notices`. Its own queue and `WorldRequest`
+  (`mcp_server/src/world.rs`, tools in `world_tools.rs` as a second
+  `tool_router` added to the first), because its dozen resources would push
+  `device::serve` past Bevy's parameter cap. A request that waits (an
+  interior, a feed) is asked again each frame, so every handler does its
+  side effects only on the first asking.
+- **`check_geometry` judges boxes**, not meshes: a sphere, a torus or a model
+  is its box. It runs in `Input`, where a prim's `Transform` is flat
+  (`strip_prim_lift`), adds the ground under its anchor as drawing does, and
+  compares every *corner* with the ground under it, since on a slope one end
+  of a bench floats while the other is buried. Floating over another object
+  or a roof is not a fault; overlap is the separating-axis depth, with 2 cm
+  of touching allowed for stacked blocks.
+- **`set_sky` takes a clock time, the sky runs on sun time.** `DevPanelState`
+  is solar time (UTC + longitude/15), so "17:30" goes through the place's
+  zone first. It holds — Manual is saved by the autosave — which is why the
+  tool says to put it back with `live`.
+- **`departures` switches the transit layer on**, because stops only stream
+  with it, and says so; `vehicles` and `notices` read their feeds without
+  drawing them (`TransitVehicles::agent_wants`, `Plans::agent_wants`).
+- **Posts are seen through the allow-list too**: an agent reads its own, the
+  listed local accounts' and, only under `*`, everyone's. A name from another
+  server is not trusted to be the listed person, so a narrowed list withholds
+  every fediverse post.
+- **Rejected: writing posts and taking part in meet-ups** (2026-11-06,
+  built and taken out before landing). A post federates under the person's
+  name and cannot be recalled from the servers that copied it, and saying
+  "I'm going" to a meet-up turns on sharing the person's live location with
+  that chat. An agent acts on text it reads, and text from others can steer
+  it, so both stay the person's own act in the app. Reading posts and seeing
+  a meet-up's time in `read_chat` remain.
+- **A group chat or topic is written to only when the agent hears everyone in
+  it** — the same rule for `say` with a `channel` and meeting answers. In
+  practice topics need the list to be `*`.
+- **`undo` keeps build batches on disk** (beside the build list), edits and
+  deletes in memory. Undoing a delete builds the objects again: they get new
+  ids and lose their scripts, videos and sounds, and the answer says so.
+- **No `post` event for `wait`**: posts arrive only by an HTTP sweep with the
+  map layer on, so there is nothing cheap to watch.
+
 ## What is not built yet
 
-The geometry checker that would answer "does anything float or intersect"
-without a render, and a server-side record of an
+A server-side record of an
 account's prim ids (export drops them by design, so `my_builds` is this
 installation's memory of what it made).
 

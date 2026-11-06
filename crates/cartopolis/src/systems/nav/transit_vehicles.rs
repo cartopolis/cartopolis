@@ -208,6 +208,37 @@ pub struct TransitVehicles {
     label_mesh: Option<Handle<Mesh>>,
     label_mats: HashMap<String, Handle<StandardMaterial>>,
     painter: Option<LabelPainter>,
+    /// An agent asked for positions: poll even with the layer off.
+    pub agent_wants: bool,
+}
+
+impl TransitVehicles {
+    /// Every vehicle tracked, where it is drawn at `now` (`WorldClock::now_unix`):
+    /// its feed id, public line, mode, and position in the anchored world XZ.
+    /// The whole national feed, not only what is drawn; empty until the live
+    /// vehicles switch is on and a poll has landed. For an agent's `vehicles`.
+    #[cfg_attr(not(mcp), allow(dead_code))]
+    pub fn positions(
+        &self,
+        now: f64,
+    ) -> impl Iterator<Item = (&str, Option<&str>, &'static str, Vec2)> + '_ {
+        self.vehicles.iter().map(move |(id, s)| {
+            let mode = match s.transport {
+                Transport::Bus => "bus",
+                Transport::Tram => "tram",
+                Transport::Metro => "metro",
+                Transport::Train => "train",
+            };
+            (id.as_str(), s.line.as_deref(), mode, interp(s, now))
+        })
+    }
+
+    /// Whether a fetch has ever answered, so an empty list means "none" rather
+    /// than "not asked yet".
+    #[cfg_attr(not(mcp), allow(dead_code))]
+    pub fn polled(&self) -> bool {
+        self.last_poll.is_some() && !self.in_flight
+    }
 }
 
 /// Interpolated flat-frame position of a vehicle at time `now`.
@@ -311,7 +342,9 @@ pub fn poll_transit_vehicles(
         .retain(|_, s| s.last_seen.elapsed() < VEHICLE_TTL);
 
     // Decide whether to poll now.
-    if tv.in_flight || !dl.live_vehicles_visible() {
+    // An agent asking where a line's vehicles are polls the feed without the
+    // boxes appearing on the person's map (`mcp::world`).
+    if tv.in_flight || !(dl.live_vehicles_visible() || tv.agent_wants) {
         return;
     }
     let Some((cell, tf)) = camera.get() else {

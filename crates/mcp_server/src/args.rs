@@ -49,6 +49,62 @@ pub struct SayArgs {
     pub scope: Option<String>,
 }
 
+/// `say` as the tool takes it: [`SayArgs`], or a group chat or community
+/// topic by name. Split from `SayArgs` so the requests that already build one
+/// (the voice agent's line to whoever asked) need not know about channels.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SayToolArgs {
+    #[schemars(description = "What to say. One line, at most 500 characters.")]
+    pub text: String,
+    #[schemars(
+        description = "Send it privately, end-to-end encrypted, to this username. Must be \
+                       somebody you are allowed to hear. Omit to speak out loud."
+    )]
+    pub to: Option<String>,
+    #[schemars(
+        description = "Send it into this group chat or community topic instead, by the name \
+                       `read_chat` gives it ('group:…', or 'community#topic'). Only into a \
+                       chat where you are allowed to hear everybody in it."
+    )]
+    pub channel: Option<String>,
+    #[schemars(
+        description = "Out loud only: 'local' (default — people within 50 m), 'shout' \
+                       (300 m) or 'global' (everyone signed in)."
+    )]
+    pub scope: Option<String>,
+}
+
+impl SayToolArgs {
+    /// The request it is: a line into a named chat, or an ordinary `say`. A
+    /// channel with `to` or `scope` as well is refused, in words: which of the
+    /// two was meant cannot be guessed, and guessing wrong is speech.
+    pub fn into_request(self) -> Result<AgentRequest, String> {
+        match self.channel.filter(|c| !c.trim().is_empty()) {
+            Some(_) if self.to.is_some() || self.scope.is_some() => Err(
+                "Give `channel` on its own, or `to` / `scope` — not both: a line goes to one \
+                 place."
+                    .into(),
+            ),
+            Some(channel) => Ok(AgentRequest::SayIn(ChannelLine {
+                channel,
+                text: self.text,
+            })),
+            None => Ok(AgentRequest::Say(SayArgs {
+                text: self.text,
+                to: self.to,
+                scope: self.scope,
+            })),
+        }
+    }
+}
+
+/// A line for a group chat or a community topic, named as `read_chat` names it.
+#[derive(Debug)]
+pub struct ChannelLine {
+    pub channel: String,
+    pub text: String,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct WalkArgs {
     #[schemars(description = "Latitude to walk to.")]
@@ -120,13 +176,21 @@ pub struct WaitArgs {
         description = "What to wait for, any of: 'chat' (somebody you can hear says \
                        something), 'arrival' (somebody comes near), 'call' (a call rings), \
                        'contact' (somebody asks to be your contact), 'script' (one of your \
-                       objects prints something), 'walk' (your walk ends), 'location' (somebody starts sharing where they are with you). Default: all."
+                       objects prints something), 'walk' (your walk ends), 'location' (somebody \
+                       starts sharing where they are with you), 'object' (one of the objects in \
+                       `ids` is moved, turned, resized, recoloured, renamed, prints something \
+                       or is removed). Default: all of them, and 'object' when `ids` is given."
     )]
     pub events: Option<Vec<String>>,
     #[schemars(description = "Give up after this many seconds, at most 600. Default 300.")]
     pub timeout_s: Option<u32>,
     #[schemars(description = "How near counts as an arrival, in metres. Default 20.")]
     pub near_m: Option<f32>,
+    #[schemars(
+        description = "For 'object': the objects to watch, by id. Any object in view, not only \
+                       yours; what one prints is shown (`script_output`) only for your own."
+    )]
+    pub ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -259,8 +323,10 @@ pub struct BuildArgs {
                        build's origin). Other fields: `name`, `shape` (box, sphere, \
                        cylinder, cone, torus), `altitude` (metres above the ground to the \
                        object's centre), `scale` [x, y, z] in metres, `rotation` [x, y, z] \
-                       in degrees, `color` [r, g, b] from 0 to 1, and `script` (Luau source \
-                       — see the scripting_guide tool)."
+                       in degrees, `color` [r, g, b] from 0 to 1, `script` (Luau source \
+                       — see the scripting_guide tool), and `model`: a model's asset hash from \
+                       `find_models`, drawn instead of the shape at its own size (`scale` then \
+                       multiplies it)."
     )]
     pub prims: Vec<Value>,
     #[schemars(
@@ -400,6 +466,81 @@ pub struct PandArgs {
     pub pand: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FindModelsArgs {
+    #[schemars(
+        description = "Words in the model's name or tags: 'bench', 'lamp post', 'tree'. Omit to \
+                       list the whole library."
+    )]
+    pub query: Option<String>,
+    #[schemars(description = "Only this category, as an earlier answer named it.")]
+    pub category: Option<String>,
+    #[schemars(
+        description = "Also list the models in your own inventory: the ones this account \
+                       uploaded or took from the library. Default false."
+    )]
+    pub mine: Option<bool>,
+    #[schemars(description = "At most this many from the library. Default 20.")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CommunitiesArgs {
+    #[schemars(
+        description = "Also search the server's directory of communities for this: a name, a \
+                       word, a town. Omit to list only the ones you are in."
+    )]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CommunityArgs {
+    #[schemars(description = "The community, by its name or id as `communities` gave it.")]
+    pub community: String,
+    #[schemars(
+        description = "To join one a moderator confirms: a line to the moderators. Optional."
+    )]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadPostsArgs {
+    #[schemars(description = "The community, by its name or id as `communities` gave it.")]
+    pub community: String,
+    #[schemars(
+        description = "Only posts written before this time, Unix milliseconds: the `created_ms` \
+                       of the oldest post you have, for the page before it. Omit for the newest."
+    )]
+    pub before: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PostIdArgs {
+    #[schemars(description = "The post's id, as `read_posts` gave it.")]
+    pub id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CalendarArgs {
+    #[schemars(description = "How many days ahead, from now. Default 7, at most 60.")]
+    pub days: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AnswerMeetingArgs {
+    #[schemars(description = "The meeting's plan id, as `calendar` gave it.")]
+    pub plan: String,
+    #[schemars(description = "'going', 'maybe' or 'no'.")]
+    pub answer: String,
+    #[schemars(
+        description = "For a repeating meeting: which date, as the `start_ms` `calendar` gave \
+                       it. Default the next one."
+    )]
+    pub date_ms: Option<u64>,
+    #[schemars(description = "For a repeating meeting: answer for every date. Default false.")]
+    pub every: Option<bool>,
+}
+
 #[derive(Debug)]
 pub enum AgentRequest {
     Me,
@@ -454,6 +595,20 @@ pub enum AgentRequest {
     SeePicture(SeePictureArgs),
     /// One object in full, its script when the account may see it.
     Inspect(IdArgs),
+    /// A line into a group chat or a community topic.
+    SayIn(ChannelLine),
+    /// Search the shared model library, and the account's own inventory.
+    FindModels(FindModelsArgs),
+    /// The account's communities, and a directory search.
+    Communities(CommunitiesArgs),
+    JoinCommunity(CommunityArgs),
+    /// A community's public posts, through the HTTP API.
+    ReadPosts(ReadPostsArgs),
+    ReadPost(PostIdArgs),
+    Calendar(CalendarArgs),
+    AnswerMeeting(AnswerMeetingArgs),
+    /// Take back the agent's last build, edit or delete.
+    Undo,
 }
 
 impl AgentRequest {
@@ -506,6 +661,15 @@ impl AgentRequest {
             Self::SendPicture(_) => "send picture",
             Self::SeePicture(_) => "see picture",
             Self::Inspect(_) => "inspect object",
+            Self::SayIn(_) => "say",
+            Self::FindModels(_) => "find models",
+            Self::Communities(_) => "communities",
+            Self::JoinCommunity(_) => "join community",
+            Self::ReadPosts(_) => "read posts",
+            Self::ReadPost(_) => "read post",
+            Self::Calendar(_) => "calendar",
+            Self::AnswerMeeting(_) => "answer meeting",
+            Self::Undo => "undo",
         }
     }
 }

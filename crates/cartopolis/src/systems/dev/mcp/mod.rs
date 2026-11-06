@@ -58,6 +58,7 @@ pub mod relay;
 pub mod screen;
 pub mod surroundings;
 pub mod voice;
+pub mod world;
 
 /// The job protocol — what crosses the channel between that crate's server
 /// thread and [`pump`]. Defined there, since the server builds and reads it.
@@ -343,6 +344,8 @@ pub struct McpBridge {
     /// its screen, for [`screen::serve`] — queued apart for the same reason.
     device: Vec<(DeviceRequest, oneshot::Sender<Reply>)>,
     screen: Vec<(DeviceRequest, oneshot::Sender<Reply>)>,
+    /// Questions about the map, for [`world::serve`].
+    world: Vec<(cartopolis_mcp::world::WorldRequest, oneshot::Sender<Reply>)>,
     /// Newest last. Bounded — this is a readout, not a record.
     pub log: VecDeque<Entry>,
     pub listen: PathBuf,
@@ -371,6 +374,7 @@ impl McpBridge {
             agent: Vec::new(),
             device: Vec::new(),
             screen: Vec::new(),
+            world: Vec::new(),
             log: VecDeque::new(),
             listen,
             served: 0,
@@ -533,6 +537,7 @@ pub fn pump(
             Request::Agent(req) => bridge.agent.push((req, job.reply)),
             Request::Device(req) if req.is_screen() => bridge.screen.push((req, job.reply)),
             Request::Device(req) => bridge.device.push((req, job.reply)),
+            Request::World(req) => bridge.world.push((req, job.reply)),
             Request::Film(mut req) => {
                 // The same rule as `view`'s, though here it blinks the chrome.
                 if chrome_leaks {
@@ -739,6 +744,7 @@ pub fn pace_idle(
     agent: Res<agent::AgentState>,
     device: Res<device::DevicePending>,
     screen: Res<screen::ScreenPending>,
+    world: Res<world::WorldPending>,
     streams: Res<crate::systems::stream_watch::StreamRegistry>,
     calls: Res<crate::systems::calls::Calls>,
 ) {
@@ -754,6 +760,8 @@ pub fn pace_idle(
         && !device.is_working()
         // A press lands over a few frames, which at the idle rate is seconds.
         && !screen.is_working()
+        // An interior is built over frames.
+        && !world.is_working()
         && streams.busy().is_empty()
         // Nor in a phone call: a voice agent's tool calls are answered on
         // the next frame, and half a second of idle frame is half a second of

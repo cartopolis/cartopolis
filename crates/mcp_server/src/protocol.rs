@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use crate::args::{AgentReply, AgentRequest};
 use crate::device::DeviceRequest;
+use crate::world::WorldRequest;
 use cartopolis_core::ShotEnv;
 
 /// The longest edge of a returned image, unless the call asks for another.
@@ -41,6 +42,9 @@ pub enum Request {
     /// Something about the app itself: its build, log, cost, settings, screen
     /// (the client's `mcp::device` and `mcp::screen`). Answered as `Reply::Agent`.
     Device(DeviceRequest),
+    /// Something about the map: a point, a building, a stop, the sky
+    /// (the client's `mcp::world`). Answered as `Reply::Agent`.
+    World(WorldRequest),
 }
 
 /// One `film` call.

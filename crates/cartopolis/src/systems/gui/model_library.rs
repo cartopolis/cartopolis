@@ -355,7 +355,8 @@ fn push(inbox: &Inbox, reply: Reply) {
 // Parsing
 // ---------------------------------------------------------------------------
 
-fn parse_items(body: &str) -> Result<Vec<InventoryItem>, String> {
+/// Also how an agent reads the inventory (`mcp::agent`'s `find_models`).
+pub(crate) fn parse_items(body: &str) -> Result<Vec<InventoryItem>, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
     let rows = json.as_array().ok_or("unexpected inventory response")?;
     Ok(rows
@@ -373,7 +374,8 @@ fn parse_items(body: &str) -> Result<Vec<InventoryItem>, String> {
         .collect())
 }
 
-fn parse_entries(body: &str) -> Result<Vec<LibraryEntry>, String> {
+/// Also how an agent reads the library (`mcp::agent`'s `find_models`).
+pub(crate) fn parse_entries(body: &str) -> Result<Vec<LibraryEntry>, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
     let rows = json.as_array().ok_or("unexpected library response")?;
     Ok(rows
@@ -426,7 +428,7 @@ fn encode(s: &str) -> String {
 /// The server stores the four codes; showing "cc-by" in a list is showing a
 /// database value to somebody who wants to know whether they have to credit
 /// anyone.
-fn licence_label(licence: &str) -> &'static str {
+pub(crate) fn licence_label(licence: &str) -> &'static str {
     match licence {
         "own" => "by its author",
         "cc0" => "CC0",

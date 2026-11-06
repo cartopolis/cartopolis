@@ -1125,7 +1125,7 @@ pub fn great_circle_m(from: (f64, f64), to: (f64, f64)) -> f64 {
 }
 
 /// Initial great-circle bearing from `from` to `to`, in degrees clockwise from north.
-fn bearing_deg(from: (f64, f64), to: (f64, f64)) -> f64 {
+pub fn bearing_deg(from: (f64, f64), to: (f64, f64)) -> f64 {
     let (lat1, lat2) = (from.0.to_radians(), to.0.to_radians());
     let dlng = (to.1 - from.1).to_radians();
     let y = dlng.sin() * lat2.cos();

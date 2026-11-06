@@ -47,7 +47,7 @@ const MAX_ADDRESSES: usize = 6;
 /// zeros (`docs/notes/building-identity-and-bag.md`) is that it is the key every
 /// Dutch register joins on; this is the one link that turns that claim into
 /// something a person can press.
-fn bag_viewer_url(id: &str) -> String {
+pub(crate) fn bag_viewer_url(id: &str) -> String {
     format!("https://bagviewer.kadaster.nl/lvbag/bag-viewer/?objectId={id}")
 }
 
@@ -300,7 +300,7 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
 /// Ebbingestraat 4a–211" for a block on the corner of the Grote Markt, where 211
 /// is a Grote Markt number and no such address exists. The other frontages are in
 /// the address list further down, which is where a second street belongs.
-fn street_line(addresses: &[AddressFact]) -> Option<String> {
+pub(crate) fn street_line(addresses: &[AddressFact]) -> Option<String> {
     let mut tally: Vec<(&str, usize)> = Vec::new();
     for a in addresses {
         let Some(street) = a.street.as_deref() else {

@@ -134,8 +134,9 @@ pub struct Posts {
 const SWEEP_SECS: u64 = 60;
 
 /// A failed request in words. The client's HTTP layer keeps only the status,
-/// so the status is what is explained.
-fn said(e: &str) -> String {
+/// so the status is what is explained. Also how an agent's post tools word one
+/// (`mcp::agent`).
+pub(crate) fn said(e: &str) -> String {
     let code = e.rsplit(' ').next().and_then(|c| c.parse::<u16>().ok());
     match code {
         Some(401) => "Sign in again: the session has expired.".into(),

@@ -197,6 +197,24 @@ pub struct Plans {
     pub open_nearest: Option<(f64, f64)>,
     /// Dots drawn last frame, and how many of them still open: the chip.
     shown: (usize, usize),
+    /// An agent asked about notices (`mcp::world`): read the feed as if the
+    /// layer were on, without drawing it on the person's map.
+    pub agent_wants: bool,
+}
+
+impl Plans {
+    /// The feed as last read, if it has been.
+    #[cfg_attr(not(mcp), allow(dead_code))]
+    pub fn feed(&self) -> Option<Arc<PlansFeed>> {
+        self.feed.clone()
+    }
+
+    /// The last read failed and nothing was kept: an empty answer is "could
+    /// not read it", not "nothing published".
+    #[cfg_attr(not(mcp), allow(dead_code))]
+    pub fn failed(&self) -> bool {
+        self.feed.is_none() && self.failed_at.is_some()
+    }
 }
 
 fn now_unix() -> u64 {
@@ -299,7 +317,10 @@ pub fn drive_plans(
             plans.card = Some(Card::Notice(i));
         }
     }
-    let wanted = dl.plans_enabled || plans.card.is_some() || plans.open_nearest.is_some();
+    let wanted = dl.plans_enabled
+        || plans.card.is_some()
+        || plans.open_nearest.is_some()
+        || plans.agent_wants;
     let stale = plans.loaded_at.is_none_or(|t| t.elapsed() >= FEED_TTL);
     let backing_off = plans.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER);
     if wanted && stale && !plans.loading && !backing_off {

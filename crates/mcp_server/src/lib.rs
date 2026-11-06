@@ -30,5 +30,6 @@ pub mod server;
 /// The voice agent's tools: these, through an in-process MCP session.
 #[cfg(unix)]
 pub mod voice_tools;
+pub mod world;
 
 pub use guide::scripting_guide;
