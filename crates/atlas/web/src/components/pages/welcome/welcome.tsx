@@ -7,6 +7,7 @@ import {$s, notifier} from '@/app'
 import {ProviderLogo} from '@/components/elements/providers/providers'
 import {
     adoptTicketSession,
+    appFromTicket,
     communityFromTicket,
     createFromTicket,
     joinFromTicket,
@@ -51,8 +52,15 @@ interface Pick {
 export class Welcome extends MithrilComponent {
     s = local({
         busy: false,
-        /** The app's code, once the account it asked for is signed in. */
-        appDone: '' as string,
+        /**
+         * An app asked for this sign-in: it is signed in only once the code it
+         * shows is typed here (`appView`). Where to go if the person did not.
+         */
+        appAsk: null as string | null,
+        /** What the person typed for the app's code. */
+        appCode: '',
+        /** The app the person confirmed is signed in. */
+        appDone: false,
         /** A short "done" line before moving on. */
         done: '',
         /** A refusal from the last step, shown in the card. */
@@ -104,8 +112,8 @@ export class Welcome extends MithrilComponent {
             case 'signed_in':
                 await adoptTicketSession(what)
                 s.signedInAs = what.username
-                if (what.app_code) {
-                    s.appDone = what.app_code
+                if (what.app) {
+                    s.appAsk = what.return
                 } else if (what.offers.length) {
                     s.picks = what.offers.map((offer) => ({join: true, offer}))
                 } else {
@@ -138,8 +146,8 @@ export class Welcome extends MithrilComponent {
     async signedIn(session: TicketSession, ret: string | undefined) {
         await adoptTicketSession(session)
         this.s.signedInAs = session.username
-        if (session.app_code) {
-            this.s.appDone = session.app_code
+        if (session.app) {
+            this.s.appAsk = ret ?? '/'
         } else {
             m.route.set(safeReturn(ret))
         }
@@ -216,7 +224,7 @@ export class Welcome extends MithrilComponent {
     view() {
         const s = this.s
         if (s.problem) return this.problemView(s.problem)
-        if (s.appDone) return this.appView()
+        if (s.appAsk !== null) return this.appView(s.appAsk)
         if (s.done) {
             return (
                 <div class="auth">
@@ -289,22 +297,70 @@ export class Welcome extends MithrilComponent {
         )
     }
 
-    /** The app asked: say so, and give the way back to it. Nothing else to do here. */
-    appView() {
+    /**
+     * An app asked for this sign-in. It is signed in only when the person types
+     * the code it shows: the code is in the link that brought them here, and
+     * whoever sent that link may have made it, so it is never filled in or
+     * shown here.
+     */
+    appView(ret: string) {
+        const s = this.s
+        if (s.appDone) {
+            return (
+                <div class="auth">
+                    <Card title={`Signed in as ${s.signedInAs}`}>
+                        <Alert tone="success">The app is now signed in too.</Alert>
+                        <div class="auth__actions">
+                            <Button href={APP_LINK} variant="primary">
+                                Back to Cartopolis
+                            </Button>
+                        </div>
+                    </Card>
+                </div>
+            )
+        }
         return (
-            <div class="auth">
-                <Card title={`Signed in as ${this.s.signedInAs}`}>
-                    <Alert tone="success">
-                        The app asking with code <b>{this.s.appDone}</b> is now signed in.
-                    </Alert>
+            <form class="auth" novalidate onsubmit={this.signInApp}>
+                <Card title={`Signed in as ${s.signedInAs}`}>
+                    <p>
+                        To sign in the Cartopolis app as well, type the code it shows. If you didn't start this from the
+                        app on your own device, don't: whoever gave you that link would get your account.
+                    </p>
+                    <FieldText
+                        autocomplete="off"
+                        disabled={s.busy}
+                        label="Code in the app"
+                        model={bind(s, 'appCode')}
+                        placeholder="ABC-DEFG"
+                    />
+                    {s.error && <Alert tone="danger">{s.error}</Alert>}
                     <div class="auth__actions">
-                        <Button href={APP_LINK} variant="primary">
-                            Back to Cartopolis
+                        <Button disabled={!s.appCode.trim()} loading={s.busy} type="submit" variant="primary">
+                            Sign in the app
+                        </Button>
+                        <Button disabled={s.busy} onclick={() => m.route.set(safeReturn(ret))} variant="ghost">
+                            I didn't start this in the app
                         </Button>
                     </div>
                 </Card>
-            </div>
+            </form>
         )
+    }
+
+    signInApp = async (e: Event) => {
+        e.preventDefault()
+        const s = this.s
+        if (s.busy || !s.appCode.trim()) return
+        s.busy = true
+        s.error = ''
+        try {
+            await appFromTicket(s.ticket, s.appCode.trim())
+            s.appDone = true
+        } catch (err) {
+            s.error = sentence(err, 'Could not sign in the app')
+        } finally {
+            s.busy = false
+        }
     }
 
     /** Who came back: the provider's name for them and how it was confirmed. */

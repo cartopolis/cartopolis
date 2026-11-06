@@ -35,6 +35,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/auth/ticket/link", post(ticket_link))
         .route("/api/auth/ticket/join", post(ticket_join))
         .route("/api/auth/ticket/community", post(ticket_community))
+        .route("/api/auth/ticket/app", post(ticket_app))
         .route("/api/auth/{id}/start", get(start))
         .route("/api/auth/{id}/begin", post(begin))
         .route("/api/auth/{id}/callback", get(callback))
@@ -542,13 +543,24 @@ fn group_ids(profile: &Profile) -> Vec<String> {
 
 /// A session for the app that started this round trip, left for it to
 /// collect: its own, not the browser's, so signing out of one leaves the other.
-fn hand_to_app(state: &HttpState, app: Option<&str>, principal: Uuid, username: &str) {
-    if let Some(code) = app {
-        let token = state.sessions.issue(principal, username);
-        state
-            .signin
-            .complete_pairing(code, token, username.to_string());
-    }
+/// Only from [`ticket_app`], once the person has typed the app's code.
+fn hand_to_app(state: &HttpState, code: &str, principal: Uuid, username: &str) {
+    let token = state.sessions.issue(principal, username);
+    state
+        .signin
+        .complete_pairing(code, token, username.to_string());
+}
+
+/// Two spellings of one pairing code: case, the dash and spaces aside.
+fn same_code(a: &str, b: &str) -> bool {
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_uppercase())
+            .collect()
+    };
+    let (a, b) = (norm(a), norm(b));
+    !a.is_empty() && a == b
 }
 
 async fn decide(
@@ -629,7 +641,6 @@ async fn decide(
         Purpose::SignIn => {
             if let Some((principal, username)) = linked {
                 let token = state.sessions.issue(principal, &username);
-                hand_to_app(state, flow.app.as_deref(), principal, &username);
                 let (pid, groups) = (p.id.clone(), group_ids(profile));
                 let offers = with_db(state, move |c| {
                     store::offers(c, &pid, &groups, Some(principal))
@@ -747,7 +758,7 @@ async fn read_ticket(
     Json(body): Json<TicketBody>,
 ) -> ApiResult<Json<Value>> {
     let t = find_ticket(&state, &body.ticket)?;
-    let app_code = t.app.clone();
+    let app = t.app.is_some();
     Ok(Json(match &t.outcome {
         Outcome::SignedIn {
             principal,
@@ -771,7 +782,7 @@ async fn read_ticket(
                 "username": username,
                 "principal": principal,
                 "offers": offers,
-                "app_code": app_code,
+                "app": app,
                 "return": t.return_to,
             })
         }
@@ -785,14 +796,14 @@ async fn read_ticket(
             "suggestion": suggestion,
             "offers": offers,
             "new_accounts": new_accounts.as_str(),
-            "app_code": app_code,
+            "app": app,
             "return": t.return_to,
         }),
         Outcome::LinkExisting { username } => json!({
             "kind": "link_existing",
             "identity": identity_json(&t),
             "username": username,
-            "app_code": app_code,
+            "app": app,
             "return": t.return_to,
         }),
         Outcome::Linked => json!({
@@ -911,13 +922,12 @@ async fn ticket_create(
     tracing::info!(provider = %t.provider, %username, "account made through another sign-in");
     let joined = join_offered(&state, principal, offers, &body.join)?;
     let token = state.sessions.issue(principal, &username);
-    hand_to_app(&state, t.app.as_deref(), principal, &username);
     Ok(Json(json!({
         "token": token,
         "username": username,
         "principal": principal,
         "joined": joined,
-        "app_code": t.app,
+        "app": t.app.is_some(),
     })))
 }
 
@@ -963,13 +973,50 @@ async fn ticket_link(
     spend(&state, &body.ticket);
     tracing::info!(provider = %t.provider, %username, "linked by password");
     let token = state.sessions.issue(principal, username);
-    hand_to_app(&state, t.app.as_deref(), principal, username);
     Ok(Json(json!({
         "token": token,
         "username": username,
         "principal": principal,
-        "app_code": t.app,
+        "app": t.app.is_some(),
     })))
+}
+
+#[derive(Deserialize)]
+struct AppBody {
+    ticket: String,
+    code: String,
+}
+
+/// Sign in the app that started this round trip, once the person signed in
+/// here has typed the code that app shows. Never at the callback, and never
+/// from the code in the address: whoever made the pairing code also made the
+/// link, so a session filed under it unasked goes to whoever sent the link —
+/// one click on a genuine sign-in page, and their app holds your account.
+async fn ticket_app(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<AppBody>,
+) -> ApiResult<Json<Value>> {
+    let access = require_person(&state, &headers)?;
+    let t = find_ticket(&state, &body.ticket)?;
+    let Some(code) = t.app.as_deref() else {
+        return Err(conflict("No app asked for this sign-in."));
+    };
+    if !same_code(code, &body.code) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "That isn't the code your app shows.".into(),
+        ));
+    }
+    if !state.signin.pairing_waiting(code) {
+        return Err(ApiError(
+            StatusCode::GONE,
+            "That sign-in from the app has expired. Start again from the app.".into(),
+        ));
+    }
+    hand_to_app(&state, code, access.principal, &access.username);
+    tracing::info!(username = %access.username, "app signed in by its code");
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

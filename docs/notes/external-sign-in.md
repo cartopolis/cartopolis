@@ -50,6 +50,13 @@ all six providers meant to be on for cartopolis.org).
   setting a password), such an account instead needs a sign-in through its
   provider in the last 10 minutes (`Sessions::reauthed_recently`); the API
   answers `"reauth": true` (`http::REAUTH_NEEDED`) so the page offers that.
+- **The app is signed in only when the person types its code on `/welcome`**
+  (`POST /api/auth/ticket/app`), never at the callback. Anyone can make a
+  pairing code (`POST /api/auth/app` needs no sign-in) and put it in a
+  genuine `…/start?app=CODE` link; until 2026-11-06 the callback filed the
+  session under that code, so one click on someone else's link handed them
+  your account. The ticket says only `app: true`, never the code, so the page
+  cannot fill it in.
 - Round trips, tickets and pairing codes are in memory and live 10 minutes. A
   restart costs somebody mid-sign-in one more click.
 - Joining through a linked group skips the community's join rule (that is what

@@ -574,8 +574,27 @@ async fn the_app_collects_its_own_session_by_code() {
         Some(json!({"ticket": t, "username": "bob"})),
     )
     .await;
-    assert_eq!(v["app_code"], code);
+    assert_eq!(v["app"], true);
+    assert!(
+        v.get("app_code").is_none(),
+        "the page must not be handed the code"
+    );
     let browser = v["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        poll().await.1["status"],
+        "waiting",
+        "signing in in the browser alone must not sign in the app"
+    );
+    let hand = |typed: String| {
+        let url = format!("{}/api/auth/ticket/app", base(&h));
+        let body = json!({"ticket": t, "code": typed});
+        let token = browser.clone();
+        async move { call("POST", url, Some(&token), Some(body)).await.0 }
+    };
+    assert_eq!(hand("XXX-XXXX".into()).await, 403);
+    assert_eq!(poll().await.1["status"], "waiting");
+    // Typed as a person might: lower case, no dash.
+    assert_eq!(hand(code.to_lowercase().replace('-', "")).await, 200);
     let (_, done, _) = poll().await;
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["username"], "bob");
@@ -585,6 +604,49 @@ async fn the_app_collects_its_own_session_by_code() {
         "the app's own session"
     );
     assert_eq!(poll().await.0, 404, "handed over once");
+}
+
+/// The theft the code check stops: somebody makes a pairing code and sends a
+/// person the genuine sign-in link carrying it. The person signs in with an
+/// account already linked here — one click at the provider — and the session
+/// must not be left under the sender's code.
+#[tokio::test]
+async fn a_sign_in_link_with_someone_elses_code_hands_them_nothing() {
+    let (h, _dir, _db) = server().await;
+    set_up_discord(&h).await;
+    let t = sign_in(&h, "discord", "bob", "").await;
+    let (s, v, _) = call(
+        "POST",
+        format!("{}/api/auth/ticket/create", base(&h)),
+        None,
+        Some(json!({"ticket": t, "username": "bob"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+
+    let (_, pair, _) = call(
+        "POST",
+        format!("{}/api/auth/app", base(&h)),
+        None,
+        Some(json!({})),
+    )
+    .await;
+    let (code, secret) = (
+        pair["code"].as_str().unwrap(),
+        pair["secret"].as_str().unwrap(),
+    );
+    let t = sign_in(&h, "discord", "bob", &format!("&app={code}")).await;
+    let (_, v, _) = call(
+        "POST",
+        format!("{}/api/auth/ticket", base(&h)),
+        None,
+        Some(json!({"ticket": t})),
+    )
+    .await;
+    assert_eq!(v["kind"], "signed_in", "{v}");
+    let url = format!("{}/api/auth/app/{code}?secret={secret}", base(&h));
+    let (_, waiting, _) = call("GET", url, None, None).await;
+    assert_eq!(waiting["status"], "waiting", "{waiting}");
 }
 
 #[tokio::test]

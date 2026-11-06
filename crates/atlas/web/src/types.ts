@@ -140,7 +140,7 @@ export type NewAccounts = 'anyone' | 'members' | 'none'
 /** What a round trip to a provider came to (`POST /api/auth/ticket`). */
 export type SigninTicket =
     | {
-          app_code?: string
+          app?: boolean
           kind: 'signed_in'
           offers: Offer[]
           principal: string
@@ -149,7 +149,7 @@ export type SigninTicket =
           username: string
       }
     | {
-          app_code?: string
+          app?: boolean
           identity: Identity
           kind: 'choose_name'
           new_accounts: 'anyone' | 'members'
@@ -172,7 +172,7 @@ export type SigninTicket =
 
 /** The session a ticket's create or link step hands back. */
 export interface TicketSession {
-    app_code?: string
+    app?: boolean
     principal: string
     token: string
     username: string

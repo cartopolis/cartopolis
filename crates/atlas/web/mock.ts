@@ -912,7 +912,7 @@ function mockTicket(ticket: string): SigninTicket | null {
                 kind: 'link_existing', username: MOCK_PLAYER,
             }
         case 'mock-app':
-            return {...session(), app_code: 'KQ7-4MD', kind: 'signed_in', offers: [], return: '/'}
+            return {...session(), app: true, kind: 'signed_in', offers: [], return: '/'}
         case 'mock-signedin':
             return {...session(), kind: 'signed_in', offers: [], return: '/buildings'}
         case 'mock-signedin-offers':
@@ -1051,6 +1051,11 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         const token = `mock-${uuid()}`
         sessions.set(token, username)
         return json({principal: account.id, token, username})
+    }
+    if (p === '/api/auth/ticket/app' && method === 'POST') {
+        const b = await body<{code: string; ticket: string}>(req)
+        const typed = (b.code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+        return typed === 'KQ74MDX' ? json({ok: true}) : refuse(403, "That isn't the code your app shows.")
     }
     if (p === '/api/auth/ticket/link' && method === 'POST') {
         const b = await body<{password: string; ticket: string}>(req)

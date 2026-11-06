@@ -87,6 +87,11 @@ export async function linkFromTicket(ticket: string, password: string): Promise<
     return signupApi.post<TicketSession>('/api/auth/ticket/link', {password, ticket})
 }
 
+/** Sign in the app that asked for this round trip, by the code it shows. */
+export async function appFromTicket(ticket: string, code: string): Promise<void> {
+    await signupApi.post<{ok: boolean}>('/api/auth/ticket/app', {code, ticket})
+}
+
 export async function joinFromTicket(ticket: string, join: string[]): Promise<string[] | null> {
     try {
         const {joined} = await signupApi.post<{joined: string[]}>('/api/auth/ticket/join', {join, ticket})
