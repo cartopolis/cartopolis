@@ -721,12 +721,15 @@ impl TerrainField {
     /// banks, so its correction fades out wherever the land was lifted
     /// ([`FINE_BANK_FADE_M`]).
     ///
-    /// **And on a bridge laid flat it is the deck**, where that is higher: what
+    /// **And on a bridge laid flat it is the deck**, where that is higher, and off
+    /// its ends the landing the street is stood on there: what
     /// stands on the Oosterbrug stands on it, not on the canal bed under it
     /// (`map_geometry::walk_deck_top`).
     #[must_use]
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
-        let ground = self.ground_only_at(wx, wz);
+        // The landings off flat deck ends, as the ground sheets stand on them
+        // (`map_geometry::walk_landed`).
+        let ground = crate::systems::map_geometry::walk_landed(wx, wz, self.ground_only_at(wx, wz));
         match crate::systems::map_geometry::walk_deck_top(wx, wz) {
             Some(top) => ground.max(top),
             None => ground,

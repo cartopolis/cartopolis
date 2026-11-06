@@ -406,6 +406,46 @@ pub fn walk_deck_top(wx: f32, wz: f32) -> Option<f32> {
         .reduce(f32::max)
 }
 
+/// **The landings off flat deck ends are walked on too** ([`Landing`]): the
+/// ground sheets are stood on them, and a walker reading the field alone sank
+/// to the knees in the H.N. Werkmanbrug's landing (2026-11-06). Per cell, with
+/// the cell's world origin; set by the cell's worker with the sheets it stood
+/// on them, cleared with the cell's decks.
+static WALK_LANDINGS: std::sync::RwLock<Option<HashMap<Cell, (Vec2, Vec<Landing>)>>> =
+    std::sync::RwLock::new(None);
+
+/// Replace one cell's landings.
+fn set_walk_landings(cell: Cell, origin: Vec2, landings: Vec<Landing>) {
+    if let Ok(mut w) = WALK_LANDINGS.write() {
+        let map = w.get_or_insert_with(HashMap::new);
+        if landings.is_empty() {
+            map.remove(&cell);
+        } else {
+            map.insert(cell, (origin, landings));
+        }
+    }
+}
+
+/// `here`, a ground height at a world point, with any landing there blended in
+/// as the ground sheets have it.
+#[must_use]
+pub fn walk_landed(wx: f32, wz: f32, here: f32) -> f32 {
+    let Ok(w) = WALK_LANDINGS.read() else {
+        return here;
+    };
+    let Some(map) = w.as_ref() else {
+        return here;
+    };
+    map.values().fold(here, |y, (origin, landings)| {
+        let landed_y = landed(landings, [wx - origin.x, wz - origin.y], here);
+        if (landed_y - here).abs() > (y - here).abs() {
+            landed_y
+        } else {
+            y
+        }
+    })
+}
+
 /// One lifted deck: its outline as the tile drew it, where that tile sits in the
 /// world, and how high the structure stands.
 struct Plate {
@@ -621,6 +661,7 @@ impl DeckPlates {
     /// Drop one cell's decks (cell retired).
     pub fn remove_cell(&mut self, cell: &Cell) {
         set_walk_decks(*cell, Vec::new());
+        set_walk_landings(*cell, Vec2::ZERO, Vec::new());
         self.piers.remove(cell);
         self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
@@ -631,6 +672,9 @@ impl DeckPlates {
     /// Drop every deck (re-anchor, or the source stopped being a vector one).
     pub fn clear(&mut self) {
         if let Ok(mut w) = WALK_DECKS.write() {
+            *w = None;
+        }
+        if let Ok(mut w) = WALK_LANDINGS.write() {
             *w = None;
         }
         self.piers.clear();
@@ -2578,13 +2622,26 @@ fn spawn_geometry_task(
                 ) {
                     (Some((g, _)), Some(measures)) => reached_ends
                         .iter()
-                        .filter_map(|(i, _, run)| {
+                        .filter_map(|(i, outlined, run)| {
                             let deck = decks.get(*i as usize)?;
                             let m = measures.get(*i as usize)?;
                             if m.height >= cartopolis_geo::terrain_grade::MIN_LIFT_M {
                                 return None;
                             }
-                            let nap = m.top.or_else(|| {
+                            // The deck's height at this end, where it is drawn on
+                            // a profile: its median stood the H.N. Werkmanbrug's
+                            // landing half a metre off the end it meets, which
+                            // climbs 3.3 → 4.4 m NAP along the bridge (2026-11-06).
+                            let at_end = m.profile.as_ref().and_then(|p| {
+                                let n = outlined.len() as f64;
+                                (n > 0.0).then(|| {
+                                    let (x, z) = outlined.iter().fold((0.0, 0.0), |(x, z), q| {
+                                        (x + f64::from(q[0]), z + f64::from(q[1]))
+                                    });
+                                    p.at([x / n, z / n])
+                                })
+                            });
+                            let nap = at_end.or(m.top).or_else(|| {
                                 levels.as_deref().and_then(|l| flat_deck_road_level(deck, l))
                             })?;
                             Some(Landing::new(deck, run, nap - g.datum_m()))
@@ -2592,6 +2649,9 @@ fn spawn_geometry_task(
                         .collect(),
                     _ => Vec::new(),
                 };
+                if let Some((_, origin)) = ground.as_ref() {
+                    set_walk_landings(cell, *origin, landings.clone());
+                }
                 let placed = stand_cell_on_ground(
                     &mut outcome,
                     ground.as_ref(),
@@ -5460,6 +5520,7 @@ const LANDING_BEHIND_M: f32 = 3.0;
 /// end a tenth to half a metre under its edge, its fascia standing out of the
 /// street as a brown band (2026-10-20). Each segment of an end, tile-local, its
 /// outward normal, and the deck's drawn height in the field's frame.
+#[derive(Clone)]
 pub(crate) struct Landing {
     segments: Vec<([f32; 2], [f32; 2], [f32; 2])>,
     level: f32,
