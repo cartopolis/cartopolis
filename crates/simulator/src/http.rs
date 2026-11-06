@@ -1183,6 +1183,14 @@ async fn update_account(
     }
     if let Some(disabled) = body.disabled {
         with_db(&state, |c| auth::set_disabled(c, &id, disabled))?;
+        // Its saved tokens never meet the login's `disabled = 0` check, so they
+        // go too; open connections see theirs gone and end (`net::handle_connection`).
+        if disabled {
+            let revoked = state
+                .sessions
+                .revoke_principal(Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()));
+            tracing::info!(%caller, target = %id, revoked, "disabled account signed out");
+        }
     }
     if let Some(admin) = body.admin {
         with_db(&state, |c| auth::set_admin(c, &id, admin))?;

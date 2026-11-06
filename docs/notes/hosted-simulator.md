@@ -75,15 +75,19 @@ Account management is an operator action, not gameplay. Putting it on
 movement intent, and would make every client's protocol version move whenever the
 *admin* surface changed. It is a separate surface with a separate audience; what
 it shares with the game is the account table and the session map, which is the
-point — an admin signs in with an ordinary account, and disabling someone takes
-effect on their next handshake.
+point — an admin signs in with an ordinary account, and disabling someone signs
+them out everywhere.
 
-**Disabling does not evict a live session.** `Sessions` is a map keyed by token
-with no principal index, so `disabled = 1` is a gate on the *next* `ClientHello`.
-Kicking someone who is already connected needs their token (`Sessions::revoke`)
-or `Sessions::revoke_principal` (a linear scan — account deletion uses it).
-Fixing it properly means indexing sessions by principal; nobody has needed it
-yet. **A restart is no longer a way to do it**: since 2026-08-21 the session map
+**Disabling revokes every token and ends open connections** (2026-11-06). It
+used to flip `disabled = 1` and nothing else, which gated only a *password*
+login: a saved session token never meets that check and slides its 30-day
+expiry on every use, so a disabled account's app reconnected indefinitely.
+`update_account` now calls `Sessions::revoke_principal` (a linear scan, as
+account deletion uses), and each open connection checks every
+`token_check_ms` that its credential — access token, or the session a sign-in
+was issued — still exists (`Sessions::session_live`, which also keeps an open
+connection's session from ageing out or being evicted at `MAX_SESSIONS`).
+**A restart is not a way to sign anyone out**: since 2026-08-21 the session map
 is written through to the `sessions` table (token *hashes*, 30-day sliding TTL),
 precisely so a redeploy stops signing everybody out — "stay signed in" was
 broken by every publish before that.

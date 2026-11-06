@@ -159,8 +159,8 @@ the first connection.
 
 **Operator actions are HTTP (`http.rs`), never `NetMessage`**: an authorisation
 decision must not share a path with a movement intent, and the admin surface must
-not move every client's protocol version. Disabling an account gates the next
-handshake, not the current session; the last enabled admin cannot be demoted,
+not move every client's protocol version. Disabling an account revokes its saved
+tokens and ends its open connections; the last enabled admin cannot be demoted,
 disabled or deleted. **Player safety actions are on the wire and every refusal is
 enforced by the server** — a block applied only in the UI is not a block
 (`user-safety.md`).

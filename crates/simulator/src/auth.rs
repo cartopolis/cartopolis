@@ -279,10 +279,10 @@ pub fn set_password(conn: &Connection, id: &str, password: &str) -> anyhow::Resu
 }
 
 /// Enable or disable an account. A disabled account cannot log in and cannot
-/// administer, but an already-connected session survives — sessions are held in
-/// memory and are not indexed by principal, so this is a gate on the *next*
-/// handshake. Kicking a live player is [`Sessions::revoke`]'s job and needs the
-/// token.
+/// administer. This only flips the column: the caller disabling an account also
+/// calls [`Sessions::revoke_principal`], or the account's saved tokens keep
+/// signing it in — they never pass through the `disabled = 0` login check, and
+/// each use slides their expiry on.
 pub fn set_disabled(conn: &Connection, id: &str, disabled: bool) -> anyhow::Result<bool> {
     let n = conn.execute(
         "UPDATE accounts SET disabled = ?2 WHERE id = ?1",
@@ -995,6 +995,23 @@ impl Sessions {
             });
         }
         Some(access)
+    }
+
+    /// Whether a sign-in session still exists — what an open connection made by
+    /// signing in asks every few seconds, so disabling or deleting the account
+    /// ([`Self::revoke_principal`]) ends it. Refreshes the session's age in
+    /// memory only, no database write: an open connection is a session in use,
+    /// and must neither age out nor be the oldest when the map reaches
+    /// [`MAX_SESSIONS`].
+    #[must_use]
+    pub fn session_live(&self, token: &str) -> bool {
+        match locked(&self.by_token).get_mut(&token_hash(token)) {
+            Some(session) => {
+                session.touched = SystemTime::now();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether an access token still exists and has not expired — what an open

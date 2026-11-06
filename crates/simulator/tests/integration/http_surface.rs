@@ -267,14 +267,38 @@ async fn an_account_created_through_the_api_can_sign_in() {
     );
 }
 
-/// Disabling an account closes the door on the next handshake. (It does not
-/// evict a session already established — that is `Sessions::revoke`'s job and is
-/// documented on `auth::set_disabled`.)
+/// Disabling an account closes the door on the next handshake, signs out the
+/// tokens it saved — which never pass the login's `disabled` check — and ends
+/// the connection it has open.
 #[tokio::test]
 async fn disabling_an_account_stops_the_next_login() {
     let (handle, _dir) = server().await;
     let (_, token) = admin_token(&handle, "root", "adminpass").await;
     let token = token.unwrap();
+    let saved = player_session(&http_base(&handle), "player", "playerpw").await;
+
+    // A live connection made by signing in.
+    let stream = TcpStream::connect(handle.local_addr).await.unwrap();
+    let mut client = Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(32 << 20)
+            .little_endian()
+            .new_codec(),
+    );
+    let hello = encode_app_frame(&NetMessage::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        auth: AuthCredential::Password {
+            username: "player".into(),
+            password: "playerpw".into(),
+        },
+    })
+    .unwrap();
+    client.send(Bytes::from(hello)).await.unwrap();
+    assert!(matches!(
+        decode_app_frame(&client.next().await.unwrap().unwrap()).unwrap(),
+        NetMessage::ServerHelloAck { .. }
+    ));
 
     let (_, body) = api(
         "GET",
@@ -315,6 +339,29 @@ async fn disabling_an_account_stops_the_next_login() {
             NetMessage::ServerError { code: 401, .. }
         ),
         "a disabled account must not be able to log in"
+    );
+    assert!(
+        matches!(
+            tcp_hello(&handle, AuthCredential::Token(saved)).await,
+            NetMessage::ServerError { code: 401, .. }
+        ),
+        "a disabled account's saved token must not sign it in"
+    );
+
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while let Some(frame) = client.next().await {
+            let Ok(bytes) = frame else { return true };
+            if let Ok(NetMessage::ServerError { code: 401, .. }) = decode_app_frame(&bytes) {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+    assert_eq!(
+        ended,
+        Ok(true),
+        "the connection outlived the account's disabling"
     );
 }
 

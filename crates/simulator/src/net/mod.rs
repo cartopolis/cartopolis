@@ -786,6 +786,10 @@ pub async fn handle_connection<T: FrameTransport>(
         }
         _ => (sessions.issue(principal, &username), None),
     };
+    // The session a sign-in connection watches, as an access-token one watches
+    // its token: disabling or deleting the account revokes it, and that has to
+    // end this connection too, not only the next handshake.
+    let watched_session = revocable.is_none().then(|| session_token.clone());
 
     // What this connection may do (`roles::effective`; see `ConnCtx`'s note on
     // why this is read once). A database error grants nothing.
@@ -999,11 +1003,11 @@ pub async fn handle_connection<T: FrameTransport>(
             .await?;
     }
 
-    // How often a connection made with an access token checks that the token
-    // still exists. Revoking one is how its owner stops a bot, so it has to end
-    // the bot's *open* connection, not just its next handshake; a check every
-    // few seconds is a hash lookup, and costs nothing for a sign-in (the arm is
-    // disabled when there is no token to watch). The period is
+    // How often a connection checks that its credential still exists: the
+    // access token it came with, or the session a sign-in was given. Revoking
+    // one is how its owner stops a bot, and disabling an account how an operator
+    // stops a person, so it has to end the *open* connection, not just the next
+    // handshake; a check every few seconds is a hash lookup. The period is
     // `SimConfig::token_check_ms`, floored because a zero period panics.
     let mut revocation = tokio::time::interval(std::time::Duration::from_millis(
         ctx.config.token_check_ms.max(10),
@@ -1113,12 +1117,19 @@ pub async fn handle_connection<T: FrameTransport>(
                     None => break,
                 }
             }
-            _ = revocation.tick(), if revocable.is_some() => {
+            _ = revocation.tick() => {
                 if revocable.as_deref().is_some_and(|t| !ctx.sessions.access_token_live(t)) {
                     let _ = ctx
                         .send(&server_error(0, 401, "this access token was revoked"))
                         .await;
                     outcome = Err(anyhow::anyhow!("access token revoked"));
+                    break;
+                }
+                if watched_session.as_deref().is_some_and(|t| !ctx.sessions.session_live(t)) {
+                    let _ = ctx
+                        .send(&server_error(0, 401, "this session was ended"))
+                        .await;
+                    outcome = Err(anyhow::anyhow!("session revoked"));
                     break;
                 }
             }

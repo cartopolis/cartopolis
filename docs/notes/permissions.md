@@ -50,8 +50,8 @@ drag rate. Since protocol 35 the copy is **kept current**:
 
 The client uses that list (`AuthIdentity::may`) only to decide what to offer —
 for example, the building card's "Replace with a model" button, shown only with
-`building_override`. Disabling an account empties its permissions at once, but
-the session itself stays open until the next handshake.
+`building_override`. Disabling an account empties its permissions at once, and
+revokes its tokens, which ends its open connections within `token_check_ms`.
 
 ## Two permissions are trust, not features
 
