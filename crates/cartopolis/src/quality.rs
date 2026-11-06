@@ -79,6 +79,27 @@ pub enum Tier {
     Desktop,
 }
 
+/// The tone curve on every rung: Khronos PBR Neutral.
+///
+/// It took over from `TonyMcMapface` (desktop and the Android rung) and
+/// `AcesFitted` (phone) on 2026-11-06. The reason is what the city looked like
+/// against a photograph of the Grote Markt in sun, not cost. Tony lifts the
+/// shadows and pulls saturated colour towards white, so a sunlit and a shaded
+/// facade came out nearly one grey and the brick came out salmon. The frame's
+/// luma standard deviation (mac-2, Grote Markt from 70 m at noon) was 0.135
+/// under Tony, 0.208 under this curve, and 0.187 for the photograph
+/// (Wikimedia, "20100523 Grote Markt en Martinitoren").
+///
+/// Measured beside it and dropped:
+/// - AgX: 0.141, and greyer still.
+/// - Removing `AMBIENT_DAY_BRIGHTNESS` outright: 0.138, so the fill light was
+///   never what flattened the frame.
+///
+/// It is arithmetic with no LUT, so it is also the cheap choice per fragment on
+/// a rung without `Hdr`. It is darker in the toe than Tony, which the night
+/// exposure lift pays for (`sky::NIGHT_EXPOSURE_LIFT`).
+pub const TONEMAPPING: Tonemapping = Tonemapping::KhronosPbrNeutral;
+
 /// The render budget for this run. Every field is a thing that measurably costs
 /// either fill or main-thread time; nothing is here for taste.
 #[derive(Clone, Copy, Debug)]
@@ -218,8 +239,8 @@ pub struct Budget {
     /// and bevy_pbr answers that by setting `TONEMAP_IN_SHADER` — so the curve
     /// stops being one full-screen pass and becomes work in *every mesh fragment
     /// shader*, multiplied by the ground overdraw. Bevy's default there is
-    /// `TonyMcMapface`, which samples a 3D LUT; `AcesFitted` is pure arithmetic
-    /// and needs no texture bound at all.
+    /// `TonyMcMapface`, which samples a 3D LUT. [`TONEMAPPING`], which every rung
+    /// uses now, is pure arithmetic and needs no texture bound at all.
     ///
     /// Deband dither stays on regardless — the sky dome's gradient is precisely
     /// the banding case it exists for, and it is arithmetic, not a fetch.
@@ -581,9 +602,7 @@ impl Budget {
             // shadows on screen — a workstation is where a hard 2×2 edge would be
             // most visible.
             shadow_filter: ShadowFilteringMethod::Gaussian,
-            // The camera is `Hdr` here (atmosphere + bloom), so this is one
-            // full-screen pass and the LUT is worth its fidelity.
-            tonemapping: Tonemapping::TonyMcMapface,
+            tonemapping: TONEMAPPING,
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
             compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
@@ -671,8 +690,7 @@ impl Budget {
             // and this is the rung Android resolves to — where it is nine taps
             // over 3.5 million pixels.
             shadow_filter: ShadowFilteringMethod::Hardware2x2,
-            // This rung's brief is to keep the picture, and the sky is most of it.
-            tonemapping: Tonemapping::TonyMcMapface,
+            tonemapping: TONEMAPPING,
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
             compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
@@ -807,7 +825,8 @@ impl Budget {
             shadow_filter: ShadowFilteringMethod::Hardware2x2,
             // No atmosphere and no bloom means no `Hdr`, which means the curve
             // runs per fragment rather than once — so it must not sample a LUT.
-            tonemapping: Tonemapping::AcesFitted,
+            // `TONEMAPPING` does not: it is a few lines of arithmetic.
+            tonemapping: TONEMAPPING,
             space_raymarch: false,
             // Half of `vector_tiles::TILE_PX`, and the same 256 the globe settled
             // on. Written out rather than derived from `TILE_PX / 2` so raising

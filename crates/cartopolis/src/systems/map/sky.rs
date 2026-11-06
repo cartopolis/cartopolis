@@ -338,7 +338,27 @@ pub(crate) const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
 pub(crate) fn eye_adaptation_stops(hours: f32, decl_rad: f32) -> f32 {
     NIGHT_EXPOSURE_LIFT * (1.0 - utils::sun::daylight(hours, decl_rad))
         + TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(hours, decl_rad)
+        + NIGHT_TOE_LIFT * night_depth(hours, decl_rad)
 }
+
+/// Stops more the camera opens up once the sun is well down, for the tone
+/// curve and not for the eye: `quality::TONEMAPPING` (Khronos PBR Neutral) does
+/// not lift the shadows the way `TonyMcMapface` did, and the night and dusk
+/// above were tuned under Tony. Swapping the curve alone took the 22 h frame
+/// from a mean sRGB luma of 0.048 to 0.017, a city that was only its windows
+/// (mac-2, `docs/cloud-shots.toml`, 2026-11-06).
+///
+/// Its own term, gated on the sun being *below* the horizon, rather than a
+/// larger [`NIGHT_EXPOSURE_LIFT`]. That one rides `1 − daylight`, which is
+/// already a fifth at a 10° sun, and raised to 3.5 it lifted the late
+/// afternoon into the sun from 0.79 to 0.86, a white sky.
+pub(crate) const NIGHT_TOE_LIFT: f32 = 1.5;
+
+/// 0 with the sun up, 1 once it is about 6° down (civil dusk).
+fn night_depth(hours: f32, decl_rad: f32) -> f32 {
+    utils::sun::smoothstep(0.0, 0.1, -utils::sun::sun_direction(hours, decl_rad).y)
+}
+
 /// Fraction of the direct beam a full overcast takes away.
 ///
 /// A stratus deck does not thin the sun, it *replaces* it: at full cover there is

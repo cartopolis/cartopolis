@@ -333,6 +333,17 @@ day than `TonyMcMapface`, no help at sunset), a smaller
 (`ScatteringMedium::default()` has it). The next place to look is the medium
 and the light's illuminance curve, not the cloud shader.
 
+**The tone curve is Khronos PBR Neutral since 2026-11-06** (`quality::TONEMAPPING`),
+and that moved the sky most of the way. Under Tony the noon zenith was greyed,
+the shade lifted and the brick paled. Under Khronos the sky is bluer and the
+frame's contrast is close to a sunny photograph's (luma standard deviation 0.21
+against 0.19; Tony's was 0.135). Its toe is darker, though: dusk and night
+needed `sky::NIGHT_TOE_LIFT` (1.5 stops, only with the sun below the horizon).
+Into a 10° sun the frame is brighter than before (mean luma 0.79 against 0.69),
+because Khronos holds highlights where Tony rolled them off. At 17.6 h the
+zenith now reads faintly violet, worth watching against the "no mauve"
+finding above.
+
 **The white flicker** is unconfirmed. Suspected: `sun_rays.wesl` scaled every
 beam by the plain mean of eight taps round the sun, and a crisp, forward-lit
 cloud edge crossing one tap moved the whole frame. It now takes their geometric
