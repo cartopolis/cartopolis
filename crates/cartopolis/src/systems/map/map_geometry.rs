@@ -2801,7 +2801,9 @@ fn stand_cell_on_ground(
                 openings: cell_openings.to_vec(),
             },
         );
-        wet_the_aprons(meshes, terraces);
+        wet_the_aprons(meshes, terraces, &|c| {
+            ground.in_water(origin.x + c[0], origin.y + c[1])
+        });
         for sm in meshes.iter_mut() {
             stand_on_terrain(
                 sm.group,
@@ -5446,6 +5448,10 @@ const LANDING_FADE_M: f32 = 4.0;
 const LANDING_SIDE_HOLD_M: f32 = 2.0;
 const LANDING_SIDE_M: f32 = 4.0;
 
+/// How far behind the line of a flat deck's end, beside the deck, the landing
+/// still holds the quay, metres.
+const LANDING_BEHIND_M: f32 = 3.0;
+
 /// **The street off a flat deck's end, at the deck's height.** Atlas lays a
 /// landing at the deck's height off each end (`terrain_grade`'s
 /// `ABUTMENT_LANDING_M`), but the field holds it only at its sample spacing,
@@ -5515,7 +5521,11 @@ impl Landing {
                 0.0
             };
             let o = (p[0] - a[0]) * out[0] + (p[1] - a[1]) * out[1];
-            if o < 0.0 {
+            // Behind the end's line is the deck itself — but beside it, the
+            // quay the end stands on: the register's canal reaches a metre past
+            // the H.N. Werkmanbrug's end there, and that strip stayed in the
+            // carve as a pit beside the landing (2026-11-06).
+            if o < 0.0 && (past == 0.0 || o < -LANDING_BEHIND_M) {
                 continue;
             }
             let outward = 1.0 - ((o - LANDING_FULL_M) / LANDING_FADE_M).clamp(0.0, 1.0);
@@ -5879,7 +5889,18 @@ fn rings_contain(rings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
 /// ([`Terrace::off_its_water`]) and not on a walk leaves its ground sheet for a
 /// water mesh of its own, which `stand_on_terrain` stands at the water's level
 /// like any other.
-fn wet_the_aprons(meshes: &mut Vec<SurfaceMesh>, terraces: &[Terrace]) {
+///
+/// **Only where the register has water there too** (`in_water`, tile-local):
+/// the strip is the register's canal that the map's stops short of. Taken
+/// wherever it lay off a walk's water edge, it turned the corner between the
+/// H.N. Werkmanbrug's end and the cycle ramp beside it — land in the register,
+/// the ramp measured as a lower walk — into a pit of canal with quay walls
+/// round it (2026-11-06).
+fn wet_the_aprons(
+    meshes: &mut Vec<SurfaceMesh>,
+    terraces: &[Terrace],
+    in_water: &dyn Fn([f32; 2]) -> bool,
+) {
     if terraces.is_empty() {
         return;
     }
@@ -5902,7 +5923,8 @@ fn wet_the_aprons(meshes: &mut Vec<SurfaceMesh>, terraces: &[Terrace]) {
                 [c[0] + p[0] / 3.0, c[1] + p[2] / 3.0]
             });
             let apron = !terraces.iter().any(|w| w.contains(c))
-                && terraces.iter().any(|w| w.off_its_water(c));
+                && terraces.iter().any(|w| w.off_its_water(c))
+                && in_water(c);
             if apron {
                 let base = wet.positions.len() as u32;
                 wet.positions
@@ -6919,7 +6941,12 @@ mod tests {
             colors: Vec::new(),
             rungs: Vec::new(),
         }];
-        wet_the_aprons(&mut meshes, &[walk()]);
+        // Land in the register stays ground, wherever it lies.
+        let mut dry = meshes.clone();
+        wet_the_aprons(&mut dry, &[walk()], &|_| false);
+        assert_eq!(dry.len(), 1, "no water where the register has none");
+        assert_eq!(dry[0].indices.len(), 18);
+        wet_the_aprons(&mut meshes, &[walk()], &|c| c[0] >= 10.0);
         assert_eq!(meshes.len(), 2, "the strip off the water edge is water");
         assert_eq!(meshes[1].group, SurfaceGroup::Water);
         assert_eq!(meshes[1].indices.len(), 6);
@@ -7024,6 +7051,14 @@ mod tests {
         assert!((at(21.0, -2.0) - 5.0).abs() < 1e-5, "held beside the end");
         assert!((at(21.0, -4.0) - 4.5).abs() < 1e-5, "halfway down the side");
         assert!((at(21.0, -6.5) - 4.0).abs() < 1e-5, "past the side fade");
+        assert!(
+            (at(19.0, -2.0) - 5.0).abs() < 1e-5,
+            "the quay beside the deck"
+        );
+        assert!(
+            (at(16.0, -2.0) - 4.0).abs() < 1e-5,
+            "too far behind the end"
+        );
         // Smooth: no step along a line out of the end or past its side.
         for k in 0..200 {
             let (o, s) = (20.0 + k as f32 * 0.05, -(k as f32) * 0.05);
