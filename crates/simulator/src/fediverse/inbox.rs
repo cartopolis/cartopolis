@@ -508,7 +508,8 @@ fn accept_object(
         .get("url")
         .and_then(id_of)
         .filter(|u| super::place_from_link(u).is_none())
-        .or_else(|| Some(ap_id.clone()));
+        .or_else(|| Some(ap_id.clone()))
+        .filter(|u| super::web_link(u));
     for (community, parent, to_group) in targets {
         let stored = ctx.db(|conn| {
             if posts::actor_blocked(conn, community, &author.id)?

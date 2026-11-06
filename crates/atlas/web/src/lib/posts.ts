@@ -53,6 +53,22 @@ export function placeParam(p: PostPlace): string {
     return `${p.latitude.toFixed(5)},${p.longitude.toFixed(5)},${alt}m${look}`
 }
 
+/**
+ * A link from another server, if it is a web page: `http:` or `https:` only.
+ * Anything else — `javascript:` above all — would run on this page, where the
+ * session token and the chat keys are. The server keeps only these already;
+ * this holds for what it stored before it did.
+ */
+export function webLink(url: string | null | undefined): string | null {
+    if (!url) return null
+    try {
+        const {protocol} = new URL(url)
+        return protocol === 'https:' || protocol === 'http:' ? url : null
+    } catch {
+        return null
+    }
+}
+
 /** The link that opens the map at a post's view, as the app's place links do. */
 export function placeLink(p: PostPlace): string {
     return `/go?place=${placeParam(p)}`

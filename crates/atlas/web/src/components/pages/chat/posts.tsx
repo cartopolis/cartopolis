@@ -5,7 +5,7 @@ import {signupApi} from '@/app'
 import {ApiError} from '@/lib/api'
 import type {CommunityView} from '@/lib/chat'
 import {Icon} from '@/lib/icons'
-import {parsePlace, placeParam, suggestHandle} from '@/lib/posts'
+import {parsePlace, placeParam, suggestHandle, webLink} from '@/lib/posts'
 import type {FollowLink, PostDto, PostPlace, PostReport, PostThread, PublicInfo, WhoPosts} from '@/types'
 
 /**
@@ -284,7 +284,8 @@ export function FollowFrom(address: string, group: boolean) {
             const link = await signupApi.get<FollowLink>(
                 `/api/fediverse/follow-link?server=${encodeURIComponent(server)}&address=${encodeURIComponent(address)}`,
             )
-            window.open(link.url, '_blank', 'noopener')
+            const url = webLink(link.url)
+            if (url) window.open(url, '_blank', 'noopener')
         } catch (e) {
             failed(e)
         }
@@ -428,8 +429,8 @@ export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
                 <small>They can't post here again, and what they wrote is hidden</small>
             </button>
         ),
-        !p.author.local && p.url && (
-            <a href={p.url} rel="noopener" target="_blank">Open where it was posted</a>
+        !p.author.local && webLink(p.url) && (
+            <a href={webLink(p.url) ?? undefined} rel="noopener" target="_blank">Open where it was posted</a>
         ),
     ].filter(Boolean)
     return (

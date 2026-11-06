@@ -851,7 +851,7 @@ pub fn read_actor_key(v: &Value, key_id: Option<&str>) -> Option<Actor> {
             .map(str::to_string),
         key_id: key.get("id")?.as_str()?.to_string(),
         public_pem: key.get("publicKeyPem")?.as_str()?.to_string(),
-        url: v.get("url").and_then(id_of),
+        url: v.get("url").and_then(id_of).filter(|u| super::web_link(u)),
         id,
     })
 }

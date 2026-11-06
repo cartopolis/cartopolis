@@ -254,6 +254,15 @@ pub fn place_link(base: &str, place: &cartopolis_core::posts::PostPlace) -> Stri
     )
 }
 
+/// Whether a link from another server may be kept as one: `https:` or `http:`
+/// only. Pages draw these as `href`s, and a `javascript:` one would run on
+/// cartopolis.org, where the session token and the chat keys are.
+#[must_use]
+pub fn web_link(url: &str) -> bool {
+    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+    matches!(scheme.as_deref(), Some("https" | "http")) && url::Url::parse(url).is_ok()
+}
+
 /// The place a Cartopolis link names (`…/go?place=53.21940,6.56650,120m,-12.5,45.0`),
 /// from whichever server: how a post from Mastodon, which has no place of its
 /// own, gets one.
@@ -337,6 +346,18 @@ mod tests {
     use super::*;
     use cartopolis_core::point::PointView;
     use cartopolis_core::posts::PostPlace;
+
+    #[test]
+    fn only_web_pages_are_kept_as_links() {
+        assert!(web_link("https://mastodon.example/@anna/1"));
+        assert!(web_link("HTTP://lemmy.example/post/2"));
+        assert!(!web_link("javascript:alert(document.cookie)"));
+        assert!(!web_link("JavaScript://x.example/%0aalert(1)"));
+        assert!(!web_link("data:text/html,<script>alert(1)</script>"));
+        assert!(!web_link("vbscript:msgbox"));
+        assert!(!web_link("//x.example/relative"));
+        assert!(!web_link(""));
+    }
 
     #[test]
     fn a_local_url_names_what_it_is() {

@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test'
 
-import {parsePlace, placeLink, suggestHandle} from './posts'
+import {parsePlace, placeLink, suggestHandle, webLink} from './posts'
 
 describe('public posts', () => {
     test('a suggested handle is what the server accepts', () => {
@@ -8,6 +8,14 @@ describe('public posts', () => {
         expect(suggestHandle('Oosterpoort Café')).toBe('oosterpoort_cafe')
         expect(suggestHandle('  --  ')).toBe('community')
         expect(suggestHandle('x'.repeat(40)).length).toBe(30)
+    })
+
+    test('a link from another server is drawn only if it is a web page', () => {
+        expect(webLink('https://mastodon.example/@anna/1')).toBe('https://mastodon.example/@anna/1')
+        expect(webLink('javascript:alert(1)')).toBeNull()
+        expect(webLink(' JavaScript:alert(1)')).toBeNull()
+        expect(webLink('data:text/html,x')).toBeNull()
+        expect(webLink(undefined)).toBeNull()
     })
 
     test('a place link reads back into its place and view', () => {
