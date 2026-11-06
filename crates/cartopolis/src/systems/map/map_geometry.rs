@@ -2554,9 +2554,13 @@ fn spawn_geometry_task(
                     .map(|(i, run)| {
                         let reached = match (ground.as_ref(), decks.get(i as usize)) {
                             (Some((g, origin)), Some(deck)) => {
-                                let water = |p: [f32; 2]| {
-                                    g.water_surface_at(origin.x + p[0], origin.y + p[1]).is_some()
-                                };
+                                // Strictly inside: with the join tolerance every
+                                // end at its quay was carried 3 m onto the land,
+                                // and the H.N. Werkmanbrug's lip and abutment
+                                // wall stood on its landing as a spike and a slot
+                                // (2026-11-06).
+                                let water =
+                                    |p: [f32; 2]| g.in_water(origin.x + p[0], origin.y + p[1]);
                                 vector_tiles::reach_the_quay(deck, &run, &water)
                             }
                             _ => run.clone(),
@@ -2854,7 +2858,7 @@ fn stand_cell_on_ground(
                 }
             }
         }
-        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground, terraces) {
+        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground, terraces, landings) {
             meshes.push(walls);
         }
         // **The cap holds after the refinement, not only before it.** The
@@ -5431,7 +5435,16 @@ const ABUTMENT_WATER_CLIMB_M: f32 = 0.3;
 /// How far off a flat deck's end the street is stood at the deck's own height,
 /// metres, and how much further it takes to rejoin the field.
 const LANDING_FULL_M: f32 = 3.0;
-const LANDING_FADE_M: f32 = 2.0;
+const LANDING_FADE_M: f32 = 4.0;
+
+/// How far past either side of a flat deck's end the landing is held at the
+/// deck's height, metres, and how much further it fades out. Held only straight
+/// off the end, it stood as a step at each side: the H.N. Werkmanbrug's cycle
+/// path lands on a platform 12 m wide off a 4.4 m end (AHN: 3.1–3.35 m NAP
+/// across it), and the field there, carved by the canal and sampled every 3 m,
+/// sagged 0.6 m at its sides into creases and a dip (2026-11-06).
+const LANDING_SIDE_HOLD_M: f32 = 2.0;
+const LANDING_SIDE_M: f32 = 4.0;
 
 /// **The street off a flat deck's end, at the deck's height.** Atlas lays a
 /// landing at the deck's height off each end (`terrain_grade`'s
@@ -5472,22 +5485,42 @@ impl Landing {
     }
 
     /// How much of the deck's height a tile-local point takes: 1 within
-    /// [`LANDING_FULL_M`] outward of a segment and across its span, falling to 0
-    /// over [`LANDING_FADE_M`] more.
+    /// [`LANDING_FULL_M`] outward of the end and across it, falling to 0 over
+    /// [`LANDING_FADE_M`] more outward and [`LANDING_SIDE_M`] past either side.
+    /// Smoothstepped, so the ground leaves the landing and rejoins the field
+    /// without a crease at either edge.
     fn weight(&self, p: [f32; 2]) -> f32 {
+        use crate::utils::sun::smoothstep;
+        // Past the run's own ends only: between two segments of one end the
+        // other segment holds the point.
+        let n = self.segments.len();
         let mut w = 0.0f32;
-        for &(a, b, out) in &self.segments {
+        for (k, &(a, b, out)) in self.segments.iter().enumerate() {
             let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
-            let len2 = dx * dx + dz * dz;
-            let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2;
-            if !(0.0..=1.0).contains(&t) {
-                continue;
-            }
+            let len = dx.hypot(dz);
+            let along = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len;
+            let past = if along < 0.0 {
+                if k == 0 {
+                    -along
+                } else {
+                    continue;
+                }
+            } else if along > len {
+                if k + 1 == n {
+                    along - len
+                } else {
+                    continue;
+                }
+            } else {
+                0.0
+            };
             let o = (p[0] - a[0]) * out[0] + (p[1] - a[1]) * out[1];
             if o < 0.0 {
                 continue;
             }
-            w = w.max((1.0 - (o - LANDING_FULL_M) / LANDING_FADE_M).clamp(0.0, 1.0));
+            let outward = 1.0 - ((o - LANDING_FULL_M) / LANDING_FADE_M).clamp(0.0, 1.0);
+            let side = 1.0 - ((past - LANDING_SIDE_HOLD_M) / LANDING_SIDE_M).clamp(0.0, 1.0);
+            w = w.max(smoothstep(0.0, 1.0, outward) * smoothstep(0.0, 1.0, side));
         }
         w
     }
@@ -5507,17 +5540,25 @@ impl cartopolis_geo::terrain_refine::GroundField for Landed<'_> {
     }
 
     fn at(&self, x: f32, z: f32) -> f32 {
-        let here = self.under.at(x, z);
-        let p = [x - self.origin.x, z - self.origin.y];
-        let (mut w, mut level) = (0.0f32, here);
-        for l in self.landings {
-            let lw = l.weight(p);
-            if lw > w {
-                (w, level) = (lw, l.level);
-            }
-        }
-        here + w * (level - here)
+        landed(
+            self.landings,
+            [x - self.origin.x, z - self.origin.y],
+            self.under.at(x, z),
+        )
     }
+}
+
+/// `here` — a ground height at tile-local `p` — with the landings off flat deck
+/// ends blended in ([`Landing`]).
+fn landed(landings: &[Landing], p: [f32; 2], here: f32) -> f32 {
+    let (mut w, mut level) = (0.0f32, here);
+    for l in landings {
+        let lw = l.weight(p);
+        if lw > w {
+            (w, level) = (lw, l.level);
+        }
+    }
+    here + w * (level - here)
 }
 
 /// **A lower quay, stood at its own measured height.** The walk at the foot of a
@@ -5968,6 +6009,7 @@ fn quay_walls<G: MeasuredGround>(
     origin: Vec2,
     terrain: &G,
     terraces: &[Terrace],
+    landings: &[Landing],
 ) -> Option<SurfaceMesh> {
     if !terrain.has_banks() {
         return None;
@@ -6051,8 +6093,18 @@ fn quay_walls<G: MeasuredGround>(
                 let off = mid + out_n * TERRACE_PROBE_M;
                 terrace_at(terraces, [off.x, off.y])
             });
+            // Up to the ground as it is drawn, landings included: a wall
+            // under a flat deck's landing stopped at the field's height and
+            // left a slit along the canal's outline through the H.N.
+            // Werkmanbrug's landing (2026-11-06).
             let street = |p: [f32; 3]| {
-                walk.unwrap_or_else(|| terrain.land_at(origin.x + p[0], origin.y + p[2]))
+                walk.unwrap_or_else(|| {
+                    landed(
+                        landings,
+                        [p[0], p[2]],
+                        terrain.land_at(origin.x + p[0], origin.y + p[2]),
+                    )
+                })
             };
             let (ta, tb) = (street(pa), street(pb));
             let (ha, hb) = (ta - pa[1], tb - pb[1]);
@@ -6763,7 +6815,7 @@ mod tests {
         // The tile runs z 0..90 (inside the ±100 m field), so the canal's two
         // short edges are on its border.
         let meshes = vec![water_rect(-10.0, 10.0, 0.0, 90.0, -3.0)];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[]).expect("walls");
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[], &[]).expect("walls");
         assert_eq!(walls.group, SurfaceGroup::QuayWall);
         assert_eq!(walls.positions.len(), 8, "two banks, one quad each");
         for (p, n) in walls.positions.iter().zip(&walls.normals) {
@@ -6791,14 +6843,14 @@ mod tests {
             water_rect(-10.0, 0.0, 0.0, 90.0, -3.0),
             water_rect(0.0, 10.0, 0.0, 90.0, -3.0),
         ];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[]).expect("walls");
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[], &[]).expect("walls");
         assert!(
             walls.positions.iter().all(|p| p[0].abs() > 9.99),
             "a wall down the middle of the canal"
         );
         // The same outline with its surface at the street: nothing to stand.
         let level = vec![water_rect(-10.0, 10.0, 0.0, 90.0, 2.0)];
-        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground, &[]).is_none());
+        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground, &[], &[]).is_none());
     }
 
     /// A bank with a lower quay along it is walled up to the walk, not to the
@@ -6823,12 +6875,13 @@ mod tests {
             Vec2::ZERO,
             &ground,
             &[walk(vec![false, false, false, true])],
+            &[],
         )
         .expect("walls");
         assert_eq!(walls.positions.len(), 4, "only the far bank keeps its wall");
         assert!(walls.positions.iter().all(|p| p[0] < -9.99));
         // Without its water edge, two metres is past the probe: the wall stands.
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[walk(Vec::new())]);
+        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[walk(Vec::new())], &[]);
         assert_eq!(walls.expect("walls").positions.len(), 8);
     }
 
@@ -6939,8 +6992,9 @@ mod tests {
     }
 
     /// The street off a flat deck's end stands at the deck's height for
-    /// `LANDING_FULL_M`, rejoins the field over `LANDING_FADE_M`, and nothing on
-    /// the deck's side of the end or beyond its span is touched.
+    /// `LANDING_FULL_M`, rejoins the field smoothly over `LANDING_FADE_M` outward
+    /// and `LANDING_SIDE_M` past either side, and nothing on the deck's side of
+    /// the end is touched.
     #[test]
     fn the_street_off_a_flat_deck_end_meets_the_deck() {
         struct Flat;
@@ -6964,10 +7018,24 @@ mod tests {
         let at = |x: f32, z: f32| landed.at(100.0 + x, 100.0 + z);
         assert!((at(20.5, 10.0) - 5.0).abs() < 1e-5);
         assert!((at(23.0, 10.0) - 5.0).abs() < 1e-5);
-        assert!((at(24.0, 10.0) - 4.5).abs() < 1e-5);
-        assert!((at(26.0, 10.0) - 4.0).abs() < 1e-5);
+        assert!((at(25.0, 10.0) - 4.5).abs() < 1e-5, "halfway down the fade");
+        assert!((at(27.0, 10.0) - 4.0).abs() < 1e-5);
         assert!((at(19.0, 10.0) - 4.0).abs() < 1e-5, "on the deck");
-        assert!((at(21.0, -2.0) - 4.0).abs() < 1e-5, "beside the end");
+        assert!((at(21.0, -2.0) - 5.0).abs() < 1e-5, "held beside the end");
+        assert!((at(21.0, -4.0) - 4.5).abs() < 1e-5, "halfway down the side");
+        assert!((at(21.0, -6.5) - 4.0).abs() < 1e-5, "past the side fade");
+        // Smooth: no step along a line out of the end or past its side.
+        for k in 0..200 {
+            let (o, s) = (20.0 + k as f32 * 0.05, -(k as f32) * 0.05);
+            assert!(
+                (at(o + 0.05, 10.0) - at(o, 10.0)).abs() < 0.05,
+                "outward at {o}"
+            );
+            assert!(
+                (at(21.0, s - 0.05) - at(21.0, s)).abs() < 0.05,
+                "sideways at {s}"
+            );
+        }
     }
 
     /// A flat deck stands at the street off its ends — not at the ground under
