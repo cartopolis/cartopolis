@@ -128,6 +128,12 @@ fn veg_profile(kind: &str) -> Option<Profile> {
 /// ~40% of the instances in a heathland cell and none of it has a visible stem.
 const TRUNK_MIN_HEIGHT: f32 = 4.0;
 
+/// How far a crown vertex may be pulled in towards the crown's centre, as a
+/// fraction of its radius: enough to break the outline into lobes, not so much
+/// that a crown with 18 vertices turns into a star.
+const CROWN_LUMP: f32 = 0.22;
+const CROWN_LUMP_SEED: u64 = 0xC4_0A_17;
+
 // ─── Scatter ─────────────────────────────────────────────────────────────────
 
 /// Scatter trees over a tile's vegetated `land` polygons.
@@ -795,10 +801,16 @@ pub fn build_vegetation_meshes(
         ];
 
         let base = canopy.positions.len() as u32;
-        for p in &unit.verts {
+        // Every crown the same ellipsoid is what made a row of trees read as a
+        // row of balls. Each vertex is pulled in by its own draw, so no two
+        // crowns share an outline; only *in*, so a crown never reaches past the
+        // radius the tunnel and sewer checks clear it at.
+        let lumps = hash3(CROWN_LUMP_SEED, (t.x * 8.0) as i32, (t.z * 8.0) as i32);
+        for (i, p) in unit.verts.iter().enumerate() {
+            let k = 1.0 - CROWN_LUMP * rand01(lumps, i as u32);
             canopy
                 .positions
-                .push([t.x + p[0] * rx, cy + p[1] * ry, t.z + p[2] * rz]);
+                .push([t.x + p[0] * rx * k, cy + p[1] * ry * k, t.z + p[2] * rz * k]);
             // Inverse-transpose of a non-uniform scale is the reciprocal scale, or
             // an ellipsoid's normals point the way a sphere's would and the shading
             // gives away that every tree is the same ball.

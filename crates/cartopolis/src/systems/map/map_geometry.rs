@@ -4742,7 +4742,11 @@ fn ground_detail_for(group: SurfaceGroup) -> GroundDetailExtension {
             | SurfaceGroup::QuayWall
     ) {
         return GroundDetailExtension {
-            params: crate::systems::ground_detail::DETAIL_OPTED_OUT,
+            params: if group == SurfaceGroup::Canopy {
+                crate::systems::ground_detail::DETAIL_FOLIAGE
+            } else {
+                crate::systems::ground_detail::DETAIL_OPTED_OUT
+            },
             slope: None,
             // A surface group is never a clipmap tile, so the level cross-fade is
             // off here as it is on every other ground material but those.

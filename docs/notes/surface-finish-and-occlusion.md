@@ -476,7 +476,29 @@ capture (a node rebuilt by another session) renders every 3DBAG wall as one
 constant height — windowless and brickless — which looks exactly like a shader
 NaN.
 
+## Occlusion without a pass (2026-11-06)
+
+There is still no occlusion pass, but bevy's `PbrInput` carries
+`diffuse_occlusion`, `specular_occlusion` and `directional_shadow_factor`, and a
+material may write all three. Two surfaces do:
+
+- **Glass** (`street_reflection`, `building_windows.wesl`). A pane's reflection
+  aimed below the rooftops sees the facades opposite, not the sky, so it is
+  occluded to 0.3. Both factors are needed. A pane forced black inside, with
+  `specular_occlusion` at 0, still carried ~0.05 of linear grey (mac-2), because
+  `AmbientLight`'s own specular lobe is occluded only by the diffuse term. Before
+  this, every ground-floor window read as a milky grey sheet.
+- **Tree crowns** (`foliage`, `ground_detail.wesl`, selected by
+  `ground_detail::DETAIL_FOLIAGE`). The crown is a density field in three
+  lattices (1.25, 0.5 and 0.125 m). Its slope tilts the normal, and its gaps are
+  occluded from the sky and the sun alike. `scatter::build_vegetation_meshes`
+  also pulls each crown vertex in by up to `CROWN_LUMP`, so no two outlines
+  match. The cost is no vertices, no upload and no texture.
+
 ### Still flat
 
 - **No screen-space reflections, no parallax, no decals.**
+- A crown's silhouette is still its 18 vertices. Lobes break it up, but an
+  alpha-cut leaf edge would need a discard, and that would cost early depth
+  testing for every material sharing the ground pipeline.
 - Concrete paving slabs carry no joint relief.

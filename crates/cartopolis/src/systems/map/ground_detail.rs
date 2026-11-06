@@ -102,6 +102,11 @@ impl GroundDetail {
 /// [`refresh_ground_detail`] leaves any material with a negative strength alone.
 pub const DETAIL_OPTED_OUT: Vec4 = Vec4::new(0.0, 0.0, 0.0, -1.0);
 
+/// [`DETAIL_OPTED_OUT`] for a tree's crown, which `ground_detail.wesl` draws as
+/// clumps of leaves (`foliage`) rather than as the smooth ball its mesh is. Still
+/// opted out — `w` is what every check reads — and `x` says which kind.
+pub const DETAIL_FOLIAGE: Vec4 = Vec4::new(1.0, 0.0, 0.0, -1.0);
+
 /// How much of the measured residual slope reaches the normal.
 ///
 /// One, and it is written down rather than left implicit: the texture is a

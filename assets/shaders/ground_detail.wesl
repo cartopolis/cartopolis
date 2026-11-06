@@ -478,6 +478,105 @@ fn paving_look(pattern: u32, p: vec2<f32>, metres_per_px: f32, sharpest_px: f32)
     return look;
 }
 
+// ─── Foliage ─────────────────────────────────────────────────────────────────
+//
+// A crown is an 18-vertex ellipsoid (`scatter::build_vegetation_meshes`), and lit
+// as one it read as a green ball: one smooth gradient from the lit side to the
+// shade. A real crown is clumps of leaves with gaps between them, and the gaps
+// are the darkest thing in it, because the sky and the sun reach them only
+// through the clumps. So the crown's surface becomes a density field in three
+// lattices — boughs, clumps and sprays of leaves — whose slope tilts the normal
+// and whose low points are occluded, from the ambient and from the sun alike.
+// Nothing is stored or uploaded. The lattices divide the floating origin's
+// 10,000 m jump and the hash wraps every 80 cells in x and z, as the paving's
+// do, so a crown is the same crown either side of one.
+
+fn fol_hash(i: vec3<f32>) -> f32 {
+    let w = vec3<f32>(i.x - floor(i.x / 80.0) * 80.0, i.y, i.z - floor(i.z / 80.0) * 80.0);
+    return fract(sin(dot(w, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+fn fol_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let near = mix(
+        mix(fol_hash(i), fol_hash(i + vec3<f32>(1.0, 0.0, 0.0)), u.x),
+        mix(fol_hash(i + vec3<f32>(0.0, 1.0, 0.0)), fol_hash(i + vec3<f32>(1.0, 1.0, 0.0)), u.x),
+        u.y,
+    );
+    let far = mix(
+        mix(fol_hash(i + vec3<f32>(0.0, 0.0, 1.0)), fol_hash(i + vec3<f32>(1.0, 0.0, 1.0)), u.x),
+        mix(fol_hash(i + vec3<f32>(0.0, 1.0, 1.0)), fol_hash(i + vec3<f32>(1.0, 1.0, 1.0)), u.x),
+        u.y,
+    );
+    return mix(near, far, u.z);
+}
+
+/// One lattice's height and slope, the slope by forward differences a third of
+/// a cell long — short enough to follow a clump, long enough not to alias.
+fn fol_octave(q: vec3<f32>) -> vec4<f32> {
+    let h = fol_noise(q);
+    let e = 0.33;
+    let g = vec3<f32>(
+        fol_noise(q + vec3<f32>(e, 0.0, 0.0)) - h,
+        fol_noise(q + vec3<f32>(0.0, e, 0.0)) - h,
+        fol_noise(q + vec3<f32>(0.0, 0.0, e)) - h,
+    ) / e;
+    return vec4<f32>(g, h);
+}
+
+// Lattices in metres: boughs, clumps, sprays. Each divides 10,000 m into a whole
+// multiple of 80 cells.
+const BOUGH_M: f32 = 1.25;
+const CLUMP_M: f32 = 0.5;
+const SPRAY_M: f32 = 0.125;
+
+struct FoliageLook {
+    /// The colour multiplier: a clump's sunny face a little over 1, a gap well
+    /// under, converging on 1 below a pixel.
+    tone: f32,
+    /// Added to the normal: minus the density's slope, so a clump faces out.
+    tilt: vec3<f32>,
+    /// How much of the sky and the sun reach this point, 0..1.
+    open: f32,
+}
+
+fn foliage(p: vec3<f32>, metres_per_px: f32) -> FoliageLook {
+    var look: FoliageLook;
+    look.tone = 1.0;
+    look.tilt = vec3<f32>(0.0);
+    look.open = 1.0;
+    let k_bough = 1.0 - pav_blur(BOUGH_M, metres_per_px);
+    if k_bough <= 0.0 {
+        return look;
+    }
+    let k_clump = 1.0 - pav_blur(CLUMP_M, metres_per_px);
+    let k_spray = 1.0 - pav_blur(SPRAY_M, metres_per_px);
+    let bough = fol_octave(p / BOUGH_M);
+    var d = (bough.w - 0.5) * 0.9 * k_bough;
+    var slope = bough.xyz * 0.35 * k_bough;
+    if k_clump > 0.0 {
+        let clump = fol_octave(p / CLUMP_M);
+        d += (clump.w - 0.5) * 0.8 * k_clump;
+        slope += clump.xyz * 0.45 * k_clump;
+    }
+    if k_spray > 0.0 {
+        // Height only: a slope at this scale is a sparkle by the time it is
+        // sharp enough to see.
+        d += (fol_noise(p / SPRAY_M) - 0.5) * 0.4 * k_spray;
+    }
+    // 0 deep in a gap, 1 on the face of a clump. The whole look fades with the
+    // coarsest lattice, so a crown past a few hundred metres keeps the colour
+    // the far map was matched to (`palette::CANOPY`, `vegetation`'s merge).
+    let face = smoothstep(-0.45, 0.25, d);
+    let k = max(k_bough, k_clump);
+    look.tone = mix(1.0, mix(0.5, 1.06, face), k);
+    look.open = mix(1.0, mix(0.35, 1.0, face), k);
+    look.tilt = -slope;
+    return look;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
@@ -515,6 +614,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let along_px = max(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
     let sharpest_px = min(length(dpdx(in.world_position.xz)), length(dpdy(in.world_position.xz)));
     let metres_per_px = sqrt(along_px * sharpest_px);
+    // A crown is not ground and is seen side-on as often as from above, so its
+    // footprint is taken in three dimensions.
+    let crown_px = length(fwidth(in.world_position.xyz));
     // Where this texel is in Web Mercator, for the sea's sheen (`map_light`):
     // the tile's key and its UV, as the hex grid finds it; none on a surface
     // with no key or no UV. A derivative, so here.
@@ -644,6 +746,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             pbr_input.material.base_color.a,
         );
         pbr_input.material.perceptual_roughness *= street.roughness;
+    } else if detail.w < 0.0 && detail.x > 0.5 {
+        // A tree's crown (`ground_detail::DETAIL_FOLIAGE`).
+        let look = foliage(in.world_position.xyz, crown_px);
+        // The underside of a crown is lit by the ground and by little else:
+        // the sky is behind the whole depth of it.
+        let under = mix(0.5, 1.0, smoothstep(-0.9, 0.4, pbr_input.N.y));
+        let n = normalize(pbr_input.N + look.tilt);
+        pbr_input.N = n;
+        pbr_input.material.base_color = vec4<f32>(
+            pbr_input.material.base_color.rgb * look.tone,
+            pbr_input.material.base_color.a,
+        );
+        pbr_input.diffuse_occlusion *= look.open * under;
+        pbr_input.specular_occlusion *= look.open * under;
+        // A gap is in the crown's own shade, whichever way the sun is.
+        pbr_input.directional_shadow_factor *= mix(0.4, 1.0, look.open);
+        // Leaves have a waxy sheen the bark and the ground do not.
+        pbr_input.material.perceptual_roughness = 0.7;
     }
 
     if detail.w > 0.0 {
