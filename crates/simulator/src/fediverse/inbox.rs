@@ -481,6 +481,13 @@ fn accept_object(
     if super::local_post(&ctx.fed.base, &ap_id).is_some() {
         return Ok(());
     }
+    // A post is made on its author's own server. An object on one server that
+    // names an author on another is somebody writing in their name: the
+    // signature and `authoritative_object` prove only where the object is.
+    if host_of(&ap_id).as_deref() != Some(author.host.as_str()) {
+        tracing::info!(%ap_id, author = %author.id, "fediverse: author on another server, not kept");
+        return Ok(());
+    }
     // A followers-only post or a private mention is not ours to show to
     // anybody, which is what a community's posts are.
     if !objects::is_public(obj) {
