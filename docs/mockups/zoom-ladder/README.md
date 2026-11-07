@@ -1,10 +1,26 @@
 ---
 topic: zoom-ladder
 triggers: [free_camera.rs, globe.rs, earth_mode, globe_spin, ORBIT_MAX_DISTANCE_SPACE, map_osd.rs, Teleport, ladder.rs, Rung, "solar system", "Milky Way", galaxy, "night side", night_side, SunMode, "fly to", flight, rail]
-updated: 2026-11-01
+updated: 2026-11-07
 ---
 
 # The zoom ladder: one zoom from the street to the Milky Way
+
+## v3 — four scales, proposed 2026-11-07
+
+![v3](v3.png)
+
+Asked 2026-11-07: the one rail from the street to the universe is impractical; the
+range should follow the scale you are in (globe, solar system, Milky Way, universe),
+and changing scale should stay logical without being part of the one slider.
+
+The proposal: a scale switch of four buttons above the rail (one disc that opens on
+a phone); the rail spans only the current scale (Globe 8 rungs, the others 4 each,
+same heights as today; the Milky Way's four rungs are new) and stops at its ends.
+At an end the − (or +) becomes the next scale's button: a tap, or half a second of
+zooming on, crosses, and the view goes on from where it stopped. A tap on a scale
+flies there; Globe returns to the place and height you left. Drawn on captures of
+today's client (mac-2) at 8,000 km, 2·10¹² m, 6·10²⁰ m and 5·10²⁴ m.
 
 ## Built, 2026-11-01
 
