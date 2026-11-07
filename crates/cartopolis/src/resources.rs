@@ -1725,6 +1725,20 @@ pub struct CameraState {
     /// its speed (`zoom_rail::flight_step`): the camera follows this, not the
     /// goal, so every rung between is passed rather than skipped.
     pub rail_way: Option<(f64, f64)>,
+    /// The scale the zoom is held in (`zoom_rail::Scale`): the wheel, a pinch,
+    /// the keys and the rail's discs stop at its ends. A jump sets it to its
+    /// goal's, any other move that left it to where the camera is now.
+    pub zoom_scale: crate::systems::zoom_rail::Scale,
+    /// A zoom pushing against the end of [`Self::zoom_scale`]: which way (out is
+    /// `true`) and since when and when last, seconds of [`Self::globe_clock`].
+    /// Half a second of it crosses into the next scale.
+    pub edge_push: Option<(bool, f32, f32)>,
+    /// How far that push has got, 0 to 1, out positive and in negative, for the
+    /// rail to draw.
+    pub edge_push_shown: f32,
+    /// The height the globe was left at by a jump to another scale, so a jump
+    /// back to the globe returns to it rather than to the whole Earth.
+    pub globe_return_alt: Option<f64>,
     /// How far out the view is past the globe's ceiling, metres: 0 while the
     /// globe is the view, else a height above the Earth & Moon, Solar system,
     /// Stars or Galaxy rung (`systems::cosmos`). The 3D camera waits at the
@@ -1897,6 +1911,10 @@ impl Default for CameraState {
             globe_clock: 0.0,
             rail_goal: None,
             rail_way: None,
+            zoom_scale: crate::systems::zoom_rail::Scale::Globe,
+            edge_push: None,
+            edge_push_shown: 0.0,
+            globe_return_alt: None,
             cosmos_alt: 0.0,
             cosmos_target: 0.0,
             cosmos_pan: bevy::math::DVec3::ZERO,

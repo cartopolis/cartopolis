@@ -464,12 +464,25 @@ pub fn render_map_osd(
         if let Some(alt) = rail.altitude().map(|a| a.max(camera_state.cosmos_alt)) {
             let fingers = Fingers::new(&touch, egui.ui_scale());
             let touch_ui = theme::touch_layout() || touch.ever();
+            // While a jump flies the rail shows the scale it passes, so the
+            // way through every scale between is seen.
+            let scale = if camera_state.rail_goal.is_some() {
+                crate::systems::zoom_rail::Scale::of(alt)
+            } else {
+                camera_state.zoom_scale
+            };
+            let input = RailIn {
+                alt,
+                scale,
+                flying_to: camera_state.rail_goal,
+                push: camera_state.edge_push_shown,
+                globe_return: camera_state.globe_return_alt,
+            };
             let (zoom, goal) = zoom_rail_control(
                 egui.ctx(),
                 &fingers,
                 &mut areas,
-                alt,
-                camera_state.rail_goal,
+                &input,
                 &mut rail.state,
                 touch_ui,
                 touch.active(),
@@ -522,12 +535,21 @@ pub struct RailState {
     /// The claimed fingers down last frame, to tell a landing from a finger
     /// that slid in from the map.
     seen: Vec<u64>,
-    /// The last time anything happened on the rail or the rung changed.
+    /// The last time anything happened on the rail or the step changed.
     active_at: f64,
-    /// The rung the camera was on last frame.
-    last_rung: usize,
-    /// How far the rung's name was faded in last frame, 0 to 1.
+    /// The scale and step the camera was on last frame.
+    last_step: (crate::systems::zoom_rail::Scale, usize),
+    /// How far the step's name was faded in last frame, 0 to 1.
     shown: f32,
+    /// Whether the scale list is open, and where it and its disc were drawn.
+    list_open: bool,
+    list_rect: Option<egui::Rect>,
+    /// When each end (out, in) began to offer the next scale.
+    edge_since: [Option<f64>; 2],
+    /// When each claimed finger down landed, and the mouse was last pressed:
+    /// a tap on an end counts only if it began after the end turned.
+    landed_at: Vec<(u64, f64)>,
+    mouse_pressed_at: f64,
 }
 
 /// A finger that landed on the track. It does nothing until it has stayed
@@ -542,8 +564,10 @@ struct RailFinger {
 }
 
 /// Track length of the zoom rail, points: shorter where a phone's height is.
-const RAIL_TRACK: f32 = 170.0;
-const RAIL_TRACK_TOUCH: f32 = 140.0;
+/// It spans one scale, four to eight steps, since 2026-11-07 (it was 170 and
+/// 140 for all sixteen; asked "the slider may be a bit shorter").
+const RAIL_TRACK: f32 = 140.0;
+const RAIL_TRACK_TOUCH: f32 = 120.0;
 /// The rail's discs: smaller than the map's other discs, since the rail is a
 /// quiet control (`docs/mockups/zoom-ladder/`, v2 — "the zoom knob is massive").
 const RAIL_DISC: f32 = 30.0;
@@ -556,18 +580,43 @@ const RAIL_GRAB_SLOP: f32 = 4.0;
 const RAIL_AWAKE_SECS: f64 = 2.0;
 const RAIL_REST_OPACITY: f32 = 0.55;
 
-/// The zoom rail on the right edge: − at the top (out, towards the universe),
-/// the track, + at the foot (in, towards the street). Returns the held zoom
-/// rate of the two discs and a height to go to, if the track asked for one.
-/// While a jump flies (`flying_to`), a ring marks where it is going.
+/// What the zoom rail is drawn for this frame.
+struct RailIn {
+    /// The camera's height, metres.
+    alt: f64,
+    /// The scale the rail spans: the one the zoom is held in, or while a jump
+    /// flies, the one it is passing.
+    scale: crate::systems::zoom_rail::Scale,
+    /// Where a jump is flying to, if one is.
+    flying_to: Option<f64>,
+    /// A zoom pushing against the scale's end (`CameraState::edge_push_shown`).
+    push: f32,
+    /// Where a jump back to the globe lands (`CameraState::globe_return_alt`).
+    globe_return: Option<f64>,
+}
+
+/// The zoom rail on the right edge, for one scale (`systems::zoom_rail`): the
+/// scale disc on top, − (out), the track, + (in). Returns the held zoom rate of
+/// the two discs and a height to go to, if the track, the scale list or an
+/// edge asked for one. While a jump flies (`flying_to`), a ring marks where it
+/// is going.
 ///
-/// **It names one thing, and only while it moves**: the rung the camera is
-/// on, beside the thumb, fading out two seconds after the rung last changed
-/// or the rail was last touched. Until 2026-11-02 it also listed all sixteen
-/// rungs beside the track on hover, and on a touchscreen egui's hover is the
-/// first finger down — a pinch near the right edge flashed the list up. The
-/// list went (asked: "the texts beside the rail are not really needed"); a
-/// tap on the track goes where the list's names went.
+/// **The scale disc** wears the current scale's icon; a tap opens the four
+/// scales beside it, and a tap on one flies there (to its overview, or for the
+/// globe back to the height a jump left it at). Until 2026-11-07 the one track
+/// ran from the street to the universe (`docs/mockups/zoom-ladder/` v3, v4).
+///
+/// **At an end of the scale** the − (or +) becomes the next scale's button:
+/// held, it is still the zoom, which pushes against the end and crosses after
+/// half a second (`free_camera`, `EDGE_PUSH_SECS`), the ring round it filling
+/// meanwhile; a tap crosses at once. A press that began while it was still −
+/// is no tap: a held − that reaches the end must not jump when let go.
+///
+/// **It names one thing, and only while it moves**: the step the camera is
+/// on, beside the thumb, fading out two seconds after the step last changed
+/// or the rail was last touched. Until 2026-11-02 it also listed every rung
+/// beside the track on hover, and on a touchscreen egui's hover is the first
+/// finger down — a pinch near the right edge flashed the list up.
 ///
 /// The track takes only a finger that **landed** on it and stayed alone; a
 /// pinch's first finger landing there used to set the height before the
@@ -577,14 +626,14 @@ fn zoom_rail_control(
     ctx: &egui::Context,
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
-    alt: f64,
-    flying_to: Option<f64>,
+    rail: &RailIn,
     state: &mut RailState,
     touch_ui: bool,
     touching: bool,
 ) -> (f32, Option<f64>) {
-    use crate::systems::zoom_rail::{altitude_at, index_of, position_of, RAIL};
-    use cartopolis_scenario::ladder::Rung;
+    use crate::systems::zoom_rail::{altitude_at, index_of, position_of, step_altitude, Scale};
+    let (alt, scale) = (rail.alt, rail.scale);
+    let steps = scale.steps();
     let mut wish = 0.0;
     let mut goal = None;
     let now = ctx.input(|i| i.time);
@@ -593,9 +642,9 @@ fn zoom_rail_control(
     } else {
         RAIL_TRACK
     };
-    let current = index_of(alt);
-    if current != state.last_rung || flying_to.is_some() {
-        state.last_rung = current;
+    let current = (scale, index_of(scale, alt));
+    if current != state.last_step || rail.flying_to.is_some() {
+        state.last_step = current;
         state.active_at = now;
     }
     // Fingers that landed this frame, rather than slid in from the map.
@@ -606,6 +655,41 @@ fn zoom_rail_control(
         .copied()
         .collect();
     state.seen = fingers.held.iter().map(|(id, _)| *id).collect();
+    state.landed_at.retain(|(id, _)| {
+        fingers.held.iter().any(|(f, _)| f == id) || fingers.released.iter().any(|(f, _)| f == id)
+    });
+    state
+        .landed_at
+        .extend(landed.iter().map(|(id, _)| (*id, now)));
+    if !touching && ctx.input(|i| i.pointer.any_pressed()) {
+        state.mouse_pressed_at = now;
+    }
+    // When each end began to offer the next scale: a press from before then
+    // is the − or + held into it, not a tap on the scale.
+    let pos_now = position_of(scale, alt);
+    let edge = [
+        (pos_now <= 0.005 || rail.push > 0.0) && scale.outward().is_some(),
+        (pos_now >= 0.995 || rail.push < 0.0) && scale.inward().is_some(),
+    ];
+    for (i, on) in edge.into_iter().enumerate() {
+        state.edge_since[i] = match (on, state.edge_since[i]) {
+            (true, Some(t)) => Some(t),
+            (true, None) => Some(now),
+            (false, _) => None,
+        };
+    }
+    // Esc, or a press anywhere but the list and its disc, folds the list.
+    if state.list_open {
+        let keep = state.list_rect;
+        let outside = |p: egui::Pos2| !keep.is_some_and(|r| r.contains(p));
+        let pressed_out = (!touching
+            && ctx.input(|i| i.pointer.any_pressed())
+            && ctx.pointer_interact_pos().is_some_and(outside))
+            || landed.iter().any(|(_, p)| outside(*p));
+        if pressed_out || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            state.list_open = false;
+        }
+    }
     // On a phone, the rail stands at the foot of the right edge, over the dock,
     // where the old + / − pair was and the thumb is: the middle of the edge is
     // where the other hand pinches (`touch-input.md`, "Both edges anchor to the
@@ -621,6 +705,7 @@ fn zoom_rail_control(
             egui::vec2(-theme::OSD_MARGIN, 0.0),
         )
     };
+    let mut scale_disc = egui::Rect::NOTHING;
     let area = egui::Area::new(egui::Id::new("zoom_rail"))
         .anchor(anchor.0, anchor.1)
         .show(ctx, |ui| {
@@ -633,7 +718,7 @@ fn zoom_rail_control(
                         .ctx()
                         .pointer_hover_pos()
                         .is_some_and(|h| ui.max_rect().expand(8.0).contains(h));
-                if hovered {
+                if hovered || state.list_open {
                     state.active_at = now;
                 }
                 let awake = ctx.animate_bool_with_time(
@@ -648,7 +733,43 @@ fn zoom_rail_control(
                         && resp.interact_pointer_pos().is_some_and(|p| hit.contains(p)))
                         || fingers.pressing(hit)
                 };
-                let disc = |ui: &mut egui::Ui, mark: Mark| {
+                // A tap that began after `since`: the mouse's click, or a
+                // finger that landed and lifted inside `hit`.
+                let tapped = |resp: &egui::Response, hit: egui::Rect, since: f64| {
+                    (!touching && resp.clicked() && state.mouse_pressed_at >= since)
+                        || fingers.released.iter().any(|(id, p)| {
+                            hit.contains(*p)
+                                && state
+                                    .landed_at
+                                    .iter()
+                                    .any(|(f, t)| f == id && *t >= since)
+                        })
+                };
+
+                // The scale disc: the scale's icon, lilac past the Earth.
+                let (resp, face) = theme::map_disc(
+                    ui,
+                    RAIL_DISC,
+                    state.list_open,
+                    theme::ACCENT_RING,
+                    egui::Sense::click(),
+                );
+                let ink = if state.list_open || scale == Scale::Globe || resp.hovered() {
+                    face.ink
+                } else {
+                    theme::PUBLIC
+                };
+                paint_scale(ui.painter(), face.center, RAIL_DISC * 0.27, scale, ink);
+                let resp = theme::named(ui, resp, scale.label());
+                scale_disc = resp.rect;
+                if resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false)) {
+                    state.list_open = !state.list_open;
+                }
+
+                // − at the top, or the next scale out at the end.
+                let end_disc = |ui: &mut egui::Ui, up: bool| {
+                    let next = if up { scale.outward() } else { scale.inward() }
+                        .filter(|_| edge[usize::from(!up)]);
                     let (resp, face) = theme::map_disc(
                         ui,
                         RAIL_DISC,
@@ -656,12 +777,60 @@ fn zoom_rail_control(
                         theme::ACCENT_RING,
                         egui::Sense::click_and_drag(),
                     );
-                    paint_mark(ui.painter(), face.center, RAIL_DISC * 0.2, mark, face.ink);
-                    theme::named(ui, resp, mark.label())
+                    let p = ui.painter();
+                    match next {
+                        Some(to) => {
+                            paint_scale(p, face.center, RAIL_DISC * 0.27, to, face.ink);
+                            p.circle_stroke(
+                                face.center,
+                                face.radius + 1.5,
+                                egui::Stroke::new(1.5, theme::ACCENT),
+                            );
+                            let done = if up { rail.push } else { -rail.push }.max(0.0);
+                            if done > 0.0 {
+                                paint_arc(p, face.center, face.radius + 3.5, done, theme::CREAM);
+                            }
+                            // Its name beside it, with the way it goes.
+                            let font = egui::FontId::proportional(theme::SIZE_SUB);
+                            let text = format!("{} {}", if up { "Out to" } else { "In to" }, to.label());
+                            let at = egui::pos2(face.center.x - face.radius - 10.0, face.center.y);
+                            let galley = p.layout_no_wrap(text.clone(), font.clone(), theme::CREAM);
+                            let tag = egui::Align2::RIGHT_CENTER
+                                .anchor_size(at, galley.size())
+                                .expand2(egui::vec2(7.0, 3.0));
+                            p.rect_filled(tag, egui::CornerRadius::same(theme::RADIUS), theme::OVERLAY);
+                            p.rect_stroke(
+                                tag,
+                                egui::CornerRadius::same(theme::RADIUS),
+                                egui::Stroke::new(1.0, theme::ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                            p.text(at, egui::Align2::RIGHT_CENTER, text, font, theme::CREAM);
+                        }
+                        None => paint_mark(
+                            p,
+                            face.center,
+                            RAIL_DISC * 0.2,
+                            if up { Mark::Minus } else { Mark::Plus },
+                            face.ink,
+                        ),
+                    }
+                    let name = match next {
+                        Some(to) => to.label(),
+                        None if up => Mark::Minus.label(),
+                        None => Mark::Plus.label(),
+                    };
+                    (theme::named(ui, resp, name), next)
                 };
-                let resp = disc(ui, Mark::Minus);
-                if held(&resp, reach(resp.rect, true, false)) {
+                let (resp, next) = end_disc(ui, true);
+                let hit = reach(resp.rect, false, false);
+                if held(&resp, hit) {
                     wish -= 1.0;
+                }
+                if let (Some(_), Some(since)) = (next, state.edge_since[0]) {
+                    if tapped(&resp, hit, since) {
+                        goal = scale.across(true);
+                    }
                 }
 
                 let (rect, resp) = ui.allocate_exact_size(
@@ -713,47 +882,45 @@ fn zoom_rail_control(
                     .interact_pointer_pos()
                     .filter(|_| !touching && resp.is_pointer_button_down_on())
                     .or(finger_at);
-                let rail_at = |p: egui::Pos2| altitude_at((p.y - rect.top()) / track_len);
+                let rail_at = |p: egui::Pos2| altitude_at(scale, (p.y - rect.top()) / track_len);
                 if let Some(p) = pointer {
                     goal = Some(rail_at(p));
                     state.active_at = now;
                 }
-                // A tap (or a click) goes to the rung it landed on, where its
+                // A tap (or a click) goes to the step it landed on, where its
                 // places are a comfortable size; a drag goes to the height
                 // under it.
                 if !touching && resp.clicked() {
                     tap = resp.interact_pointer_pos();
                 }
                 if let Some(p) = tap {
-                    goal = Some(crate::systems::zoom_rail::rung_altitude(index_of(rail_at(
-                        p,
-                    ))));
+                    goal = Some(step_altitude(scale, index_of(scale, rail_at(p))));
                     state.active_at = now;
                 }
 
-                // The track in two tones, no ticks: lilac above the Earth (the
-                // colour the app uses for what is public and beyond the
-                // street), plain below it.
+                // The track, lilac past the Earth (the colour the app uses for
+                // what is public and beyond the street), plain on the globe.
                 let p = ui.painter();
-                let earth = RAIL
-                    .iter()
-                    .position(|r| r.rung == Rung::EarthMoon)
-                    .map_or(0.0, |i| (i + 1) as f32 / RAIL.len() as f32);
-                let (top, split, bottom) = (
-                    egui::pos2(x, rect.top()),
-                    egui::pos2(x, y_at(earth)),
-                    egui::pos2(x, rect.bottom()),
-                );
+                let (top, bottom) = (egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom()));
                 p.line_segment([top, bottom], egui::Stroke::new(4.0, theme::OVERLAY));
-                p.line_segment(
-                    [top, split],
-                    egui::Stroke::new(1.5, theme::PUBLIC.gamma_multiply(0.8)),
-                );
-                p.line_segment([split, bottom], egui::Stroke::new(1.5, theme::TEXT_DIM));
-                let thumb_y = y_at(position_of(alt));
-                if let Some(to) = flying_to {
+                let tone = if scale == Scale::Globe {
+                    theme::TEXT_DIM
+                } else {
+                    theme::PUBLIC.gamma_multiply(0.8)
+                };
+                p.line_segment([top, bottom], egui::Stroke::new(1.5, tone));
+                // A faint tick between steps: few enough now to count.
+                for k in 1..steps.len() {
+                    let y = y_at(k as f32 / steps.len() as f32);
+                    p.line_segment(
+                        [egui::pos2(x - 3.0, y), egui::pos2(x + 3.0, y)],
+                        egui::Stroke::new(1.0, tone.gamma_multiply(0.6)),
+                    );
+                }
+                let thumb_y = y_at(pos_now);
+                if let Some(to) = rail.flying_to.filter(|to| Scale::of(*to) == scale) {
                     p.circle_stroke(
-                        egui::pos2(x, y_at(position_of(to))),
+                        egui::pos2(x, y_at(position_of(scale, to))),
                         8.0,
                         egui::Stroke::new(2.0, theme::CREAM),
                     );
@@ -765,7 +932,8 @@ fn zoom_rail_control(
                     egui::Stroke::new(3.0, theme::OVERLAY_LINE),
                 );
 
-                // The rung's name beside the thumb, while the rail is awake.
+                // The step's name beside the thumb, while the rail is awake
+                // and no end is offering the next scale there.
                 let shown = ctx.animate_bool_with_time(
                     egui::Id::new("zoom_rail_name"),
                     now - state.active_at < RAIL_AWAKE_SECS,
@@ -773,7 +941,7 @@ fn zoom_rail_control(
                 );
                 state.shown = shown;
                 if shown > 0.0 {
-                    let label = RAIL[current].label;
+                    let label = steps[current.1].label;
                     let font = egui::FontId::proportional(theme::SIZE_SUB);
                     let at = egui::pos2(x - 16.0, thumb_y);
                     let mut p = ui.painter().clone();
@@ -786,12 +954,83 @@ fn zoom_rail_control(
                     p.text(at, egui::Align2::RIGHT_CENTER, label, font, theme::CREAM);
                 }
 
-                let resp = disc(ui, Mark::Plus);
-                if held(&resp, reach(resp.rect, false, true)) {
+                let (resp, next) = end_disc(ui, false);
+                let hit = reach(resp.rect, false, true);
+                if held(&resp, hit) {
                     wish += 1.0;
+                }
+                if let (Some(_), Some(since)) = (next, state.edge_since[1]) {
+                    if tapped(&resp, hit, since) {
+                        goal = scale.across(false);
+                    }
                 }
             });
         });
+    // The four scales, opened from the disc: beside it, outermost on top.
+    state.list_rect = None;
+    if state.list_open {
+        let list = egui::Area::new(egui::Id::new("zoom_scales"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(scale_disc.left_top() + egui::vec2(-8.0, 0.0))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                for s in Scale::ALL.into_iter().rev() {
+                    let font = egui::FontId::proportional(theme::SIZE_BODY);
+                    let galley = ui.painter().layout_no_wrap(
+                        s.label().to_string(),
+                        font.clone(),
+                        theme::CREAM,
+                    );
+                    let h = RAIL_DISC + 4.0;
+                    let w = galley.size().x + h + 24.0;
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+                    let resp = theme::named(ui, resp, s.label());
+                    let on = s == scale;
+                    let p = ui.painter();
+                    let fill = if resp.hovered() {
+                        theme::SURFACE_HOVER
+                    } else {
+                        theme::OVERLAY
+                    };
+                    let round = egui::CornerRadius::same(theme::RADIUS_PILL);
+                    p.rect_filled(rect, round, fill);
+                    p.rect_stroke(
+                        rect,
+                        round,
+                        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                        egui::StrokeKind::Inside,
+                    );
+                    let c = egui::pos2(rect.right() - h / 2.0, rect.center().y);
+                    let r = h / 2.0 - 3.0;
+                    let (plate, ink) = if on {
+                        (theme::ACCENT, theme::INK)
+                    } else {
+                        (theme::SURFACE_RAISED, if s == Scale::Globe { theme::CREAM } else { theme::PUBLIC })
+                    };
+                    p.circle_filled(c, r, plate);
+                    paint_scale(p, c, r * 0.6, s, ink);
+                    p.text(
+                        egui::pos2(c.x - r - 10.0, c.y),
+                        egui::Align2::RIGHT_CENTER,
+                        s.label(),
+                        font,
+                        if on { theme::CREAM } else { theme::TEXT },
+                    );
+                    if resp.clicked() || fingers.lifted_in(rect) {
+                        goal = Some(if on {
+                            s.overview()
+                        } else {
+                            s.arrival(rail.globe_return)
+                        });
+                        state.list_open = false;
+                        state.active_at = now;
+                    }
+                }
+            });
+        areas.push(list.response.rect);
+        state.list_rect = Some(list.response.rect.union(scale_disc));
+    }
     if wish != 0.0 {
         state.active_at = now;
     }
@@ -799,6 +1038,73 @@ fn zoom_rail_control(
     // beside it keeps both its fingers.
     areas.push(area.response.rect);
     (wish, goal)
+}
+
+/// A scale's icon, painted like the [`Mark`]s: the globe a meridian and an
+/// equator in a ring; the solar system a Sun in two orbits with a planet; the
+/// Milky Way a core with two arms; the universe a web of points.
+fn paint_scale(
+    p: &egui::Painter,
+    c: egui::Pos2,
+    s: f32,
+    scale: crate::systems::zoom_rail::Scale,
+    ink: egui::Color32,
+) {
+    use crate::systems::zoom_rail::Scale;
+    let line = egui::Stroke::new((s * 0.16).max(1.3), ink);
+    let thin = egui::Stroke::new((s * 0.11).max(1.0), ink.gamma_multiply(0.75));
+    match scale {
+        Scale::Globe => {
+            p.circle_stroke(c, s, line);
+            p.add(egui::Shape::ellipse_stroke(c, egui::vec2(s * 0.45, s), line));
+            p.line_segment([c - egui::vec2(s, 0.0), c + egui::vec2(s, 0.0)], line);
+        }
+        Scale::SolarSystem => {
+            p.circle_filled(c, s * 0.3, ink);
+            p.circle_stroke(c, s * 0.62, thin);
+            p.circle_stroke(c, s, thin);
+            p.circle_filled(c + egui::vec2(s * 0.71, -s * 0.71), s * 0.2, ink);
+            p.circle_filled(c + egui::vec2(-s * 0.44, s * 0.44), s * 0.15, ink);
+        }
+        Scale::MilkyWay => {
+            p.circle_filled(c, s * 0.22, ink);
+            // Two arms, each a quarter turn more of a widening spiral.
+            for turn in [0.0_f32, std::f32::consts::PI] {
+                let points: Vec<egui::Pos2> = (0..=16)
+                    .map(|k| {
+                        let t = k as f32 / 16.0;
+                        let a = turn + t * 1.6 * std::f32::consts::PI;
+                        let r = s * (0.3 + 0.7 * t);
+                        c + egui::vec2(a.cos(), a.sin()) * r
+                    })
+                    .collect();
+                p.add(egui::Shape::line(points, line));
+            }
+        }
+        Scale::Universe => {
+            let at = [(-0.7, -0.5), (0.55, -0.75), (0.0, 0.0), (-0.75, 0.65), (0.7, 0.7), (0.95, -0.05)];
+            let pt = |(x, y): (f32, f32)| c + egui::vec2(x, y) * s;
+            for i in [0, 1, 3, 4, 5] {
+                p.line_segment([pt(at[2]), pt(at[i])], thin);
+            }
+            p.line_segment([pt(at[0]), pt(at[1])], thin);
+            for (i, a) in at.iter().enumerate() {
+                p.circle_filled(pt(*a), s * if i == 2 { 0.22 } else { 0.15 }, ink);
+            }
+        }
+    }
+}
+
+/// A ring from the top round clockwise, `done` of the way.
+fn paint_arc(p: &egui::Painter, c: egui::Pos2, r: f32, done: f32, ink: egui::Color32) {
+    let n = (48.0 * done).ceil().max(2.0) as usize;
+    let points: Vec<egui::Pos2> = (0..=n)
+        .map(|k| {
+            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * done * k as f32 / n as f32;
+            c + egui::vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    p.add(egui::Shape::line(points, egui::Stroke::new(2.0, ink)));
 }
 
 /// An egui rect in the window's own logical points.
@@ -1664,6 +1970,8 @@ mod tests {
         ctx: egui::Context,
         state: RailState,
         t: f64,
+        /// The camera's height the rail is drawn for.
+        alt: f64,
     }
 
     impl Rail {
@@ -1672,6 +1980,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 state: RailState::default(),
                 t: 0.0,
+                alt: 1e6,
             };
             // Let the layout settle, and the rail fall asleep, before any
             // finger arrives.
@@ -1706,18 +2015,49 @@ mod tests {
             let (mut goal, mut areas) = (None, Vec::new());
             let state = &mut self.state;
             let touching = !f.held.is_empty() || f.free > 0;
+            let rail = RailIn {
+                alt: self.alt,
+                scale: crate::systems::zoom_rail::Scale::of(self.alt),
+                flying_to: None,
+                push: 0.0,
+                globe_return: None,
+            };
             self.ctx.run_ui_unpainted(input, |ui| {
-                goal =
-                    zoom_rail_control(ui.ctx(), &f, &mut areas, 1e6, None, state, true, touching).1;
+                goal = zoom_rail_control(ui.ctx(), &f, &mut areas, &rail, state, true, touching).1;
             });
-            (goal, areas[0])
+            // The rail is the last area claimed; the scale list, if open,
+            // comes before it.
+            (goal, *areas.last().unwrap())
         }
 
-        /// A point on the track, `at` of the way down it.
+        /// A point on the track, `at` of the way down it: under the scale
+        /// disc and the −.
         fn on_track(&mut self, at: f32) -> (f32, f32) {
             let r = self.run(&fingers(&[], &[]), 0).1;
-            let (top, bottom) = (r.top() + RAIL_DISC + 6.0, r.bottom() - RAIL_DISC - 6.0);
+            let (top, bottom) = (r.top() + 2.0 * RAIL_DISC + 12.0, r.bottom() - RAIL_DISC - 6.0);
             (r.right() - RAIL_DISC / 2.0, top + (bottom - top) * at)
+        }
+
+        /// The middle of the disc `k` from the top: 0 the scale disc, 1 the −.
+        fn disc(&mut self, k: f32) -> (f32, f32) {
+            let r = self.run(&fingers(&[], &[]), 0).1;
+            (
+                r.right() - RAIL_DISC / 2.0,
+                r.top() + RAIL_DISC / 2.0 + k * (RAIL_DISC + 6.0),
+            )
+        }
+
+        /// A finger that lands at `p`, stays two frames, and lifts.
+        fn tap(&mut self, p: (f32, f32)) -> Option<f64> {
+            let on = fingers(&[(7, p)], &[]);
+            let mut goal = self.frame(&on, 0);
+            goal = goal.or(self.frame(&on, 0));
+            let lift = Fingers {
+                held: Vec::new(),
+                released: vec![(7, egui::pos2(p.0, p.1))],
+                free: 0,
+            };
+            goal.or(self.frame(&lift, 0))
         }
     }
 
@@ -1783,8 +2123,57 @@ mod tests {
         let up = rail.frame(&fingers(&[], &[]), 0);
         assert_eq!(up, None);
         assert!(goal > 1e6, "a tap high on the rail climbs: {goal}");
-        // …to the rung it landed on, not the point.
-        use crate::systems::zoom_rail::{index_of, rung_altitude};
-        assert_eq!(goal, rung_altitude(index_of(goal)));
+        // …to the step it landed on, not the point.
+        use crate::systems::zoom_rail::{index_of, step_altitude, Scale};
+        assert_eq!(goal, step_altitude(Scale::Globe, index_of(Scale::Globe, goal)));
+    }
+
+    /// At the top of the globe the − is the solar system: a tap there goes
+    /// over the line.
+    #[test]
+    fn a_tap_on_the_end_crosses_into_the_next_scale() {
+        use crate::systems::zoom_rail::Scale;
+        let mut rail = Rail::new();
+        rail.alt = Scale::Globe.bounds().1 * 0.999;
+        let minus = rail.disc(1.0);
+        let goal = rail.tap(minus).expect("the tap went nowhere");
+        assert_eq!(Scale::of(goal), Scale::SolarSystem);
+    }
+
+    /// A − held into the end of the scale is the zoom pushing on, not a tap
+    /// on the next scale when it lets go.
+    #[test]
+    fn a_minus_held_into_the_end_does_not_jump_when_let_go() {
+        use crate::systems::zoom_rail::Scale;
+        let mut rail = Rail::new();
+        let minus = rail.disc(1.0);
+        let on = fingers(&[(7, minus)], &[]);
+        rail.frame(&on, 0);
+        rail.alt = Scale::Globe.bounds().1;
+        for _ in 0..5 {
+            assert_eq!(rail.frame(&on, 0), None);
+        }
+        let lift = Fingers {
+            held: Vec::new(),
+            released: vec![(7, egui::pos2(minus.0, minus.1))],
+            free: 0,
+        };
+        assert_eq!(rail.frame(&lift, 0), None, "letting go crossed");
+    }
+
+    /// The scale disc opens the four scales; a tap on one flies to it, and the
+    /// list folds.
+    #[test]
+    fn the_scale_disc_opens_the_scales() {
+        use crate::systems::zoom_rail::Scale;
+        let mut rail = Rail::new();
+        let disc = rail.disc(0.0);
+        assert_eq!(rail.tap(disc), None);
+        assert!(rail.state.list_open, "the list did not open");
+        // The list's rows run down from the disc's top, outermost first.
+        let row = |k: f32| (disc.0 - RAIL_DISC - 40.0, disc.1 - RAIL_DISC / 2.0 + 2.0 + RAIL_DISC / 2.0 + k * (RAIL_DISC + 10.0));
+        let goal = rail.tap(row(0.0)).expect("the row went nowhere");
+        assert_eq!(goal, Scale::Universe.overview());
+        assert!(!rail.state.list_open, "the list stayed open");
     }
 }

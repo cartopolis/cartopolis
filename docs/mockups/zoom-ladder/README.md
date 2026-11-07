@@ -6,6 +6,15 @@ updated: 2026-11-07
 
 # The zoom ladder: one zoom from the street to the Milky Way
 
+## v4 — the switch folded into one disc, 2026-11-07
+
+![v4](v4.png)
+
+After review the same day: the scale switch is one disc on the desktop too
+(asked when it shows: folded, like the phone's), crossing at the edge by a tap
+or half a second of zooming on, and the rail a little shorter. Built on
+`session/s643`; standing facts in `docs/notes/zoom-ladder.md`, "Four scales".
+
 ## v3 — four scales, proposed 2026-11-07
 
 ![v3](v3.png)

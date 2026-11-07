@@ -533,6 +533,13 @@ const REANCHOR_DISTANCE: f64 = 120_000.0;
 /// Exponential rate of the smooth zoom glide (per second): the wheel moves a
 /// target distance, and the camera flies toward it at this rate.
 const ZOOM_GLIDE_RATE: f64 = 6.0;
+/// How long a zoom pushes against the end of its scale before it crosses into
+/// the next (`docs/mockups/zoom-ladder/` v4): long enough that a wheel's overrun
+/// or the last of a pinch does not cross, short enough that a climb on purpose
+/// is no chore.
+pub(crate) const EDGE_PUSH_SECS: f32 = 0.5;
+/// The longest pause within one push: a wheel's notches arrive frames apart.
+const EDGE_PUSH_GAP: f32 = 0.25;
 /// Exponential rate the compass "north up" reset eases the orbit view back to
 /// north (per second) — brisk enough to feel instant, slow enough to read as a
 /// turn rather than a snap.
@@ -3103,6 +3110,13 @@ fn earth_mode(ctx: ModeCtx) {
     } else {
         0.0
     };
+    // PgUp / PgDn: the next scale out or in, as a tap on it in the rail's list.
+    let scale_key = if keys {
+        keyboard_input.just_pressed(KeyCode::PageUp) as i32
+            - keyboard_input.just_pressed(KeyCode::PageDown) as i32
+    } else {
+        0
+    };
     if keys && keyboard_input.just_pressed(KeyCode::KeyN) {
         camera_state.orbit_north_reset = true;
     }
@@ -3177,11 +3191,44 @@ fn earth_mode(ctx: ModeCtx) {
     // The zoom rail: a height, held as a goal until the camera gets there (it
     // may have to climb out of the surface tier first). Any other zoom —
     // wheel, pinch, the rail's own discs, the keys — takes over from it.
-    if let Some(alt) = osd.rail_altitude {
-        camera_state.rail_goal = Some(alt.min(crate::systems::zoom_rail::TOP_M));
+    use crate::systems::zoom_rail::Scale;
+    let height_now = if camera_state.cosmos_alt > 0.0 {
+        camera_state.cosmos_alt
+    } else if space {
+        camera_state.orbit_distance - radius
+    } else {
+        camera_state.orbit_distance * f64::from(camera_state.orbit_pitch.sin())
+    };
+    let key_goal = match scale_key {
+        1 => camera_state.zoom_scale.outward(),
+        -1 => camera_state.zoom_scale.inward(),
+        _ => None,
+    }
+    .map(|s| s.arrival(camera_state.globe_return_alt));
+    if let Some(alt) = osd.rail_altitude.or(key_goal) {
+        let alt = alt.min(crate::systems::zoom_rail::TOP_M);
+        // A jump out of the globe remembers the height it left, for the way
+        // back (`Scale::arrival`).
+        if Scale::of(alt) != Scale::Globe
+            && camera_state.zoom_scale == Scale::Globe
+            && camera_state.cosmos_alt == 0.0
+            && camera_state.rail_goal.is_none()
+        {
+            camera_state.globe_return_alt = Some(height_now);
+        }
+        camera_state.rail_goal = Some(alt);
     }
     if osd.zoom != 0.0 || key_zoom != 0.0 || (touch.pair() && touch.pinch != 1.0) {
         camera_state.rail_goal = None;
+    }
+    // The scale the zoom is held in follows a jump to its goal, and any other
+    // move that left it (a teleport, a shot's height, a jump taken over
+    // mid-way) to where the camera is.
+    if let Some(goal) = camera_state.rail_goal {
+        camera_state.zoom_scale = Scale::of(goal);
+    } else if !camera_state.zoom_scale.holds(height_now) {
+        camera_state.zoom_scale = Scale::of(height_now);
+        camera_state.edge_push = None;
     }
     let ceiling = ORBIT_MAX_DISTANCE_SPACE - radius;
     if camera_state.rail_goal.is_none() {
@@ -3333,14 +3380,60 @@ fn earth_mode(ctx: ModeCtx) {
     // zooming back under it steps out, and the globe takes over again.
     if space {
         let at_ceiling = camera_state.orbit_distance >= max_d * 0.98;
+        // The zoom stops at the ends of the scale it is in; every scale's ends
+        // but the street's are out here. A jump (`rail_goal`) is not held.
+        let (lo, hi) = camera_state.zoom_scale.bounds();
+        let lo = if lo > ceiling { lo } else { 0.0 };
         if camera_state.cosmos_target > 0.0 {
-            camera_state.cosmos_target =
-                (camera_state.cosmos_target * zoom_mul).min(crate::systems::zoom_rail::TOP_M);
+            camera_state.cosmos_target = (camera_state.cosmos_target * zoom_mul).clamp(lo, hi);
             if camera_state.cosmos_target <= ceiling {
                 camera_state.cosmos_target = 0.0;
             }
         } else if zoom_mul > 1.0 && at_ceiling && camera_state.orbit_distance_target >= max_d {
-            camera_state.cosmos_target = ceiling * zoom_mul;
+            camera_state.cosmos_target = (ceiling * zoom_mul).min(hi);
+        }
+        // The scale's edge: a zoom that keeps pushing against an end for
+        // EDGE_PUSH_SECS crosses into the next scale, and the zoom goes on
+        // from there. A wheel's notches are frames apart, so a push holds
+        // through gaps of up to EDGE_PUSH_GAP.
+        let against = if zoom_mul > 1.0
+            && camera_state.cosmos_target >= hi * 0.999
+            && camera_state.zoom_scale.outward().is_some()
+        {
+            Some(true)
+        } else if zoom_mul < 1.0 && lo > 0.0 && camera_state.cosmos_target <= lo * 1.001 {
+            Some(false)
+        } else {
+            None
+        };
+        let clock = camera_state.globe_clock;
+        match (against, camera_state.edge_push) {
+            (Some(up), push) => {
+                let since = match push {
+                    Some((was, since, last)) if was == up && clock - last < EDGE_PUSH_GAP => since,
+                    _ => clock,
+                };
+                if clock - since >= EDGE_PUSH_SECS {
+                    let to = if up {
+                        camera_state.zoom_scale.outward()
+                    } else {
+                        camera_state.zoom_scale.inward()
+                    };
+                    if let Some(to) = to {
+                        if camera_state.zoom_scale == Scale::Globe {
+                            camera_state.globe_return_alt = None;
+                        }
+                        camera_state.zoom_scale = to;
+                    }
+                    camera_state.edge_push = None;
+                } else {
+                    camera_state.edge_push = Some((up, since, clock));
+                }
+            }
+            (None, Some((_, _, last))) if clock - last >= EDGE_PUSH_GAP => {
+                camera_state.edge_push = None;
+            }
+            _ => {}
         }
         let goal = camera_state.cosmos_target.max(ceiling);
         if camera_state.cosmos_target > 0.0 || camera_state.cosmos_alt > 0.0 {
@@ -3359,6 +3452,17 @@ fn earth_mode(ctx: ModeCtx) {
         camera_state.cosmos_alt = 0.0;
         camera_state.cosmos_target = 0.0;
     }
+    if !space {
+        camera_state.edge_push = None;
+    }
+    camera_state.edge_push_shown = camera_state.edge_push.map_or(0.0, |(up, since, _)| {
+        let done = ((camera_state.globe_clock - since) / EDGE_PUSH_SECS).clamp(0.0, 1.0);
+        if up {
+            done
+        } else {
+            -done
+        }
+    });
     if camera_state.cosmos_alt == 0.0 {
         camera_state.cosmos_pan = DVec3::ZERO;
     }

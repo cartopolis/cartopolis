@@ -1,7 +1,7 @@
 ---
 topic: zoom-ladder
-triggers: [zoom_rail.rs, zoom_rail_control, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
-updated: 2026-11-02
+triggers: [zoom_rail.rs, zoom_rail_control, zoom_scale, edge_push, globe_return_alt, Scale, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
+updated: 2026-11-07
 ---
 
 # The zoom ladder: one zoom from the street to the edge of the universe
@@ -205,19 +205,51 @@ if it were a mouse:
 Now (`map_osd::zoom_rail_control`) the list is gone. The rail names only the
 rung the camera is on, beside the thumb, and only while something moves: it
 fades out 2 s after the rung last changed or the rail was last used (a mouse
-over it counts; a finger never hovers), and the whole rail dims to 55 %. The
-track is drawn in two tones without ticks, lilac above the Earth. A tap on
-the track goes to the middle of the rung it landed on (`rung_altitude`, the
-Milky Way's exception included), where the list's names used to go; a drag
+over it counts; a finger never hovers), and the whole rail dims to 55 %. A tap on
+the track goes to the middle of the step it landed on (`step_altitude`, the
+whole galaxy's exception included), where the list's names used to go; a drag
 goes to the height under it. The track takes only a finger that **landed**
 on it and stayed alone for 0.12 s or moved 4 pt, and lets go for good when
-any second finger comes down. Tracks are 170 pt (desktop) and 140 pt (phone),
-down from 250 and 200.
+any second finger comes down. Tracks are 140 pt (desktop) and 120 pt (phone)
+since the scales (below); 170 and 140 before, 250 and 200 at first.
 
 On a phone the rail stands at the foot of the right edge, over the dock,
 where the + / − pair was — the middle of the edge is where the other hand
 pinches, and the bottom is where the thumb is. A desktop keeps it centred
 as the mockup has it. The tests replay the finger sequences frame by frame.
+
+## Four scales, a rail for each
+
+Asked 2026-11-07: one rail from the street to the edge of the universe gave
+each of sixteen rungs 11 pt, and a slip of the thumb threw the view out of
+the Earth. Built from `docs/mockups/zoom-ladder/` v4: the rail spans one
+`zoom_rail::Scale` — Globe (Street to World, 8 steps), Solar system, Milky
+Way, Universe (4 each) — and a disc on top wearing the scale's icon opens the
+four. The heights are the ladder's; the solar system's and the Milky Way's
+steps are parts of today's rungs (`Step::span`), and a test holds every step
+inside its rung so a layer's board and the rail agree.
+
+- **Every zoom but a jump stops at the scale's ends** (`free_camera`, in the
+  cosmos block: every end but the street's lies past the globe's ceiling,
+  so only `cosmos_target` is clamped). Half a second of pushing on against
+  an end (`EDGE_PUSH_SECS`; a wheel's notches may pause 0.25 s within it)
+  crosses, and the zoom goes on from there — the climb is still seamless
+  when meant.
+- **At an end the − (or +) becomes the next scale's button**, a ring round it
+  filling while the push lasts. Held, it is still the zoom, so a held −
+  reaches the end and crosses by pushing; a tap crosses at once, but only a
+  press that began after the end turned: a − held into the end must not
+  jump when it is let go (tested).
+- **`zoom_scale` follows the camera, not the other way round**: a jump sets it
+  to its goal's scale, and any move that leaves it (a teleport, a shot's
+  `--at`, a jump taken over mid-way) to the scale the camera is in. Without
+  that a capture at 3·10²⁷ m was clamped back to the World.
+- **A jump to the globe returns to the height a jump left it at**
+  (`globe_return_alt`); leaving by the edge clears it, and the globe's
+  overview, the World step, is the landing then. A tap on the current
+  scale goes to its overview. PgUp / PgDn change scale.
+- The edge button's ring is the accent, not the mockup's orange: the brand
+  orange is the logo's alone (`monochrome-chrome.md`).
 
 ## Light and Dark are the sun modes, not a globe setting
 

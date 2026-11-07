@@ -1472,11 +1472,7 @@ mod tests {
     fn a_tap_on_the_milky_way_shows_all_of_it() {
         // Where the rail's "Milky Way" goes, the galactic centre is the middle
         // and every point of the galaxy is on screen.
-        let i = crate::systems::zoom_rail::RAIL
-            .iter()
-            .position(|r| r.rung == Rung::Galaxy)
-            .unwrap();
-        let v = view_at(crate::systems::zoom_rail::rung_altitude(i));
+        let v = view_at(crate::systems::zoom_rail::Scale::MilkyWay.overview());
         let gc = gal_to_ecl(DVec3::X) * GC_LY * LIGHT_YEAR_M;
         assert!(v.at(gc).distance(v.centre) < 5.0);
         let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
