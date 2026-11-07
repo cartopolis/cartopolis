@@ -1333,6 +1333,10 @@ struct DetailWants {
     /// leave it to the basemap image (`FLAT_GROUND_ON_M`). The data they carry is
     /// extracted either way.
     flat_ground: bool,
+    /// Build the crowns chunk by chunk and hand on the trees for real models up
+    /// close (`systems::tree_models`) — the person's setting, so a change has to
+    /// retear the cells like the toggles above.
+    tree_models: bool,
 }
 
 impl DetailWants {
@@ -1408,6 +1412,7 @@ impl DetailWants {
         grass: true,
         modelled: FurnitureMask::NONE,
         flat_ground: true,
+        tree_models: true,
     };
 }
 
@@ -2030,7 +2035,7 @@ fn spawn_geometry_task(
                                         // the crowns are merged chunk by chunk so a
                                         // near chunk can hide its own
                                         // (`systems::tree_models`).
-                                        if crate::quality::budget().tree_models {
+                                        if wants.tree_models {
                                             let (chunked, models) =
                                                 crate::systems::tree_models::chunked_meshes(
                                                     &mut trees, mesh_bytes,
@@ -3420,6 +3425,7 @@ pub fn update_map_surfaces(
         grass: stores.grass.enabled,
         modelled: stores.placeholders.mask(),
         flat_ground: flat_ground && ground_meshes_enabled(),
+        tree_models: stores.tree_models.enabled,
     };
     // A zoom sweeping through the bands gains no detail and starts no cells
     // until it slows (`SWEEP_RATE`): whatever it built now would be the wrong
@@ -7656,6 +7662,13 @@ mod tests {
                 "flat_ground",
                 DetailWants {
                     flat_ground: false,
+                    ..all
+                },
+            ),
+            (
+                "tree_models",
+                DetailWants {
+                    tree_models: false,
                     ..all
                 },
             ),

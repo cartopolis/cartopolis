@@ -279,6 +279,10 @@ pub struct LayerPrefs {
     pub map: bool,
     #[serde(default = "detail_default")]
     pub trees: bool,
+    /// Real tree models up close (`systems::tree_models`); its default is the
+    /// rung's (`quality::Budget::tree_models`), so the phone starts without.
+    #[serde(default = "tree_models_default")]
+    pub tree_models: bool,
     /// Near-field grass (`systems::grass`).
     #[serde(default = "detail_default")]
     pub grass: bool,
@@ -418,6 +422,10 @@ fn yes() -> bool {
 /// — they are the ones the phone tier starts without).
 fn detail_default() -> bool {
     crate::quality::budget().detail_layers
+}
+
+fn tree_models_default() -> bool {
+    crate::quality::budget().tree_models
 }
 
 /// `#[serde(default)]` for [`SkyPrefs::fog_density`]: `DevPanelState::default`'s

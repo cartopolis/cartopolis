@@ -26,8 +26,10 @@
 //! 52 k for the crowns (`docs/notes/tree-silhouettes.md`) before the light model
 //! and the chunk distance existed. The light model casts no shadow.
 //!
-//! Off where [`quality::Budget::tree_models`] says so — the phone and the browser —
-//! and then the worker builds the crowns as it always did.
+//! A setting, "Tree models" under the map layers (`DataLayers::tree_models_enabled`),
+//! whose default is [`quality::Budget::tree_models`]: on for a workstation, off
+//! on the phone and in the browser, where the person may turn it on. Off, the
+//! worker builds the crowns as it always did.
 //!
 //! [`scatter::build_vegetation_meshes`]: crate::systems::scatter::build_vegetation_meshes
 //! [`quality::Budget::tree_models`]: crate::quality::Budget::tree_models
@@ -153,6 +155,10 @@ struct CellTrees {
 /// Every live cell's chunks, and the models standing in the near ones.
 #[derive(Resource, Default)]
 pub struct TreeModels {
+    /// The person's setting (`DataLayers::tree_models_enabled`), copied here
+    /// for the map worker's `DetailWants`, which is what retears the cells
+    /// when it changes.
+    pub enabled: bool,
     assets: Option<ModelAssets>,
     cells: HashMap<(i64, i64), CellTrees>,
 }
@@ -196,9 +202,16 @@ impl TreeModels {
     }
 }
 
-/// Load the models, once, where the rung draws them.
-pub fn load_tree_models(mut models: ResMut<TreeModels>, asset_server: Res<AssetServer>) {
-    if models.assets.is_some() || !crate::quality::budget().tree_models {
+/// Follow the setting, and load the models the first time it is on.
+pub fn load_tree_models(
+    mut models: ResMut<TreeModels>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    asset_server: Res<AssetServer>,
+) {
+    if models.enabled != layers.tree_models_enabled {
+        models.enabled = layers.tree_models_enabled;
+    }
+    if models.assets.is_some() || !models.enabled {
         return;
     }
     let parts = TREE_FORMS
@@ -237,7 +250,7 @@ pub fn update_tree_models(
     bigspace: Query<Entity, With<big_space::prelude::BigSpace>>,
     mut visibility: Query<&mut Visibility>,
 ) {
-    if models.assets.is_none() {
+    if models.assets.is_none() || !models.enabled {
         return;
     }
     let (Ok(root), Some(eye)) = (bigspace.single(), camera.world_position_f64()) else {
@@ -247,7 +260,7 @@ pub fn update_tree_models(
     // Above the vegetation fade, or with the layer off, every chunk is far: the
     // crowns are what fades into the flat fill.
     let allowed = veg.enabled && veg.factor <= 0.0;
-    let TreeModels { assets, cells } = &mut *models;
+    let TreeModels { assets, cells, .. } = &mut *models;
     let assets = assets.as_ref().expect("checked above");
     cells.retain(|cell, _| surfaces.holds(*cell));
     let mut budget = MAX_TREES_PER_FRAME;

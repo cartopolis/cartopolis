@@ -453,6 +453,11 @@ pub struct DataLayers {
     /// Feature toggle (under Map): the merged tree canopies/trunks
     /// (`systems::vegetation`). Gates their visibility on top of the altitude LOD.
     pub trees_enabled: bool,
+    /// Feature toggle (under Map): real tree models up close instead of the
+    /// merged crowns (`systems::tree_models`). Starts as the rung says
+    /// (`quality::Budget::tree_models`): on for a workstation, off on a phone,
+    /// where the person may turn it on.
+    pub tree_models_enabled: bool,
     /// Feature toggle (under Map): near-field grass on the green areas
     /// (`systems::grass`) — blades within a few tens of metres of the camera.
     /// Unlike the layers around it this gates no streaming of its own: what it
@@ -699,6 +704,7 @@ impl DataLayers {
             osm_buildings: self.osm_buildings_enabled,
             map: self.map_enabled,
             trees,
+            tree_models: self.tree_models_enabled,
             grass,
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
@@ -796,6 +802,7 @@ impl DataLayers {
         self.osm_buildings_enabled = p.osm_buildings;
         self.map_enabled = p.map;
         self.trees_enabled = p.trees;
+        self.tree_models_enabled = p.tree_models;
         self.grass_enabled = p.grass;
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
@@ -884,6 +891,7 @@ impl Default for DataLayers {
             // budget. A master that started off would hide them twice.
             vehicles_enabled: false,
             trees_enabled: detail,
+            tree_models_enabled: crate::quality::budget().tree_models,
             grass_enabled: detail,
             furniture_enabled: detail,
             // Both ride `detail_layers` with the rest: a phone starts without
@@ -2389,6 +2397,7 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
         n(&[
             dl.buildings_enabled,
             dl.trees_enabled,
+            dl.tree_models_enabled,
             dl.grass_enabled,
             dl.furniture_enabled,
             dl.street_detail_enabled,
@@ -2564,6 +2573,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     (
                         tile(icons::LEISURE, "Trees", false, false, low),
                         &mut dl.trees_enabled,
+                    ),
+                    (
+                        tile(icons::LEISURE, "Tree models", false, false, low),
+                        &mut dl.tree_models_enabled,
                     ),
                     (
                         tile(icons::GRASS, "Grass", false, false, low),
@@ -2967,6 +2980,7 @@ pub fn render_data_layers_panel(
         dl.map_enabled = fresh.map_enabled;
         dl.vehicles_enabled = fresh.vehicles_enabled;
         dl.trees_enabled = fresh.trees_enabled;
+        dl.tree_models_enabled = fresh.tree_models_enabled;
         dl.grass_enabled = fresh.grass_enabled;
         dl.furniture_enabled = fresh.furniture_enabled;
         dl.roads_textured = fresh.roads_textured;
