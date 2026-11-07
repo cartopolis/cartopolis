@@ -250,10 +250,10 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
 /// ever see the fix was a new key. The `v1` entries age out through the ordinary
 /// sweep.
 fn objects_cache_key(cx: i64, cy: i64) -> String {
-    // `v4`: a wall surveyed as an area follows its bends (`v3` gained the
-    // bridge parts); a cell cached before would otherwise keep its walls
-    // straight across every corner.
-    format!("bgt/v4/{BGT_ZOOM}/{cx}/{cy}.json")
+    // `v5`: a cell carries the woods the register says what grows in
+    // (`v4` made a wall surveyed as an area follow its bends, `v3` gained the
+    // bridge parts); a cell cached before would never plant its pines.
+    format!("bgt/v5/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
 /// The paving half's key: `v3` since it carries the lower quays' levels.
