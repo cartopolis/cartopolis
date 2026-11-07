@@ -34,6 +34,7 @@ use cartopolis_geo::ahn::wgs84_to_rd;
 use cartopolis_geo::formats::coverage::Manifest;
 use cartopolis_geo::formats::registers::{Cell as CellDoc, Prop, Tree, SUPPLIES_TREES};
 use cartopolis_geo::furniture::FurnitureKind;
+use cartopolis_geo::tree_form::TreeForm;
 use serde_json::Value;
 
 use super::geom::{polygon_rings, round};
@@ -58,8 +59,11 @@ impl Fields<'_> {
 /// spot in the lighting layer drawn as a four-metre column is worse than not
 /// drawing it, so [`Yields::Props`] answers `None` for those.
 pub enum Yields {
+    /// A height where the register measured one, and the silhouette its
+    /// species implies where it names one.
     Trees {
         height: fn(&Fields) -> Option<f32>,
+        form: fn(&Fields) -> Option<TreeForm>,
     },
     /// The form, and an sRGB body colour where the register says one.
     Props {
@@ -94,9 +98,9 @@ pub struct Source {
     /// The geometry property — `GEOM` on most of Groningen's layers, `geom` on
     /// the parking bays, and the server refuses a `propertyName` it does not have.
     pub geometry: &'static str,
-    /// The one attribute the reader looks at, so the request asks for nothing
-    /// else (the tree layer carries fifteen). Empty for a source that reads none.
-    pub attribute: &'static str,
+    /// The attributes the reader looks at, so the request asks for nothing else
+    /// (the tree layer carries fifteen). Empty for a source that reads none.
+    pub attributes: &'static [&'static str],
     pub yields: Yields,
     /// The national-register content this source stands in for. Declared rather
     /// than derived: a reader is a function and cannot be asked what it might
@@ -131,9 +135,10 @@ const GRONINGEN: Register = Register {
             id: "trees",
             layer: "geo-data:Bomen gemeente Groningen",
             geometry: "GEOM",
-            attribute: "BOOMHOOGTE",
+            attributes: &["BOOMHOOGTE", "LATIJNSE_NAAM"],
             yields: Yields::Trees {
                 height: |f| f.str("BOOMHOOGTE").and_then(height_band_m),
+                form: |f| f.str("LATIJNSE_NAAM").and_then(TreeForm::from_taxon),
             },
             supplies: &[Supply::Trees],
         },
@@ -141,7 +146,7 @@ const GRONINGEN: Register = Register {
             id: "lamps",
             layer: "geo-data:Lichtmasten gemeente Groningen",
             geometry: "GEOM",
-            attribute: "LICHTPUNT_SOORT",
+            attributes: &["LICHTPUNT_SOORT"],
             yields: Yields::Props {
                 // Over one cell: 481 `Lichtmast`, 8 `Grondspot`, 3
                 // `Tunnelverlichting`, 1 `Klok`. Only the column has a form here.
@@ -156,7 +161,7 @@ const GRONINGEN: Register = Register {
             id: "containers",
             layer: "geo-data:CONTAINERS",
             geometry: "GEOM",
-            attribute: "FRACTIE",
+            attributes: &["FRACTIE"],
             yields: Yields::Props {
                 // The fraction is a colour, not a form: a bottle bank and a paper
                 // bank are the same six boxes.
@@ -173,7 +178,7 @@ const GRONINGEN: Register = Register {
             id: "fountains",
             layer: "geo-data:Fonteinen_gemeente_Groningen",
             geometry: "GEOM",
-            attribute: "SOORT_KUNSTWERK",
+            attributes: &["SOORT_KUNSTWERK"],
             yields: Yields::Props {
                 // `Fontein` on every feature seen, but matched rather than
                 // accepted blanket: the collection is the city's *kunstwerken*
@@ -190,7 +195,7 @@ const GRONINGEN: Register = Register {
             id: "chargers",
             layer: "geo-data:Laadpalen_gemeente_Groningen",
             geometry: "GEOM",
-            attribute: "STATUS_LAADPAAL",
+            attributes: &["STATUS_LAADPAAL"],
             yields: Yields::Props {
                 // A charge point is a box on a plinth. One status value exists
                 // today; anything else (planned, withdrawn) is refused, because a
@@ -208,7 +213,7 @@ const GRONINGEN: Register = Register {
             // itself, with the lamp number it is wired to.
             layer: "geo-data:Bushaltes gemeente Groningen",
             geometry: "GEOM",
-            attribute: "LICHTPUNT_SOORT",
+            attributes: &["LICHTPUNT_SOORT"],
             yields: Yields::Props {
                 kind: |f| match f.str("LICHTPUNT_SOORT") {
                     Some("Abri") => Some((FurnitureKind::Shelter, None)),
@@ -223,7 +228,7 @@ const GRONINGEN: Register = Register {
             // Voetgangerslicht` and 557 `Schakelkast`, the controller at the kerb.
             layer: "geo-data:Verkeerslichten gemeente Groningen",
             geometry: "GEOM",
-            attribute: "LICHTPUNT_SOORT",
+            attributes: &["LICHTPUNT_SOORT"],
             yields: Yields::Props {
                 kind: |f| match f.str("LICHTPUNT_SOORT") {
                     Some("Verkeerslicht" | "VRI Voetgangerslicht") => {
@@ -243,7 +248,7 @@ const GRONINGEN: Register = Register {
             // Supplies nothing new: the chargers already speak for cabinets.
             layer: "geo_info:Parkeerautomaten gemeente Groningen",
             geometry: "GEOM",
-            attribute: "",
+            attributes: &[],
             yields: Yields::Props {
                 kind: |_| Some((FurnitureKind::Cabinet, None)),
             },
@@ -256,7 +261,7 @@ const GRONINGEN: Register = Register {
             // perpendicular 4.9 × 2.3, herringbone 6.8 × 2.2. OSM has 1,741.
             layer: "geo_info:Parkeervakken gemeente Groningen",
             geometry: "geom",
-            attribute: "",
+            attributes: &[],
             yields: Yields::Bays,
             supplies: &[],
         },
@@ -308,17 +313,16 @@ fn is_rd(x: f64, y: f64) -> bool {
 ///
 /// **`srsName` is what makes it RD**; the server's default is Web Mercator, which
 /// once put every tree the client drew from this city outside its cell.
-/// `propertyName` asks for the geometry and the one attribute and nothing else.
+/// `propertyName` asks for the geometry and the attributes read, and nothing else.
 /// There is no paging: the server answers a whole city in one response, and
 /// pages would need a `sortBy` on a column each layer names differently (it
 /// refuses `startIndex` without one). A response that comes back short of its
 /// own `numberMatched` fails the run rather than writing a thinned city.
 fn source_url(register: &Register, source: &Source, bbox: [f64; 4]) -> String {
-    let properties = if source.attribute.is_empty() {
-        source.geometry.to_string()
-    } else {
-        format!("{},{}", source.geometry, source.attribute)
-    };
+    let properties = std::iter::once(source.geometry)
+        .chain(source.attributes.iter().copied())
+        .collect::<Vec<_>>()
+        .join(",");
     let [x0, y0, x1, y1] = bbox;
     format!(
         "{}?{}",
@@ -342,7 +346,8 @@ fn source_url(register: &Register, source: &Source, bbox: [f64; 4]) -> String {
 /// What one source contributed, in lat/lng.
 #[derive(Debug, Default, PartialEq)]
 pub struct Read {
-    pub trees: Vec<Tree>,
+    /// Each tree with the form its species implies, where it names one.
+    pub trees: Vec<(Tree, Option<TreeForm>)>,
     pub props: Vec<Prop>,
     pub bays: Vec<Vec<(f64, f64)>>,
     /// Features refused by the reader or outside RD.
@@ -419,10 +424,9 @@ pub fn read_source(doc: &Value, yields: &Yields) -> Result<Read, String> {
         let (lat, lng) = rd_to_lat_lng(x, y);
         let (lat, lng) = (round(lat, 7), round(lng, 7));
         match yields {
-            Yields::Trees { height } => out.trees.push(Tree(
-                lat,
-                lng,
-                height(&fields).map(|h| (h * 10.0).round() / 10.0),
+            Yields::Trees { height, form } => out.trees.push((
+                Tree(lat, lng, height(&fields).map(|h| (h * 10.0).round() / 10.0)),
+                form(&fields),
             )),
             Yields::Props { kind } => match kind(&fields) {
                 Some((kind, paint)) => out.props.push(Prop(lat, lng, kind.slug().into(), paint)),
@@ -680,6 +684,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let mut docs: BTreeMap<Cell, CellDoc> = area.iter().map(|c| (*c, CellDoc::default())).collect();
     let mut counts: Vec<Count> = Vec::new();
     let mut attributions: Vec<&str> = Vec::new();
+    let mut n_formed = 0usize;
 
     for register in REGISTERS {
         let Some(reach) = intersect(ctx.bbox, register.bounds_rd) else {
@@ -704,10 +709,15 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 PipelineError::Failed(format!("{}/{}: {e}", register.id, source.id))
             })?;
             let mut kept = 0usize;
-            for t in read.trees {
+            for (t, form) in read.trees {
                 let cell = lat_lng_to_cell(t.0, t.1);
                 if let Some(d) = docs.get_mut(&cell).filter(|_| covered.contains(&cell)) {
                     d.trees.push(t);
+                    // Pushed with every tree, so the two lists pair up; a cell
+                    // where none has a form drops its list before writing.
+                    d.tree_forms
+                        .push(form.map_or(String::new(), |f| f.slug().to_string()));
+                    n_formed += usize::from(form.is_some());
                     kept += 1;
                 }
             }
@@ -786,6 +796,14 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     counts.push(Count::new("artworks", n_art));
     attributions.push(WIKIDATA_ATTRIBUTION);
 
+    ctx.log(format!(
+        "trees: {n_formed} with a silhouette from their species"
+    ));
+    for doc in docs.values_mut() {
+        if doc.tree_forms.iter().all(String::is_empty) {
+            doc.tree_forms.clear();
+        }
+    }
     for (cell, doc) in &docs {
         ctx.check()?;
         ctx.write_doc(&cell_path("registers", *cell), doc)?;
@@ -840,16 +858,22 @@ mod tests {
         assert!(url.contains("srsName=EPSG%3A28992"), "{url}");
         let page = |x: f64, y: f64| {
             json!({"features":[{"geometry":{"type":"Point","coordinates":[x, y]},
-                                "properties":{"BOOMHOOGTE":"15 tot 18 m."}}]})
+                                "properties":{"BOOMHOOGTE":"15 tot 18 m.",
+                                              "LATIJNSE_NAAM":"Populus nigra 'Italica'"}}]})
         };
         assert!(read_source(&page(732_717.02, 7_024_297.87), &source("trees").yields).is_err());
         let read = read_source(&page(234_806.13, 582_449.68), &source("trees").yields).unwrap();
-        let Tree(lat, lng, h) = read.trees[0];
+        let (Tree(lat, lng, h), form) = read.trees[0];
         assert!(
             (lat - 53.2227).abs() < 1e-3 && (lng - 6.5821).abs() < 1e-3,
             "{lat} {lng}"
         );
         assert_eq!(h, Some(16.5));
+        assert_eq!(form, Some(TreeForm::Columnar));
+        assert!(
+            url.contains("LATIJNSE_NAAM"),
+            "the species is asked for: {url}"
+        );
     }
 
     #[test]

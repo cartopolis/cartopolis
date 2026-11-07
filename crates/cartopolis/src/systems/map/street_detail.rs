@@ -54,7 +54,7 @@ use crate::systems::osm_buildings::{
     lat_lng_to_local, num_from_value, overpass_query, overpass_remark, MeshData,
 };
 use crate::systems::scatter::{
-    self, build_vegetation_meshes, srgb_to_linear_rgb, TreeInstance, TREE_FADE_END,
+    self, build_vegetation_meshes, srgb_to_linear_rgb, TreeForm, TreeInstance, TREE_FADE_END,
 };
 use crate::systems::terrain::TerrainSnapshot;
 use crate::systems::vector_tiles::SurfaceGroup;
@@ -161,8 +161,8 @@ enum WaterKind {
 /// One parsed cell, still in (lat, lng).
 #[derive(Default, Debug)]
 struct DetailData {
-    /// (lat, lng, height tag, crown-diameter tag, needleleaved).
-    trees: Vec<(f64, f64, Option<f32>, Option<f32>, bool)>,
+    /// (lat, lng, height tag, crown-diameter tag, silhouette).
+    trees: Vec<(f64, f64, Option<f32>, Option<f32>, TreeForm)>,
     tree_rows: Vec<Vec<(f64, f64)>>,
     /// (lat, lng, height tag).
     lamps: Vec<(f64, f64, Option<f32>)>,
@@ -331,13 +331,22 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                 };
                 let id = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                 if tag_str(tags, "natural") == Some("tree") {
-                    let needle = tag_str(tags, "leaf_type") == Some("needleleaved");
+                    // The species where it was mapped, the most specific first; a
+                    // mapper who knew only the leaf type still told us a conifer.
+                    let form = ["species", "taxon", "genus"]
+                        .iter()
+                        .find_map(|k| tag_str(tags, k).and_then(TreeForm::from_taxon))
+                        .or_else(|| {
+                            (tag_str(tags, "leaf_type") == Some("needleleaved"))
+                                .then_some(TreeForm::Conical)
+                        })
+                        .unwrap_or_default();
                     out.trees.push((
                         lat,
                         lng,
                         tag_num(tags, "height"),
                         tag_num(tags, "diameter_crown"),
-                        needle,
+                        form,
                     ));
                 } else if tag_str(tags, "highway") == Some("street_lamp") {
                     out.lamps.push((lat, lng, tag_num(tags, "height")));
@@ -691,7 +700,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     if ctx.wants_trees {
         let mut instances: Vec<TreeInstance> = Vec::new();
         let mut push_tree =
-            |p: Vec2, height: Option<f32>, crown: Option<f32>, needle: bool, seed: u64| {
+            |p: Vec2, height: Option<f32>, crown: Option<f32>, form: TreeForm, seed: u64| {
                 if instances.len() >= MAX_TREES_PER_CELL {
                     return;
                 }
@@ -701,7 +710,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 let r = crown
                     .map(|d| d * 0.5)
                     .unwrap_or_else(|| {
-                        let base = if needle { h * 0.22 } else { h * 0.32 };
+                        let base = h * 0.32 * form.width();
                         base * (0.85 + 0.3 * srand(seed, 2))
                     })
                     .clamp(0.8, 9.0);
@@ -710,19 +719,16 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                     z: p.y,
                     radius: r,
                     height: h,
-                    tone: if needle {
-                        0.7 + 0.3 * srand(seed, 3)
-                    } else {
-                        srand(seed, 3)
-                    },
-                    luma: 0.9 + 0.2 * srand(seed, 4),
+                    tone: form.tone(srand(seed, 3)),
+                    luma: (0.9 + 0.2 * srand(seed, 4)) * form.luma(),
+                    form,
                 });
             };
-        for &(lat, lng, h, crown, needle) in &data.trees {
+        for &(lat, lng, h, crown, form) in &data.trees {
             if !ctx.owns(lat, lng) {
                 continue;
             }
-            push_tree(local(lat, lng), h, crown, needle, feature_seed(lat, lng));
+            push_tree(local(lat, lng), h, crown, form, feature_seed(lat, lng));
         }
         for row in &data.tree_rows {
             let Some(&(flat, flng)) = row.first() else {
@@ -734,7 +740,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             let line: Vec<Vec2> = row.iter().map(|&(la, lo)| local(la, lo)).collect();
             for (p, _) in along(&line, 7.0) {
                 let seed = feature_seed(flat + p.x as f64 * 1e-5, flng + p.y as f64 * 1e-5);
-                push_tree(p, None, None, false, seed);
+                push_tree(p, None, None, TreeForm::Round, seed);
             }
         }
         // The vegetation builder works in a tile-local frame with ground y = 0;

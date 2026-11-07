@@ -47,7 +47,7 @@ use crate::platform::cell_source::CellSource;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind};
 use crate::systems::osm_buildings::tdbag_url;
-use crate::systems::scatter::TreeInstance;
+use crate::systems::scatter::{TreeForm, TreeInstance};
 use cartopolis_geo::formats::registers::{self, SUPPLIES_TREES};
 
 /// The zoom cells are cut at — `map_geometry::GEOMETRY_ZOOM`, because these
@@ -94,6 +94,8 @@ pub struct RegisteredTree {
     /// `None` is ordinary — Groningen leaves it blank on about one tree in thirty —
     /// and means "draw it the way an unmeasured street tree has always been drawn".
     pub height_m: Option<f32>,
+    /// The silhouette its species implies; `Round` where the register names none.
+    pub form: TreeForm,
 }
 
 /// One street object as a register placed it.
@@ -152,8 +154,14 @@ fn parse_cell(text: &str) -> Option<RegisteredCell> {
     Some(RegisteredCell {
         trees: doc
             .trees
-            .into_iter()
-            .map(|registers::Tree(lat, lng, height_m)| RegisteredTree { lat, lng, height_m })
+            .iter()
+            .enumerate()
+            .map(|(i, &registers::Tree(lat, lng, height_m))| RegisteredTree {
+                lat,
+                lng,
+                height_m,
+                form: doc.tree_form(i),
+            })
             .collect(),
         props: doc
             .props
@@ -225,12 +233,12 @@ pub fn registered_trees(
     tile_m: f32,
     seed: u64,
 ) -> Vec<TreeInstance> {
-    let points: Vec<(f32, f32, Option<f32>)> = cell
+    let points: Vec<(f32, f32, Option<f32>, TreeForm)> = cell
         .trees
         .iter()
         .filter_map(|t| {
             crate::systems::surveyed::cell_local(t.lat, t.lng, cx, cy, REGISTER_ZOOM, tile_m)
-                .map(|(x, z)| (x, z, t.height_m))
+                .map(|(x, z)| (x, z, t.height_m, t.form))
         })
         .collect();
     crate::systems::scatter::surveyed_trees(&points, seed)

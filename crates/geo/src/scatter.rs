@@ -35,6 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+pub use crate::tree_form::TreeForm;
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData, TILE_BUFFER_FRAC};
 
 /// Altitude at which trees start merging into the flat fill.
@@ -63,6 +64,8 @@ pub struct TreeInstance {
     pub tone: f32,
     /// Per-instance brightness multiplier, centred on 1.0.
     pub luma: f32,
+    /// The silhouette, from the species where somebody recorded it.
+    pub form: TreeForm,
 }
 
 /// How one landuse kind is planted.
@@ -270,6 +273,7 @@ pub fn scatter_vegetation(
                         height: lerp(profile.height.0, profile.height.1, rand01(h, 3)),
                         tone: rand01(h, 4),
                         luma: 1.0 + (rand01(h, 5) - 0.5) * 0.08,
+                        form: TreeForm::Round,
                     });
                     if out.len() >= MAX_TREES_PER_CELL {
                         truncated = true;
@@ -686,8 +690,15 @@ pub(crate) fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
 /// away the only thing the better register knows. The crown/height ratio is the
 /// one the band already implies (~0.3), jittered, so an unmeasured tree and a
 /// measured one of the same height are drawn the same way.
+///
+/// The fourth is its [`TreeForm`]: the crown is narrowed or widened by the form's
+/// [`TreeForm::width`] and toned by its [`TreeForm::tone`]; `Round`, the form of a
+/// tree whose species nobody recorded, changes neither.
 #[must_use]
-pub fn surveyed_trees(points: &[(f32, f32, Option<f32>)], seed: u64) -> Vec<TreeInstance> {
+pub fn surveyed_trees(
+    points: &[(f32, f32, Option<f32>, TreeForm)],
+    seed: u64,
+) -> Vec<TreeInstance> {
     /// Height and crown radius of a street tree, metres. Narrower than
     /// [`veg_profile`]'s woodland band and centred lower.
     const HEIGHT: (f32, f32) = (6.0, 11.5);
@@ -698,7 +709,7 @@ pub fn surveyed_trees(points: &[(f32, f32, Option<f32>)], seed: u64) -> Vec<Tree
     points
         .iter()
         .enumerate()
-        .map(|(i, &(x, z, measured))| {
+        .map(|(i, &(x, z, measured, form))| {
             let h = hash3(seed, i as i32, 0x5EED);
             let (height, radius) = match measured {
                 // A register that answers with a nonsense height is answering
@@ -715,10 +726,11 @@ pub fn surveyed_trees(points: &[(f32, f32, Option<f32>)], seed: u64) -> Vec<Tree
             TreeInstance {
                 x,
                 z,
-                radius,
+                radius: radius * form.width(),
                 height,
-                tone: rand01(h, 2),
-                luma: 1.0 + (rand01(h, 3) - 0.5) * 0.08,
+                tone: form.tone(rand01(h, 2)),
+                luma: (1.0 + (rand01(h, 3) - 0.5) * 0.08) * form.luma(),
+                form,
             }
         })
         .collect()
@@ -756,14 +768,9 @@ pub fn build_vegetation_meshes(
     if trees.is_empty() {
         return Vec::new();
     }
-    let unit = unit_canopy();
     let deep = tone_multiplier();
 
-    // What one more tree adds, so the check below is "would this one overflow"
-    // rather than "has it already", which would let every piece finish over the
-    // limit it exists to stay under.
-    let canopy_step = unit.verts.len() * VERTEX_BYTES + unit.indices.len() * INDEX_BYTES;
-    const TRUNK_STEP: usize = 16 * VERTEX_BYTES + 24 * INDEX_BYTES;
+    const TRUNK_STEP: usize = 4 * TRUNK_SIDES * VERTEX_BYTES + 6 * TRUNK_SIDES * INDEX_BYTES;
 
     let mut out = Vec::new();
     let mut canopy = MeshBuf::default();
@@ -775,6 +782,11 @@ pub fn build_vegetation_meshes(
         .into_iter()
         .map(|i| &trees[i])
     {
+        let shape = t.form.shape();
+        // What one more tree adds, so the check below is "would this one overflow"
+        // rather than "has it already", which would let every piece finish over
+        // the limit it exists to stay under.
+        let canopy_step = shape.verts.len() * VERTEX_BYTES + shape.indices.len() * INDEX_BYTES;
         // Flush before adding, and only when there is something to flush — a piece
         // has to hold at least one tree or a cap below `canopy_step` would emit
         // empty meshes forever.
@@ -787,8 +799,9 @@ pub fn build_vegetation_meshes(
             }
         }
 
-        // Crown occupies the top 70% of the tree; the trunk carries the rest.
-        let crown_bottom = t.height * 0.30;
+        // The crown takes the tree above its form's stem: 70% of it for the old
+        // ball, nearly all of it for a spruce, the top half for a pine.
+        let crown_bottom = t.height * shape.crown_bottom;
         let ry = (t.height - crown_bottom) * 0.5;
         let cy = crown_bottom + ry;
         let (rx, rz) = (t.radius, t.radius);
@@ -806,22 +819,35 @@ pub fn build_vegetation_meshes(
         // crowns share an outline; only *in*, so a crown never reaches past the
         // radius the tunnel and sewer checks clear it at.
         let lumps = hash3(CROWN_LUMP_SEED, (t.x * 8.0) as i32, (t.z * 8.0) as i32);
-        for (i, p) in unit.verts.iter().enumerate() {
+        // A turn of its own, so a row of one species is not one outline repeated;
+        // a turn is about the axis, so it cannot carry a crown past its radius.
+        let (sin, cos) = if shape.turns {
+            (std::f32::consts::TAU * rand01(lumps, 0xA16)).sin_cos()
+        } else {
+            (0.0, 1.0)
+        };
+        let turn = |v: [f32; 3]| [v[0] * cos - v[2] * sin, v[1], v[0] * sin + v[2] * cos];
+        for (i, (p, n)) in shape.verts.iter().zip(&shape.normals).enumerate() {
             let k = 1.0 - CROWN_LUMP * rand01(lumps, i as u32);
+            let p = turn(*p);
             canopy
                 .positions
                 .push([t.x + p[0] * rx * k, cy + p[1] * ry * k, t.z + p[2] * rz * k]);
             // Inverse-transpose of a non-uniform scale is the reciprocal scale, or
             // an ellipsoid's normals point the way a sphere's would and the shading
             // gives away that every tree is the same ball.
-            let n = normalize([p[0] / rx, p[1] / ry, p[2] / rz]);
-            canopy.normals.push(n);
+            let n = turn(*n);
+            canopy
+                .normals
+                .push(normalize([n[0] / rx, n[1] / ry, n[2] / rz]));
             canopy.colors.push(tint);
         }
-        canopy.indices.extend(unit.indices.iter().map(|i| base + i));
+        canopy
+            .indices
+            .extend(shape.indices.iter().map(|i| base + i));
 
         if t.height >= TRUNK_MIN_HEIGHT {
-            let hw = (t.radius * 0.09).max(0.08);
+            let hw = (t.radius * shape.trunk).max(0.08);
             // Overlap into the crown so no gap opens at the join from below.
             let top = crown_bottom + ry * 0.35;
             let tint = [t.luma, t.luma, t.luma, 1.0];
@@ -867,19 +893,35 @@ impl MeshBuf {
     }
 }
 
-/// A square prism, open at both ends — the crown caps the top and the ground the
-/// bottom, so caps would only be triangles nobody ever sees.
+/// Faces round a stem. Four made a square post, which is what a trunk looked like
+/// from the street until there was a reason to stand under one.
+const TRUNK_SIDES: usize = 6;
+
+/// How much narrower a stem is where it meets the crown than at the ground.
+const TRUNK_TAPER: f32 = 0.7;
+
+/// A tapering prism, open at both ends — the crown caps the top and the ground
+/// the bottom, so caps would only be triangles nobody ever sees. Each face is
+/// flat-shaded: smooth normals on six faces read as a blurred column, not a
+/// rounder one.
 fn push_trunk(buf: &mut MeshBuf, x: f32, z: f32, hw: f32, top: f32, tint: [f32; 4]) {
-    const SIDES: [([f32; 2], [f32; 2], [f32; 3]); 4] = [
-        ([-1.0, -1.0], [1.0, -1.0], [0.0, 0.0, -1.0]),
-        ([1.0, -1.0], [1.0, 1.0], [1.0, 0.0, 0.0]),
-        ([1.0, 1.0], [-1.0, 1.0], [0.0, 0.0, 1.0]),
-        ([-1.0, 1.0], [-1.0, -1.0], [-1.0, 0.0, 0.0]),
-    ];
-    for (a, b, n) in SIDES {
+    let corner = |i: usize| {
+        let a = std::f32::consts::TAU * i as f32 / TRUNK_SIDES as f32;
+        [a.cos(), a.sin()]
+    };
+    for i in 0..TRUNK_SIDES {
+        let (a, b) = (corner(i), corner(i + 1));
+        let mid = normalize([a[0] + b[0], 0.0, a[1] + b[1]]);
+        // The taper tilts each face up by the slope of its side.
+        let n = normalize([mid[0], hw * (1.0 - TRUNK_TAPER) / top, mid[2]]);
         let base = buf.positions.len() as u32;
-        for (c, y) in [(a, 0.0), (b, 0.0), (b, top), (a, top)] {
-            buf.positions.push([x + c[0] * hw, y, z + c[1] * hw]);
+        for (c, y, w) in [
+            (a, 0.0, hw),
+            (b, 0.0, hw),
+            (b, top, hw * TRUNK_TAPER),
+            (a, top, hw * TRUNK_TAPER),
+        ] {
+            buf.positions.push([x + c[0] * w, y, z + c[1] * w]);
             buf.normals.push(n);
             buf.colors.push(tint);
         }
@@ -892,12 +934,12 @@ fn push_trunk(buf: &mut MeshBuf, x: f32, z: f32, hw: f32, top: f32, tint: [f32; 
 /// unit sphere — 18 vertices and 32 triangles, smooth-shaded off the normalised
 /// position. Small enough to spend on every tree, round enough that a canopy seen
 /// from directly overhead still reads as a canopy.
-struct UnitCanopy {
-    verts: Vec<[f32; 3]>,
-    indices: Vec<u32>,
+pub(crate) struct UnitCanopy {
+    pub(crate) verts: Vec<[f32; 3]>,
+    pub(crate) indices: Vec<u32>,
 }
 
-fn unit_canopy() -> UnitCanopy {
+pub(crate) fn unit_canopy() -> UnitCanopy {
     const OCT: [[f32; 3]; 6] = [
         [1.0, 0.0, 0.0],
         [-1.0, 0.0, 0.0],
@@ -1307,6 +1349,38 @@ mod tests {
             for n in &m.normals {
                 let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
                 assert!((len - 1.0).abs() < 1e-3, "unnormalised normal {n:?}");
+            }
+        }
+    }
+
+    /// Every form, through the builder — turned, lumped and stood on its stem —
+    /// stays within its radius and between the ground and its height, which is
+    /// what the tunnel and sewer keep-outs clear a tree at.
+    #[test]
+    fn every_form_stays_inside_the_tree_it_was_sized_as() {
+        for (i, form) in crate::tree_form::TREE_FORMS.into_iter().enumerate() {
+            let t = TreeInstance {
+                x: 100.0 + i as f32 * 37.3,
+                z: 50.0 - i as f32 * 11.9,
+                radius: 4.0,
+                height: 15.0,
+                tone: 0.5,
+                luma: 1.0,
+                form,
+            };
+            let meshes = build_vegetation_meshes(&[t], None);
+            assert_eq!(meshes.len(), 2, "{form:?}: a crown and a stem");
+            for m in &meshes {
+                for p in &m.positions {
+                    let r = ((p[0] - t.x).powi(2) + (p[2] - t.z).powi(2)).sqrt();
+                    assert!(r <= t.radius + 1e-3, "{form:?} {:?} reaches {r}", m.group);
+                    assert!(
+                        (-1e-3..=t.height + 1e-3).contains(&p[1]),
+                        "{form:?} {:?} at y {}",
+                        m.group,
+                        p[1]
+                    );
+                }
             }
         }
     }

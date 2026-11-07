@@ -118,6 +118,9 @@ pub mod road_levels;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
+// What a tree's species says about its shape, and the crown each shape is built
+// from — read by atlas from a city's register and by the client from OSM tags.
+pub mod tree_form;
 // The tall-structure lane's z11 cell and Overpass query, shared by the client and
 // the atlas dataset that pre-cuts the same query into static files.
 pub mod tall;

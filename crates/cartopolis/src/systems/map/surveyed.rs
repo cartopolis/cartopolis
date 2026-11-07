@@ -328,11 +328,13 @@ pub fn surveyed_trees(
     // No measured height: the BGT registers a tree as a point and says nothing
     // about how big it is. A city's own register does, which is what
     // `systems::municipal` carries the third element for.
-    let points: Vec<(f32, f32, Option<f32>)> = cell
+    // Nor its species, so every BGT tree is the form a tree with none is drawn as.
+    let points: Vec<(f32, f32, Option<f32>, crate::systems::scatter::TreeForm)> = cell
         .trees
         .iter()
         .filter_map(|&(lat, lng)| {
-            to_cell_local(lat, lng, cx, cy, tile_m).map(|(x, z)| (x, z, None))
+            to_cell_local(lat, lng, cx, cy, tile_m)
+                .map(|(x, z)| (x, z, None, crate::systems::scatter::TreeForm::Round))
         })
         .collect();
     crate::systems::scatter::surveyed_trees(&points, seed)
