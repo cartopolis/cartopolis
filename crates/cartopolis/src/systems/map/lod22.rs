@@ -2597,7 +2597,11 @@ fn build_lod22_from_body(
             let clear = b.finish.as_deref() == Some("clear");
             for &(i, j, k, is_roof) in &b.t {
                 let (a, bb, c) = (local[i], local[j], local[k]);
-                let color = if is_roof == 1 && !clear { roof_tile } else { wall };
+                let color = if is_roof == 1 && !clear {
+                    roof_tile
+                } else {
+                    wall
+                };
                 let uv = if clear {
                     CLEAR_GLASS_UV
                 } else {
