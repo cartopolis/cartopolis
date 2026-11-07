@@ -1,0 +1,246 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Cartopolis — zoom ladder v4: the scale switch folded into one disc</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* v3: a scale switch above a rail that spans one scale */
+.ctl { position:absolute; display:flex; flex-direction:column; align-items:center; gap:14px; width:40px; }
+.scales { display:flex; flex-direction:column; gap:2px; padding:3px; border-radius:20px; background:var(--glass); border:1px solid var(--gline); }
+.scales div { width:32px; height:32px; border-radius:16px; display:grid; place-items:center; color:var(--dim); position:relative; }
+.scales div.on { background:var(--cream); color:var(--ink); }
+.scales div.cos.on { background:#c9b8ff; }
+.scales svg.i { width:19px; height:19px; }
+.scales .nm { position:absolute; right:42px; white-space:nowrap; font-size:12px; color:var(--dim); text-shadow:0 1px 3px #000, 0 0 6px #000; }
+.scales div.on .nm { color:var(--cream); }
+.srail { display:flex; flex-direction:column; align-items:center; width:30px; }
+.srail .pm { width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); color:var(--cream); display:grid; place-items:center; font-size:17px; line-height:1; position:relative; }
+.srail .track { position:relative; width:4px; margin:8px 0; border-radius:2px; background:rgba(255,255,255,.18); }
+.srail.cos .track { background:rgba(201,184,255,.28); }
+.srail .track i { position:absolute; left:-2px; width:8px; height:1.5px; background:rgba(255,255,255,.32); border-radius:1px; }
+.srail .track .th { position:absolute; left:-5px; width:14px; height:14px; border-radius:50%; background:var(--cream); box-shadow:0 0 0 3px rgba(243,247,249,.2); transform:translateY(-50%); }
+.srail.cos .track .th { background:#e4dcff; box-shadow:0 0 0 3px rgba(201,184,255,.25); }
+.srail .tag { position:absolute; right:20px; transform:translateY(-50%); white-space:nowrap; font-size:12.5px; color:var(--cream); background:var(--glass); border:1px solid var(--gline); padding:2px 9px; border-radius:8px; }
+.srail .lab { position:absolute; right:16px; transform:translateY(-50%); white-space:nowrap; font-size:11.5px; color:var(--dim); text-shadow:0 1px 3px #000, 0 0 6px #000; }
+/* the end of a scale: − (or +) becomes the next scale */
+.srail .pm.next { border-color:rgba(253,96,18,.7); color:var(--cream); }
+.srail .pm.next svg.i { width:17px; height:17px; }
+.srail .pm .go { position:absolute; right:38px; white-space:nowrap; font-size:12.5px; color:#ffd0b4; background:rgba(13,18,20,.9); border:1px solid rgba(253,96,18,.55); padding:2px 9px; border-radius:8px; }
+.srail .pm svg.ring { position:absolute; left:-4px; top:-4px; width:38px; height:38px; }
+.cover { position:absolute; right:0; top:0; bottom:0; width:120px; background:linear-gradient(90deg, rgba(5,8,11,0), #05080b 40%); }
+.toast2 { white-space:nowrap; position:absolute; left:50%; transform:translateX(-50%); top:16px; padding:6px 16px; font-size:14.5px; color:var(--cream); display:flex; gap:9px; align-items:center; }
+.toast2 small { color:var(--dim); font-size:12.5px; }
+.toast2 em { font-style:normal; color:var(--dim); }
+.four { display:grid; grid-template-columns:repeat(4, 1fr); gap:20px; }
+.four .frame { aspect-ratio:16/10; background:#05080b; }
+.four .frame img { object-fit:cover; }
+.sc4 { background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:14px 16px; margin-top:12px; font-family:JakartaR, sans-serif; font-size:13px; color:var(--dim); }
+.sc4 h3 { font-family:Jakarta; color:var(--cream); font-size:17px; display:flex; align-items:center; gap:8px; margin-bottom:2px; }
+.sc4 h3 svg.i { width:20px; height:20px; }
+.sc4 .rng { color:var(--text); margin-bottom:8px; }
+.sc4 ol { list-style:none; margin:6px 0 8px; border-left:2px solid rgba(255,255,255,.14); padding-left:10px; }
+.sc4.cos ol { border-color:rgba(201,184,255,.4); }
+.sc4 ol li { padding:1px 0; color:var(--text); display:flex; justify-content:space-between; }
+.sc4 ol li small { color:var(--dim); }
+.sc4 .k { color:var(--cream); font-family:Jakarta; }
+.box { position:relative; height:470px; background:#05080b; border-radius:14px; border:1px solid var(--gline); overflow:hidden; }
+.box .say { position:absolute; left:12px; top:12px; width:230px; padding:8px 10px; border-radius:10px; background:rgba(5,8,11,.82); color:var(--dim); font-size:13px; font-family:JakartaR; }
+.box .say b { color:var(--cream); font-family:Jakarta; font-weight:inherit; display:block; margin-bottom:3px; }
+.steps4 { display:grid; grid-template-columns:repeat(4, 1fr); gap:20px; }
+.arrowr { position:absolute; right:-17px; top:50%; color:var(--brand); font-size:22px; z-index:2; }
+.spd { position:absolute; right:52px; display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+.spd div { white-space:nowrap; display:flex; align-items:center; gap:8px; padding:4px 5px 4px 12px; border-radius:20px; background:var(--glass); border:1px solid var(--gline); font-size:13px; color:var(--text); }
+.spd div span { width:30px; height:30px; border-radius:15px; display:grid; place-items:center; background:var(--raised); color:var(--cream); }
+.spd div.on span { background:#c9b8ff; color:var(--ink); }
+.spd div.on { color:var(--cream); }
+.spd svg.i { width:18px; height:18px; }
+</style></head>
+<body>
+
+<h1>The zoom ladder v4: the scale switch <b>folded into one disc</b></h1>
+<p class="lede"><b style="color:#ffb48a;font-weight:inherit">v4, after review the same day:</b> the scale switch is one disc on desktop too, as on the phone — it wears the current scale's icon and opens the four on a tap. Everything else is v3.<br>v3: asked 2026-11-07: the zoom rail is impractical — one slider from the street to the edge of the universe gives each rung a
+few points of track, and a slip of the thumb throws you out of the Earth. The rail should span the scale you are in — the globe, the
+solar system, the Milky Way, the universe — and moving between scales should stay logical, but not be part of the one slider.
+The pictures are today's client (captured on mac-2); the controls on them are drawn. Orange marks what is new.</p>
+
+<div class="principles">
+  <div><h3>A scale is a place, not a zoom level</h3><p>Four scales, each with its own subject in the middle: your place, the Sun, the galaxy, the cosmic web. The switch says where you are; the rail says how close.</p></div>
+  <div><h3>The rail stops at the scale's edge</h3><p>A drag, a pinch, the wheel or a held − can never leave the scale by accident. The rail's ends are real ends.</p></div>
+  <div><h3>The edge offers the next scale</h3><p>At the top, − turns into the next scale's button. Tap it, or keep zooming out for a moment, and you go on — seamlessly, as today.</p></div>
+  <div><h3>A tap on a scale flies there</h3><p>Through every scale in between, as a rung tap does today. The globe returns you to the place and height you left.</p></div>
+</div>
+
+<h2><span>1</span>The solar system: the switch folded <span class="new">new in v4</span></h2>
+<p class="sub">Desktop, 2·10¹² m out. On top of the rail one disc, the size of − and +, wearing the current scale's icon (lilac above the Earth). Its name shows on hover; the scale is also named in the tag at the top. The rail beneath it spans only the solar system.</p>
+<div class="screen" style="background:#05080b url(v3-solar.jpg) center/cover">
+  <div class="cover"></div>
+  <div class="glass toast2">Solar system <em>·</em> Outer planets <small>13 AU · 1.8 h of light</small></div>
+  <div id="big"></div>
+  <div class="callout" style="left:1180px;top:330px;max-width:250px">The <b>scale disc</b>: the current scale's icon. A tap opens the four.</div>
+  <div class="callout" style="left:1180px;top:560px;max-width:250px">The <b>rail</b> spans this scale only: Earth &amp; Moon to the edge of the heliosphere.</div>
+  <div class="callout" style="left:560px;top:20px;max-width:230px;transform:translateX(-112%)">The tag at the top names the <b>scale</b>, the rung and the distance in the scale's own unit.</div>
+</div>
+<h2><span>1b</span>Opened <span class="new">new in v4</span></h2>
+<p class="sub">A tap on the disc opens the four scales upwards, with their names, the current one filled. A tap on one flies there and folds the list; a tap beside it, Esc, or 4 s without the pointer over it folds it too. While open the rail stays as it was.</p>
+<div class="screen" style="background:#05080b url(v3-solar.jpg) center/cover">
+  <div class="cover"></div>
+  <div class="glass toast2">Solar system <em>·</em> Outer planets <small>13 AU · 1.8 h of light</small></div>
+  <div id="big2"></div>
+  <div class="callout" style="left:1080px;top:250px;max-width:250px">Hovered: <b>Milky Way</b>. A tap flies there through the Stars, about two seconds.</div>
+</div>
+
+<h2><span>2</span>The four scales</h2>
+<p class="sub">Each scale is the stretch of today's ladder whose subject stays in the middle. The heights are today's; only the Milky Way's rungs are new, splitting today's "Stars" and "Milky Way". Every rung still gets the same length of track, log within the rung.</p>
+<div class="four">
+  <div>
+    <div class="frame"><img src="v3-globe.jpg"><div class="cover" style="width:60px"></div><div class="ctlslot" data-scale="0" data-pos="0.83"></div></div>
+    <div class="sc4"><h3><svg class="i" viewBox="0 0 24 24" id="ic0"></svg>Globe</h3>
+      <div class="rng">15 m – 38,600 km: the 3D camera's whole range</div>
+      <ol><li>World <small>9,000 km –</small></li><li>Continent</li><li>Country</li><li>Province</li><li>City</li><li>District</li><li>Neighbourhood</li><li>Street <small>– 2.5 km</small></li></ol>
+      <span class="k">Middle:</span> your place. <span class="k">A tap on Globe:</span> back to the place and height you left it at.</div>
+  </div>
+  <div class="cos">
+    <div class="frame"><img src="v3-solar.jpg"><div class="cover" style="width:60px"></div><div class="ctlslot" data-scale="1" data-pos="0.5"></div></div>
+    <div class="sc4 cos"><h3><svg class="i" viewBox="0 0 24 24" id="ic1"></svg>Solar system</h3>
+      <div class="rng">38,600 km – 670 AU</div>
+      <ol><li>Heliosphere <small>to 670 AU</small></li><li>Outer planets <small>Jupiter–Neptune</small></li><li>Inner planets <small>Mercury–Mars</small></li><li>Earth &amp; Moon</li></ol>
+      <span class="k">Middle:</span> the Earth, moving to the Sun on the way out (today's behaviour). <span class="k">A tap:</span> the eight planets, 2·10¹² m.</div>
+  </div>
+  <div>
+    <div class="frame"><img src="v3-galaxy.jpg"><div class="cover" style="width:60px"></div><div class="ctlslot" data-scale="2" data-pos="0.2"></div></div>
+    <div class="sc4 cos"><h3><svg class="i" viewBox="0 0 24 24" id="ic2"></svg>Milky Way</h3>
+      <div class="rng">670 AU – 100,000 light years</div>
+      <ol><li>Whole galaxy <span class="new">new</span></li><li>Spiral arms <span class="new">new</span></li><li>Star neighbourhood <span class="new">new</span></li><li>Nearest stars <small>Alpha Centauri</small></li></ol>
+      <span class="k">Middle:</span> the Sun, moving to the galactic centre. <span class="k">A tap:</span> the whole spiral, 6·10²⁰ m (today's Milky Way tap).</div>
+  </div>
+  <div>
+    <div class="frame"><img src="v3-universe.jpg"><div class="cover" style="width:60px"></div><div class="ctlslot" data-scale="3" data-pos="0.3"></div></div>
+    <div class="sc4 cos"><h3><svg class="i" viewBox="0 0 24 24" id="ic3"></svg>Universe</h3>
+      <div class="rng">100,000 light years – the edge, 46.5 billion</div>
+      <ol><li>Observable universe</li><li>Cosmic web</li><li>Nearby galaxies</li><li>Local Group <small>Andromeda</small></li></ol>
+      <span class="k">Middle:</span> the Milky Way. <span class="k">A tap:</span> the survey's clusters inside the edge's ring, 5·10²⁴ m.</div>
+  </div>
+</div>
+
+<h2><span>3</span>Leaving a scale at its edge <span class="new">new</span></h2>
+<p class="sub">Zooming out of the globe with a pinch or the wheel. The rail runs out at World; there the zoom stops with a small give, and the − at the
+top of the rail becomes the next scale's button. Going on is a choice, but not a detour: tap it, or keep zooming out for half a second.
+Zooming in at the foot of a scale works the same way downwards, with the + becoming the scale below.</p>
+<div class="steps4">
+  <div class="box" id="e0" style="background:#05080b url(v3-globe.jpg) 30% 40%/auto 170% no-repeat"><div class="say"><b>1 · Zooming out</b>Continent, near the top of the Globe's rail. Nothing new to see.</div></div>
+  <div class="box" id="e1" style="background:#05080b url(v3-globe.jpg) 50% 50%/auto 105% no-repeat"><div class="say"><b>2 · The end of the rail</b>At World the zoom stops, with a small spring back. − is now <em>Solar system</em>, in orange, its name beside it.</div></div>
+  <div class="box" id="e2" style="background:#05080b url(v3-globe.jpg) 50% 50%/auto 105% no-repeat"><div class="say"><b>3 · Keep pushing</b>Pinching or scrolling on fills the ring round it; letting go before it is full leaves you on the globe. A tap goes at once.</div></div>
+  <div class="box" id="e3" style="background:#05080b url(v3-solar.jpg) 45% 50%/auto 150% no-repeat"><div class="say"><b>4 · In the solar system</b>The switch moves on, the rail is the solar system's, the thumb at its foot — the view went on from where the globe stopped, as it does today.</div></div>
+</div>
+<div class="notes">
+  <div><h3>Why the edge does not simply let you through</h3><ul>
+    <li>That is today's slider with a line drawn on it: a fling that overshoots still lands among the planets, and coming back means finding the way down again.</li>
+    <li>A hard wall with no way on would make the scales separate apps. The − that becomes the next scale keeps the climb in the hand that is already zooming.</li>
+    <li>Half a second of pushing on is long enough that a wheel's overrun or a pinch's last bit of travel does not cross, short enough that a deliberate climb is not a chore.</li></ul></div>
+  <div><h3>The rest of the movement</h3><ul>
+    <li><b>Over the edge</b> the view goes on from where it was: out of the globe at its ceiling into Earth &amp; Moon, down from Earth &amp; Moon onto the globe where you left it.</li>
+    <li><b>A tap on a scale</b> flies through the ones between, at today's flight rates (street to universe in about five seconds); the switch lights each one as it passes.</li>
+    <li><b>A tap on the current scale</b> goes to its overview: the whole Earth, the eight planets, the spiral, the web.</li>
+    <li><b>Keys:</b> − / + zoom within the scale and stop at its ends, PgUp / PgDn change scale.</li></ul></div>
+</div>
+
+<h2><span>4</span>On a phone</h2>
+<p class="sub">Unchanged from v3, and now the same as the desktop: the rail at the foot of the right edge over the dock, the scale disc on top of it.</p>
+<div class="phones">
+  <div><div class="phone"><div class="scr" style="background:#05080b url(v3-galaxy-phone.jpg) center/cover no-repeat">
+    <div class="sb"><span>21:40</span><span>●●● 82%</span></div>
+    <div class="abs disc" style="left:10px;top:52px;width:38px;height:38px"></div><div class="abs disc" style="left:10px;top:98px;width:38px;height:38px"></div><div class="abs disc" style="left:10px;top:144px;width:38px;height:38px"></div>
+    <div class="abs glass toast2" style="top:150px;font-size:13px;padding:5px 12px">Milky Way <em>·</em> Whole galaxy</div>
+    <div id="ph0"></div>
+    <div class="abs dock" style="bottom:14px;gap:8px"><div class="disc" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div><div class="disc brand" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div></div>
+  </div></div><div class="pcap"><b>At rest.</b> The scale disc sits on top of the rail (140 pt, as today). The rail is the Milky Way's.</div></div>
+  <div><div class="phone"><div class="scr" style="background:#05080b url(v3-galaxy-phone.jpg) center/cover no-repeat">
+    <div class="sb"><span>21:40</span><span>●●● 82%</span></div>
+    <div class="abs" style="inset:0;background:rgba(5,8,11,.45)"></div>
+    <div class="abs disc" style="left:10px;top:52px;width:38px;height:38px"></div><div class="abs disc" style="left:10px;top:98px;width:38px;height:38px"></div><div class="abs disc" style="left:10px;top:144px;width:38px;height:38px"></div>
+    <div id="ph1"></div>
+    <div class="abs dock" style="bottom:14px;gap:8px"><div class="disc" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div><div class="disc brand" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div><div class="disc" style="width:40px;height:40px"></div></div>
+  </div></div><div class="pcap"><b>Opened.</b> The four scales with their names, the current one filled; a tap on one flies there and closes the list. A tap beside it closes it.</div></div>
+  <div style="flex:1;min-width:0">
+    <table class="ideas">
+      <tr><th></th><th>Today</th><th>v3</th></tr>
+      <tr><td>The rail</td><td>One track, sixteen rungs, street to universe; ~11 px per rung on a desktop, ~9 on a phone.</td><td>One track per scale, 4–8 rungs; 21 px per rung on the Globe, 42 on the others.</td></tr>
+      <tr><td>Changing scale</td><td>Somewhere along the track: a drag that runs on is a change of scale.</td><td>The scale disc (tap, then the scale), or the edge's next-scale button. Nothing else crosses.</td></tr>
+      <tr><td>Pinch, wheel, held −</td><td>Climb on through every rung.</td><td>Stop at the scale's end; pushing on for ½ s crosses.</td></tr>
+      <tr><td>The tag</td><td>The rung's name, fading after 2 s.</td><td>The rung's name on the rail as today; the scale, the rung and the distance at the top.</td></tr>
+      <tr><td>Back to the Earth</td><td>Drag the thumb down past nine rungs.</td><td>Disc, then Globe: your place, your height.</td></tr>
+      <tr><td>Unchanged</td><td colspan="2">The heights, the views and what is drawn in each; the flight; the one map at one scale above the globe; the rail's touch rules (a finger must land on it, a second finger lets go).</td></tr>
+    </table>
+  </div>
+</div>
+
+<script>
+const IC = [
+  '<circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.6" ry="8"/><path d="M4 12h16"/>',
+  '<circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="5.6" stroke-width="1.2" opacity=".7"/><circle cx="12" cy="12" r="9" stroke-width="1.2" opacity=".7"/><circle cx="18.4" cy="5.6" r="1.8" fill="currentColor" stroke="none"/><circle cx="7" cy="14.6" r="1.3" fill="currentColor" stroke="none"/>',
+  '<circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/><path d="M12 9.2c3.2-.6 5.6 1.4 5.4 4.2M12 14.8c-3.2.6-5.6-1.4-5.4-4.2M12 5.6c5-.4 8.6 3.4 8 8.4M12 18.4c-5 .4-8.6-3.4-8-8.4"/>',
+  '<g fill="currentColor" stroke="none"><circle cx="6" cy="7" r="1.5"/><circle cx="17" cy="5.5" r="1.2"/><circle cx="12" cy="12" r="1.8"/><circle cx="5.5" cy="17" r="1.2"/><circle cx="18" cy="17.5" r="1.5"/><circle cx="19.5" cy="11" r="1"/></g><path d="M6 7l6 5 5-6.5M12 12l-6.5 5M12 12l6 5.5M12 12l7.5-1" stroke-width="1.1" opacity=".6"/>',
+];
+const NAMES = ['Globe', 'Solar system', 'Milky Way', 'Universe'];
+const RUNGS = [
+  ['World','Continent','Country','Province','City','District','Neighbourhood','Street'],
+  ['Heliosphere','Outer planets','Inner planets','Earth & Moon'],
+  ['Whole galaxy','Spiral arms','Star neighbourhood','Nearest stars'],
+  ['Observable universe','Cosmic web','Nearby galaxies','Local Group'],
+];
+const svg = (i, cls='i') => `<svg class="${cls}" viewBox="0 0 24 24">${IC[i]}</svg>`;
+for (let i = 0; i < 4; i++) document.getElementById('ic'+i).innerHTML = IC[i];
+
+// One control: the scale switch over the rail.
+// o: scale, pos (0 top … 1 bottom), len, names (show switch names), labels (show rung names),
+//    top / bottom: 'next' (the end offers the next scale), ring (0…1 filled), scales:false for the phone.
+function control(o) {
+  const len = o.len ?? 170, n = RUNGS[o.scale].length, cos = o.scale > 0;
+  let sw = '';
+  if (o.disc) {
+    const open = o.disc === 'open';
+    sw = `<div class="disc" style="width:32px;height:32px;position:relative;background:${open?'var(--cream)':'#2a3335'};color:${open?'var(--ink)':(o.scale>0?'#c9b8ff':'var(--cream)')}">${svg(o.scale)}`
+      + (open ? '<div class="spd" style="bottom:0;right:44px">' + [3,2,1,0].map(i => `<div class="${i===o.scale?'on':''}" style="${i===o.hover?'background:var(--hover);color:var(--cream)':''}">${NAMES[i]}<span>${svg(i)}</span></div>`).join('') + '</div>' : '')
+      + '</div>';
+  } else if (o.scales !== false) {
+    sw = '<div class="scales">' + [3,2,1,0].map(i =>
+      `<div class="${i===o.scale?'on':''} ${i>0?'cos':''}">${svg(i)}${o.names?`<span class="nm">${NAMES[i]}</span>`:''}</div>`).join('') + '</div>';
+  }
+  const ring = (f) => f ? `<svg class="ring" viewBox="0 0 38 38"><circle cx="19" cy="19" r="17" fill="none" stroke="rgba(253,96,18,.25)" stroke-width="2.5"/><circle cx="19" cy="19" r="17" fill="none" stroke="#FD6012" stroke-width="2.5" stroke-dasharray="${(f*106.8).toFixed(1)} 200" transform="rotate(-90 19 19)" stroke-linecap="round"/></svg>` : '';
+  const top = o.top === 'next'
+    ? `<div class="pm next">${svg(o.scale+1)}${ring(o.ring)}<span class="go">↑ ${NAMES[o.scale+1]}</span></div>`
+    : '<div class="pm">−</div>';
+  const bot = o.bottom === 'next'
+    ? `<div class="pm next">${svg(o.scale-1)}${ring(o.ring)}<span class="go">↓ ${NAMES[o.scale-1]}</span></div>`
+    : '<div class="pm">+</div>';
+  let ticks = '';
+  for (let k = 1; k < n; k++) ticks += `<i style="top:${(k*len/n).toFixed(1)}px"></i>`;
+  const cur = Math.min(n-1, Math.floor(o.pos*n));
+  let labs = '';
+  if (o.labels) RUNGS[o.scale].forEach((r,k) => { if (k!==cur) labs += `<div class="lab" style="top:${((k+.5)*len/n).toFixed(1)}px">${r}</div>`; });
+  const tag = o.tag === false ? '' : `<div class="tag" style="top:${(o.pos*len).toFixed(1)}px">${RUNGS[o.scale][cur]}</div>`;
+  return `${sw}<div class="srail ${cos?'cos':''}">${top}<div class="track" style="height:${len}px">${ticks}${labs}<div class="th" style="top:${(o.pos*len).toFixed(1)}px"></div>${tag}</div>${bot}</div>`;
+}
+function place(id, o, css) {
+  const el = document.createElement("div"); document.getElementById(id).appendChild(el);
+  el.className = 'ctl'; el.style.cssText = css; el.innerHTML = control(o);
+}
+place('big', {scale:1, pos:0.37, disc:'closed'}, 'right:22px;top:50%;transform:translateY(-50%)');
+place('big2', {scale:1, pos:0.37, disc:'open', hover:2}, 'right:22px;top:50%;transform:translateY(-50%)');
+document.querySelectorAll('.ctlslot').forEach(s => {
+  s.className = 'ctl'; s.style.cssText = 'right:10px;top:50%;transform:translateY(-50%) scale(.62);transform-origin:right center';
+  s.innerHTML = control({scale:+s.dataset.scale, pos:+s.dataset.pos, disc:'closed'});
+});
+place('e0', {disc:'closed', scale:0, pos:0.19, labels:true}, 'right:26px;top:70px');
+place('e1', {disc:'closed', scale:0, pos:0.0, labels:true, top:'next'}, 'right:26px;top:70px');
+place('e2', {disc:'closed', scale:0, pos:0.0, labels:true, top:'next', ring:0.65}, 'right:26px;top:70px');
+place('e3', {disc:'closed', scale:1, pos:0.97, labels:true}, 'right:26px;top:70px');
+// the phone: one disc on top of the rail, at the foot of the right edge
+function phone(id, open) {
+  const el = document.getElementById(id);
+  el.className = 'ctl'; el.style.cssText = 'right:10px;bottom:76px;gap:10px;width:36px';
+  const disc = `<div class="disc" style="width:36px;height:36px;background:${open?'var(--cream)':'#2a3335'};color:${open?'var(--ink)':'#c9b8ff'};position:relative">${svg(2)}
+    ${open ? '<div class="spd" style="bottom:0">' + [3,2,1,0].map(i => `<div class="${i===2?'on':''}">${NAMES[i]}<span>${svg(i)}</span></div>`).join('') + '</div>' : ''}</div>`;
+  el.innerHTML = disc + control({scale:2, pos:0.12, len:140, scales:false, tag:!open});
+}
+phone('ph0', false); phone('ph1', true);
+</script>
+</body></html>
