@@ -118,6 +118,19 @@ pub struct Footprint {
     /// from the bottom of the world to the top of it.
     bottom: f32,
     top: f32,
+    /// The building's surfaces that are not upright walls, as triangles in world
+    /// XZ with their absolute height (the frame of `top`), each with whether it
+    /// can be stood on ([`surfaces_of`]). Empty for a building drawn from an
+    /// outline alone, which is then the block `bottom..top` everywhere inside it.
+    ///
+    /// `top` is one number, the highest point, and the building is not that
+    /// high everywhere: a flat roof with a terrace sunk into it, a pitched roof
+    /// under its ridge, the Forum's facades leaning in from a base wider than
+    /// its roof. Taken as a block, a flier above the leaning facade was stopped
+    /// in the air, and an avatar on the roof was inside the building and pushed
+    /// off it. With surfaces the building at a point is as high as it is there
+    /// ([`Self::holds`]).
+    surfaces: std::sync::Arc<[Surface]>,
 }
 
 /// The volume an avatar takes up, for the vertical half of every collision query.
@@ -205,7 +218,55 @@ impl Footprint {
             access: Access::Public,
             bottom: f32::NEG_INFINITY,
             top: f32::INFINITY,
+            surfaces: std::sync::Arc::new([]),
         })
+    }
+
+    /// Give this footprint its surfaces ([`surfaces_of`]).
+    #[must_use]
+    pub fn with_surfaces(mut self, surfaces: Vec<Surface>) -> Self {
+        self.surfaces = surfaces.into();
+        self
+    }
+
+    /// The heights of this building's surfaces over `p`, the roofs only when
+    /// `standable`.
+    fn heights_at(&self, p: Vec2, standable: bool) -> impl Iterator<Item = f32> + '_ {
+        let near = !self.surfaces.is_empty() && self.aabb_contains(p);
+        self.surfaces
+            .iter()
+            .filter(move |s| near && (s.standable || !standable))
+            .filter_map(move |s| height_in_triangle(&s.tri, p))
+    }
+
+    /// The highest of this building's roofs under `p` that is no higher than
+    /// `reach`, or `None` if `p` is over none of them.
+    fn roof_under(&self, p: Vec2, reach: f32) -> Option<f32> {
+        self.heights_at(p, true)
+            .filter(|&y| y <= reach)
+            .reduce(f32::max)
+    }
+
+    /// Whether the building holds `p` against this `body`: `p` is inside it
+    /// ([`Self::contains`]) and, where its surfaces say how high it is there,
+    /// higher than a step over the soles — unless the avatar is standing on, or
+    /// just coming down onto, a roof at `p` (a terrace under an overhang). Where
+    /// they say nothing (an outline-only building, a seam between triangles),
+    /// the whole block holds it, as before there were surfaces.
+    fn holds(&self, p: Vec2, open: bool, body: Body) -> bool {
+        self.contains(p, open) && self.solid_at(p, body)
+    }
+
+    /// The vertical half of [`Self::holds`], for a point known to be inside.
+    fn solid_at(&self, p: Vec2, body: Body) -> bool {
+        let reach = body.feet + Body::STEP;
+        let Some(height) = self.heights_at(p, false).reduce(f32::max) else {
+            return true;
+        };
+        height > reach
+            && !self
+                .heights_at(p, true)
+                .any(|y| y <= reach && y >= body.feet - LANDING_M)
     }
 
     /// Bound this footprint vertically: it occupies `bottom..top`, in the frame the
@@ -300,7 +361,7 @@ impl Footprint {
     /// [`COLLIDE_PROBE_M`] ahead of the avatar, which from just outside a facade
     /// lands well inside the room, so asking "is that point solid?" would answer
     /// no and walk the avatar straight through the brickwork.
-    fn crosses_wall(&self, from: Vec2, to: Vec2, open: bool) -> bool {
+    fn crosses_wall(&self, from: Vec2, to: Vec2, open: bool, body: Option<Body>) -> bool {
         let (lo, hi) = (from.min(to), from.max(to));
         if self.max.x < lo.x || self.min.x > hi.x || self.max.y < lo.y || self.min.y > hi.y {
             return false;
@@ -323,11 +384,50 @@ impl Footprint {
             }
             // Where it went through, not where it ended up: a doorway is a hole
             // in a particular part of a particular wall.
-            if !open || !self.in_a_doorway(from + d * t) {
+            if (!open || !self.in_a_doorway(from + d * t))
+                && body.is_none_or(|body| self.solid_beside(from + d * t, d, body))
+            {
                 return true;
             }
         }
         false
+    }
+
+    /// Whether the move `from → to` passes through the building's mass between
+    /// its ends, sampled every metre. Only for a building with surfaces: one
+    /// crossed above a leaning foot ([`Self::solid_beside`]) has its walls
+    /// inside the outline, and a flier's step of tens of metres would otherwise
+    /// go through the middle of it.
+    fn solid_along(&self, from: Vec2, to: Vec2, body: Body) -> bool {
+        if self.surfaces.is_empty() {
+            return false;
+        }
+        let (lo, hi) = (from.min(to), from.max(to));
+        if self.max.x < lo.x || self.min.x > hi.x || self.max.y < lo.y || self.min.y > hi.y {
+            return false;
+        }
+        let n = (from.distance(to) / SAMPLE_M)
+            .ceil()
+            .clamp(1.0, MAX_SAMPLES) as usize;
+        (1..n).any(|i| {
+            let p = from.lerp(to, i as f32 / n as f32);
+            self.contains(p, false) && self.solid_at(p, body)
+        })
+    }
+
+    /// Whether the building is solid to `body` just inside its outline where a
+    /// move along `d` crosses it at `q`: the side of `q`, a few centimetres off,
+    /// that is inside ([`Self::solid_at`]). A wall whose foot leans out, as the
+    /// Forum's do, is crossed in the air above it.
+    fn solid_beside(&self, q: Vec2, d: Vec2, body: Body) -> bool {
+        if self.surfaces.is_empty() {
+            return true;
+        }
+        let nudge = d.normalize_or_zero() * 0.05;
+        [q + nudge, q - nudge]
+            .into_iter()
+            .find(|&p| self.contains(p, false))
+            .is_none_or(|p| self.solid_at(p, body))
     }
 
     /// Nearest point on the polygon boundary to `p`.
@@ -430,7 +530,11 @@ impl BuildingColliders {
     /// fired through the road.
     #[must_use]
     pub fn slide_in_bore(&self, from: Vec2, to: Vec2) -> Vec2 {
-        let crosses = |a: Vec2, b: Vec2| self.tunnels.iter().any(|f| f.crosses_wall(a, b, true));
+        let crosses = |a: Vec2, b: Vec2| {
+            self.tunnels
+                .iter()
+                .any(|f| f.crosses_wall(a, b, true, None))
+        };
         if !crosses(from, to) {
             return to;
         }
@@ -579,6 +683,17 @@ impl BuildingColliders {
             .reduce(f32::max)
     }
 
+    /// The height of the highest roof surface under `p` (world XZ) no higher
+    /// than `reach`, in the footprints' frame, or `None` where there is none —
+    /// what an avatar coming down at `p` lands on. Any building's, a private
+    /// house's too: standing on a roof is not going in.
+    #[must_use]
+    pub fn roof_under(&self, p: Vec2, reach: f32) -> Option<f32> {
+        self.iter_buildings()
+            .filter_map(|f| f.roof_under(p, reach))
+            .reduce(f32::max)
+    }
+
     /// The footprints an avatar with this `body` can actually run into.
     fn iter_at(&self, body: Body) -> impl Iterator<Item = &Footprint> {
         self.iter().filter(move |f| f.blocks(body))
@@ -586,7 +701,7 @@ impl BuildingColliders {
 
     /// True if `p` (world XZ) lies inside any footprint or prop in the way.
     fn blocked(&self, p: Vec2, body: Body) -> bool {
-        self.iter_at(body).any(|f| f.contains(p, self.open(f))) || self.in_prop(p, body)
+        self.iter_at(body).any(|f| f.holds(p, self.open(f), body)) || self.in_prop(p, body)
     }
 
     /// True if the move `from → to` is refused — the question every mover here
@@ -601,13 +716,15 @@ impl BuildingColliders {
         }
         self.iter_at(body).any(|f| {
             let open = self.open(f);
-            f.contains(to, open) || f.crosses_wall(from, to, open)
+            f.holds(to, open, body)
+                || f.crosses_wall(from, to, open, Some(body))
+                || f.solid_along(from, to, body)
         })
     }
 
     /// The footprint containing `p`, if any is in the way.
     fn hit(&self, p: Vec2, body: Body) -> Option<&Footprint> {
-        self.iter_at(body).find(|f| f.contains(p, self.open(f)))
+        self.iter_at(body).find(|f| f.holds(p, self.open(f), body))
     }
 
     /// How far along the sight line `from → to` the first wall is, as a fraction
@@ -790,6 +907,65 @@ impl BuildingColliders {
             allowed.normalize() * speed
         }
     }
+}
+
+/// One of a building's surfaces that is not an upright wall ([`surfaces_of`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Surface {
+    /// World XZ and absolute height, the frame of `Footprint::top`.
+    tri: [Vec3; 3],
+    /// Level enough to stand on ([`ROOF_MIN_UP`]); a steeper one, a leaning
+    /// facade or a tiled pitch, only says how high the building is there.
+    standable: bool,
+}
+
+/// The up component of a normal under which a face is an upright wall, and says
+/// nothing about how high the building is anywhere.
+const UPRIGHT_MAX_UP: f32 = 0.05;
+
+/// The steepest roof an avatar stands on: the up component of its normal, about
+/// 53° from level. A steeper pitch is a wall to land against, as a tiled roof is.
+const ROOF_MIN_UP: f32 = 0.6;
+
+/// How far under the soles a roof still holds the avatar off the building
+/// around it, metres: one being landed on this frame. Further down it is a roof
+/// inside the building's mass, which is no place to be.
+const LANDING_M: f32 = 1.0;
+
+/// How far apart `Footprint::solid_along` samples a move, metres, and the most
+/// samples it takes: a 64 m step, a fast flight's, at a metre.
+const SAMPLE_M: f32 = 1.0;
+const MAX_SAMPLES: f32 = 64.0;
+
+/// A building's surfaces, picked from its mesh in world XZ and absolute height:
+/// every face that is not upright, either winding — a model is drawn from both
+/// sides — except the bottom, a face lying on `base`, which is the ground.
+pub fn surfaces_of(tris: impl IntoIterator<Item = [Vec3; 3]>, base: f32) -> Vec<Surface> {
+    tris.into_iter()
+        .filter_map(|tri| {
+            let [a, b, c] = tri;
+            let up = (b - a).cross(c - a).normalize_or_zero().y.abs();
+            (up > UPRIGHT_MAX_UP && a.y.max(b.y).max(c.y) > base + 0.05).then_some(Surface {
+                tri,
+                standable: up >= ROOF_MIN_UP,
+            })
+        })
+        .collect()
+}
+
+/// The height of triangle `t` over `p` (world XZ), or `None` if `p` is outside it
+/// in plan.
+fn height_in_triangle(t: &[Vec3; 3], p: Vec2) -> Option<f32> {
+    let [a, b, c] = t.map(|v| Vec2::new(v.x, v.z));
+    let det = (b - a).perp_dot(c - a);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let u = (p - a).perp_dot(c - a) / det;
+    let v = (b - a).perp_dot(p - a) / det;
+    const E: f32 = -1e-4;
+    (u >= E && v >= E && u + v <= 1.0 - E)
+        .then(|| t[0].y + u * (t[1].y - t[0].y) + v * (t[2].y - t[0].y))
 }
 
 /// Mirror the streamed street furniture into the collider index, so the props the
@@ -1415,6 +1591,101 @@ mod tests {
         let to = Vec2::new(8.0, 0.0);
         assert_eq!(c.slide(from, to, Body::new(30.0, 0.0)), to);
         assert_ne!(c.slide(from, to, Body::new(6.0, 0.0)), to);
+    }
+
+    /// The Forum's shape in small: a 10 m square whose ridge (a balustrade, say)
+    /// is at 12 m, a flat roof at 10 m, and a terrace sunk to 6 m in its west
+    /// half; its bottom face at 0 m, which is no roof.
+    fn terraced_building() -> Footprint {
+        let quad = |x0: f32, x1: f32, y: f32| {
+            let (a, b, c, d) = (
+                Vec3::new(x0, y, -5.0),
+                Vec3::new(x1, y, -5.0),
+                Vec3::new(x1, y, 5.0),
+                Vec3::new(x0, y, 5.0),
+            );
+            [[a, b, c], [a, c, d]]
+        };
+        let tris: Vec<[Vec3; 3]> = [
+            quad(-5.0, 0.0, 6.0),
+            quad(0.0, 5.0, 10.0),
+            quad(-5.0, 5.0, 0.0),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        unit_square()
+            .with_extent(-3.0, 12.0)
+            .with_surfaces(surfaces_of(tris, 0.0))
+    }
+
+    #[test]
+    fn an_avatar_stands_on_a_roof_below_the_ridge_and_not_in_the_walls() {
+        let c = colliders_with(terraced_building());
+        assert_eq!(c.roof_under(Vec2::new(2.0, 0.0), 10.3), Some(10.0));
+        assert_eq!(c.roof_under(Vec2::new(-2.0, 0.0), 10.3), Some(6.0));
+        // On the street the bottom face is no floor: the building is solid.
+        assert_eq!(c.roof_under(Vec2::new(2.0, 0.0), 0.3), None);
+        assert!(c
+            .eject_dir(Vec2::new(2.0, 0.0), Body::new(0.0, 0.0))
+            .is_some());
+        // On the roof, two metres under the ridge: not pushed off, free to walk.
+        let on_roof = Body::new(10.0, 10.0);
+        assert_eq!(c.eject_dir(Vec2::new(2.0, 0.0), on_roof), None);
+        let to = Vec2::new(3.0, 1.0);
+        assert_eq!(c.slide(Vec2::new(2.0, 0.0), to, on_roof), to);
+        // Down onto the terrace, and stopped by its wall back up to the roof.
+        let on_terrace = Body::new(6.0, 6.0);
+        assert_eq!(c.eject_dir(Vec2::new(-2.0, 0.0), on_terrace), None);
+        assert_ne!(
+            c.slide(Vec2::new(-1.0, 0.0), Vec2::new(1.0, 0.0), on_terrace),
+            Vec2::new(1.0, 0.0)
+        );
+        // Flying into the facade at 5 m is still stopped.
+        assert_ne!(
+            c.slide(
+                Vec2::new(-8.0, 0.0),
+                Vec2::new(2.0, 0.0),
+                Body::new(5.0, 0.0)
+            ),
+            Vec2::new(2.0, 0.0)
+        );
+    }
+
+    /// The Forum's facades: a 10 m base leaning in to a 6 m roof at 10 m. Its
+    /// collider is the hull of the base, 10 m high.
+    #[test]
+    fn a_leaning_facade_is_flown_over_and_its_roof_landed_on() {
+        let (lo, hi) = (5.0, 3.0);
+        let corner = |r: f32, sx: f32, sz: f32, y: f32| Vec3::new(r * sx, y, r * sz);
+        let ring = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+        let mut tris = Vec::new();
+        for i in 0..4 {
+            let ((ax, az), (bx, bz)) = (ring[i], ring[(i + 1) % 4]);
+            let (a0, b0) = (corner(lo, ax, az, 0.0), corner(lo, bx, bz, 0.0));
+            let (a1, b1) = (corner(hi, ax, az, 10.0), corner(hi, bx, bz, 10.0));
+            tris.push([a0, b0, b1]);
+            tris.push([a0, b1, a1]);
+        }
+        let top = ring.map(|(x, z)| corner(hi, x, z, 10.0));
+        tris.push([top[0], top[1], top[2]]);
+        tris.push([top[0], top[2], top[3]]);
+        let c = colliders_with(
+            unit_square()
+                .with_extent(-3.0, 10.0)
+                .with_surfaces(surfaces_of(tris, 0.0)),
+        );
+        // Over the foot of the facade, 2.5 m high there, at 8 m: in the air.
+        assert!(!c.blocked(Vec2::new(4.5, 0.0), Body::new(8.0, 0.0)));
+        assert!(c.blocked(Vec2::new(4.5, 0.0), Body::new(1.0, 0.0)));
+        // Flown in over the foot to the roof's edge, and stood on the roof.
+        let to = Vec2::new(3.5, 0.0);
+        assert_eq!(c.slide(Vec2::new(8.0, 0.0), to, Body::new(9.0, 0.0)), to);
+        assert_eq!(c.roof_under(Vec2::ZERO, 10.3), Some(10.0));
+        assert!(!c.blocked(Vec2::ZERO, Body::new(10.0, 10.0)));
+        // A fast flight at 8 m does not pass through the middle.
+        let far = Vec2::new(-8.0, 0.0);
+        assert_ne!(c.slide(Vec2::new(8.0, 0.0), far, Body::new(8.0, 0.0)), far);
     }
 
     #[test]

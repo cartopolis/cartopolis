@@ -2371,8 +2371,15 @@ fn build_lod22_from_body(
         let wall_h = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
         // The collider spans the building's own height, so a bridge deck or a
         // flier above the ridge is not stopped by it.
+        // Near enough for the avatar to be on it, how high it is at each point
+        // and what of it can be stood on.
         if let Some(fp) = pending_fp {
-            footprints.push(fp.with_extent(base - 3.0, base + wall_h.max(3.0)));
+            let fp = fp.with_extent(base - 3.0, base + wall_h.max(3.0));
+            footprints.push(if detail == load_control::Detail::Near {
+                fp.with_surfaces(surfaces_of(&b.t, &b.p, &world_xz, base))
+            } else {
+                fp
+            });
         }
         if let Some(d) = design {
             // Once per building, whichever of its parts gets here first.
@@ -2582,9 +2589,14 @@ fn build_lod22_from_body(
             }
             let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
             interior.set_ground(base);
+            // The hull of a model's walls is the widest it is at any height,
+            // and its surfaces say how high it is at each point of it.
             if let Some(fp) = model_fp {
                 let top = b.p.iter().map(|&(_, _, h)| h).fold(0.0f32, f32::max);
-                footprints.push(fp.with_extent(base - 3.0, base + top.max(3.0)));
+                footprints.push(
+                    fp.with_extent(base - 3.0, base + top.max(3.0))
+                        .with_surfaces(surfaces_of(&b.t, &b.p, &world_xz, base)),
+                );
             }
             let local: Vec<Vec3> =
                 b.p.iter()
@@ -2676,6 +2688,25 @@ pub struct ShellMeasure {
     /// because a highlight drawn to the eaves leaves a pitched roof sticking out
     /// of it unselected.
     pub top_m: f32,
+}
+
+/// One element's surfaces for its collider, in world XZ and the colliders'
+/// height frame (`base` + the element's own heights): `collision::surfaces_of`
+/// its faces. Every face, not the roof-flagged ones: a model flags only level
+/// faces, and a leaning facade is how high the building is beside its roof.
+fn surfaces_of(
+    t: &[(usize, usize, usize, u8)],
+    p: &[(f64, f64, f32)],
+    xz: &[Vec2],
+    base: f32,
+) -> Vec<crate::systems::collision::Surface> {
+    let at = |i: usize| Vec3::new(xz[i].x, p[i].2 + base, xz[i].y);
+    crate::systems::collision::surfaces_of(
+        t.iter()
+            .filter(|&&(i, j, k, _)| i.max(j).max(k) < p.len())
+            .map(|&(i, j, k, _)| [at(i), at(j), at(k)]),
+        base,
+    )
 }
 
 /// Measure a shell: its storey datum, its roof area and its volume.

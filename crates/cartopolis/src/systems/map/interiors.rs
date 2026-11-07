@@ -721,18 +721,90 @@ pub struct Footing<'w> {
     /// back by what AHN accounts for. Without the same correction here the avatar
     /// walks that far under the carriageway it can see.
     pub terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    /// The roofs, which are a floor too: the buildings' collider footprints carry
+    /// the surfaces on their tops (`collision::surfaces_of`).
+    pub colliders: Res<'w, crate::systems::collision::BuildingColliders>,
+}
+
+/// Where the avatar's feet are, for the roof under them.
+#[derive(Clone, Copy, Debug)]
+pub struct Feet {
+    /// The colliders' world-XZ frame.
+    pub world: Vec2,
+    /// The height `floor_lift` is measured from, in the colliders' frame.
+    pub ground: f32,
+    /// The soles' height above the floor the avatar has now (`floor_lift`).
+    pub above: f32,
+    /// How much of `above` the movement holds itself, and a roof must take off
+    /// the floor it offers rather than add to it. Online that is all of it: the
+    /// sim is flat, so an avatar coming down onto a roof is still `above` up
+    /// there, and only the floor rising under it stands it on the roof. Offline
+    /// none: the transform is the height, and the floor only stops the fall.
+    pub carried: f32,
+    /// How far the soles came down since the last frame, metres (0 when
+    /// rising): a roof passed through in one frame is still landed on.
+    pub falling: f32,
 }
 
 impl Footing<'_> {
-    /// Advance the avatar's floor one frame. See [`step_floor_lift`].
-    pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32) -> f32 {
+    /// Advance the avatar's floor one frame. See [`step_floor_lift`], and
+    /// [`Self::roof_floor`] for the roof under `feet`.
+    pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32, feet: Feet) -> f32 {
         if let Some(measured) = avatar.measured_level {
             avatar.floor_lift = measured_floor(&self.floors, at, measured);
             avatar.floor_drop_speed = 0.0;
             return avatar.floor_lift;
         }
-        step_floor_lift(&self.floors, &self.tunnels, &self.terrain, avatar, at, dt)
+        let roof = self.roof_floor(avatar.floor_lift, feet);
+        step_floor_lift(&self.floors, &self.tunnels, &self.terrain, avatar, at, dt);
+        if let Some(r) = roof.filter(|&r| r >= avatar.floor_lift) {
+            avatar.floor_lift = r;
+            avatar.floor_drop_speed = 0.0;
+        }
+        avatar.floor_lift
     }
+
+    /// The floor of a flier well off it, which [`Self::step`] does not move
+    /// (`avatar::FLOOR_FREEZE_ABOVE_M`): held, but raised by a roof coming up
+    /// under a descent, which starts metres up.
+    pub fn hold(&self, avatar: &mut AvatarState, feet: Feet) -> f32 {
+        if avatar.measured_level.is_some() {
+            return avatar.floor_lift;
+        }
+        if let Some(r) = self
+            .roof_floor(avatar.floor_lift, feet)
+            .filter(|&r| r > avatar.floor_lift)
+        {
+            avatar.floor_lift = r;
+            avatar.floor_drop_speed = 0.0;
+        }
+        avatar.floor_lift
+    }
+
+    /// The floor a roof under `feet` holds the avatar at, given the floor `lift`
+    /// it has now, or `None` over no roof it can reach (none, or one more than a
+    /// step above its soles).
+    ///
+    /// Standing on it, the floor is the roof. Coming down onto it online, the
+    /// floor is what puts the soles on the roof at the height the sim still has
+    /// them (`Feet::carried`), so it rises as the sim's height falls, and the
+    /// avatar is on the roof when the sim lands. It never sinks below `lift`
+    /// for a jump from it, and never rises above the roof.
+    fn roof_floor(&self, lift: f32, feet: Feet) -> Option<f32> {
+        roof_floor(
+            |reach| self.colliders.roof_under(feet.world, reach),
+            lift,
+            feet,
+        )
+    }
+}
+
+/// [`Footing::roof_floor`], over `roof_under(reach)`: the highest roof under the
+/// feet no higher than `reach`, in the colliders' frame.
+fn roof_floor(roof_under: impl FnOnce(f32) -> Option<f32>, lift: f32, feet: Feet) -> Option<f32> {
+    let soles = feet.ground + lift + feet.above;
+    let on = roof_under(soles + STEP_UP_M + feet.falling)? - feet.ground;
+    Some(on.min(lift.max(on - feet.carried)))
 }
 
 /// How far a measured level may be from a known floor and still be stood on it,
@@ -1179,6 +1251,44 @@ mod tests {
             floors.support(Vec2::new(-500.0, -500.0), 0.0) == 0.0,
             "outdoors"
         );
+    }
+
+    /// Online, coming down onto a 47 m roof from 60 m: the floor rises as the
+    /// sim's height falls, so the soles stay on the roof, and is the roof once
+    /// the sim has landed; a jump from it does not lower it.
+    #[test]
+    fn a_roof_rises_under_a_descent_and_holds_a_jump() {
+        let roof = |reach: f32| (reach >= 47.0).then_some(47.0);
+        let online = |above: f32| Feet {
+            world: Vec2::ZERO,
+            ground: 0.0,
+            above,
+            carried: above,
+            falling: 10.0,
+        };
+        // Above it: offered, but nothing to raise yet.
+        assert_eq!(roof_floor(roof, 0.0, online(60.0)), Some(0.0));
+        // The sim at 20 m, the floor at 27 m: soles on the roof.
+        let mut lift = 0.0;
+        for above in [47.0, 40.0, 30.0, 20.0] {
+            lift = roof_floor(roof, lift, online(above)).unwrap().max(lift);
+        }
+        assert_eq!(lift, 27.0);
+        lift = roof_floor(roof, lift, online(10.0)).unwrap();
+        assert_eq!(roof_floor(roof, lift, online(0.0)), Some(47.0));
+        // A jump from the roof.
+        assert_eq!(roof_floor(roof, 47.0, online(1.0)), Some(47.0));
+        // Under the roof, on the street: out of reach.
+        assert_eq!(roof_floor(roof, 0.0, online(0.0)), None);
+        // Offline the transform carries the height, and the floor is the roof.
+        let offline = Feet {
+            world: Vec2::ZERO,
+            ground: 0.0,
+            above: 30.0,
+            carried: 0.0,
+            falling: 0.0,
+        };
+        assert_eq!(roof_floor(roof, 20.0, offline), Some(47.0));
     }
 
     /// A measured height stands the avatar on the floor it is near — the street,

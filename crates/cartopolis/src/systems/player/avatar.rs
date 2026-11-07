@@ -1682,10 +1682,19 @@ pub fn smooth_online_avatar_display(
         // frame `send_network_intent` resolves collision in — so the floor the
         // avatar stands on is the floor it can see and the wall it just walked
         // through. Held while the avatar is well off it (`FLOOR_FREEZE_ABOVE_M`).
+        // A roof is a floor that comes up under a descent from any height, so it
+        // is asked about the frozen floor too.
+        let feet = crate::systems::interiors::Feet {
+            world: Vec2::new(flat.x, flat.z),
+            ground: avatar_state.terrain_lift,
+            above: flat.y,
+            carried: flat.y,
+            falling: (-avatar_state.predicted_velocity.y * dt).max(0.0),
+        };
         let floor = if flat.y > FLOOR_FREEZE_ABOVE_M {
-            avatar_state.floor_lift
+            footing.hold(&mut avatar_state, feet)
         } else {
-            footing.step(&mut avatar_state, Vec2::new(flat.x, flat.z), dt)
+            footing.step(&mut avatar_state, Vec2::new(flat.x, flat.z), dt, feet)
         };
         avatar_state.display_position = flat + Vec3::Y * (avatar_state.terrain_lift + floor);
         // What the follow camera leads by. The predicted velocity is the honest
@@ -2102,14 +2111,26 @@ pub fn handle_avatar_movement(
     // The storey the avatar is standing on, if it is indoors. Same shape as the
     // terrain above it — the ground level is whatever is under your feet, and a
     // first-floor slab is as much "the ground" as a hillside is. Sampled in the
-    // frame `interiors` built its rooms in, which is this transform's.
+    // frame `interiors` built its rooms in, which is this transform's. A roof
+    // is asked in the colliders' frame, absolute world XZ.
+    let ground = terrain.ground_at(transform.translation.x, transform.translation.z);
+    let feet = crate::systems::interiors::Feet {
+        world: Vec2::new(
+            grid_cell.x as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.x,
+            grid_cell.z as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.z,
+        ),
+        ground,
+        above: transform.translation.y - GROUND_HEIGHT - ground - avatar_state.floor_lift,
+        carried: 0.0,
+        falling: 0.0,
+    };
     let floor = footing.step(
         &mut avatar_state,
         Vec2::new(transform.translation.x, transform.translation.z),
         delta_time,
+        feet,
     );
-    let ground_y =
-        GROUND_HEIGHT + terrain.ground_at(transform.translation.x, transform.translation.z) + floor;
+    let ground_y = GROUND_HEIGHT + ground + floor;
     if avatar_state.is_flying {
         // Ramped, not switched — `motion::step_fly_vertical`, the same curve the
         // sim runs and `send_network_intent` predicts. Descent stops asking once
