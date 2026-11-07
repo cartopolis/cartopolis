@@ -35,8 +35,11 @@ pub struct File {
 
 /// The wall finishes a model element may name (`Element::finish`), which the
 /// client's facade shader draws: `slab` is natural-stone cladding, large slabs
-/// with open joints. Any other name is drawn from the element's colour alone.
-pub const FINISHES: &[&str] = &["slab"];
+/// with open joints; `clear` is clear glass, drawn see-through (a railing, a
+/// canopy). Any other name is drawn from the element's colour alone. Not
+/// `glass`: a kit names its window material that, and a GLB material's name
+/// is read as its finish (`overrides::gltf_model`).
+pub const FINISHES: &[&str] = &["slab", "clear"];
 
 /// One building part.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

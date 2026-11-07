@@ -855,6 +855,19 @@ fn fence_mesh(pbr_input: ptr<function, PbrInput>, wire: vec2<f32>, wire_px: f32)
     return mix(FENCE_COVER, on_wire, near);
 }
 
+/// The share of a model's clear glass (`lod22::CLEAR_GLASS_UV`) drawn, of the
+/// screen door's sixteen: enough to read as a tinted pane, few enough that the
+/// sky and the roof behind it show through.
+const GLASS_COVER: f32 = 0.4;
+
+/// Clear glass on a model part: smooth and a little metallic, so it catches
+/// the sky, with the part's own tint. Returns its coverage.
+fn clear_glass(pbr_input: ptr<function, PbrInput>) -> f32 {
+    (*pbr_input).material.perceptual_roughness = 0.08;
+    (*pbr_input).material.metallic = 0.3;
+    return GLASS_COVER;
+}
+
 /// Screen-door transparency: whether a fragment of a surface with this
 /// coverage is a hole here, on a 4×4 ordered dither. The building material is
 /// opaque and there is no depth prepass (`render_features`), so a discarded
@@ -1230,11 +1243,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     if door_part {
         door_surface(&pbr_input, face_uv);
-        // A scaffold's debris netting (`scaffolding`, UV0.x = 2) and a site
-        // fence's mesh panel (UV0.x = 3): both are see-through.
+        // A scaffold's debris netting (`scaffolding`, UV0.x = 2), a site
+        // fence's mesh panel (UV0.x = 3) and a model's clear glass (UV0.x = 4,
+        // `lod22::CLEAR_GLASS_UV`): all are see-through.
         if face_uv.y > -0.75 && face_uv.x > 1.5 {
             var cover = 1.0;
-            if face_uv.x > 2.5 {
+            if face_uv.x > 3.5 {
+                cover = clear_glass(&pbr_input);
+            } else if face_uv.x > 2.5 {
                 cover = fence_mesh(&pbr_input, wire, wire_px);
             } else {
                 cover = netting(&pbr_input, u, v, weave, weave_px);

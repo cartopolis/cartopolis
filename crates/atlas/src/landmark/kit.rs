@@ -39,7 +39,7 @@ pub struct Material {
     pub rgb: [u8; 3],
     /// What the walls are faced with, one of
     /// `cartopolis_geo::formats::lod22::FINISHES` (`slab`: natural-stone
-    /// cladding), drawn by the client's facade shader over the colour.
+    /// cladding, `clear`: see-through glass), drawn by the client's facade shader over the colour.
     #[serde(default)]
     pub finish: Option<String>,
 }

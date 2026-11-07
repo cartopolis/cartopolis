@@ -145,6 +145,12 @@ landmark goes live through a person's signed-in app.
 ## Limits
 
 One flat colour per part and material, no textures (`building-models.md`).
+A material may name a `finish` (`formats::lod22::FINISHES`): `slab` for
+stone cladding, `clear` for see-through glass (the Forum's railings). Clear
+glass is a 40 % screen door on the models' inside material, not blending:
+the cell is one merged mesh and a blended one would need sorting. A kit's
+window material is named `glass` and stays opaque, which is why the finish
+is not called that.
 A sideways disc or a tilted plate is built from `layers` (a thin plan
 shifted between two heights is a leaning plate, as on the Museum). Solid parts are named
 `… wall` and need the record's collision set to `walls`, so the panels behind

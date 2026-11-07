@@ -241,6 +241,11 @@ const DOOR_PROUD_M: f32 = 0.04;
 /// colour like everything else in this mesh, so it costs no material.
 const DOOR_COLOR: [f32; 4] = [0.115, 0.075, 0.055, 1.0];
 
+/// A model part of clear glass (`formats::lod22::FINISHES`): UV0.x = 4 on a
+/// part that is not a wall asks `building_windows.wesl` for see-through glass,
+/// beside the scaffold's tube (1), netting (2) and fence mesh (3).
+const CLEAR_GLASS_UV: [f32; 2] = [4.0, -0.5];
+
 /// A doorway built onto a wall face: the leaf set back inside a surround that
 /// stands off the wall, reveals on three sides of the recess, and a step.
 ///
@@ -2586,14 +2591,19 @@ fn build_lod22_from_body(
                     .zip(&world_xz)
                     .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
                     .collect();
+            // A part of clear glass is see-through the way a scaffold's netting
+            // is: a screen door on this, the inside material, asked for by its
+            // UV0 (`CLEAR_GLASS_UV`) on every face, top and bottom included.
+            let clear = b.finish.as_deref() == Some("clear");
             for &(i, j, k, is_roof) in &b.t {
                 let (a, bb, c) = (local[i], local[j], local[k]);
-                let color = if is_roof == 1 { roof_tile } else { wall };
-                interior.tri_graded_uv(
-                    [a, bb, c],
-                    [color; 3],
-                    [crate::systems::building_windows::WINDOWLESS_UV; 3],
-                );
+                let color = if is_roof == 1 && !clear { roof_tile } else { wall };
+                let uv = if clear {
+                    CLEAR_GLASS_UV
+                } else {
+                    crate::systems::building_windows::WINDOWLESS_UV
+                };
+                interior.tri_graded_uv([a, bb, c], [color; 3], [uv; 3]);
             }
         }
     }
