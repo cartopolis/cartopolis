@@ -739,10 +739,7 @@ fn zoom_rail_control(
                     (!touching && resp.clicked() && state.mouse_pressed_at >= since)
                         || fingers.released.iter().any(|(id, p)| {
                             hit.contains(*p)
-                                && state
-                                    .landed_at
-                                    .iter()
-                                    .any(|(f, t)| f == id && *t >= since)
+                                && state.landed_at.iter().any(|(f, t)| f == id && *t >= since)
                         })
                 };
 
@@ -792,13 +789,18 @@ fn zoom_rail_control(
                             }
                             // Its name beside it, with the way it goes.
                             let font = egui::FontId::proportional(theme::SIZE_SUB);
-                            let text = format!("{} {}", if up { "Out to" } else { "In to" }, to.label());
+                            let text =
+                                format!("{} {}", if up { "Out to" } else { "In to" }, to.label());
                             let at = egui::pos2(face.center.x - face.radius - 10.0, face.center.y);
                             let galley = p.layout_no_wrap(text.clone(), font.clone(), theme::CREAM);
                             let tag = egui::Align2::RIGHT_CENTER
                                 .anchor_size(at, galley.size())
                                 .expand2(egui::vec2(7.0, 3.0));
-                            p.rect_filled(tag, egui::CornerRadius::same(theme::RADIUS), theme::OVERLAY);
+                            p.rect_filled(
+                                tag,
+                                egui::CornerRadius::same(theme::RADIUS),
+                                theme::OVERLAY,
+                            );
                             p.rect_stroke(
                                 tag,
                                 egui::CornerRadius::same(theme::RADIUS),
@@ -984,7 +986,8 @@ fn zoom_rail_control(
                     );
                     let h = RAIL_DISC + 4.0;
                     let w = galley.size().x + h + 24.0;
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
                     let resp = theme::named(ui, resp, s.label());
                     let on = s == scale;
                     let p = ui.painter();
@@ -1006,7 +1009,14 @@ fn zoom_rail_control(
                     let (plate, ink) = if on {
                         (theme::ACCENT, theme::INK)
                     } else {
-                        (theme::SURFACE_RAISED, if s == Scale::Globe { theme::CREAM } else { theme::PUBLIC })
+                        (
+                            theme::SURFACE_RAISED,
+                            if s == Scale::Globe {
+                                theme::CREAM
+                            } else {
+                                theme::PUBLIC
+                            },
+                        )
                     };
                     p.circle_filled(c, r, plate);
                     paint_scale(p, c, r * 0.6, s, ink);
@@ -1056,7 +1066,11 @@ fn paint_scale(
     match scale {
         Scale::Globe => {
             p.circle_stroke(c, s, line);
-            p.add(egui::Shape::ellipse_stroke(c, egui::vec2(s * 0.45, s), line));
+            p.add(egui::Shape::ellipse_stroke(
+                c,
+                egui::vec2(s * 0.45, s),
+                line,
+            ));
             p.line_segment([c - egui::vec2(s, 0.0), c + egui::vec2(s, 0.0)], line);
         }
         Scale::SolarSystem => {
@@ -1082,7 +1096,14 @@ fn paint_scale(
             }
         }
         Scale::Universe => {
-            let at = [(-0.7, -0.5), (0.55, -0.75), (0.0, 0.0), (-0.75, 0.65), (0.7, 0.7), (0.95, -0.05)];
+            let at = [
+                (-0.7, -0.5),
+                (0.55, -0.75),
+                (0.0, 0.0),
+                (-0.75, 0.65),
+                (0.7, 0.7),
+                (0.95, -0.05),
+            ];
             let pt = |(x, y): (f32, f32)| c + egui::vec2(x, y) * s;
             for i in [0, 1, 3, 4, 5] {
                 p.line_segment([pt(at[2]), pt(at[i])], thin);
@@ -1100,7 +1121,8 @@ fn paint_arc(p: &egui::Painter, c: egui::Pos2, r: f32, done: f32, ink: egui::Col
     let n = (48.0 * done).ceil().max(2.0) as usize;
     let points: Vec<egui::Pos2> = (0..=n)
         .map(|k| {
-            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * done * k as f32 / n as f32;
+            let a =
+                -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * done * k as f32 / n as f32;
             c + egui::vec2(a.cos(), a.sin()) * r
         })
         .collect();
@@ -2034,7 +2056,10 @@ mod tests {
         /// disc and the −.
         fn on_track(&mut self, at: f32) -> (f32, f32) {
             let r = self.run(&fingers(&[], &[]), 0).1;
-            let (top, bottom) = (r.top() + 2.0 * RAIL_DISC + 12.0, r.bottom() - RAIL_DISC - 6.0);
+            let (top, bottom) = (
+                r.top() + 2.0 * RAIL_DISC + 12.0,
+                r.bottom() - RAIL_DISC - 6.0,
+            );
             (r.right() - RAIL_DISC / 2.0, top + (bottom - top) * at)
         }
 
@@ -2125,7 +2150,10 @@ mod tests {
         assert!(goal > 1e6, "a tap high on the rail climbs: {goal}");
         // …to the step it landed on, not the point.
         use crate::systems::zoom_rail::{index_of, step_altitude, Scale};
-        assert_eq!(goal, step_altitude(Scale::Globe, index_of(Scale::Globe, goal)));
+        assert_eq!(
+            goal,
+            step_altitude(Scale::Globe, index_of(Scale::Globe, goal))
+        );
     }
 
     /// At the top of the globe the − is the solar system: a tap there goes
@@ -2171,7 +2199,12 @@ mod tests {
         assert_eq!(rail.tap(disc), None);
         assert!(rail.state.list_open, "the list did not open");
         // The list's rows run down from the disc's top, outermost first.
-        let row = |k: f32| (disc.0 - RAIL_DISC - 40.0, disc.1 - RAIL_DISC / 2.0 + 2.0 + RAIL_DISC / 2.0 + k * (RAIL_DISC + 10.0));
+        let row = |k: f32| {
+            (
+                disc.0 - RAIL_DISC - 40.0,
+                disc.1 - RAIL_DISC / 2.0 + 2.0 + RAIL_DISC / 2.0 + k * (RAIL_DISC + 10.0),
+            )
+        };
         let goal = rail.tap(row(0.0)).expect("the row went nowhere");
         assert_eq!(goal, Scale::Universe.overview());
         assert!(!rail.state.list_open, "the list stayed open");

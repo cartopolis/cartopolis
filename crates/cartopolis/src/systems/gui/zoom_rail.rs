@@ -384,15 +384,18 @@ mod tests {
             "the whole ladder took {secs:.2} s"
         );
         for (scale, i) in every_step() {
-            if (scale, i) == (Scale::Universe, 0) || (scale, i) == (Scale::Globe, GLOBE.len() - 1)
-            {
+            if (scale, i) == (Scale::Universe, 0) || (scale, i) == (Scale::Globe, GLOBE.len() - 1) {
                 continue;
             }
             let frames = seen
                 .iter()
                 .filter(|a| Scale::of(**a) == scale && index_of(scale, **a) == i)
                 .count();
-            assert!(frames >= 6, "{} passed in {frames} frames", scale.steps()[i].label);
+            assert!(
+                frames >= 6,
+                "{} passed in {frames} frames",
+                scale.steps()[i].label
+            );
         }
         for w in seen.windows(2) {
             let decades = (w[1] / w[0]).log10();
@@ -402,7 +405,10 @@ mod tests {
 
     #[test]
     fn a_short_hop_is_short() {
-        let seen = fly(step_altitude(Scale::Globe, 3), step_altitude(Scale::Globe, 4));
+        let seen = fly(
+            step_altitude(Scale::Globe, 3),
+            step_altitude(Scale::Globe, 4),
+        );
         assert!(seen.len() < 60, "one step took {} frames", seen.len());
     }
 
@@ -431,7 +437,13 @@ mod tests {
         // Within a scale the steps adjoin, top to bottom.
         for s in Scale::ALL {
             for w in s.steps().windows(2) {
-                assert_eq!(band(&w[0]).0, band(&w[1]).1, "{} | {}", w[0].label, w[1].label);
+                assert_eq!(
+                    band(&w[0]).0,
+                    band(&w[1]).1,
+                    "{} | {}",
+                    w[0].label,
+                    w[1].label
+                );
             }
         }
         // Every rung of the ladder is on some rail.
@@ -448,7 +460,11 @@ mod tests {
             let st = &s.steps()[i];
             let (lo, hi) = band(st);
             let (rlo, rhi) = st.rung.altitudes();
-            assert!(lo >= rlo.max(FLOOR_M) && hi <= rhi.min(TOP_M), "{}", st.label);
+            assert!(
+                lo >= rlo.max(FLOOR_M) && hi <= rhi.min(TOP_M),
+                "{}",
+                st.label
+            );
         }
     }
 
