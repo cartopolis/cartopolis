@@ -1,0 +1,326 @@
+# The day/night cycle as a set of numbers: three views of Groningen's centre at
+# ten times of 17 October, under one sky, for `sky::eye_adaptation_stops` and
+# anything else that moves the exposure or the tone curve. Colour only means
+# anything on a real GPU (a Mac node).
+#
+#     CARTO_DATA_DIR=/tmp/empty cargo run -p cartopolis -- --shots docs/daylight-shots.toml
+#     CARTO_QUALITY=balanced CARTO_HANDSET=1 …   # the phone's rung
+#
+# Read the city apart from the sky. A whole frame's mean is mostly sky, and on
+# 2026-11-07 it said the curve swap had left the day as bright as before while
+# the buildings had gone a quarter stop darker. At 960×540 the crops are:
+#   gm_*    city 960x300+0+240, sky 960x70+0+0
+#   w_*/e_* city 960x150+0+390, sky 960x190+0+0
+# e.g. `convert gm_12.png -crop 960x300+0+240 -colorspace Gray -format '%[fx:mean]' info:`.
+# Compare a change against the same run on the commit before it, view by view:
+# the three views disagree by more than a tuning step does.
+#
+# Sun elevation on the day (as `cloud-shots.toml`): 16 h 10°, 16.6 h 5°,
+# 17.3 h −1°, 17.6 h −3.7°; 22 h is deep night.
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "960x540"
+out_dir = "gpu/daylight"
+hide_ui = true
+mode = "free"
+settle = 1.0
+wait = 40.0
+
+[[shot]]
+name = "gm_8"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 8
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_10"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 10
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_12"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 12
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_14"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 14
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_16"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 16
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_16_6"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 16.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_17_3"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 17.3
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_17_6"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 17.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_18_5"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 18.5
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "gm_22"
+at = [53.2176, 6.5655, 70]
+look_at = [53.2190, 6.5680]
+time = 22
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_8"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 8
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_10"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 10
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_12"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 12
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_14"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 14
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_16"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 16
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_16_6"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 16.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_17_3"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 17.3
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_17_6"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 17.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_18_5"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 18.5
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "w_22"
+at = [53.2194, 6.5665, 40]
+look = [10.0, 100]
+time = 22
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_8"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 8
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_10"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 10
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_12"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 12
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_14"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 14
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_16"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 16
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_16_6"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 16.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_17_3"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 17.3
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_17_6"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 17.6
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_18_5"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 18.5
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0
+
+[[shot]]
+name = "e_22"
+at = [53.2194, 6.5665, 40]
+look = [10.0, -80]
+time = 22
+date = "2026-10-17"
+clouds = 0.3
+fog = 0.06
+rain = 0.0

@@ -338,11 +338,18 @@ and that moved the sky most of the way. Under Tony the noon zenith was greyed,
 the shade lifted and the brick paled. Under Khronos the sky is bluer and the
 frame's contrast is close to a sunny photograph's (luma standard deviation 0.21
 against 0.19; Tony's was 0.135). Its toe is darker, though: dusk and night
-needed `sky::NIGHT_TOE_LIFT` (1.5 stops, only with the sun below the horizon).
+needed a toe lift (since folded into the light meter, below).
 Into a 10° sun the frame is brighter than before (mean luma 0.79 against 0.69),
 because Khronos holds highlights where Tony rolled them off. At 17.6 h the
 zenith now reads faintly violet, worth watching against the "no mauve"
 finding above.
+
+**The exposure has been a light meter since 2026-11-07**
+(`exposure-and-adaptation.md`): the swap to Khronos had left the city a quarter
+stop dark by day and half as bright at night, and the time-of-day lifts it was
+tuned with are gone. Still open: at 17.6 h the cloud undersides go near-black
+under Khronos where Tony greyed them. Frame time did not move with the curve,
+on the desktop or the phone rung (`perf.toml` street, city, earth).
 
 **The white flicker** is unconfirmed. Suspected: `sun_rays.wesl` scaled every
 beam by the plain mean of eight taps round the sun, and a crisp, forward-lit

@@ -298,25 +298,17 @@ pub(crate) fn manage_lights(
 /// one number produce.
 pub(crate) const SUN_SCALE: f32 = 0.75;
 
-/// Camera exposure (EV100) at full daylight. Exposure adapts toward night by this
-/// many stops, mimicking eye/camera adaptation so twilight and the lit city aren't
-/// crushed by the bright-noon exposure. Lower ev100 = brighter.
-///
-/// Kept modest (2.0 stops = 4×): the old 3.5-stop lift (≈11×) multiplied the
-/// night ambient floor and moon terms so hard that the near-white OSM ground read
-/// as bright daylight, not night. Night should be dark — lit by the moon's
-/// directional shaping and the glowing windows, not a lifted exposure.
+/// Camera exposure (EV100) with the sun high, before the tone curve's trim
+/// ([`TONE_CURVE_LIFT`]); the light meter ([`eye_adaptation_stops`]) opens the
+/// camera up from here as the light falls. Lower ev100 = brighter.
 pub(crate) const DAY_EXPOSURE_EV100: f32 = 13.6;
+/// The night lift [`STAR_BRIGHTNESS`] was judged under (2026-08), when the
+/// night exposure was the day's opened up by this many stops. Only the space
+/// tier's star compensation reads it now; the ground's own night exposure comes
+/// from the light meter.
 pub(crate) const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
-/// Extra stops around sunrise/sunset, on top of the night lift. The direct beam
-/// there is ~3% of noon (air mass ~38 strips most of it), so the two lifts the
-/// night curve gives are nowhere near enough — dawn rendered as a black city
-/// under a dark red band. Real twilight *looks* bright because the eye adapts to
-/// it; this is that adaptation. Gated on `horizon_proximity`, so it fades out
-/// well before midnight and leaves the night floor untouched.
-pub(crate) const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
 /// Stops of exposure lift at full overcast — the eye adapting to a duller sky,
-/// exactly as [`TWILIGHT_EXPOSURE_LIFT`] is the eye adapting to dusk.
+/// as [`eye_adaptation_stops`] is the eye adapting to dusk.
 ///
 /// It has to *pay for the light the overcast model removes*, and at 0.4 it did
 /// not come close. [`overcast_lighting`] leaves ~20 klux of ground illuminance at
@@ -331,32 +323,120 @@ pub(crate) const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
 /// there — the three constants here only mean anything as a set.
 pub(crate) const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
 
-/// Stops the camera opens up for the time of day — the eye adapting to night
-/// ([`NIGHT_EXPOSURE_LIFT`]) and to dusk ([`TWILIGHT_EXPOSURE_LIFT`]). The overcast
-/// lift is not in it: that one pays for the beam the overcast model takes off
-/// the ground, which the cloud deck, being that overcast, never lost.
+/// Stops the camera opens up for the time of day: a light meter with partial
+/// adaptation, the way an eye adapts.
+///
+/// [`metered_light`] is how much light the city really has at this sun
+/// elevation, measured off the renderer's own output; the camera follows
+/// [`ADAPTATION`] of every stop it loses. So the evening and the night come
+/// out darker than noon by the stops the eye does *not* make up, smoothly and
+/// for any date, and a change to the lighting is a re-measurement of one
+/// table rather than a new set of lifts tuned by eye. It replaced four of
+/// those (night, twilight, the tone curve's toe and its day trim) on
+/// 2026-11-07; `docs/notes/exposure-and-adaptation.md` has the measurement and
+/// the alternatives.
+///
+/// The overcast lift is not in it: that one pays for the beam the overcast
+/// model takes off the ground, which the cloud deck, being that overcast,
+/// never lost.
 pub(crate) fn eye_adaptation_stops(hours: f32, decl_rad: f32) -> f32 {
-    NIGHT_EXPOSURE_LIFT * (1.0 - utils::sun::daylight(hours, decl_rad))
-        + TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(hours, decl_rad)
-        + NIGHT_TOE_LIFT * night_depth(hours, decl_rad)
+    ADAPTATION * (METER_REFERENCE - metered_light(hours, decl_rad)) + TONE_CURVE_LIFT
 }
 
-/// Stops more the camera opens up once the sun is well down, for the tone
-/// curve and not for the eye: `quality::TONEMAPPING` (Khronos PBR Neutral) does
-/// not lift the shadows the way `TonyMcMapface` did, and the night and dusk
-/// above were tuned under Tony. Swapping the curve alone took the 22 h frame
-/// from a mean sRGB luma of 0.048 to 0.017, a city that was only its windows
-/// (mac-2, `docs/cloud-shots.toml`, 2026-11-06).
+/// The share of a change in light the camera makes up for. 1 would draw a
+/// night as bright as noon, 0 would draw it 7.6 stops under, a black screen.
 ///
-/// Its own term, gated on the sun being *below* the horizon, rather than a
-/// larger [`NIGHT_EXPOSURE_LIFT`]. That one rides `1 − daylight`, which is
-/// already a fifth at a 10° sun, and raised to 3.5 it lifted the late
-/// afternoon into the sun from 0.79 to 0.86, a white sky.
-pub(crate) const NIGHT_TOE_LIFT: f32 = 1.5;
+/// Fitted to the exposure that matched the look before the curve changed
+/// (`docs/daylight-shots.toml` against `TonyMcMapface`, 2026-11-07): 0.78 is
+/// within half a stop of it at most elevations and up to a stop darker with
+/// the sun 2–5° up, and it leaves the night 1.7 stops under noon and a 5° sun
+/// 0.7 under. 0.70 was 1.3 stops off just after sunrise, 0.86 1.2 at night.
+pub(crate) const ADAPTATION: f32 = 0.78;
 
-/// 0 with the sun up, 1 once it is about 6° down (civil dusk).
-fn night_depth(hours: f32, decl_rad: f32) -> f32 {
-    utils::sun::smoothstep(0.0, 0.1, -utils::sun::sun_direction(hours, decl_rad).y)
+/// [`metered_light`] with the sun high in October, where [`DAY_EXPOSURE_EV100`]
+/// less [`TONE_CURVE_LIFT`] is the exposure.
+const METER_REFERENCE: f32 = 12.6;
+
+/// Stops more at every hour for the tone curve: Khronos PBR Neutral's toe
+/// takes 0.04 off every channel, so the shaded half of the city came out a
+/// quarter stop darker than under `TonyMcMapface`. City luma at noon over the
+/// three views of `docs/daylight-shots.toml`, Tony / Khronos / Khronos with
+/// this: 0.463 / 0.438 / 0.481, 0.422 / 0.376 / 0.417, 0.427 / 0.385 / 0.426.
+pub(crate) const TONE_CURVE_LIFT: f32 = 0.25;
+
+/// log2 of the city's mean scene luminance by sun elevation (degrees), from
+/// the Grote Markt at 70 m, clear and without fog, rendered with no tone curve
+/// and the exposure divided back out (mac-2, 17 October and 21 June,
+/// 2026-11-07; `docs/notes/exposure-and-adaptation.md` has how). The two dates
+/// agree within half a stop at one elevation, so elevation is enough to
+/// index it. Below −10° the night floor: the ambient skyglow, the moon and the
+/// windows, which the eye adapts to and no further.
+const METER: [(f32, f32); 16] = [
+    (-10.0, 5.0),
+    (-6.0, 5.5),
+    (-4.5, 6.2),
+    (-3.0, 6.8),
+    (-1.5, 7.4),
+    (0.0, 7.95),
+    (1.5, 8.3),
+    (3.0, 9.0),
+    (5.0, 9.5),
+    (7.0, 10.3),
+    (9.5, 10.85),
+    (13.0, 11.5),
+    (18.0, 11.9),
+    (22.0, 12.25),
+    (27.0, 12.6),
+    (60.0, 12.8),
+];
+
+/// The light meter: [`METER`] read at this hour's sun elevation.
+pub(crate) fn metered_light(hours: f32, decl_rad: f32) -> f32 {
+    let el = sun_direction(hours, decl_rad)
+        .y
+        .clamp(-1.0, 1.0)
+        .asin()
+        .to_degrees();
+    let (first, last) = (METER[0], METER[METER.len() - 1]);
+    if el <= first.0 {
+        return first.1;
+    }
+    if el >= last.0 {
+        return last.1;
+    }
+    let i = METER
+        .iter()
+        .position(|&(e, _)| e > el)
+        .unwrap_or(METER.len() - 1);
+    let ((e0, l0), (e1, l1)) = (METER[i - 1], METER[i]);
+    l0 + (l1 - l0) * (el - e0) / (e1 - e0)
+}
+
+/// How far into night vision the eye is, 0 (cones, daylight) to 1 (rods):
+/// below about 3 stops under the dusk at sunset, where colour starts to go,
+/// to the night floor, where it has. Drives [`night_vision_grading`].
+pub(crate) fn scotopic(hours: f32, decl_rad: f32) -> f32 {
+    utils::sun::smoothstep(7.5, 5.2, metered_light(hours, decl_rad))
+}
+
+/// Saturation kept in the shadows and the midtones at full night vision. Rods
+/// see no colour, so a moonlit street reads blue-grey rather than as daylight
+/// colours turned down; the lit windows are highlights and keep theirs, which
+/// is also how a night street looks. Under Khronos the night's shadows came out
+/// more saturated than noon's (HSL saturation 0.7–0.8 against 0.2 under Tony),
+/// the curve's toe squaring each channel apart.
+pub(crate) const NIGHT_SHADOW_SATURATION: f32 = 0.55;
+pub(crate) const NIGHT_MIDTONE_SATURATION: f32 = 0.7;
+
+/// The camera's colour grading for night vision at this hour: shadows and
+/// midtones lose colour as [`scotopic`] rises. A uniform, so it costs nothing
+/// per pixel on any rung.
+pub(crate) fn night_vision_grading(hours: f32, decl_rad: f32) -> bevy::render::view::ColorGrading {
+    let s = scotopic(hours, decl_rad);
+    let mut grading = bevy::render::view::ColorGrading::default();
+    grading.shadows.saturation = 1.0 - (1.0 - NIGHT_SHADOW_SATURATION) * s;
+    grading.midtones.saturation = 1.0 - (1.0 - NIGHT_MIDTONE_SATURATION) * s;
+    grading
 }
 
 /// Fraction of the direct beam a full overcast takes away.
@@ -839,6 +919,7 @@ pub(crate) fn apply_day_night_cycle(
             &GridCell,
             &Transform,
             &mut Exposure,
+            &mut bevy::render::view::ColorGrading,
             // `Option`, because a tier that does not want glare omits `Bloom`
             // rather than zeroing it (`free_camera::setup_camera` says why: the
             // component carries `#[require(Hdr)]`, so keeping it costs 8 B/px of
@@ -884,12 +965,14 @@ pub(crate) fn apply_day_night_cycle(
     // below crossfades on it. As a boolean these all stepped at once, mid-zoom.
     let space = camera
         .single()
-        .map(|(cell, tf, _, _, _)| globe.space_factor(cell, tf))
+        .map(|(cell, tf, _, _, _, _)| globe.space_factor(cell, tf))
         .unwrap_or(0.0);
-    let sky_ibl = camera.single().is_ok_and(|(_, _, _, _, env)| env.is_some());
+    let sky_ibl = camera
+        .single()
+        .is_ok_and(|(_, _, _, _, _, env)| env.is_some());
     let bloom_on = camera
         .single()
-        .is_ok_and(|(_, _, _, bloom, _)| bloom.is_some());
+        .is_ok_and(|(_, _, _, _, bloom, _)| bloom.is_some());
     let features = Some((sky_ibl, bloom_on));
     let in_atmosphere = sky
         .as_ref()
@@ -900,7 +983,7 @@ pub(crate) fn apply_day_night_cycle(
     let light_dir = camera
         .single()
         .ok()
-        .map(|(cell, tf, _, _, _)| {
+        .map(|(cell, tf, _, _, _, _)| {
             let from_centre = (systems::free_camera::cell_origin(cell) + tf.translation.as_dvec3()
                 - globe.center_local.as_dvec3())
             .normalize_or_zero()
@@ -943,7 +1026,17 @@ pub(crate) fn apply_day_night_cycle(
         // A small lift so an overcast scene reads dim-but-legible rather than
         // being crushed once the direct sun is pulled down.
         - OVERCAST_EXPOSURE_LIFT * overcast;
-    if let Ok((_, _, mut exp, bloom, _)) = camera.single_mut() {
+    if let Ok((_, _, mut exp, mut grading, bloom, _)) = camera.single_mut() {
+        // Night vision fades out with the climb, as the exposure's adaptation
+        // does: from orbit the lit half of the planet is in daylight.
+        let mut night = night_vision_grading(dev.time_of_day, dev.sun_declination_rad);
+        night.shadows.saturation = night.shadows.saturation.lerp(1.0, space);
+        night.midtones.saturation = night.midtones.saturation.lerp(1.0, space);
+        if grading.shadows.saturation != night.shadows.saturation
+            || grading.midtones.saturation != night.midtones.saturation
+        {
+            *grading = night;
+        }
         // The globe's map imagery is bright (near-white paper); from orbit the
         // sunlit hemisphere blows out, so stop the camera down as you climb. This
         // rides `space_factor`, so at the tier boundary it's exactly the ground

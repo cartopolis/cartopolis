@@ -84,8 +84,9 @@ transmittance table at each point (`color *= transmittance * sun_visibility`).
 compound: at the full curve dawn kept 9 % of the beam, the atmosphere took its
 cut of that, and sunrise was a near-black maroon sky over a maroon city.
 `SUN_EXTINCTION_SOFTNESS` (0.45) bends only the large-air-mass end (9 % → 32 % at
-the horizon, noon untouched), and `TWILIGHT_EXPOSURE_LIFT` (2.5 stops) is the eye
-adaptation that makes twilight read bright. Every one of them moves the sky and
+the horizon, noon untouched), and the light meter (`sky::eye_adaptation_stops`,
+`exposure-and-adaptation.md`) is the eye adaptation that makes twilight read
+bright. Every one of them moves the sky and
 the ground together; check both.
 
 **The light's colour is white when the atmosphere draws the sky** (2026-10-18).
