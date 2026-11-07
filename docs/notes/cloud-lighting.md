@@ -344,6 +344,20 @@ because Khronos holds highlights where Tony rolled them off. At 17.6 h the
 zenith now reads faintly violet, worth watching against the "no mauve"
 finding above.
 
+**After sunset the deck is grey, not black** (2026-11-07). Once the
+atmosphere's sun stopped being dimmed twice
+(`the-atmosphere-from-the-street-to-orbit.md`), the sky after sunset came out a
+stop brighter and lavender, and every cloud in it black: the deck's fill is the
+fog colour, which faded by e every 1.5° below the horizon, and the blue sky
+above it faded with `daylight`. Both were tuned to the old, darker sky. The fog
+now fades by e every 6° (`free_camera::DUSK_FADE_Y`) and the sky above does not
+fade; at 17.6 h toward the set sun a cloud measured sRGB (112, 116, 133)
+against the sky's (92, 85, 103), blue-grey and a little brighter, as in the
+photograph *Sunset over Groningen (again)* ((117, 143, 197) against
+(93, 126, 192)). At night `CLOUD_NIGHT_FLOOR` went up tenfold, since the night
+is exposed about four stops brighter: at the old value every cloud was a black
+hole in a navy sky.
+
 **The exposure has been a light meter since 2026-11-07**
 (`exposure-and-adaptation.md`): the swap to Khronos had left the city a quarter
 stop dark by day and half as bright at night, and the time-of-day lifts it was

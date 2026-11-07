@@ -83,11 +83,21 @@ transmittance table at each point (`color *= transmittance * sun_visibility`).
 `sky::sun_light` extincts too (`utils::sun`'s Kasten–Young curve), so the two
 compound: at the full curve dawn kept 9 % of the beam, the atmosphere took its
 cut of that, and sunrise was a near-black maroon sky over a maroon city.
-`SUN_EXTINCTION_SOFTNESS` (0.45) bends only the large-air-mass end (9 % → 32 % at
-the horizon, noon untouched), and the light meter (`sky::eye_adaptation_stops`,
-`exposure-and-adaptation.md`) is the eye adaptation that makes twilight read
-bright. Every one of them moves the sky and
-the ground together; check both.
+`SUN_EXTINCTION_SOFTNESS` (0.45) bent only the large-air-mass end (9 % → 32 % at
+the horizon, noon untouched), and that was still a double extinction.
+**Since 2026-11-07 the atmosphere's sun is not extincted at all**
+(`sky::sun_light_in_atmosphere`: `RAW_SUNLIGHT × SUN_SCALE`, faded only through
+twilight). With the softened curve still on, the sky after sunset came out
+2–3 stops dark and maroon (the east sky at −2° was sRGB ~(54, 47, 55) where a
+photograph of the Belt of Venus is (189, 175, 199)), and the exposure lifted to
+make up for it drew the city brighter than the sky behind it, where a sunset
+photograph has the city in silhouette. Undimmed, the sky at −2° measured a
+stop brighter and came out lavender-peach, ~(166, 155, 175) toward the sun.
+The curve still lights the surfaces on the dome sky (`sun_light`), which has no
+table of its own. The cloud deck takes no dimming under the atmosphere either
+(`update_clouds`), since it reads its sun off the same table. Every one of
+these moves the sky and the ground together; check both, and re-measure the
+light meter (`exposure-and-adaptation.md`) after.
 
 **The light's colour is white when the atmosphere draws the sky** (2026-10-18).
 `SUN_COLOR_SATURATION` (0.25) tints the light toward the beam's colour, and

@@ -367,27 +367,31 @@ pub(crate) const TONE_CURVE_LIFT: f32 = 0.25;
 /// log2 of the city's mean scene luminance by sun elevation (degrees), from
 /// the Grote Markt at 70 m, clear and without fog, rendered with no tone curve
 /// and the exposure divided back out (mac-2, 17 October and 21 June,
-/// 2026-11-07; `docs/notes/exposure-and-adaptation.md` has how). The two dates
-/// agree within half a stop at one elevation, so elevation is enough to
-/// index it. Below −10° the night floor: the ambient skyglow, the moon and the
-/// windows, which the eye adapts to and no further.
-const METER: [(f32, f32); 16] = [
+/// 2026-11-07; `docs/notes/exposure-and-adaptation.md` has how). Each dusk
+/// point is its own launch: in a run of captures the sky's light on the city
+/// lags the clock, and read in sequence dusk came out up to 0.8 stop bright.
+/// By day each point is the mean of a morning and an afternoon at that
+/// elevation, which lag in opposite directions. Below −10° the night floor:
+/// the ambient skyglow, the moon and the windows, which the eye adapts to and
+/// no further.
+const METER: [(f32, f32); 17] = [
     (-10.0, 5.0),
-    (-6.0, 5.5),
-    (-4.5, 6.2),
-    (-3.0, 6.8),
-    (-1.5, 7.4),
-    (0.0, 7.95),
-    (1.5, 8.3),
-    (3.0, 9.0),
-    (5.0, 9.5),
-    (7.0, 10.3),
-    (9.5, 10.85),
-    (13.0, 11.5),
-    (18.0, 11.9),
-    (22.0, 12.25),
-    (27.0, 12.6),
-    (60.0, 12.8),
+    (-8.0, 5.2),
+    (-6.3, 5.6),
+    (-4.5, 6.6),
+    (-3.0, 7.35),
+    (-1.7, 8.0),
+    (-0.4, 8.6),
+    (1.0, 9.1),
+    (3.0, 9.8),
+    (5.2, 10.05),
+    (7.3, 10.8),
+    (9.4, 11.15),
+    (13.2, 11.6),
+    (19.8, 12.1),
+    (26.5, 12.6),
+    (36.6, 12.65),
+    (60.0, 12.9),
 ];
 
 /// The light meter: [`METER`] read at this hour's sun elevation.
@@ -582,22 +586,35 @@ pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, 
 /// at all. It need not be cut for the surfaces here: with the atmosphere on,
 /// bevy's own lighting already drops a sun below each point's horizon
 /// (`atmosphere_visible_sun_ratio` in the patched `bevy_pbr_lighting.wesl`). So the
-/// light holds until the end of civil twilight and goes out by astronomical dusk,
-/// when the atmosphere's planet shadow has darkened the sky anyway.
+/// light holds to 3° below the horizon and goes out by nautical dusk
+/// ([`TWILIGHT_SUN_FULL_Y`]).
 pub(crate) fn sun_light_in_atmosphere(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
     let y = sun_direction(hours, decl_rad).y;
     let on = utils::sun::smoothstep(TWILIGHT_SUN_OFF_Y, TWILIGHT_SUN_FULL_Y, y);
-    // Untinted: bevy reddens this light itself, through the transmittance table,
-    // for the sky and for every surface (the patched `bevy_pbr_lighting.wesl`).
-    // Tinting it as well reddened everything twice, and turned the blue zenith
-    // of a sunset mauve (2026-10-17).
-    sun_light_cut(hours, decl_rad, fog_density, on, 0.0)
+    // Untinted and undimmed: bevy extincts this light itself, through the
+    // transmittance table, for the sky and for every surface (the patched
+    // `bevy_pbr_lighting.wesl`). Tinting it as well reddened everything twice,
+    // and turned the blue zenith of a sunset mauve (2026-10-17); dimming it by
+    // the air mass as well took the sun the sky is lit by to a fifth at the
+    // horizon, so the twilight sky came out 2–3 stops dark and maroon, and the
+    // exposure lifted to make up for it drew the city brighter than the sky it
+    // stood against (2026-11-07, `exposure-and-adaptation.md`).
+    let (color, _) = sun_light_cut(hours, decl_rad, fog_density, on, 0.0);
+    let sun_through_fog = 1.0 - 0.75 * fog_density;
+    (color, RAW_SUNLIGHT * SUN_SCALE * on * sun_through_fog)
 }
 
 /// Sun elevations (sine) between which [`sun_light_in_atmosphere`] fades the light
-/// out: the end of civil twilight (−6°) and astronomical dusk (−18°).
-const TWILIGHT_SUN_FULL_Y: f32 = -0.105;
-const TWILIGHT_SUN_OFF_Y: f32 = -0.309;
+/// out: 3° below the horizon and the end of nautical twilight (−12°).
+///
+/// It was −6° to −18° while the light was also dimmed by the air mass, which
+/// took it to a fifth by the horizon. Undimmed, the sky's light on the city
+/// (the environment map, on the rungs that have one) still read as early dusk
+/// with the sun 13° down, three times the city's brightness before, where
+/// outdoors the light there is a thousandth of the light at sunset
+/// (mac-2, `daylight-shots.toml` at 18.5 h, 2026-11-07).
+const TWILIGHT_SUN_FULL_Y: f32 = -0.052;
+const TWILIGHT_SUN_OFF_Y: f32 = -0.209;
 
 /// [`sun_light`] with the horizon's cut given: `cut` 0..1 of the light survives it,
 /// and `saturation` of the beam's colour is kept in the light's (0 = white).
@@ -1800,9 +1817,15 @@ const LUMINANCE: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
 ///
 /// Faint, and a little warm: city light from below. At 0.045 grey it was some
 /// thirty times the night fog, and the deck stood out as a lit grey lid over
-/// the dark city (2026-10-17). Here it is a few times that, enough to hide the
-/// stars behind it and no more.
-pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.0085, 0.0075, 0.0070);
+/// the dark city (2026-10-17).
+///
+/// Ten times the 0.0085 it was then set to, because it is in post-exposure
+/// units and the night is now exposed about four stops brighter
+/// (`eye_adaptation_stops`, the light meter): at 0.0085 every cloud was a
+/// black hole in a navy sky. At this value the deck is about as bright as the
+/// sky beside it, a dim warm grey that hides the stars and no more; at 25×
+/// it was the lit lid again (mac-2, `daylight-shots.toml` at 22 h, 2026-11-07).
+pub(crate) const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.085, 0.075, 0.070);
 /// Fraction of the ambient sky an opaque cloud core still receives, at the two
 /// ends of the coverage range — the shader lerps between them.
 ///
@@ -1892,6 +1915,7 @@ pub(crate) fn update_clouds(
     weather: Res<systems::weather::WeatherState>,
     mut field: ResMut<CloudField>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
+    sky: Option<Res<systems::sky_dome::SkyMode>>,
 ) {
     // The live wind drifts the deck. Integrated here rather than in the shader,
     // which used to take velocity × clock: with a wind that changes, that product
@@ -1953,7 +1977,18 @@ pub(crate) fn update_clouds(
     // left the lit side of a sunset cloud that many stops too dark — muddy brown
     // against a sky and a fog colour that had been lifted (2026-10-17).
     let adapt = 2f32.powf(eye_adaptation_stops(hours, decl));
-    let sun_gain = deck_disc * CLOUD_SUN_GAIN * adapt * sky_light_dimming(hours, decl);
+    // Under bevy's atmosphere the sky is lit by the undimmed sun
+    // (`sun_light_in_atmosphere`), and the deck reads its colour off the same
+    // transmittance table, so it takes no dimming of its own either.
+    let in_atmosphere = sky
+        .as_ref()
+        .is_some_and(|s| **s == systems::sky_dome::SkyMode::Atmosphere);
+    let dimming = if in_atmosphere {
+        1.0
+    } else {
+        sky_light_dimming(hours, decl)
+    };
+    let sun_gain = deck_disc * CLOUD_SUN_GAIN * adapt * dimming;
     let sun_rgb = beam * sun_gain;
 
     // Ambient sky light filling the shadowed side — and, at full cover, the deck's
@@ -1996,10 +2031,12 @@ pub(crate) fn update_clouds(
             if quality::is_phone() { 1.0 } else { 0.0 },
             // The sky above, as bright as the sky the camera shows: the fog
             // colour is that sky's horizon, in the same post-exposure units.
-            // Less of it as the day goes: the fog is lifted with the eye's
-            // adaptation at dusk, the sky overhead darkens faster than that, and
-            // at full strength its blue turned every sunset cloud pink.
-            haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN * utils::sun::daylight(hours, decl),
+            // It used to fade with `daylight`, because the fog was lifted at
+            // dusk while the sky overhead went dark, and its blue turned the
+            // sunset clouds pink. With the atmosphere lit by the undimmed sun
+            // the sky after sunset stays bright, and the fade turned every
+            // cloud in it black (2026-11-07); the blue is what greys them.
+            haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN,
             0.0,
         );
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);

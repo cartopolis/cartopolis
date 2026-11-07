@@ -23,7 +23,9 @@ the light falls to the night floor; the lit windows, highlights, keep theirs.
 illuminance, the ambient, the atmosphere or the windows and re-measure it,
 or the exposure keeps answering for the old light.
 
-How it was taken (2026-11-07, mac-2): the Grote Markt from 70 m (the
+How it was taken (2026-11-07, mac-2, twice: again after the atmosphere's sun
+stopped being dimmed twice, which brought the city up 0.6–0.75 stop from 9° to
+−8° and the sky after sunset a stop): the Grote Markt from 70 m (the
 `grote-markt` pose of `docs/shots.toml`), clear, no fog, 46 times over
 17 October and 21 June, rendered with `Tonemapping::None`. With no curve the
 picture is the scene times the exposure, clamped, so per frame: the city crop
@@ -33,6 +35,16 @@ was nowhere near clipping (under 3 % of pixels at the brightest noon). The two
 dates agree within half a stop at one elevation; the views do not quite (a
 morning and an afternoon at 9° differ by 0.4 stop, the light falling on
 different facades), which is the limit of a one-view meter.
+
+**Measure dusk one launch per capture.** In a run of captures the sky's light
+on the city (the atmosphere's environment map, on the rungs that have one) lags
+the clock: at 18.5 h after a 17.6 h capture the city read 0.179, launched on
+its own 0.050, and waiting longer (`settle` 6 s) changed nothing. Read in
+sequence the dusk points came out up to 0.8 stop bright, so `METER` takes them
+from single launches. By day the lag is small, and a morning and an afternoon
+at one elevation lag in opposite directions, so the table takes their mean.
+Whether the app shows the same lag when the time is jumped (the time slider,
+`set_sky`) is not measured.
 
 What it found: from an October noon to the night floor the city loses 7.6
 stops. Twilight in the renderer is far gentler than outdoors, about 0.4 stop

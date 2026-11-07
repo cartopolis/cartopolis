@@ -22,6 +22,18 @@ use crate::systems::gizmo::GizmoState;
 /// (1 = the raw beam colour, 0 = white).
 const GLOW_SATURATION: f32 = 0.5;
 
+/// How fast the fog's daylight colour fades once the sun is down: by e for
+/// every this much of the sun's sine below the horizon, about 6°.
+///
+/// It was 0.026 (1.5°), when the sky after sunset was drawn 2–3 stops too dark
+/// (the atmosphere's sun dimmed twice, `sky::sun_light_in_atmosphere`) and a
+/// brighter fog made the deck glow lavender over it. With the sky lit right, the
+/// fast fade left the fog, and the cloud fill taken from it, far under the sky:
+/// at 17.6 h in October the clouds were black on a lavender sky. At 6° they come
+/// out a blue-grey a little brighter than the sky beside them, as in a
+/// photograph of a sunset over Groningen (mac-2, 2026-11-07).
+const DUSK_FADE_Y: f32 = 0.105;
+
 pub fn distance_fog(density: f32, hours: f32, decl_rad: f32) -> DistanceFog {
     use crate::utils::sun;
 
@@ -40,11 +52,9 @@ pub fn distance_fog(density: f32, hours: f32, decl_rad: f32) -> DistanceFog {
     // takes its fill light from this colour, went brown in every shadow
     // (2026-10-17). So the daylight part rises by the eye adaptation, up to its
     // noon colour; the night colour is the night exposure's already. Once the sun
-    // is down the sky darkens faster than the adaptation opens, so the lift
-    // falls away by e every 1.5° of depression — half left at 1°, a twelfth
-    // at 4° — or the deck glowed lavender over a dusk sky darker than it.
+    // is down the lift falls away by e every 6° of depression (`DUSK_FADE_Y`).
     let lift = 2f32.powf(crate::systems::sky::eye_adaptation_stops(hours, decl_rad));
-    let dusk = (sun::sun_direction(hours, decl_rad).y / 0.026)
+    let dusk = (sun::sun_direction(hours, decl_rad).y / DUSK_FADE_Y)
         .exp()
         .min(1.0);
     let linear = |c: Vec3| Color::srgb(c.x, c.y, c.z).to_linear().to_vec3();
