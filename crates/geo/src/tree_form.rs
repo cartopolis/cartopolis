@@ -158,7 +158,8 @@ impl TreeForm {
         if NOT_A_TAXON.contains(&genus) || !genus.chars().all(char::is_alphabetic) {
             return None;
         }
-        let cultivar = cultivar(&lower);
+        let rest: Vec<&str> = words.collect();
+        let cultivar = cultivar(&lower, &rest);
         if COLUMNAR_CULTIVARS.iter().any(|c| cultivar.contains(c)) {
             return Some(Self::Columnar);
         }
@@ -220,15 +221,66 @@ impl TreeForm {
     }
 }
 
-/// The text between the quotes of a cultivar name, or nothing.
-fn cultivar(name: &str) -> &str {
+/// What the BGT says grows in a wood (`begroeidterreindeel.fysiek_voorkomen`):
+/// the kind of wood, not the species, so it decides the scattered trees' forms
+/// in proportion rather than one by one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WoodKind {
+    Broadleaf,
+    Conifer,
+    Mixed,
+}
+
+impl WoodKind {
+    /// The kind a `formats::bgt::WOOD_KINDS` slug names.
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Some(match slug {
+            "broadleaf" => Self::Broadleaf,
+            "conifer" => Self::Conifer,
+            "mixed" => Self::Mixed,
+            _ => return None,
+        })
+    }
+
+    /// The form a scattered tree takes in a wood of this kind, from a uniform
+    /// draw `r`.
+    ///
+    /// **The proportions are the one judgement here.** The BGT says conifer, not
+    /// which: the Dutch forest inventory has Scots and Corsican pine as about two
+    /// thirds of the country's conifer stands, Douglas fir, larch and spruce the
+    /// rest, so a conifer wood is 70 % pine and 30 % cone; a mixed wood is half
+    /// broadleaf and half that. A broadleaf wood stays the old ball: its species
+    /// are unknown, and the ball is the cheapest crown in a cell of 6,000 trees.
+    #[must_use]
+    pub fn form(self, r: f32) -> TreeForm {
+        let conifer = |r: f32| {
+            if r < 0.7 {
+                TreeForm::Pine
+            } else {
+                TreeForm::Conical
+            }
+        };
+        match self {
+            Self::Broadleaf => TreeForm::Round,
+            Self::Conifer => conifer(r),
+            Self::Mixed if r < 0.5 => TreeForm::Round,
+            Self::Mixed => conifer((r - 0.5) * 2.0),
+        }
+    }
+}
+
+/// The cultivar: the text between its quotes, as Groningen and Amsterdam write
+/// it (`Carpinus betulus 'Fastigiata'`), or where there are no quotes every word
+/// after the species, as Nijmegen writes it (`Carpinus betulus Fastigiata 0`).
+fn cultivar(name: &str, after_species: &[&str]) -> String {
     let quote = |c: char| matches!(c, '\'' | '"' | '‘' | '’' | '`');
     match name.find(quote) {
         Some(i) => {
             let rest = &name[i + name[i..].chars().next().map_or(1, char::len_utf8)..];
-            rest.find(quote).map_or(rest, |j| &rest[..j])
+            rest.find(quote).map_or(rest, |j| &rest[..j]).to_string()
         }
-        None => "",
+        None => after_species.join(" "),
     }
 }
 
@@ -475,12 +527,34 @@ mod tests {
             ("Pinus nigra", Pine),
             ("Tilia", Broad),
             ("Vruchtboom", Broad),
+            // Nijmegen writes the cultivar bare, with a suffix of its own.
+            ("Carpinus betulus Fastigiata 0", Columnar),
+            ("Quercus robur Fastigiata", Columnar),
+            ("Betula pendula 0", Upright),
+            ("Tilia x europaea -", Broad),
+            ("Robinia pseudoacacia (risico biodiversiteit)", Broad),
         ] {
             assert_eq!(TreeForm::from_taxon(name), Some(form), "{name}");
         }
         for name in ["", "  ", "Onbekend", "Verwijderd", "?"] {
             assert_eq!(TreeForm::from_taxon(name), None, "{name:?}");
         }
+    }
+
+    #[test]
+    fn a_wood_plants_in_its_proportions() {
+        let count = |kind: WoodKind, form: TreeForm| {
+            (0..1000)
+                .filter(|i| kind.form((*i as f32 + 0.5) / 1000.0) == form)
+                .count()
+        };
+        assert_eq!(count(WoodKind::Broadleaf, TreeForm::Round), 1000);
+        assert_eq!(count(WoodKind::Conifer, TreeForm::Pine), 700);
+        assert_eq!(count(WoodKind::Conifer, TreeForm::Conical), 300);
+        assert_eq!(count(WoodKind::Mixed, TreeForm::Round), 500);
+        assert_eq!(count(WoodKind::Mixed, TreeForm::Pine), 350);
+        assert_eq!(WoodKind::from_slug("mixed"), Some(WoodKind::Mixed));
+        assert_eq!(WoodKind::from_slug("jungle"), None);
     }
 
     /// The keep-outs clear a tree at its radius and between its foot and its

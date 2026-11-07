@@ -1923,6 +1923,16 @@ fn spawn_geometry_task(
                             if wants.trees {
                                 match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
                                     Ok(mut trees) => {
+                                        // A scattered tree in a wood the BGT
+                                        // surveyed takes that wood's kind —
+                                        // before the street trees join, which
+                                        // carry their own species.
+                                        scatter::plant_woods(
+                                            &mut trees,
+                                            &crate::systems::surveyed::surveyed_woods(
+                                                &surveyed, cell.0, cell.1, tile_m,
+                                            ),
+                                        );
                                         // The BGT's individual street trees join
                                         // the scattered canopies rather than
                                         // replacing them — see

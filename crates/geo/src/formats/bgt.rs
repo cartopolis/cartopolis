@@ -56,7 +56,26 @@ pub struct Objects {
     /// Surveyed trees, `[lat, lng]`.
     #[serde(default)]
     pub trees: Vec<LatLng>,
+    /// The woods the register says what grows in. Absent from files written
+    /// before 2026-11-07, and from cells with none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub woods: Vec<Wood>,
 }
+
+/// A wood, `[kind, [ring, …]]`: kind one of [`WOOD_KINDS`], the rings outer
+/// first. Written to **every cell its outline's bounds touch**, not only the
+/// cell of its first corner as a paving surface is: a wood is often larger than
+/// a cell, and the client asks of each tree it plants which wood it stands in.
+///
+/// A key of its own for the reason [`Terrace`] is one: a reader that predates it
+/// ignores an unknown key, and would refuse the whole file over an unknown
+/// array element.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Wood(pub String, pub Vec<Vec<LatLng>>);
+
+/// What a [`Wood`] can be: BGT `begroeidterreindeel.fysiek_voorkomen`
+/// `loofbos`, `naaldbos` and `gemengd bos`.
+pub const WOOD_KINDS: [&str; 3] = ["broadleaf", "conifer", "mixed"];
 
 /// A walk below the street beside it: `[[ring, …], level, [seaward, …]]` — the
 /// rings of one of the file's surfaces, outer first, its level in metres above
@@ -145,6 +164,7 @@ mod tests {
             ],
             props: vec![(53.2194, 6.5665, 0), (53.2195, 6.5666, 6)],
             trees: vec![(53.2196, 6.5667)],
+            woods: Vec::new(),
         }
     }
 
@@ -208,5 +228,24 @@ mod tests {
         let old = parse_objects(r#"{"props":[[53.2,6.5,0]]}"#).unwrap();
         assert_eq!(old.props.len(), 1);
         assert!(old.trees.is_empty() && old.lines.is_empty() && old.bridges.is_empty());
+    }
+
+    /// Woods ride in a key of their own, after the trees, and an objects file
+    /// without any is byte for byte what it was.
+    #[test]
+    fn woods_round_trip_and_cost_nothing_when_absent() {
+        let text = r#"{"bridges":[],"lines":[],"props":[],"trees":[],"woods":[["conifer",[[[53.1,5.8],[53.1,5.81],[53.11,5.81]]]]]}"#;
+        let objects = parse_objects(text).unwrap();
+        assert_eq!(objects.woods.len(), 1);
+        assert_eq!(objects.woods[0].0, "conifer");
+        assert_eq!(
+            String::from_utf8(super::super::to_vec(&objects).unwrap()).unwrap(),
+            text
+        );
+        assert!(WOOD_KINDS.contains(&objects.woods[0].0.as_str()));
+        let bare = Objects::default();
+        assert!(!String::from_utf8(super::super::to_vec(&bare).unwrap())
+            .unwrap()
+            .contains("woods"));
     }
 }

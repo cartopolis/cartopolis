@@ -285,8 +285,39 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
+/// BGT `begroeidterreindeel.fysiek_voorkomen` → a [`bgt::WOOD_KINDS`] entry.
+/// `houtwal` (a wooded bank) and `struiken` are not woods the scatter plants.
+fn wood_kind(v: &str) -> Option<&'static str> {
+    Some(match v {
+        "loofbos" => "broadleaf",
+        "naaldbos" => "conifer",
+        "gemengd bos" => "mixed",
+        _ => return None,
+    })
+}
+
+/// Every cell the bounds of a `[lat, lng]` ring touch.
+fn cells_touched(ring: &[[f64; 2]]) -> Vec<Cell> {
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in ring {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let (a, b) = (lat_lng_to_cell(lo[0], lo[1]), lat_lng_to_cell(hi[0], hi[1]));
+    let mut out = Vec::new();
+    for x in a.0.min(b.0)..=a.0.max(b.0) {
+        for y in a.1.min(b.1)..=a.1.max(b.1) {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
 /// The object types the extract is asked for.
-const FEATURETYPES: [&str; 9] = [
+const FEATURETYPES: [&str; 10] = [
+    "begroeidterreindeel",
     "vegetatieobject",
     "paal",
     "straatmeubilair",
@@ -695,6 +726,8 @@ struct CellData {
     terraces: Vec<bgt::Terrace>,
     /// The steps down to them.
     ramps: Vec<bgt::Ramp>,
+    /// The woods that reach into the cell (`formats::bgt::Wood`).
+    woods: Vec<bgt::Wood>,
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -860,6 +893,43 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let quays = super::lower_quay::QuayIndex::new(quays);
     let (n_surf, n_terraces) = collect_surfaces(ctx, extract, &mut cells, &quays)?;
 
+    // Last, so a wood reaching into a cell nothing else was written for does not
+    // make that cell look surveyed: it goes to the cell of its first corner, as a
+    // paving surface does, and to the other cells its bounds touch only where
+    // those are written anyway.
+    ctx.log("bossen…");
+    let mut n_woods = 0;
+    let mut woods: Vec<(Cell, Vec<Cell>, bgt::Wood)> = Vec::new();
+    items(ctx, extract, "begroeidterreindeel", |feat| {
+        let Some(kind) = wood_kind(&js_str(&feat["properties"]["fysiek_voorkomen"])) else {
+            return;
+        };
+        for poly in polygon_rings(&feat["geometry"]) {
+            // A metre, not the paving's 10 cm: the outline only answers which
+            // wood a tree stands in, and a wood is not planted under 100 m².
+            let out_rings = lat_lng_rings(&poly, 1.0, 100.0);
+            let Some(outer) = out_rings.first().filter(|r| r.len() >= 3) else {
+                continue;
+            };
+            let home = lat_lng_to_cell(outer[0][0], outer[0][1]);
+            let touched = cells_touched(outer);
+            woods.push((
+                home,
+                touched,
+                bgt::Wood(kind.into(), ring_pairs(&out_rings)),
+            ));
+            n_woods += 1;
+        }
+    })?;
+    for (home, touched, wood) in woods {
+        for cell in touched {
+            if cell != home && cells.contains_key(&cell) {
+                cells.get_mut(&cell).unwrap().woods.push(wood.clone());
+            }
+        }
+        cells.entry(home).or_default().woods.push(wood);
+    }
+
     let written: Vec<(Cell, CellData)> = cells
         .into_iter()
         .filter(|(_, c)| {
@@ -870,6 +940,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 || !c.terraces.is_empty()
                 || !c.ramps.is_empty()
                 || !c.bridges.is_empty()
+                || !c.woods.is_empty()
         })
         .collect();
     let covered = sorted_cells(written.iter().map(|(c, _)| *c));
@@ -884,9 +955,15 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             bridges,
             terraces,
             ramps,
+            woods,
         } = data;
         // Two files, as the BAG splits its own: the paving is the heavy part.
-        if !trees.is_empty() || !props.is_empty() || !lines.is_empty() || !bridges.is_empty() {
+        if !trees.is_empty()
+            || !props.is_empty()
+            || !lines.is_empty()
+            || !bridges.is_empty()
+            || !woods.is_empty()
+        {
             ctx.write_doc(
                 &cell_path("bgt", cell),
                 &bgt::Objects {
@@ -894,6 +971,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                     lines,
                     props,
                     trees,
+                    woods,
                 },
             )?;
         }
@@ -941,6 +1019,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         cells: n_written,
         counts: vec![
             Count::new("trees", n_trees),
+            Count::new("woods", n_woods),
             Count::new("props", n_props),
             Count::new("lines", n_lines),
             Count::new("surfaces", n_surf),

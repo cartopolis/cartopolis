@@ -36,7 +36,7 @@ use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
 use crate::systems::osm_buildings::tdbag_url;
 use crate::systems::paving::{PavingKind, PavingMaterial};
-use crate::systems::scatter::TreeInstance;
+use crate::systems::scatter::{TreeInstance, WoodKind};
 
 /// Fixed cache/streaming zoom — the one the extractor bins into. Must also match
 /// `map_geometry::GEOMETRY_ZOOM`.
@@ -136,6 +136,8 @@ pub struct SurveyedCell {
     /// The parts bridges are surveyed as — decks, piers, abutments — with their
     /// outlines, outer ring first.
     pub bridges: Vec<SurveyedBridgePart>,
+    /// The woods the register says what grows in, rings `(lat, lng)`, outer first.
+    pub woods: Vec<(WoodKind, Vec<Vec<(f64, f64)>>)>,
 }
 
 /// One part of a bridge as the BGT surveys it (`overbruggingsdeel`).
@@ -231,6 +233,14 @@ pub fn parse_surveyed_cell(text: &str) -> Result<SurveyedCell, String> {
                 })
             })
             .collect(),
+        woods: wire
+            .woods
+            .into_iter()
+            .filter(|w| w.1.first().is_some_and(|r| r.len() >= 3))
+            .filter_map(|cartopolis_geo::formats::bgt::Wood(kind, rings)| {
+                Some((WoodKind::from_slug(&kind)?, rings))
+            })
+            .collect(),
     })
 }
 
@@ -308,6 +318,36 @@ pub fn surveyed_piers(cell: &SurveyedCell, cx: i64, cy: i64, tile_m: f32) -> Vec
                     })
                     .collect(),
             )
+        })
+        .collect()
+}
+
+/// This cell's surveyed woods in the scatter's frame, for
+/// [`scatter::plant_woods`](crate::systems::scatter::plant_woods). Unclamped: a
+/// wood is written whole to every cell it reaches, and a ring cut at the cell
+/// edge would answer "inside" wrongly along the cut.
+#[must_use]
+pub fn surveyed_woods(
+    cell: &SurveyedCell,
+    cx: i64,
+    cy: i64,
+    tile_m: f32,
+) -> Vec<crate::systems::scatter::Wood> {
+    cell.woods
+        .iter()
+        .map(|(kind, rings)| {
+            let local = rings
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|&(lat, lng)| {
+                            let (x, z) = cell_local_unclamped(lat, lng, cx, cy, BGT_ZOOM, tile_m);
+                            [x, z]
+                        })
+                        .collect()
+                })
+                .collect();
+            (*kind, local)
         })
         .collect()
 }

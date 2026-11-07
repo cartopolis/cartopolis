@@ -35,7 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-pub use crate::tree_form::TreeForm;
+pub use crate::tree_form::{TreeForm, WoodKind};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData, TILE_BUFFER_FRAC};
 
 /// Altitude at which trees start merging into the flat fill.
@@ -736,6 +736,73 @@ pub fn surveyed_trees(
         .collect()
 }
 
+/// One wood the BGT surveyed, in the scatter's tile-local frame: its kind and
+/// its rings, outer first, as `[x, z]` metres.
+pub type Wood = (WoodKind, Vec<Vec<[f32; 2]>>);
+
+/// Give each scattered tree standing in a surveyed wood the form that wood's
+/// kind plants ([`WoodKind::form`]), and the width and tone that form has. A
+/// tree in no wood — a park, a garden, a wood the BGT has no kind for — is left
+/// as it was.
+///
+/// Only for `Round` trees, which is every tree [`scatter_vegetation`] makes; a
+/// tree that already has a form got it from its species.
+pub fn plant_woods(trees: &mut [TreeInstance], woods: &[Wood]) {
+    if woods.is_empty() {
+        return;
+    }
+    let bounds: Vec<[f32; 4]> = woods
+        .iter()
+        .map(|(_, rings)| {
+            let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for p in rings.first().into_iter().flatten() {
+                b = [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ];
+            }
+            b
+        })
+        .collect();
+    for t in trees.iter_mut().filter(|t| t.form == TreeForm::Round) {
+        let found = woods.iter().zip(&bounds).find(|((_, rings), b)| {
+            (b[0]..=b[2]).contains(&t.x)
+                && (b[1]..=b[3]).contains(&t.z)
+                && rings.iter().filter(|r| in_ring(r, t.x, t.z)).count() % 2 == 1
+        });
+        let Some(((kind, _), _)) = found else {
+            continue;
+        };
+        // A draw of its own, off the position, so the mix does not follow the
+        // tone or the height the scatter already drew.
+        let r = rand01(hash3(WOOD_SEED, (t.x * 4.0) as i32, (t.z * 4.0) as i32), 0);
+        let form = kind.form(r);
+        t.radius *= form.width();
+        t.tone = form.tone(t.tone);
+        t.luma *= form.luma();
+        t.form = form;
+    }
+}
+
+const WOOD_SEED: u64 = 0x_0B05;
+
+/// Even-odd: is `(x, z)` inside the ring? Holes are rings too, so "inside an
+/// odd number of a polygon's rings" is inside the polygon.
+fn in_ring(ring: &[[f32; 2]], x: f32, z: f32) -> bool {
+    let mut inside = false;
+    let mut j = ring.len().wrapping_sub(1);
+    for (i, a) in ring.iter().enumerate() {
+        let b = ring[j];
+        if (a[1] > z) != (b[1] > z) && x < a[0] + (z - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 // ─── Meshing ─────────────────────────────────────────────────────────────────
 
 /// Turn scattered instances into merged [`SurfaceMesh`]es — canopies and trunks,
@@ -1383,6 +1450,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A conifer wood turns the trees inside it — not those outside it, nor
+    /// those in a clearing cut out of it, nor one whose species already spoke.
+    #[test]
+    fn a_surveyed_wood_plants_its_kind_and_nowhere_else() {
+        let tree = |x: f32, z: f32, form: TreeForm| TreeInstance {
+            x,
+            z,
+            radius: 3.0,
+            height: 12.0,
+            tone: 0.1,
+            luma: 1.0,
+            form,
+        };
+        let square = |a: f32, b: f32| vec![[a, a], [b, a], [b, b], [a, b]];
+        let woods = vec![(
+            WoodKind::Conifer,
+            vec![square(0.0, 100.0), square(40.0, 60.0)],
+        )];
+        let mut trees: Vec<TreeInstance> = (0..20)
+            .map(|i| {
+                tree(
+                    5.0 + i as f32 * 0.37,
+                    10.0 + i as f32 * 3.1,
+                    TreeForm::Round,
+                )
+            })
+            .collect();
+        trees.push(tree(50.0, 50.0, TreeForm::Round)); // the clearing
+        trees.push(tree(150.0, 50.0, TreeForm::Round)); // outside
+        trees.push(tree(20.0, 20.0, TreeForm::Weeping)); // a species
+        plant_woods(&mut trees, &woods);
+        assert!(trees[..20]
+            .iter()
+            .all(|t| matches!(t.form, TreeForm::Pine | TreeForm::Conical)));
+        assert!(trees[..20].iter().all(|t| t.radius < 3.0 && t.tone >= 0.75));
+        assert_eq!(trees[20].form, TreeForm::Round, "a clearing is not wood");
+        assert_eq!(trees[21].form, TreeForm::Round, "outside the wood");
+        assert_eq!(trees[22].form, TreeForm::Weeping, "the species stands");
     }
 
     #[test]
