@@ -121,7 +121,7 @@ pub struct Register {
 }
 
 /// Every city whose register atlas reads.
-pub static REGISTERS: &[Register] = &[GRONINGEN];
+pub static REGISTERS: &[Register] = &[GRONINGEN, NIJMEGEN];
 
 // ─── Groningen ───────────────────────────────────────────────────────────────
 
@@ -279,6 +279,34 @@ fn fraction_colour(fraction: &str) -> u32 {
         _ => 0x9A_98_93,
     }
 }
+
+// ─── Nijmegen ────────────────────────────────────────────────────────────────
+
+/// Trees only: Nijmegen's register has the species of all but ~3,200 of its
+/// 70,447 trees and a height band on all but 500 (fetched whole, 2026-11-07). It
+/// writes a cultivar without quotes and with a suffix of its own
+/// (`"Carpinus betulus Fastigiata 0"`), which `TreeForm::from_taxon` reads; its
+/// bands (`"Tot 6 m"`, `"6 tot 12 m"`, `"24 m en hoger"`) are the numbers
+/// [`height_band_m`] reads.
+const NIJMEGEN: Register = Register {
+    id: "nijmegen",
+    attribution: "Street trees: gemeente Nijmegen open data (CC BY 4.0)",
+    // The extent of the trees themselves, outward to the next 100 m: the layer
+    // publishes none.
+    bounds_rd: [180_400.0, 422_600.0, 190_900.0, 434_100.0],
+    wfs: "https://services.nijmegen.nl/geoservices/extern_BOR_Groen/ows",
+    sources: &[Source {
+        id: "trees",
+        layer: "extern_BOR_Groen:GRN_BOMEN",
+        geometry: "GEOMETRIE",
+        attributes: &["HOOGTE", "BOOMSOORT"],
+        yields: Yields::Trees {
+            height: |f| f.str("HOOGTE").and_then(height_band_m),
+            form: |f| f.str("BOOMSOORT").and_then(TreeForm::from_taxon),
+        },
+        supplies: &[Supply::Trees],
+    }],
+};
 
 /// A Dutch height band — `"15 tot 18 m."`, `"tot 6 m."`, `"24 m. en hoger"` — as
 /// one number in metres.
@@ -821,7 +849,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             ..Manifest::new(CACHE_ZOOM, sorted_cells(docs.keys().copied())).described(
                 ctx.name.as_str(),
                 attributions.join(" · "),
-                "Gemeente Groningen GeoServer (WFS); Wikidata SPARQL; our Overpass",
+                "municipal GeoServers (WFS); Wikidata SPARQL; our Overpass",
                 ctx.bbox,
             )
         },
@@ -874,6 +902,24 @@ mod tests {
             url.contains("LATIJNSE_NAAM"),
             "the species is asked for: {url}"
         );
+    }
+
+    /// A Nijmegen tree as its server sends one: a bare cultivar, a band of its
+    /// own spelling.
+    #[test]
+    fn nijmegen_reads_its_own_spellings() {
+        let nijmegen = REGISTERS.iter().find(|r| r.id == "nijmegen").unwrap();
+        let trees = &nijmegen.sources[0];
+        let url = source_url(nijmegen, trees, [1.0, 2.0, 3.0, 4.0]);
+        assert!(url.contains("GEOMETRIE%2CHOOGTE%2CBOOMSOORT"), "{url}");
+        let page = json!({"numberMatched": 1, "features":[{"geometry":{"type":"Point",
+            "coordinates":[187_500.0, 428_000.0]},
+            "properties":{"HOOGTE":"Tot 6 m","BOOMSOORT":"Carpinus betulus Fastigiata 0"}}]});
+        let read = read_source(&page, &trees.yields).unwrap();
+        let (Tree(lat, _, h), form) = read.trees[0];
+        assert!((lat - 51.84).abs() < 0.05, "{lat}");
+        assert_eq!(h, Some(4.5));
+        assert_eq!(form, Some(TreeForm::Columnar));
     }
 
     #[test]
