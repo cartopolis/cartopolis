@@ -1,6 +1,6 @@
 ---
 topic: vegetation
-triggers: [tree_form.rs, TreeForm, TREE_FORMS, from_taxon, tree_forms, LATIJNSE_NAAM, "tree model", "tree models", "tree species", boomsoort, build_vegetation_meshes, push_trunk, "leaf_type", genus]
+triggers: [tree_form.rs, TreeForm, TREE_FORMS, from_taxon, tree_forms, LATIJNSE_NAAM, "tree model", "tree models", "tree species", boomsoort, build_vegetation_meshes, push_trunk, "leaf_type", genus, plant_woods, WoodKind, WOOD_KINDS, begroeidterreindeel, naaldbos, loofbos, "gemengd bos", surveyed_woods]
 updated: 2026-11-07
 ---
 
@@ -35,10 +35,26 @@ is a species name and does not weep. OSM's `natural=tree` gives the same name in
 `species` / `taxon` / `genus` where somebody mapped it, and the client reads it
 there; `leaf_type=needleleaved` alone still makes a conifer.
 
-The BGT registers no species, and the vector tiles' woods and parks are areas
-with no trees in them at all, so **every scattered tree and every BGT tree stays
-`Round`, which is the old ball vertex for vertex.** That is also what keeps the
-cost down: a wood cell scatters up to 6,000 trees, and those did not grow.
+The BGT registers a street tree as `plus_type = boom` and nothing more: **no
+species and no height, anywhere in the country**, so every BGT tree stays `Round`,
+the old ball vertex for vertex.
+
+## A wood is planted by its kind
+
+The vector tiles' woods and parks are areas with no trees in them, which the
+scatter fills. What the BGT *does* say is what grows in a wood:
+`begroeidterreindeel.fysiek_voorkomen` is `loofbos`, `naaldbos` or `gemengd bos`
+(seen live on the Veluwe and south of Groningen, 2026-11-07). Atlas writes those
+outlines into the BGT objects file as `woods` (`formats::bgt::Wood`), to every cell
+an outline's bounds reach, since a wood is often larger than a cell; the client
+asks of each scattered tree which wood it stands in (`scatter::plant_woods`).
+
+The kind gives a proportion, not a species: a conifer wood is 70 % pine and 30 %
+cone, a mixed one half broadleaf and half that (`WoodKind::form` has the
+reasoning). **A broadleaf wood stays the ball**, because its species are unknown
+and a wood cell scatters up to 6,000 trees: the ball is the cheapest crown there
+is. A conifer wood costs about twice the old vertices (pine 36, cone 42). Like
+the species, nothing shows until atlas re-runs `bgt` on the host.
 
 ## What it costs
 
