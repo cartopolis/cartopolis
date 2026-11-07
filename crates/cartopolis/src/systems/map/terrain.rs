@@ -1414,6 +1414,16 @@ impl TerrainSnapshot {
         !self.banks.is_empty()
     }
 
+    /// Whether a world-XZ point is in or beside registered water — nearer a
+    /// [`WET`] or [`BANK`] sample than a dry one. `false` where none is registered.
+    #[must_use]
+    pub fn by_the_water(&self, wx: f32, wz: f32) -> bool {
+        if self.banks.is_empty() {
+            return false;
+        }
+        self.bilinear_by(wx, wz, |i| f32::from(self.banks[i] != 0)) > 0.5
+    }
+
     /// This field as the ground beside the water — see [`LandField`].
     #[must_use]
     pub fn land(&self) -> LandField<'_> {
@@ -3429,6 +3439,20 @@ mod tests {
             let h = field.land_at(x, 0.0);
             assert!((h - 2.0).abs() < 1e-4, "street at x = {x}: {h}");
         }
+    }
+
+    /// The quay's line is by the water, the street a few samples back is not.
+    #[test]
+    fn the_quay_is_by_the_water_and_the_street_behind_it_is_not() {
+        let (field, _) = canal();
+        for x in [-10.0, 0.0, 10.0, 11.0] {
+            assert!(field.by_the_water(x, 0.0), "x = {x}");
+        }
+        for x in [20.0, -25.0, 60.0] {
+            assert!(!field.by_the_water(x, 0.0), "x = {x}");
+        }
+        let dry = snapshot_of(50.0, 3.125, |_, _| 1.0);
+        assert!(!dry.by_the_water(0.0, 0.0));
     }
 
     /// With nothing registered, both readings are the field to the bit.

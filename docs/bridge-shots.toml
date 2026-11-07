@@ -99,3 +99,10 @@ name = "bridge-werkmanbrug"
 description = "H.N. Werkmanbrug, the footbridge from the station to the Groninger Museum (way 773758337) — the bridge people in Groningen call the Museumbrug since the museum moved there in 1994. From the station side, so the museum stands behind it rather than in front."
 at = [53.211150, 6.565000, 40]
 look_at = [53.211906, 6.565811]
+
+[[shot]]
+group = "bridges"
+name = "bridge-sint-jansbrug"
+description = "Sint Jansbrug: 13 x 7 m bascule outline (way 813282685), its ends on the Turfsingel's quay walls."
+at = [53.219644, 6.572258, 26]
+look_at = [53.219921, 6.571854]

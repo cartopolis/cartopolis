@@ -1121,6 +1121,23 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 let t1 = (s + 1) as f32 / steps as f32;
                 let pa = a.lerp(b, t0);
                 let pb = a.lerp(b, t1);
+                // A retaining wall at the water is the quay, which the terrain
+                // already draws from the street down (`map_geometry::quay_walls`);
+                // stood up as well it is masonry along the canal and across every
+                // bridge end on it (the Sint Jansbrug, 2026-11-07).
+                let mid = (pa + pb) * 0.5 + Vec2::new(ox, oz);
+                if *kind == BarrierKind::Retaining && ctx.ground.by_the_water(mid.x, mid.y) {
+                    continue;
+                }
+                if kind.solid() {
+                    colliders.extend(segment_collider(
+                        pa + Vec2::new(ox, oz),
+                        pb + Vec2::new(ox, oz),
+                        half_t.max(0.15),
+                        ground_at(pa).max(ground_at(pb)),
+                        top,
+                    ));
+                }
                 push_wall_segment(
                     &mut lin,
                     pa,
@@ -1132,15 +1149,6 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                     half_t,
                     color,
                 );
-            }
-            if kind.solid() {
-                colliders.extend(segment_collider(
-                    a + Vec2::new(ox, oz),
-                    b + Vec2::new(ox, oz),
-                    half_t.max(0.15),
-                    ground_at(a).max(ground_at(b)),
-                    top,
-                ));
             }
         }
         // Guard-rail posts, every 2 m — the band alone floats unexplained.
