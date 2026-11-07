@@ -2011,7 +2011,7 @@ pub(crate) fn update_clouds(
     // the deck darker than the sky behind it and turn it into black holes in the
     // star field — the one place cloud and fog should not agree, and now the only
     // one.
-    let haze = fog.color.to_linear().to_vec3();
+    let haze = systems::free_camera::cloud_sky_fill(hours, decl);
     let sky_rgb = haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
@@ -2043,10 +2043,15 @@ pub(crate) fn update_clouds(
         // The haze colour's alpha was documented "unused" and is the deck's sky
         // floor — a Rust-side decision precisely because it is a *lighting* one
         // (`cloud_sky_floor`), and the shader is where shape lives.
-        mat.haze_color = fog
-            .color
-            .to_linear()
-            .with_alpha(cloud_sky_floor(dev.cloud_cover));
+        // The far deck fades toward the horizon behind it. The fog's own colour
+        // is the horizon *away* from the sun, which goes dark over the Earth's
+        // shadow after sunset, while toward the sun it stays gold; the deck has
+        // no glow term, so it takes the geometric mean of the two, or the far
+        // clouds toward a setting sun went dark brown (2026-11-07).
+        let (anti, toward) = systems::free_camera::horizon_sky(hours, decl);
+        let far = (anti * toward).powf(0.5) * systems::free_camera::horizon_to_screen(hours, decl);
+        let far = far.lerp(fog.color.to_linear().to_vec3(), space);
+        mat.haze_color = LinearRgba::new(far.x, far.y, far.z, cloud_sky_floor(dev.cloud_cover));
         // World-anchor: the camera's horizontal position in the local anchor
         // frame, in metres, so the deck stays fixed over the ground as you fly
         // under it rather than sliding with the camera. Metres, not the shader's
@@ -2501,10 +2506,9 @@ mod overcast_tests {
         );
     }
 
-    /// The fog colour the horizon shell paints at noon.
+    /// The sky's fill on the deck at noon (`update_clouds`' `haze`).
     fn noon_haze() -> Vec3 {
-        let fog = systems::free_camera::distance_fog(0.2, 12.0, 0.0);
-        fog.color.to_linear().to_vec3()
+        systems::free_camera::cloud_sky_fill(12.0, 0.0)
     }
 
     /// The base tone of an opaque core of the low deck at noon, under `cover`:

@@ -61,6 +61,28 @@ within half a stop of it at most elevations, and up to a stop darker with the
 sun 2–5° up, where the old lifts had piled up. It leaves the night 1.7 stops
 under noon.
 
+## The fog takes the horizon's colour, measured the same way
+
+`free_camera::HORIZON_SKY` is the clear sky just above the horizon, away from
+the sun and toward it, by sun elevation: the atmosphere alone (no fog, no
+cloud, no tone curve) from Groningen at 40 m, two views, the exposure divided
+back out. Bright frames clip at 1.0 without a tone curve, so those were taken
+again four stops darker and the two runs agree where neither clips. The fog's
+base colour is the away side brought to the screen's exposure, and the sky's
+brightening toward the sun is the fog's sun-side glow (bevy multiplies that by
+the sun's illuminance and the exposure, so both are divided back out).
+
+Before, the fog was a hand-tuned grey, night blue and gold cast, and a fogged
+distance drew a band of its own between the city and the sky: grey at noon,
+salmon into a low sun, neon pink after sunset (sRGB ~(236, 172, 163) at the
+horizon at 17.3 h, where the atmosphere alone is (238, 154, 119) and a
+photograph's sunset band (217, 168, 114)). With the measured colour it is
+(221, 133, 85). The cloud deck does **not** take its fill from the fog any
+more (`free_camera::cloud_sky_fill`): the horizon away from the sun goes dark
+over the Earth's shadow, while the sky over a deck stays lit, and with it as
+the fill every dusk cloud went brown. Its far fade takes the geometric mean of
+the two horizons. Re-measure `HORIZON_SKY` with `METER` when the light changes.
+
 ## What it replaced
 
 Four lifts summed by sun position: `NIGHT_EXPOSURE_LIFT` on `1 − daylight`,
