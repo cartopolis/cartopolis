@@ -1,0 +1,10 @@
+{
+  "name": "tree-models",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dgreenheck/ez-tree": "1.1.0",
+    "@gltf-transform/core": "4.2.1",
+    "three": "0.187.0"
+  }
+}
