@@ -76,8 +76,8 @@ pub use map::{
     particles, placeholder_models, render_features, render_scale, rendering, road_depth,
     roof_colours, satellites, scaffolding, sewers, sky, sky_bake, sky_dome, stream_ledger,
     stream_watch, street_detail, street_furniture, street_labels, sun_rays, surveyed,
-    tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tunnels, underground,
-    vegetation, water, water_levels, weather, wet_surfaces, world_places,
+    tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tree_models, tunnels,
+    underground, vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
 pub use nav::{
     crowd, crows, driver, geo_nav, gnss_receiver, locate, meetup, navigation, place_link,

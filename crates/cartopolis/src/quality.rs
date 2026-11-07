@@ -121,6 +121,11 @@ pub struct Budget {
     /// water shader. Individually modest, collectively a large slice of both the
     /// draw list and the per-cell meshing the main thread does while streaming.
     pub detail_layers: bool,
+    /// Real tree models within ~140 m of the camera, in place of the merged crowns
+    /// (`systems::tree_models`). Thousands of triangles a tree where a crown is
+    /// tens, and the full model casts shadows: a workstation's cost, so it is on
+    /// the desktop rung alone until it has been measured anywhere else.
+    pub tree_models: bool,
     /// Octaves the water shader sums per fragment (`assets/shaders/water.wesl`).
     ///
     /// Each one is two sines, a cosine and two powers, and the finest ones are the
@@ -574,6 +579,7 @@ impl Budget {
             bloom: true,
             sky_ibl: true,
             detail_layers: true,
+            tree_models: true,
             water_octaves: 8,
             radius_bias: 0,
             per_frame_divisor: 1,
@@ -665,6 +671,7 @@ impl Budget {
             // missed thing on this list.
             sky_ibl: false,
             detail_layers: true,
+            tree_models: false,
             // Two fewer than a workstation. The pair dropped are the finest, worth
             // ripples of a few centimetres inside ~40 m of the camera — the least
             // of what this rung gives up.
@@ -805,6 +812,7 @@ impl Budget {
             bloom: false,
             sky_ibl: false,
             detail_layers: false,
+            tree_models: false,
             // Dead while `detail_layers` is false — the water shading toggle
             // follows that rung, and a still sheet sums no octaves worth counting.
             // It is what the dev panel's water toggle then gets.
@@ -2000,6 +2008,10 @@ mod tests {
             assert!(!lower.shadows || upper.shadows, "shadows: {name}");
             assert!(!lower.bloom || upper.bloom, "bloom: {name}");
             assert!(!lower.sky_ibl || upper.sky_ibl, "sky_ibl: {name}");
+            assert!(
+                !lower.tree_models || upper.tree_models,
+                "tree_models: {name}"
+            );
             assert!(
                 !lower.detail_layers || upper.detail_layers,
                 "detail_layers: {name}"

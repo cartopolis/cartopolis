@@ -60,11 +60,13 @@ pub mod nav_marks;
 pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
+// Real tree models up close, the merged crowns further out.
 pub mod prim_hand;
 pub mod prim_sound;
 pub mod prim_tone;
 pub mod roof_colours;
 pub mod satellites;
+pub mod tree_models;
 // Scaffolding on the buildings the register says are being worked on.
 pub mod scaffolding;
 pub mod sewers;

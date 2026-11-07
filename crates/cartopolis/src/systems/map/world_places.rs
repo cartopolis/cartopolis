@@ -49,6 +49,9 @@ pub struct CellPlaces {
     /// has to be retired with the same cell; `insert_cell` hands it straight on to
     /// `DriveNetwork` and keeps none of it.
     pub drive_lines: Vec<cartopolis_geo::traffic::DriveLine>,
+    /// The trees drawn as real models up close (`systems::tree_models`), handed
+    /// on to `TreeModels` at insert and not kept here.
+    pub tree_models: Vec<crate::systems::tree_models::ModelTree>,
     /// The surveyed paving, kept as polygons so a footstep can ask what it
     /// lands on (`systems::soundscape`). The meshes have merged it by then.
     pub paving: cartopolis_geo::paving::PavingIndex,

@@ -305,6 +305,9 @@ pub struct CellStores<'w> {
     /// it is a single grid in the anchor's frame that every cell marks its own part
     /// of, and it is cleared by the re-anchor rather than by the ring.
     road_mask: ResMut<'w, crate::systems::terrain::RoadMask>,
+    /// The trees drawn as models up close (`systems::tree_models`): keyed by cell
+    /// and filled from this parse, like the rest.
+    tree_models: ResMut<'w, crate::systems::tree_models::TreeModels>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -2023,6 +2026,18 @@ fn spawn_geometry_task(
                                                 crate::systems::collision::TRUNK_RADIUS,
                                             )
                                         }));
+                                        // Where the rung draws real models up close,
+                                        // the crowns are merged chunk by chunk so a
+                                        // near chunk can hide its own
+                                        // (`systems::tree_models`).
+                                        if crate::quality::budget().tree_models {
+                                            let (chunked, models) =
+                                                crate::systems::tree_models::chunked_meshes(
+                                                    &mut trees, mesh_bytes,
+                                                );
+                                            meshes.extend(chunked);
+                                            cell_places.tree_models = models;
+                                        }
                                         meshes.extend(scatter::build_vegetation_meshes(
                                             &trees,
                                             mesh_bytes,
@@ -3785,6 +3800,7 @@ fn upload_finished_cells(
                 stores.placeholders.enqueue(c, &hash, transform);
             }
         }
+        let model_trees = std::mem::take(&mut cell_places.tree_models);
         stores.places.insert_cell(c, wx, wz, cell_places);
         // Same origin, same lifetime, same retire path again.
         stores.tunnels.insert_cell(c, Vec2::new(wx, wz), tunnels);
@@ -3833,6 +3849,8 @@ fn upload_finished_cells(
             .iter()
             .any(|m| is_flat_ground(m.group) && m.group.layer().is_sheet());
         let mut entities = Vec::with_capacity(surface_meshes.len());
+        // The crown pieces, for `TreeModels` to know which chunk each hides.
+        let mut crown_pieces: Vec<(Vec2, Entity)> = Vec::new();
         let mut built_bytes = 0usize;
         for sm in surface_meshes {
             let stand = if placed {
@@ -3845,7 +3863,10 @@ fn upload_finished_cells(
             // out of the refinement several times its measured size, and is cut
             // back to the cap (`build_meshes_owned`).
             for piece in build_meshes_owned(sm, wx, wz, stand) {
-                let piece_bounds = if group == SurfaceGroup::Kerb {
+                let piece_bounds = if matches!(
+                    group,
+                    SurfaceGroup::Kerb | SurfaceGroup::Canopy | SurfaceGroup::Trunk
+                ) {
                     crate::systems::kerb_shadows::xz_bounds(&piece)
                 } else {
                     [0.0; 4]
@@ -3948,6 +3969,12 @@ fn upload_finished_cells(
                 if !casts_shadow(group) {
                     commands.entity(id).insert(bevy::light::NotShadowCaster);
                 }
+                if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk)
+                    && !model_trees.is_empty()
+                {
+                    let b = piece_bounds;
+                    crown_pieces.push((Vec2::new((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5), id));
+                }
                 if matches!(group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
                     // Read the *current* ramp at spawn, the way new globe tiles read
                     // the current albedo: a cell streaming in above the fade band must
@@ -3986,6 +4013,11 @@ fn upload_finished_cells(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        stores
+            .tree_models
+            .insert_cell(c, Vec2::new(wx, wz), model_trees, crown_pieces, |x, z| {
+                terrain.at(x, z)
+            });
         surfaces.cell_bytes.insert(c, built_bytes);
         surfaces.cell_cost.insert(c, built_bytes);
         // Complete once its ground is in, not when it lands (`awaiting_complete`).

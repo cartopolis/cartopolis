@@ -152,6 +152,7 @@ impl Plugin for MapPlugin {
             .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
             .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
             .init_resource::<systems::globe::GlobeNight>()
+            .init_resource::<systems::tree_models::TreeModels>()
             .init_resource::<systems::placeholder_models::PlaceholderModels>();
 
         app.add_systems(
@@ -411,6 +412,12 @@ impl Plugin for MapPlugin {
                     // not exist yet.
                     systems::placeholder_models::spawn_placeholder_models
                         .after(systems::map_geometry::update_map_surfaces),
+                    // Real tree models in the near chunks, crowns in the far ones.
+                    // After the vegetation ramp, whose visibility it overrides for
+                    // the crowns of a near chunk.
+                    systems::tree_models::load_tree_models,
+                    systems::tree_models::update_tree_models
+                        .after(systems::vegetation::update_vegetation_lod),
                     // …and ask the server what those are, once per session.
                     systems::placeholder_models::poll_placeholders,
                     // Near-field grass: slide the patch pool along its lattice, keep
