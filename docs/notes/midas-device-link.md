@@ -1,7 +1,7 @@
 ---
 topic: the Midas device link (the app answering a developer's agent sessions)
-triggers: ["midas_link.rs", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "mcp/film.rs", "mcp_server/src/local.rs", LocalTools]
-updated: 2026-11-04
+triggers: ["midas_link.rs", "MidasCall.java", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "mcp/film.rs", "mcp_server/src/local.rs", LocalTools]
+updated: 2026-11-07
 ---
 
 # The Midas device link
@@ -97,6 +97,23 @@ because `bevy_winit` runs no update while suspended (`should_update` asks
 `{"type":"away","away":true}`. The hub then tells the person a session wants
 the phone, and the call it holds is answered the moment the app is opened,
 with no reconnect.
+
+**Answering off screen was weighed and not built (2026-11-07).** The owner
+asked whether the app could answer while the Midas page is in front. Only the
+tools that need no picture could (the sensors, chat, walking): Android gives a
+backgrounded app no surface and no camera, so `screenshot`, `view`, `film` and
+`camera_frame` never can. It would take running Bevy's update while
+suspended, which `bevy_winit` does not, plus background-location permission
+for `gnss`. The owner chose the notice below instead.
+
+**A held call shows on the phone (2026-11-07).** A call still unanswered 2 s
+after it reached the app off screen posts a silent, high-importance
+notification (`MidasCall.java`, channel `midas`): "s579 wants the phone",
+`screenshot and 1 more. Tap to answer.`. It peeks over the Midas page, and the
+tap opens the app, which answers. The 2 s is so a tool answered without a
+frame does not flash one. It goes when the app resumes, when every held call is
+answered, and after 90 s, when the hub has given up. The worker posts it from
+its own thread (`worker::Waiting`), since nothing on the frame loop runs then.
 
 **Each call is acknowledged as it arrives** (`"ack": true` in the hello, then
 `{"type":"ack"}` before anything else), so the hub drops a dead socket in 5 s

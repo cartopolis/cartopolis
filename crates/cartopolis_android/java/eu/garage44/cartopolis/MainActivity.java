@@ -54,6 +54,8 @@ public final class MainActivity extends NativeActivity {
         if (manager != null) {
             manager.cancel(PushReceiver.NOTIFICATION_ID);
         }
+        // Likewise a Midas session's call, answered now the app runs again.
+        MidasCall.clear(this);
         Updater.check(this);
     }
 

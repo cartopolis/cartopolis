@@ -1069,6 +1069,53 @@ fn set_background_service_inner(
     })
 }
 
+/// `eu.garage44.cartopolis.MidasCall`, the "a session wants the phone" notification.
+const MIDAS_CALL_BINARY: &str = "eu.garage44.cartopolis.MidasCall";
+
+/// Show which Midas session waits for the app while it is off screen, and how
+/// many calls it holds (`systems::midas_link`); `None` takes the notice down.
+/// The activity takes it down too, as it comes back on screen.
+pub fn midas_waiting(waiting: Option<(&str, &str, usize)>) -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach_current_thread: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(8, |env| {
+        let class = load_app_class(env, &activity, MIDAS_CALL_BINARY)?;
+        match waiting {
+            Some((session, tool, count)) => {
+                let session = env.new_string(session)?;
+                let tool = env.new_string(tool)?;
+                env.call_static_method(
+                    &class,
+                    "show",
+                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;I)V",
+                    &[
+                        JValue::Object(&activity),
+                        JValue::Object(&session),
+                        JValue::Object(&tool),
+                        JValue::Int(i32::try_from(count).unwrap_or(i32::MAX)),
+                    ],
+                )?;
+            }
+            None => {
+                env.call_static_method(
+                    &class,
+                    "clear",
+                    "(Landroid/content/Context;)V",
+                    &[JValue::Object(&activity)],
+                )?;
+            }
+        }
+        Ok::<(), Fail>(())
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("MidasCall: {msg}")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 3. open_url
 // ---------------------------------------------------------------------------

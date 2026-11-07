@@ -1755,6 +1755,89 @@ mod worker {
         }
     }
 
+    /// How long the hub holds a call for a phone that is away.
+    const HELD_S: u64 = 90;
+
+    /// A call unanswered this long while the app is off screen is put in a
+    /// notice. Sooner, and a tool that needs no frame (`me`, `read_chat`,
+    /// `scripting_guide`) would flash one over the Midas page as it answers.
+    const NOTICE_AFTER_MS: u128 = 2000;
+
+    /// A call that came while the app was off screen.
+    struct Held {
+        id: u64,
+        // Read only by the Android notice.
+        #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+        session: String,
+        #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+        tool: String,
+        at: web_time::Instant,
+    }
+
+    /// The calls that came while the app was off screen, and the notice
+    /// showing them on the phone (`MidasCall.java`): the person is usually
+    /// reading the session on the Midas page, with the app behind it, and
+    /// nothing answers there until they bring it back.
+    #[derive(Default)]
+    struct Waiting {
+        calls: Vec<Held>,
+        /// The newest call and the count the notice shows, if one is up.
+        shown: Option<(u64, usize)>,
+    }
+
+    impl Waiting {
+        fn add(&mut self, id: u64, session: &str, tool: &str) {
+            self.calls.push(Held {
+                id,
+                session: session.to_string(),
+                tool: tool.to_string(),
+                at: web_time::Instant::now(),
+            });
+        }
+
+        fn answered(&mut self, id: u64) {
+            self.calls.retain(|c| c.id != id);
+            self.update();
+        }
+
+        /// Back on screen: the activity took the notice down as it resumed.
+        fn back(&mut self) {
+            self.calls.clear();
+            self.shown = None;
+        }
+
+        /// What the notice should show: every call the hub still holds, once
+        /// one of them has waited [`NOTICE_AFTER_MS`].
+        fn wanted(&mut self) -> Option<(u64, usize)> {
+            self.calls.retain(|c| c.at.elapsed().as_secs() < HELD_S);
+            let due = self
+                .calls
+                .iter()
+                .any(|c| c.at.elapsed().as_millis() >= NOTICE_AFTER_MS);
+            let newest = self.calls.last()?;
+            due.then_some((newest.id, self.calls.len()))
+        }
+
+        fn update(&mut self) {
+            let wanted = self.wanted();
+            if wanted == self.shown {
+                return;
+            }
+            self.shown = wanted;
+            #[cfg(target_os = "android")]
+            {
+                let show = self
+                    .calls
+                    .last()
+                    .filter(|_| wanted.is_some())
+                    .map(|c| (c.session.as_str(), c.tool.as_str(), self.calls.len()));
+                if let Err(e) = crate::platform::android::midas_waiting(show) {
+                    tracing::warn!(error = %e, "midas link: could not show the waiting call");
+                }
+            }
+        }
+    }
+
     /// Carry calls on one open link until it ends: closed, silent for
     /// [`SILENT_S`], or left for another target.
     #[allow(clippy::too_many_arguments)]
@@ -1772,12 +1855,17 @@ mod worker {
         #[cfg(not(mcp))]
         let _ = (tools, answers);
         let mut heard = web_time::Instant::now();
-        let mut check = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Each second: the notice wants its first, a silent link its last.
+        let mut check = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut waiting = Waiting::default();
         loop {
             tokio::select! {
-                _ = check.tick() => if heard.elapsed().as_secs() >= SILENT_S {
-                    lock(shared).state = format!("the hub went quiet for {SILENT_S} s; linking again");
-                    return;
+                _ = check.tick() => {
+                    if heard.elapsed().as_secs() >= SILENT_S {
+                        lock(shared).state = format!("the hub went quiet for {SILENT_S} s; linking again");
+                        return;
+                    }
+                    waiting.update();
                 },
                 msg = stream.next() => match msg {
                     Some(Ok(Message::Text(t))) => {
@@ -1796,6 +1884,9 @@ mod worker {
                                 args: req["params"]["arguments"].clone(),
                                 rpc: req["id"].clone(),
                             };
+                            if *away {
+                                waiting.add(call.id, &call.session, &call.tool);
+                            }
                             let mut s = lock(shared);
                             s.last_call = Some((call.tool.clone(), call.session.clone(), web_time::Instant::now()));
                             let ours = own.as_array().is_some_and(|o| o.iter().any(|t| t["name"] == call.tool.as_str()));
@@ -1819,10 +1910,15 @@ mod worker {
                 },
                 cmd = cmds.recv() => match cmd {
                     Some(Cmd::Answer(id, response)) => {
+                        // A tool that needs no frame answers off screen too.
+                        waiting.answered(id);
                         if sink.send(Message::Text(result_message(id, &response).into())).await.is_err() { return }
                     }
                     Some(Cmd::Away(a)) => {
                         *away = a;
+                        if !a {
+                            waiting.back();
+                        }
                         // Back on screen after a while: the phone may be on
                         // another network, so a quiet link is not trusted.
                         if !a && heard.elapsed().as_secs() >= RESUME_SILENT_S {
@@ -1857,6 +1953,21 @@ mod worker {
                 http_base("midas.cartopolis.org"),
                 "https://midas.cartopolis.org"
             );
+        }
+
+        #[test]
+        fn a_call_held_off_screen_is_shown_once_it_waits() {
+            let ago = |ms| web_time::Instant::now() - std::time::Duration::from_millis(ms);
+            let mut w = Waiting::default();
+            w.add(1, "s1", "screenshot");
+            assert_eq!(w.wanted(), None, "a call answered at once flashes nothing");
+            w.calls[0].at = ago(2500);
+            w.add(2, "s1", "gnss");
+            assert_eq!(w.wanted(), Some((2, 2)), "the newest, and how many wait");
+            w.calls[0].at = ago(HELD_S * 1000 + 1);
+            assert_eq!(w.wanted(), None, "the hub gave up on the old one");
+            w.answered(2);
+            assert!(w.calls.is_empty());
         }
 
         #[test]
