@@ -1,0 +1,145 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+.tree { display:grid; grid-template-columns:repeat(4,1fr); gap:18px; margin-top:20px; }
+.tree > div { background:#131A1C; border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:18px 20px; }
+.tree h3 { display:flex; align-items:center; gap:10px; font-size:20px; color:var(--sheet-cream); margin-bottom:4px; }
+.tree h3 svg { color:var(--accent); }
+.tree .why { color:var(--sheet-dim); font-size:14px; margin-bottom:12px; }
+.tree ul { list-style:none; font-size:14.5px; }
+.tree li { padding:6px 0; border-top:1px solid rgba(255,255,255,.06); }
+.tree li i { font-style:normal; color:var(--sheet-dim); font-size:13px; display:block; }
+.always { margin-top:18px; background:#131A1C; border:1px dashed rgba(255,255,255,.18); border-radius:16px; padding:14px 20px; color:var(--sheet-dim); font-size:14.5px; }
+.always b { color:var(--sheet-cream); }
+.scale { display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:18px; }
+.cmp { background:#131A1C; border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:20px; }
+.cmp h4 { color:var(--sheet-cream); font-size:16px; margin-bottom:12px; }
+.cmp table { width:100%; border-collapse:collapse; font-size:14.5px; }
+.cmp td { padding:7px 6px; border-bottom:1px solid rgba(255,255,255,.06); }
+.cmp td:nth-child(2) { color:#F0A08F; } .cmp td:nth-child(3) { color:#7FE0D3; font-weight:600; }
+.btnrow { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:6px 0 14px; color:var(--text); }
+.demo { background:var(--surface); border-radius:18px; padding:18px; }
+.demo .sub { margin-bottom:8px; }
+</style></head><body>
+
+<h1>Cartopolis, <b>opnieuw ingedeeld</b></h1>
+<p class="lede">Gevraagd 2026-11-07: "de ui/ux is onduidelijk. ik kan de helft niet terugvinden en de ui elementen zijn lelijk. dat glas effect werkt niet,
+de menu items zijn te krap, functies van buttons zijn niet duidelijk, navigatiestructuur is onduidelijk." Dit blad: <b>wat er nu misgaat</b> (gefotografeerd van
+<code>main</code> 0a7e2a97 met <code>docs/phone-ui-shots.toml</code>, schaal 1,5, mac-1), <b>vijf regels</b>, en <b>de nieuwe indeling</b> met waar elke functie
+heen gaat. De schermen staan op <code>v1-phone</code> en <code>v1-desktop</code>. Alles wat hier getekend is, is <span class="tag">nieuw</span>.</p>
+
+<h2 class="sec"><span>1</span>Wat er nu misgaat</h2>
+<div class="row">
+  <div class="cell"><div class="shot"><img class="today" src="today-none.jpg">
+    <div class="ring" style="left:22px;top:28px;width:60px;height:336px"></div><div class="pin" style="left:86px;top:34px">1</div>
+    <div class="ring" style="left:10px;top:752px;width:370px;height:90px"></div><div class="pin" style="left:342px;top:720px">2</div></div>
+    <div class="cap"><h3><span>A</span>De kaart, niets open</h3><ul>
+      <li><b>1</b> Vijf rondjes zonder naam: lagen, lenzen, kompas, locatie, licht. Uitleg zit alleen in een tooltip, en die bestaat niet op een telefoon.</li>
+      <li><b>2</b> De dock heeft wel namen, maar "Fly" verandert van naam als je erop tikt, en Chats, Community en Agenda staan er niet in.</li></ul></div></div>
+  <div class="cell"><div class="shot"><img class="today" src="today-menu.jpg">
+    <div class="ring" style="left:16px;top:420px;width:358px;height:326px"></div><div class="pin" style="left:336px;top:392px">3</div></div>
+    <div class="cap"><h3><span>B</span>Het menu</h3><ul>
+      <li><b>3</b> Regels van 24 pt (desktop) / 32 pt (touch) met 6 pt ertussen, in een kaart van 232 pt breed. De richtlijn voor een vinger is 48.</li>
+      <li>Het menu is de enige weg naar Instellingen, Avatar en Models, en het staat naast Afsluiten.</li></ul></div></div>
+  <div class="cell"><div class="shot"><img class="today" src="today-community.jpg">
+    <div class="ring" style="left:12px;top:334px;width:362px;height:58px"></div><div class="pin" style="left:340px;top:306px">4</div>
+    <div class="ring" style="left:12px;top:662px;width:362px;height:122px"></div><div class="pin" style="left:340px;top:636px">5</div></div>
+    <div class="cap"><h3><span>C</span>Een community</h3><ul>
+      <li><b>4</b> "Invite · Topic · [mensen] 5 · Edit": vier gelijke knoppen, onduidelijk wat "Topic" doet en dat "5" de ledenlijst is.</li>
+      <li><b>5</b> Twee teal knoppen en twee losse icoontjes (verversen, tandwiel) onder elkaar: geen hoofdactie.</li>
+      <li>Op een telefoon verdwijnt de dock zodra een paneel open is. De weg terug naar de kaart is het ✕, en de &lsaquo; ernaast doet iets anders.</li></ul></div></div>
+  <div class="cell"><div class="shot"><img class="today" src="today-building.jpg">
+    <div class="ring" style="left:6px;top:228px;width:380px;height:510px"></div><div class="pin" style="left:350px;top:200px">6</div></div>
+    <div class="cap"><h3><span>D</span>Glas</h3><ul>
+      <li><b>6</b> De stad schijnt wazig en extra verzadigd (×1,69) door het paneel. Op een drukke kaart wordt dat een bruine vlek achter de tekst.</li>
+      <li>Alleen rechthoeken worden wazig; ronde knoppen zijn alleen getint, dus de twee soorten zien er anders uit. Het is niet uit te zetten op Android of het web.</li></ul></div></div>
+</div>
+
+<h2 class="sec"><span>2</span>Vijf regels</h2>
+<div class="principles">
+  <div><h3><i>1</i>Vier vaste plekken</h3><p>Onderaan altijd dezelfde vier tabs: <b>Map · Chats · Calendar · You</b>. Ze verdwijnen nooit, ook niet als er iets open staat. Geen hamburger-menu meer.</p></div>
+  <div><h3><i>2</i>Elke knop heeft een naam</h3><p>Een icoon staat altijd boven of naast een woord. Alleen ✕ en ‹ Terug mogen zonder, en de terugknop zegt waar je heen gaat ("‹ Chats").</p></div>
+  <div><h3><i>3</i>Eén hoofdactie</h3><p>Per scherm hooguit één gevulde knop. Andere acties zijn een rij benoemde tegels of een tekstknop. Iets wat iets weggooit is rood en vraagt eerst.</p></div>
+  <div><h3><i>4</i>Ruimte voor een vinger</h3><p>Lijstregels 60 pt, knoppen 48 pt, 16 pt marge. Tekst 16 pt, toelichting 13,5 pt; niets onder 12. Desktop krijgt dezelfde maten.</p></div>
+  <div><h3><i>5</i>Dicht, niet glas</h3><p>Panelen zijn effen donker (#151F22) met een zachte schaduw. De kaart blijft zichtbaar náást een paneel, niet erdoorheen. Het wazige glas gaat weg.</p></div>
+</div>
+
+<h2 class="sec"><span>3</span>De indeling</h2>
+<p class="lede" style="margin-bottom:0">Elke functie heeft één thuis, hooguit twee tikken van een tab. Wat op een plek slaat (route, opslaan, delen, posten, bouwen) zit op het blad van die plek.</p>
+<div class="tree">
+  <div><h3><svg class="i l"><use href="#map"/></svg>Map</h3><p class="why">Kijken, zoeken, ergens heen gaan.</p><ul>
+    <li>Zoekbalk bovenaan <i>plekken, mensen, communities; leeg = Recent en Saved</i></li>
+    <li>Kaartknoppen rechts, met naam <i>Layers · View · Locate · Photo</i></li>
+    <li>Tik op iets = <b>het blad</b> <i>gebouw, plek, punt, object, persoon: één soort blad met benoemde acties (vervangt de ring en de losse kaartjes)</i></li>
+    <li>Route <i>als blad over de kaart, vanaf "Route" op een blad</i></li>
+    <li>Layers-blad <i>Map · City · Places · Traffic · Figures (lenzen) · Light</i></li></ul></div>
+  <div><h3><svg class="i l"><use href="#chat"/></svg>Chats</h3><p class="why">Alles waar je met mensen praat.</p><ul>
+    <li>Filter <i>All · People · Communities · Here</i></li>
+    <li>Gesprek <i>de tabs blijven staan; "Show on map" wisselt naar Map met het gesprek als blad</i></li>
+    <li>Community <i>opent op posts; Members, Invite, Edit onder "⋯ Manage"</i></li>
+    <li>+ New <i>Message a person · Start a group · Find a community</i></li>
+    <li>Requests <i>bovenaan als er iets wacht</i></li></ul></div>
+  <div><h3><svg class="i l"><use href="#cal"/></svg>Calendar</h3><p class="why">Nu verstopt achter een strook in Community.</p><ul>
+    <li>Week-strook + lijst <i>List · Month</i></li>
+    <li>Afspraak <i>wie, waar (kaartje → Map), Going / Not going</i></li>
+    <li>+ Plan something</li>
+    <li>Wat je moet beantwoorden staat bovenaan</li></ul></div>
+  <div><h3><svg class="i l"><use href="#user"/></svg>You</h3><p class="why">Alles over jou en de app. Vervangt het ☰-menu.</p><ul>
+    <li>Profiel <i>foto, naam, Avatar, Share my link</i></li>
+    <li>Saved places · Contacts · Models</li>
+    <li>Settings <i>General, Sound, Graphics, Time and weather, Privacy and safety, Account</i></li>
+    <li>Admin <i>alleen met de rechten</i></li>
+    <li>Help and controls · About · Sign out <i>(vraagt eerst)</i></li></ul></div>
+</div>
+<div class="always"><b>Altijd op het scherm, wat er ook open is:</b> de vier tabs. <b>Vervalt:</b> het ☰-menu, de dock, de Community | World-schakelaar bovenaan,
+de rondjes linksboven, de actiering. <b>Telefoon:</b> een paneel vult het scherm boven de tabs. <b>Desktop:</b> de tabs staan als smalle balk links, het paneel ernaast,
+de kaart blijft rechts zichtbaar (<code>v1-desktop</code>).</div>
+
+<h3 style="color:var(--sheet-cream);font-size:18px;margin-top:28px">Waar elke functie van nu heen gaat</h3>
+<table class="map">
+<tr><th style="width:30%">Nu</th><th style="width:26%">Straks</th><th>Waarom</th></tr>
+<tr><td>Dock ▸ Search, Ctrl+L</td><td>Map ▸ zoekbalk</td><td>Altijd zichtbaar. Back / Forward / Home worden "Recent" en "Home" in de lege zoeklijst.</td></tr>
+<tr><td>Dock ▸ Fly / Follow / Earth (wisselt bij elke tik)</td><td>Map ▸ View</td><td>Een keuzeblad met drie benoemde opties en een zin uitleg, in plaats van een knop die van naam verandert. Tab blijft werken.</td></tr>
+<tr><td>Dock ▸ Camera</td><td>Map ▸ Photo</td><td>Een kaartknop met naam; ook in een gesprek via + Photo.</td></tr>
+<tr><td>Dock ▸ Saved</td><td>You ▸ Saved places, en Save op elk blad</td><td>Saved places staan ook bovenaan de lege zoeklijst.</td></tr>
+<tr><td>Dock ▸ Say (praten over de kaart)</td><td>Chats ▸ Here</td><td>Een gewoon gesprek, met "Show on map".</td></tr>
+<tr><td>☰ Menu (Sign in, Avatar, Community, Models, Settings, About, Developer, Sign out, Exit)</td><td>You</td><td>Het menu stond als enige ingang voor vijf dingen; You is een tab.</td></tr>
+<tr><td>Rondje linksboven: Layers</td><td>Map ▸ Layers</td><td>Met naam.</td></tr>
+<tr><td>Rondje linksboven: Lens</td><td>Map ▸ Layers ▸ Figures</td><td>Een lens is een laag met cijfers; één plek voor alles wat je over de kaart legt.</td></tr>
+<tr><td>Rondjes: kompas, locate, licht</td><td>Kompas klein op de kaart · Map ▸ Locate · Layers ▸ Light</td><td>Het kompas blijft een indicator; tikken zet noorden boven, en dat staat erbij.</td></tr>
+<tr><td>Actiering (rechtsklik / lang drukken)</td><td>Het blad van wat je aantikte</td><td>Dezelfde acties, als benoemde tegels. Lang drukken op een leeg punt geeft een "Dropped pin"-blad.</td></tr>
+<tr><td>Gebouwkaart, plaatskaart, POI-popup, persoonskaart</td><td>Het blad</td><td>Eén vorm: titel, regel uitleg, hoofdactie, tegels, feiten.</td></tr>
+<tr><td>Community | World-schakelaar bovenaan</td><td>Chats (lijst) · Map (wereld)</td><td>Twee tabs die er al zijn.</td></tr>
+<tr><td>Calendar (strook in Community)</td><td>Calendar-tab</td><td>Was één verstopte ingang.</td></tr>
+<tr><td>You-rondje naast de schakelaar · Admin daarachter</td><td>You-tab ▸ Admin</td><td>Admin vind je nu alleen als je weet dat het achter je eigen gezicht zit.</td></tr>
+<tr><td>Script (alleen ring op een object)</td><td>Blad van een object ▸ Script</td><td>Zelfde plek, nu benoemd.</td></tr>
+<tr><td>Emotes 1–6, gezichten Shift+1–8 (alleen toetsenbord)</td><td>Map ▸ in Walk-stand een knop "Express"</td><td>Een telefoon kan ze nu niet.</td></tr>
+<tr><td>Settings op twee plekken, Sign out op twee plekken (één zonder vraag)</td><td>Alleen You</td><td>Eén plek, en Sign out vraagt altijd.</td></tr>
+<tr><td>Developer tools (Ctrl+Shift+D)</td><td>You ▸ Settings ▸ General ▸ Developer</td><td>Sneltoets blijft.</td></tr>
+</table>
+
+<h2 class="sec"><span>4</span>Maten en knoppen</h2>
+<div class="scale">
+  <div class="cmp"><h4>Nu → straks (pt)</h4><table>
+    <tr><td>Menu- / lijstregel</td><td>24 · touch 32</td><td>60</td></tr>
+    <tr><td>Ruimte tussen regels</td><td>6</td><td>scheidingslijn, 0</td></tr>
+    <tr><td>Knophoogte</td><td>24–34</td><td>48 · klein 38</td></tr>
+    <tr><td>Knop-padding</td><td>9×4 · touch 11×8</td><td>18×0 bij 48 hoog</td></tr>
+    <tr><td>Paneelmarge</td><td>14×10</td><td>16 rondom, 20 boven een titel</td></tr>
+    <tr><td>Breedte menu / paneel (desktop)</td><td>232 / 280–420 wisselend</td><td>400, voor elk paneel</td></tr>
+    <tr><td>Tekst: hoofdtekst / toelichting / kleinste</td><td>14 / 12,5 / 9,5 (ring)</td><td>16 / 13,5 / 12</td></tr>
+    <tr><td>Kaartknop</td><td>40 rond, zonder woord</td><td>64×60, icoon + woord</td></tr>
+    <tr><td>Achtergrond paneel</td><td>blur ×1,69 verzadigd, rand 6 pt helder</td><td>effen #151F22, schaduw</td></tr>
+  </table></div>
+  <div class="cmp"><h4>Drie knopgewichten</h4>
+    <div class="demo">
+      <div class="sub">Hoofdactie: één per scherm</div>
+      <div class="btnrow"><span class="btn primary"><svg class="i s"><use href="#route"/></svg>Route here</span><span class="btn primary"><svg class="i s"><use href="#plus"/></svg>Write a post</span></div>
+      <div class="sub">Tweede keus: benoemde tegels of omlijnde knoppen</div>
+      <div class="acts" style="margin-bottom:14px"><div class="act"><svg class="i"><use href="#bookmark"/></svg>Save</div><div class="act"><svg class="i"><use href="#share"/></svg>Share</div><div class="act"><svg class="i"><use href="#chat"/></svg>Post here</div><div class="act"><svg class="i"><use href="#more"/></svg>More</div></div>
+      <div class="btnrow"><span class="btn second"><svg class="i s"><use href="#people"/></svg>Members 5</span><span class="btn second"><svg class="i s"><use href="#pin"/></svg>Show on map</span></div>
+      <div class="sub">Licht en gevaarlijk</div>
+      <div class="btnrow"><span class="btn text">See all</span><span class="btn danger">Block sanne…</span><span class="btn danger">Sign out…</span></div>
+    </div></div>
+</div>
+
+<script src="icons.js"></script></body></html>

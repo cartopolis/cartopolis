@@ -1,0 +1,373 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+.map-bg { background-image:url(map-phone.jpg); background-size:cover; background-position:center; }
+.compass { position:absolute; left:14px; top:118px; width:44px; height:44px; border-radius:50%; background:var(--surface); display:flex; align-items:center; justify-content:center; color:var(--danger); box-shadow:0 6px 18px rgba(0,0,0,.4); z-index:10; }
+.scalebar { position:absolute; left:16px; font-size:12px; color:#fff; text-shadow:0 1px 3px #000; z-index:10; }
+.scalebar i { display:block; width:70px; height:6px; border:2px solid #fff; border-top:0; margin-top:2px; }
+.mappin { position:absolute; z-index:9; }
+.selbld { position:absolute; border:3px solid var(--accent); border-radius:6px; background:rgba(94,208,194,.18); z-index:8; }
+.facts { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+.facts div { background:var(--raised); border-radius:14px; padding:10px 12px; }
+.facts b { display:block; font-size:16px; font-weight:600; }
+.facts span { font-size:12.5px; color:var(--dim); }
+.opt { display:flex; gap:14px; align-items:center; padding:14px 16px; border-radius:16px; background:var(--raised); margin-bottom:10px; border:2px solid transparent; }
+.opt.on { border-color:var(--accent); }
+.opt .ic { width:44px; height:44px; border-radius:14px; background:rgba(94,208,194,.14); color:var(--accent); display:flex; align-items:center; justify-content:center; flex:none; }
+.opt b { font-size:16px; } .opt p { font-size:13.5px; color:var(--dim); }
+.layer-tabs { display:flex; gap:8px; overflow:hidden; margin-bottom:6px; }
+.tiles { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+.tile { border-radius:14px; background:var(--raised); padding:10px; font-size:13.5px; font-weight:600; border:2px solid transparent; }
+.tile.on { border-color:var(--accent); }
+.tile .im { height:52px; border-radius:9px; margin-bottom:8px; background:#2a3a3e center/cover; }
+.bubble { max-width:78%; padding:10px 14px; border-radius:18px; font-size:15px; margin-bottom:8px; }
+.bubble.them { background:var(--raised); border-bottom-left-radius:6px; }
+.bubble.me { background:#1F5A53; margin-left:auto; border-bottom-right-radius:6px; }
+.when { font-size:12px; color:var(--faint); text-align:center; margin:6px 0 10px; }
+.composer { position:absolute; left:0; right:0; bottom:86px; padding:10px 12px; display:flex; gap:8px; align-items:center; background:var(--bg); border-top:1px solid var(--line); }
+.composer .field { flex:1; height:46px; border-radius:23px; background:var(--raised); display:flex; align-items:center; padding:0 16px; color:var(--faint); }
+.ibtn { width:46px; height:46px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--raised); color:var(--text); flex:none; }
+.ibtn.primary { background:var(--accent); color:var(--on-accent); }
+.week { display:flex; justify-content:space-between; margin:4px 0 6px; }
+.week div { width:44px; text-align:center; padding:6px 0; border-radius:14px; font-size:12px; color:var(--dim); }
+.week b { display:block; font-size:18px; color:var(--text); }
+.week .on { background:var(--accent); color:var(--on-accent); } .week .on b { color:var(--on-accent); }
+.ev { display:flex; gap:12px; align-items:center; }
+.ev .tm { width:48px; font-size:15px; font-weight:600; text-align:center; } .ev .tm span { display:block; font-size:12px; color:var(--faint); font-weight:400; }
+.ev .bar { width:4px; align-self:stretch; border-radius:2px; background:var(--accent); }
+.hero { display:flex; gap:14px; align-items:center; padding:6px 4px 14px; }
+.post { background:var(--raised); border-radius:18px; padding:14px 16px; margin-bottom:10px; }
+.post .t { font-size:16px; font-weight:600; margin:6px 0 2px; }
+.dim { color:var(--dim); }
+.mini-map { height:90px; border-radius:12px; background:url(map-phone.jpg) center 40%/cover; margin:8px 0; position:relative; }
+.overlay-dim { position:absolute; inset:0; background:rgba(0,0,0,.35); z-index:11; }
+</style></head><body>
+
+<h1>Cartopolis op een telefoon, <b>scherm voor scherm</b></h1>
+<p class="lede">Bij <code>v1-structure</code>: vier tabs die altijd blijven staan, elke knop met een naam, één hoofdactie per scherm, ruime regels, effen panelen.
+Teksten in de app blijven Engels, zoals nu. Alles op dit blad is <span class="tag">nieuw</span>; de inhoud (Garage 44, sanne, de Martinitoren) is voorbeeld.</p>
+
+<!-- ================= ROW 1: the map ================= -->
+<div class="row">
+
+<!-- P1 Map at rest -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="searchbar"><svg class="i"><use href="#search"/></svg>Search places, people…<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="compass"><svg class="i"><use href="#north"/></svg></div>
+  <div class="mapctl" style="top:118px">
+    <div class="mbtn"><svg class="i"><use href="#layers"/></svg>Layers</div>
+    <div class="mbtn"><svg class="i"><use href="#plane"/></svg>View</div>
+    <div class="mbtn"><svg class="i"><use href="#locate"/></svg>Locate</div>
+    <div class="mbtn"><svg class="i"><use href="#camera"/></svg>Photo</div>
+  </div>
+  <div class="scalebar" style="bottom:100px">100 m<i></i></div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P1</span>De kaart</h3><ul>
+  <li><b>Zoekbalk</b> bovenaan, altijd. Je gezichtje rechts erin is een snelkoppeling naar You.</li>
+  <li><b>Vier kaartknoppen</b> rechts, elk met een woord. Het kompas staat los en zegt bij een tik "North up".</li>
+  <li><b>Vier tabs</b> met tellers. Geen dock, geen ☰, geen rondjes zonder naam.</li></ul></div></div>
+
+<!-- P2 Building sheet -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="searchbar"><svg class="i"><use href="#search"/></svg>Search places, people…<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="selbld" style="left:150px;top:200px;width:70px;height:56px"></div>
+  <div class="sheet" style="top:300px;bottom:86px">
+    <div class="grab"></div>
+    <div class="h-row"><div class="grow"><div class="title">Martinitoren</div><div class="sub">Tower · 97 m · Martinikerkhof · 450 m away</div></div><div class="ibtn"><svg class="i"><use href="#close"/></svg></div></div>
+    <div style="margin:14px 0 10px"><span class="btn primary full"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+    <div class="acts"><div class="act"><svg class="i"><use href="#bookmark"/></svg>Save</div><div class="act"><svg class="i"><use href="#share"/></svg>Share</div><div class="act"><svg class="i"><use href="#building"/></svg>Look inside</div><div class="act"><svg class="i"><use href="#more"/></svg>More</div></div>
+    <div class="label">Here now</div>
+    <div class="list"><div class="li"><div class="av" style="background:#6B9A2E">S</div><div class="grow"><div class="t">sanne</div><div class="d">sharing location · 12 m</div></div><span class="btn second small">Say hi</span></div></div>
+    <div class="label">The building</div>
+    <div class="facts"><div><b>1482</b><span>Built</span></div><div><b>97 m</b><span>Height</span></div><div><b>4 250 m²</b><span>Floor area</span></div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P2</span>Tik op een gebouw</h3><ul>
+  <li>Eén soort <b>blad</b> voor alles wat je aantikt: titel, één regel wat het is en hoe ver, <b>één hoofdactie</b>.</li>
+  <li>Daaronder benoemde tegels. "More" heeft Floor plan, Official record, Replace with a model: elk met een zin uitleg.</li>
+  <li>Eerst wie er is, dan de feiten. Omhoog vegen = het hele blad.</li></ul></div></div>
+
+<!-- P3 Dropped pin -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="searchbar"><svg class="i"><use href="#search"/></svg>Search places, people…<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="mappin" style="left:178px;top:330px;color:var(--live)"><svg class="i l" style="width:36px;height:36px;fill:#FD6012;stroke:#fff"><use href="#pin"/></svg></div>
+  <div class="sheet" style="top:470px;bottom:86px">
+    <div class="grab"></div>
+    <div class="h-row"><div class="grow"><div class="title">Dropped pin</div><div class="sub">Oude Ebbingestraat 12 · 300 m away</div></div><div class="ibtn"><svg class="i"><use href="#close"/></svg></div></div>
+    <div style="margin:14px 0 10px"><span class="btn primary full"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+    <div class="acts"><div class="act"><svg class="i"><use href="#bookmark"/></svg>Save</div><div class="act"><svg class="i"><use href="#share"/></svg>Share</div><div class="act"><svg class="i"><use href="#chat"/></svg>Post here</div><div class="act"><svg class="i"><use href="#plus"/></svg>Build</div></div>
+    <div class="list" style="margin-top:10px"><div class="li" style="min-height:52px"><div class="grow"><div class="t" style="font-size:15px">Start a route from here</div></div><svg class="i s chev"><use href="#right"/></svg></div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P3</span>Lang drukken op een punt</h3><ul>
+  <li>Vervangt de <b>actiering</b>: dezelfde acties (Route here, Save, Share, Post here, Build, Route from), nu in hetzelfde blad als P2.</li>
+  <li>Een object geeft hetzelfde blad met <b>Touch · Edit · Script · Follow</b> en een rode <b>Delete…</b> die eerst vraagt.</li>
+  <li>Rechtsklik op desktop doet hetzelfde.</li></ul></div></div>
+
+<!-- P4 Layers -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="overlay-dim"></div>
+  <div class="sheet" style="top:150px;bottom:86px">
+    <div class="grab"></div>
+    <div class="h-row"><div class="grow title">Layers</div><span class="btn text small">Reset</span><div class="ibtn"><svg class="i"><use href="#close"/></svg></div></div>
+    <div class="layer-tabs" style="margin-top:12px"><span class="chip on">Map</span><span class="chip">City</span><span class="chip">Places</span><span class="chip">Traffic</span><span class="chip">Figures</span></div>
+    <div class="label">The ground</div>
+    <div class="tiles"><div class="tile on"><div class="im" style="background-image:url(map-phone.jpg)"></div>Drawn map</div><div class="tile"><div class="im" style="background:#3B4A35"></div>Aerial photo</div><div class="tile"><div class="im" style="background:#1d2629"></div>No ground</div></div>
+    <div class="label">On the map</div>
+    <div class="list">
+      <div class="li"><div class="grow"><div class="t">Street names</div></div><div class="toggle"></div></div>
+      <div class="li"><div class="grow"><div class="t">Place names</div></div><div class="toggle"></div></div>
+      <div class="li"><div class="grow"><div class="t">Moving water</div><div class="d">Uses more battery</div></div><div class="toggle off"></div></div>
+    </div>
+    <div class="label">Light</div>
+    <div class="seg"><div class="on">Auto</div><div>Light</div><div>Dark</div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P4</span>Layers</h3><ul>
+  <li>Groepen als <b>chips met woorden</b>, niet als zes icoontjes met tellertjes.</li>
+  <li><b>Figures</b> is de huidige lens-knop linksboven; <b>Light</b> het huidige licht-rondje.</li>
+  <li>Aan/uit is een schakelaar op een regel van 60 pt, niet een tegel met een schakelaartje erin.</li></ul></div></div>
+</div>
+
+<!-- ================= ROW 2 ================= -->
+<div class="row" style="margin-top:46px">
+
+<!-- P5 Search -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="searchbar" style="color:var(--text);border:2px solid var(--accent)"><svg class="i"><use href="#search"/></svg>|<span class="btn text small" style="margin-left:auto">Cancel</span></div>
+  <div class="content" style="top:118px">
+    <div class="actions" style="margin-bottom:6px"><span class="chip on">All</span><span class="chip">Places</span><span class="chip">People</span><span class="chip">Communities</span></div>
+    <div class="label">Saved</div>
+    <div class="list">
+      <div class="li"><div class="ic"><svg class="i"><use href="#home"/></svg></div><div class="grow"><div class="t">Home</div><div class="d">Laan Corpus den Hoorn · 2.1 km</div></div></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#bookmark"/></svg></div><div class="grow"><div class="t">Grote Markt</div><div class="d">Binnenstad · 400 m</div></div></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#bookmark"/></svg></div><div class="grow"><div class="t">Slochterdiep</div><div class="d">Harkstede · 7 km</div></div></div>
+    </div>
+    <div class="h-row"><div class="label grow">Recent</div><span class="btn text small" style="margin-top:8px">Clear</span></div>
+    <div class="list">
+      <div class="li"><div class="ic" style="background:var(--hover);color:var(--dim)"><svg class="i"><use href="#clock"/></svg></div><div class="grow"><div class="t">Martinitoren</div><div class="d">Tower</div></div></div>
+      <div class="li"><div class="ic" style="background:var(--hover);color:var(--dim)"><svg class="i"><use href="#clock"/></svg></div><div class="grow"><div class="t">Amsterdam</div><div class="d">City · Noord-Holland</div></div></div>
+      <div class="li"><div class="av" style="background:#4566D6">G</div><div class="grow"><div class="t">Garage 44</div><div class="d">Community · 5 people</div></div></div>
+    </div>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P5</span>Zoeken</h3><ul>
+  <li>Eén veld voor <b>plekken, mensen en communities</b>.</li>
+  <li>Leeg toont het <b>Saved</b> en <b>Recent</b>: dat vervangt de Back / Forward / Home-icoontjes en de Saved-knop in de dock.</li>
+  <li>Een resultaat aantikken vliegt erheen en opent het blad (P2).</li></ul></div></div>
+
+<!-- P6 View chooser -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="overlay-dim"></div>
+  <div class="sheet" style="top:330px;bottom:86px">
+    <div class="grab"></div>
+    <div class="h-row" style="margin-bottom:14px"><div class="grow title">View</div><div class="ibtn"><svg class="i"><use href="#close"/></svg></div></div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#walk"/></svg></div><div><b>Walk</b><p>Be your avatar in the street. Stick to move.</p></div></div>
+    <div class="opt on"><div class="ic"><svg class="i"><use href="#plane"/></svg></div><div><b>Fly</b><p>Move the camera freely over the city.</p></div></div>
+    <div class="opt"><div class="ic"><svg class="i"><use href="#compass"/></svg></div><div><b>Earth</b><p>The whole globe, up to the stars. Pinch to zoom.</p></div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P6</span>View: hoe je kijkt</h3><ul>
+  <li>Nu wisselt de dock-knop bij elke tik, en verandert hij daarbij van naam. Straks <b>kies je</b>, met één zin wat het is.</li>
+  <li>De kaartknop toont het icoon van de huidige stand; Tab op desktop blijft door de standen gaan.</li>
+  <li>In <b>Walk</b> verschijnt naast de stick een benoemde knop <b>Express</b> voor zwaaien en gezichten (nu alleen toetsen 1–6).</li></ul></div></div>
+
+<!-- P7 Route -->
+<div class="cell"><div class="phone map-bg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <svg style="position:absolute;left:0;top:0;z-index:9" width="390" height="500"><path d="M120 420 C 150 360, 200 380, 210 300 S 260 200, 250 150" stroke="#5ED0C2" stroke-width="7" fill="none" stroke-linecap="round"/><circle cx="120" cy="420" r="9" fill="#fff" stroke="#5ED0C2" stroke-width="4"/><circle cx="250" cy="150" r="9" fill="#FD6012" stroke="#fff" stroke-width="3"/></svg>
+  <div class="sheet" style="top:470px;bottom:86px">
+    <div class="grab"></div>
+    <div class="h-row"><div class="grow"><div class="title">To Martinitoren</div><div class="sub">From your location · <span style="color:var(--accent)">Change</span></div></div><div class="ibtn"><svg class="i"><use href="#close"/></svg></div></div>
+    <div class="seg" style="margin:14px 0 12px"><div class="on"><svg class="i s"><use href="#walk"/></svg>&nbsp;18 min</div><div>Bike 8 min</div><div>Car 5 min</div></div>
+    <div class="h-row" style="margin-bottom:14px"><div class="grow"><b style="font-size:20px">Arrive 21:08</b><div class="sub">1.4 km · to the door</div></div></div>
+    <span class="btn primary full"><svg class="i s"><use href="#walk"/></svg>Start walking</span>
+  </div>
+  <div class="tabbar">
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P7</span>Route</h3><ul>
+  <li>De titel zegt <b>waarheen</b>, de regel eronder <b>vanwaar</b>, met "Change". Nu staat er "to the door · to Route end".</li>
+  <li>Eén hoofdactie <b>Start walking</b>. De losse knoppen "Clear" en "Walk" naast "Walk me there" vervallen; ✕ wist de route.</li></ul></div></div>
+
+<!-- P8 Chats -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="topbar" style="padding:0 20px"><div class="grow" style="font-size:30px;font-weight:600">Chats</div><span class="btn primary small"><svg class="i s"><use href="#plus"/></svg>New</span></div>
+  <div class="content">
+    <div class="actions" style="margin:4px 0 12px"><span class="chip on">All</span><span class="chip">People</span><span class="chip">Communities</span><span class="chip">Here</span></div>
+    <div class="list" style="margin-bottom:12px;border:1px solid rgba(242,166,90,.45)"><div class="li"><div class="ic" style="background:rgba(242,166,90,.15);color:var(--warn)"><svg class="i"><use href="#people"/></svg></div><div class="grow"><div class="t">2 message requests</div><div class="d">jeroen and 1 more want to talk</div></div><span class="btn second small">Answer</span></div></div>
+    <div class="list">
+      <div class="li"><div class="av" style="background:#4566D6">G</div><div class="grow"><div class="t">Garage 44</div><div class="d">karim: I'll bring the drill</div></div><div style="text-align:right"><div class="meta">19:50</div><span class="count">5</span></div></div>
+      <div class="li"><div class="av" style="background:#6B9A2E">S</div><div class="grow"><div class="t">sanne</div><div class="d" style="color:var(--warn)">sharing location · 60 min</div></div><div class="meta">19:40</div></div>
+      <div class="li"><div class="av" style="background:#8A4FC8">F</div><div class="grow"><div class="t">Fietsers Groningen</div><div class="d">joris: 10:00 at the station</div></div><div style="text-align:right"><div class="meta">18:02</div><span class="count">2</span></div></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#pin"/></svg></div><div class="grow"><div class="t">Here · Grote Markt</div><div class="d">3 people nearby · Wieke: are you…</div></div><div class="meta">17:30</div></div>
+      <div class="li"><div class="av" style="background:#C8306A">E</div><div class="grow"><div class="t">eva</div><div class="d">See you Saturday!</div></div><div class="meta">Thu</div></div>
+    </div>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P8</span>Chats</h3><ul>
+  <li>Personen, groepen, communities en <b>Here</b> (praten met wie in de buurt is, nu de "Say"-knop) in <b>één lijst</b>.</li>
+  <li>"+ New" met een woord, niet een los plusje onderin.</li>
+  <li>Wat op jou wacht staat bovenaan, met een knop die zegt wat je doet: <b>Answer</b>.</li></ul></div></div>
+</div>
+
+<!-- ================= ROW 3 ================= -->
+<div class="row" style="margin-top:46px">
+
+<!-- P9 Community -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="topbar"><div class="back"><svg class="i"><use href="#left"/></svg>Chats</div><div class="grow"></div><span class="btn second small"><svg class="i s"><use href="#settings"/></svg>Manage</span></div>
+  <div class="content">
+    <div class="hero"><div class="av lg" style="background:#4566D6;width:56px;height:56px;border-radius:16px;font-size:22px">G</div><div><div class="title">Garage 44</div><div class="sub">Building cartopolis together · 5 people</div></div></div>
+    <div class="actions" style="margin-bottom:12px"><span class="btn primary" style="flex:1"><svg class="i s"><use href="#plus"/></svg>Write a post</span><span class="btn second"><svg class="i s"><use href="#pin"/></svg>On the map</span></div>
+    <div class="list" style="margin-bottom:12px;border:1px solid rgba(242,166,90,.45)"><div class="li"><div class="grow"><div class="t">2 things wait for you</div><div class="d">1 asking to join · 1 report</div></div><span class="btn second small">Review</span></div></div>
+    <div class="seg" style="margin-bottom:10px"><div class="on">Posts</div><div>Topics 3</div><div>Members 5</div></div>
+    <div class="post"><div class="h-row"><div class="av sm" style="background:#6B9A2E">S</div><span class="sub">sanne · 25 min</span></div><div class="t">Plant swap on the corner</div><div class="sub">Saturday 10–1, bring cuttings. 6 replies</div></div>
+    <div class="post"><div class="h-row"><div class="av sm" style="background:#C2651F">K</div><span class="sub">karim · 2 h</span></div><div class="t">Who has a ladder for the mural?</div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P9</span>Een community</h3><ul>
+  <li><b>‹ Chats</b> zegt waar terug heen gaat; de tabs blijven staan, dus Map is één tik.</li>
+  <li>Eén hoofdactie <b>Write a post</b>. Invite, Edit, verversen en het tandwiel gaan onder <b>Manage</b>.</li>
+  <li>"Topic" en "[mensen] 5" worden de tabs <b>Topics 3</b> en <b>Members 5</b>.</li></ul></div></div>
+
+<!-- P10 Conversation -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="topbar" style="border-bottom:1px solid var(--line)"><div class="back"><svg class="i"><use href="#left"/></svg></div><div class="av" style="background:#6B9A2E">S</div><div class="grow"><div style="font-weight:600;font-size:16px">sanne</div><div class="d" style="font-size:12.5px;color:var(--warn)">sharing location · 60 min left</div></div><span class="btn second small"><svg class="i s"><use href="#mic"/></svg>Call</span></div>
+  <div class="content" style="top:112px;bottom:154px;padding-top:10px">
+    <div class="when">Today</div>
+    <div class="bubble them">Where shall we have dinner Saturday?</div>
+    <div class="bubble me">Somewhere near the Vismarkt?</div>
+    <div class="bubble them" style="padding:8px"><div class="mini-map"></div><b>Stadsschouwburg</b><div class="sub">Then the show after?</div><div class="actions" style="margin-top:8px"><span class="btn second small"><svg class="i s"><use href="#map"/></svg>Show on map</span><span class="btn second small"><svg class="i s"><use href="#route"/></svg>Route</span></div></div>
+    <div class="bubble me">Perfect. 19:00 at the corner?</div>
+  </div>
+  <div class="composer"><div class="ibtn"><svg class="i"><use href="#plus"/></svg></div><div class="field">Message</div><div class="ibtn primary"><svg class="i"><use href="#send"/></svg></div></div>
+  <div class="tabbar">
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P10</span>Een gesprek</h3><ul>
+  <li>De bel krijgt het woord <b>Call</b>. De Chat | World-schakelaar vervalt: <b>Show on map</b> op een plek gaat naar Map met het gesprek als blad.</li>
+  <li>De + opent een blad met benoemde keuzes: Photo, Place, Share location, Plan something.</li></ul></div></div>
+
+<!-- P11 Calendar -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="topbar" style="padding:0 20px"><div class="grow" style="font-size:30px;font-weight:600">Calendar</div><span class="btn primary small"><svg class="i s"><use href="#plus"/></svg>Plan</span></div>
+  <div class="content">
+    <div class="week"><div class="on">Sat<b>7</b></div><div>Sun<b>8</b></div><div>Mon<b>9</b></div><div>Tue<b>10</b></div><div>Wed<b>11</b></div><div>Thu<b>12</b></div><div>Fri<b>13</b></div></div>
+    <div class="list" style="margin:10px 0 0;border:1px solid rgba(242,166,90,.45)"><div class="li"><div class="grow"><div class="t">Buurtvergadering</div><div class="d">Tomorrow 04:00 · a call · Garage 44</div></div><span class="btn second small">Going?</span></div></div>
+    <div class="label">Today · Saturday 7 November</div>
+    <div class="list"><div class="li"><div class="ev grow"><div class="tm">22:30<span>2 h</span></div><div class="bar"></div><div class="grow"><div class="t">Vismarkt dinner</div><div class="d">sanne · 2 going · Vismarkt</div></div></div><span class="chip on" style="height:30px">Going</span></div></div>
+    <div class="label">Monday 9 November</div>
+    <div class="list"><div class="li"><div class="ev grow"><div class="tm">00:00</div><div class="bar" style="background:var(--warn)"></div><div class="grow"><div class="t">Hoofdstation pick-up</div><div class="d">joris · Hoofdstation</div></div></div></div></div>
+    <div class="label">Tuesday 10 November</div>
+    <div class="list"><div class="li"><div class="ev grow"><div class="tm">22:00</div><div class="bar"></div><div class="grow"><div class="t">Family call</div><div class="d">a call · 4 going</div></div></div><span class="chip on" style="height:30px">Going</span></div></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P11</span>Calendar</h3><ul>
+  <li>Een <b>eigen tab</b>. Nu bereik je de agenda alleen via een strook in de Community-lijst.</li>
+  <li>Wat je nog moet beantwoorden staat bovenaan, als <b>Going?</b>.</li></ul></div></div>
+
+<!-- P12 You -->
+<div class="cell"><div class="phone solid">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="content" style="top:56px">
+    <div class="hero"><div class="av" style="background:#2E8F82;width:64px;height:64px;font-size:26px">J</div><div class="grow"><div class="title">jeroen</div><div class="sub">jeroen@cartopolis.org</div></div></div>
+    <div class="actions" style="margin-bottom:6px"><span class="btn second" style="flex:1"><svg class="i s"><use href="#user"/></svg>Avatar</span><span class="btn second" style="flex:1"><svg class="i s"><use href="#share"/></svg>Share my link</span></div>
+    <div class="label">Yours</div>
+    <div class="list">
+      <div class="li"><div class="ic"><svg class="i"><use href="#bookmark"/></svg></div><div class="grow"><div class="t">Saved places</div><div class="d">4 places · Groningen</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#people"/></svg></div><div class="grow"><div class="t">Contacts</div><div class="d">3 · 2 requests</div></div><span class="count">2</span><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#grid"/></svg></div><div class="grow"><div class="t">Models</div><div class="d">What you have built</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+    </div>
+    <div class="label">App</div>
+    <div class="list">
+      <div class="li"><div class="ic"><svg class="i"><use href="#settings"/></svg></div><div class="grow"><div class="t">Settings</div><div class="d">Graphics, sound, privacy, account</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#flag"/></svg></div><div class="grow"><div class="t">Admin</div><div class="d">2 reports open</div></div><span class="count">2</span><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="li"><div class="ic"><svg class="i"><use href="#check"/></svg></div><div class="grow"><div class="t">Help and controls</div><div class="d">Gestures, keys, about</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+    </div>
+    <div style="margin-top:14px"><span class="btn danger full">Sign out…</span></div>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#user"/></svg></div>You</div>
+  </div>
+</div>
+<div class="cap"><h3><span>P12</span>You</h3><ul>
+  <li>Vervangt het <b>☰-menu</b> en het You-rondje. Alles wat over jou of de app gaat staat hier, op één plek.</li>
+  <li><b>Admin</b> is een gewone regel, met een teller. Zonder account staat bovenaan "Sign in to meet people" met Sign in / Create account.</li></ul></div></div>
+</div>
+
+<script src="icons.js"></script></body></html>

@@ -1,0 +1,72 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+.rail { width:92px; background:var(--bg); border-right:1px solid var(--line); display:flex; flex-direction:column; align-items:center; padding:18px 0; gap:6px; flex:none; z-index:5; }
+.rail .logo { width:40px; height:40px; border-radius:12px; background:var(--brand); margin-bottom:18px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; }
+.rail .tab { width:76px; padding:6px 0; }
+.rail .tab .badge { left:46px; }
+.rail .spacer { flex:1; }
+.panel { width:400px; background:var(--surface); border-right:1px solid var(--line); flex:none; position:relative; padding:20px 20px; z-index:4; }
+.mapside { flex:1; position:relative; background:url(map.jpg) center/cover; }
+.mapside .searchbar { position:absolute; left:20px; right:auto; width:440px; top:18px; }
+.mapside .mapctl { top:18px; right:18px; }
+.card { position:absolute; width:380px; background:var(--surface); border-radius:22px; padding:16px 18px 18px; box-shadow:0 12px 36px rgba(0,0,0,.5); z-index:6; }
+.kbd { display:inline-block; font-size:11px; padding:1px 6px; border:1px solid var(--line); border-radius:5px; color:var(--faint); margin-left:6px; }
+.post { background:var(--raised); border-radius:18px; padding:14px 16px; margin-bottom:10px; }
+.post .t { font-size:16px; font-weight:600; margin:6px 0 2px; }
+.facts { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+.facts div { background:var(--raised); border-radius:14px; padding:10px 12px; }
+.facts b { display:block; font-size:16px; font-weight:600; } .facts span { font-size:12.5px; color:var(--dim); }
+.selbld { position:absolute; border:3px solid var(--accent); border-radius:6px; background:rgba(94,208,194,.18); z-index:5; }
+.hero { display:flex; gap:14px; align-items:center; padding:6px 0 14px; }
+</style></head><body>
+
+<h1>Cartopolis op een groot scherm, <b>dezelfde indeling</b></h1>
+<p class="lede">Bij <code>v1-structure</code> en <code>v1-phone</code>. Dezelfde vier tabs staan links als een smalle balk, met naam. Een paneel is altijd 400 pt breed
+en schuift de kaart opzij; het ligt er niet als glas overheen. Het blad van wat je aantikt (P2) wordt op desktop een kaart in de hoek van de kaart.
+Alles is <span class="tag">nieuw</span>.</p>
+
+<div class="desk">
+  <div class="rail">
+    <div class="logo">c</div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#map"/></svg></div>Map</div>
+    <div class="tab on"><div class="ico"><svg class="i"><use href="#chat"/></svg></div>Chats<span class="badge">5</span></div>
+    <div class="tab"><div class="ico"><svg class="i"><use href="#cal"/></svg></div>Calendar<span class="badge">1</span></div>
+    <div class="spacer"></div>
+    <div class="tab"><div class="av sm" style="background:#2E8F82;margin-bottom:4px">J</div>You</div>
+  </div>
+  <div class="panel">
+    <div class="h-row" style="margin-bottom:6px"><div class="back" style="padding-left:0"><svg class="i"><use href="#left"/></svg>Chats</div><div class="grow"></div><span class="btn second small"><svg class="i s"><use href="#settings"/></svg>Manage</span></div>
+    <div class="hero"><div class="av" style="background:#4566D6;width:56px;height:56px;border-radius:16px;font-size:22px">G</div><div><div class="title">Garage 44</div><div class="sub">Building cartopolis together · 5 people</div></div></div>
+    <div class="actions" style="margin-bottom:12px"><span class="btn primary" style="flex:1"><svg class="i s"><use href="#plus"/></svg>Write a post</span><span class="btn second"><svg class="i s"><use href="#pin"/></svg>On the map</span></div>
+    <div class="list" style="margin-bottom:12px;border:1px solid rgba(242,166,90,.45)"><div class="li"><div class="grow"><div class="t">2 things wait for you</div><div class="d">1 asking to join · 1 report</div></div><span class="btn second small">Review</span></div></div>
+    <div class="seg" style="margin-bottom:10px"><div class="on">Posts</div><div>Topics 3</div><div>Members 5</div></div>
+    <div class="post"><div class="h-row"><div class="av sm" style="background:#6B9A2E">S</div><span class="sub">sanne · 25 min</span></div><div class="t">Plant swap on the corner</div><div class="sub">Saturday 10–1, bring cuttings. 6 replies</div></div>
+    <div class="post"><div class="h-row"><div class="av sm" style="background:#C2651F">K</div><span class="sub">karim · 2 h</span></div><div class="t">Who has a ladder for the mural?</div><div class="sub">2 replies</div></div>
+    <div class="post"><div class="h-row"><div class="av sm" style="background:#8A4FC8">F</div><span class="sub">fenna · yesterday</span></div><div class="t">Minutes of Tuesday's meeting</div></div>
+  </div>
+  <div class="mapside">
+    <div class="searchbar"><svg class="i"><use href="#search"/></svg>Search places, people, communities<span class="kbd" style="margin-left:auto;margin-right:10px">Ctrl L</span></div>
+    <div class="mapctl">
+      <div class="mbtn"><svg class="i"><use href="#layers"/></svg>Layers</div>
+      <div class="mbtn"><svg class="i"><use href="#plane"/></svg>View</div>
+      <div class="mbtn"><svg class="i"><use href="#locate"/></svg>Locate</div>
+      <div class="mbtn"><svg class="i"><use href="#camera"/></svg>Photo</div>
+    </div>
+    <div class="selbld" style="left:470px;top:330px;width:80px;height:60px"></div>
+    <div class="card" style="left:20px;bottom:20px">
+      <div class="h-row"><div class="grow"><div class="title">Martinitoren</div><div class="sub">Tower · 97 m · Martinikerkhof · 450 m away</div></div><div class="ibtn" style="width:40px;height:40px;border-radius:50%;background:var(--raised);display:flex;align-items:center;justify-content:center"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin:14px 0 10px"><span class="btn primary full"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+      <div class="acts" style="margin-bottom:12px"><div class="act"><svg class="i"><use href="#bookmark"/></svg>Save</div><div class="act"><svg class="i"><use href="#share"/></svg>Share</div><div class="act"><svg class="i"><use href="#building"/></svg>Look inside</div><div class="act"><svg class="i"><use href="#more"/></svg>More</div></div>
+      <div class="facts"><div><b>1482</b><span>Built</span></div><div><b>97 m</b><span>Height</span></div><div><b>4 250 m²</b><span>Floor area</span></div></div>
+    </div>
+  </div>
+</div>
+<div class="row" style="margin-top:6px">
+<div class="cap" style="width:1500px"><h3><span>D1</span>Desktop: een community open, een gebouw aangetikt</h3><ul>
+  <li><b>Links de vier tabs</b> met naam; You onderaan met je gezicht. Een tik op de tab die al open is klapt het paneel in, en de kaart krijgt de hele breedte.</li>
+  <li><b>Het paneel duwt de kaart opzij</b> in plaats van eroverheen te liggen, dus de kaart blijft zichtbaar en niets schijnt erdoorheen.</li>
+  <li><b>De kaartknoppen hebben dezelfde namen als op de telefoon</b>. Sneltoetsen staan erbij waar ze bestaan (Ctrl L), en Help and controls onder You geeft de hele lijst.</li>
+  <li><b>Het blad van een gebouw</b> is een kaart linksonder op de kaart: dezelfde opbouw als P2. Rechtsklik op een punt geeft het "Dropped pin"-blad (P3), niet de ring.</li></ul></div>
+</div>
+
+<script src="icons.js"></script></body></html>
