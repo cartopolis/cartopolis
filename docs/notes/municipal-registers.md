@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: [municipal.rs, pipeline/registers.rs, formats/registers.rs, "registers/", Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, FRACTIE, containers, laadpalen, fonteinen, parkeervakken, parking bays, park_in_bays, Wikidata, public art, statues, artwork, benches, speelplekken, Kunstpunt, kunstsoort, Overpass, osm_has]
-updated: 2026-10-19
+triggers: [municipal.rs, pipeline/registers.rs, formats/registers.rs, "registers/", Register, Source, Yields, Supply, REGISTERS, bomen, lichtmasten, municipal trees, street lighting, Groningen, maps.groningen.nl, WFS, city register, the study quay, BOOMHOOGTE, FRACTIE, containers, laadpalen, fonteinen, parkeervakken, parking bays, park_in_bays, Wikidata, public art, statues, artwork, benches, speelplekken, Kunstpunt, kunstsoort, Overpass, osm_has, Nijmegen, Amsterdam, Rotterdam, "Den Haag", Utrecht, ArcGIS]
+updated: 2026-11-07
 ---
 
 # The trees a city surveys, where the country's register is empty
@@ -298,8 +298,9 @@ operational database and a ninth band costs nothing to add there.
 
 ## What is still open
 
-- **One city.** Every other municipality with the same hole needs its own entry
-  in atlas's `REGISTERS`: its endpoint, its layer and field names, its readers.
+- **Two cities.** Every other municipality needs its own entry in atlas's
+  `REGISTERS`: its endpoint, its layer and field names, its readers. What the
+  others publish is below.
 - **Artwork names.** Wikidata has the title of every statue; the cell format
   carries none yet, so the proximity prompt says "Artwork".
 - **Most of the city's sculpture is not drawn.** ~370 works Wikidata files as
@@ -308,3 +309,23 @@ operational database and a ninth band costs nothing to add there.
 - **Bay markings.** The register says which bays are marked (`MARKERING`); the
   white lines are not drawn.
 - **The parked cars on bays have not been seen on a device.**
+
+## Other cities' tree registers (checked live, 2026-11-07)
+
+Nijmegen was added beside Groningen for its trees (70,447, species and height
+band, one WFS answer). The rest, and what stands between each and an entry:
+
+| City | Trees | Species / height | What it needs |
+|---|---|---|---|
+| Amsterdam | 326,827 | `soortnaam` / `boomhoogteklasse_actueel` band | WFS caps at 5,000 unless `count` is set, and GeoJSON's `numberMatched` is `null`, so the truncation check needs a `resultType=hits` request first. No CC licence stated ("openbaar") |
+| Rotterdam | 199,561 | `BOOMSORTIMENT` (upper case) / `HOOGTE` band | GeoJSON ignores `propertyName` (~200 MB) and the text is Latin-1, not UTF-8; GML respects both |
+| Den Haag | 127,170 | `BOOMSOORT_WETENSCHAPPELIJ` / no height (age only) | ArcGIS REST only, 20,000 a page |
+| Utrecht | 137,135 + 25,518 | `Wetenschap` / no height | ArcGIS Online WFS, 3,000 unless `count`; leaving `Shape` out of `propertyName` drops the coordinates |
+| Eindhoven | 127,909 | `boomsoort` / `hoogte` band | official copy WGS84 or ArcGIS 2,000 a page; a third-party GeoServer fits but is a different extract |
+| Haarlem | 75,016 (+ Zandvoort) | `naam_lt` / no height | fits as is, but **CC BY-SA**: the cells we derive would have to be share-alike too; its published extent is wrong |
+| Breda, Zwolle | 117,092 / 79,695 | species; Zwolle a height | ArcGIS REST only, 1,000 a page |
+| Almere | 147,179 | — | only an unofficial copy on a personal ArcGIS account |
+| Tilburg, Leeuwarden | — | — | no open full register reachable (Leeuwarden publishes only its 878 monumental trees) |
+
+So the next entries are a `count`/hits change for Amsterdam and an ArcGIS REST
+reader with offset paging, which alone opens Den Haag, Breda and Zwolle.
