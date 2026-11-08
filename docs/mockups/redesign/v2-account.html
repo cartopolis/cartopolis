@@ -1,0 +1,157 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css">
+<style>
+body { width:2300px; }
+.lede { max-width:1700px; }
+.lt.mapbg { background:url(map-today.jpg) center/cover; }
+.dk.mapbg { background:linear-gradient(rgba(8,16,30,.5),rgba(8,16,30,.5)), url(map-today.jpg) center/cover; }
+.row5 { display:grid; grid-template-columns:repeat(5,390px); gap:34px; }
+.space { position:absolute; left:50%; transform:translateX(-50%); bottom:12px; height:48px; border-radius:24px; background:var(--surface); box-shadow:var(--lift-2); display:flex; padding:4px; gap:2px; z-index:14; }
+.space div { display:flex; align-items:center; gap:6px; padding:0 14px; border-radius:20px; font-weight:600; font-size:13.5px; color:var(--dim); }
+.space div.on { background:var(--accent); color:var(--on-accent); }
+.sbar { position:absolute; left:8px; right:8px; top:36px; height:44px; border-radius:22px; background:var(--surface); box-shadow:var(--lift-2); display:flex; align-items:center; gap:8px; padding:0 4px 0 14px; color:var(--dim); font-size:14px; z-index:10; }
+.sheet2 { position:absolute; left:8px; right:8px; background:var(--surface); border-radius:20px; box-shadow:var(--lift-2); padding:14px; z-index:12; }
+.ttl { font-size:19px; font-weight:600; color:var(--strong); }
+.st { font-size:13px; color:var(--dim); }
+.ptitle { font-size:24px; font-weight:600; color:var(--strong); }
+.fld { margin-bottom:10px; }
+.fld label { display:block; font-size:12.5px; font-weight:600; color:var(--dim); margin:0 2px 4px; }
+.fld div { height:42px; border-radius:10px; border:1px solid var(--border); background:var(--surface); display:flex; align-items:center; padding:0 12px; font-size:14.5px; color:var(--text); }
+.fld div.focus { border-color:var(--accent); box-shadow:0 0 0 3px rgb(92 198 192 / 30%); }
+.or { display:flex; align-items:center; gap:10px; color:var(--faint); font-size:12.5px; margin:14px 0 10px; }
+.or::before, .or::after { content:''; flex:1; height:1px; background:var(--border); }
+.prov { display:flex; align-items:center; gap:10px; height:44px; border-radius:22px; border:1px solid var(--border); background:var(--surface); box-shadow:var(--lift-1); padding:0 16px; font-weight:600; font-size:14.5px; margin-bottom:8px; }
+.prov i { width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff; font-style:normal; font-size:12px; font-weight:700; }
+.tg { width:40px; height:24px; border-radius:12px; background:var(--accent); position:relative; flex:none; }
+.tg::after { content:''; position:absolute; right:3px; top:3px; width:18px; height:18px; border-radius:50%; background:#fff; }
+.wordmark { font-size:22px; font-weight:600; color:var(--strong); } .wordmark b { color:#fd6012; font-weight:600; }
+.pic { width:84px; height:84px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-size:34px; font-weight:600; position:relative; }
+.pic .cam { position:absolute; right:-2px; bottom:-2px; width:30px; height:30px; border-radius:50%; background:var(--surface); color:var(--text); box-shadow:var(--lift-2); display:flex; align-items:center; justify-content:center; }
+.bridge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; background:#fd6012; color:#fff; font-size:11px; font-weight:700; flex:none; }
+.rowlabel { font-size:15px; font-weight:600; color:var(--sheet-cream); margin:30px 0 12px; }
+</style></head><body>
+
+<h1>Inloggen en je profiel, <b>licht en donker</b></h1>
+<p class="lede">Gevraagd 2026-11-08 bij v2: "hoe ziet het inloggen/profiel er dan uit? En ik wil ook een dark theme variant." Vijf schermen in de opbouw van vraag 2:
+je gezicht rechtsboven is de ingang, in World en Community gelijk. Bovenste rij licht, onderste rij dezelfde schermen in midas' donker. Getekend op 275 pt,
+de echte breedte van de app. Inloggen met een ander account (Mastodon, Codeberg, GitHub, Google, Discord, Reddit) bestaat al; een knop verschijnt pas als de server
+die dienst heeft ingesteld. <span class="tag">nieuw</span></p>
+
+<div class="rowlabel">Licht</div>
+<div class="row5">
+
+<!-- A1 signed out, world -->
+<div><div class="phone p275 lt mapbg" data-twin="a1">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:var(--sunken);color:var(--dim);width:34px;height:34px;margin-left:auto"><svg class="i s"><use href="#user"/></svg></div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="ttl">Cartopolis is better with people</div>
+    <div class="st" style="margin:4px 0 12px">Sign in to see who is around, chat, and join the communities near you.</div>
+    <div class="h-row" style="gap:8px"><span class="b2 p" style="flex:1">Sign in</span><span class="b2 s" style="flex:1">Create account</span></div>
+    <div style="text-align:center;margin-top:6px"><span class="b2 t sm">Not now, just the map</span></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community</div></div>
+</div></div>
+
+<!-- A2 sign in -->
+<div><div class="phone p275 lt" data-twin="a2" style="background:var(--bg)">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:34px 14px 0">
+    <div class="h-row" style="margin:6px 0 14px"><div class="grow wordmark">carto<b>polis</b></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="ptitle" style="margin-bottom:12px">Sign in</div>
+    <div class="fld"><label>Account name</label><div class="focus">jeroen</div></div>
+    <div class="fld"><label>Password</label><div>••••••••••</div></div>
+    <div class="h-row" style="margin:4px 2px 12px;font-size:14px"><div class="grow">Stay signed in on this device</div><div class="tg"></div></div>
+    <span class="b2 p" style="width:100%">Sign in</span>
+    <div class="or">or with</div>
+    <div class="prov"><i style="background:#6364FF">M</i>Mastodon</div>
+    <div class="prov"><i style="background:#2185D0">C</i>Codeberg</div>
+    <div style="text-align:center;margin-top:8px;font-size:13.5px;color:var(--dim)">New here? <b style="color:var(--accent-text)">Create an account</b></div>
+    <div style="position:absolute;bottom:16px;left:0;right:0;text-align:center;font-size:12.5px;color:var(--faint)">Server: cartopolis.org · <b style="color:var(--accent-text)">Change</b></div>
+  </div>
+</div></div>
+
+<!-- A3 You sheet signed in -->
+<div><div class="phone p275 lt mapbg" data-twin="a3">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:0;background:rgba(15,20,22,.35);z-index:11"></div>
+  <div class="sheet2" style="bottom:0;left:0;right:0;top:110px;border-radius:20px 20px 0 0">
+    <div class="h-row" style="margin-bottom:12px"><div class="av lg" style="background:#2E8F82">J</div><div class="grow"><div class="ttl">jeroen</div><div class="st">@jeroen@cartopolis.org</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="h-row" style="gap:8px;margin-bottom:12px"><span class="b2 s sm" style="flex:1">Your profile</span><span class="b2 s sm" style="flex:1"><svg class="i s"><use href="#share"/></svg>Share link</span></div>
+    <div class="list2">
+      <div class="r2"><svg class="i ic"><use href="#user"/></svg><div>Avatar</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#bookmark"/></svg><div>Saved places</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#settings"/></svg><div>Settings</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#flag"/></svg><div>Admin<div class="d">2 reports open</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+    </div>
+    <div style="margin-top:8px;text-align:center"><span class="b2 t sm" style="color:var(--danger)">Sign out…</span></div>
+  </div>
+</div></div>
+
+<!-- A4 own profile -->
+<div><div class="phone p275 lt" data-twin="a4" style="background:var(--bg)">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:34px 12px 0">
+    <div class="h-row" style="margin:4px 0 8px"><span class="b2 t" style="padding-left:0"><svg class="i s"><use href="#left"/></svg>Back</span><div class="grow"></div><span class="b2 s sm">Edit</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:14px"><div class="pic" style="background:#2E8F82">J<span class="cam"><svg class="i s"><use href="#camera"/></svg></span></div>
+      <div class="ptitle" style="margin-top:10px">jeroen</div><div class="st">@jeroen@cartopolis.org</div>
+      <div style="font-size:14px;text-align:center;margin-top:6px">Building cartopolis in Groningen.</div></div>
+    <div class="head2">How others see you</div>
+    <div class="list2">
+      <div class="r2"><svg class="i ic"><use href="#user"/></svg><div>Avatar<div class="d">Your figure in the world</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#chat"/></svg><div>Who can message you<div class="d">People you've been near</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#pin"/></svg><div>Your location<div class="d">Shared with nobody</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- A5 someone else's profile -->
+<div><div class="phone p275 lt" data-twin="a5" style="background:var(--bg)">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:34px 12px 0">
+    <div class="h-row" style="margin:4px 0 8px"><span class="b2 t" style="padding-left:0"><svg class="i s"><use href="#left"/></svg>Chats</span><div class="grow"></div><div class="x2"><svg class="i s"><use href="#more"/></svg></div></div>
+    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:14px"><div class="pic" style="background:#6B9A2E">S</div>
+      <div class="ptitle" style="margin-top:10px">sanne</div><div class="st">@sanne@cartopolis.org · contact</div></div>
+    <div class="h-row" style="gap:8px;margin-bottom:8px"><span class="b2 p" style="flex:1"><svg class="i s"><use href="#chat"/></svg>Message</span><span class="b2 s" style="flex:1"><svg class="i s"><use href="#mic"/></svg>Call</span></div>
+    <div class="h-row" style="gap:8px"><span class="b2 s" style="flex:1"><svg class="i s"><use href="#map"/></svg>Show in world</span><span class="bridge">2</span></div>
+    <div class="st" style="text-align:center;margin-top:4px;color:#c26a00">Sharing location with you · 60 min</div>
+    <div class="head2">In common</div>
+    <div class="list2">
+      <div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">Community</div></div></div>
+    </div>
+  </div>
+</div></div>
+</div>
+
+<div class="rowlabel">Donker</div>
+<div class="row5">
+  <div><div class="phone p275 dk mapbg" data-copy="a1"></div></div>
+  <div><div class="phone p275 dk" data-copy="a2" style="background:var(--bg)"></div></div>
+  <div><div class="phone p275 dk mapbg" data-copy="a3"></div></div>
+  <div><div class="phone p275 dk" data-copy="a4" style="background:var(--bg)"></div></div>
+  <div><div class="phone p275 dk" data-copy="a5" style="background:var(--bg)"></div></div>
+</div>
+
+<div class="row5" style="margin-top:6px">
+<div class="cap"><h3><span>A1</span>Zonder account</h3><ul>
+  <li>Je gezicht rechtsboven is een <b>grijs rondje</b>. Dat is de enige plek waar inloggen altijd staat.</li>
+  <li>De eerste keer staat dit kaartje boven de schakelaar, met twee gelijke knoppen en "Not now, just the map". Nu staat dat kaartje boven de dock.</li>
+  <li>Community zonder account toont hetzelfde kaartje.</li></ul></div>
+<div class="cap"><h3><span>A2</span>Inloggen</h3><ul>
+  <li><b>Velden zoals in midas</b>: het label erboven, 42 pt hoog, een teal rand bij focus. Nu staat het label links en is het veld 24 pt.</li>
+  <li>Eerst je account, daarna <b>"or with"</b> de diensten die de server heeft ingesteld.</li>
+  <li>De server is een regel onderaan met "Change". Nu is het het eerste veld.</li></ul></div>
+<div class="cap"><h3><span>A3</span>Je gezicht aangetikt</h3><ul>
+  <li>Een blad over wat je nu ziet (wereld of community): <b>Your profile</b>, Share link, dan Avatar, Saved places, Settings en Admin.</li>
+  <li><b>Sign out…</b> staat los, in rood, en vraagt eerst.</li></ul></div>
+<div class="cap"><h3><span>A4</span>Je profiel</h3><ul>
+  <li>Je foto (het camera-rondje verandert hem), naam, adres en een regel over jezelf. <b>Edit</b> staat rechtsboven.</li>
+  <li>"How others see you" zet drie dingen bij elkaar die nu verspreid staan: je avatar, wie je mag berichten (nu op twee plekken) en of je je locatie deelt.</li></ul></div>
+<div class="cap"><h3><span>A5</span>Iemand anders</h3><ul>
+  <li>Een pagina in Community: Message als hoofdactie, dan Call.</li>
+  <li>Deelt sanne haar locatie, dan staat hier <b>Show in world</b> ②, de brug van vraag 2.</li>
+  <li>Block en Report zitten onder ⋯ en vragen eerst.</li></ul></div>
+</div>
+
+<script src="icons.js"></script>
+<script>document.querySelectorAll('[data-copy]').forEach(d => { d.innerHTML = document.querySelector(`[data-twin="${d.dataset.copy}"]`).innerHTML; });</script>
+</body></html>

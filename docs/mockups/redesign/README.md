@@ -71,6 +71,20 @@ instelling Light (Auto / Light / Dark).
 
 ![world and community](v2-world-community.png)
 
+Dezelfde schermen in midas' donkere kleuren. Ze komen uit hetzelfde bestand, met
+`v2-world-community.html?dark`:
+
+![world and community, dark](v2-world-community-dark.png)
+
+### Inloggen en je profiel, licht en donker
+
+Gevraagd 2026-11-08 bij v2. De ingang is je gezicht rechtsboven: zonder account
+is dat een grijs rondje. Inloggen gebruikt velden zoals midas, met het label erboven.
+Een ander account (Mastodon, Codeberg …) staat onder "or with". Je profiel heeft het kopje
+"How others see you". Iemand anders' profiel heeft Message, Call en "Show in world" ②.
+
+![account](v2-account.png)
+
 Nog niets besloten.
 
 ## v1 (vervangen door v2)
