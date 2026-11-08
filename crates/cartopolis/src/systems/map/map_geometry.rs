@@ -2681,6 +2681,30 @@ fn spawn_geometry_task(
                         meshes.retain(|m| !is_flat_ground(m.group));
                     }
                 }
+                // **And over the drawn water**, whose edge the quay walls stand
+                // on: the map's water is the tile's, quantised and simplified, and
+                // ran 0.58 m past the register's at the Sint Jansbrug's east end —
+                // a strip of nothing between the slab and its quay wall, seen from
+                // the street as a dark slit across the road (2026-11-08).
+                let water_tris: Vec<(&[[f32; 3]], Vec<[u32; 3]>)> = outcome
+                    .as_deref()
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| m.group == SurfaceGroup::Water)
+                    .map(|m| {
+                        let tris = m
+                            .indices
+                            .chunks_exact(3)
+                            .map(|t| [t[0], t[1], t[2]])
+                            .collect();
+                        (m.positions.as_slice(), tris)
+                    })
+                    .collect();
+                let drawn_water: Vec<TriangleIndex<'_>> = water_tris
+                    .iter()
+                    .filter(|(_, tris)| !tris.is_empty())
+                    .map(|(pos, tris)| TriangleIndex::new(pos, tris))
+                    .collect();
                 // Each deck's ends carried out over the register's water to its
                 // quay (`vector_tiles::reach_the_quay`): `(deck, as outlined, as
                 // reached)`.
@@ -2694,8 +2718,10 @@ fn spawn_geometry_task(
                                 // and the H.N. Werkmanbrug's lip and abutment
                                 // wall stood on its landing as a spike and a slot
                                 // (2026-11-06).
-                                let water =
-                                    |p: [f32; 2]| g.in_water(origin.x + p[0], origin.y + p[1]);
+                                let water = |p: [f32; 2]| {
+                                    g.in_water(origin.x + p[0], origin.y + p[1])
+                                        || drawn_water.iter().any(|w| w.contains(Vec2::from(p)))
+                                };
                                 vector_tiles::reach_the_quay(deck, &run, &water)
                             }
                             _ => run.clone(),
@@ -2703,6 +2729,9 @@ fn spawn_geometry_task(
                         (i, run, reached)
                     })
                     .collect();
+                // They borrow the cell's meshes, which are stood on the ground next.
+                drop(drawn_water);
+                drop(water_tris);
                 // The street off each flat deck's end, at the height the deck is
                 // drawn at (`Landing`): its measured top, else its street's.
                 let landings: Vec<Landing> = match (

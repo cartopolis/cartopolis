@@ -506,6 +506,17 @@ point 0.21 → 0.05. The seven tunnel captures in `docs/grade-shots.toml`, with
 the correction switched off and on in one build on both quality settings,
 differ only in the traffic.
 
+**Raising the street uncovered a slit at the joint**, at eye height off the
+Sint Jansbrug's east end: a strip 0.58 m wide with nothing in it between the
+slab and its quay wall, the canal's dark below. It had always been there; with
+the paving 13 cm low it read as a step. The quay walls stand on the *drawn*
+water's edge (the tile's, quantised and simplified), while
+`reach_the_quay` carried an end out only over the *register's* water, which
+stopped at the outline. It now carries an end over either, so the lip reaches
+the wall the street rises to. The check for this is a camera at 1.6 m on the
+street 9 m off each end and 5 m aside, looking back at the joint — from above
+neither the slit nor the step shows.
+
 ## Storage, if the raster is ever baked instead of proxied
 
 Measured from real 200 × 200 m patches (a dense rail yard and open farmland;

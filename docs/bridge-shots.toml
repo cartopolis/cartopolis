@@ -106,3 +106,120 @@ name = "bridge-sint-jansbrug"
 description = "Sint Jansbrug: 13 x 7 m bascule outline (way 813282685), its ends on the Turfsingel's quay walls."
 at = [53.219644, 6.572258, 26]
 look_at = [53.219921, 6.571854]
+
+# Each low bridge's ends at eye height: 1.6 m on the street, 9 m off the end and
+# 5 m aside, looking back at the joint. From above neither a step nor a slit
+# between the deck and its street shows (docs/notes/bridge-heights.md).
+#
+#     cargo shots docs/bridge-shots.toml --only bridge-joints
+[[shot]]
+group = "bridge-joints"
+name = "joint-berlagebrug-a"
+at = [53.2204799, 6.5900929, 1.6]
+on_ground = true
+look_at = [53.2203984, 6.5902327]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-berlagebrug-b"
+at = [53.2197719, 6.5907621, 1.6]
+on_ground = true
+look_at = [53.2198534, 6.5906223]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-oosterbrug-a"
+at = [53.2136918, 6.5738640, 1.6]
+on_ground = true
+look_at = [53.2137543, 6.5736991]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-oosterbrug-b"
+at = [53.2139205, 6.5734148, 1.6]
+on_ground = true
+look_at = [53.2138574, 6.5735789]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-plantsoenbrug-a"
+at = [53.2190488, 6.5560340, 1.6]
+on_ground = true
+look_at = [53.2191466, 6.5559274]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-plantsoenbrug-b"
+at = [53.2192797, 6.5558097, 1.6]
+on_ground = true
+look_at = [53.2191819, 6.5559164]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-museumbrug-a"
+at = [53.2149052, 6.5595438, 1.6]
+on_ground = true
+look_at = [53.2148587, 6.5593649]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-museumbrug-b"
+at = [53.2148119, 6.5591560, 1.6]
+on_ground = true
+look_at = [53.2148584, 6.5593349]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-herebrug-a"
+at = [53.2127257, 6.5699861, 1.6]
+on_ground = true
+look_at = [53.2126463, 6.5701291]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-herebrug-b"
+at = [53.2123828, 6.5704025, 1.6]
+on_ground = true
+look_at = [53.2124667, 6.5702667]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-hn-werkmanbrug-a"
+at = [53.2116503, 6.5659062, 1.6]
+on_ground = true
+look_at = [53.2117556, 6.5658217]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-hn-werkmanbrug-b"
+at = [53.2121300, 6.5657134, 1.6]
+on_ground = true
+look_at = [53.2120247, 6.5657978]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-ebbingebrug-a"
+at = [53.2219116, 6.5655151, 1.6]
+on_ground = true
+look_at = [53.2219756, 6.5653519]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-ebbingebrug-b"
+at = [53.2220842, 6.5651382, 1.6]
+on_ground = true
+look_at = [53.2220202, 6.5653014]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-sint-jansbrug-a"
+at = [53.2198264, 6.5717282, 1.6]
+on_ground = true
+look_at = [53.2199194, 6.5718461]
+
+[[shot]]
+group = "bridge-joints"
+name = "joint-sint-jansbrug-b"
+at = [53.2200124, 6.5719641, 1.6]
+on_ground = true
+look_at = [53.2199194, 6.5718461]
