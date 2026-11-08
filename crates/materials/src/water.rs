@@ -70,6 +70,13 @@ pub struct WaterExtension {
 }
 
 impl MaterialExtension for WaterExtension {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// Not audited for the prepass: water is a small share of the
+    /// handset's frame, and out of it the material draws exactly as before.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/water.wesl".into()
     }

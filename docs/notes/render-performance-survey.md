@@ -156,7 +156,8 @@ every other respect) and only the pieces that can reach the two near cascades
 cast (`systems::kerb_shadows`): street steady frame 49.9 → 41.8 ms (dev build,
 quiet windows only), captures at 20 m and 120 m unchanged but for the walkers.
 Not taken: a depth prepass would cut the 3.2× overdraw but add a second geometry
-pass to a frame that is geometry-bound.
+pass to a frame that is geometry-bound. **Taken on a handset** (2026-11-08), whose
+frame is fill: `depth-prepass-on-the-handset.md`.
 
 ## At the Deck's own size the light shafts were the frame (2026-10-19)
 

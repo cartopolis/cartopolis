@@ -2102,7 +2102,7 @@ pub fn apply_feature_toggles(
 /// The `occluded` arm is the reverse case and the expensive one. The clipmap's
 /// levels nest, so under the camera eight opaque textured layers are stacked 0.4 m
 /// apart, and `Opaque3d` is binned rather than depth-sorted (every tile has its own
-/// material) with no depth prepass anywhere — so early-Z rejects nothing reliably
+/// material) with no depth prepass off a handset — so early-Z rejects nothing reliably
 /// and every one of those layers is shaded, per ground pixel. A tile whose whole
 /// footprint is painted by finer *ready* tiles can be hidden without changing a
 /// pixel; `map_stream::occluded_by_finer` decides which those are, recursively, so

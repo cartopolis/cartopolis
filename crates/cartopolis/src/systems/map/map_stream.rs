@@ -1746,8 +1746,9 @@ fn tile_rank(tile: TileKey, centres: &[(u32, i64, i64)]) -> fetch_gate::Rank {
 /// nest, so the ground you are standing on is covered by z10 *through* z17 at once,
 /// stacked 0.4 m apart. `Opaque3d` is a `BinnedPhaseItem` in Bevy 0.19 — binned by
 /// pipeline and asset, not sorted front-to-back — and every tile has its own
-/// material, so the draw order is effectively arbitrary; there is no depth prepass
-/// in this tree either. Early-Z therefore rejects nothing reliably and all eight
+/// material, so the draw order is effectively arbitrary; only a handset has a
+/// depth prepass (`quality::Budget::depth_prepass`), and the other tiers' frames
+/// are not fill-bound enough to want one. Early-Z therefore rejects nothing reliably and all eight
 /// textured fragments are shaded, per ground pixel, on a device whose scarcest
 /// resource is fill.
 ///

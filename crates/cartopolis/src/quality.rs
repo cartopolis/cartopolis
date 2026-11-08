@@ -480,6 +480,25 @@ pub struct Budget {
     /// four, and costs no system memory at all — the building meshes are
     /// `RENDER_WORLD` only, so there is no CPU-side copy left to hold.
     pub warm_gpu_bytes: usize,
+    /// Whether the camera draws a depth-only pass before the main one, so the
+    /// main pass shades each pixel once instead of once per surface covering it.
+    ///
+    /// **On for a handset, off everywhere else, and both for a measured reason.**
+    /// Over Groningen at 150 m on the OnePlus 15's panel (1272×2772, the
+    /// handset rung, 2026-11-08) the main pass ran the fragment shader 10.6 M
+    /// times for 3.5 M pixels: every pixel shaded three times, most of it
+    /// thrown away under a building in front. Bevy bins opaque draws by
+    /// pipeline, not by distance, so nothing orders them front to back. On the
+    /// phone that is the frame — halving the render scale halved it — while on
+    /// the Steam Deck at street level the frame is geometry, and a second
+    /// geometry pass is the wrong trade there
+    /// (`docs/notes/render-performance-survey.md`).
+    ///
+    /// The picture does not change: every material either draws the same depth
+    /// in both passes or stays out of the first one (`cartopolis_materials`,
+    /// each `enable_prepass`), and `docs/notes/depth-prepass-on-the-handset.md`
+    /// lists which and why. `CARTO_DEPTH_PREPASS=0|1` overrides it for an A/B.
+    pub depth_prepass: bool,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -643,6 +662,7 @@ impl Budget {
             // out of a district and back is a re-spawn, and not so much that the
             // pool is the largest thing in the process.
             warm_gpu_bytes: 512 * 1024 * 1024,
+            depth_prepass: false,
         }
     }
 
@@ -736,6 +756,9 @@ impl Budget {
             // what a thin laptop or an integrated GPU gets and not what a phone
             // resolving to this rung gets.
             warm_gpu_bytes: 160 * 1024 * 1024,
+            // An integrated GPU's frame is geometry before it is fill; a handset
+            // resolving to this rung gets it from `handset_guarded`.
+            depth_prepass: false,
         }
     }
 
@@ -888,6 +911,7 @@ impl Budget {
             // graphics memory for a view nobody is looking at is the last thing
             // such a machine should spend.
             warm_gpu_bytes: 0,
+            depth_prepass: true,
         }
     }
 
@@ -1742,6 +1766,8 @@ pub(crate) fn handset_guarded(budget: Budget) -> Budget {
         // resource whose exhaustion is a lost Vulkan device and a crash report,
         // and no amount of it is worth a phone's return journey being quick.
         warm_gpu_bytes: 0,
+        // A handset is fill-bound whatever rung it was given (see the field).
+        depth_prepass: true,
         ..budget
     }
 }

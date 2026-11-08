@@ -131,6 +131,13 @@ impl Default for RoadDepthExtension {
 }
 
 impl MaterialExtension for RoadDepthExtension {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// The road's depth is moved per vertex in a vertex stage the
+    /// prepass does not run, so its depths would disagree with the main pass's.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn vertex_shader() -> ShaderRef {
         "shaders/road_depth.wesl".into()
     }
@@ -174,12 +181,10 @@ impl MaterialExtension for RoadDepthExtension {
         // this client had no prepass at all, and appeared the moment ambient
         // occlusion required one.
         //
-        // **There is no prepass again**: ambient occlusion was removed on
-        // 2026-09-21 (`systems::render_features`) and took `DepthPrepass` and
-        // `NormalPrepass` with it, so this branch is currently unreachable. It
-        // stays because the last time it was unreachable somebody added a feature
-        // that needed a prepass, and the cost of keeping it is one string compare
-        // per pipeline specialisation.
+        // A handset's camera has a depth prepass again (since 2026-11-08,
+        // `quality::Budget::depth_prepass`), but `enable_prepass` keeps this
+        // material out of it; what reaches this branch is the shadow passes,
+        // which are bevy's prepass pipeline too.
         //
         // Matched on the label because that is the only thing here that
         // distinguishes the two calls: the mesh key carries the prepass *bits* in

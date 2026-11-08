@@ -67,6 +67,11 @@ not complete without the prepass half.
 
 ## What a prepass would cost this feature, if one comes back
 
+**One came back on 2026-11-08, on a handset only, and the material stays out of
+it** (`enable_prepass() -> false`, `depth-prepass-on-the-handset.md`): the far
+ring is drawn by the main pass alone and gives up only the prepass's saving on
+its own pixels. What follows is the price of putting it *in*.
+
 A `prepass_vertex_shader` applying the identical transform: a copy of bevy's
 prepass vertex stage with one line changed, carrying its `#ifdef`s for motion
 vectors, normals, deferred, skinning and morph targets — and therefore a file that

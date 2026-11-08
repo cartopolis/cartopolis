@@ -1288,6 +1288,14 @@ pub fn setup_camera(
         if hdr {
             cam.insert(bevy::camera::Hdr);
         }
+        // Depth first, so the main pass shades a pixel once: the handset's frame
+        // is fill, three shaded fragments per pixel (`quality::Budget::depth_prepass`).
+        // Decided here for good, like `Hdr`: it adds a depth target every opaque
+        // pipeline is specialised against, so it is not a thing to switch on a
+        // live camera.
+        if crate::env_value("CARTO_DEPTH_PREPASS").map_or(budget.depth_prepass, |v| v != "0") {
+            cam.insert(bevy::core_pipeline::prepass::DepthPrepass);
+        }
         // Bloom, the atmosphere, its reflections, the edge filter and the light
         // shafts are **not** inserted here, and the tonemapping and shadow filter
         // above are only first answers (the sample count and `Hdr` are this

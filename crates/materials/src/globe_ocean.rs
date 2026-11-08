@@ -152,6 +152,14 @@ impl GlobeOcean {
 }
 
 impl MaterialExtension for GlobeOcean {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// Not audited for the prepass. The globe is drawn from
+    /// altitude, where the handset's overdraw is not, and out of it the
+    /// material draws exactly as before.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/globe_ocean.wesl".into()
     }

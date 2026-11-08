@@ -12,9 +12,9 @@
 // the axes and leave the four corners standing at full height against the ring
 // boundary — the hard line this exists to remove, kept where it reads worst.
 //
-// **There is no prepass in this client**, which is what lets this exist as a
-// main-pass vertex stage alone. `systems::building_fade` says what a prepass would
-// owe it.
+// **The material stays out of the camera's depth prepass** (`enable_prepass` in
+// `cartopolis_materials::building_fade`), which is what lets this exist as a
+// main-pass vertex stage alone. `systems::building_fade` says why.
 
 import bevy_pbr::render::{
     mesh_functions,

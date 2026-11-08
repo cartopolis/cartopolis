@@ -870,8 +870,9 @@ fn clear_glass(pbr_input: ptr<function, PbrInput>) -> f32 {
 
 /// Screen-door transparency: whether a fragment of a surface with this
 /// coverage is a hole here, on a 4×4 ordered dither. The building material is
-/// opaque and there is no depth prepass (`render_features`), so a discarded
-/// fragment simply shows whatever lies behind it.
+/// opaque, and this variant writes no depth in a handset's depth prepass
+/// (`keep_holes_out_of_view_prepass`), so a discarded fragment simply shows
+/// whatever lies behind it.
 fn see_through(coverage: f32, frag: vec2<f32>) -> bool {
     let p = vec2<u32>(frag) % vec2<u32>(4u, 4u);
     var bayer = array<f32, 16>(

@@ -27,9 +27,9 @@
 //! The mask is the frame itself: the sun, and the sky showing through a gap, are
 //! the brightest things near the sun; a cloud's shadowed base and a building's
 //! silhouette are darker. Blurred along the radial line, the bright gaps become
-//! streaks and the dark occluders cut them. No depth buffer is read — this app has
-//! no prepass, on purpose (`render_features`' module note) — and none is needed,
-//! because an occluder only has to be darker than the sky behind it.
+//! streaks and the dark occluders cut them. No depth buffer is read — only a
+//! handset has a depth prepass (`quality::Budget::depth_prepass`) — and none is
+//! needed, because an occluder only has to be darker than the sky behind it.
 //!
 //! # Placement
 //!

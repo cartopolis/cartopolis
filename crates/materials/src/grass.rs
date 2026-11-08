@@ -75,6 +75,13 @@ impl From<&GrassExtension> for GrassGpu {
 }
 
 impl MaterialExtension for GrassExtension {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// The blades are placed in a vertex stage the prepass does
+    /// not run, so it would write depth where the main pass draws nothing.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn vertex_shader() -> ShaderRef {
         "shaders/grass.wesl".into()
     }

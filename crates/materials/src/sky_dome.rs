@@ -32,6 +32,13 @@ pub struct SkyDomeMaterial {
 }
 
 impl Material for SkyDomeMaterial {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`): the
+    /// dome writes no depth in the main pass, so writing one in the prepass would
+    /// put the sky in front of the world.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/sky_dome.wesl".into()
     }

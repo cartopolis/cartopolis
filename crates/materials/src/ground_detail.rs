@@ -4,6 +4,7 @@
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+    MeshPipelineKey,
 };
 use bevy::prelude::*;
 use bevy::render::render_resource::{
@@ -35,6 +36,44 @@ impl From<&GroundDetailExtension> for GroundKey {
             see_through: e.see_through,
         }
     }
+}
+
+/// Keep a variant that can `discard` from writing depth in the camera's depth
+/// prepass (`cartopolis::quality::Budget::depth_prepass`), and say whether this
+/// pipeline is a prepass at all.
+///
+/// The prepass runs bevy's own depth-only fragment stage, which never takes our
+/// `discard`: a hole the main pass cuts would be written as solid, and the room
+/// or the pipe behind it depth-rejected. With the write off the variant still
+/// draws in the main pass, depth-tested as it always was; it only stops hiding
+/// what is behind it from the prepass.
+///
+/// The camera's prepass is told from the shadow passes, which are bevy's prepass
+/// pipeline too, by the projection bits of the key: a light's shadow view always
+/// states one (orthographic for the sun and moon, perspective for a point or
+/// spot light, `render/light.rs`), while the camera's prepass key is built from
+/// its sample count and prepass flags alone (`prepass/mod.rs`, bevy_pbr 0.20.0)
+/// and leaves them at `VIEW_PROJECTION_NONSTANDARD`, zero. Testing for the
+/// camera's *perspective* bit instead — the first version — matched nothing, and
+/// the sewer view lost its pipes. The shadows keep their depth, as they had
+/// before there was a prepass.
+pub fn keep_holes_out_of_view_prepass(
+    descriptor: &mut RenderPipelineDescriptor,
+    mesh_key: MeshPipelineKey,
+    cuts_holes: bool,
+) -> bool {
+    let prepass = descriptor
+        .label
+        .as_ref()
+        .is_some_and(|label| label.contains("prepass"));
+    let camera_view = mesh_key.intersection(MeshPipelineKey::VIEW_PROJECTION_RESERVED_BITS)
+        == MeshPipelineKey::VIEW_PROJECTION_NONSTANDARD;
+    if prepass && cuts_holes && camera_view {
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+        }
+    }
+    prepass
 }
 
 /// Add the shader defs a [`GroundKey`] asks for to a ground pipeline. Shared with
@@ -190,6 +229,7 @@ impl MaterialExtension for GroundDetailExtension {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        keep_holes_out_of_view_prepass(descriptor, key.mesh_key, key.bind_group_data.see_through);
         specialize_ground(descriptor, key.bind_group_data);
         Ok(())
     }

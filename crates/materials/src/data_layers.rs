@@ -25,6 +25,13 @@ pub type PinHeadMaterial = ExtendedMaterial<StandardMaterial, DepthAlways>;
 pub struct DepthAlways {}
 
 impl MaterialExtension for DepthAlways {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// The pin ignores the depth test in the main pass; a depth
+    /// written for it first would hide the world behind every pin.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,

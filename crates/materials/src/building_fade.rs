@@ -50,6 +50,13 @@ pub struct BuildingFade {
 }
 
 impl MaterialExtension for BuildingFade {
+    /// Out of the depth prepass (`cartopolis::quality::Budget::depth_prepass`).
+    /// The ring is lowered in a vertex stage the prepass does not
+    /// run, so it would write a full-height depth over a building drawn short.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn vertex_shader() -> ShaderRef {
         "shaders/building_fade.wesl".into()
     }
@@ -67,8 +74,9 @@ impl MaterialExtension for BuildingFade {
         // *bevy's* prepass shader is a pipeline that never validates, which
         // `handle_render_error` answers by halting the renderer for good.
         //
-        // This client has no prepass today. The guard is not for today — see the
-        // module docs on what a prepass would owe this material.
+        // What still comes through here is the shadow passes: the camera's depth
+        // prepass never does, since `enable_prepass` keeps this material out of
+        // it.
         if descriptor
             .label
             .as_ref()

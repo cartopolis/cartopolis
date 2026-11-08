@@ -240,12 +240,14 @@ impl MaterialExtension for BuildingWindows {
         // The shadow pass is bevy's prepass pipeline, whose vertex inputs sit at
         // other locations; `building_fade::specialize` says why touching it is a
         // pipeline that never validates. It reads the position, which is
-        // unchanged.
-        if descriptor
-            .label
-            .as_ref()
-            .is_some_and(|label| label.contains("prepass"))
-        {
+        // unchanged — which is also why the buildings can be in the camera's
+        // depth prepass at all. The cutaway variant cuts holes, so it stays out
+        // of that one's depth (`keep_holes_out_of_view_prepass`).
+        if crate::ground_detail::keep_holes_out_of_view_prepass(
+            descriptor,
+            key.mesh_key,
+            key.bind_group_data.cutaway,
+        ) {
             return Ok(());
         }
         if !layout.0.contains(ATTRIBUTE_FACADE_CODE) {

@@ -42,7 +42,7 @@
 //! shells never fade and four bytes a vertex is ~2.9 MB of graphics memory on one
 //! 720k-vertex cell, on the tier with the least of it.
 //!
-//! # This only works because there is no prepass, and that is not an accident
+//! # This only works because the material stays out of the prepass
 //!
 //! A material that moves vertices in its main-pass vertex stage and leaves
 //! `prepass_vertex_shader` at bevy's default has **two pipelines drawing one
@@ -50,16 +50,18 @@
 //! the short one. Everything behind the building's missing upper half would be
 //! depth-rejected against a silhouette that is no longer drawn.
 //!
-//! This client has no prepass — ambient occlusion was its only user and was
-//! removed on 2026-09-21 (`systems::render_features`). **Anything that
-//! reintroduces one owes this module a `prepass_vertex_shader` applying the
-//! identical transform**, which means a copy of bevy's prepass vertex stage
-//! carrying its `#ifdef`s for motion vectors, normals, deferred, skinning and
-//! morph targets — a file that then has to be diffed against upstream on every
-//! bevy bump, the way the vendored `big_space` already is. That is the price, and
-//! it is why the guard in
+//! A handset's camera has a depth prepass (since 2026-11-08,
+//! `quality::Budget::depth_prepass`), so the material opts out of it
+//! (`BuildingFade::enable_prepass`, in `cartopolis_materials`): the far ring is
+//! drawn by the main pass alone, depth-tested against everything else, and gives
+//! up only the prepass's saving on its own pixels. The alternative — a
+//! `prepass_vertex_shader` applying the identical transform — is a copy of bevy's
+//! prepass vertex stage with its `#ifdef`s for motion vectors, normals, deferred,
+//! skinning and morph targets, to be diffed against upstream on every bevy bump.
+//! The shadow passes are bevy's prepass pipeline too, and still draw the ring at
+//! full height; the guard in
 //! [`BuildingFade::specialize`](cartopolis_materials::building_fade::BuildingFade)
-//! is there to be found.
+//! is what keeps that pipeline valid.
 
 use bevy::prelude::*;
 
