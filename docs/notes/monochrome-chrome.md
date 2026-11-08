@@ -1,10 +1,10 @@
 ---
 topic: ui
 triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
-updated: 2026-11-01
+updated: 2026-11-08
 ---
 
-# The chrome is monochrome glass, and the logo is not
+# The chrome was monochrome glass (now solid), and the logo is not
 
 > **The palette half of this note is history.** The monochrome ramp and pale
 > accent gave way on 2026-10-04 (charcoal and orange) and again on 2026-10-10 to
@@ -75,7 +75,32 @@ that floats over arbitrary imagery.
   stayed orange because a pin is *map content* — it has to be found against parks
   and paper, and grey is what a map already has plenty of.
 
-## The glass, the blur, and the one number that is not a taste knob
+## The glass is gone (2026-11-08)
+
+**Every surface is solid now**, and `systems::glass`, the blur behind the
+panes, is deleted. The person's words: "the round buttons weren't bad; it's
+just a bad implementation of glass, and a try to mimic the theming of the web
+UI". What they saw, on a dense city (`docs/mockups/redesign/v1-structure.png`):
+the ×1.69 saturation lift turned the blurred roofs into a brown wash behind
+the type, and the round controls were tinted but never blurred, so two kinds
+of "glass" sat side by side.
+
+What replaced it is the midas hub's layering, value for value. `PANEL` is the
+page (`INK`), `GLASS` and `OVERLAY` are cards (`SURFACE`) under a soft
+shadow, and every rim is the hub's border (`PANEL_RIM`, `#2A3536`). The
+discs are flat plates under one shadow: the sheen and the accent glow went
+with the glass. The web's `--c-glass` was **not** changed: `web_theme.rs`
+holds it at 92 %, because the ask was about the app.
+
+Do not bring a blur back to answer "the map should show through". That was
+the argument for every step below, and each step ended at a darker slab or a
+brown one. If the map has to be seen, move the panel off it (the desktop
+panels already sit beside the map).
+
+The rest of this section is the history of the glass, kept so the next
+person who wants it knows what it cost.
+
+## History: the glass, the blur, and the one number that was not a taste knob
 
 `GLASS` is `SURFACE` at 92 %, and it is the panel and window fill (84 % until
 2026-11-01; see "The midas hub's tones" below). Alongside the

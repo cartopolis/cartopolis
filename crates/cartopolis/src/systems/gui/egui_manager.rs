@@ -241,14 +241,15 @@ pub fn responsive_right_panel(
     viewport_w: f32,
     wide_width: f32,
 ) -> egui::Panel {
-    // The surface every panel shares (`theme::PANEL`, glass like the panes over the
-    // map) and the glass rim, with room round the content. egui's own side-panel margin
-    // is 8 x 2 pt, which set every title and row against the panel's edge; the
-    // Chats screen sets its own frame over this one.
+    // The page every panel shares (`theme::PANEL`, the midas hub's) and its
+    // hairline, with room round the content. egui's own side-panel margin is
+    // 8 x 2 pt, which set every title and row against the panel's edge; it was
+    // 14 x 10 until 2026-11-08 ("less cramped"). The Chats screen sets its own
+    // frame over this one.
     let frame = egui::Frame::NONE
         .fill(crate::systems::theme::PANEL)
         .stroke(egui::Stroke::new(1.0, crate::systems::theme::PANEL_RIM))
-        .inner_margin(egui::Margin::symmetric(14, 10));
+        .inner_margin(egui::Margin::symmetric(16, 14));
     if compact {
         egui::Panel::right(id)
             .frame(frame)
@@ -747,10 +748,6 @@ pub struct EguiRenderOutput {
     /// Forces the next [`end_egui_frame`] to write even if egui reports no repaint,
     /// otherwise the suppressed state would stick and the UI would never come back.
     pub force_next_write: bool,
-    /// Whether these primitives hold a glass rectangle, i.e. sample the blurred
-    /// backdrop. [`egui_pass`] skips the blur when they do not: a phone with a
-    /// full-screen opaque panel up, or an empty map, has nothing to blur for.
-    pub glass: bool,
 }
 
 // ─── Render-world resource ─────────────────────────────────────────────────
@@ -776,14 +773,6 @@ pub struct EguiWgpuRenderer(
             u32,
             Option<u64>,
             Vec<egui::TextureId>,
-            // The chrome's backdrop blur (`systems::glass`). It lives in here
-            // rather than in a resource of its own so that it inherits both of
-            // this one's properties for free: the wasm arm's non-send storage,
-            // and — the load-bearing half — being dropped whenever the renderer
-            // is, which is what `RenderStartup` does after a device loss. A
-            // backdrop texture belonging to a dead device, sampled by egui, is a
-            // `Validation` error, and those halt the renderer for good.
-            Option<crate::systems::glass::Backdrop>,
         )>,
     >,
 );
@@ -1354,9 +1343,6 @@ pub fn end_egui_frame(
     // it there would go through `DerefMut` and mark the resource changed every
     // frame — defeating exactly the extract skip this function exists to set up.
     mut since_write: Local<f32>,
-    // The glass panes' sheen (`glass::sheen_image`), a texture egui owns; held
-    // here so it lives as long as the system does.
-    mut sheen: Local<Option<egui::TextureHandle>>,
 ) {
     *since_write += time.delta_secs();
     // Unconditional, and deliberately not gated on a surface existing: every
@@ -1423,31 +1409,9 @@ pub fn end_egui_frame(
     }
     *since_write = 0.0;
 
-    // Hang a blurred copy of the frame under every glass rectangle, before
-    // tessellation turns the shapes into meshes and the fills into vertex
-    // colours. This is the last moment at which a panel background is still
-    // recognisably a panel background (`systems::glass`).
-    let mut shapes = full_output.shapes;
-    // Named only from the frame after it is made: loaded now, after
-    // `end_pass`, its allocation travels in the *next* pass's texture delta,
-    // and geometry naming it before then would draw a texture egui-wgpu has
-    // not got. That next pass is never a quiet one, since a pending delta
-    // forces a write.
-    let sheen_id = sheen.as_ref().map(egui::TextureHandle::id);
-    if sheen.is_none() {
-        *sheen = Some(egui_manager.ctx.load_texture(
-            "glass_sheen",
-            crate::systems::glass::sheen_image(),
-            egui::TextureOptions::LINEAR,
-        ));
-    }
-    let glass = crate::systems::glass::insert_backdrops(
-        &mut shapes,
-        size_in_pixels,
-        pixels_per_point,
-        sheen_id,
-    );
-    let clipped_primitives = egui_manager.ctx.tessellate(shapes, pixels_per_point);
+    let clipped_primitives = egui_manager
+        .ctx
+        .tessellate(full_output.shapes, pixels_per_point);
 
     // Carry unconsumed texture deltas forward instead of dropping them.
     //
@@ -1485,7 +1449,6 @@ pub fn end_egui_frame(
         pixels_per_point,
         generation: render_output.generation.wrapping_add(1),
         force_next_write: false,
-        glass,
     };
 }
 
@@ -1543,7 +1506,7 @@ pub fn egui_pass(
     // (Re-)create the wgpu renderer when the output format or sample count changes.
     let needs_recreate = guard
         .as_ref()
-        .map(|(_, fmt, s, _, _, _)| *fmt != texture_format || *s != sample_count)
+        .map(|(_, fmt, s, _, _)| *fmt != texture_format || *s != sample_count)
         .unwrap_or(true);
 
     if needs_recreate {
@@ -1566,15 +1529,10 @@ pub fn egui_pass(
             // replaces; dropping it releases those textures the safe way (wgpu
             // keeps a dropped resource alive until the buffers using it retire).
             Vec::new(),
-            None,
         ));
-        // The id the main world was handing out named a texture registered with
-        // the renderer we just dropped. Retract it before anything can tessellate
-        // against it again.
-        crate::systems::glass::forget();
     }
 
-    let (renderer, _, _, uploaded_gen, pending_free, backdrop) = guard.as_mut().unwrap();
+    let (renderer, _, _, uploaded_gen, pending_free) = guard.as_mut().unwrap();
 
     // Destroy last frame's retired textures *now*, at the top of the pass, rather
     // than at the bottom of the one that retired them — see the note where they
@@ -1620,34 +1578,6 @@ pub fn egui_pass(
         Vec::new()
     };
     *uploaded_gen = Some(render_data.generation);
-
-    // Blur the frame the chrome is about to be drawn over, before the pass that
-    // draws it. Two quarter-size passes on this same encoder, so what egui
-    // samples is this frame's scene rather than the last one's — and *before* the
-    // egui pass, because the source is the main texture and a texture cannot be
-    // sampled by a pass that is also writing to it.
-    //
-    // Nothing here is checked: a backdrop that fails to build leaves the chrome
-    // painting flat translucent fills, which is what it did before this existed.
-    {
-        let source = view_target.main_texture_view();
-        let size = view_target.main_texture().size();
-        let viewport = camera
-            .physical_viewport_size
-            .map_or((size.width, size.height), |v| (v.x, v.y));
-        let encoder = render_context.command_encoder();
-        crate::systems::glass::prepare(
-            render_device.wgpu_device(),
-            render_queue,
-            encoder,
-            renderer,
-            backdrop,
-            &source,
-            (size.width, size.height),
-            viewport,
-            render_data.glass,
-        );
-    }
 
     // Draw egui on top of the presented frame.
     {

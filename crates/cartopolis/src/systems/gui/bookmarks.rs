@@ -1829,6 +1829,7 @@ mod tests {
         };
 
         let mut name = egui::Pos2::ZERO;
+        let mut menu_x: Option<f32> = None;
         let mut out = Actions::default();
         for frame in 0..14 {
             let mut raw = egui::RawInput::default();
@@ -1837,7 +1838,10 @@ mod tests {
             // clears egui's threshold within the hold below.
             raw.time = Some(frame as f64 * 0.2);
             raw.predicted_dt = 0.2;
-            let item = name + egui::vec2(30.0, dy);
+            // Into the menu, on whichever side of the press egui opened it:
+            // the roomier menu (2026-11-08) no longer fits right of a press in
+            // a right-hand panel, so egui opens it to the left.
+            let item = egui::pos2(menu_x.unwrap_or(name.x + 30.0), name.y + dy);
             match (long_touch, frame) {
                 // A right-click opens the menu on the release.
                 (false, 1) => raw.events.push(egui::Event::PointerMoved(name)),
@@ -1905,6 +1909,14 @@ mod tests {
                         name = egui::pos2(top.x + 70.0, (top.y + ui.cursor().min.y) * 0.5);
                     });
             });
+            menu_x = ctx.memory(|m| {
+                m.areas()
+                    .visible_layer_ids()
+                    .into_iter()
+                    .filter(|l| l.order != egui::Order::Background)
+                    .find_map(|l| m.area_rect(l.id))
+                    .map(|r| r.center().x)
+            });
             if act.route.is_some() {
                 out.route = act.route;
             }
@@ -1923,7 +1935,7 @@ mod tests {
 
     /// Sweep the menu for the entry that routes to the place.
     fn sweep_for_route(long_touch: bool) -> Actions {
-        for step in 0..40 {
+        for step in 0..80 {
             let act = click_place_menu(long_touch, 6.0 + step as f32 * 4.0);
             if act.route.is_some() {
                 return act;

@@ -44,8 +44,12 @@ these constants (`atlas-web-ui.md`).
 Three passes were shown before that landed, and the misses are the useful part:
 making the panel glass at the old density changed nothing visible, and
 re-drawing the buttons alone was "barely better" — what was meant was the
-*panel*, the hub's dark teal with its teal rim (`theme::GLASS`, `PANEL_RIM`),
-"tealer, lighter" than the hub's own 7 % mix. Inside it the widgets follow the
+*panel*, then drawn as the hub's dark teal with a teal rim, "tealer, lighter"
+than the hub's own 7 % mix. **On 2026-11-08 that was taken back**: the person
+called it "a bad implementation of glass, and a try to mimic the web UI" and
+asked for midas's colours as midas lays them out — solid `SURFACE` cards on an
+`INK` page, the hub's `#2A3536` hairline (`PANEL_RIM`), and more room (rows 28
+/ 40 pt, menu rows 36 / 48, `monochrome-chrome.md`). Inside it the widgets follow the
 hub's component library (`@garage44/mithril`): a segmented control's choice is
 a raised card, not an accent plate; section heads are sentence case with the
 count in the faint tone ("Asking to join 1"); a panel title has no medallion; a

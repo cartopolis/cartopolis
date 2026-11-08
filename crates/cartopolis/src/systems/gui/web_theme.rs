@@ -117,8 +117,10 @@ fn both(c: Color32) -> Value {
 fn tokens() -> Vec<(&'static str, Value)> {
     use theme::*;
     use Value::*;
-    // [`GLASS`]'s own alpha, so the web's glass is the client's.
-    let glass_pct = GLASS.a() as f32 / 2.55;
+    // The web's glass stays at the 92 % the client's was. The client went
+    // solid on 2026-11-08 (`theme::GLASS`) at the person's word about the app;
+    // the web page was not part of that ask, so it keeps its look until it is.
+    let glass_pct = 92.0;
     vec![
         // Brand
         ("--c-brand", both(BRAND)),

@@ -44,10 +44,10 @@ use crate::systems::{icons, theme};
 // style.css`), which is itself the app palette: `theme`
 // already has ink, surface, raised, accent, brand and cream at the same values.
 
-/// The hairline around glass and the segmented control (`--gline`, white at
-/// 14 %).
-pub(crate) const GLINE: egui::Color32 =
-    egui::Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 36);
+/// The hairline around a floating card and the segmented control: the midas
+/// hub's border ([`theme::PANEL_RIM`]). It was white at 14 % (`--gline`), the
+/// lit edge of a glass pane, until the chrome went solid on 2026-11-08.
+pub(crate) const GLINE: egui::Color32 = theme::PANEL_RIM;
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
 ///
 /// Lifted from the mockup's muted set on 2026-10-04: on the ink screen those
@@ -4323,8 +4323,8 @@ pub(crate) fn raised_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(12))
 }
 
-/// The design's floating glass (`.float-top`, `.sheet`): ink at 84 %, a
-/// hairline, round corners.
+/// The design's floating card (`.float-top`, `.sheet`): solid since
+/// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
 pub(crate) fn glass_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(theme::GLASS)

@@ -35,7 +35,7 @@ pub struct MainMenu {
 /// the reason the driver bar's module note gives: this is an anchored,
 /// size-to-content `Area`, and anything inside it that reaches for the
 /// *available* width would grow the card a little every frame.
-const MENU_WIDTH: f32 = 232.0;
+const MENU_WIDTH: f32 = 248.0;
 
 /// The app menu's account entry (`systems::session`), bundled into one parameter
 /// because [`render_main_menu`] would otherwise sit at Bevy's 16-parameter
@@ -121,16 +121,15 @@ pub fn render_main_menu(
         .default_size(egui::vec2(MENU_WIDTH, max_height))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(&ctx, |ui| {
-            // `Frame::popup`, not `theme::overlay_frame`: the shared overlay frame
-            // is translucent, which is right for a HUD readout and wrong under a
-            // list of commands over a moving map.
+            // `Frame::popup`: the window card, with its shadow and the hub's
+            // hairline, which is what a list of commands over a moving map
+            // wants.
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(MENU_WIDTH);
                 egui::ScrollArea::vertical()
                     .max_height(max_height)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        ui.spacing_mut().button_padding.y = 4.0;
                         // The brand, at the top of the card the mark opened — the
                         // same two-tone wordmark the splash and the sign-in card
                         // wear (`theme::WORDMARK_HEAD`).

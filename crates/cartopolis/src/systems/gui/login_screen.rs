@@ -480,9 +480,7 @@ pub fn render_login_screen(
     // ── Card ─────────────────────────────────────────────────────────────────
     let card_id = egui::Id::new("sign_in_card");
     let frame = egui::Frame::NONE
-        // The same glass every panel and window in the app is made of — see
-        // `theme::GLASS`. A card over a dimmed map is exactly the case the
-        // translucency was chosen for.
+        // The card every window in the app is (`theme::GLASS`, solid).
         .fill(theme::GLASS)
         .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
@@ -628,7 +626,7 @@ fn card_ui(
     // field was the card's first question, and only somebody running their own
     // server has a different answer to it than the one filled in.
     if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
-        field(ui, "Server", |ui| {
+        field_line(ui, "Server", |ui| {
             // Change takes its corner first and the name what is left, for
             // the reason the header gives: laid out the other way round the
             // two were drawn over each other on a phone.
@@ -694,7 +692,7 @@ fn card_ui(
         external_buttons(ui, screen, session.status.is_busy());
     }
 
-    field(ui, "User", |ui| {
+    field(ui, "Account name", |ui| {
         crate::systems::text_touch::field(
             ui,
             egui::TextEdit::singleline(&mut screen.username)
@@ -942,19 +940,33 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
     });
 }
 
-/// A labelled row in the remote-server form. The label column is fixed so the
-/// three fields line up — a `horizontal` with two labels of different widths puts
-/// each field somewhere else, which reads as three unrelated boxes.
+/// A labelled field in the sign-in form, as the midas hub lays one out: the
+/// label above, small and dim, and the field the card's full width under it.
+///
+/// It was a fixed 66 pt label column with the field beside it (so the fields
+/// lined up), which on a 275 pt phone left the field under 200 pt and the
+/// form looking like a settings table (2026-11-08, `docs/mockups/redesign`).
 fn field(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(label)
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+    );
+    ui.add_space(2.0);
+    ui.horizontal(add);
+}
+
+/// A value already answered, on one line: its label, then the value. The
+/// folded server row, which is a fact with a "Change" beside it rather than a
+/// question, so it does not take a field's two lines.
+fn field_line(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(66.0, 20.0), egui::Sense::hover());
-        ui.painter().text(
-            egui::pos2(rect.left(), rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(theme::SIZE_SUB),
-            theme::TEXT_DIM,
+        ui.label(
+            egui::RichText::new(label)
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
         );
         add(ui);
     });
