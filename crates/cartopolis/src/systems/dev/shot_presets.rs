@@ -211,9 +211,89 @@ pub struct Preset {
     #[serde(default)]
     #[allow(dead_code)] // data for whoever reads the file; the harness never does
     pub measured: Option<toml::Table>,
+    /// A photograph of this view, relative to the manifest: the camera's Real
+    /// picture, or the photograph's half of a Mixed one. `cartopolis compare`
+    /// measures the capture's light against it (`systems::light_compare`); the
+    /// harness itself never reads it.
+    #[serde(default)]
+    pub reference: Option<PathBuf>,
+    /// The region the others are measured from, in stops. Defaults to the first.
+    #[serde(default)]
+    pub anchor: Option<String>,
+    /// The places in the picture whose light is compared: a sunlit wall, a wall
+    /// in shade, the sky overhead and at the horizon.
+    #[serde(default, rename = "region")]
+    pub regions: Vec<Region>,
+}
+
+/// One place in a reference photograph and the same place in the capture.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Region {
+    pub name: String,
+    /// `[x, y, w, h]` as fractions of the photograph, from its top-left corner.
+    pub photo: [f32; 4],
+    /// The same place in the capture, when it does not frame quite like the
+    /// photograph (a compass is a few degrees out). Defaults to `photo`.
+    #[serde(default)]
+    pub render: Option<[f32; 4]>,
+}
+
+impl Region {
+    pub fn render_rect(&self) -> [f32; 4] {
+        self.render.unwrap_or(self.photo)
+    }
 }
 
 impl Preset {
+    /// Regions only mean something beside a photograph, each rect has to lie in
+    /// the picture, and the anchor has to be one of them: a typo here would
+    /// otherwise measure the wrong place and report it as a finding.
+    fn validate_regions(&self) -> Result<(), String> {
+        if self.reference.is_none() {
+            if !self.regions.is_empty() || self.anchor.is_some() {
+                return Err(format!(
+                    "shot {:?} has regions or an anchor but no reference photograph",
+                    self.name
+                ));
+            }
+            return Ok(());
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for r in &self.regions {
+            if seen.contains(&r.name.as_str()) {
+                return Err(format!("shot {:?} has two regions {:?}", self.name, r.name));
+            }
+            seen.push(&r.name);
+            for rect in [r.photo, r.render_rect()] {
+                let [x, y, w, h] = rect;
+                let inside = rect.iter().all(|v| v.is_finite())
+                    && x >= 0.0
+                    && y >= 0.0
+                    && w > 0.0
+                    && h > 0.0
+                    && x + w <= 1.0 + 1e-4
+                    && y + h <= 1.0 + 1e-4;
+                if !inside {
+                    return Err(format!(
+                        "shot {:?} region {:?} has rect {rect:?}: [x, y, w, h] are \
+                         fractions of the picture and must lie inside it",
+                        self.name, r.name
+                    ));
+                }
+            }
+        }
+        if let Some(a) = &self.anchor {
+            if !seen.contains(&a.as_str()) {
+                return Err(format!(
+                    "shot {:?} anchors on {a:?}, which is not one of its regions",
+                    self.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::date`] as a day of the year, `None` when the shot names no date.
     pub fn day_of_year(&self) -> Result<Option<f32>, String> {
         let Some(d) = self.date.as_deref() else {
@@ -238,7 +318,7 @@ impl Manifest {
         Ok(manifest)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.shots.is_empty() {
             return Err("shot manifest has no [[shot]] entries".into());
         }
@@ -261,6 +341,7 @@ impl Manifest {
                     ));
                 }
             }
+            s.validate_regions()?;
             if s.roll.is_some_and(|r| !r.is_finite()) {
                 return Err(format!("shot {:?} has a roll that is not a number", s.name));
             }
@@ -502,7 +583,10 @@ out = "img/custom.png"
                     .unwrap_or_else(|e| panic!("{} is invalid: {e}", path.display()));
             }
         }
-        assert!(seen >= 2, "found {seen} shot manifests, expected at least the documentation set and the grade set");
+        assert!(
+            seen >= 2,
+            "found {seen} shot manifests, expected at least the documentation set and the grade set"
+        );
     }
 
     #[test]

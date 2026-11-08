@@ -120,6 +120,11 @@ pub fn run() {
     if systems::mcp::relay::requested() {
         systems::mcp::relay::main();
     }
+    // `cartopolis compare`: captures measured against photographs, no app.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    if systems::light_compare::requested() {
+        systems::light_compare::main();
+    }
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(async {
         use crate::platform::storage;

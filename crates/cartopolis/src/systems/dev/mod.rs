@@ -11,6 +11,9 @@ pub use plugin::{PerfPlugin, ShotHarnessPlugin};
 /// The aerial photograph a capture is checked against (`--aerial-reference`).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aerial_reference;
+/// A capture's light measured against a photograph of the view (`cartopolis compare`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod light_compare;
 /// The clock the moving world animates against; frozen between frames of a movie.
 pub mod anim_clock;
 pub mod camera_pacing;
