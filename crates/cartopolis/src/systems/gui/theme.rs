@@ -43,8 +43,8 @@
 //!     without the other.
 //!
 //! **Every surface is solid** (since 2026-11-08, "a bad implementation of
-//! glass"): the midas hub's layering. [`PANEL`] is its page ([`INK`]), cards and
-//! everything over the map are [`SURFACE`] ([`GLASS`], [`OVERLAY`]) under a soft
+//! glass"): the midas hub's layering, one darkness. [`PANEL`], [`GLASS`] and
+//! [`OVERLAY`] are all its page ([`INK`]), with [`SURFACE`] cards inside and a soft
 //! shadow, with the hub's hairline ([`PANEL_RIM`]). Nothing shows through.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
@@ -90,8 +90,8 @@ use crate::systems::icons;
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
 pub const INK: Color32 = Color32::from_rgb(0x0F, 0x14, 0x16);
-/// The surface ramp's bottom: every card, window and box over the map
-/// ([`GLASS`] and [`OVERLAY`] are this, by name).
+/// The surface ramp's bottom above [`INK`]: a card *inside* a panel (a list
+/// group, a chat row), one step off the panel's page.
 pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x1A, 0x1C);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
@@ -249,28 +249,31 @@ pub const CODE_API: Color32 = Color32::from_rgb(0x8F, 0xCB, 0xFF);
 pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
 
 /// The fill of the boxes that float *over* the map (status HUD, stats, driver
-/// chrome, the dock, the round map buttons): [`SURFACE`], solid.
+/// chrome, the dock, the round map buttons): [`PANEL`]'s dark, solid.
 ///
 /// **Solid since 2026-11-08**, asked for that day: "a bad implementation of
 /// glass". These were 92 % over a blurred, saturated copy of the frame, and on
-/// a busy city the blur came through as a brown wash behind the type. The
-/// midas hub draws the same tones as solid cards with a soft shadow, and that
-/// is what the person asked for. What the boxes stood on top of is now said by
-/// their shadow ([`CARD_SHADOW`], `Visuals::window_shadow`), not by the map
-/// showing through. `monochrome-chrome.md` has the glass's history, so nobody
-/// walks it again.
-pub const OVERLAY: Color32 = SURFACE;
-
-/// The window and popup fill: a card ([`SURFACE`]), solid, like [`OVERLAY`].
+/// a busy city the blur came through as a brown wash behind the type. What a
+/// box stands on is said by its shadow ([`CARD_SHADOW`],
+/// `Visuals::window_shadow`), not by the map showing through.
+/// `monochrome-chrome.md` has the glass's history, so nobody walks it again.
 ///
-/// The name stays for the call sites that paint "the card a window is"; there
-/// is no translucency left in the chrome.
-pub const GLASS: Color32 = SURFACE;
+/// **[`INK`], the same as a panel**, also asked that day: drawn as
+/// [`SURFACE`], the floating cards (the menu, a building, a person) came out a
+/// step lighter than the panels, and "some panels are lighter than others;
+/// they must be dark". One darkness for every surface a person reads as a
+/// panel; only a card *inside* one ([`SURFACE`]) stands a step off it.
+pub const OVERLAY: Color32 = PANEL;
 
-/// The docked side panels' surface, and a phone's full-screen page: the midas
-/// hub's page, [`INK`], with [`SURFACE`] cards on it under [`CARD_SHADOW`].
-/// The layering is most of the hub's depth (2026-11-01, and solid again since
-/// 2026-11-08).
+/// The window and popup fill: [`OVERLAY`]'s dark. The name stays for the call
+/// sites that paint "the card a window is"; there is no translucency left in
+/// the chrome.
+pub const GLASS: Color32 = PANEL;
+
+/// Every panel's surface — docked, full-screen on a phone, floating over the
+/// map: the midas hub's page, [`INK`], with [`SURFACE`] cards on it under
+/// [`CARD_SHADOW`]. The layering is most of the hub's depth (2026-11-01, and
+/// solid and one darkness since 2026-11-08).
 pub const PANEL: Color32 = INK;
 
 /// The hairline round a panel, a window or a box over the map: the midas hub's
