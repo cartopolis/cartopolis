@@ -1,0 +1,219 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css">
+<style>
+.lt.mapbg { background:url(map-today.jpg) center/cover; }
+.space { position:absolute; left:50%; transform:translateX(-50%); bottom:12px; height:48px; border-radius:24px; background:var(--surface); box-shadow:var(--lift-2); display:flex; padding:4px; gap:2px; z-index:14; }
+.space div { display:flex; align-items:center; gap:6px; padding:0 14px; border-radius:20px; font-weight:600; font-size:13.5px; color:var(--dim); position:relative; }
+.space div.on { background:var(--accent); color:var(--on-accent); }
+.space .n { background:#fd6012; color:#fff; font-size:10.5px; border-radius:8px; padding:0 5px; height:16px; display:inline-flex; align-items:center; }
+.sbar { position:absolute; left:8px; right:8px; top:36px; height:44px; border-radius:22px; background:var(--surface); box-shadow:var(--lift-2); display:flex; align-items:center; gap:8px; padding:0 4px 0 14px; color:var(--dim); font-size:14px; z-index:10; }
+.sbar .av { width:34px; height:34px; margin-left:auto; font-size:13px; }
+.mk { position:absolute; z-index:9; display:flex; flex-direction:column; align-items:center; }
+.mk .disc { width:30px; height:30px; border-radius:50%; border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; font-size:12px; }
+.mk .lbl { margin-top:3px; background:#fff; color:#1f2829; font-size:10.5px; font-weight:600; border-radius:6px; padding:1px 6px; box-shadow:0 1px 3px rgba(0,0,0,.3); white-space:nowrap; }
+.bridge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; background:#fd6012; color:#fff; font-size:11px; font-weight:700; flex:none; }
+.sheet2 { position:absolute; left:8px; right:8px; background:var(--surface); border-radius:20px; box-shadow:var(--lift-2); padding:14px; z-index:12; }
+.ttl { font-size:19px; font-weight:600; color:var(--strong); }
+.st { font-size:13px; color:var(--dim); }
+.tile2 { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:9px 2px 7px; border-radius:12px; border:1px solid var(--border); font-size:12px; font-weight:600; color:var(--text); position:relative; }
+.tile2 svg { color:var(--accent-text); }
+.tile2 .bridge { position:absolute; top:-6px; right:-4px; }
+.backchip { position:absolute; left:8px; top:36px; height:40px; border-radius:20px; background:var(--strong); color:var(--surface); display:flex; align-items:center; gap:6px; padding:0 14px 0 8px; font-weight:600; font-size:13.5px; z-index:10; box-shadow:var(--lift-2); }
+.ptitle { font-size:24px; font-weight:600; color:var(--strong); }
+
+/* the diagram */
+.diag { display:grid; grid-template-columns:1fr 400px 1fr; gap:0; align-items:stretch; margin-top:24px; }
+.zone { background:#131A1C; border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:20px 22px; }
+.zone h3 { font-size:22px; color:var(--sheet-cream); display:flex; align-items:center; gap:10px; }
+.zone h3 svg { color:#5cc6c0; }
+.zone .why { color:var(--sheet-dim); font-size:14.5px; margin:4px 0 12px; }
+.zone ul { list-style:none; font-size:14.5px; columns:2; }
+.zone li { padding:4px 0; break-inside:avoid; }
+.zone li i { font-style:normal; color:var(--sheet-dim); font-size:13px; }
+.zone .look { margin-top:12px; font-size:13.5px; color:var(--sheet-dim); border-top:1px solid rgba(255,255,255,.08); padding-top:10px; }
+.zone .look b { color:var(--sheet-cream); }
+.bridges { display:flex; flex-direction:column; justify-content:center; gap:14px; padding:0 18px; }
+.br { background:#1b1410; border:1px solid rgba(253,96,18,.5); border-radius:14px; padding:10px 14px; font-size:13.5px; color:var(--sheet-dim); }
+.br b { color:var(--sheet-cream); display:flex; align-items:center; gap:8px; font-size:14.5px; margin-bottom:2px; }
+.br .arrow { color:#FF9A66; font-weight:600; }
+.youbar { margin-top:14px; background:#131A1C; border:1px dashed rgba(255,255,255,.2); border-radius:14px; padding:12px 20px; color:var(--sheet-dim); font-size:14.5px; }
+.youbar b { color:var(--sheet-cream); }
+</style></head><body>
+
+<h1>Vraag 2 · De wereld en de community, <b>uit elkaar</b></h1>
+<p class="lede">Gevraagd 2026-11-08: "er moet een duidelijker onderscheid zijn tussen de wereld en de community. Je introduceert die begrippen in de wereld als knoppen,
+maar het is niet duidelijk hoe ze samenhangen. En de knoppen nemen veel ruimte." Hier dus <b>twee ruimtes</b>, elk met een eigen vorm, en <b>drie benoemde
+bruggen</b> ertussen. Er zijn geen andere. Het thema is dat van vraag 1 (licht), en de schermen zijn getekend op de echte maat van de app: 275 pt breed.
+De knoppen op de kaart blijven ronde knoppen. <span class="tag">nieuw</span></p>
+
+<div class="diag">
+  <div class="zone"><h3><svg class="i l"><use href="#map"/></svg>World</h3><p class="why">Waar je bent en wat je ziet. Jij en de stad.</p>
+    <ul><li>Zoeken naar plekken</li><li>Lagen, lenzen, licht</li><li>Walk · Fly · Earth</li><li>Locate, Camera</li><li>Gebouwen, binnen kijken</li><li>Route</li><li>Saved places</li><li>Bouwen, objecten, scripts</li></ul>
+    <div class="look"><b>Vorm:</b> de kaart over het hele scherm, ronde knoppen aan de rand, kaartjes onderaan. Er komen geen lijsten met mensen of berichten in.</div></div>
+  <div class="bridges">
+    <div class="br"><b><span class="bridge">1</span>Markers <span class="arrow">World → Community</span></b>Mensen, afspraken en posts met een plek staan als markers op de kaart. Tik je erop, dan opent het in Community.</div>
+    <div class="br"><b><span class="bridge">2</span>Show in world <span class="arrow">Community → World</span></b>Alles in Community wat een plek heeft (een gedeelde locatie, een afspraak, een post) heeft één knop: "Show in world". Daarna brengt "‹ Back" je terug.</div>
+    <div class="br"><b><span class="bridge">3</span>Share <span class="arrow">World → Community</span></b>Een plek of het beeld delen gaat naar een gesprek of een community. Het is één knop op een kaartje, en verder niets sociaals in de wereld.</div>
+  </div>
+  <div class="zone"><h3><svg class="i l"><use href="#people"/></svg>Community</h3><p class="why">Met wie je praat. Mensen en groepen.</p>
+    <ul><li>Chats</li><li>Communities, posts</li><li>Calendar, afspraken</li><li>Contacts, requests</li><li>Calls</li><li>Zoeken naar mensen</li></ul>
+    <div class="look"><b>Vorm:</b> een effen pagina met lijsten, zoals midas. Op een telefoon vult ze het scherm, op desktop is ze een paneel naast de wereld. Er komt geen kaart in, behalve kleine voorbeeldjes die naar ② leiden.</div></div>
+</div>
+<div class="youbar"><b>Wisselen:</b> één schakelaar onderaan, <b>World | Community</b>, die er in beide ruimtes hetzelfde uitziet en op dezelfde plek staat. De dock, het ☰-menu en de
+schakelaar bovenaan vervallen. <b>Jij:</b> je gezicht staat rechtsboven in beide ruimtes en opent Profile, Avatar, Settings, Admin, About en Sign out.</div>
+
+<!-- ============ ROW 1 ============ -->
+<h2 class="sec"><span>A</span>In de wereld</h2>
+<div class="row">
+
+<!-- N1 -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="rcol" style="right:10px;top:92px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div><div class="rb"><svg class="i"><use href="#camera"/></svg></div></div>
+  <div class="rb sm" style="position:absolute;left:10px;top:92px;color:#e0533c"><svg class="i s"><use href="#north"/></svg></div>
+  <div class="mk" style="left:70px;top:250px"><div class="disc" style="background:#6B9A2E">S</div><div class="lbl">sanne</div></div>
+  <div class="mk" style="left:150px;top:350px"><div class="disc" style="background:#fff;color:#17696a"><svg class="i s"><use href="#cal"/></svg></div><div class="lbl">Vismarkt dinner · 22:30</div></div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N1</span>World</h3><ul>
+  <li>Bovenaan <b>Search places</b> en je gezicht. Rechts vier ronde knoppen: Layers, View, Locate, Camera. Het kompas staat links.</li>
+  <li>Onderaan alleen de <b>schakelaar</b>. De tellers (5) zijn die van Community.</li>
+  <li>De community komt hier alleen voor als <b>markers</b> ①: sanne, en een afspraak met een plek.</li></ul></div></div>
+
+<!-- N2 -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div style="margin:12px 0 10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+    <div class="h-row" style="gap:6px"><div class="tile2"><svg class="i s"><use href="#bookmark"/></svg>Save</div><div class="tile2"><svg class="i s"><use href="#building"/></svg>Inside</div><div class="tile2"><svg class="i s"><use href="#more"/></svg>Facts</div><div class="tile2"><svg class="i s"><use href="#share"/></svg>Share<span class="bridge">3</span></div></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N2</span>Een gebouw</h3><ul>
+  <li><b>Alleen wereld-acties</b>: Route here, Save, Inside, Facts. In v1 stonden hier "Here now · Say hi" en "Post here", en dat was de verwarring.</li>
+  <li>Het enige sociale is <b>Share</b> ③, met een oranje bolletje zodat je ziet dat het naar Community gaat.</li>
+  <li>Tegels van 44 pt in één rij. Het kaartje laat de bovenste helft van de kaart vrij.</li></ul></div></div>
+
+<!-- N3 -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="mk" style="left:150px;top:240px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#cal"/></svg></div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="h-row"><div class="grow"><div class="st" style="font-weight:600;color:var(--accent-text)">Garage 44 · event</div><div class="ttl">Vismarkt dinner</div><div class="st">Today 22:30 · sanne and 1 more going</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="h-row" style="gap:8px;margin-top:12px"><span class="b2 p" style="flex:1"><svg class="i s"><use href="#people"/></svg>Open in Community</span><span class="bridge">1</span></div>
+    <div style="margin-top:8px"><span class="b2 s" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N3</span>Een marker aangetikt ①</h3><ul>
+  <li>Bovenaan staat <b>waar het vandaan komt</b>: "Garage 44 · event".</li>
+  <li>De hoofdknop zegt waar je heen gaat: <b>Open in Community</b>. Ernaar lopen kan ook, want het is een plek.</li>
+  <li>Een persoon werkt net zo: "sanne · sharing location", met "Open chat".</li></ul></div></div>
+
+<!-- N4 Share -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:0;background:rgba(15,20,22,.35);z-index:11"></div>
+  <div class="sheet2" style="bottom:0;left:0;right:0;border-radius:20px 20px 0 0;padding-bottom:20px">
+    <div class="h-row"><div class="grow"><div class="ttl">Share Martinitoren</div><div class="st">Sends the place to a chat or community</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="head2" style="margin-top:14px">Send to</div>
+    <div class="list2">
+      <div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">Chat</div></div></div>
+      <div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">Community · as a post</div></div></div>
+      <div class="r2"><div class="av sm" style="background:#8A4FC8">F</div><div>Fietsers Groningen<div class="d">Community</div></div></div>
+    </div>
+    <div style="margin-top:10px"><span class="b2 s" style="width:100%"><svg class="i s"><use href="#share"/></svg>Copy link</span></div>
+  </div>
+</div>
+<div class="cap"><h3><span>N4</span>Share ③</h3><ul>
+  <li>Eén blad dat zegt wat het doet: "Sends the place to a chat or community".</li>
+  <li>Hiermee vervallen "Post here", "Send this view to a chat" en "Post this view to a community". Die waren drie aparte knoppen in de ring en in het zoekpaneel.</li></ul></div></div>
+</div>
+
+<!-- ============ ROW 2 ============ -->
+<h2 class="sec"><span>B</span>In de community, en terug</h2>
+<div class="row">
+
+<!-- N5 Community home -->
+<div class="cell"><div class="phone p275 lt" style="background:var(--bg)">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:34px 10px 0">
+    <div class="h-row" style="margin:4px 2px 10px"><div class="grow ptitle">Community</div><span class="rb sm" style="box-shadow:var(--lift-1)"><svg class="i s"><use href="#search"/></svg></span><div class="av" style="background:#2E8F82;width:34px;height:34px;font-size:13px">J</div></div>
+    <div class="seg2" style="margin-bottom:10px"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+    <div class="needs" style="margin-bottom:10px"><div class="grow" style="font-size:14px"><b>2 message requests</b><div class="st">jeroen and 1 more</div></div><span class="b2 p sm">Answer</span></div>
+    <div class="list2">
+      <div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div><span class="space n" style="position:static;transform:none;box-shadow:none;height:18px;padding:0 6px;background:#fd6012;color:#fff;font-size:11px;border-radius:9px">5</span></div>
+      <div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d" style="color:#c26a00">sharing location · 60 min</div></div></div>
+      <div class="r2"><div class="av sm" style="background:#8A4FC8">F</div><div>Fietsers Groningen<div class="d">joris: 10:00 at the station</div></div></div>
+      <div class="r2"><div class="av sm" style="background:#C8306A">E</div><div>eva<div class="d">See you Saturday!</div></div></div>
+    </div>
+  </div>
+  <div class="space"><div><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N5</span>Community</h3><ul>
+  <li><b>Een effen pagina</b>, zonder kaart. Je ziet meteen dat je in een andere ruimte bent.</li>
+  <li>Drie delen bovenaan: <b>Chats · Groups · Calendar</b>. Calendar was verstopt achter een strook.</li>
+  <li>De schakelaar staat op <b>dezelfde plek</b> als in de wereld. Eén tik brengt je terug naar dezelfde kaart.</li></ul></div></div>
+
+<!-- N6 event detail -->
+<div class="cell"><div class="phone p275 lt" style="background:var(--bg)">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:34px 10px 0">
+    <div class="h-row" style="margin:4px 0 6px"><span class="b2 t" style="padding-left:0"><svg class="i s"><use href="#left"/></svg>Calendar</span></div>
+    <div class="st" style="font-weight:600;color:var(--accent-text)">Garage 44</div>
+    <div class="ptitle" style="font-size:22px">Vismarkt dinner</div>
+    <div class="st" style="margin-bottom:12px">Today 22:30 – 00:30 · sanne, karim going</div>
+    <div class="h-row" style="gap:8px;margin-bottom:12px"><span class="b2 p" style="flex:1">Going</span><span class="b2 s" style="flex:1">Not going</span></div>
+    <div class="list2">
+      <div style="height:96px;background:url(map-today.jpg) center 60%/cover;position:relative"><div class="mk" style="left:110px;top:30px"><div class="disc" style="background:#5cc6c0;color:#0f1416"><svg class="i s"><use href="#cal"/></svg></div></div></div>
+      <div class="r2"><div>Vismarkt<div class="d">Groningen · 700 m away</div></div></div>
+    </div>
+    <div class="h-row" style="gap:8px;margin-top:10px"><span class="b2 s" style="flex:1"><svg class="i s"><use href="#map"/></svg>Show in world</span><span class="bridge">2</span></div>
+  </div>
+  <div class="space"><div><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N6</span>Iets met een plek</h3><ul>
+  <li>Het kaartje is een <b>voorbeeld</b>, geen kaart om te bedienen. De knop eronder zegt wat er gebeurt: <b>Show in world</b> ②.</li>
+  <li>Dezelfde knop staat bij een gedeelde locatie in een chat en bij een post met een plek.</li></ul></div></div>
+
+<!-- N7 back in world -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="backchip"><svg class="i s"><use href="#left"/></svg>Back to Vismarkt dinner</div>
+  <div class="rcol" style="right:10px;top:92px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div></div>
+  <div class="mk" style="left:118px;top:230px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#cal"/></svg></div><div class="lbl">Vismarkt dinner</div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="h-row"><div class="grow"><div class="ttl">Vismarkt</div><div class="st">Square · 700 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div style="margin-top:12px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>N7</span>Terug in de wereld</h3><ul>
+  <li>De schakelaar staat op World, en de kaart is naar de plek gevlogen. Je ziet het kaartje van de <b>plek</b>, niet van de afspraak.</li>
+  <li>Waar de zoekbalk stond, staat <b>"‹ Back to Vismarkt dinner"</b>. Zo weet je hoe je hier kwam en hoe je terug gaat. De chip verdwijnt als je zelf gaat rondkijken.</li></ul></div></div>
+
+<!-- N8 You -->
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;inset:0;background:rgba(15,20,22,.35);z-index:11"></div>
+  <div class="sheet2" style="bottom:0;left:0;right:0;top:120px;border-radius:20px 20px 0 0">
+    <div class="h-row" style="margin-bottom:12px"><div class="av lg" style="background:#2E8F82">J</div><div class="grow"><div class="ttl">jeroen</div><div class="st">jeroen@cartopolis.org</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="list2">
+      <div class="r2"><svg class="i ic"><use href="#user"/></svg><div>Avatar</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#bookmark"/></svg><div>Saved places</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#settings"/></svg><div>Settings</div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#flag"/></svg><div>Admin<div class="d">2 reports open</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#check"/></svg><div>Help and about</div><svg class="i s chev"><use href="#right"/></svg></div>
+    </div>
+    <div style="margin-top:10px;text-align:center"><span class="b2 t" style="color:var(--danger)">Sign out…</span></div>
+  </div>
+</div>
+<div class="cap"><h3><span>N8</span>Jij: je gezicht rechtsboven</h3><ul>
+  <li>Vervangt het <b>☰-menu</b>. Het staat in beide ruimtes op dezelfde plek en hoort bij geen van beide.</li>
+  <li>Zonder account staat er een grijs rondje, en het blad begint met <b>Sign in</b>.</li></ul></div></div>
+</div>
+
+<script src="icons.js"></script></body></html>

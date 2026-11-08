@@ -1,0 +1,139 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css">
+<style>
+.lt.mapbg { background:url(map-today.jpg) center/cover; }
+.dk.mapbg { background:linear-gradient(rgba(8,16,30,.5),rgba(8,16,30,.5)), url(map-today.jpg) center/cover; }
+.wordmark { font-size:20px; font-weight:600; color:var(--strong); } .wordmark b { color:#fd6012; font-weight:600; }
+</style></head><body>
+
+<h1>Vraag 1 · Het thema van midas, <b>met ruimte</b></h1>
+<p class="lede">Gevraagd 2026-11-08: "de ronde knoppen waren niet slecht, het is een slechte uitvoering van glas en een poging om de webui na te doen.
+De vraag was: dezelfde themakleuren als de midas web-ui, en de ui minder krap." Dus hier verandert <b>alleen hoe het eruitziet</b>: de indeling, de dock,
+de ronde knoppen en het menu blijven waar ze nu staan. Links de app nu (<code>main</code> 0a7e2a97, mac-1), dan dezelfde schermen in midas' lichte en donkere
+kleuren. De kleuren komen letterlijk uit midas' <code>web/src/theme.css</code> en de schaduwen uit <code>app.css</code>. <span class="tag">nieuw</span></p>
+
+<div class="principles" style="grid-template-columns:repeat(4,1fr)">
+  <div><h3><i>1</i>Effen vlakken</h3><p>Panelen zijn wit (licht) of #141A1C (donker), met midas' zachte schaduw. Er schijnt niets doorheen en er is geen wazige rand. De kaart blijft zichtbaar náást een paneel.</p></div>
+  <div><h3><i>2</i>Ronde knoppen blijven</h3><p>Dezelfde rondjes, nu 48 pt, effen, met één schaduw. Licht: een witte cirkel op de kaart, zoals in een kaarten-app. De actieve knop is teal gevuld.</p></div>
+  <div><h3><i>3</i>Midas' lijsten</h3><p>Groepen in één kaart met dunne lijnen: regels van 56 pt (nu 24 of 32), kopjes klein en grijs, een teller in de lichte tint. Wacht er iets op jou, dan krijgt het een oranje rand.</p></div>
+  <div><h3><i>4</i>Licht of donker</h3><p>Volgt de bestaande instelling Light (Auto / Light / Dark): Auto kiest licht overdag en donker 's avonds, dus de knoppen passen bij de lucht.</p></div>
+</div>
+
+<div class="swatches">
+  <div class="sw"><div style="background:#f1f5f5"></div><div><b>bg</b>#f1f5f5 · #0f1416</div></div>
+  <div class="sw"><div style="background:#ffffff"></div><div><b>surface</b>#ffffff · #141a1c</div></div>
+  <div class="sw"><div style="background:#1f2829"></div><div><b>raised (donker)</b>#f8fafa · #1f2829</div></div>
+  <div class="sw"><div style="background:#dae3e3"></div><div><b>border</b>#dae3e3 · #2a3536</div></div>
+  <div class="sw"><div style="background:#5cc6c0"></div><div><b>accent</b>#5cc6c0</div></div>
+  <div class="sw"><div style="background:#d9f0ee"></div><div><b>accent-soft</b>#d9f0ee · #263f42</div></div>
+  <div class="sw"><div style="background:#1f2829"></div><div><b>text</b>#1f2829 · #e2e9ea</div></div>
+  <div class="sw"><div style="background:#546568"></div><div><b>dim</b>#546568 · #aac2c6</div></div>
+  <div class="sw"><div style="background:#fd6012"></div><div><b>brand</b>#fd6012 · alleen logo en "wacht op jou"</div></div>
+</div>
+
+<!-- ========== ROW 1: map + menu ========== -->
+<h2 class="sec"><span>1</span>De kaart met het menu open</h2>
+<div class="col3">
+  <div><div class="colhead">Nu</div><img class="today" src="today-menu.jpg"></div>
+  <div><div class="colhead">Licht <span>· midas</span></div>
+  <div class="phone p275 lt mapbg" data-twin="menu">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="rcol" style="left:10px;top:38px">
+      <div class="rb"><svg class="i"><use href="#layers"/></svg></div>
+      <div class="rb"><svg class="i"><use href="#grid"/></svg></div>
+      <div class="rb" style="color:#e0533c"><svg class="i"><use href="#north"/></svg></div>
+      <div class="rb"><svg class="i"><use href="#sun"/></svg></div>
+    </div>
+    <div class="card2" style="position:absolute;left:8px;right:8px;bottom:82px;padding:16px 8px 8px;z-index:12">
+      <div class="wordmark" style="padding:0 12px 10px">carto<b>polis</b></div>
+      <div class="r2" style="border-top:1px solid var(--border)"><svg class="i ic"><use href="#user"/></svg><div><div>Sign in…</div><div class="d">Meet people, chat and join communities</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#settings"/></svg>Settings<svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2"><svg class="i ic"><use href="#check"/></svg>About<svg class="i s chev"><use href="#right"/></svg></div>
+      <div class="r2" style="color:var(--dim)"><svg class="i ic"><use href="#close"/></svg>Exit</div>
+    </div>
+    <div class="dock2">
+      <div><svg class="i"><use href="#search"/></svg>Search</div>
+      <div><svg class="i"><use href="#plane"/></svg>Fly</div>
+      <div><svg class="i"><use href="#camera"/></svg>Camera</div>
+      <div><svg class="i"><use href="#bookmark"/></svg>Saved</div>
+      <div class="on"><svg class="i"><use href="#menu"/></svg>Menu</div>
+    </div>
+  </div></div>
+  <div><div class="colhead">Donker <span>· midas</span></div><div class="phone p275 dk mapbg" data-copy="menu"></div></div>
+  <div class="cap" style="margin-top:34px"><h3>Wat er verandert</h3><ul>
+    <li><b>Menuregels 56 pt</b>, nu 24 (desktop) of 32 (touch) met 6 pt ertussen. De kaart is zo breed als het scherm, niet 232 pt.</li>
+    <li><b>De rondjes links</b> zijn effen en 48 pt (nu 40 en getint). Ze staan op dezelfde plek, met 12 pt ertussen.</li>
+    <li><b>De dock</b> is een effen pil. Het gekozen item krijgt midas' lichte teal vlak en blijft niet alleen een gevuld rondje.</li>
+    <li>"Exit" staat in grijs onderaan, los van de rest.</li></ul></div>
+</div>
+
+<!-- ========== ROW 2: building card ========== -->
+<h2 class="sec"><span>2</span>Een gebouw aangetikt</h2>
+<div class="col3">
+  <div><div class="colhead">Nu</div><img class="today" src="today-building.jpg"></div>
+  <div><div class="colhead">Licht</div>
+  <div class="phone p275 lt mapbg" data-twin="bld">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="rcol" style="left:10px;top:38px">
+      <div class="rb"><svg class="i"><use href="#layers"/></svg></div>
+      <div class="rb"><svg class="i"><use href="#grid"/></svg></div>
+    </div>
+    <div class="card2" style="position:absolute;left:8px;right:8px;bottom:82px;padding:14px 14px 12px;z-index:12">
+      <div class="h-row"><div class="grow"><div style="font-size:21px;font-weight:600;color:var(--strong)">Grote Markt 27</div><div style="font-size:14px;color:var(--dim)">Offices · meeting place</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin:10px 0 14px">
+        <div class="kv"><span>Built</span>2014</div><div class="kv"><span>Floor area</span>4 250 m²</div><div class="kv"><span>Height</span>24.0 m</div><div class="kv"><span>District</span>Groningen</div>
+      </div>
+      <div class="h-row" style="gap:8px"><span class="b2 s" style="flex:1"><svg class="i s"><use href="#building"/></svg>Look inside</span><span class="b2 s" style="flex:1">Floor plan ↗</span></div>
+      <div style="text-align:center;margin-top:6px"><span class="b2 t sm">Official record ↗</span></div>
+    </div>
+    <div class="dock2">
+      <div><svg class="i"><use href="#search"/></svg>Search</div>
+      <div><svg class="i"><use href="#plane"/></svg>Fly</div>
+      <div><svg class="i"><use href="#camera"/></svg>Camera</div>
+      <div><svg class="i"><use href="#bookmark"/></svg>Saved</div>
+      <div><svg class="i"><use href="#menu"/></svg>Menu</div>
+    </div>
+  </div></div>
+  <div><div class="colhead">Donker</div><div class="phone p275 dk mapbg" data-copy="bld"></div></div>
+  <div class="cap" style="margin-top:34px"><h3>Wat er verandert</h3><ul>
+    <li><b>Feiten als regels met dunne lijnen</b>, waarde rechts. Zo zet midas een detail neer. Er staat geen kaart doorheen.</li>
+    <li><b>Knoppen 44 pt</b>, omlijnd met midas' schaduw. Een link naar buiten is een tekstknop met ↗.</li>
+    <li>Het ✕ is een rondje van 36 pt op een vlakje (nu 22 pt en los).</li>
+    <li>Het kaartje laat de dock vrij, want het staat erboven, en niet eroverheen.</li>
+    <li>Op 275 pt passen vier feiten; Units, Roof area, Volume en Addresses komen onder "More facts".</li></ul></div>
+</div>
+
+<!-- ========== ROW 3: settings ========== -->
+<h2 class="sec"><span>3</span>Een paneel: Settings</h2>
+<div class="col3">
+  <div><div class="colhead">Nu</div><img class="today" src="today-settings.jpg"></div>
+  <div><div class="colhead">Licht</div>
+  <div class="phone p275 lt" data-twin="set" style="background:var(--bg)">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div style="position:absolute;inset:34px 10px 0">
+      <div class="h-row" style="margin:6px 4px 4px"><div class="grow" style="font-size:26px;font-weight:600;color:var(--strong)">Settings</div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="head2">Account</div>
+      <div class="list2">
+        <div class="r2"><svg class="i ic"><use href="#flag"/></svg><div><div>Privacy and safety</div><div class="d">Blocked people, who can message you</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+        <div class="r2"><svg class="i ic"><use href="#user"/></svg><div><div>Account</div><div class="d">Not signed in</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+      </div>
+      <div class="head2">App</div>
+      <div class="list2">
+        <div class="r2"><svg class="i ic"><use href="#settings"/></svg><div><div>General</div><div class="d">Units, navigation, connection</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+        <div class="r2"><svg class="i ic"><use href="#mic"/></svg><div><div>Sound and voice</div><div class="d">Volume, microphone</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+        <div class="r2"><svg class="i ic"><use href="#grid"/></svg><div><div>Graphics</div><div class="d">Detail, frame rate, effects</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+        <div class="r2"><svg class="i ic"><use href="#sun"/></svg><div><div>Time and weather</div><div class="d">Light, clouds, time of day</div></div><svg class="i s chev"><use href="#right"/></svg></div>
+        <div class="r2"><svg class="i ic"><use href="#check"/></svg>About<svg class="i s chev"><use href="#right"/></svg></div>
+      </div>
+    </div>
+  </div></div>
+  <div><div class="colhead">Donker</div><div class="phone p275 dk" data-copy="set" style="background:var(--bg)"></div></div>
+  <div class="cap" style="margin-top:34px"><h3>Wat er verandert</h3><ul>
+    <li><b>Op een telefoon is een paneel een effen pagina</b> in de achtergrondkleur, met witte (of donkere) kaarten erop. Nu is het een wazige stad met teal erover.</li>
+    <li><b>Icoon in de tekstkleur</b>, zonder gekleurd vierkantje erachter, zoals in midas. Regels zijn 56 pt, met de toelichting eronder in grijs.</li>
+    <li>De titel staat links, groot, met het ✕-rondje rechts.</li></ul></div>
+</div>
+
+<script src="icons.js"></script>
+<script>
+document.querySelectorAll('[data-copy]').forEach(d => { d.innerHTML = document.querySelector(`[data-twin="${d.dataset.copy}"]`).innerHTML; });
+</script></body></html>
