@@ -1212,12 +1212,25 @@ impl LevelMap {
     /// its half-width plus `reach`, or `None`.
     #[must_use]
     pub fn y_at(&self, p: [f32; 2], accept: impl Fn(i8) -> bool, reach: f32) -> Option<f32> {
+        self.nearest(p, accept, reach).map(|n| n.y)
+    }
+
+    /// The nearest run of an accepted level whose edge lies within `reach` of
+    /// `p` (at most [`BUCKET_M`]): how far past its carriageway `p` is, the
+    /// point on its centreline, and the road's height there.
+    #[must_use]
+    pub fn nearest(
+        &self,
+        p: [f32; 2],
+        accept: impl Fn(i8) -> bool,
+        reach: f32,
+    ) -> Option<NearestRoad> {
         #[allow(clippy::cast_possible_truncation)]
         let key = (
             (p[0] / BUCKET_M).floor() as i32,
             (p[1] / BUCKET_M).floor() as i32,
         );
-        let mut best: Option<(f32, f32)> = None;
+        let mut best: Option<(f32, NearestRoad)> = None;
         for &(li, si) in self.buckets.get(&key).into_iter().flatten() {
             let line = &self.lines[li as usize];
             if !accept(line.level) {
@@ -1237,12 +1250,28 @@ impl LevelMap {
                 continue;
             }
             let y = line.ys[si] + (line.ys[si + 1] - line.ys[si]) * t;
-            if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, y));
+            if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                let near = NearestRoad {
+                    beyond: (d - line.half_w).max(0.0),
+                    at: [a[0] + dx * t, a[1] + dz * t],
+                    y,
+                };
+                best = Some((d, near));
             }
         }
-        best.map(|(_, y)| y)
+        best.map(|(_, n)| n)
     }
+}
+
+/// [`LevelMap::nearest`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NearestRoad {
+    /// Metres past the carriageway's edge; 0 on it.
+    pub beyond: f32,
+    /// The point on the run's centreline nearest the one asked about.
+    pub at: [f32; 2],
+    /// The road's solved height there.
+    pub y: f32,
 }
 
 /// How far from the street it carries a deck's outline may lie and still take

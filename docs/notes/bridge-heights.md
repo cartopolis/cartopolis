@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
-triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles/bridges.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at]
-updated: 2026-10-20
+triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles/bridges.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at, BesideRoads, walk_beside_roads, CARTO_PROBE]
+updated: 2026-11-08
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -466,6 +466,45 @@ What a canal bridge laid flat needs, from the water up, and where each piece is:
 
 Checked with the same loopback stand-in as above, now also serving `/water`
 from the scratch tree after `water::bridge_gaps` ran over it.
+
+## The ground beside a street stands on the street (2026-11-08)
+
+"The deck and the quay are never at one height", from a phone at the Sint
+Jansbrug. Measured before anything changed: the client logs every sheet's
+drawn height at `CARTO_PROBE` points (`systems::ground_probe`), so points every
+2 m along each approach of the twelve bridges in `docs/bridge-shots.toml`, out
+to 20 m, were set against AHN's 0.5 m DSM from PDOK's WCS. NAP was calibrated
+per bridge on the drawn *roads*, which stand on atlas's solved heights and so
+on AHN; calibrating on the field put the Berlagebrug half a metre out.
+
+- **The deck and its landing were never the fault.** At the Sint Jansbrug the
+  slab, the landing and the quay are drawn within 2 cm of each other.
+- **The ground around them was**, on a handset: the paving and verges beside
+  the approaches 0.41 m off AHN on average and up to 2.25 m (the footways along
+  the Berlagebrug's ramp), against 0.18 m on a desktop. A handset's field is
+  atlas's 129² tile, every fourth sample of the dense one, ~11.5 m apart
+  (`terrain_tiles::tile_grid`); beside a canal those samples land in the carve
+  and on the bank, and `field.at` itself sagged 0.3–0.4 m under the Oosterbrug's
+  approach — not the bank substitution in `land_at`. The roads between stood
+  right, so a kerb read as a step and a bridge's end as a ramp down to the quay
+  once the 3 m landing let go.
+
+`map_geometry::BesideRoads` carries the field's error *at the street* — the
+solved height less the field under the carriageway — onto the ground beside
+it: whole for 3 m past the carriageway's edge, gone 7 m further. A correction,
+not a height, so the ground keeps its own slope. Only streets at grade
+(level 0); never within 12–20 m of a tunnel's carriageway, where the ground is
+the lid's or the cutting's; never where the street and the field differ by more
+than 2 m, which is a structure, not an error. Every consumer takes the same
+number: the sheets, the quay walls' tops, the walker (`walk_beside_roads`, per
+cell like the landings) and the street furniture (`LidSnapshot::ground_at`).
+Buildings do not, and stand on the field as before.
+
+After, on the handset setting: 0.18 m mean, 15 of 96 points over 0.25 m
+(34 before); the Werkmanbrug's approach 0.64 → 0.25, the Museumbrug's worst
+point 0.21 → 0.05. The seven tunnel captures in `docs/grade-shots.toml`, with
+the correction switched off and on in one build on both quality settings,
+differ only in the traffic.
 
 ## Storage, if the raster is ever baked instead of proxied
 

@@ -729,7 +729,11 @@ impl TerrainField {
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
         // The landings off flat deck ends, as the ground sheets stand on them
         // (`map_geometry::walk_landed`).
-        let ground = crate::systems::map_geometry::walk_landed(wx, wz, self.ground_only_at(wx, wz));
+        // And the correction the sheets beside a street take from it
+        // (`map_geometry::walk_beside_roads`).
+        let beside = crate::systems::map_geometry::walk_beside_roads(wx, wz, &self.ground.land());
+        let ground =
+            crate::systems::map_geometry::walk_landed(wx, wz, self.ground_only_at(wx, wz) + beside);
         match crate::systems::map_geometry::walk_deck_top(wx, wz) {
             Some(top) => ground.max(top),
             None => ground,

@@ -77,7 +77,10 @@ impl LidSnapshot {
     ) -> f32 {
         // The land beside the water, as the flat sheets are stood on — not the
         // carve a register's ring reaches under the lawn with.
-        let here = ground.land_at(x, z);
+        // Corrected by the street beside it, as the sheets are
+        // (`map_geometry::walk_beside_roads`).
+        let here = ground.land_at(x, z)
+            + crate::systems::map_geometry::walk_beside_roads(x, z, &ground.land());
         let (w, land) = fill_of(&self.tunnels, [x, z]);
         if w <= 0.0 {
             return here;

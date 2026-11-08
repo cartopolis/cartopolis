@@ -429,6 +429,66 @@ fn set_walk_landings(cell: Cell, origin: Vec2, landings: Vec<Landing>) {
     }
 }
 
+/// **The streets' correction of the ground is walked on too** ([`BesideRoads`]):
+/// the sheets beside a street stand on it, and a walker reading the field alone
+/// would sink as far as the field sagged. Per cell, as [`WALK_LANDINGS`].
+static WALK_STREETS: std::sync::RwLock<Option<HashMap<Cell, WalkStreets>>> =
+    std::sync::RwLock::new(None);
+
+struct WalkStreets {
+    origin: Vec2,
+    levels: Arc<cartopolis_geo::road_levels::LevelMap>,
+    tunnels: crate::systems::tunnels::Tunnels,
+    datum: f32,
+    /// The cell's edge, metres: a point further than the correction reaches
+    /// outside it is no business of this cell's streets.
+    size: f32,
+}
+
+/// Replace one cell's streets, or drop them with `None`.
+fn set_walk_streets(cell: Cell, streets: Option<WalkStreets>) {
+    if let Ok(mut w) = WALK_STREETS.write() {
+        let map = w.get_or_insert_with(HashMap::new);
+        match streets {
+            Some(s) => map.insert(cell, s),
+            None => map.remove(&cell),
+        };
+    }
+}
+
+/// How much the ground at a world point is lifted (or lowered) by the street
+/// beside it, as the ground sheets have it; `field` is the ground they correct.
+#[must_use]
+pub fn walk_beside_roads(
+    wx: f32,
+    wz: f32,
+    field: &dyn cartopolis_geo::terrain_refine::GroundField,
+) -> f32 {
+    let Ok(w) = WALK_STREETS.read() else {
+        return 0.0;
+    };
+    let Some(map) = w.as_ref() else {
+        return 0.0;
+    };
+    let reach = STREET_HOLD_M + STREET_FADE_M + 20.0;
+    map.values()
+        .filter(|s| {
+            let (x, z) = (wx - s.origin.x, wz - s.origin.y);
+            (-reach..=s.size + reach).contains(&x) && (-reach..=s.size + reach).contains(&z)
+        })
+        .map(|s| {
+            BesideRoads {
+                levels: &s.levels,
+                tunnels: &s.tunnels,
+                origin: s.origin,
+                datum: s.datum,
+                under: field,
+            }
+            .correction(wx, wz)
+        })
+        .fold(0.0, |a, c| if c.abs() > a.abs() { c } else { a })
+}
+
 /// `here`, a ground height at a world point, with any landing there blended in
 /// as the ground sheets have it.
 #[must_use]
@@ -665,6 +725,7 @@ impl DeckPlates {
     pub fn remove_cell(&mut self, cell: &Cell) {
         set_walk_decks(*cell, Vec::new());
         set_walk_landings(*cell, Vec2::ZERO, Vec::new());
+        set_walk_streets(*cell, None);
         self.piers.remove(cell);
         self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
@@ -2679,8 +2740,29 @@ fn spawn_geometry_task(
                         .collect(),
                     _ => Vec::new(),
                 };
-                if let Some((_, origin)) = ground.as_ref() {
+                if let Some((g, origin)) = ground.as_ref() {
                     set_walk_landings(cell, *origin, landings.clone());
+                    set_walk_streets(
+                        cell,
+                        levels.clone().map(|levels| {
+                            let mut tunnels = crate::systems::tunnels::Tunnels::default();
+                            tunnels.insert_cell(
+                                cell,
+                                *origin,
+                                CellTunnels {
+                                    tunnels: cell_tunnels.clone(),
+                                    openings: cell_openings.clone(),
+                                },
+                            );
+                            WalkStreets {
+                                origin: *origin,
+                                levels,
+                                tunnels,
+                                datum: g.datum_m(),
+                                size: tile_m,
+                            }
+                        }),
+                    );
                 }
                 let placed = stand_cell_on_ground(
                     &mut outcome,
@@ -2950,7 +3032,9 @@ fn stand_cell_on_ground(
                 }
             }
         }
-        if let Some(walls) = quay_walls(meshes, tile_m, *origin, ground, terraces, landings) {
+        if let Some(walls) = quay_walls(
+            meshes, tile_m, *origin, ground, terraces, landings, levels, &tunnels,
+        ) {
             meshes.push(walls);
         }
         // **The cap holds after the refinement, not only before it.** The
@@ -6141,10 +6225,22 @@ fn quay_walls<G: MeasuredGround>(
     terrain: &G,
     terraces: &[Terrace],
     landings: &[Landing],
+    levels: Option<&cartopolis_geo::road_levels::LevelMap>,
+    tunnels: &crate::systems::tunnels::Tunnels,
 ) -> Option<SurfaceMesh> {
     if !terrain.has_banks() {
         return None;
     }
+    // The street the wall rises to is the one the sheets are stood on, the
+    // correction by the roads included ([`BesideRoads`]).
+    let land = terrain.land();
+    let beside_roads = levels.map(|levels| BesideRoads {
+        levels,
+        tunnels,
+        origin,
+        datum: terrain.datum_m(),
+        under: &land,
+    });
     let mut out = SurfaceMesh {
         group: SurfaceGroup::QuayWall,
         positions: Vec::new(),
@@ -6230,11 +6326,11 @@ fn quay_walls<G: MeasuredGround>(
             // Werkmanbrug's landing (2026-11-06).
             let street = |p: [f32; 3]| {
                 walk.unwrap_or_else(|| {
-                    landed(
-                        landings,
-                        [p[0], p[2]],
-                        terrain.land_at(origin.x + p[0], origin.y + p[2]),
-                    )
+                    landed(landings, [p[0], p[2]], {
+                        let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                        terrain.land_at(x, z)
+                            + beside_roads.as_ref().map_or(0.0, |b| b.correction(x, z))
+                    })
                 })
             };
             let (ta, tb) = (street(pa), street(pb));
@@ -6469,9 +6565,20 @@ fn stand_on_terrain<G: MeasuredGround>(
             datum: terrain.datum_m(),
             under: &lidded,
         });
-    let field: &dyn cartopolis_geo::terrain_refine::GroundField = match &on_roads {
-        Some(f) => f,
-        None => &lidded,
+    // Everything else flat stands beside the roads, on the field corrected by them.
+    let beside_roads = levels
+        .filter(|_| on_roads.is_none() && !volumetric)
+        .map(|levels| BesideRoads {
+            levels,
+            tunnels,
+            origin,
+            datum: terrain.datum_m(),
+            under: &lidded,
+        });
+    let field: &dyn cartopolis_geo::terrain_refine::GroundField = match (&on_roads, &beside_roads) {
+        (Some(f), _) => f,
+        (None, Some(f)) => f,
+        (None, None) => &lidded,
     };
     let landed = Landed {
         under: field,
@@ -6590,6 +6697,96 @@ impl cartopolis_geo::terrain_refine::GroundField for OnRoads<'_> {
         self.levels
             .y_at(local, |level| level == 0, ROAD_REACH_M)
             .map_or_else(|| self.under.at(x, z), |y| y - self.datum)
+    }
+}
+
+/// How far past a street's edge the ground beside it takes the street's
+/// correction whole, metres, and how much further that fades out.
+const STREET_HOLD_M: f32 = 3.0;
+const STREET_FADE_M: f32 = 7.0;
+
+/// Where the field and a street disagree by more than this the difference is
+/// the street's own — an embankment, a cutting, a ramp — and not the field's
+/// error, metres; the correction fades out over the last [`STREET_TRUST_FADE_M`].
+const STREET_TRUST_M: f32 = 2.0;
+const STREET_TRUST_FADE_M: f32 = 0.5;
+
+/// Inside this distance in plan of a tunnel's carriageway the ground is left to
+/// the structure (its lid, its cutting), metres; the correction returns over
+/// [`STREET_TUNNEL_FADE_M`] more.
+const STREET_TUNNEL_CLEAR_M: f32 = 12.0;
+const STREET_TUNNEL_FADE_M: f32 = 8.0;
+
+/// **The ground beside a street, stood on the street.** A road is drawn at its
+/// solved height (`road_levels`, [`OnRoads`]), measured along the street itself;
+/// everything around it stands on the field, which on a handset is AHN thinned
+/// to every fourth sample, ~11.5 m apart. Beside a canal those samples fall into
+/// the carve and onto the bank's slope, and the field sagged under the paving,
+/// the verges and the street off a bridge's end by 0.2–1.7 m against AHN while
+/// the road between them stood right (twelve bridges, 2026-11-08): kerbs a step
+/// above their pavement, and a bridge's end on a ramp down to the quay.
+///
+/// So the field's error *at the street* — the street's height less the field
+/// there — is carried onto the ground beside it, whole within
+/// [`STREET_HOLD_M`] of the carriageway's edge and fading over
+/// [`STREET_FADE_M`]. It is a correction, not a height: the ground keeps its own
+/// shape and only the field's mistake under the street is taken out, so a
+/// lawn sloping off a street still slopes. Streets at grade only (level 0) —
+/// the ground under a bridge or over a tunnel is not the deck's or the bore's —
+/// and never near a tunnel's carriageway, where the ground is the structure's
+/// ([`STREET_TUNNEL_CLEAR_M`]), nor where the two disagree by a structure's
+/// worth ([`STREET_TRUST_M`]).
+struct BesideRoads<'a> {
+    levels: &'a cartopolis_geo::road_levels::LevelMap,
+    tunnels: &'a crate::systems::tunnels::Tunnels,
+    origin: Vec2,
+    datum: f32,
+    under: &'a dyn cartopolis_geo::terrain_refine::GroundField,
+}
+
+impl BesideRoads<'_> {
+    /// How much the field at world `(x, z)` is off, by the street beside it.
+    fn correction(&self, x: f32, z: f32) -> f32 {
+        use crate::utils::sun::smoothstep;
+        let local = [x - self.origin.x, z - self.origin.y];
+        let Some(near) =
+            self.levels
+                .nearest(local, |level| level == 0, STREET_HOLD_M + STREET_FADE_M)
+        else {
+            return 0.0;
+        };
+        let reach = 1.0 - smoothstep(0.0, 1.0, (near.beyond - STREET_HOLD_M) / STREET_FADE_M);
+        if reach <= 0.0 {
+            return 0.0;
+        }
+        let tunnel = self
+            .tunnels
+            .nearest_tunnel(Vec2::new(x, z))
+            .map_or(1.0, |(d, _)| {
+                smoothstep(0.0, 1.0, (d - STREET_TUNNEL_CLEAR_M) / STREET_TUNNEL_FADE_M)
+            });
+        if tunnel <= 0.0 {
+            return 0.0;
+        }
+        let (qx, qz) = (self.origin.x + near.at[0], self.origin.y + near.at[1]);
+        let error = near.y - self.datum - self.under.at(qx, qz);
+        let trust = 1.0
+            - smoothstep(
+                0.0,
+                1.0,
+                (error.abs() - (STREET_TRUST_M - STREET_TRUST_FADE_M)) / STREET_TRUST_FADE_M,
+            );
+        error * reach * tunnel * trust
+    }
+}
+
+impl cartopolis_geo::terrain_refine::GroundField for BesideRoads<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.under.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        self.under.at(x, z) + self.correction(x, z)
     }
 }
 
@@ -6946,7 +7143,17 @@ mod tests {
         // The tile runs z 0..90 (inside the ±100 m field), so the canal's two
         // short edges are on its border.
         let meshes = vec![water_rect(-10.0, 10.0, 0.0, 90.0, -3.0)];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[], &[]).expect("walls");
+        let walls = quay_walls(
+            &meshes,
+            90.0,
+            Vec2::ZERO,
+            &ground,
+            &[],
+            &[],
+            None,
+            &Default::default(),
+        )
+        .expect("walls");
         assert_eq!(walls.group, SurfaceGroup::QuayWall);
         assert_eq!(walls.positions.len(), 8, "two banks, one quad each");
         for (p, n) in walls.positions.iter().zip(&walls.normals) {
@@ -6974,14 +7181,34 @@ mod tests {
             water_rect(-10.0, 0.0, 0.0, 90.0, -3.0),
             water_rect(0.0, 10.0, 0.0, 90.0, -3.0),
         ];
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[], &[]).expect("walls");
+        let walls = quay_walls(
+            &meshes,
+            90.0,
+            Vec2::ZERO,
+            &ground,
+            &[],
+            &[],
+            None,
+            &Default::default(),
+        )
+        .expect("walls");
         assert!(
             walls.positions.iter().all(|p| p[0].abs() > 9.99),
             "a wall down the middle of the canal"
         );
         // The same outline with its surface at the street: nothing to stand.
         let level = vec![water_rect(-10.0, 10.0, 0.0, 90.0, 2.0)];
-        assert!(quay_walls(&level, 90.0, Vec2::ZERO, &ground, &[], &[]).is_none());
+        assert!(quay_walls(
+            &level,
+            90.0,
+            Vec2::ZERO,
+            &ground,
+            &[],
+            &[],
+            None,
+            &Default::default()
+        )
+        .is_none());
     }
 
     /// A bank with a lower quay along it is walled up to the walk, not to the
@@ -7007,12 +7234,23 @@ mod tests {
             &ground,
             &[walk(vec![false, false, false, true])],
             &[],
+            None,
+            &Default::default(),
         )
         .expect("walls");
         assert_eq!(walls.positions.len(), 4, "only the far bank keeps its wall");
         assert!(walls.positions.iter().all(|p| p[0] < -9.99));
         // Without its water edge, two metres is past the probe: the wall stands.
-        let walls = quay_walls(&meshes, 90.0, Vec2::ZERO, &ground, &[walk(Vec::new())], &[]);
+        let walls = quay_walls(
+            &meshes,
+            90.0,
+            Vec2::ZERO,
+            &ground,
+            &[walk(Vec::new())],
+            &[],
+            None,
+            &Default::default(),
+        );
         assert_eq!(walls.expect("walls").positions.len(), 8);
     }
 
@@ -7228,6 +7466,64 @@ mod tests {
         // Nothing solved within reach: no answer, and the caller falls back.
         let far = cartopolis_geo::road_levels::LevelMap::default();
         assert!(flat_deck_road_level(&deck, &far).is_none());
+    }
+
+    /// A field sagging 0.4 m under a street at grade is put right beside it,
+    /// whole on the pavement and fading out behind; a street that really is
+    /// two and a half metres off the field (a cutting) moves nothing, and neither
+    /// does a bridge's street over it.
+    #[test]
+    fn the_ground_beside_a_street_stands_on_the_street() {
+        struct Flat(f32);
+        impl cartopolis_geo::terrain_refine::GroundField for Flat {
+            fn min_ground_edge_m(&self) -> f32 {
+                1.0
+            }
+            fn at(&self, _: f32, _: f32) -> f32 {
+                self.0
+            }
+        }
+        let tunnels = crate::systems::tunnels::Tunnels::default();
+        let mut levels = cartopolis_geo::road_levels::LevelMap::default();
+        // A 6 m street along x = 0, solved at 2.4 m NAP; datum 2.0.
+        levels.add(0, 3.0, vec![[0.0, -50.0], [0.0, 50.0]], vec![2.4, 2.4]);
+        let field = Flat(0.0);
+        let beside = BesideRoads {
+            levels: &levels,
+            tunnels: &tunnels,
+            origin: Vec2::ZERO,
+            datum: 2.0,
+            under: &field,
+        };
+        use cartopolis_geo::terrain_refine::GroundField;
+        for x in [0.0, 3.0, 5.5] {
+            assert!(
+                (beside.at(x, 0.0) - 0.4).abs() < 1e-4,
+                "x = {x}: {}",
+                beside.at(x, 0.0)
+            );
+        }
+        let mid = beside.at(3.0 + STREET_HOLD_M + STREET_FADE_M * 0.5, 0.0);
+        assert!(mid > 0.05 && mid < 0.35, "{mid}");
+        assert_eq!(
+            beside.at(3.0 + STREET_HOLD_M + STREET_FADE_M + 0.5, 0.0),
+            0.0
+        );
+
+        let mut cutting = cartopolis_geo::road_levels::LevelMap::default();
+        cutting.add(0, 3.0, vec![[0.0, -50.0], [0.0, 50.0]], vec![-0.5, -0.5]);
+        let mut bridge = cartopolis_geo::road_levels::LevelMap::default();
+        bridge.add(1, 3.0, vec![[0.0, -50.0], [0.0, 50.0]], vec![2.4, 2.4]);
+        for levels in [&cutting, &bridge] {
+            let b = BesideRoads {
+                levels,
+                tunnels: &tunnels,
+                origin: Vec2::ZERO,
+                datum: 2.0,
+                under: &field,
+            };
+            assert_eq!(b.at(4.0, 0.0), 0.0);
+        }
     }
 
     /// `square_deck`, moved `dx`, `dz` metres into the tile.
