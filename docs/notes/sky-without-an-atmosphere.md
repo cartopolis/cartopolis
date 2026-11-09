@@ -8,7 +8,7 @@ triggers:
   - "why are there two skies"
   - choosing a sky from Settings ▸ Graphics (`AppPrefs::sky`)
   - files `sky_dome.rs`, `sky_dome.wesl`, `render_features.rs`, `free_camera.rs`, `sky.rs`
-updated: 2026-10-17
+updated: 2026-11-09
 ---
 
 # The sky on a GPU that cannot run bevy's atmosphere
@@ -195,6 +195,12 @@ water back for a reason worth knowing: bevy's ambient is **not diffuse-only** �
 `ambient.wgsl` runs `EnvBRDFApprox` for the specular lobe too, so raising it
 restores the grazing-angle sheen a water surface is mostly made of, with no
 cubemap and no per-cell material churn.
+
+**The quarter was a measured eighth of the fill on a screen** (2026-11-09):
+at 4,000 a facade in shade read 0.012 linear against the environment map's
+0.088, on every run without one, so every shaded wall on the phone was
+near-black navy. It is 12,000 now, which matches the desktop (0.080); the
+numbers are on the constant.
 
 A real procedural cubemap generated from this dome would be better still —
 it would have a sun in it, and a ground half — and is the obvious next step if

@@ -516,7 +516,16 @@ pub(crate) const AMBIENT_DAY_BRIGHTNESS: f32 = 900.0;
 /// not diffuse-only. `ambient.wgsl` runs `EnvBRDFApprox` for the specular lobe
 /// too, so raising it restores the grazing-angle sheen a water surface is almost
 /// entirely made of — no cubemap, no per-cell material churn.
-pub(crate) const AMBIENT_DAY_BRIGHTNESS_NO_IBL: f32 = 4_000.0;
+///
+/// **The quarter was arithmetic, and on a screen it was an eighth of the fill**
+/// (mac-2, 2026-11-09, the Stadhuis's north face from the Grote Markt at
+/// 13:30 in June, mean linear luma of the wall in shade): 0.088 with the
+/// environment map, 0.012 at 4,000 on every run without one (`CARTO_QUALITY=android`
+/// with either sky, `CARTO_NO_ENVMAP=1`, the dome on the desktop). Every facade
+/// in shade on the phone was near-black navy, which is most of what "flat and
+/// unrealistic" was on the device the person looks at. 12,000 gives 0.080,
+/// the desktop's fill; 24,000 washed the shade out to 0.19.
+pub(crate) const AMBIENT_DAY_BRIGHTNESS_NO_IBL: f32 = 12_000.0;
 /// Ambient floor at night — a faint blue city skyglow so the world doesn't vanish
 /// into pure black between the lit windows. Deliberately low: this is a *floor*,
 /// not the main night light (that's the moon + window glow). At the old value of
