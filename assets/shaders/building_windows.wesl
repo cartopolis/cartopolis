@@ -50,6 +50,7 @@ import bevy_pbr::render::{
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
 };
+import super::ground_bounce;
 
 // x: column pitch (m). y: floor pitch (m). z: window width (m). w: window height (m).
 // → `facade.lattice`, in `Facade` below.
@@ -1659,6 +1660,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color = apply_pbr_lighting(pbr_input);
+        // The street's light thrown back up (`ground_bounce`): what fills a wall in
+        // shade, which bevy does not compute.
+        let diffuse = pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic);
+        out.color = vec4<f32>(
+            out.color.rgb + ground_bounce::radiance(diffuse * pbr_input.diffuse_occlusion, pbr_input.N),
+            out.color.a,
+        );
     } else {
         out.color = pbr_input.material.base_color;
     }

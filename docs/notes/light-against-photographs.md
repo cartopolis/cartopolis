@@ -1,9 +1,9 @@
 ---
 topic: light-against-photographs
-triggers: [light_compare.rs, shot_presets.rs, sky.rs, free_camera.rs, systems::light_compare,
+triggers: [light_compare.rs, shot_presets.rs, sky.rs, free_camera.rs, ground_bounce.wesl, systems::light_compare,
   "cartopolis compare", "reference photograph", "shot.region", "looks unrealistic",
   "the light is not realistic", "facades look flat"]
-updated: 2026-11-08
+updated: 2026-11-09
 ---
 
 # The light is judged against photographs, not against the render
@@ -61,3 +61,20 @@ the set, not on the one shot it was tuned on.
 Only a real GPU's capture is evidence here (`mac-1`, `mac-2`): lavapipe is evidence
 for geometry and none for light (`headless-shots-software-renderer.md`).
 
+
+## What the first look found (2026-11-09)
+
+Before any photograph came in, on mac-2 at the Grote Markt in June, clear,
+mean linear luma per patch:
+
+- **On the phone, and on every run without the atmosphere's environment map,
+  a facade in shade was an eighth of the desktop's** (0.012 against 0.088):
+  the ambient that stands in for the map had been sized on paper.
+  `AMBIENT_DAY_BRIGHTNESS_NO_IBL` is 12,000 now (`sky-without-an-atmosphere.md`).
+- **Nothing bounced.** Ground in shade was 10 times darker than ground in sun
+  and bluer than red; outdoors it is about 5–6 times and grey, because the sunlit
+  street throws light back. `ground_bounce.wesl` adds that light to the
+  buildings (a shaded facade +0.4 stop, warmer); the ground itself, roads and
+  props do not take it yet.
+- On the desktop the shaded ground (0.029) is darker than a shaded wall (0.088)
+  although it sees the whole sky and the wall half of it. Not explained yet.
