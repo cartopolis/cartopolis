@@ -128,13 +128,18 @@ fn labelled<R>(ui: &mut egui::Ui, word: &str, add: impl FnOnce(&mut egui::Ui) ->
         |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let r = add(ui);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(word)
-                        .size(theme::SIZE_TINY)
-                        .color(theme::TEXT_DIM),
-                )
-                .selectable(false),
+            // On the map itself now there is no bar under it, so it takes the
+            // scale bar's halo rather than a plate (`hud::halo_text_aligned`).
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(theme::ROUND_BUTTON_SIZE, LABEL_H),
+                egui::Sense::hover(),
+            );
+            crate::systems::hud::halo_text_aligned(
+                ui.painter(),
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                word,
+                theme::TEXT,
             );
             r
         },
@@ -239,14 +244,12 @@ pub fn render_dock(
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.x = bar_spacing(viewport_w, disc_count);
-                // One pane of glass under the row: five dark discs floating
-                // apart read as loose buttons dropped on the map, and the
-                // glass was nowhere to be seen (2026-10-31).
+                // Round buttons on the map, with no bar under them: the solid
+                // bar that replaced the glass one was "ugly and too massive"
+                // (2026-11-08). The bar's margin is kept as plain room so the
+                // row sits where it always did.
                 let pad = bar_pad(viewport_w, disc_count);
                 egui::Frame::NONE
-                    .fill(theme::GLASS)
-                    .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
-                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_PILL))
                     .inner_margin(egui::Margin::same(pad.round() as i8))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -254,7 +257,7 @@ pub fn render_dock(
                                 |ui: &mut egui::Ui, panel: RightPanel, word: &str| {
                                     let open = right_panel.is(panel);
                                     if labelled(ui, word, |ui| {
-                                        theme::bar_button(ui, panel.icon(), panel.label(), open)
+                                        theme::round_button(ui, panel.icon(), panel.label(), open)
                                     })
                                     .clicked()
                                     {
@@ -269,7 +272,7 @@ pub fn render_dock(
                             // panel discs wear.
                             if has_session
                                 && labelled(ui, "Say", |ui| {
-                                    theme::bar_button(
+                                    theme::round_button(
                                         ui,
                                         crate::systems::icons::CHAT,
                                         "Say something",
@@ -293,7 +296,7 @@ pub fn render_dock(
                             // the camera is up, as the panel discs do while open.
                             if has_camera
                                 && labelled(ui, "Camera", |ui| {
-                                    theme::bar_button(
+                                    theme::round_button(
                                         ui,
                                         crate::systems::icons::CAMERA,
                                         "Camera",
@@ -313,7 +316,7 @@ pub fn render_dock(
                             // it, which is a problem for the one disc that is the only
                             // route to Settings, sign-in and Exit.
                             if labelled(ui, "Menu", |ui| {
-                                theme::bar_button(
+                                theme::round_button(
                                     ui,
                                     crate::systems::icons::MENU,
                                     "Menu",
@@ -433,7 +436,7 @@ fn mode_disc(
         name
     };
     if labelled(ui, word, |ui| {
-        theme::bar_button(
+        theme::round_button(
             ui,
             icon,
             &format!("{name} view — switch to {next_name}"),

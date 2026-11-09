@@ -1359,19 +1359,6 @@ pub fn round_button(
     round_button_on(ui, icon, tooltip, selected, (OVERLAY, OVERLAY_LINE))
 }
 
-/// [`round_button`] for a disc that sits *in* a glass bar (the dock): at rest
-/// it is only its glyph, since the bar is already the surface — a dark disc on
-/// a dark pane read as a hole in it. Hover and the engaged plate are the same.
-pub fn bar_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, selected: bool) -> egui::Response {
-    round_button_on(
-        ui,
-        icon,
-        tooltip,
-        selected,
-        (Color32::TRANSPARENT, Color32::TRANSPARENT),
-    )
-}
-
 fn round_button_on(
     ui: &mut egui::Ui,
     icon: &str,
