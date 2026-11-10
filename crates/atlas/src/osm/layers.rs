@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{document, tag, Bbox, Node, Out, Store, TagView, Tags, TileIndex, Wanted, Way};
 
-fn view(tags: &Tags) -> Vec<(&str, &str)> {
+pub(crate) fn view(tags: &Tags) -> Vec<(&str, &str)> {
     tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
 }
 
@@ -247,6 +247,103 @@ pub mod speeds {
             Out::Geom,
         )
     }
+}
+
+/// `osm_buildings`' query outside 3DBAG's cells:
+/// `way["building"]`, `way["building:part"]`, `out geom`, z14.
+pub mod buildings {
+    use super::*;
+
+    pub const ZOOM: u32 = 14;
+
+    pub fn way(tags: &TagView<'_>) -> bool {
+        tag(tags, "building").is_some() || tag(tags, "building:part").is_some()
+    }
+
+    pub const WANTED: Wanted = Wanted {
+        way,
+        ..Wanted::NOTHING
+    };
+
+    #[must_use]
+    pub fn cell(store: &Store, index: &TileIndex, x: i64, y: i64) -> Value {
+        let bb = Bbox::tile(x, y, ZOOM);
+        select(
+            store,
+            index,
+            &bb,
+            |_| false,
+            |w| way(&view(&w.tags)),
+            Out::Geom,
+        )
+    }
+}
+
+/// `registers::osm_art_query`: `nwr["tourism"="artwork"]`, `out center tags`.
+/// Nodes and ways; an artwork mapped as a relation is not read.
+pub mod artworks {
+    use super::*;
+
+    pub fn wanted(tags: &TagView<'_>) -> bool {
+        tag(tags, "tourism") == Some("artwork")
+    }
+
+    pub const WANTED: Wanted = Wanted {
+        node: wanted,
+        way: wanted,
+        ..Wanted::NOTHING
+    };
+}
+
+/// `bag::materials_query`: buildings that name their pand (`ref:bag`) and say
+/// what they are built of or what colour they are, ways and relations, tags only.
+pub mod materials {
+    use super::*;
+
+    pub fn wanted(tags: &TagView<'_>) -> bool {
+        tag(tags, "building").is_some()
+            && tag(tags, "ref:bag").is_some()
+            && (tag(tags, "building:material").is_some() || tag(tags, "building:colour").is_some())
+    }
+
+    pub const WANTED: Wanted = Wanted {
+        way: wanted,
+        ..Wanted::NOTHING
+    };
+}
+
+/// `backdrop::query`: the streets, paths, rail and water a backdrop draws.
+pub mod backdrop {
+    use super::*;
+
+    const HIGHWAYS: &[&str] = &[
+        "motorway",
+        "trunk",
+        "primary",
+        "secondary",
+        "tertiary",
+        "unclassified",
+        "residential",
+        "living_street",
+        "pedestrian",
+        "cycleway",
+        "service",
+        "footway",
+        "path",
+    ];
+
+    /// `["waterway"~"canal|river"]` is unanchored: `riverbank` matches too.
+    pub fn way(tags: &TagView<'_>) -> bool {
+        is(tags, "highway", HIGHWAYS)
+            || tag(tags, "waterway").is_some_and(|w| w.contains("canal") || w.contains("river"))
+            || tag(tags, "natural") == Some("water")
+            || tag(tags, "railway") == Some("rail")
+    }
+
+    pub const WANTED: Wanted = Wanted {
+        way,
+        ..Wanted::NOTHING
+    };
 }
 
 #[cfg(test)]

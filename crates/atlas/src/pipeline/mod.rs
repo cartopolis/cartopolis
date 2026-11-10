@@ -710,6 +710,17 @@ pub const DATASETS: &[Dataset] = &[
         run: crate::osm::run_shops,
     },
     Dataset {
+        id: "osmbuildings",
+        label: "Buildings (OSM)",
+        description: "Every building and building part in the OpenStreetMap extract, per \
+                      z14 cell over the area and the client's skyline around it — the \
+                      buildings the client draws where 3DBAG has no cell, which it asked \
+                      Overpass for.",
+        coverage: "osmbuildings/coverage.json",
+        typical_minutes: 4,
+        run: crate::osm::run_buildings,
+    },
+    Dataset {
         id: "speeds",
         label: "Speed limits (OSM)",
         description: "Every road with a speed limit in the OpenStreetMap extract, per z14 \

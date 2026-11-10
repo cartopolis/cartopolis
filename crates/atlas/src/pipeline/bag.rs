@@ -783,20 +783,6 @@ fn bare_pand(id: &str) -> &str {
     }
 }
 
-/// The OpenStreetMap ways and relations over the area that say what a building
-/// is built of and which pand it is: the only source of a facade's material
-/// anywhere, the BAG and 3DBAG having none.
-fn materials_query(bbox_rd: [f64; 4]) -> String {
-    let [w, s, e, n] = super::rd::wgs84_bbox(bbox_rd);
-    let b = format!("{s:.5},{w:.5},{n:.5},{e:.5}");
-    format!(
-        "[out:json][timeout:300];(way[\"building\"][\"building:material\"][\"ref:bag\"]({b});\
-         relation[\"building\"][\"building:material\"][\"ref:bag\"]({b});\
-         way[\"building\"][\"building:colour\"][\"ref:bag\"]({b});\
-         relation[\"building\"][\"building:colour\"][\"ref:bag\"]({b}););out tags;"
-    )
-}
-
 /// What one mapped building says about its facade: `building:material`
 /// lower-cased, `building:colour` as written.
 #[derive(Debug, Default, PartialEq)]
@@ -838,23 +824,32 @@ fn materials_of(doc: &Value) -> Vec<(String, Mapped)> {
     out
 }
 
-/// What OpenStreetMap says each pand is built of and what colour it is. Best
-/// effort: an Overpass that does not answer leaves every building as the
-/// register alone describes it, and the run goes on — the facade then takes its
-/// era's palette, as it always did.
+/// What OpenStreetMap says each pand is built of and what colour it is: the
+/// buildings that name their pand and their material or colour
+/// (`osm::layers::materials`), the only source of a facade's material anywhere,
+/// the BAG and 3DBAG having none. Best effort: an extract that cannot be read
+/// leaves every building as the register alone describes it, and the run goes
+/// on — the facade then takes its era's palette, as it always did.
 fn collect_materials(ctx: &Ctx, c: &mut Collected) -> Outcome<usize> {
-    let url = format!(
-        "{}?{}",
-        super::tall::overpass_url(),
-        query(&[("data", &materials_query(ctx.bbox))])
-    );
-    let doc = match get_json_with(
-        ctx,
-        &url,
-        "building materials",
-        std::time::Duration::from_secs(360),
-        3,
-    ) {
+    let read =
+        || -> Outcome<Value> {
+            let mut doc = crate::osm::area_document(
+                ctx,
+                super::rd::wgs84_bbox(ctx.bbox),
+                &crate::osm::layers::materials::WANTED,
+                crate::osm::Out::Body,
+            )?;
+            let path = crate::osm::ensure_extract(ctx)?;
+            let relations =
+                crate::osm::relation_tags(ctx, &path, crate::osm::layers::materials::wanted)?;
+            if let Some(elements) = doc["elements"].as_array_mut() {
+                elements.extend(relations.into_iter().map(
+                    |(id, tags)| serde_json::json!({"type": "relation", "id": id, "tags": tags}),
+                ));
+            }
+            Ok(doc)
+        };
+    let doc = match read() {
         Ok(doc) => doc,
         Err(PipelineError::Cancelled) => return Err(PipelineError::Cancelled),
         Err(PipelineError::Failed(e)) => {

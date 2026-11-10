@@ -5,7 +5,7 @@
 //! colour; what a blur needs is structure, and for a map product the obvious
 //! structure is a map. So the page behind every pane is a city's centre —
 //! Groningen's, with its canal ring, by default — drawn from OpenStreetMap
-//! geometry through our own Overpass (`tall::overpass_url`): streets, paths,
+//! geometry read from the extract (`crate::osm`): streets, paths,
 //! rail and water, the line weight by the road's class.
 //!
 //! **A mask, so it is black.** The page uses the file as a `mask` and paints
@@ -13,7 +13,7 @@
 //! the light and the dark theme.
 //!
 //! The web UI serves a committed copy rather than calling this on every page
-//! load: a page must never wait on a live Overpass query. This route is how that
+//! load: a page must never wait on reading the extract. This route is how that
 //! copy is made and remade — `GET /api/pipeline/backdrop.svg?bbox=s,w,n,e` —
 //! and how one for another city would be.
 //!
@@ -22,11 +22,8 @@
 //! backdrop stays still.
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
 use serde_json::Value;
-
-use super::{http, tall};
 
 /// Groningen's centre: the canal ring and a kilometre or so around it. What the
 /// committed backdrop (`crates/atlas/web/src/img/groningen.svg`) was made from.
@@ -39,12 +36,10 @@ const WIDTH: f64 = 2000.0;
 /// what a full-screen background can show, and most of a street's vertices.
 const SIMPLIFY: f64 = 0.8;
 
-/// The largest area this will ask Overpass for, in square kilometres. A
+/// The largest area this will draw, in square kilometres. A
 /// backdrop is a city centre; a province would be megabytes of line work
-/// nobody can see and a long query on a server other people share.
+/// nobody can see.
 pub const MAX_KM2: f64 = 25.0;
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A `[south, west, north, east]` box in WGS84, or why it is not one.
 pub fn validate(bbox: &[f64]) -> Result<[f64; 4], String> {
@@ -85,27 +80,31 @@ pub fn query([s, w, n, e]: [f64; 4]) -> String {
     )
 }
 
-/// Ask our Overpass for a box and draw it. Retried, because Overpass refuses a
-/// query it is still answering for somebody else (`duplicate_query`, an HTML
-/// page) — which is what asking for the same box twice in a row does.
-pub fn fetch(bbox: [f64; 4]) -> Result<String, String> {
-    const ATTEMPTS: u32 = 4;
-    let url = format!(
-        "{}?{}",
-        tall::overpass_url(),
-        http::query(&[("data", &query(bbox))])
+/// Read the ways [`query`] names for a box from the OpenStreetMap extract
+/// (`osm::layers::backdrop`, kept under `data_dir`) and draw them.
+pub fn fetch(bbox: [f64; 4], data_dir: Option<&std::path::Path>) -> Result<String, String> {
+    let [s, w, n, e] = bbox;
+    let mut ctx = super::Ctx::new(
+        [0.0; 4],
+        "backdrop",
+        &std::env::temp_dir(),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::sync::Arc::new(crate::osm::TracingSink),
     );
-    let mut last = String::new();
-    for attempt in 0..ATTEMPTS {
-        match http::fetch(&url, TIMEOUT).and_then(|body| tall::validate(&body)) {
-            Ok(doc) => return draw(&doc, bbox),
-            Err(e) => last = e,
-        }
-        if attempt + 1 < ATTEMPTS {
-            std::thread::sleep(Duration::from_secs(5 << attempt));
-        }
+    if let Some(dir) = data_dir {
+        ctx = ctx.with_data_dir(dir);
     }
-    Err(last)
+    let doc = crate::osm::area_document(
+        &ctx,
+        [w, s, e, n],
+        &crate::osm::layers::backdrop::WANTED,
+        crate::osm::Out::Geom,
+    )
+    .map_err(|e| match e {
+        super::PipelineError::Failed(m) => m,
+        super::PipelineError::Cancelled => "cancelled".into(),
+    })?;
+    draw(&doc, bbox)
 }
 
 /// Stroke width of a way in SVG units, by what it is; `None` for a way the
@@ -291,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn boxes_are_checked_before_overpass_is_asked() {
+    fn boxes_are_checked_before_the_extract_is_read() {
         assert!(validate(&GRONINGEN).is_ok());
         assert!(validate(&[53.2, 6.5, 53.1, 6.6]).is_err(), "inside out");
         assert!(validate(&[52.0, 4.0, 53.5, 7.0]).is_err(), "a province");
@@ -299,18 +298,19 @@ mod tests {
         assert!(validate(&[f64::NAN, 6.5, 53.3, 6.6]).is_err());
     }
 
-    /// Remakes the web UI's committed backdrop from Overpass. Off by default —
-    /// it is a network fetch, not a test — and run by hand:
+    /// Remakes the web UI's committed backdrop from the OpenStreetMap extract.
+    /// Off by default — it reads (or downloads) a 1.4 GB file, not a test — and
+    /// run by hand, with `ATLAS_OSM_EXTRACT` naming a local extract:
     ///
     /// ```text
-    /// cargo test -p cartopolis_atlas writes_the_web_backdrop -- --ignored
+    /// ATLAS_OSM_EXTRACT=nl.osm.pbf cargo test -p cartopolis_atlas writes_the_web_backdrop -- --ignored
     /// ```
     #[test]
-    #[ignore = "fetches from Overpass and rewrites the web UI's committed file"]
+    #[ignore = "reads the OpenStreetMap extract and rewrites the web UI's committed file"]
     fn writes_the_web_backdrop() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/src/img/groningen.svg");
-        let svg = fetch(GRONINGEN).unwrap();
+        let svg = fetch(GRONINGEN, None).unwrap();
         std::fs::write(&path, &svg).unwrap();
         println!("wrote {} ({} bytes)", path.display(), svg.len());
     }

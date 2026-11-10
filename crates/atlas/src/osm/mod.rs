@@ -86,6 +86,12 @@ pub fn ensure_extract(ctx: &Ctx) -> Outcome<PathBuf> {
     }
 }
 
+/// Up to this many square degrees (a z9 tile here is 0.70° × 0.42°, 0.30) [`load`]
+/// collects the ids of every node in the area to drop ways outside it early:
+/// tens of millions of ids at most, a few hundred megabytes. A whole country
+/// is read in such pieces ([`CHUNK_ZOOM`]) rather than letting the set grow.
+const SMALL_AREA_DEG2: f64 = 0.4;
+
 /// An element's tags while the extract is read: borrowed, in file order.
 pub type TagView<'a> = [(&'a str, &'a str)];
 
@@ -271,37 +277,49 @@ pub fn load(ctx: &Ctx, path: &Path, area: Bbox, wanted: &Wanted) -> Outcome<Stor
     let fail = |e: osmpbf::Error| PipelineError::Failed(format!("{}: {e}", path.display()));
     let reader = || ElementReader::from_path(path).map_err(fail);
 
-    // 1. Tagged nodes, kept or joining, inside the area.
+    // 1. Tagged nodes, kept or joining, inside the area; and, for a city-sized
+    //    area, the id of every node in it, so the next pass can drop a way that
+    //    has no node there before its geometry is ever looked up. Without it every
+    //    speed-limited road in the country was held until the third pass. The
+    //    cost: a way that crosses the area with no node inside it is missed,
+    //    which the cells' ring of padding keeps to the area's outer edge.
     ctx.check()?;
     ctx.log("OSM: knopen lezen");
-    let nodes: Vec<Node> = reader()?
+    let small = (area.north - area.south) * (area.east - area.west) <= SMALL_AREA_DEG2;
+    let (nodes, inside): (Vec<Node>, Vec<i64>) = reader()?
         .par_map_reduce(
             |el| {
                 let (id, lat, lon, tags): (i64, f64, f64, Vec<(&str, &str)>) = match &el {
                     Element::Node(n) => (n.id(), n.lat(), n.lon(), n.tags().collect()),
                     Element::DenseNode(n) => (n.id(), n.lat(), n.lon(), n.tags().collect()),
-                    _ => return Vec::new(),
+                    _ => return (Vec::new(), Vec::new()),
                 };
-                if tags.is_empty() || !area.contains(lat, lon) {
-                    return Vec::new();
+                if !area.contains(lat, lon) {
+                    return (Vec::new(), Vec::new());
+                }
+                let inside = if small { vec![id] } else { Vec::new() };
+                if tags.is_empty() {
+                    return (Vec::new(), inside);
                 }
                 let keep = (wanted.node)(&tags);
                 let joins = (wanted.join_node)(&tags);
                 if !keep && !joins {
-                    return Vec::new();
+                    return (Vec::new(), inside);
                 }
-                vec![Node {
+                let node = Node {
                     id,
                     lat: round7(lat),
                     lon: round7(lon),
                     tags: owned(&tags),
                     joins,
-                }]
+                };
+                (vec![node], inside)
             },
-            Vec::new,
-            concat,
+            || (Vec::new(), Vec::new()),
+            |(a, b), (c, d)| (concat(a, c), concat(b, d)),
         )
         .map_err(fail)?;
+    let inside: Option<HashSet<i64>> = small.then(|| inside.into_iter().collect());
     let joining: HashSet<i64> = nodes.iter().filter(|n| n.joins).map(|n| n.id).collect();
 
     // 2. Ways, kept for their tags or for passing through a joining node.
@@ -321,7 +339,11 @@ pub fn load(ctx: &Ctx, path: &Path, area: Bbox, wanted: &Wanted) -> Outcome<Stor
                     || (!joining.is_empty()
                         && (wanted.join_way)(&tags)
                         && w.refs().any(|r| joining.contains(&r)));
-                if !keep {
+                if !keep
+                    || inside
+                        .as_ref()
+                        .is_some_and(|s| !w.refs().any(|r| s.contains(&r)))
+                {
                     return Vec::new();
                 }
                 vec![Way {
@@ -623,26 +645,36 @@ pub fn build_cells(
     use crate::pipeline::{Count, DatasetResult, Progress};
     use cartopolis_geo::formats::coverage::Manifest;
 
-    let Some(area) = cells_bounds(cells, zoom) else {
+    if cells.is_empty() {
         return Err(PipelineError::Failed("no cells in the area".into()));
-    };
+    }
     let path = ensure_extract(ctx)?;
-    let store = load(ctx, &path, area, wanted)?;
-    let index = TileIndex::new(&store, zoom);
     let total = cells.len();
-    ctx.log(format!("{total} z{zoom}-cellen schrijven"));
-    let mut elements = 0usize;
-    for (done, &(x, y)) in cells.iter().enumerate() {
-        ctx.check()?;
-        let doc = cell(&store, &index, x, y);
-        elements += doc["elements"].as_array().map_or(0, Vec::len);
-        ctx.write_json(&format!("{dataset}/{zoom}/{x}/{y}.json"), &doc)?;
-        if done % 256 == 0 || done + 1 == total {
-            ctx.progress(Progress {
-                phase: Some("cellen".into()),
-                done: Some(done as u64 + 1),
-                total: Some(Some(total as u64)),
-            });
+    let chunks = chunked(cells, zoom);
+    ctx.log(format!(
+        "{total} z{zoom}-cellen schrijven, in {} stuk(ken)",
+        chunks.len()
+    ));
+    let (mut elements, mut done) = (0usize, 0usize);
+    for chunk in &chunks {
+        let Some(area) = cells_bounds(chunk, zoom) else {
+            continue;
+        };
+        let store = load(ctx, &path, area, wanted)?;
+        let index = TileIndex::new(&store, zoom);
+        for &(x, y) in chunk {
+            ctx.check()?;
+            let doc = cell(&store, &index, x, y);
+            elements += doc["elements"].as_array().map_or(0, Vec::len);
+            ctx.write_json(&format!("{dataset}/{zoom}/{x}/{y}.json"), &doc)?;
+            done += 1;
+            if done % 256 == 0 || done == total {
+                ctx.progress(Progress {
+                    phase: Some("cellen".into()),
+                    done: Some(done as u64),
+                    total: Some(Some(total as u64)),
+                });
+            }
         }
     }
     ctx.write_coverage(
@@ -664,6 +696,25 @@ pub fn build_cells(
         cells: total,
         counts: vec![Count::new("OSM elements", elements)],
     })
+}
+
+/// The zoom whose tiles an area is read in, one at a time: a z9 tile is about
+/// 70 × 45 km here, small enough for [`load`]'s early way filter, so a
+/// whole-country run holds one province-sized piece of the map at a time
+/// rather than every building in the country.
+const CHUNK_ZOOM: u32 = 9;
+
+/// The cells grouped by the [`CHUNK_ZOOM`] tile they fall in, in row order.
+fn chunked(cells: &[(i64, i64)], zoom: u32) -> Vec<Vec<(i64, i64)>> {
+    let shift = zoom.saturating_sub(CHUNK_ZOOM);
+    let mut groups: BTreeMap<(i64, i64), Vec<(i64, i64)>> = BTreeMap::new();
+    for &(x, y) in cells {
+        groups
+            .entry((y >> shift, x >> shift))
+            .or_default()
+            .push((x, y));
+    }
+    groups.into_values().collect()
 }
 
 /// The area the cells cover together.
@@ -755,4 +806,106 @@ pub fn run_speeds(ctx: &Ctx) -> Outcome<crate::pipeline::DatasetResult> {
         layers::speeds::cell,
         ATTRIBUTION,
     )
+}
+
+/// Cells out from the camera's the client streams OSM buildings over, to the
+/// skyline (`osm_buildings::FAR_SKYLINE_RADIUS`); atlas grows an area by as many.
+const BUILDINGS_RING: i64 = 5;
+
+pub fn run_buildings(ctx: &Ctx) -> Outcome<crate::pipeline::DatasetResult> {
+    let cells = area_cells(ctx.bbox, layers::buildings::ZOOM, BUILDINGS_RING);
+    build_cells(
+        ctx,
+        "osmbuildings",
+        layers::buildings::ZOOM,
+        &cells,
+        &layers::buildings::WANTED,
+        layers::buildings::cell,
+        ATTRIBUTION,
+    )
+}
+
+/// The tags of every relation that passes `pred`, wherever it is: no geometry,
+/// so no area test. For a question answered by tags alone (`bag`'s materials),
+/// where an element outside the area costs a lookup that finds nothing.
+pub fn relation_tags(
+    ctx: &Ctx,
+    path: &Path,
+    pred: fn(&TagView<'_>) -> bool,
+) -> Outcome<Vec<(i64, Tags)>> {
+    ctx.check()?;
+    ElementReader::from_path(path)
+        .and_then(|r| {
+            r.par_map_reduce(
+                |el| {
+                    let Element::Relation(rel) = &el else {
+                        return Vec::new();
+                    };
+                    let tags: Vec<(&str, &str)> = rel.tags().collect();
+                    if pred(&tags) {
+                        vec![(rel.id(), owned(&tags))]
+                    } else {
+                        Vec::new()
+                    }
+                },
+                Vec::new,
+                concat,
+            )
+        })
+        .map_err(|e| PipelineError::Failed(format!("{}: {e}", path.display())))
+}
+
+/// One Overpass-shaped answer for an area given as `[west, south, east, north]`
+/// (what `rd::wgs84_bbox` returns): the nodes and ways `wanted` names that lie
+/// in it, written as `out`.
+pub fn area_document(ctx: &Ctx, wgs84: [f64; 4], wanted: &Wanted, out: Out) -> Outcome<Value> {
+    let [west, south, east, north] = wgs84;
+    let area = Bbox {
+        south,
+        west,
+        north,
+        east,
+    };
+    let path = ensure_extract(ctx)?;
+    let store = load(ctx, &path, area, wanted)?;
+    let nodes: Vec<&Node> = store
+        .nodes
+        .iter()
+        .filter(|n| (wanted.node)(&layers::view(&n.tags)))
+        .collect();
+    let ways: Vec<&Way> = store.ways.iter().collect();
+    Ok(document(&nodes, &ways, out))
+}
+
+/// A [`crate::pipeline::Sink`] for a [`Ctx`] made outside a job (the backdrop
+/// route): its lines go to the log.
+pub struct TracingSink;
+
+impl crate::pipeline::Sink for TracingSink {
+    fn log(&self, line: String) {
+        tracing::info!("{line}");
+    }
+    fn progress(&self, _: crate::pipeline::Progress) {}
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+
+    #[test]
+    fn a_city_is_one_chunk_and_a_country_is_many() {
+        let city = area_cells([229_000.0, 578_000.0, 238_000.0, 587_000.0], 14, 1);
+        assert!(
+            chunked(&city, 14).len() <= 2,
+            "Groningen straddles at most one edge"
+        );
+        let country = area_cells([13_000.0, 306_000.0, 278_000.0, 620_000.0], 14, 0);
+        let chunks = chunked(&country, 14);
+        assert!(chunks.len() > 20, "{}", chunks.len());
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), country.len());
+        for c in &chunks {
+            let b = cells_bounds(c, 14).unwrap();
+            assert!((b.north - b.south) * (b.east - b.west) <= SMALL_AREA_DEG2);
+        }
+    }
 }

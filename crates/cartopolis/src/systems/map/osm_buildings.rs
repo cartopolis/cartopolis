@@ -94,7 +94,8 @@ fn overpass_url() -> String {
 pub(crate) fn overpass_pace() -> (usize, Duration) {
     let url = overpass_url();
     let ours = url == DEFAULT_OVERPASS_URL
-        || crate::services::osm_query().is_some_and(|s| s == url)
+        || crate::services::osm_query()
+            .is_some_and(|s| s == url && s != FALLBACK_OVERPASS_URL && !s.is_empty())
         || url.starts_with("http://localhost")
         || url.starts_with("http://127.");
     if ours {
@@ -112,6 +113,11 @@ pub(crate) fn overpass_pace() -> (usize, Duration) {
 /// queues behind this one on the same pool.
 fn overpass_endpoints() -> Vec<(String, u32)> {
     let primary = overpass_url();
+    // An empty primary is a server saying it runs no Overpass of its own: only
+    // the public instance is left, at its polite pace (`overpass_pace`).
+    if primary.is_empty() {
+        return vec![(FALLBACK_OVERPASS_URL.to_string(), 2)];
+    }
     let mut out = vec![(primary.clone(), 3)];
     if primary != FALLBACK_OVERPASS_URL {
         out.push((FALLBACK_OVERPASS_URL.to_string(), 2));
@@ -336,6 +342,7 @@ fn parse_coverage(sub: &str, text: &str) -> Coverage {
 /// the empty answer into a `OnceLock` and disabled 3DBAG for the process. Retrying
 /// is the other half of `fetch_coverage` returning `Option`.
 fn ensure_coverage_prefetch(now: f64) {
+    OSM_COVERAGE.ensure(now);
     let epoch = crate::systems::coverage::refresh_epoch();
     let stale = COVERAGE_EPOCH.load(Ordering::Relaxed) != epoch;
     if (coverage_resolved() && !stale) || COVERAGE_FETCHING.load(Ordering::Relaxed) {
@@ -3672,6 +3679,14 @@ async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     Ok(text)
 }
 
+/// Atlas's OSM building cells (`osmbuildings`), where 3DBAG has none.
+static OSM_COVERAGE: crate::systems::coverage::CoverageSlot =
+    crate::systems::coverage::CoverageSlot::new(
+        "osmbuildings",
+        "/osmbuildings/coverage.json",
+        CACHE_ZOOM,
+    );
+
 /// One fixed cell's buildings from disk cache or a single Overpass query (cached).
 /// Cache hits skip the network (and the throttle) entirely.
 async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String, String> {
@@ -3687,6 +3702,21 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
                 tracing::warn!(key, %remark, "re-fetching cached Overpass error body");
                 storage::remove(storage::Namespace::Cache, &key).await;
             }
+        }
+    }
+
+    // Atlas's `osmbuildings` cell is this query's answer, cut from the
+    // OpenStreetMap extract; anything it does not cover is asked of Overpass.
+    let host = tdbag_url();
+    if zoom == CACHE_ZOOM && OSM_COVERAGE.covers(cx, cy) && !host.is_empty() {
+        let url = format!("{host}/osmbuildings/{CACHE_ZOOM}/{cx}/{cy}.json");
+        match http::fetch_string(http::Request::get(url.clone())).await {
+            Ok(text) if text.trim_start().starts_with('{') => {
+                storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+                return Ok(text);
+            }
+            Ok(_) => tracing::debug!(%url, "pre-cut building cell is not a document"),
+            Err(e) => tracing::debug!(%url, error = %e, "pre-cut building cell unavailable"),
         }
     }
 

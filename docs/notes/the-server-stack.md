@@ -73,10 +73,18 @@ Checked 2026-11-10 against Overpass, Groningen, Netherlands extract of that day:
   The missing ones are old (a wall from 2021, way 1001079088) and absent from
   `overpass.cartopolis.org` entirely, even asked by id: that instance lost ways,
   so the extract is not merely as good but more complete.
-- Building all five layers for Groningen from the 1.4 GB extract: 2.5 min on
-  mac-1, 2.2 GB peak memory, 13 MB of cells. `speeds` dominates the memory: a way
-  cannot be placed before its nodes are read, so every speed-limited way in the
-  country (966k, 5.0M nodes) is held until the third pass drops those outside.
+- Building the first five layers for Groningen from the 1.4 GB extract took
+  2.5 min on mac-1 and 2.2 GB, almost all of it `speeds`: a way cannot be placed
+  before its nodes are read, so every speed-limited way in the country (966k)
+  was held until the third pass. The first pass now also collects the id of
+  every node in the area, and a way with none of them is dropped on sight:
+  8,298 ways, and `osmbuildings` + `speeds` together peak at 0.54 GB
+  (199,656 buildings over 289 cells in 112 s).
+- **An area is read in z9 tiles** (about 70 × 45 km), one at a time, so the
+  whole country is a sequence of province-sized reads rather than one that
+  holds every building in it. Each costs three passes over the extract.
+- Atlas asks no Overpass at all since 2026-11-10: `registers` (artworks), `bag`
+  (facade materials, relations by tag) and the backdrop route read the extract.
 
 ## Options looked at for replacing them (2026-11-10, desk research)
 

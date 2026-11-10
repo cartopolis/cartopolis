@@ -15,7 +15,9 @@
 //! needs a service that answers the same requests: a Nominatim-shaped geocoder,
 //! an Overpass interpreter, atlas's cell tree, atlas's terrain and height. An
 //! empty `map_data` or `terrain` turns that layer off, as their `CARTO_*`
-//! overrides do; an empty `height` makes the client ask PDOK itself.
+//! overrides do; an empty `height` makes the client ask PDOK itself; an empty
+//! `osm_query` says the server runs no Overpass, and the client asks the public
+//! one, politely, for whatever the map data does not cover.
 
 use serde::{Deserialize, Serialize};
 

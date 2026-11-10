@@ -204,6 +204,12 @@ impl Runner {
         self
     }
 
+    /// Atlas's own store, if one was given.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.shared.data_dir.get().map(PathBuf::as_path)
+    }
+
     /// How many requests a dataset keeps in flight to one upstream
     /// (`AtlasConfig::upstream_concurrency`). Set once, before any job.
     #[must_use]

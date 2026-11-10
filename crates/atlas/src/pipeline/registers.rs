@@ -22,7 +22,7 @@
 //! covered cell with no lamp posts in it is the city's word that there are none.
 //!
 //! Data: Gemeente Groningen open data (CC BY 4.0); Wikidata (CC0); OpenStreetMap
-//! through our own Overpass, only to see which statues the map already has.
+//! (its extract), only to see which statues the map already has.
 //!
 //! **Every source is asked once per run** — a layer, a query — and through the
 //! source cache, so a re-run within a month asks nobody anything.
@@ -606,8 +606,9 @@ pub fn read_art(doc: &Value) -> Result<(Vec<Artwork>, usize), String> {
 const SAME_WORK_M: f64 = 25.0;
 
 /// The map tile draws OSM's `tourism=artwork` already, so a Wikidata work OSM has
-/// is left to it and only the ones it lacks are added. Asked of **our own**
-/// Overpass (`tall::overpass_url`), once for the area.
+/// is left to it and only the ones it lacks are added. Read from the
+/// OpenStreetMap extract (`osm::layers::artworks`) once for the area; this query
+/// is the statement of what that reads.
 #[must_use]
 pub fn osm_art_query(bbox: [f64; 4]) -> String {
     let [west, south, east, north] = bbox;
@@ -793,13 +794,13 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let doc = get_json(ctx, &url, "wikidata")?;
     let (art, refused) =
         read_art(&doc).map_err(|e| PipelineError::Failed(format!("wikidata: {e}")))?;
-    let url = format!(
-        "{}?{}",
-        super::tall::overpass_url(),
-        query(&[("data", &osm_art_query(area))])
-    );
-    let doc = get_json(ctx, &url, "overpass")?;
-    let osm = read_osm_art(&doc).map_err(|e| PipelineError::Failed(format!("overpass: {e}")))?;
+    let doc = crate::osm::area_document(
+        ctx,
+        area,
+        &crate::osm::layers::artworks::WANTED,
+        crate::osm::Out::Center,
+    )?;
+    let osm = read_osm_art(&doc).map_err(|e| PipelineError::Failed(format!("osm: {e}")))?;
     let (mut n_art, mut in_osm) = (0usize, 0usize);
     for work in &art {
         let Some(d) = docs.get_mut(&lat_lng_to_cell(work.lat, work.lng)) else {
@@ -849,7 +850,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             ..Manifest::new(CACHE_ZOOM, sorted_cells(docs.keys().copied())).described(
                 ctx.name.as_str(),
                 attributions.join(" · "),
-                "municipal GeoServers (WFS); Wikidata SPARQL; our Overpass",
+                "municipal GeoServers (WFS); Wikidata SPARQL; OpenStreetMap extract",
                 ctx.bbox,
             )
         },

@@ -103,8 +103,8 @@ struct BackdropQuery {
 }
 
 /// A city's streets as the web UI's backdrop (`pipeline::backdrop`). Operator
-/// only, like the rest of this surface: every call is a query on an Overpass
-/// other people share. The site serves a committed copy; this is how it is made.
+/// only, like the rest of this surface: every call reads the OpenStreetMap
+/// extract, tens of seconds. The site serves a committed copy; this is how it is made.
 async fn get_backdrop(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -127,9 +127,10 @@ async fn get_backdrop(
             }
         }
     };
-    match blocking(move || backdrop::fetch(bbox)).await {
+    let data_dir = state.runner.data_dir().map(std::path::Path::to_path_buf);
+    match blocking(move || backdrop::fetch(bbox, data_dir.as_deref())).await {
         Ok(svg) => ([("content-type", "image/svg+xml")], svg).into_response(),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, &format!("Overpass: {e}")),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, &format!("OpenStreetMap: {e}")),
     }
 }
 
