@@ -1,0 +1,70 @@
+# The street-level views the light is measured on (`docs/notes/light-against-photographs.md`):
+# a clear midsummer noon, where sun and shade sit side by side. Colour means
+# anything only on a real GPU (a Mac node).
+#
+#     CARTO_DATA_DIR=/tmp/empty cargo run -p cartopolis -- --shots docs/light-shots.toml
+#
+#     cargo run -p cartopolis -- compare docs/light-shots.toml
+#
+# Until photographs of these views come in, each `reference` is the same run on
+# the commit before the change (copy `gpu/light` to `gpu/light-before` there), so
+# `compare` reports what the change moved. A photograph replaces it, and its
+# regions are redrawn on the side-by-side `compare` writes.
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "960x540"
+out_dir = "gpu/light"
+hide_ui = true
+mode = "free"
+settle = 1.0
+wait = 40.0
+# 13:30 summer time, the sun at 59° a little west of south.
+time = 11.5
+fog = 0.02
+clouds = 0.0
+rain = 0.0
+
+[[shot]]
+name = "poelestraat"
+description = "Poelestraat from the Grote Markt, east: the north side in sun, the south side and half the street in shade"
+at = [53.21836, 6.56925, 1.7]
+look_at = [53.21841, 6.57100]
+date = "2026-06-21"
+reference = "gpu/light-before/poelestraat.png"
+anchor = "sun-ground"
+region = [
+  { name = "sun-ground", photo = [0.16, 0.81, 0.31, 0.11] },
+  { name = "shade-ground", photo = [0.79, 0.81, 0.16, 0.11] },
+  { name = "sun-wall", photo = [0.02, 0.22, 0.04, 0.11] },
+  { name = "shade-wall", photo = [0.906, 0.43, 0.06, 0.07] },
+  { name = "sky", photo = [0.62, 0.02, 0.10, 0.11] },
+]
+
+[[shot]]
+name = "grote-markt"
+description = "The Grote Markt from its south-west corner at eye level, to the Martinitoren"
+at = [53.21805, 6.56650, 1.7]
+look_at = [53.21926, 6.56817]
+date = "2026-06-21"
+reference = "gpu/light-before/grote-markt.png"
+anchor = "sun-ground"
+region = [
+  { name = "sun-ground", photo = [0.47, 0.87, 0.16, 0.09] },
+  { name = "shade-ground", photo = [0.73, 0.67, 0.16, 0.07] },
+  { name = "shade-paving", photo = [0.02, 0.83, 0.21, 0.11] },
+  { name = "wall", photo = [0.47, 0.78, 0.10, 0.05] },
+  { name = "sky", photo = [0.73, 0.04, 0.21, 0.11] },
+]
+
+
+[[shot]]
+name = "horizon"
+description = "Across the Stadspark's meadow, west: the sky down to an open horizon"
+at = [53.20300, 6.54300, 1.7]
+look_at = [53.20300, 6.52000]
+date = "2026-06-21"
+reference = "gpu/light-before/horizon.png"
+anchor = "sky-high"
+region = [
+  { name = "sky-high", photo = [0.40, 0.02, 0.20, 0.08] },
+  { name = "sky-low", photo = [0.40, 0.30, 0.20, 0.04] },
+]

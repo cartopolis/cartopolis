@@ -1,9 +1,10 @@
 ---
 topic: light-against-photographs
 triggers: [light_compare.rs, shot_presets.rs, sky.rs, free_camera.rs, ground_bounce.wesl, systems::light_compare,
+  earth_air, ScatteringMedium, ground_albedo, light-shots.toml,
   "cartopolis compare", "reference photograph", "shot.region", "looks unrealistic",
   "the light is not realistic", "facades look flat"]
-updated: 2026-11-09
+updated: 2026-11-10
 ---
 
 # The light is judged against photographs, not against the render
@@ -71,10 +72,43 @@ mean linear luma per patch:
   a facade in shade was an eighth of the desktop's** (0.012 against 0.088):
   the ambient that stands in for the map had been sized on paper.
   `AMBIENT_DAY_BRIGHTNESS_NO_IBL` is 12,000 now (`sky-without-an-atmosphere.md`).
-- **Nothing bounced.** Ground in shade was 10 times darker than ground in sun
-  and bluer than red; outdoors it is about 5–6 times and grey, because the sunlit
-  street throws light back. `ground_bounce.wesl` adds that light to the
-  buildings (a shaded facade +0.4 stop, warmer); the ground itself, roads and
-  props do not take it yet.
-- On the desktop the shaded ground (0.029) is darker than a shaded wall (0.088)
-  although it sees the whole sky and the wall half of it. Not explained yet.
+- **Nothing bounced** — on the phone. Ground in shade was 10 times darker than
+  ground in sun and bluer than red; outdoors it is about 5–6 times and grey.
+  `ground_bounce.wesl` adds the sunlit street's light to the buildings (a shaded
+  facade +0.4 stop, warmer), **only where there is no environment map**: the
+  atmosphere's map already holds it, below its horizon (next section).
+
+## What the second look found (2026-11-10)
+
+On mac-2, `docs/light-shots.toml` (the Poelestraat and the Grote Markt at eye
+level, 13:30 on 21 June, clear), with every building and ground surface
+painted one grey of albedo 0.2 so that only the light differs:
+
+- **The shaded ground was darker than a shaded wall because the wall saw
+  bevy's planet below the horizon.** The sky-view table the environment map
+  is baked from ends a downward ray on the planet's ground and lights it with
+  the sun at `ground_albedo` 0.3 (`raymarch_atmosphere`, `ground = true`): a
+  sunlit plane under every wall, which ground facing up does not see. With it
+  set to 0 the shaded wall fell 1.9 stops, onto the shaded ground. So the
+  wall's fill was right and `ground_bounce` was counting it a second time on
+  the desktop; it is added only without the map now.
+- **The shaded ground was dark and blue because bevy's air has no haze.**
+  `ScatteringMedium::earth` holds an aerosol column of optical depth 0.005 and
+  has its Mie scattering and absorption swapped (3.996e-6 is the absorption in
+  bevy 0.20, the scattering in Hillaire 2020 and in bevy 0.16). Putting the two
+  right changed nothing measurable; raising the column to a clear Dutch summer
+  day's 0.1 (`globe::earth_air`) took ground in shade from 3.4 to 2.7 stops
+  under ground in sun, and its log2(red/blue) from −3.4 to −1.6; the sky
+  overhead from −2.1 to −1.3, the pale blue it is here. Shaded ground and
+  shaded wall now agree (−2.74, −2.68). The phone, without the map, is within
+  a third of a stop (−2.80, −2.42) and warmer (−0.3).
+- What the haze costs: a sun 5° up is duller and less gold than it was
+  (`daylight-shots.toml`'s `gm_16_6`), since the haze dims a low sun as a
+  real one does; looking into a low sun (`e_8`) the city behind it goes white.
+  A haze that takes more blue than red (Ångström 1.3) gave back a little gold
+  and drew a lilac band along the horizon, so it is grey. 0.1 is a guess at a
+  clear day, not a measurement: the photographs set it.
+- Still open: the desktop's shade is bluer than the phone's by more than a
+  stop of red over blue, and nothing yet says which is right — that is what the
+  photographs are for. Ground in a street also takes light from the sunlit
+  wall across it, which nothing adds (a quarter of a stop, by arithmetic).
