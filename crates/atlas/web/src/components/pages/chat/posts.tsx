@@ -6,7 +6,17 @@ import {ApiError} from '@/lib/api'
 import type {CommunityView} from '@/lib/chat'
 import {Icon} from '@/lib/icons'
 import {parsePlace, placeParam, suggestHandle, webLink} from '@/lib/posts'
-import type {FollowLink, PostDto, PostPlace, PostReport, PostThread, PublicInfo, WhoPosts} from '@/types'
+import type {
+    FollowLink,
+    NoticeKind,
+    PostDto,
+    PostNotices,
+    PostPlace,
+    PostReport,
+    PostThread,
+    PublicInfo,
+    WhoPosts,
+} from '@/types'
 
 /**
  * A community's public posts (`docs/notes/fediverse.md`,
@@ -38,6 +48,12 @@ interface Draft {
     where: string
     place: PostPlace | null
     picture: string | null
+    /** What the picture shows, in words, for somebody who cannot see it. */
+    alt: string
+    /** Blur the picture until a reader asks to see it. */
+    sensitive: boolean
+    /** A content warning, shown in place of the post until it is opened; null when off. */
+    warning: string | null
     /** Whether the place field is showing. */
     placing: boolean
 }
@@ -74,6 +90,12 @@ const st = {
     info: new Map<string, PublicInfo>(),
     loaded: null as string | null,
     reply: '',
+    /** The reply being answered, when it is one rather than the post. */
+    replyTo: null as PostDto | null,
+    /** The post being reported, and what the reporter says. */
+    reporting: null as {id: string; reason: string; forward: boolean} | null,
+    /** Posts behind a content warning, or with a sensitive picture, that the reader opened. */
+    shown: new Set<string>(),
     /** Reports from other servers, per community, for its moderators. */
     reports: new Map<string, PostReport[]>(),
     settingsOpen: false,
@@ -121,6 +143,7 @@ export async function toggleThread(post: string): Promise<void> {
     st.threadOpen = post
     st.thread = null
     st.reply = ''
+    st.replyTo = null
     try {
         st.thread = await signupApi.get<PostThread>(`/api/posts/${post}`)
     } catch (e) {
@@ -432,7 +455,24 @@ export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
         !p.author.local && webLink(p.url) && (
             <a href={webLink(p.url) ?? undefined} rel="noopener" target="_blank">Open where it was posted</a>
         ),
+        where.signedIn && !p.mine && (
+            <button onclick={() => (st.reporting = {forward: false, id: p.id, reason: ''})} type="button">
+                Report
+                <small>To this community's moderators{p.author.local ? '' : ', and if you like to its own server'}</small>
+            </button>
+        ),
     ].filter(Boolean)
+    // Behind a content warning, the words and pictures wait until opened; a
+    // sensitive picture is blurred until clicked.
+    const hidden = !!p.warning && !p.mine && !st.shown.has(p.id)
+    const blurred = p.sensitive && !p.mine && !st.shown.has(p.id)
+    const pictures = [
+        url && {alt: p.picture_alt ?? '', src: url},
+        ...(p.more_pictures ?? []).map((x) => {
+            const src = ctx.pictureUrl(x.hash)
+            return src && {alt: x.alt ?? '', src}
+        }),
+    ].filter(Boolean) as {alt: string; src: string}[]
     return (
         <article class={top ? 'post-card' : 'post-card is-reply'} key={p.id}>
             <div class="post-face">{ctx.avatar(p.author.address, top ? 36 : 28)}</div>
@@ -456,7 +496,22 @@ export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
                     )}
                 </header>
                 {p.via && <div class="post-via">via {p.via}</div>}
-                {editing ? (
+                {p.answers && <div class="post-via">{Icon('reply')} to {p.answers}</div>}
+                {p.warning && (
+                    <div class="post-warning">
+                        {Icon('warning')} <span>{p.warning}</span>
+                        {!p.mine && (
+                            <Button
+                                onclick={() => (hidden ? st.shown.add(p.id) : st.shown.delete(p.id))}
+                                size="sm"
+                                variant="ghost"
+                            >
+                                {hidden ? 'Show' : 'Hide'}
+                            </Button>
+                        )}
+                    </div>
+                )}
+                {hidden ? null : editing ? (
                     <form
                         class="post-edit"
                         onsubmit={(e: Event) => {
@@ -476,10 +531,20 @@ export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
                         </span>
                     </form>
                 ) : <p class="post-text">{p.text}</p>}
-                {snapshot && (
+                {!hidden && snapshot && (
                     <img alt="A snapshot of the map where this was written" class="post-polaroid" loading="lazy" src={snapshot} />
                 )}
-                {url && <img alt="" class="post-picture" loading="lazy" src={url} />}
+                {!hidden && pictures.map((pic) => (
+                    <img
+                        alt={pic.alt}
+                        class={blurred ? 'post-picture is-blurred' : 'post-picture'}
+                        loading="lazy"
+                        onclick={() => blurred && st.shown.add(p.id)}
+                        src={pic.src}
+                        title={blurred ? 'Sensitive: click to show' : pic.alt || undefined}
+                    />
+                ))}
+                {st.reporting?.id === p.id && ReportBox(where, p)}
                 {top && (
                     <footer class="post-foot">
                         {PlaceChip(p.place, ctx)}
@@ -490,25 +555,134 @@ export function Card(where: Where, p: PostDto, ctx: PostsCtx, top: boolean) {
                         >
                             {Icon('comment')} {p.replies} {p.replies === 1 ? 'reply' : 'replies'}
                         </button>
-                        {Votes(p)}
+                        {Actions(where, p, top)}
                     </footer>
                 )}
-                {!top && Votes(p)}
+                {!top && <footer class="post-foot">{Actions(where, p, top)}</footer>}
                 {open && Replies(where, ctx)}
             </div>
         </article>
     )
 }
 
-/** Likes and votes from other servers, when there are any. */
-function Votes(p: PostDto) {
-    if (!p.likes && !p.dislikes) return null
-    const title = 'From other servers: favourites on Mastodon, votes on Lemmy'
-    return (
-        <span class="post-votes" title={title}>
+/** Update a post wherever this page holds it: the feed, the open thread. */
+function replaceEverywhere(changed: PostDto): void {
+    for (const list of [st.feed.get(changed.community), st.thread?.replies, st.thread ? [st.thread.post] : []]) {
+        const at = list?.find((x) => x.id === changed.id)
+        if (at) Object.assign(at, changed)
+    }
+}
+
+/**
+ * Like, pass on, and answer: for somebody signed in. Counts include what
+ * other servers sent (Mastodon's favourites and boosts, Lemmy's votes).
+ */
+function Actions(where: Where, p: PostDto, top: boolean) {
+    const toggle = async (what: 'like' | 'boost', on: boolean) => {
+        try {
+            replaceEverywhere(await signupApi.post<PostDto>(`/api/posts/${p.id}/${what}`, {on}))
+        } catch (e) {
+            failed(e)
+        }
+        m.redraw()
+    }
+    const likes = (
+        <>
             {Icon('favorite')} {p.likes}
             {p.dislikes > 0 && <> · {Icon('thumb_down')} {p.dislikes}</>}
+        </>
+    )
+    if (!where.signedIn) {
+        return (p.likes > 0 || p.dislikes > 0 || p.boosts > 0) && (
+            <span class="post-votes">
+                {likes}
+                {p.boosts > 0 && <> · {Icon('repeat')} {p.boosts}</>}
+            </span>
+        )
+    }
+    return (
+        <span class="post-actions">
+            <button
+                aria-pressed={p.liked}
+                class={p.liked ? 'post-action is-on' : 'post-action'}
+                onclick={() => void toggle('like', !p.liked)}
+                title={p.liked ? 'Take your like back' : 'Like'}
+                type="button"
+            >
+                {likes}
+            </button>
+            {top && !p.mine && (
+                <button
+                    aria-pressed={p.boosted}
+                    class={p.boosted ? 'post-action is-on' : 'post-action'}
+                    onclick={() => void toggle('boost', !p.boosted)}
+                    title={p.boosted ? 'Stop passing it on' : 'Pass it on to the people who follow you'}
+                    type="button"
+                >
+                    {Icon('repeat')} {p.boosts}
+                </button>
+            )}
+            {top && p.mine && p.boosts > 0 && <span class="post-votes">{Icon('repeat')} {p.boosts}</span>}
+            {!top && (
+                <button
+                    class="post-action"
+                    onclick={() => {
+                        st.replyTo = p
+                        if (!st.reply.trim() && !p.author.local) st.reply = `@${p.author.address} `
+                    }}
+                    title={`Answer ${p.author.name}`}
+                    type="button"
+                >
+                    {Icon('reply')} Reply
+                </button>
+            )}
         </span>
+    )
+}
+
+/** What somebody reporting a post says, and whether it goes to its own server too. */
+function ReportBox(where: Where, p: PostDto) {
+    const r = st.reporting!
+    const send = async () => {
+        try {
+            await signupApi.post(`/api/posts/${p.id}/report`, {forward: r.forward, reason: r.reason.trim()})
+            st.reporting = null
+            st.error = 'Reported. The moderators will look at it.'
+        } catch (e) {
+            failed(e)
+        }
+        m.redraw()
+    }
+    return (
+        <form
+            class="post-report-box"
+            onsubmit={(e: Event) => {
+                e.preventDefault()
+                void send()
+            }}
+        >
+            <textarea
+                maxlength={1000}
+                oninput={(e: Event) => (r.reason = (e.target as HTMLTextAreaElement).value)}
+                placeholder="What is wrong with it? (optional)"
+                rows={2}
+                value={r.reason}
+            />
+            {!p.author.local && (
+                <label class="post-check">
+                    <input
+                        checked={r.forward}
+                        onchange={(e: Event) => (r.forward = (e.target as HTMLInputElement).checked)}
+                        type="checkbox"
+                    />
+                    Also tell {p.author.address.split('@')[1] ?? 'its server'}, without your name
+                </label>
+            )}
+            <span class="post-edit-actions">
+                <Button onclick={() => (st.reporting = null)} size="sm" variant="ghost">Cancel</Button>
+                <Button disabled={st.busy || !where.signedIn} size="sm" type="submit">Report</Button>
+            </span>
+        </form>
     )
 }
 
@@ -528,12 +702,14 @@ function Replies(where: Where, ctx: PostsCtx) {
                     if (!text || st.busy) return
                     st.busy = true
                     try {
-                        const reply = await signupApi.post<PostDto>(`/api/posts/${t.post.id}/replies`, {text})
+                        const to = st.replyTo?.id ?? t.post.id
+                        const reply = await signupApi.post<PostDto>(`/api/posts/${to}/replies`, {text})
                         t.replies.push(reply)
                         t.post.replies += 1
                         const inFeed = st.feed.get(where.id)?.find((x) => x.id === t.post.id)
                         if (inFeed) inFeed.replies = t.post.replies
                         st.reply = ''
+                        st.replyTo = null
                         st.busy = false
                     } catch (err) {
                         failed(err)
@@ -541,6 +717,12 @@ function Replies(where: Where, ctx: PostsCtx) {
                     m.redraw()
                 }}
             >
+                {st.replyTo && (
+                    <span class="post-replying">
+                        {Icon('reply')} To {st.replyTo.author.name}
+                        <button aria-label="Answer the post instead" onclick={() => (st.replyTo = null)} type="button">{Icon('close')}</button>
+                    </span>
+                )}
                 <textarea
                     maxlength={500}
                     oninput={(e: Event) => (st.reply = (e.target as HTMLTextAreaElement).value)}
@@ -560,8 +742,11 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
     const start = () => {
         const p = community.settings.place
         st.draft = {
+            alt: '',
             community: community.id,
             picture: null,
+            sensitive: false,
+            warning: null,
             place: p ? {latitude: p.latitude, longitude: p.longitude, name: p.name} : null,
             placing: !p,
             text: '',
@@ -589,6 +774,9 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                 picture: d.picture ?? undefined,
                 place: d.place,
                 text: d.text.trim(),
+                ...(d.warning?.trim() ? {warning: d.warning.trim()} : {}),
+                ...(d.picture && d.alt.trim() ? {picture_alt: d.alt.trim()} : {}),
+                sensitive: !!d.picture && d.sensitive,
             })
             st.feed.set(community.id, [post, ...(st.feed.get(community.id) ?? [])])
             st.draft = null
@@ -611,10 +799,39 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                     rows={3}
                     value={d.text}
                 />
+                {d.warning !== null && (
+                    <input
+                        aria-label="Content warning"
+                        class="post-compose-warning"
+                        maxlength={100}
+                        oninput={(e: Event) => (d.warning = (e.target as HTMLInputElement).value)}
+                        placeholder="Content warning: what readers see before they open it"
+                        value={d.warning}
+                    />
+                )}
                 {url && (
                     <div class="post-compose-picture">
-                        <img alt="" class="post-picture" src={url} />
+                        <img alt={d.alt} class="post-picture" src={url} />
                         <button aria-label="Remove the picture" onclick={() => (d.picture = null)} type="button">{Icon('close')}</button>
+                    </div>
+                )}
+                {url && (
+                    <div class="post-compose-alt">
+                        <input
+                            aria-label="What the photo shows"
+                            maxlength={1500}
+                            oninput={(e: Event) => (d.alt = (e.target as HTMLInputElement).value)}
+                            placeholder="What the photo shows, for people who can't see it"
+                            value={d.alt}
+                        />
+                        <label class="post-check">
+                            <input
+                                checked={d.sensitive}
+                                onchange={(e: Event) => (d.sensitive = (e.target as HTMLInputElement).checked)}
+                                type="checkbox"
+                            />
+                            Sensitive: blur it until opened
+                        </label>
                     </div>
                 )}
                 {d.placing && (
@@ -686,6 +903,15 @@ function Composer(community: CommunityView, info: PublicInfo, me: string, ctx: P
                             type="file"
                         />
                     </label>
+                    <button
+                        aria-pressed={d.warning !== null}
+                        class={d.warning !== null ? 'post-tool is-on' : 'post-tool'}
+                        onclick={() => (d.warning = d.warning === null ? '' : null)}
+                        title="Add a content warning"
+                        type="button"
+                    >
+                        {Icon('warning')} Warning
+                    </button>
                     <span class="post-count">{500 - d.text.length}</span>
                     <Button onclick={() => (st.draft = null)} size="sm" variant="ghost">Cancel</Button>
                     <Button disabled={!ready} onclick={() => void send()} size="sm">Post</Button>
@@ -808,4 +1034,98 @@ function Settings(community: CommunityView, info: PublicInfo) {
             )}
         </div>
     )
+}
+
+/** What happened to the reader in public, and when it was last read. */
+const notices = {
+    list: null as PostNotices | null,
+    readAt: 0,
+}
+
+/** How many notices are unread, for a badge; read again at most once a minute. */
+export function unreadNotices(): number {
+    if (Date.now() - notices.readAt > 60_000) {
+        notices.readAt = Date.now()
+        void loadNotices()
+    }
+    return notices.list?.unread ?? 0
+}
+
+async function loadNotices(): Promise<void> {
+    try {
+        notices.list = await signupApi.get<PostNotices>('/api/fediverse/notices')
+        notices.readAt = Date.now()
+    } catch {
+        // Signed out, or the server is older than notices: no badge.
+    }
+    m.redraw()
+}
+
+const NOTICE_WORDS: Record<NoticeKind, [string, string]> = {
+    boost: ['repeat', 'passed on your post'],
+    follow: ['person_add', 'follows you'],
+    like: ['favorite', 'likes'],
+    mention: ['alternate_email', 'mentioned you'],
+    reply: ['reply', 'replied'],
+}
+
+/**
+ * Replies, mentions, likes, boosts and new followers, here and from other
+ * servers, newest first. Opening the page marks them read; a notice about a
+ * post opens that post's community with its replies showing.
+ */
+export function Notices(ctx: PostsCtx, open: (community: string, post: string) => void) {
+    const list = notices.list
+    if (!list) {
+        void loadNotices()
+        return <p class="chat-hint">Reading what happened…</p>
+    }
+    if (list.unread > 0) {
+        const up_to = Math.max(...list.items.map((n) => n.id))
+        list.unread = 0
+        list.items.forEach((n) => (n.read = true))
+        void signupApi.post('/api/fediverse/notices/read', {up_to}).catch(failed)
+    }
+    return (
+        <div class="post-notices">
+            <h2 class="chat-pane-h">{Icon('notifications')} Activity</h2>
+            <p class="chat-hint">Replies, mentions, likes and followers on your public posts, here and on other servers.</p>
+            {list.items.length === 0 && <p class="post-empty">Nothing yet.</p>}
+            {list.items.map((n) => {
+                const [icon, words] = NOTICE_WORDS[n.kind]
+                const about = n.kind === 'like' && n.excerpt ? 'your post' : ''
+                return (
+                    <button
+                        class={n.read ? 'post-notice' : 'post-notice is-unread'}
+                        disabled={!n.post || !n.community}
+                        key={n.id}
+                        onclick={() => n.post && n.community && open(n.community, n.post)}
+                        type="button"
+                    >
+                        <span class="post-face">{ctx.avatar(n.who.address, 32)}</span>
+                        <span class="post-notice-text">
+                            <span>
+                                {Icon(icon)} <b>{n.who.name}</b> {words} {about}
+                                <span class="post-dim"> · {ago(n.created_ms)}</span>
+                            </span>
+                            {n.excerpt && <span class="post-dim post-notice-excerpt">{n.excerpt}</span>}
+                            {!n.who.local && <span class="post-dim is-public">@{n.who.address}</span>}
+                        </span>
+                    </button>
+                )
+            })}
+        </div>
+    )
+}
+
+/** Show a community's posts with one post's replies open under it. */
+export function openPost(community: string, post: string): void {
+    st.loaded = community
+    st.tab.set(community, 'posts')
+    st.settingsOpen = false
+    st.error = ''
+    st.draft = null
+    st.threadOpen = null
+    void load(community)
+    void toggleThread(post)
 }

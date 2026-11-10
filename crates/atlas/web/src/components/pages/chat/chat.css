@@ -3660,6 +3660,106 @@
     width: 1em;
 }
 
+/* Like, pass on, answer: quiet until used. */
+.post-actions {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+}
+
+:is(.chat, .post-page) button.post-action {
+    align-items: center;
+    border-radius: var(--m-radius-full);
+    color: var(--m-text-dim);
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+    padding: 4px 8px !important;
+}
+
+:is(.chat, .post-page) button.post-action:hover {
+    background: var(--m-control-bg);
+    color: var(--m-text-strong);
+}
+
+:is(.chat, .post-page) button.post-action.is-on {
+    color: var(--m-accent);
+}
+
+.post-action .chat-icon {
+    height: 1em;
+    width: 1em;
+}
+
+/* A content warning, in place of the post until it is opened. */
+.post-warning {
+    align-items: center;
+    background: var(--m-warning-soft);
+    border-radius: var(--m-radius);
+    display: flex;
+    gap: 8px;
+    margin: 6px 0;
+    padding: 6px 10px;
+}
+
+.post-warning > span {
+    flex: 1;
+}
+
+.post-picture.is-blurred {
+    cursor: pointer;
+    filter: blur(24px);
+}
+
+.post-compose-warning,
+.post-compose-alt input,
+.post-report-box textarea {
+    background: var(--m-control-bg);
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    color: var(--m-text);
+    font: inherit;
+    margin-top: 6px;
+    padding: 6px 8px;
+    width: 100%;
+}
+
+.post-compose-alt,
+.post-report-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.post-check {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 6px;
+}
+
+.post-tool.is-on {
+    color: var(--m-accent);
+}
+
+/* Who a reply answers, above the box. */
+.post-replying {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: inline-flex;
+    font-size: var(--m-font-size-sm);
+    gap: 4px;
+}
+
+.post-replying button {
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+}
+
 /* An author editing their post, in place. */
 .post-edit {
     display: flex;
@@ -3817,4 +3917,47 @@
     .chat-edit textarea {
         font-size: 16px;
     }
+}
+
+/* What happened to you in public: one row per notice, unread ones marked. */
+.post-notices {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+}
+
+:is(.chat, .post-page) button.post-notice {
+    align-items: flex-start;
+    border-radius: var(--m-radius);
+    display: flex;
+    gap: 10px;
+    padding: 8px !important;
+    text-align: left;
+}
+
+:is(.chat, .post-page) button.post-notice:hover:not(:disabled) {
+    background: var(--m-control-bg);
+}
+
+:is(.chat, .post-page) button.post-notice.is-unread {
+    background: var(--m-accent-soft);
+}
+
+.post-notice-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.post-notice-text .chat-icon {
+    height: 1em;
+    width: 1em;
+}
+
+.post-notice-excerpt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

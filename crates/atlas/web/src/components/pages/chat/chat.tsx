@@ -52,7 +52,7 @@ import {Icon} from '@/lib/icons'
 import {ProviderChoices} from '@/components/elements/providers/providers'
 import {CommunityStats} from './community-stats'
 import {LinkedGroups} from './linked-groups'
-import {Posts, Tabs, tabOf} from './posts'
+import {Notices, openPost, Posts, Tabs, tabOf, unreadNotices} from './posts'
 import {Calendar, type CalendarCtx, openCalendar, todayCount} from './calendar'
 
 /**
@@ -589,6 +589,7 @@ function Body(text: string, me: string | null) {
 /** What the middle of the page shows. */
 type Pane =
     | {kind: 'calendar'}
+    | {kind: 'notices'}
     | {kind: 'chat'; channel: string}
     | {kind: 'community'; id: string}
     | {kind: 'edit'; id: string}
@@ -1239,6 +1240,10 @@ export class Chat extends MithrilComponent {
                     {this.reminderBanner()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
                     {pane.kind === 'calendar' && Calendar(this.calendarCtx())}
+                    {pane.kind === 'notices' && Notices(this.postsCtx(), (community, post) => {
+                        openPost(community, post)
+                        this.show({id: community, kind: 'community'})
+                    })}
                     {pane.kind === 'community' && this.communityPane(pane.id)}
                     {pane.kind === 'edit' && this.editView(pane.id)}
                     {pane.kind === 'find' && this.findView()}
@@ -1385,6 +1390,8 @@ export class Chat extends MithrilComponent {
                 parts.push({go: () => this.open(null), label: 'Home'})
             } else if (space === 'calendar') {
                 parts.push({label: 'Calendar'})
+            } else if (space === 'notices') {
+                parts.push({label: 'Activity'})
             }
             const pane = s.pane
             if (pane.kind === 'chat') {
@@ -1536,6 +1543,7 @@ export class Chat extends MithrilComponent {
                     {homeUnread > 0 && <span class="chat-count home-tile-badge">{homeUnread}</span>}
                 </button>
                 {this.calendarTile(here === 'calendar')}
+                {this.noticesTile(here === 'notices')}
                 {c.communities.map((community) => {
                     const unread = community.topics.filter((t) => !c.isMuted(t.channel)).reduce(
                         (n, t) => n + (c.chats.find((x) => x.channel === t.channel)?.unread ?? 0), 0)
@@ -1591,6 +1599,45 @@ export class Chat extends MithrilComponent {
                     </div>
                 </details>
             </nav>
+        )
+    }
+
+    /** What the posts views borrow from this page: faces, pictures, and World. */
+    postsCtx() {
+        return {
+            avatar: (who: string, size: number) => Avatar(who, size),
+            // A post's place: World, flown to the view it was written from.
+            onMap: (place: string) => {
+                this.postPlace = place
+                m.route.set(PATHS.world)
+            },
+            pictureUrl,
+        }
+    }
+
+    /** Activity on the rail: replies, likes and followers on your public posts. */
+    noticesTile(current: boolean) {
+        const unread = unreadNotices()
+        return (
+            <button
+                class={current ? 'home-tile is-current' : 'home-tile'}
+                onclick={() => {
+                    closeMenus()
+                    this.s.space = 'notices'
+                    this.s.pane = {kind: 'notices'}
+                    this.s.thread = null
+                    chat().open(null)
+                }}
+                title={unread ? `Activity · ${unread} new` : 'Activity'}
+                type="button"
+            >
+                <span class="home-tile-face is-calendar">{Icon('notifications')}</span>
+                <span class="home-tile-name">
+                    Activity
+                    <span class="chat-sub">{unread ? `${unread} new` : 'On your public posts'}</span>
+                </span>
+                {unread > 0 && <span class="chat-count is-mention home-tile-badge">{unread}</span>}
+            </button>
         )
     }
 
@@ -3501,15 +3548,7 @@ export class Chat extends MithrilComponent {
                         </>
                     )}
                     {Tabs(id, community.topics.length)}
-                    {tabOf(id) === 'posts' ? Posts(community, me ?? '', {
-                        avatar: (who, size) => Avatar(who, size),
-                        // A post's place: World, flown to the view it was written from.
-                        onMap: (place) => {
-                            this.postPlace = place
-                            m.route.set(PATHS.world)
-                        },
-                        pictureUrl,
-                    }) : <>
+                    {tabOf(id) === 'posts' ? Posts(community, me ?? '', this.postsCtx()) : <>
                     <p class="chat-hint">Members only, end-to-end encrypted. Never on the fediverse.</p>
                     {community.topics.map((t) => (
                         <div class="chat-topic-row" key={t.channel}>
