@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
-updated: 2026-11-08
+updated: 2026-11-10
 ---
 
 # The chrome was monochrome glass (now solid), and the logo is not
@@ -197,6 +197,28 @@ at once:
 
 When midas's copy of `theme.css` is refreshed it picks up the token changes;
 the rest is layout, and lives in each repository.
+
+## A light theme beside the dark one (2026-11-10)
+
+The person asked for "the midas web UI's colours", light and dark. The dark
+theme is the palette above, unchanged (`theme::DARK`); `theme::LIGHT` is the
+hub's light tokens role for role (page `#F1F5F5`, white cards, text `#1F2829`,
+strong `#0F1416`, dim `#546568`, hairline `#DAE3E3`, accent-soft `#D9F0EE`,
+warning `#855700`, danger `#B3361E`). Three values move off the hub's, each
+for a 3:1 or 4.5:1 that a `theme` test holds in both themes:
+
+- **The accent is `#34938E` on the light theme, not `#5CC6C0`.** The hub's
+  accent is 2.0:1 on white, so an engaged plate, a slider's fill and the hover
+  ring identified nothing against the light surfaces. Same hue, deeper; the
+  hub's own value is what a plate lifts to under the pointer (`accent_lift`).
+- `line` is the hub's strong border a step darker (`#788B8E`): `#84979A` is
+  2.8:1 on the page.
+- `accent_ring` / `accent_pressed` are `#318C87`, so the pressed tag's rim
+  clears 3:1 and the plate's ink 4.5:1.
+
+The shadows scale by `Palette::shadow` (0.35 on the light theme, the hub's
+faint lift), and the focus ring's two rings swap: the ink is the light half
+there, the strong text the dark one. Switching: `ui-vocabulary.md`.
 
 ## The focus ring is two rings
 

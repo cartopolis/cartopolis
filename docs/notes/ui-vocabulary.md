@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
-updated: 2026-11-01
+triggers: [theme.rs, ui_theme.rs, dismiss.rs, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
+updated: 2026-11-10
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -27,6 +27,28 @@ six panels hand-rolled `heading` + `button("✕")`, and since `✕` is in none o
 egui's fonts every one of them closed on an empty box (`close_button` paints two
 line segments instead). A fresh `Color32::from_rgb` in a panel is how the chrome
 drifted last time.
+
+**Two palettes since 2026-11-10: the colours are `theme::p().field`, not
+constants.** `theme::Palette` has one field per chrome role, `theme::DARK`
+holds the look as it was (value for value, pinned by
+`the_dark_palette_is_the_look_it_was`) and `theme::LIGHT` the midas hub's light
+tokens in the same roles. Read the palette where you paint — never into a
+`const`, `static` or cached field, which keeps the other theme's colour after a
+flip. What switches it is the app's light setting (`systems::ui_theme`, in
+`ClientPhase::Input`): Light → light, Dark → dark, Auto or a set time → light
+while the sun is above the horizon at the anchor; `CARTO_UI_THEME=light|dark`
+forces one for a capture. On a flip `theme::apply_visuals` replaces only the
+egui visuals, so spacing and the debug switches survive. Brand and data
+colours (`BRAND`, the council, the code colours, the map labels, the call
+buttons, the scenario inks) stay `const`. **What was `INK` is two roles now**:
+`ink` is the deepest background (wells, a segmented track — the hub's sunken
+grey in the light theme) and `on_accent` the ink on an accent plate (`#0F1416`
+in both); `on_status` is the ink on a warning or error plate (white on the
+light theme) and `accent_word` the accent-coloured word on a soft accent tag.
+Surfaces that are dark in both themes — the splash (it is `index.html`'s
+loader), the call and camera screens, the script editor's code box, anything
+on a `LABEL_CHIP` — draw inside `theme::dark_here` with
+`theme::use_dark_visuals`, or name `theme::DARK` directly.
 
 A panel's name and glyph are `RightPanel::label()` and `RightPanel::icon()`, so
 the dock disc, the menu entry and the header medallion read one table. (CLAUDE.md
