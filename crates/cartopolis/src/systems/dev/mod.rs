@@ -11,9 +11,6 @@ pub use plugin::{PerfPlugin, ShotHarnessPlugin};
 /// The aerial photograph a capture is checked against (`--aerial-reference`).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aerial_reference;
-/// A capture's light measured against a photograph of the view (`cartopolis compare`).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod light_compare;
 /// The clock the moving world animates against; frozen between frames of a movie.
 pub mod anim_clock;
 pub mod camera_pacing;
@@ -22,6 +19,10 @@ pub mod dev_panel;
 pub mod diagnostics;
 pub mod frame_pacing;
 pub mod frame_split;
+/// A capture's light measured against a photograph of the view (`cartopolis compare`).
+/// A desktop tool: the phone and the browser never run it.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub mod light_compare;
 #[cfg(mcp)]
 pub mod mcp;
 /// This app paired to a developer's Midas hub, its tools relayed to their
