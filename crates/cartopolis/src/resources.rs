@@ -620,6 +620,56 @@ pub struct AppPrefs {
     /// session has come up: either way it does not come back.
     #[serde(default)]
     pub welcome_seen: bool,
+    /// The chrome's palette (`systems::ui_theme`): Auto, Light or Dark, in
+    /// Settings ▸ General. Its own setting since 2026-11-10 — it followed the
+    /// scene's light (`SunMode`) before, so a dark UI made the map night.
+    #[serde(default)]
+    pub ui_theme: UiTheme,
+}
+
+/// Which palette the chrome wears (`theme::LIGHT`, `theme::DARK`).
+///
+/// Named variants on the wire, read leniently as [`SunMode`] is: a name this
+/// build has never heard of costs this setting, not the settings file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiTheme {
+    /// Light while the sun is up where the map is, dark once it has set.
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl UiTheme {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Light, Self::Dark];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UiTheme {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(match name.as_str() {
+            "auto" => Self::Auto,
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            other => {
+                tracing::warn!(theme = %other, "unknown UI theme in user.json; using Auto");
+                Self::default()
+            }
+        })
+    }
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -668,6 +718,7 @@ impl Default for AppPrefs {
             mcp_enabled: yes(),
             developer_menu: false,
             welcome_seen: false,
+            ui_theme: UiTheme::default(),
         }
     }
 }
@@ -2271,6 +2322,7 @@ mod tests {
             background_connection: true,
             developer_menu: true,
             welcome_seen: true,
+            ui_theme: UiTheme::Dark,
             // Set, for the same reason the two `Some(..)` above are: a nested
             // object that round-trips only while it is all-default proves nothing
             // about the nesting.

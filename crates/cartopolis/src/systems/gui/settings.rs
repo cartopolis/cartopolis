@@ -962,6 +962,19 @@ fn general_tab(
     state: &mut SettingsState,
     receiver: &mut crate::systems::gnss_receiver::ReceiverPrefs,
 ) -> bool {
+    // The app's own colours, apart from the sky's light (Settings ▸ World):
+    // until 2026-11-10 the one switch did both, so a dark UI made the map
+    // night (`systems::ui_theme`).
+    section(ui, "Appearance");
+    let themes = crate::resources::UiTheme::ALL.map(|t| (t, t.label()));
+    crate::systems::theme::segmented(ui, &mut prefs.ui_theme, &themes);
+    theme::note(
+        ui,
+        "Auto is light while the sun is up where the map is. The sky's own light is under World.",
+    );
+
+    ui.add_space(8.0);
+    ui.separator();
     section(ui, "Units");
     let units = Units::ALL.map(|u| (u, u.label()));
     crate::systems::theme::segmented(ui, &mut prefs.units, &units);
