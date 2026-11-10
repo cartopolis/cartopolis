@@ -1,6 +1,6 @@
 ---
 topic: shaders-are-wesl
-triggers: [assets/shaders, crates/bevy_shader, shader_store.rs, glass.wgsl, atmosphere_patch.rs, systems::atmosphere_patch,
+triggers: [assets/shaders, crates/bevy_shader, shader_store.rs, atmosphere_patch.rs, systems::atmosphere_patch,
   from_wesl, water_common, cloud_field, "registered to a different shader", WESL, naga_oil, "#ifdef", "@if", define_import_path, MATERIAL_BIND_GROUP,
   ShaderCacheError, "unresolved import", "writing a shader", "bumping Bevy"]
 updated: 2026-10-19
@@ -48,10 +48,8 @@ copy replaces a *stock* bevy module that nothing else loads, so it is registered
 under that module's own `embedded://` path. Otherwise it would be a second module
 that nothing imports.
 
-A plain `.wgsl` given to bevy is passed through untouched (`bevy_shader` 0.20's
-`shader_cache.rs`), which is only right for a shader with no imports at all. The
-only one left, `glass.wgsl`, never reaches bevy: `systems::glass` hands it
-straight to wgpu.
+`shader_cache.rs`), which is only right for a shader with no imports at all.
+The last one, `glass.wgsl`, went with the chrome's blur on 2026-11-08.
 
 ## Where the errors show up
 
