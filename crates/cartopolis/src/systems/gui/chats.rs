@@ -4,13 +4,14 @@
 //!
 //! # Three screens, one state
 //!
-//!  * **Community | World** at the top of the map. *World* is the app
-//!    as it always was; *Community* is the list, which is the right-hand panel
-//!    (the whole screen on a phone). It was called Chats until 2026-10-16, when
-//!    it took the web page's word, since it holds communities and the public
-//!    chats as well as conversations (`docs/mockups/home-and-profile`). Your
-//!    disc beside the switch opens the You page, and from there Settings and,
-//!    for an account that may run something, Admin (`systems::admin`).
+//!  * **World | Community**, the switch at the bottom of the screen
+//!    (`dock::render_dock`, since 2026-11-10; it was at the top of the map and
+//!    only signed in). *World* is the map; *Community* is the list, which is
+//!    the right-hand panel (the whole screen on a phone). It was called Chats
+//!    until 2026-10-16, when it took the web page's word, since it holds
+//!    communities and the public chats as well as conversations
+//!    (`docs/mockups/home-and-profile`). Your face at the top right opens your
+//!    sheet (`ui::render_main_menu`), whose "Your profile" is the You page.
 //!  * **A chat's Chat view**: its thread, as bubbles, with points drawn as
 //!    numbered cards. Same panel, with the chat open.
 //!  * **A chat's World view**: the map, with the chat's points as numbered pins
@@ -320,6 +321,16 @@ impl ChatsView {
         let seen = self.seen.get(key).copied().unwrap_or(0).min(lines.len());
         lines[seen..].iter().filter(|l| !is_mine(chat, l)).count()
     }
+
+    /// Unread lines over every chat but *Here*, whose lines are the map's
+    /// own bubbles: the count the World | Community switch wears.
+    pub(crate) fn unread_total(&self, chat: &ChatState) -> usize {
+        chat.channels
+            .iter()
+            .filter(|c| kind_of(&c.key) != ChatKind::Here)
+            .map(|c| self.unread(chat, &c.key, &c.lines))
+            .sum()
+    }
 }
 
 /// What kind of chat a channel is, which decides what it says about itself.
@@ -622,51 +633,48 @@ pub(crate) fn segmented(
 }
 
 /// What [`top_bar`] was asked to do.
-#[derive(Default)]
 pub(crate) struct TopBar {
-    pub seg: Option<Seg>,
-    /// Your disc was tapped: open the You page.
-    pub you: bool,
+    /// Your face was tapped: open or close your sheet.
+    pub face: bool,
+    /// Where your face is, for the sheet (`ui::MainMenu::face`).
+    pub face_rect: egui::Rect,
 }
 
-/// The top of the Community panel: the switch, and your own disc beside it
-/// (`docs/mockups/home-and-profile/v1`, A). No title above it: the switch says
-/// where you are. `waiting` puts an orange dot on the disc, for a message
-/// request or a report waiting for an admin — both are on the You page.
-pub(crate) fn top_bar(
-    ui: &mut egui::Ui,
-    on: Seg,
-    unread: usize,
-    me: &str,
-    waiting: bool,
-) -> TopBar {
-    let mut out = TopBar::default();
+/// The top of the Community page: its name, and your face at the right
+/// (`docs/mockups/redesign`, v2, N5). The World | Community switch is at the
+/// bottom of the screen now, in the same place over the map
+/// (`dock::render_dock`); the face is the same face the search bar wears
+/// there, and opens the same sheet. `waiting` puts an orange dot on it, for a
+/// message request or a report waiting for an admin.
+pub(crate) fn top_bar(ui: &mut egui::Ui, me: &str, waiting: bool, open: bool) -> TopBar {
     ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        let disc = 42.0;
-        let w = ui.available_width() - disc - ui.spacing().item_spacing.x;
-        out.seg = segmented(ui, "Community", w, on, unread, false);
-        let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(disc), egui::Sense::click());
-        let resp = theme::named(ui, resp, "You");
-        let p = ui.painter();
-        p.circle_stroke(
-            rect.center(),
-            disc / 2.0 + 1.0,
-            egui::Stroke::new(1.0, gline()),
-        );
-        let name = if me.is_empty() { "?" } else { me };
-        paint_avatar(p, rect.center(), name, ChatKind::Private, disc - 2.0);
-        if waiting {
-            let c = rect.right_top() + egui::vec2(-4.0, 4.0);
-            p.circle_filled(c, 6.5, theme::p().panel);
-            p.circle_filled(c, 5.0, theme::BRAND);
-        }
-        out.you = resp
-            .on_hover_text("You: your profile and settings")
-            .clicked();
-    });
+    let face = 40.0;
+    // Right to left, so the face is at the page's right edge and the name
+    // takes what is left.
+    let row = ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), face),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            let name = (!me.is_empty()).then_some(me);
+            let resp = crate::systems::dock::face_button(ui, face, name, waiting, open);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Community")
+                            .font(egui::FontId::new(26.0, theme::brand_family()))
+                            .color(theme::p().cream),
+                    )
+                    .truncate(),
+                );
+            });
+            resp
+        },
+    );
     ui.add_space(10.0);
-    out
+    TopBar {
+        face: row.inner.clicked(),
+        face_rect: row.inner.rect,
+    }
 }
 
 /// A round button of the design's composer (`.circ`): raised, or the pale
@@ -941,6 +949,10 @@ struct Actions {
     view_picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Open (`true`) or leave (`false`) the You page.
     you: Option<bool>,
+    /// Your face at the top of the list was tapped: your sheet.
+    face: bool,
+    /// Where that face is (`ui::MainMenu::face`).
+    face_rect: Option<egui::Rect>,
     /// Put another panel in this one's place: Admin, Settings, Appearance.
     panel: Option<RightPanel>,
     /// The contacts screen the You page opened, so back returns there.
@@ -1051,6 +1063,7 @@ pub fn render_chats_panel(
     mut communities: ResMut<crate::systems::communities::Communities>,
     mut faces: ResMut<crate::systems::faces::Faces>,
     mut calendar: ResMut<crate::systems::calendar::Calendar>,
+    mut menu: ResMut<crate::systems::ui::MainMenu>,
 ) {
     for said in communities.take_admin_results() {
         chat.notice = Some(crate::systems::chat::ChatNotice {
@@ -1103,11 +1116,26 @@ pub fn render_chats_panel(
     // The design's screen is solid ink (`.phone`), not the glass the other
     // panels use: a conversation is read, and a map showing through the text
     // is noise behind it.
+    //
+    // On a phone the World | Community switch stays over the page
+    // (`dock::render_dock`) — it is the way back to the map — so the page
+    // leaves the bottom edge to it, except in a chat, whose composer has it
+    // and where the switch stands down.
+    let bottom = if compact && view.open.is_none() {
+        (crate::systems::dock::reserved_bottom() + 6.0) as i8
+    } else {
+        10
+    };
     crate::systems::egui_manager::responsive_right_panel("chats_panel", compact, viewport_w, 360.0)
         .frame(
             egui::Frame::NONE
                 .fill(theme::p().panel)
-                .inner_margin(egui::Margin::symmetric(12, 10)),
+                .inner_margin(egui::Margin {
+                    left: 12,
+                    right: 12,
+                    top: 10,
+                    bottom,
+                }),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
             let mut me = identity.username.clone().unwrap_or_default();
@@ -1178,6 +1206,7 @@ pub fn render_chats_panel(
                     &mut act,
                     &me,
                     lift,
+                    menu.open,
                 ),
                 (None, Some(key)) => {
                     let call = call_button(&calls, &key);
@@ -1201,6 +1230,13 @@ pub fn render_chats_panel(
     // A page's own close (`theme::back_title`, the contacts' title row).
     if !open_flag || theme::take_panel_close(egui.ctx()) {
         act.close = true;
+    }
+    // Your face at the top of the list: the same sheet as the search bar's.
+    if let Some(rect) = act.face_rect.take() {
+        menu.face = Some(rect);
+    }
+    if std::mem::take(&mut act.face) {
+        menu.open = !menu.open;
     }
     if std::mem::take(&mut act.calendar) {
         calendar.show(now);
@@ -1305,22 +1341,17 @@ fn list_screen(
     act: &mut Actions,
     me: &str,
     lift: f32,
+    face_open: bool,
 ) {
-    // The switch and your disc; no title above them, since the switch says
-    // where you are (`docs/mockups/home-and-profile/v1`, A).
+    // The page's name and your face (`docs/mockups/redesign`, v2, N5).
     let bar = top_bar(
         ui,
-        Seg::Community,
-        0,
         me,
         !contacts.incoming.is_empty() || view.admin.is_some_and(|n| n > 0),
+        face_open,
     );
-    if bar.seg == Some(Seg::World) {
-        act.to_world = true;
-    }
-    if bar.you {
-        act.you = Some(true);
-    }
+    act.face_rect = Some(bar.face_rect);
+    act.face |= bar.face;
     if let Some(notice) = chat.notice.clone() {
         if notice.error {
             act.dismiss_notice = theme::inline_error(ui, &notice.text);
@@ -4807,58 +4838,7 @@ pub fn restore_screen(
     }
 }
 
-/// The switch at the top of the map: back into the chats.
-///
-/// Not drawn while the Chats panel is up (its own switch is at its top), while
-/// a chat's World view has the top of the screen, or while driving.
-#[allow(clippy::too_many_arguments)]
-pub fn render_chats_switch(
-    mut egui: EguiMut,
-    chat: Res<ChatState>,
-    mut view: ResMut<ChatsView>,
-    online: Option<Res<OnlineSession>>,
-    mut right_panel: ResMut<RightPanel>,
-    driver: Res<crate::systems::driver::DriverState>,
-    camera: Res<crate::systems::camera_screen::CameraScreen>,
-) {
-    if (online.is_none() && !view.demo)
-        || driver.active
-        || camera.is_open()
-        || right_panel.is(RightPanel::Chat)
-        || right_panel.is(RightPanel::Admin)
-        || chat.world.is_some()
-        || (egui.compact() && !right_panel.is(RightPanel::None))
-    {
-        return;
-    }
-    let unread: usize = chat
-        .channels
-        .iter()
-        .filter(|c| kind_of(&c.key) != ChatKind::Here)
-        .map(|c| view.unread(&chat, &c.key, &c.lines))
-        .sum();
-    let ctx = egui.ctx_mut().clone();
-    let mut picked = None;
-    let width = 260.0;
-    egui::Area::new(egui::Id::new("chats_world_switch"))
-        .order(egui::Order::Middle)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset(&chat)))
-        .show(&ctx, |ui| {
-            // `.topseg`: the glass segmented pill on its own, no frame around it.
-            ui.set_width(width);
-            picked = segmented(ui, "Community", width, Seg::World, unread, true);
-        });
-    match picked {
-        Some(Seg::Community) => {
-            *right_panel = RightPanel::Chat;
-            view.open = None;
-            view.you = false;
-        }
-        _ => {}
-    }
-}
-
-/// Sign out from the You page: the same path as the main menu's Sign out.
+/// Sign out from the You page: the same path as your face's sheet's Sign out.
 pub fn apply_sign_out(
     mut view: ResMut<ChatsView>,
     mut session: ResMut<crate::systems::session::SessionState>,

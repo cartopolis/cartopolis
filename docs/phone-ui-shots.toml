@@ -20,12 +20,38 @@ look = [-50.0, 0.0]
 time = 12.0
 ui = []
 
+# Your face's sheet, signed out (it replaced the ☰ menu, 2026-11-10).
 [[shot]]
-name = "menu"
+name = "face"
 at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]
 time = 12.0
-ui = ["menu"]
+ui = ["face"]
+
+# The same sheet signed in, opened from the Community page's face.
+[[shot]]
+name = "facecommunity"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["chats", "face"]
+
+# Community chosen signed out: what signing in is for, the switch on Community.
+[[shot]]
+name = "communityout"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["communityout"]
+
+# Earth mode: the zoom rail on the right edge under the column of buttons.
+[[shot]]
+name = "earth"
+at = [53.2190, 6.5680, 1500.0]
+look = [-60.0, 0.0]
+time = 12.0
+mode = "earth"
+ui = []
 
 [[shot]]
 name = "search"

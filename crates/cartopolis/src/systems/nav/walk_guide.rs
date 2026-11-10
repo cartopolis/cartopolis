@@ -274,7 +274,12 @@ pub fn render_walk_guide(
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 theme::overlay_frame().show(ui, |ui| {
-                    ui.set_max_width(260.0);
+                    // Between the two columns of round buttons that come down
+                    // the edges under it (`dock`): the search bar stands down
+                    // while a walk is guided, and this takes its place.
+                    let between =
+                        viewport.x - 2.0 * (theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + 10.0);
+                    ui.set_max_width(260.0_f32.min(between - 24.0));
                     ui.horizontal(|ui| {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());

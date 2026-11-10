@@ -42,6 +42,7 @@ pub fn render_floor_picker(
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    chrome: Res<crate::systems::dock::MapChrome>,
 ) {
     if cutaway.looking.is_none() {
         return; // only the card's Look inside asks for the floors
@@ -64,9 +65,14 @@ pub fn render_floor_picker(
     let mut open: Option<String> = None;
     let ctx = egui.ctx();
     egui::Area::new(egui::Id::new("floor_picker"))
+        // Under the map's column of round buttons on the same edge
+        // (`dock::right_column`); in the middle of the edge it ran into them.
         .anchor(
-            egui::Align2::RIGHT_CENTER,
-            egui::vec2(-theme::OSD_MARGIN, 0.0),
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(
+                -theme::OSD_MARGIN,
+                chrome.right_bottom + theme::OSD_GROUP_GAP,
+            ),
         )
         .show(ctx, |ui| {
             theme::overlay_frame().show(ui, |ui| {

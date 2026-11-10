@@ -88,7 +88,11 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
     let mut close = false;
     egui::Area::new(egui::Id::new("app_update_pill"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, theme::OSD_MARGIN))
+        // Under the search bar, which has the top edge.
+        .anchor(
+            egui::Align2::CENTER_TOP,
+            egui::vec2(0.0, crate::systems::dock::reserved_top()),
+        )
         .show(ctx, |ui| {
             crate::systems::chats::glass_frame().show(ui, |ui| {
                 ui.set_width(width);

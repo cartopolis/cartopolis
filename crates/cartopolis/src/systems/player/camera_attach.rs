@@ -199,7 +199,7 @@ pub fn render_attach_chip(
     egui::Area::new(egui::Id::new("camera_attach_chip"))
         .anchor(
             egui::Align2::CENTER_TOP,
-            egui::vec2(0.0, theme::OSD_MARGIN + 44.0),
+            egui::vec2(0.0, crate::systems::dock::reserved_top()),
         )
         .show(egui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {

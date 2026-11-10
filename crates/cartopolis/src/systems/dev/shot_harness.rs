@@ -2502,7 +2502,10 @@ const UI_ELEMENTS: &[&str] = &[
     "switches",
     "precision",
     "midas",
+    // Your face's sheet (`ui::render_main_menu`): `face`, or `menu`, its name
+    // while it was the ☰ menu.
     "menu",
+    "face",
     "avatar",
     "appearance",
     "layers",
@@ -2536,6 +2539,9 @@ const UI_ELEMENTS: &[&str] = &[
     "signin",
     // The first-launch card over the map (`systems::welcome`).
     "welcome",
+    // Community chosen signed out: the same card, with the switch on
+    // Community (`welcome::Welcome::community`).
+    "communityout",
     // The app's own updates (`systems::app_update`, `docs/mockups/app-updates`):
     // the pill, the too-old card, and that card downloading — as on a phone.
     "updateready",
@@ -2682,6 +2688,7 @@ pub fn open_scripted_ui(
     // scripted run reads no `user.json` and would otherwise show it on every
     // shot as a fresh install does.
     cards.welcome.capture = Some(want("welcome"));
+    cards.welcome.community = want("communityout");
     {
         use crate::platform::update::UpdateStatus;
         use crate::systems::app_update::Capture;
@@ -2744,11 +2751,10 @@ pub fn open_scripted_ui(
     if want("signin") {
         cards.sign_in.seed_for_capture("cartopolis.org", "jeroen");
     }
-    // `--ui menu` opens the app mark's card. It is the one piece of chrome a
-    // scripted run could not reach at all, and it is where the entries that left
-    // the map now live — Set Home, Copy location and the way into Developer
-    // tools. A control nothing can screenshot is a control nobody reviews.
-    cards.menu.open = want("menu");
+    // `--ui face` (or `menu`) opens your face's sheet. It only ever opens
+    // from a tap otherwise, and a control nothing can screenshot is a control
+    // nobody reviews.
+    cards.menu.open = want("menu") || want("face");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
     // Which category the Layers panel opens on: `--ui layers,orbit`.

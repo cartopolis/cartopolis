@@ -81,7 +81,11 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
         .unwrap_or(0);
     let mut stop = None;
     egui::Area::new(egui::Id::new("real_location_sharing_chip"))
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+        // Under the search bar, which has the top edge.
+        .anchor(
+            egui::Align2::CENTER_TOP,
+            egui::vec2(0.0, crate::systems::dock::reserved_top()),
+        )
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()

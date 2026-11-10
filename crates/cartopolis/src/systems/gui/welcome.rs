@@ -30,17 +30,22 @@ const CARD_WIDTH: f32 = 300.0;
 #[derive(Resource, Default)]
 pub struct Welcome {
     pub capture: Option<bool>,
+    /// Community was chosen signed out (`dock::render_dock`): this card is
+    /// what Community is without an account (`docs/mockups/redesign`,
+    /// v2-account, A1), whether or not it has been answered before. Signing
+    /// in opens the Community page; "Not now" and World go back to the map.
+    pub community: bool,
 }
 
 /// The card, while it has not been answered.
 #[allow(clippy::too_many_arguments)]
 pub fn render_welcome(
     egui: EguiRef,
-    welcome: Res<Welcome>,
+    mut welcome: ResMut<Welcome>,
     mut prefs: ResMut<AppPrefs>,
     mut login: ResMut<LoginScreen>,
     session: Res<SessionState>,
-    right_panel: Res<RightPanel>,
+    mut right_panel: ResMut<RightPanel>,
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
@@ -52,7 +57,14 @@ pub fn render_welcome(
     if session.is_online() && !prefs.welcome_seen {
         prefs.welcome_seen = true;
     }
-    let show = welcome.capture.unwrap_or(!prefs.welcome_seen);
+    // Signed in from Community: on to the Community page it was asked for.
+    if session.is_online() && welcome.community {
+        welcome.community = false;
+        if right_panel.is(RightPanel::None) {
+            *right_panel = RightPanel::Chat;
+        }
+    }
+    let show = welcome.community || welcome.capture.unwrap_or(!prefs.welcome_seen);
     if !show || session.is_online() || session.status.is_busy() || login.open {
         return;
     }
@@ -67,6 +79,7 @@ pub fn render_welcome(
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let ctx = egui.ctx();
     let mut answered = false;
+    let mut not_now = false;
     egui::Area::new(egui::Id::new("welcome_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(ctx, |ui| {
@@ -127,11 +140,15 @@ pub fn render_welcome(
                         .clicked()
                     {
                         answered = true;
+                        not_now = true;
                     }
                 });
             });
         });
     if answered && welcome.capture.is_none() {
         prefs.welcome_seen = true;
+    }
+    if not_now {
+        welcome.community = false;
     }
 }

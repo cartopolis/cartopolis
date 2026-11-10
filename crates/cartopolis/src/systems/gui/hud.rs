@@ -1,5 +1,6 @@
-//! The map's left-hand controls: the compass rose, the locate button under it,
-//! and the scale bar along the bottom edge.
+//! The map's view controls: the compass rose and the light disc in the left
+//! column, the locate button in the right one (at the slot `dock` keeps for
+//! it, since 2026-11-10), and the scale bar along the bottom edge.
 //!
 //! **The status readout that used to share this module is gone** (2026-09-10).
 //! It was an anchored box in the top-right corner carrying the wall-clock time,
@@ -260,10 +261,12 @@ fn locate_overlay(
     // already running is the shape that deadlocks.
     let time = ctx.input(|i| i.time);
     egui::Area::new(egui::Id::new("locate_overlay"))
-        // Directly under the compass, centred on its column.
+        // In the right-hand column under the search bar, at the slot
+        // `dock::right_column` keeps for it (2026-11-10; it was under the
+        // compass on the left).
         .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(column_x(LOCATE_SIZE), top),
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-column_x(LOCATE_SIZE), top),
         )
         .show(ctx, |ui| {
             // Tracking is an engaged state, so it takes the plate the dock's
@@ -307,20 +310,23 @@ fn locate_overlay(
             }
             // The caption, and it is the half that reaches a phone at all: every
             // other report this button can make is in `hover`, and a touch device
-            // has no hover. Under the disc rather than beside it, so the column
-            // keeps its single centre line (`column_x`).
+            // has no hover. To the left of the disc, over the map, since
+            // 2026-11-10: the disc is at the screen's right margin in a column
+            // that has no room under it (`dock::right_column`).
             if let Some(caption) = gps.caption().filter(|_| on) {
-                halo_text(p, egui::pos2(c.x, c.y + face.radius + 8.0), &caption, tone);
+                halo_text_aligned(
+                    p,
+                    egui::pos2(c.x - face.radius - 6.0, c.y),
+                    egui::Align2::RIGHT_CENTER,
+                    &caption,
+                    tone,
+                );
             }
             let resp = resp.on_hover_text(hover);
             clicked = resp.clicked();
         });
     clicked
 }
-
-/// Room the locate button's caption takes under its disc, so the disc below it
-/// does not sit on the words.
-const LOCATE_CAPTION_ROOM: f32 = 14.0;
 
 /// The three lights the disc offers, in the order a theme switcher lists them.
 /// A set time is Settings' alone: it needs a clock face to set.
@@ -410,7 +416,7 @@ fn light_overlay(
             let behind = if *open {
                 theme::p().accent
             } else {
-                theme::p().overlay
+                theme::p().map_fill
             };
             paint_light_icon(
                 ui.painter(),
@@ -468,7 +474,7 @@ fn light_overlay(
                             let p = ui.painter();
                             p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_PILL), fill);
                             let behind = if fill == egui::Color32::TRANSPARENT {
-                                theme::p().overlay
+                                theme::p().map_fill
                             } else {
                                 fill
                             };
@@ -536,13 +542,9 @@ fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, 
 /// something this small reads as a piece of chrome that has come loose. Four
 /// offset copies rather than a stroke, because epaint's text has no outline —
 /// diagonals as well as axes, or the halo thins to nothing at the corners of a
-/// glyph.
-fn halo_text(painter: &egui::Painter, at: egui::Pos2, text: &str, ink: egui::Color32) {
-    halo_text_aligned(painter, at, egui::Align2::CENTER_CENTER, text, ink);
-}
-
-/// [`halo_text`] anchored by `align` at `at`: the hand button's word sits to
-/// the left of its disc (`map_osd`).
+/// glyph. Anchored by `align` at `at`: the locate caption ends at its disc's
+/// right edge, the hand button's word sits to the left of its disc
+/// (`map_osd`).
 pub(crate) fn halo_text_aligned(
     painter: &egui::Painter,
     at: egui::Pos2,
@@ -917,9 +919,9 @@ pub fn render_map_controls(
     let cfg = Compass {
         interactive: orbit,
         locked,
-        // Below the layers disc, which owns the very top of this column
-        // (`dock::reserved_top`) — the address bar's mark used to sit there.
-        top: crate::systems::dock::reserved_top(),
+        // Under the search bar, at the head of the left column
+        // (`dock::left_slot`).
+        top: crate::systems::dock::left_slot(0),
         caption: None,
         hover: if locked {
             "North-up locked — click to release"
@@ -943,23 +945,17 @@ pub fn render_map_controls(
     // whatever view you were already using. Not drawn while driving: the arrow is
     // already centred and the camera is held, so there is nothing left for it to
     // do.
-    // The bottom edge of what the column has drawn so far; each control below
-    // adds its own gap before its own height.
-    let mut column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
-    if !avatars.is_empty() {
+    if let Some(top) = (!avatars.is_empty())
+        .then(|| crate::systems::dock::right_column(true, false).locate)
+        .flatten()
+    {
         let state = if tracking.active {
             LocateState::Tracking
         } else {
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        let toggled = locate_overlay(
-            egui.ctx(),
-            column + theme::OSD_GAP,
-            state,
-            tracking.gps,
-            &hover,
-        );
+        let toggled = locate_overlay(egui.ctx(), top, state, tracking.gps, &hover);
         if toggled {
             match state {
                 // Recenter, in the view the user is already in. The button used to
@@ -984,15 +980,13 @@ pub fn render_map_controls(
         }
     }
 
-    // The light disc, last in the column: Auto, Light or Dark, as a theme
-    // switcher offers them (`docs/mockups/zoom-ladder/`, v2). The same setting
-    // as Settings ▸ World's Light row, which also holds a set time.
-    if !avatars.is_empty() {
-        column += theme::OSD_GAP + LOCATE_SIZE + LOCATE_CAPTION_ROOM;
-    }
+    // The light disc, under the lens in the left column: Auto, Light or
+    // Dark, as a theme switcher offers them (`docs/mockups/zoom-ladder/`,
+    // v2). The same setting as Settings ▸ World's Light row, which also holds
+    // a set time.
     if let Some(mode) = light_overlay(
         egui.ctx(),
-        column + theme::OSD_GAP,
+        crate::systems::dock::left_slot(2),
         dev.sun_mode,
         &mut light_open,
     ) {
@@ -1152,19 +1146,17 @@ mod tests {
         );
     }
 
-    /// **The column is one column: one axis, one diameter.** Both halves of that
-    /// are load-bearing and both were broken. The layers disc at the head is
-    /// `dock`'s, anchored flush to its own margin, so it sat 3 pt off the axis of
-    /// the discs below it; and the compass was 46 pt against everything else's
-    /// 40, so the stack visibly bulged in the middle.
+    /// **A column is one column: one axis, one diameter.** Both halves of that
+    /// are load-bearing and both were broken once: a disc anchored flush to its
+    /// own margin sat 3 pt off the axis of the discs below it, and the compass
+    /// was 46 pt against everything else's 40, so the stack bulged.
     ///
-    /// It is measured through [`column_x`] and the theme's own inset rather than
-    /// against a literal, so a future change to either moves the whole column or
-    /// fails here; a hard-coded 12 would have gone on agreeing with a stale
-    /// number. `dock::the_column_is_one_column` is the other half, asserting the
-    /// layers disc's margin is that same inset.
+    /// Measured through [`column_x`] and the theme's own inset rather than
+    /// against a literal. The left column (compass, light) and the right one
+    /// (locate, anchored from the right edge by the same offset) share it, as
+    /// `dock`'s discs do: they are anchored at [`theme::OSD_MARGIN`] too.
     #[test]
-    fn the_left_column_is_one_axis_and_one_diameter() {
+    fn the_columns_are_one_axis_and_one_diameter() {
         let axis = theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE * 0.5;
         for size in [COMPASS_SIZE, LOCATE_SIZE] {
             assert_eq!(
@@ -1180,22 +1172,20 @@ mod tests {
         }
     }
 
-    /// The column's gaps say what belongs together: the compass and the locate
-    /// arrow both steer the *view* and sit a plain gap apart, while the layers
-    /// disc above them opens a panel and is a group gap out. With one gap for
-    /// both, the discs read as an undifferentiated strip of chrome.
+    /// The left column under the search bar — compass, lens, light — and the
+    /// locate disc in the right one take the slots `dock` hands out, so they
+    /// start under the bar and never sit on a neighbour.
     #[test]
-    fn the_column_groups_the_view_controls() {
-        let compass_top = crate::systems::dock::reserved_top();
-        let locate_top = compass_top + COMPASS_SIZE + theme::OSD_GAP;
-        let above_compass = compass_top - (theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE);
-        assert!(
-            locate_top - (compass_top + COMPASS_SIZE) < above_compass,
-            "the gap under the layers disc must exceed the one inside the pair"
-        );
-        // …and nothing overlaps its neighbour, which hand-placed anchors do not
-        // guarantee on their own.
-        assert!(locate_top >= compass_top + COMPASS_SIZE);
+    fn the_view_controls_take_their_slots() {
+        let dock = crate::systems::dock::reserved_top();
+        let compass = crate::systems::dock::left_slot(0);
+        let light = crate::systems::dock::left_slot(2);
+        assert!(compass >= dock);
+        assert!(light >= compass + 2.0 * (COMPASS_SIZE + theme::OSD_GAP));
+        let col = crate::systems::dock::right_column(true, true);
+        let locate = col.locate.expect("an avatar has a locate slot");
+        assert!(locate >= col.mode + theme::ROUND_BUTTON_SIZE);
+        assert!(col.camera.unwrap() >= locate + LOCATE_SIZE + theme::OSD_GAP);
     }
 
     /// The locate button's caption must tell the four situations apart. They look

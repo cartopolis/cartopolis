@@ -44,8 +44,8 @@
 //!     buttons exist for the one-handed case, which is most of the time a phone
 //!     is held at all.
 //!
-//! The camera-mode switcher is *not* here: it is the dock's mode disc
-//! (`dock::mode_disc`). It sat in this corner briefly, and what that cost was
+//! The camera-mode switcher is *not* here: it is the mode disc in the map's
+//! right-hand column (`dock::mode_disc`). It sat in this corner briefly, and what that cost was
 //! the corner itself — every pair on this edge stacked one control higher for
 //! a disc that is chrome, not a touch control.
 //!
@@ -117,6 +117,26 @@ fn pair_height() -> f32 {
 /// the same arithmetic the anchor uses.
 fn actions_bottom_offset() -> f32 {
     bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
+}
+
+/// Bottom offset of the face disc, a group gap above the jump/flight pair: the
+/// top tier of Follow's right edge. The hand button stands beside it.
+fn face_bottom_offset() -> f32 {
+    actions_bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
+}
+
+/// Right offset of the hand button: one disc and a gap in from the edge,
+/// beside the face disc.
+fn hand_right_offset() -> f32 {
+    theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP
+}
+
+/// How far up from the bottom the right edge's touch controls reach, at
+/// most: Follow's face disc. The map's column of round buttons comes down
+/// from the top to meet it (`dock::right_column`), and the two must not meet.
+#[cfg(test)]
+fn right_edge_reach() -> f32 {
+    face_bottom_offset() + CONTROL_SIZE
 }
 
 /// How much of the bottom-**left** corner the thumbstick claims, in points, for
@@ -385,6 +405,7 @@ pub fn render_map_osd(
     camera: Res<crate::systems::camera_screen::CameraScreen>,
     mut body: BodyControls,
     mut rail: RailView,
+    chrome: Res<crate::systems::dock::MapChrome>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -477,6 +498,7 @@ pub fn render_map_osd(
                 flying_to: camera_state.rail_goal,
                 push: camera_state.edge_push_shown,
                 globe_return: camera_state.globe_return_alt,
+                top: chrome.right_bottom + theme::OSD_GROUP_GAP,
             };
             let (zoom, goal) = zoom_rail_control(
                 egui.ctx(),
@@ -593,6 +615,9 @@ struct RailIn {
     push: f32,
     /// Where a jump back to the globe lands (`CameraState::globe_return_alt`).
     globe_return: Option<f64>,
+    /// Where the rail starts on a desktop: under the map's right-hand column
+    /// of round buttons (`dock::MapChrome`), which shares its edge.
+    top: f32,
 }
 
 /// The zoom rail on the right edge, for one scale (`systems::zoom_rail`): the
@@ -690,10 +715,12 @@ fn zoom_rail_control(
             state.list_open = false;
         }
     }
-    // On a phone, the rail stands at the foot of the right edge, over the dock,
-    // where the old + / − pair was and the thumb is: the middle of the edge is
-    // where the other hand pinches (`touch-input.md`, "Both edges anchor to the
-    // bottom"). A desktop keeps it in the middle, as the mockup has it.
+    // On a phone, the rail stands at the foot of the right edge, over the
+    // World | Community switch, where the old + / − pair was and the thumb is:
+    // the middle of the edge is where the other hand pinches (`touch-input.md`,
+    // "Both edges anchor to the bottom"). A desktop hangs it under the column
+    // of round buttons on the same edge (`dock::right_column`, 2026-11-10): in
+    // the middle of the edge it ran into them on a short window.
     let anchor = if touch_ui {
         (
             egui::Align2::RIGHT_BOTTOM,
@@ -701,8 +728,8 @@ fn zoom_rail_control(
         )
     } else {
         (
-            egui::Align2::RIGHT_CENTER,
-            egui::vec2(-theme::OSD_MARGIN, 0.0),
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-theme::OSD_MARGIN, rail.top),
         )
     };
     let mut scale_disc = egui::Rect::NOTHING;
@@ -807,7 +834,7 @@ fn zoom_rail_control(
                             p.rect_filled(
                                 tag,
                                 egui::CornerRadius::same(theme::RADIUS),
-                                theme::p().overlay,
+                                theme::p().map_fill,
                             );
                             p.rect_stroke(
                                 tag,
@@ -912,7 +939,7 @@ fn zoom_rail_control(
                 // what is public and beyond the street), plain on the globe.
                 let p = ui.painter();
                 let (top, bottom) = (egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom()));
-                p.line_segment([top, bottom], egui::Stroke::new(4.0, theme::p().overlay));
+                p.line_segment([top, bottom], egui::Stroke::new(4.0, theme::p().map_fill));
                 let tone = if scale == Scale::Globe {
                     theme::p().text_dim
                 } else {
@@ -932,14 +959,14 @@ fn zoom_rail_control(
                     p.circle_stroke(
                         egui::pos2(x, y_at(position_of(scale, to))),
                         8.0,
-                        egui::Stroke::new(2.0, theme::p().cream),
+                        egui::Stroke::new(2.0, theme::p().map_mark),
                     );
                 }
-                p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::p().cream);
+                p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::p().map_mark);
                 p.circle_stroke(
                     egui::pos2(x, thumb_y),
                     9.5,
-                    egui::Stroke::new(3.0, theme::p().overlay_line),
+                    egui::Stroke::new(3.0, theme::p().map_rim),
                 );
 
                 // The step's name beside the thumb, while the rail is awake
@@ -965,7 +992,7 @@ fn zoom_rail_control(
                     p.rect_filled(
                         tag,
                         egui::CornerRadius::same(theme::RADIUS),
-                        theme::p().overlay,
+                        theme::p().map_fill,
                     );
                     p.text(
                         at,
@@ -1014,14 +1041,14 @@ fn zoom_rail_control(
                     let fill = if resp.hovered() {
                         theme::p().surface_hover
                     } else {
-                        theme::p().overlay
+                        theme::p().map_fill
                     };
                     let round = egui::CornerRadius::same(theme::RADIUS_PILL);
                     p.rect_filled(rect, round, fill);
                     p.rect_stroke(
                         rect,
                         round,
-                        egui::Stroke::new(1.0, theme::p().overlay_line),
+                        egui::Stroke::new(1.0, theme::p().map_rim),
                         egui::StrokeKind::Inside,
                     );
                     let c = egui::pos2(rect.right() - h / 2.0, rect.center().y);
@@ -1048,7 +1075,7 @@ fn zoom_rail_control(
                         if on {
                             theme::p().cream
                         } else {
-                            theme::p().text
+                            theme::p().map_ink
                         },
                     );
                     if resp.clicked() || fingers.lifted_in(rect) {
@@ -1294,15 +1321,13 @@ fn hand_button(
         Some(HandWord::CameraBusy) => theme::p().warn,
         _ => theme::p().accent_ring,
     };
-    let above = actions_bottom_offset()
-        + pair_height()
-        + theme::OSD_GROUP_GAP
-        + CONTROL_SIZE
-        + theme::OSD_GAP;
+    // Beside the face disc rather than above it: the right edge's top half is
+    // the map's column of round buttons now (`dock::right_column`), and a
+    // fourth tier here reached into it on a phone.
     let area = egui::Area::new(egui::Id::new("osd_hand"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-theme::OSD_MARGIN, -above),
+            egui::vec2(-hand_right_offset(), -face_bottom_offset()),
         )
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
@@ -1417,7 +1442,7 @@ fn face_picker(
     areas: &mut Vec<egui::Rect>,
     open: &mut bool,
 ) -> Option<cartopolis_core::Expression> {
-    let above = actions_bottom_offset() + pair_height() + theme::OSD_GROUP_GAP;
+    let above = face_bottom_offset();
     let area = egui::Area::new(egui::Id::new("osd_face"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
@@ -1437,7 +1462,10 @@ fn face_picker(
     let list = egui::Area::new(egui::Id::new("osd_faces"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-(theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP), -above),
+            egui::vec2(
+                -(hand_right_offset() + CONTROL_SIZE + theme::OSD_GAP),
+                -above,
+            ),
         )
         .show(ctx, |ui| {
             theme::overlay_frame().show(ui, |ui| {
@@ -1925,6 +1953,32 @@ mod tests {
         assert!(pair.0 >= crate::systems::dock::reserved_bottom());
     }
 
+    /// The right edge has two owners since 2026-11-10: the map's column of
+    /// round buttons comes down from under the search bar
+    /// (`dock::right_column`), and the touch controls grow up from the
+    /// World | Community switch. On a phone (600 pt tall at 1.5, the shots'
+    /// 412×900 px) they must not meet — neither Follow's tallest stack (the
+    /// face and hand discs over the jump/flight pair over the zoom pair) nor
+    /// Earth's rail.
+    #[test]
+    fn the_right_edge_controls_clear_the_column_of_round_buttons() {
+        let phone_h = 600.0;
+        let column = crate::systems::dock::right_column(true, true).bottom;
+        let follow_top = phone_h - right_edge_reach();
+        assert!(
+            follow_top >= column + theme::OSD_GAP,
+            "Follow's stack reaches {follow_top}, the column ends at {column}"
+        );
+        let rail = 3.0 * RAIL_DISC + RAIL_TRACK_TOUCH + 3.0 * 6.0;
+        let rail_top = phone_h - bottom_offset() - rail;
+        assert!(
+            rail_top >= column + theme::OSD_GAP,
+            "the rail reaches {rail_top}, the column ends at {column}"
+        );
+        // The hand button stands beside the face disc, a disc and a gap in.
+        assert!(hand_right_offset() >= theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP);
+    }
+
     /// What the bottom-left corner reserves has to cover the stick actually
     /// drawn there, or the scale bar that reads this lands on it — which is the
     /// collision that moved the bar off the opposite corner in the first place.
@@ -2067,6 +2121,7 @@ mod tests {
                 flying_to: None,
                 push: 0.0,
                 globe_return: None,
+                top: 0.0,
             };
             self.ctx.run_ui_unpainted(input, |ui| {
                 goal = zoom_rail_control(ui.ctx(), &f, &mut areas, &rail, state, true, touching).1;

@@ -16,62 +16,83 @@ use bevy::prelude::*;
 use cartopolis_core::NetMessage;
 use egui::Window;
 
-/// The main menu's state: whether the card above the dock is showing.
+/// Your face's sheet: whether it is showing, and where the face that toggles
+/// it was drawn.
 ///
-/// A resource rather than a `Local` because two systems share it — the dock
-/// paints the mark disc that toggles it (and shows it pressed while it is open),
-/// and [`render_main_menu`] paints the card. `toggled` is that hand-off: without
-/// it the click that opens the menu is also a click *outside* the card, which the
-/// dismiss rule below would act on in the same frame, and the menu would never
-/// appear.
+/// A resource because three systems share it: the search bar's face
+/// (`dock::render_dock`) and the Community page's (`chats`) open it, and
+/// [`render_main_menu`] draws it. Both faces are drawn *after* the sheet in the
+/// frame (they sit at the tail of the panel chain), so a tap on a face is a
+/// tap outside the sheet when the sheet looks for one; `face` is the face's
+/// rect from the frame before, which the sheet leaves to the face to answer.
 #[derive(Resource, Default)]
 pub struct MainMenu {
     pub open: bool,
-    /// Set by the dock on the frame the disc was clicked; consumed here.
-    pub toggled: bool,
+    /// Where a face was drawn last frame. Taken by the sheet each frame and
+    /// written again by whichever face draws.
+    pub face: Option<egui::Rect>,
 }
 
-/// Width of the menu card, in points. Fixed rather than sized to its content for
-/// the reason the driver bar's module note gives: this is an anchored,
-/// size-to-content `Area`, and anything inside it that reaches for the
-/// *available* width would grow the card a little every frame.
-const MENU_WIDTH: f32 = 248.0;
+/// Width of the sheet on a desktop, where it hangs under your face. Fixed
+/// rather than sized to its content for the reason the driver bar's module
+/// note gives: an anchored, size-to-content `Area` that reaches for the
+/// *available* width grows a little every frame. On a phone it is the screen's
+/// width, as a bottom sheet is.
+const MENU_WIDTH: f32 = 320.0;
 
-/// The app menu's account entry (`systems::session`), bundled into one parameter
+/// The sheet's width on a viewport this wide.
+#[must_use]
+fn sheet_width(viewport_w: f32, compact: bool) -> f32 {
+    if compact {
+        viewport_w
+    } else {
+        MENU_WIDTH.min(viewport_w - 2.0 * theme::OSD_MARGIN)
+    }
+}
+
+/// The sheet's account half (`systems::session`), bundled into one parameter
 /// because [`render_main_menu`] would otherwise sit at Bevy's 16-parameter
 /// ceiling — the same reason `network::AuthWriteback` exists.
 ///
-/// `session` is a `ResMut` because **Log out happens here**, not on the sign-in
-/// card: it is one entry with one outcome, and routing it through a modal that
-/// then has to be dismissed is three taps for a verb that needs one.
+/// `session` is a `ResMut` because **Sign out happens here**, not on the
+/// sign-in card: it is one entry with one outcome.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SignInMenu<'w> {
     screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
     session: ResMut<'w, crate::systems::session::SessionState>,
     identity: Res<'w, crate::resources::AuthIdentity>,
+    chats: ResMut<'w, crate::systems::chats::ChatsView>,
+    contacts: Res<'w, crate::systems::contacts::Contacts>,
 }
 
-/// The main menu: a card that rises out of the dock's mark disc, holding
-/// everything that is not a place you navigate to.
+/// What a row of the sheet asked for.
+enum SheetAct {
+    Panel(RightPanel),
+    Profile,
+    ShareLink,
+    SignIn,
+    DevTools,
+    Diagnostics,
+    SignOut,
+    #[cfg_attr(any(target_os = "android", target_arch = "wasm32"), allow(dead_code))]
+    Exit,
+}
+
+/// Your face's sheet: who you are, and everything that is not a place on the
+/// map — your profile, your avatar, your saved places, Models, Settings,
+/// Admin, About, the developer tools, Sign out and Exit
+/// (`docs/mockups/redesign`, v2-account, A3). It replaced the ☰ menu, whose
+/// entries and what each does it keeps; what changed is where it opens and
+/// how it looks: rows of the theme's lists, 50 pt tall, on a sheet.
 ///
-/// **This is what is left of the address bar.** That was a card in the top-left
-/// corner: a mark you clicked to unfold a search field, three history buttons, the
-/// camera picker and a hamburger. It began as a full-width strip, then a card that
-/// revealed itself when the pointer grazed the top edge (undiscoverable — you
-/// cannot aim at something you have never seen — and fired on every trip to the
-/// window's title bar), then the folding card. All three put the two controls
-/// reached most often, search and the menu, in the corner furthest from the thumb
-/// of anyone holding a phone, and all three had to fold half their contents into
-/// the menu on a narrow viewport anyway. So the search field is a panel
-/// (`geo_nav::render_search_panel`), the mark is a dock disc, and what the compact
-/// layout folded away *permanently* lives here — one menu on every viewport,
-/// rather than a menu whose contents depend on the window width.
+/// **A bottom sheet on a phone, a card under your face on a desktop.** On a
+/// phone the face is at the top and the thumb at the bottom, and a sheet
+/// rising from the bottom is the shape a phone gives "more about you"; on a
+/// desktop a card hangs from the face that opened it.
 ///
-/// Anchored to the bottom centre rather than to the disc it belongs to: the dock
-/// is centred and its width depends on whether there is a session (Say comes and
-/// goes), so an offset measured from the disc would move under a card that should
-/// not move. It is a floating `Area`, so like the dock and the HUD it is
-/// deliberately *not* in the panel chain.
+/// **Who you are comes first**, written out — it was the hover text of a "Log
+/// out" row once, which a phone never shows. Signing out is last, in red, and
+/// arms before it acts (`docs/mockups/ux-review`).
 #[allow(clippy::too_many_arguments)]
 pub fn render_main_menu(
     mut egui: EguiMut,
@@ -85,299 +106,432 @@ pub fn render_main_menu(
     mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
     prefs: Res<crate::resources::AppPrefs>,
 ) {
-    let dismissed_by_disc = std::mem::take(&mut menu.toggled);
+    let face = menu.face.take();
     if !menu.open {
         return;
     }
 
-    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let max_height = (egui.viewport_pts().y - bottom - 24.0).max(120.0);
+    let compact = egui.compact();
+    let viewport = egui.viewport_pts();
+    let width = sheet_width(viewport.x, compact);
+    let demo = sign_in.chats.demo;
+    let signed_in = sign_in.session.is_online() || demo;
+    let me = sign_in
+        .identity
+        .username
+        .clone()
+        .filter(|n| !n.is_empty())
+        .or_else(|| demo.then(|| "jeroen".to_string()));
+    let server = match sign_in.identity.server_name.as_deref() {
+        None if demo => "cartopolis.org".to_string(),
+        other => other.unwrap_or_default().to_string(),
+    };
+    let admin = sign_in.chats.admin.filter(|_| signed_in);
+    let waiting = signed_in && !sign_in.contacts.incoming.is_empty();
     let ctx = egui.ctx_mut().clone();
+    let mut act: Option<SheetAct> = None;
     let mut close = false;
-    let mut log_out = false;
 
-    let area = egui::Area::new(egui::Id::new("main_menu"))
+    // Keyed on the band it may fill: an `Area` remembers its first frame's
+    // size and the `ScrollArea` inside never reports more, so a sheet first
+    // laid out against a smaller band (the window's first frame, a resize)
+    // stayed that short — Settings and About fell off the bottom.
+    let sheet_id = egui::Id::new(("main_menu", compact, viewport.x as i32, viewport.y as i32));
+    let (area, max_height) = if compact {
+        (
+            egui::Area::new(sheet_id).anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, 0.0)),
+            (viewport.y - 72.0).max(160.0),
+        )
+    } else {
+        let top = face.map_or(crate::systems::dock::reserved_top(), |f| f.bottom() + 8.0);
+        let right = face.map_or(viewport.x - theme::OSD_MARGIN, |f| f.right() + 2.0);
+        (
+            egui::Area::new(sheet_id)
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(right - viewport.x, top)),
+            (viewport.y - top - 24.0).max(160.0),
+        )
+    };
+    let corner = if compact {
+        egui::CornerRadius {
+            nw: 22,
+            ne: 22,
+            sw: 0,
+            se: 0,
+        }
+    } else {
+        egui::CornerRadius::same(theme::RADIUS_LG)
+    };
+    let area = area
         .order(egui::Order::Foreground)
-        // **The sizing pass decides how tall this card may ever be.** An `Area`
-        // lays out its first frame against `Spacing::default_area_size`, which
-        // egui defaults to 600×**400**, then remembers the content's size and
-        // uses *that* as the `max_rect` for every frame after. Overflow is
-        // supposed to grow it back — "if the contents overflow, the area will
-        // grow" — but only if the content reports its true height, and this one
-        // cannot: the `ScrollArea` shrinks to the room it is given, and inside a
-        // justified top-down layout the widgets past the bottom are allocated
-        // whatever is left, which by then is a few points. The result is a
-        // *stable* wrong answer — content and container agree at ~340 pt — so it
-        // does not flicker or recover, it just ends.
-        //
-        // What that cost: the card stopped after About, and Sign in…, the status
-        // readout, Developer tools and Exit were simply not on screen. Every one
-        // of them is the only route to what it does. It reads as a menu that is
-        // merely short, which is why it survived a UI sweep that was looking at
-        // this very card.
-        //
-        // So the sizing pass gets the whole band the card is allowed, and the
-        // remembered size is then the content's own.
-        .default_size(egui::vec2(MENU_WIDTH, max_height))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+        // **The sizing pass decides how tall this card may ever be.** An
+        // `Area` lays out its first frame against `Spacing::default_area_size`
+        // (600×400), remembers the content's size and uses *that* as the
+        // `max_rect` from then on; a `ScrollArea` inside shrinks to the room it
+        // is given, so container and content settle on a truncated height and
+        // the rows below the fold are simply not there. The sizing pass gets
+        // the whole band instead (`a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass`).
+        .default_size(egui::vec2(width, max_height))
         .show(&ctx, |ui| {
-            // `Frame::popup`: the window card, with its shadow and the hub's
-            // hairline, which is what a list of commands over a moving map
-            // wants.
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(MENU_WIDTH);
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        // The brand, at the top of the card the mark opened — the
-                        // same two-tone wordmark the splash and the sign-in card
-                        // wear (`theme::WORDMARK_HEAD`).
-                        theme::wordmark_ui(ui, theme::SIZE_TITLE);
-                        ui.separator();
-
-                        // Justified, the way egui lays a menu out: every entry
-                        // takes the card's full width, so the hit targets line up
-                        // and a two-word label does not make a button half the
-                        // size of its neighbour. The entries themselves are
-                        // `theme::menu_entry` — a line of a list, not a plate;
-                        // see that helper for what a card of full-width buttons
-                        // looked like.
-                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                            // **Who you are comes first**, written out. It was the
-                            // hover text of a "Log out" entry here, which a
-                            // touchscreen never shows; and "Log out" was the
-                            // first row, one mis-tap from the top of the card,
-                            // with nothing asking first. Signing out is the last
-                            // row now and arms before it acts
-                            // (`docs/mockups/ux-review`).
-                            if sign_in.session.is_online() {
-                                let user = sign_in.identity.username.as_deref();
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(user.unwrap_or("Signed in"))
-                                            .size(theme::SIZE_TITLE)
-                                            .color(theme::p().cream),
-                                    )
-                                    .truncate(),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Signed in to {}",
-                                        sign_in.session.mode.where_()
-                                    ))
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                                );
-                            } else {
-                                if theme::menu_entry(ui, icons::KEY, "Sign in…").clicked() {
-                                    sign_in.screen.open = true;
-                                    close = true;
-                                }
-                                // What signing in is for, in words a phone shows:
-                                // this was a tooltip about "a simulator". Out of the
-                                // justified layout, which spreads a wrapped line's
-                                // words across the card.
-                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "Meet people, chat and join communities",
-                                        )
-                                        .size(theme::SIZE_SUB)
-                                        .color(theme::p().text_dim),
-                                    );
-                                });
-                            }
-                            // **Why a session failure is reported here.** The
-                            // sign-in card used to raise itself whenever one
-                            // arrived — a modal the app pushed in front of you,
-                            // mid-flight, for a question you had not asked. It
-                            // opens from the entry above and from nowhere else
-                            // now, so the reason a remembered session did not
-                            // come up, or a live one dropped, lands next to the
-                            // entry that offers to try again. Losing it entirely
-                            // would leave a client that silently fell back to
-                            // the offline map with nothing anywhere saying why.
-                            if let Some(error) = &sign_in.session.error {
-                                theme::note(ui, error);
-                            }
-                            ui.separator();
-
-                            // Panels you *visit* rather than flip: Appearance is a
-                            // wardrobe, so it does not earn a permanent disc in the
-                            // dock next to the places you actually navigate between.
-                            //
-                            // Nearby chat joined them when chatting stopped being a
-                            // panel at all (`systems::chat_overlay`): the dock's Say
-                            // disc raises the composer over the map, and what is left
-                            // in here is the log, the rooms, the blocks and the
-                            // microphone. Only in a session — there is nobody to have
-                            // said anything otherwise.
-                            for panel in [
-                                // **Appearance is session-bound too**, and that is
-                                // the one of the three that costs something: an
-                                // offline avatar is visible and is wearing
-                                // whatever `user.json` last remembered, so this
-                                // hides the only way to change a body you can
-                                // still see. It is the right trade anyway. An
-                                // appearance is a thing other people look at —
-                                // that is what it is *for* — and offline there is
-                                // nobody to look, so what the panel offers alone
-                                // on the map is a wardrobe with no occasion. The
-                                // saved choice is not lost; it comes back with
-                                // the session that gives it a point.
-                                crate::resources::RightPanel::Appearance,
-                                crate::resources::RightPanel::Chat,
-                                // Models is a cupboard you go to, not a place you
-                                // navigate between — same argument as Appearance
-                                // above. Only in a session: the inventory belongs
-                                // to an account on a server, and offline there is
-                                // neither.
-                                crate::resources::RightPanel::Models,
-                                crate::resources::RightPanel::Settings,
-                                // About carries the attribution the map data's licences
-                                // require, so it must be reachable from the running app,
-                                // not only from a file in the tarball.
-                                crate::resources::RightPanel::About,
-                            ]
-                            .into_iter()
-                            .filter(|p| {
-                                !matches!(
-                                    p,
-                                    crate::resources::RightPanel::Appearance
-                                        | crate::resources::RightPanel::Chat
-                                        | crate::resources::RightPanel::Models
-                                ) || sign_in.session.is_online()
-                            }) {
-                                // Same glyph the panel's own header wears, so the menu
-                                // entry and the badge it opens are recognisably one thing.
-                                if theme::menu_entry_selected(
-                                    ui,
-                                    right_panel.is(panel),
-                                    panel.icon(),
-                                    panel.label(),
-                                )
-                                .clicked()
-                                {
-                                    right_panel.toggle(panel);
-                                    close = true;
-                                }
-                            }
-                            if prefs.developer_menu {
-                                ui.separator();
-                                // The inspection surface. It was two entries — this
-                                // one and a "Status readout" that put time, position
-                                // and altitude in a box over the top-right of the map
-                                // — and the readout is gone (`systems::hud`'s module
-                                // note): the position and altitude are two taps into
-                                // this panel, where somebody asking where the camera
-                                // is already is, and the sun and weather chips it also
-                                // carried are in Settings ▸ World.
-                                //
-                                // It carries the accent when it is open rather than
-                                // renaming itself to "Hide …": a toggle that is lit
-                                // says the same thing in a word less, and it is the
-                                // state the panel entries above already show.
-                                if theme::menu_entry_selected(
-                                    ui,
-                                    dev_state.open,
-                                    icons::TUNE,
-                                    "Developer tools",
-                                )
-                                .clicked()
-                                {
-                                    dev_state.open = !dev_state.open;
-                                    close = true;
-                                }
-                                // Next to the developer tools because it is one — but
-                                // above the fold rather than inside the dev panel,
-                                // because the person who needs it is holding a phone
-                                // and reporting a bug, not inspecting the renderer.
-                                // It is the only way anything a device knows about
-                                // itself gets off that device short of a crash
-                                // (`systems::diagnostics`).
-                                if theme::menu_entry(ui, icons::COPY, "Share diagnostics…")
-                                    .on_hover_text(
-                                        "The build, the GPU, the render tier and what the \
-                                     avatar is doing, plus this run's log — to the share \
-                                     sheet on a phone, to the clipboard everywhere else",
-                                    )
-                                    .clicked()
-                                {
-                                    diagnostics.pending = true;
-                                }
-                                if let Some(result) = diagnostics.last.as_deref() {
-                                    theme::note(ui, result);
-                                }
-                            }
-                            ui.separator();
-                            if sign_in.session.is_online() {
-                                // Arms in place, as `theme::confirm_button` does:
-                                // the first tap asks, the second signs out, and
-                                // a stray tap times out.
-                                let id = egui::Id::new("main_menu_sign_out");
-                                let now = ui.input(|i| i.time);
-                                let armed = ui
-                                    .memory(|m| m.data.get_temp::<f64>(id))
-                                    .is_some_and(|t| now - t < 3.0);
-                                let label = if armed {
-                                    "Sign out? Tap again"
-                                } else {
-                                    "Sign out"
-                                };
-                                if theme::menu_entry(ui, icons::LOGOUT, label).clicked() {
-                                    if armed {
-                                        ui.memory_mut(|m| m.data.remove::<f64>(id));
-                                        log_out = true;
-                                        close = true;
-                                    } else {
-                                        ui.memory_mut(|m| m.data.insert_temp(id, now));
-                                    }
-                                }
-                                if armed {
-                                    ui.ctx().request_repaint();
-                                }
-                            }
-                            // Desktop only: an Android app does not quit (Back
-                            // from the map sends it to the background), and a
-                            // browser tab is closed by the browser.
-                            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-                            if theme::menu_entry(ui, icons::CLEAR, "Exit").clicked() {
-                                app_exit.write(AppExit::Success);
-                                close = true;
-                            }
-                            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
-                            let _ = &mut app_exit;
+            egui::Frame::NONE
+                .fill(theme::p().panel)
+                .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
+                .shadow(theme::card_shadow())
+                .corner_radius(corner)
+                .inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: 14,
+                    bottom: if compact { 18 } else { 12 },
+                })
+                .show(ui, |ui| {
+                    let inner = width - 28.0;
+                    ui.set_width(inner);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_height - 32.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_width(inner);
+                            sheet_body(
+                                ui,
+                                SheetIn {
+                                    signed_in,
+                                    me: me.as_deref(),
+                                    server: &server,
+                                    waiting,
+                                    admin,
+                                    error: sign_in.session.error.as_deref(),
+                                    dev: prefs.developer_menu,
+                                    diagnostics: diagnostics.last.as_deref(),
+                                },
+                                &mut act,
+                                &mut close,
+                            );
                         });
-                    });
-            });
+                });
         });
 
+    let mut log_out = false;
+    match act {
+        Some(SheetAct::Panel(panel)) => {
+            right_panel.toggle(panel);
+            close = true;
+        }
+        Some(SheetAct::Profile) => {
+            // Your profile is the Community's You page.
+            let chats = &mut sign_in.chats;
+            chats.open = None;
+            chats.sub = None;
+            chats.you = true;
+            *right_panel = RightPanel::Chat;
+            close = true;
+        }
+        Some(SheetAct::ShareLink) => {
+            let chats = &mut sign_in.chats;
+            chats.open = None;
+            chats.you = true;
+            chats.sub = Some(crate::systems::contacts::Sub::Add);
+            chats.sub_root = Some(crate::systems::contacts::Sub::Add);
+            *right_panel = RightPanel::Chat;
+            close = true;
+        }
+        Some(SheetAct::SignIn) => {
+            sign_in.screen.open = true;
+            close = true;
+        }
+        Some(SheetAct::DevTools) => {
+            dev_state.open = !dev_state.open;
+            close = true;
+        }
+        Some(SheetAct::Diagnostics) => diagnostics.pending = true,
+        Some(SheetAct::SignOut) => {
+            log_out = true;
+            close = true;
+        }
+        Some(SheetAct::Exit) => {
+            app_exit.write(AppExit::Success);
+            close = true;
+        }
+        None => {}
+    }
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    let _ = &mut app_exit;
     if log_out {
         crate::systems::session::sign_out(&mut sign_in.session, &mut store);
+        *right_panel = RightPanel::None;
     }
-    // Dismiss on a click that landed outside the card — but never on the one that
-    // opened it, which is a click outside the card by definition (see
-    // `MainMenu::toggled`). Escape closes it too, the way every other transient
-    // surface in this app does.
+    // Dismiss on a click that landed outside the sheet — but not on a face,
+    // which toggles it itself (see `MainMenu::face`). Escape and Back are
+    // `systems::dismiss`'s.
     let clicked_out = ctx.input(|i| {
         i.pointer.any_click()
-            && i.pointer
-                .interact_pos()
-                .is_some_and(|p| !area.response.rect.contains(p))
+            && i.pointer.interact_pos().is_some_and(|p| {
+                !area.response.rect.contains(p) && !face.is_some_and(|f| f.contains(p))
+            })
     });
-    // Escape is not read here. It closed nothing from this site anyway — the key
-    // reached egui only while a text field had focus, and this card contains no
-    // field — and now that it does reach egui, one handler per surface would
-    // close two things per press. `systems::dismiss` owns the whole ladder.
-    if close || (clicked_out && !dismissed_by_disc) {
+    if close || clicked_out {
         menu.open = false;
+    }
+}
+
+/// What the sheet shows, read before it is drawn.
+struct SheetIn<'a> {
+    signed_in: bool,
+    me: Option<&'a str>,
+    server: &'a str,
+    waiting: bool,
+    admin: Option<usize>,
+    error: Option<&'a str>,
+    dev: bool,
+    diagnostics: Option<&'a str>,
+}
+
+fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, close: &mut bool) {
+    use crate::systems::theme::RowEnd;
+    let accent = theme::p().accent;
+    // Who you are, and the close.
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(46.0), egui::Sense::hover());
+        crate::systems::dock::paint_face(
+            ui.painter(),
+            rect.center(),
+            46.0,
+            s.me.filter(|_| s.signed_in),
+            s.waiting,
+            false,
+        );
+        let close_w = theme::close_button_size();
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width() - close_w - 8.0, 46.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.add_space(3.0);
+                let (title, sub) = match (s.signed_in, s.me) {
+                    (true, Some(me)) => (
+                        me.to_string(),
+                        if s.server.is_empty() {
+                            "Signed in".to_string()
+                        } else {
+                            cartopolis_core::address::person(me, s.server)
+                        },
+                    ),
+                    (true, None) => ("Signed in".to_string(), String::new()),
+                    _ => (
+                        "Not signed in".to_string(),
+                        "Meet people, chat and join communities".to_string(),
+                    ),
+                };
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(title)
+                            .font(egui::FontId::new(
+                                theme::SIZE_HEADING,
+                                theme::brand_family(),
+                            ))
+                            .color(theme::p().cream),
+                    )
+                    .truncate(),
+                );
+                if !sub.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(sub)
+                                .size(theme::SIZE_SUB)
+                                .color(theme::p().text_dim),
+                        )
+                        .truncate(),
+                    );
+                }
+            },
+        );
+        if theme::close_button(ui).clicked() {
+            *close = true;
+        }
+    });
+    ui.add_space(10.0);
+
+    if s.signed_in {
+        // Your profile, and your link: the two things about you that are not
+        // a setting (`v2-account`, A3).
+        ui.horizontal(|ui| {
+            let w = theme::equal_width(ui, 2);
+            if theme::secondary_button(ui, crate::systems::icons::APPEARANCE, "Your profile", w)
+                .clicked()
+            {
+                *act = Some(SheetAct::Profile);
+            }
+            if theme::secondary_button(ui, crate::systems::icons::SHARE, "Share link", w).clicked()
+            {
+                *act = Some(SheetAct::ShareLink);
+            }
+        });
+    } else {
+        if theme::primary_button_sized(ui, "Sign in…", ui.available_width()).clicked() {
+            *act = Some(SheetAct::SignIn);
+        }
+    }
+    // **Why a session failure is reported here.** The sign-in card used to
+    // raise itself whenever one arrived; it opens from the row above and from
+    // nowhere else now, so the reason a remembered session did not come up
+    // lands next to the way to try again.
+    if let Some(error) = s.error {
+        theme::note(ui, error);
+    }
+    ui.add_space(10.0);
+
+    let row = |ui: &mut egui::Ui, panel: RightPanel, act: &mut Option<SheetAct>| {
+        if theme::list_row(
+            ui,
+            panel.icon(),
+            panel.label(),
+            None,
+            RowEnd::Chevron,
+            accent,
+        )
+        .clicked()
+        {
+            *act = Some(SheetAct::Panel(panel));
+        }
+    };
+    // Yours: the body others see, the places you keep, the models you own.
+    // Avatar and Models are an account's (an appearance is a thing other
+    // people look at; an inventory lives on a server); saved places are this
+    // device's and are there signed out too.
+    theme::list_group(ui, |ui| {
+        if s.signed_in {
+            row(ui, RightPanel::Appearance, act);
+        }
+        row(ui, RightPanel::Places, act);
+        if s.signed_in {
+            row(ui, RightPanel::Models, act);
+        }
+    });
+    // The app's: Settings, Admin for an account that may run something, and
+    // About, which carries the attribution the map data's licences require.
+    theme::list_group(ui, |ui| {
+        row(ui, RightPanel::Settings, act);
+        if let Some(waiting) = s.admin {
+            if theme::list_row(
+                ui,
+                RightPanel::Admin.icon(),
+                RightPanel::Admin.label(),
+                (waiting > 0)
+                    .then(|| format!("{waiting} waiting"))
+                    .as_deref(),
+                RowEnd::Badge(waiting),
+                theme::p().warn,
+            )
+            .clicked()
+            {
+                *act = Some(SheetAct::Panel(RightPanel::Admin));
+            }
+        }
+        row(ui, RightPanel::About, act);
+    });
+    // Developer tools and Share diagnostics only with Settings ▸ General ▸
+    // Developer on (`AppPrefs::developer_menu`).
+    if s.dev {
+        theme::list_group(ui, |ui| {
+            if theme::list_row(
+                ui,
+                crate::systems::icons::TUNE,
+                "Developer tools",
+                None,
+                RowEnd::Chevron,
+                accent,
+            )
+            .clicked()
+            {
+                *act = Some(SheetAct::DevTools);
+            }
+            // The person who needs this is holding a phone and reporting a
+            // bug (`systems::diagnostics`).
+            if theme::list_row(
+                ui,
+                crate::systems::icons::COPY,
+                "Share diagnostics…",
+                s.diagnostics,
+                RowEnd::Nothing,
+                accent,
+            )
+            .on_hover_text(
+                "The build, the GPU, the render tier and what the avatar is doing, plus \
+                 this run's log — to the share sheet on a phone, to the clipboard \
+                 everywhere else",
+            )
+            .clicked()
+            {
+                *act = Some(SheetAct::Diagnostics);
+            }
+        });
+    }
+    // Desktop only: an Android app does not quit (Back from the map sends it
+    // to the background), and a browser tab is closed by the browser.
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    theme::list_group(ui, |ui| {
+        if theme::list_row(
+            ui,
+            crate::systems::icons::CLEAR,
+            "Exit",
+            None,
+            RowEnd::Nothing,
+            accent,
+        )
+        .clicked()
+        {
+            *act = Some(SheetAct::Exit);
+        }
+    });
+    if s.signed_in {
+        ui.add_space(4.0);
+        // Arms in place, as `theme::confirm_button` does: the first tap asks,
+        // the second signs out, and a stray tap times out.
+        let id = egui::Id::new("main_menu_sign_out");
+        let now = ui.input(|i| i.time);
+        let armed = ui
+            .memory(|m| m.data.get_temp::<f64>(id))
+            .is_some_and(|t| now - t < 3.0);
+        let label = if armed {
+            "Tap again to sign out"
+        } else {
+            "Sign out…"
+        };
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), theme::menu_row_height().max(44.0)),
+            egui::Sense::click(),
+        );
+        let resp = theme::named(ui, resp, label);
+        if resp.hovered() || armed {
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same(theme::RADIUS),
+                theme::p().surface_hover,
+            );
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::new(theme::SIZE_VALUE, theme::brand_family()),
+            theme::p().error,
+        );
+        if resp.clicked() {
+            if armed {
+                ui.memory_mut(|m| m.data.remove::<f64>(id));
+                *act = Some(SheetAct::SignOut);
+            } else {
+                ui.memory_mut(|m| m.data.insert_temp(id, now));
+            }
+        }
+        if armed {
+            ui.ctx().request_repaint();
+        }
     }
 }
 
 // The camera-mode picker (a Follow/Fly/Earth chip row plus a "View whole
 // Earth" jump) used to be drawn inline here. It is the mode disc in the
-// bottom-right corner of the map now (`map_osd::mode_button`): a camera switch
+// right-hand column of the map now (`dock::mode_disc`): a camera switch
 // is a change to the map and belongs on it, not two taps deep in a card that
 // covers it — and the disc, cycling only the modes on offer, is also where
 // "Follow needs a signed-in session" is enforced for the UI.
@@ -2345,23 +2499,26 @@ mod tests {
         );
     }
 
-    /// The menu card is a size-to-content `Area`, so nothing clamps it: what it
-    /// asks for is what it takes, off the edge of the screen included. This is
-    /// the number that decides whether the app menu — the only route to
-    /// Settings, sign-in and Exit — is on the screen at all. The card it
-    /// replaced folded half its contents away below this width; a card that is
-    /// the same on every viewport has to fit the smallest one instead.
+    /// Your face's sheet is a size-to-content `Area`, so nothing clamps it: what
+    /// it asks for is what it takes, off the edge of the screen included — and
+    /// it is the only route to Settings, sign-in and Exit. On a phone it is a
+    /// bottom sheet exactly the screen's width (both documented phone
+    /// viewports, 274 pt Android and ≈214 pt web); on a desktop a card under
+    /// the face, inside the window's margins even at the narrowest
+    /// non-compact width.
     #[test]
-    fn the_menu_card_fits_a_phone() {
-        // 411 dp at `ui_scale` 1.5, i.e. what `quality::Tier::Phone` resolves an
-        // ordinary Android handset to.
-        let viewport = 274.0;
-        // `Frame::popup`'s margins and the card's stroke, generously.
-        let card = MENU_WIDTH + 24.0;
-        assert!(
-            card <= viewport,
-            "menu card {card} does not fit {viewport} pt"
-        );
+    fn the_sheet_fits_a_phone_and_a_window() {
+        for viewport in [274.0_f32, 214.0] {
+            assert_eq!(sheet_width(viewport, true), viewport);
+            // Its rows have room for a word between the icon and the chevron:
+            // 14 pt margins each side, a 58 pt icon column, a 36 pt end.
+            assert!(sheet_width(viewport, true) - 28.0 - 58.0 - 36.0 >= 80.0);
+        }
+        for viewport in [640.0_f32, 1600.0] {
+            let w = sheet_width(viewport, false);
+            assert!(w + 2.0 * theme::OSD_MARGIN <= viewport, "{w} in {viewport}");
+            assert_eq!(w, MENU_WIDTH);
+        }
     }
 
     /// The object editor asks for 320 pt, which is wider than a phone. A

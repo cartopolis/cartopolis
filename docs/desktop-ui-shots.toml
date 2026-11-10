@@ -1,0 +1,56 @@
+# The map's chrome on a desktop window, 1600×900 at scale 1: the search bar
+# and your face top right, the column of round buttons under it, the
+# World | Community switch at the bottom of the map, and Community as a side
+# panel. The desktop half of `phone-ui-shots.toml`:
+#
+#     CARTO_UI_SCALE=1.0 cargo run -p cartopolis -- --shots docs/desktop-ui-shots.toml
+tile_url = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "/tmp/desk"
+hide_ui = false
+mode = "free"
+settle = 1.0
+wait = 12.0
+
+[[shot]]
+name = "none"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = []
+
+[[shot]]
+name = "face"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["face"]
+
+[[shot]]
+name = "chats"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["chats"]
+
+[[shot]]
+name = "facecommunity"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["chats", "face"]
+
+[[shot]]
+name = "search"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["search"]
+
+[[shot]]
+name = "earth"
+at = [53.2190, 6.5680, 1500.0]
+look = [-60.0, 0.0]
+time = 12.0
+mode = "earth"
+ui = []

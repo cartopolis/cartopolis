@@ -1258,10 +1258,13 @@ pub fn draw_link_button(
     let ctx = egui.ctx();
     let size = theme::ROUND_BUTTON_SIZE;
     let mut toggle = false;
+    // A second column, left of the map's round buttons under the search bar
+    // (`dock::right_column`): the top right corner is your face now.
+    let left_of_column = theme::OSD_MARGIN + size + theme::OSD_GAP;
     egui::Area::new(egui::Id::new("midas_link_button"))
         .anchor(
             egui::Align2::RIGHT_TOP,
-            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
+            egui::vec2(-left_of_column, crate::systems::dock::reserved_top()),
         )
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(
@@ -1295,8 +1298,8 @@ pub fn draw_link_button(
         .anchor(
             egui::Align2::RIGHT_TOP,
             egui::vec2(
-                -(theme::OSD_MARGIN + size + theme::OSD_GAP),
-                theme::OSD_MARGIN,
+                -(left_of_column + size + theme::OSD_GAP),
+                crate::systems::dock::reserved_top(),
             ),
         )
         .show(ctx, |ui| {

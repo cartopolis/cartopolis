@@ -1124,10 +1124,13 @@ pub fn render_scenario_chrome(
         Shape::Column => {
             let x = theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP;
             (
-                egui::Area::new(egui::Id::new("lens"))
-                    .anchor(egui::Align2::LEFT_TOP, egui::vec2(x, theme::OSD_MARGIN)),
+                egui::Area::new(egui::Id::new("lens")).anchor(
+                    egui::Align2::LEFT_TOP,
+                    egui::vec2(x, crate::systems::dock::reserved_top()),
+                ),
                 COLUMN_W - inset,
-                (viewport.y - theme::OSD_MARGIN - bottom - HEADER_PTS).max(BODY_MIN_PTS),
+                (viewport.y - crate::systems::dock::reserved_top() - bottom - HEADER_PTS)
+                    .max(BODY_MIN_PTS),
             )
         }
     };

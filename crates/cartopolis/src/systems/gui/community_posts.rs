@@ -1913,7 +1913,11 @@ pub fn render_filter_chip(
         return;
     };
     let pinned = cs.posts.pinned(id);
-    let top = crate::systems::chats::top_offset(&chat) + 52.0;
+    // Under the search bar, between the two columns of round buttons that
+    // come down the edges under it (`dock`), and truncated to fit there.
+    let top = crate::systems::dock::reserved_top();
+    let between = egui.viewport_pts().x
+        - 2.0 * (theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP);
     let ctx = egui.ctx_mut().clone();
     let (mut open, mut clear) = (false, false);
     egui::Area::new(egui::Id::new("community_filter_chip"))
@@ -1930,15 +1934,24 @@ pub fn render_filter_chip(
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         ui.painter().circle_filled(dot.center(), 5.0, theme::PUBLIC);
                         let posts = if pinned == 1 { "post" } else { "posts" };
+                        // Room for the dot, the ✕ and the gaps beside it.
+                        let words = (between - 20.0 - 10.0 - 38.0 - 2.0 * 8.0 - 20.0).max(40.0);
                         if ui
-                            .add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("Only {name} · {pinned} {posts}"))
+                            .scope(|ui| {
+                                ui.set_max_width(words);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "Only {name} · {pinned} {posts}"
+                                        ))
                                         .size(theme::SIZE_SUB)
                                         .color(theme::p().cream),
+                                    )
+                                    .truncate()
+                                    .sense(egui::Sense::click()),
                                 )
-                                .sense(egui::Sense::click()),
-                            )
+                            })
+                            .inner
                             .on_hover_text("Open the community's page")
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()

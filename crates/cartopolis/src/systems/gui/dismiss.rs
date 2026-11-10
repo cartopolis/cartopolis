@@ -76,6 +76,7 @@ pub struct Dismissable<'w> {
     pub place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
     pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     pub building: ResMut<'w, crate::systems::building_select::BuildingSelection>,
+    pub welcome: ResMut<'w, crate::systems::welcome::Welcome>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -147,6 +148,11 @@ pub enum Rung {
     PlaceCard,
     /// The building card a tap on a building opens.
     BuildingCard,
+    /// Community, signed out: the card that says what signing in is for
+    /// (`welcome::Welcome::community`). Last, because it *is* a space, as the
+    /// Community panel is: a press goes back to the map from it, and only
+    /// then may Back send the app to the background.
+    SignedOutCommunity,
 }
 
 /// What is open right now — the ladder's whole input, as plain data.
@@ -175,6 +181,7 @@ pub struct OpenSurfaces {
     pub person_card: bool,
     pub place_card: bool,
     pub building_card: bool,
+    pub signed_out_community: bool,
 }
 
 impl OpenSurfaces {
@@ -217,6 +224,8 @@ impl OpenSurfaces {
             Some(Rung::PlaceCard)
         } else if self.building_card {
             Some(Rung::BuildingCard)
+        } else if self.signed_out_community {
+            Some(Rung::SignedOutCommunity)
         } else {
             None
         }
@@ -247,6 +256,7 @@ impl Dismissable<'_> {
             person_card: self.contacts.card.is_some(),
             place_card: self.place_card.place.is_some(),
             building_card: self.building.selected.is_some(),
+            signed_out_community: self.welcome.community,
         }
     }
 
@@ -279,6 +289,7 @@ impl Dismissable<'_> {
             }
             Rung::PlaceCard => self.place_card.place = None,
             Rung::BuildingCard => self.building.clear(),
+            Rung::SignedOutCommunity => self.welcome.community = false,
         }
         Some(rung)
     }
@@ -319,6 +330,7 @@ mod tests {
             person_card: true,
             place_card: true,
             building_card: true,
+            signed_out_community: true,
         }
     }
 
@@ -342,6 +354,7 @@ mod tests {
             Rung::PersonCard => s.person_card = false,
             Rung::PlaceCard => s.place_card = false,
             Rung::BuildingCard => s.building_card = false,
+            Rung::SignedOutCommunity => s.signed_out_community = false,
         }
     }
 
@@ -380,6 +393,7 @@ mod tests {
                 Rung::PersonCard,
                 Rung::PlaceCard,
                 Rung::BuildingCard,
+                Rung::SignedOutCommunity,
             ]
         );
         assert_eq!(s, OpenSurfaces::default());

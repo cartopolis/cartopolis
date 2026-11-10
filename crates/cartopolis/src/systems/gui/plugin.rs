@@ -38,6 +38,7 @@ impl Plugin for GuiPlugin {
             .watch_stream::<systems::cosmos::GalaxyCatalogue>()
             // The dock's mark disc and the card it opens (`systems::ui`).
             .init_resource::<systems::ui::MainMenu>()
+            .init_resource::<systems::dock::MapChrome>()
             // The place card a picked search result opens (`systems::place_card`).
             .init_resource::<systems::place_card::PlaceCard>()
             .init_resource::<systems::welcome::Welcome>()
@@ -165,7 +166,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::onscreen_keyboard::render_onscreen_keyboard)
                     .in_set(ClientPhase::Present),
                 systems::community_posts::render_filter_chip
-                    .after(systems::chats::render_chats_switch)
+                    .after(systems::dock::render_dock)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -230,13 +231,6 @@ impl Plugin for GuiPlugin {
         app.add_systems(
             Update,
             (
-                // The bottom dock and the top-left layers disc — floating `Area`s
-                // of round panel toggles, so they reserve no root-`Ui` space and
-                // stay out of the panel chain. **Before the main menu**, which is
-                // not a preference: the dock owns the mark disc that toggles the
-                // menu, and a menu drawn before its own switch would open a frame
-                // late and dismiss itself on the click that opened it.
-                systems::dock::render_dock.before(systems::ui::render_main_menu),
                 // The rungs above the globe (`systems::cosmos`): painted on the
                 // background layer, so before every panel, which then draws over
                 // it as panels draw over the map.
@@ -472,7 +466,15 @@ impl Plugin for GuiPlugin {
                     // A chat's World view has a text field, so it is ordered before
                     // the on-screen keyboard for the composer's reason.
                     systems::chats::render_chat_world,
-                    systems::chats::render_chats_switch,
+                    // The map's chrome (`systems::dock`): the World | Community
+                    // switch, the search bar with your face, the round buttons.
+                    // In the chain because the bar and the switch sit over the
+                    // map the side panels leave, read off the root `Ui` — so
+                    // after every panel. After your face's sheet too, which is
+                    // at the head: a face drawn here toggles the sheet, and the
+                    // sheet leaves a tap on last frame's face to it
+                    // (`ui::MainMenu::face`).
+                    systems::dock::render_dock,
                     // The person card and the first-message sheet
                     // (`systems::contacts`): the sheet is a text field too.
                     systems::contacts::render_person_card,
