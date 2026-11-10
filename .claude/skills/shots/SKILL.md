@@ -74,7 +74,7 @@ cargo run -p cartopolis -- --shot /tmp/fly.png \
   `shot_harness::UI_ELEMENTS` (`dev`, `layers`, `route` seeds a demo route,
   `driver`, `sit`, `fire`, `building`, `inside`, `chat`, `settings`, `all`, …);
   an unknown name is logged as ignored, not refused.
-- Environment: `--size WxH`, `--time HOURS`, `--fog D`, `--clouds C`, `--rain R`,
+- Environment: `--size WxH`, `--time HOURS`, `--date YYYY-MM-DD`, `--fog D`, `--clouds C`, `--rain R`,
   `--weather-live`. A/B the lighting curves with `--time 6` (dawn) and tell a
   washed-out sky from a washed-out fog with `--time 18 --fog 0`.
 - Layers that a headless run has no panel to tick: `--aerial`, `--sewers`,

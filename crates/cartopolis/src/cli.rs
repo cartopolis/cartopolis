@@ -173,6 +173,13 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "HOURS")]
     pub(crate) time: Option<f32>,
 
+    /// The day a `--shot` capture is lit for, as `YYYY-MM-DD` (default today):
+    /// what a manifest's per-shot `date` is on the command line. The season
+    /// moves the sun, and in November the Arctic is in the night side of a
+    /// globe seen from space.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub(crate) date: Option<String>,
+
     /// The light setting to start in — `auto`, `light` or `dark`, the light
     /// disc's three (`docs/mockups/zoom-ladder/`). Over the globe Light lights
     /// the side you look at and Dark is night all round; a `--time` beside it is
@@ -433,6 +440,16 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
     let Some(path) = cli.shot.clone() else {
         return Ok((None, None));
     };
+    let day_of_year = cli
+        .date
+        .as_deref()
+        .map(|d| {
+            d.trim()
+                .parse::<jiff::civil::Date>()
+                .map(|d| f32::from(d.day_of_year()))
+                .map_err(|e| format!("--date {d:?} is not YYYY-MM-DD: {e}"))
+        })
+        .transpose()?;
     ShotHarness::from_cli(systems::shot_harness::ShotArgs {
         path,
         at: &cli.at,
@@ -459,6 +476,11 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
     .map(|mut h| {
         h.aerial_reference = cli.aerial_reference;
         h.video_fps = cli.video_fps;
+        if day_of_year.is_some() {
+            for s in &mut h.shots {
+                s.day_of_year = day_of_year;
+            }
+        }
         (Some(h), None)
     })
     .map_err(|e| format!("--shot: {e}"))
