@@ -271,12 +271,6 @@ impl Posts {
         self.spawn(async move { Done::Notices(json(api_get("/api/fediverse/notices").await)) });
     }
 
-    /// How many notices are unread, for a badge.
-    #[must_use]
-    pub fn unread_notices(&self) -> u32 {
-        self.notices.as_ref().map_or(0, |n| n.unread)
-    }
-
     /// Whether anything is still on its way.
     #[must_use]
     pub fn busy(&self) -> bool {

@@ -157,7 +157,11 @@ fn post_dto() {
     };
     assert_eq!(web_fields("PostNotices"), keys(&notices), "{drift}");
     assert_eq!(web_fields("PostNotice"), keys(&notices.items[0]), "{drift}");
-    assert_eq!(web_fields("PostPicture"), keys(&post.more_pictures[0]), "{drift}");
+    assert_eq!(
+        web_fields("PostPicture"),
+        keys(&post.more_pictures[0]),
+        "{drift}"
+    );
     assert_eq!(web_fields("PostPlace"), keys(&place), "{drift}");
     assert_eq!(web_fields("PostAuthor"), keys(&author), "{drift}");
     assert_eq!(
