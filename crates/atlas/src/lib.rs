@@ -16,6 +16,7 @@ pub mod http;
 pub mod jobs;
 pub mod landmark;
 pub mod official_areas;
+pub mod osm;
 pub mod overrides;
 pub mod pipeline;
 pub mod plans;

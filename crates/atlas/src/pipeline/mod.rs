@@ -673,12 +673,51 @@ pub const DATASETS: &[Dataset] = &[
         id: "tall",
         label: "Tall structures (OSM)",
         description: "Wind turbines, windmills, masts, towers, chimneys, water towers and \
-                      cranes from our Overpass, pre-cut into the z11 cells the client's \
-                      horizon lane streams, over the area and 30 km around it — so a cold \
-                      start reads 25 small files instead of queueing 25 live queries.",
+                      cranes from the OpenStreetMap extract, pre-cut into the z11 cells the \
+                      client's horizon lane streams, over the area and 30 km around it — so a \
+                      cold start reads 25 small files instead of queueing 25 live queries.",
         coverage: "tall/coverage.json",
-        typical_minutes: 1,
+        typical_minutes: 2,
         run: tall::run,
+    },
+    Dataset {
+        id: "street",
+        label: "Street detail (OSM)",
+        description: "Trees, lamps, bike racks, bollards, walls, fences, piers, weirs, \
+                      traffic lights and zebra crossings with their roads, and roads closed \
+                      to cars, from the OpenStreetMap extract, per z14 cell — what the client \
+                      asked Overpass for street by street.",
+        coverage: "street/coverage.json",
+        typical_minutes: 3,
+        run: crate::osm::run_street,
+    },
+    Dataset {
+        id: "transit",
+        label: "Stops and stations (OSM)",
+        description: "Railway stations, halts, tram and bus stops from the OpenStreetMap \
+                      extract, per z14 cell, for the transit data layer.",
+        coverage: "transit/coverage.json",
+        typical_minutes: 2,
+        run: crate::osm::run_transit,
+    },
+    Dataset {
+        id: "shops",
+        label: "Shops (OSM)",
+        description: "Every shop in the OpenStreetMap extract, per z14 cell, for the shops \
+                      data layer.",
+        coverage: "shops/coverage.json",
+        typical_minutes: 2,
+        run: crate::osm::run_shops,
+    },
+    Dataset {
+        id: "speeds",
+        label: "Speed limits (OSM)",
+        description: "Every road with a speed limit in the OpenStreetMap extract, per z14 \
+                      cell, which the client reads along a route instead of asking Overpass \
+                      for the corridor.",
+        coverage: "speeds/coverage.json",
+        typical_minutes: 2,
+        run: crate::osm::run_speeds,
     },
     Dataset {
         id: "galaxies",

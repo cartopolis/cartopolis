@@ -59,6 +59,9 @@ gltf = { version = "1.4", default-features = false, features = ["utils", "names"
 # crate's sha2 0.10).
 glam.workspace = true
 sha2 = "0.10"
+# Reading a Geofabrik `.osm.pbf` extract in place of asking Overpass (`osm`).
+# Its default inflates through flate2's Rust backend, the one atlas already has.
+osmpbf = "0.3"
 # Reading the BRO's groundwater usage register, which is published only as a
 # GeoPackage (`pipeline/wko.rs`). The workspace's, already built for the simulator.
 rusqlite.workspace = true

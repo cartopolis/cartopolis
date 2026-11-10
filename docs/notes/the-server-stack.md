@@ -1,6 +1,6 @@
 ---
 topic: the-server-stack
-triggers: [crates/core/src/services.rs, crates/cartopolis/src/services.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
+triggers: [crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
 updated: 2026-11-10
 ---
 
@@ -55,6 +55,28 @@ Caddyfile exist only on the host; `docs/guides/server.md` holds an older copy.
 
 A fixed set of questions about one country, which is why both are candidates to be
 answered from files atlas builds from one OSM extract rather than kept as services.
+
+## Overpass answers cut from the extract (`crates/atlas/src/osm`)
+
+Atlas's `tall`, `street`, `transit`, `shops` and `speeds` datasets read a Geofabrik
+`.osm.pbf` (`ATLAS_OSM_EXTRACT`, a URL or a path; the Netherlands by default,
+re-downloaded after a week into `<data_dir>/osm/`) and write, per cell, the
+document Overpass would have answered to the client's query. The client reads a
+covered cell from the map-data host and asks Overpass only for the rest.
+
+Checked 2026-11-10 against Overpass, Groningen, Netherlands extract of that day:
+
+- **tall**: 19 of 35 z11 cells identical; every difference was an element
+  added to or deleted from OSM after the published files were made (2026-09-26).
+- **street**, the Grote Markt cell (z14 8490/5320): all 1044 nodes identical;
+  **our Overpass returned 285 ways, the extract 452**, none the other way round.
+  The missing ones are old (a wall from 2021, way 1001079088) and absent from
+  `overpass.cartopolis.org` entirely, even asked by id: that instance lost ways,
+  so the extract is not merely as good but more complete.
+- Building all five layers for Groningen from the 1.4 GB extract: 2.5 min on
+  mac-1, 2.2 GB peak memory, 13 MB of cells. `speeds` dominates the memory: a way
+  cannot be placed before its nodes are read, so every speed-limited way in the
+  country (966k, 5.0M nodes) is held until the third pass drops those outside.
 
 ## Options looked at for replacing them (2026-11-10, desk research)
 
