@@ -10,6 +10,11 @@
 // shade a neutral grey). In a real street most of a wall's fill is the sunlit
 // pavement in front of it, warm, and from below.
 //
+// Only where there is no environment map (the phone): the atmosphere's map holds
+// this light already, as the sunlit planet below its horizon, and adding it again
+// made a shaded wall a stop and more brighter than shaded ground of the same
+// albedo (`docs/notes/light-against-photographs.md`).
+//
 // So: the ground taken as an endless plane lit by the sun, of albedo `GROUND`,
 // seen by a surface of normal `n` through the lower half of its view, (1 − n.y)/2
 // of it. Lambertian both ways, in the same units `apply_pbr_lighting` returns

@@ -1661,12 +1661,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color = apply_pbr_lighting(pbr_input);
         // The street's light thrown back up (`ground_bounce`): what fills a wall in
-        // shade, which bevy does not compute.
-        let diffuse = pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic);
-        out.color = vec4<f32>(
-            out.color.rgb + ground_bounce::radiance(diffuse * pbr_input.diffuse_occlusion, pbr_input.N),
-            out.color.a,
-        );
+        // shade. The atmosphere's environment map already holds it — the sunlit
+        // ground below its horizon — so only a run without one adds it.
+        @if(!ENVIRONMENT_MAP)
+        {
+            let diffuse = pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic);
+            out.color = vec4<f32>(
+                out.color.rgb + ground_bounce::radiance(diffuse * pbr_input.diffuse_occlusion, pbr_input.N),
+                out.color.a,
+            );
+        }
     } else {
         out.color = pbr_input.material.base_color;
     }
