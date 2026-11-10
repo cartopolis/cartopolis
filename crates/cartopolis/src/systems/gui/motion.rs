@@ -392,6 +392,124 @@ pub fn follow(ui: &mut Ui, id: Id, pres: Presence, drag: &mut SheetDrag, lift: f
     );
 }
 
+/// A page turn in progress: which page is leaving, how deep it was, when it
+/// started.
+#[derive(Clone, Copy, Debug)]
+struct Turn<K> {
+    from: K,
+    from_depth: u8,
+    started: f64,
+}
+
+/// How far the two pages of a turn stand from their places, as fractions of
+/// the width, and how dark the parent is, at eased progress `e`. Going deeper
+/// the new page comes in from the right while the parent gives way a third
+/// and dims; coming back it is the other way round.
+fn turn_offsets(deeper: bool, e: f32) -> (f32, f32, f32) {
+    if deeper {
+        (-PARENT_GIVES * e, 1.0 - e, PARENT_DIM * e)
+    } else {
+        (
+            1.0 - (1.0 - e),
+            -PARENT_GIVES * (1.0 - e),
+            PARENT_DIM * (1.0 - e),
+        )
+    }
+}
+
+/// How much of its width the page underneath gives way during a turn.
+const PARENT_GIVES: f32 = 0.3;
+/// How dark the page underneath goes, as ink's alpha.
+const PARENT_DIM: f32 = 0.3;
+
+/// Draw the page `key` of a stack with `draw`, turning from the last page
+/// drawn under `id` when the key changes: the new page slides in from the
+/// right over a parent that gives way and dims when `depth` grew, and back out
+/// to the right when it shrank. Both pages are drawn, untouchable, for
+/// [`ENTER`]; `draw` is therefore asked for the old key as well as the new one
+/// while a turn runs, and must be able to draw either.
+pub fn page_turn<K: Copy + PartialEq + Send + Sync + 'static>(
+    ui: &mut Ui,
+    id: Id,
+    key: K,
+    depth: u8,
+    mut draw: impl FnMut(&mut Ui, K),
+) {
+    let ctx = ui.ctx().clone();
+    let now = ctx.input(|i| i.time);
+    let id = id.with("page_turn");
+    let last_id = id.with("last");
+    let turn_id = id.with("turn");
+    let last: Option<(K, u8)> = ctx.data(|d| d.get_temp(last_id));
+    let mut turn: Option<Turn<K>> = ctx.data(|d| d.get_temp(turn_id));
+    match last {
+        Some((from, from_depth)) if from != key => {
+            turn = Some(Turn {
+                from,
+                from_depth,
+                started: now,
+            });
+        }
+        _ => {}
+    }
+    ctx.data_mut(|d| d.insert_temp(last_id, (key, depth)));
+
+    let secs = enter_time();
+    let progress = turn.map(|t| {
+        if secs <= 0.0 {
+            1.0
+        } else {
+            ((now - t.started) as f32 / secs).clamp(0.0, 1.0)
+        }
+    });
+    let rect = ui.available_rect_before_wrap();
+    let clip = ui.clip_rect();
+    let mut page = |ui: &mut Ui, k: K, salt: &str, dx: f32, live: bool, dim: f32| {
+        let shifted = rect.translate(egui::vec2(dx * rect.width(), 0.0));
+        let r = ui.scope_builder(
+            egui::UiBuilder::new().max_rect(shifted).id_salt(salt),
+            |ui| {
+                ui.set_clip_rect(clip);
+                if !live {
+                    ui.disable();
+                }
+                draw(ui, k);
+            },
+        );
+        if dim > 0.0 {
+            let ink = super::theme::p().ink.gamma_multiply(dim);
+            ui.painter()
+                .rect_filled(r.response.rect.intersect(clip), 0, ink);
+        }
+    };
+    match (turn, progress) {
+        (Some(t), Some(p)) if p < 1.0 => {
+            ctx.data_mut(|d| d.insert_temp(turn_id, t));
+            ctx.request_repaint();
+            let (old_dx, new_dx, dim) = turn_offsets(depth > t.from_depth, ease_out(p));
+            let (old_dim, new_dim) = if depth > t.from_depth {
+                (dim, 0.0)
+            } else {
+                (0.0, dim)
+            };
+            // The one underneath first, so the one on top paints over it.
+            if depth > t.from_depth {
+                page(ui, t.from, "page_leaving", old_dx, false, old_dim);
+                page(ui, key, "page", new_dx, false, new_dim);
+            } else {
+                page(ui, key, "page", new_dx, false, new_dim);
+                page(ui, t.from, "page_leaving", old_dx, false, old_dim);
+            }
+        }
+        _ => {
+            if turn.is_some() {
+                ctx.data_mut(|d| d.remove::<Turn<K>>(turn_id));
+            }
+            page(ui, key, "page", 0.0, true, 0.0);
+        }
+    }
+}
+
 /// Run `f` — a `Panel::show_collapsible`, whose slide reads
 /// `Style::animation_time` — with the time a surface takes to come or go,
 /// and put the style's [`STATE`] back after.
@@ -429,6 +547,20 @@ mod tests {
             .fold(0.0, f32::max);
         assert!(peak > 1.04 && peak < 1.12, "{peak}");
         assert_eq!(spring(1.0), 1.0);
+    }
+
+    #[test]
+    fn a_turn_starts_off_screen_and_ends_in_place() {
+        // Deeper: the new page comes from the right, the parent gives a third.
+        let (old, new, dim) = turn_offsets(true, 0.0);
+        assert_eq!((old, new, dim), (0.0, 1.0, 0.0));
+        let (old, new, dim) = turn_offsets(true, 1.0);
+        assert!((old + PARENT_GIVES).abs() < 1e-6 && new == 0.0 && (dim - PARENT_DIM).abs() < 1e-6);
+        // Back: the parent returns from a third left, undimming.
+        let (old, new, dim) = turn_offsets(false, 0.0);
+        assert!(old == 0.0 && (new + PARENT_GIVES).abs() < 1e-6 && (dim - PARENT_DIM).abs() < 1e-6);
+        let (old, new, dim) = turn_offsets(false, 1.0);
+        assert!((old - 1.0).abs() < 1e-6 && new == 0.0 && dim == 0.0);
     }
 
     #[test]

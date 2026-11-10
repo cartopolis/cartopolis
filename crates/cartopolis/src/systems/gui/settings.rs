@@ -434,55 +434,70 @@ pub fn render_settings_panel(
             // and a `Panel` clips rather than scrolls (the Layers panel had lost
             // its last ten rows to exactly this). The header stays outside, so
             // the way back cannot scroll away.
+            // A page comes in from the right over the list, and goes back out
+            // to it (`motion::page_turn`), which draws the old page too while
+            // it turns — so every arm below has to draw from state that
+            // outlives the choice of page, which they do.
+            let shown = state.page;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| match state.page {
-                    None => {
-                        if let Some(page) = settings_home(ui, &identity, signed_in, &mut to_about) {
-                            state.page = Some(page);
-                        }
-                    }
-                    Some(SettingsTab::General) => {
-                        reset_cache = general_tab(
-                            ui,
-                            &mut edited,
-                            &cache,
-                            &mut editor,
-                            &mut state,
-                            &mut receiver_edit,
-                        );
-                    }
-                    Some(SettingsTab::World) => {
-                        world_tab(ui, &mut world, &mut weather_live, observed);
-                    }
-                    Some(SettingsTab::Graphics) => {
-                        graphics_tab(ui, &mut edited, target, sky.as_deref().copied());
-                    }
-                    Some(SettingsTab::Audio) => {
-                        if signed_in {
-                            section(ui, "Voice");
-                            crate::systems::chat::voice_row(ui, &mut people.voice);
-                        }
-                        play_tone = audio_tab(ui, &mut state, &mut edited);
-                    }
-                    Some(SettingsTab::Account) => {
-                        delete_account =
-                            account_tab(ui, &mut state, &mut identity, online.is_some());
-                    }
-                    Some(SettingsTab::Privacy) => {
-                        unblock = privacy_tab(ui, &mut people, signed_in);
-                    }
-                    Some(SettingsTab::Tokens) => {
-                        if signed_in || people.tokens.demo {
-                            crate::systems::access_tokens::page(
-                                ui,
-                                &mut people.tokens,
-                                may_elevate,
-                            );
-                        } else {
-                            theme::note(ui, "Sign in to make or revoke access tokens.");
-                        }
-                    }
+                .show(ui, |ui| {
+                    crate::systems::motion::page_turn(
+                        ui,
+                        egui::Id::new("settings_page"),
+                        shown,
+                        u8::from(shown.is_some()),
+                        |ui, page| match page {
+                            None => {
+                                if let Some(page) =
+                                    settings_home(ui, &identity, signed_in, &mut to_about)
+                                {
+                                    state.page = Some(page);
+                                }
+                            }
+                            Some(SettingsTab::General) => {
+                                reset_cache = general_tab(
+                                    ui,
+                                    &mut edited,
+                                    &cache,
+                                    &mut editor,
+                                    &mut state,
+                                    &mut receiver_edit,
+                                );
+                            }
+                            Some(SettingsTab::World) => {
+                                world_tab(ui, &mut world, &mut weather_live, observed);
+                            }
+                            Some(SettingsTab::Graphics) => {
+                                graphics_tab(ui, &mut edited, target, sky.as_deref().copied());
+                            }
+                            Some(SettingsTab::Audio) => {
+                                if signed_in {
+                                    section(ui, "Voice");
+                                    crate::systems::chat::voice_row(ui, &mut people.voice);
+                                }
+                                play_tone = audio_tab(ui, &mut state, &mut edited);
+                            }
+                            Some(SettingsTab::Account) => {
+                                delete_account =
+                                    account_tab(ui, &mut state, &mut identity, online.is_some());
+                            }
+                            Some(SettingsTab::Privacy) => {
+                                unblock = privacy_tab(ui, &mut people, signed_in);
+                            }
+                            Some(SettingsTab::Tokens) => {
+                                if signed_in || people.tokens.demo {
+                                    crate::systems::access_tokens::page(
+                                        ui,
+                                        &mut people.tokens,
+                                        may_elevate,
+                                    );
+                                } else {
+                                    theme::note(ui, "Sign in to make or revoke access tokens.");
+                                }
+                            }
+                        },
+                    );
                 });
         });
     }
