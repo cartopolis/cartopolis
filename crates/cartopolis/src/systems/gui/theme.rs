@@ -291,6 +291,12 @@ pub struct Palette {
     pub gold: Color32,
     /// The ink on [`Palette::gold`].
     pub on_gold: Color32,
+    /// The hairline round a button or a field at rest: the midas hub's soft
+    /// border, a step firmer. It was [`Palette::line`], a 3:1 grey, and a page
+    /// of buttons in it read as "cheap" boxes (2026-11-10); a control is now
+    /// told by its plate, its shape and its word, as in the hub, with
+    /// [`Palette::line`] kept for what must be found by its edge alone.
+    pub control_edge: Color32,
     /// Whether egui's dark visuals are the base ([`visuals`]).
     pub dark: bool,
 }
@@ -331,6 +337,7 @@ pub const DARK: Palette = Palette {
     knob_on: Color32::from_rgb(0xE2, 0xE9, 0xEA),
     gold: Color32::from_rgb(0xD8, 0xC0, 0x7A),
     on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
+    control_edge: Color32::from_rgb(0x3A, 0x48, 0x49),
     dark: true,
 };
 
@@ -381,6 +388,7 @@ pub const LIGHT: Palette = Palette {
     knob_on: Color32::WHITE,
     gold: Color32::from_rgb(0xE0, 0xBC, 0x5C),
     on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
+    control_edge: Color32::from_rgb(0xC9, 0xD4, 0xD5),
     dark: false,
 };
 
@@ -845,7 +853,7 @@ fn widgets(c: &Palette) -> Widgets {
         // surface that lifts a step under the pointer. The hub's hairline is
         // quieter than [`Palette::line`]; this one keeps the 3:1 a control boundary
         // needs (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
-        inactive: visuals(c.surface, c.line, c.text),
+        inactive: visuals(c.surface, c.control_edge, c.text),
         hovered: visuals(c.surface_raised, c.accent_word, c.cream),
         // Pressed / focused — **one fill, not two.** `weak_bg_fill` (the button
         // fill) carries a [`Palette::cream`] label, so both fills are the deep
@@ -892,6 +900,9 @@ pub fn visuals_of(c: &Palette) -> egui::Visuals {
     v.hyperlink_color = c.accent_text;
     v.faint_bg_color = c.surface_raised;
     v.extreme_bg_color = c.ink;
+    // A text field is a card, not a well: an ink well read as a black slot in
+    // the dark theme (2026-11-10).
+    v.text_edit_bg_color = Some(c.card);
     v.code_bg_color = c.ink;
     v.warn_fg_color = c.warn;
     v.error_fg_color = c.error;
@@ -1472,8 +1483,8 @@ pub fn secondary_toggle(
     // The midas hub's button (`m-button`): a dark surface with a hairline and
     // a small shadow, the word and its icon in the strong text tone. Under the
     // pointer it lifts a step and the hairline takes the accent; "on" is the
-    // hub's soft teal tag. The hairline is [`Palette::line`], firmer than the hub's,
-    // for the 3:1 a control boundary needs.
+    // hub's soft teal tag. The hairline is [`Palette::control_edge`], the hub's
+    // soft border a step firmer.
     let (fill, line, ink) = if !enabled {
         (p().surface, p().surface_hover, p().cream)
     } else if on {
@@ -1483,7 +1494,7 @@ pub fn secondary_toggle(
     } else if resp.hovered() {
         (p().surface_raised, p().accent, p().cream)
     } else {
-        (p().surface, p().line, p().cream)
+        (p().surface, p().control_edge, p().cream)
     };
     let p = ui.painter();
     if enabled && !held && !on {
@@ -1594,6 +1605,59 @@ pub fn round_button(
 ) -> egui::Response {
     round_button_on(ui, icon, tooltip, selected, (p().overlay, p().overlay_line))
 }
+
+/// One button of the dock: a tall rounded plate with its glyph and its word
+/// inside, [`ROUND_BUTTON_SIZE`] wide and [`DOCK_BUTTON_HEIGHT`] tall.
+///
+/// It was a round disc with the word painted under it on the map in a dark
+/// halo; over a busy city the halo smudged the word, worst in the light theme
+/// ("the text under the floating buttons", 2026-11-10). Inside the plate the
+/// word is on the panel's own tone, so it reads the same over any map.
+pub fn dock_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    word: &str,
+    tooltip: &str,
+    selected: bool,
+) -> egui::Response {
+    let size = egui::vec2(ROUND_BUTTON_SIZE, DOCK_BUTTON_HEIGHT);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let resp = named(ui, resp, tooltip);
+    let (fill, rim, ink, word_ink) = match (selected, resp.hovered()) {
+        (true, _) => (p().accent, p().accent_ring, p().on_accent, p().on_accent),
+        (false, true) => (p().surface_hover, p().overlay_line, p().cream, p().cream),
+        (false, false) => (p().overlay, p().overlay_line, p().text, p().text_dim),
+    };
+    let corner = CornerRadius::same(14);
+    let painter = ui.painter();
+    painter.add(lift_shadow().as_shape(rect, corner));
+    painter.rect(
+        rect,
+        corner,
+        fill,
+        Stroke::new(1.0, rim),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        egui::pos2(rect.center().x, rect.top() + 18.0),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(17.0),
+        ink,
+    );
+    painter.text(
+        egui::pos2(rect.center().x, rect.bottom() - 11.0),
+        egui::Align2::CENTER_CENTER,
+        word,
+        FontId::proportional(SIZE_TINY),
+        word_ink,
+    );
+    paint_focus_ring(ui, &resp, rect, false);
+    resp.on_hover_text(tooltip)
+}
+
+/// Height of a [`dock_button`]: the glyph's disc and its word, in one plate.
+pub const DOCK_BUTTON_HEIGHT: f32 = 50.0;
 
 fn round_button_on(
     ui: &mut egui::Ui,
@@ -1962,6 +2026,12 @@ fn paint_disc_shadow(p: &egui::Painter, center: egui::Pos2, radius: f32, shadow:
     p.add(shadow.as_shape(rect, corner));
 }
 
+/// The soft shadow a round button stands on, for a disc painted outside this
+/// file (the layer categories), so it lifts as the map's round buttons do.
+pub fn paint_disc_lift(p: &egui::Painter, center: egui::Pos2, radius: f32) {
+    paint_disc_shadow(p, center, radius, lift_shadow());
+}
+
 fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
     // A flat plate under one soft shadow, as the midas hub draws its round
     // buttons. The sheen and the accent's glow went with the glass (2026-11-08).
@@ -2224,7 +2294,7 @@ fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
     let (fill, stroke, ink) = if selected {
         (p().accent, p().accent_ring, p().on_accent)
     } else {
-        (p().surface_raised, p().line, p().text)
+        (p().surface_raised, p().control_edge, p().text)
     };
     egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
         .fill(fill)
@@ -2296,7 +2366,7 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     } else if resp.hovered() {
         (p().surface_hover, p().accent, p().cream)
     } else {
-        (p().surface_raised, p().line, p().text_dim)
+        (p().surface_raised, p().control_edge, p().text_dim)
     };
     let p = ui.painter();
     p.rect(
@@ -2872,7 +2942,7 @@ pub fn press_page_back(ctx: &egui::Context) {
 }
 
 /// One control with several positions: a raised pill with equal-width
-/// segments, the chosen one on the [`Palette::accent`] plate in [`Palette::ink`] — the Chats
+/// segments, the chosen one on the [`Palette::accent`] plate in [`Palette::on_accent`] — the Chats
 /// screen's toggle (`chats::segmented`) made general. Returns whether the
 /// value changed; `value` is written only on a click, so a caller holding a
 /// resource does not mark it changed every frame.
@@ -2880,7 +2950,7 @@ pub fn press_page_back(ctx: &egui::Context) {
 /// It replaced rows of `selectable_value`s, which wrapped as soon as a panel
 /// was narrow ("Full detail" alone on a second line) and read as loose words
 /// rather than one choice. Labels that do not fit their segment are set
-/// smaller, down to [`SIZE_TINY`], before anything wraps.
+/// smaller, down to [`SIZE_SUB`]; past that the options take two rows.
 pub fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     value: &mut T,
@@ -2889,41 +2959,51 @@ pub fn segmented<T: PartialEq + Copy>(
     if options.is_empty() {
         return false;
     }
-    let height = row_height().max(30.0);
-    let (rect, track) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
-    let inner = rect.shrink(3.0);
     let gap = 2.0;
-    let n = options.len() as f32;
-    let seg_w = (inner.width() - gap * (n - 1.0)) / n;
+    let width = ui.available_width();
+    let n = options.len();
+    // How wide a label is, measured in the chosen option's (wider) brand face
+    // so that choosing one never makes it spill.
+    let label_w = |label: &str, size: f32| {
+        ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(
+                label.to_string(),
+                FontId::new(size, brand_family()),
+                p().text,
+            )
+            .size()
+            .x
+        })
+    };
+    let seg_w_for = |cols: usize| (width - 6.0 - gap * (cols as f32 - 1.0)) / cols as f32;
+    let fits = |cols: usize, size: f32| {
+        let seg_w = seg_w_for(cols);
+        options
+            .iter()
+            .all(|(_, label)| label_w(label, size) <= seg_w - 10.0)
+    };
+    // One row while every label fits it at [`SIZE_SUB`] or larger; otherwise
+    // two rows, half the options in each, at the same sizes. Shrinking four
+    // options into one row on a phone made them unreadable, and wrapping
+    // inside a segment broke "Automatic" mid-word (2026-11-10).
+    let cols = if fits(n, SIZE_SUB) { n } else { n.div_ceil(2) };
+    let rows = n.div_ceil(cols);
+    let seg_w = seg_w_for(cols);
+    let mut size = SIZE_BODY - 1.0;
+    while size > SIZE_TINY && !fits(cols, size) {
+        size -= 0.5;
+    }
+    let row_h = row_height().max(30.0) - 6.0;
+    let height = rows as f32 * row_h + (rows as f32 - 1.0) * gap + 6.0;
+    let (rect, track) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let inner = rect.shrink(3.0);
     // Keyed on the track's own auto id: two rows with the same first label
     // ("Automatic") in one tab must not share segment ids.
     let base = track.id;
 
-    // One size for every label, so the segments read as one control.
-    let fits = |size: f32| {
-        options.iter().all(|(_, label)| {
-            ui.ctx().fonts_mut(|f| {
-                f.layout_no_wrap((*label).to_string(), FontId::proportional(size), p().text)
-                    .size()
-                    .x
-            }) <= seg_w - 8.0
-        })
-    };
-    let mut size = SIZE_BODY - 1.0;
-    while size > SIZE_TINY && !fits(size) {
-        size -= 0.5;
-    }
-
-    // The midas hub's segmented control (`m-segmented`): a sunken track with a
-    // hairline, and the chosen option a raised card on it — not an accent
-    // plate. The accent stays for the one primary action on a page.
-    //
-    // Since 2026-11-10 the track is a card like the lists around it and the
-    // chosen option the accent plate: the deep well with a raised card on it
-    // was "ugly" (the person, of the Clouds switch).
+    // A card like the lists around it, the chosen option on the accent plate
+    // (2026-11-10: the hub's deep well with a raised card on it was "ugly", of
+    // the Clouds switch).
     let p = ui.painter().clone();
     p.rect_filled(rect, CornerRadius::same(RADIUS_LG), self::p().card);
     p.rect_stroke(
@@ -2934,9 +3014,13 @@ pub fn segmented<T: PartialEq + Copy>(
     );
     let mut changed = false;
     for (i, (option, label)) in options.iter().enumerate() {
+        let (row, col) = (i / cols, i % cols);
         let r = egui::Rect::from_min_size(
-            egui::pos2(inner.left() + i as f32 * (seg_w + gap), inner.top()),
-            egui::vec2(seg_w, inner.height()),
+            egui::pos2(
+                inner.left() + col as f32 * (seg_w + gap),
+                inner.top() + row as f32 * (row_h + gap),
+            ),
+            egui::vec2(seg_w, row_h),
         );
         let resp = ui
             .interact(r, base.with(i), egui::Sense::click())
@@ -2954,22 +3038,16 @@ pub fn segmented<T: PartialEq + Copy>(
         } else {
             (Color32::TRANSPARENT, self::p().text_dim)
         };
-        let corner = CornerRadius::same(RADIUS_LG - 3);
-        p.rect_filled(r, corner, fill);
-        p.text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            *label,
-            FontId::new(
-                size,
-                if on {
-                    brand_family()
-                } else {
-                    FontFamily::Proportional
-                },
-            ),
-            ink,
+        p.rect_filled(r, CornerRadius::same(RADIUS_LG - 3), fill);
+        let font = FontId::new(
+            size,
+            if on {
+                brand_family()
+            } else {
+                FontFamily::Proportional
+            },
         );
+        p.text(r.center(), egui::Align2::CENTER_CENTER, *label, font, ink);
         paint_focus_ring(ui, &resp, r, false);
         if resp.clicked() && !on {
             *value = *option;
@@ -3680,6 +3758,10 @@ mod tests {
     fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
         for (theme, c) in BOTH {
             let v = visuals_of(c);
+            // A button at rest is edged in the hub's soft border, not a 3:1
+            // line: the person called a page of 3:1-edged buttons "cheap"
+            // (2026-11-10), and the hub tells its buttons by plate, shape and
+            // word. The edge must still be there, so it is held to a floor.
             for (name, got) in [
                 (
                     "a button's border on a panel",
@@ -3689,6 +3771,10 @@ mod tests {
                     "a button's border on the page",
                     contrast(v.widgets.inactive.bg_stroke.color, c.panel),
                 ),
+            ] {
+                assert!(got >= 1.3, "{theme}: {name}: contrast {got:.2} < 1.3");
+            }
+            for (name, got) in [
                 (
                     "the hover ring against the fill it encloses",
                     contrast(v.widgets.hovered.bg_stroke.color, c.surface_hover),

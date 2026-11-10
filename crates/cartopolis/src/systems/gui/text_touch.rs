@@ -75,8 +75,11 @@ impl End {
 /// Show a text field with finger-sized selection handles.
 ///
 /// A drop-in for `ui.add(TextEdit::…)`: same builder, same `Response`.
+///
+/// Every field gets room inside its frame, as the midas hub's fields have:
+/// egui's own 4 × 2 pt margin made each one a thin slot (2026-11-10).
 pub fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
-    let out = edit.show(ui);
+    let out = edit.margin(egui::Margin::symmetric(10, 7)).show(ui);
     let response = out.response.response.clone();
     if !onscreen_keyboard::platform_wants_keyboard() {
         return response;

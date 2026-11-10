@@ -115,36 +115,20 @@ pub fn reserved_bottom() -> f32 {
 /// The glass bar's margin round the discs, where there is room for it.
 const BAR_PAD: f32 = 4.0;
 
-/// The word under each disc. The dock was six bare glyphs, and two of them
+/// The room the word takes in a dock button, below its glyph. The dock was six bare glyphs, and two of them
 /// (the view mode, Saved) said nothing a person could guess
 /// (`docs/mockups/ux-review`).
-const LABEL_H: f32 = 12.0;
+const LABEL_H: f32 = theme::DOCK_BUTTON_HEIGHT - theme::ROUND_BUTTON_SIZE;
 
-/// A disc with its word under it, in the disc's width.
-fn labelled<R>(ui: &mut egui::Ui, word: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.allocate_ui_with_layout(
-        egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE + LABEL_H),
-        egui::Layout::top_down(egui::Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let r = add(ui);
-            // On the map itself now there is no bar under it, so it takes the
-            // scale bar's halo rather than a plate (`hud::halo_text_aligned`).
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(theme::ROUND_BUTTON_SIZE, LABEL_H),
-                egui::Sense::hover(),
-            );
-            crate::systems::hud::halo_text_aligned(
-                ui.painter(),
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                word,
-                theme::p().text,
-            );
-            r
-        },
-    )
-    .inner
+/// A dock button: its glyph and its word in one plate (`theme::dock_button`).
+fn labelled(
+    ui: &mut egui::Ui,
+    word: &str,
+    icon: &str,
+    tooltip: &str,
+    selected: bool,
+) -> egui::Response {
+    theme::dock_button(ui, icon, word, tooltip, selected)
 }
 
 /// The bar's margin at this viewport: [`BAR_PAD`], or what is left once the
@@ -256,10 +240,8 @@ pub fn render_dock(
                             let mut panel_disc =
                                 |ui: &mut egui::Ui, panel: RightPanel, word: &str| {
                                     let open = right_panel.is(panel);
-                                    if labelled(ui, word, |ui| {
-                                        theme::round_button(ui, panel.icon(), panel.label(), open)
-                                    })
-                                    .clicked()
+                                    if labelled(ui, word, panel.icon(), panel.label(), open)
+                                        .clicked()
                                     {
                                         clicked = Some(panel);
                                     }
@@ -271,14 +253,13 @@ pub fn render_dock(
                             // the composer is up, the same "this is the live one" the
                             // panel discs wear.
                             if has_session
-                                && labelled(ui, "Say", |ui| {
-                                    theme::round_button(
-                                        ui,
-                                        crate::systems::icons::CHAT,
-                                        "Say something",
-                                        say.composing,
-                                    )
-                                })
+                                && labelled(
+                                    ui,
+                                    "Say",
+                                    crate::systems::icons::CHAT,
+                                    "Say something",
+                                    say.composing,
+                                )
                                 .clicked()
                             {
                                 say_clicked = true;
@@ -295,14 +276,13 @@ pub fn render_dock(
                             // when nothing was (2026-11-03). It takes the accent while
                             // the camera is up, as the panel discs do while open.
                             if has_camera
-                                && labelled(ui, "Camera", |ui| {
-                                    theme::round_button(
-                                        ui,
-                                        crate::systems::icons::CAMERA,
-                                        "Camera",
-                                        camera.is_open(),
-                                    )
-                                })
+                                && labelled(
+                                    ui,
+                                    "Camera",
+                                    crate::systems::icons::CAMERA,
+                                    "Camera",
+                                    camera.is_open(),
+                                )
                                 .clicked()
                             {
                                 camera_clicked = true;
@@ -315,15 +295,8 @@ pub fn render_dock(
                             // decoration — nothing about it said there was a menu behind
                             // it, which is a problem for the one disc that is the only
                             // route to Settings, sign-in and Exit.
-                            if labelled(ui, "Menu", |ui| {
-                                theme::round_button(
-                                    ui,
-                                    crate::systems::icons::MENU,
-                                    "Menu",
-                                    menu.open,
-                                )
-                            })
-                            .clicked()
+                            if labelled(ui, "Menu", crate::systems::icons::MENU, "Menu", menu.open)
+                                .clicked()
                             {
                                 menu_clicked = true;
                             }
@@ -435,14 +408,13 @@ fn mode_disc(
     } else {
         name
     };
-    if labelled(ui, word, |ui| {
-        theme::round_button(
-            ui,
-            icon,
-            &format!("{name} view — switch to {next_name}"),
-            false,
-        )
-    })
+    if labelled(
+        ui,
+        word,
+        icon,
+        &format!("{name} view — switch to {next_name}"),
+        false,
+    )
     .clicked()
     {
         enter_mode(camera_state, next);

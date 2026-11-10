@@ -97,14 +97,24 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
         let on = *selected == *cat;
         let centre = Pos2::new(col.center().x, col.top() + DISC / 2.0);
         let painter = ui.painter();
+        // Dark discs with a teal glyph, the chosen one the accent plate with a
+        // white one (2026-11-10: grey discs with white or black glyphs "do not
+        // fit; dark goes with teal"). In the light theme the disc is a white
+        // card, its glyph the same teal.
         let fill = if on {
             theme::p().accent
         } else if resp.hovered() {
             theme::p().surface_hover
+        } else if theme::p().dark {
+            theme::p().ink
         } else {
-            theme::p().surface_raised
+            theme::p().card
         };
+        theme::paint_disc_lift(painter, centre, DISC / 2.0);
         painter.circle_filled(centre, DISC / 2.0, fill);
+        if !on {
+            painter.circle_stroke(centre, DISC / 2.0, Stroke::new(1.0, theme::p().list_line));
+        }
         painter.text(
             centre,
             Align2::CENTER_CENTER,
@@ -113,7 +123,7 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
             if on {
                 theme::p().on_accent
             } else {
-                theme::p().text
+                theme::p().accent_word
             },
         );
         painter.text(
