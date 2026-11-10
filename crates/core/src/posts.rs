@@ -508,6 +508,9 @@ mod tests {
                     yaw: 10.0,
                 }),
             },
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
         };
         let json = serde_json::to_string(&post).unwrap();
         assert!(!json.contains("picture"), "{json}");
