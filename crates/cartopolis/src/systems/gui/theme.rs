@@ -44,7 +44,7 @@
 //!
 //! **Every surface is solid** (since 2026-11-08, "a bad implementation of
 //! glass"): the midas hub's layering, one darkness. [`PANEL`], [`GLASS`] and
-//! [`OVERLAY`] are all one very dark teal page, with [`SURFACE`] cards inside and a soft
+//! [`OVERLAY`] are all the hub's dark teal card, with darker [`SURFACE`] wells inside and a soft
 //! shadow, with the hub's hairline ([`PANEL_RIM`]). Nothing shows through.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
@@ -91,7 +91,7 @@ use crate::systems::icons;
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
 pub const INK: Color32 = Color32::from_rgb(0x0F, 0x14, 0x16);
 /// The surface ramp's bottom above [`INK`]: a card *inside* a panel (a list
-/// group, a chat row), one step off the panel's page.
+/// group, a chat row): a well a step darker than the panel's teal.
 pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x1A, 0x1C);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
@@ -271,15 +271,17 @@ pub const OVERLAY: Color32 = PANEL;
 pub const GLASS: Color32 = PANEL;
 
 /// Every panel's surface — docked, full-screen on a phone, floating over the
-/// map: a very dark teal, with [`SURFACE`] cards on it under [`CARD_SHADOW`]
-/// (solid and one darkness since 2026-11-08).
+/// map: the midas hub's card, a dark teal (solid and one tone since
+/// 2026-11-08).
 ///
-/// **Teal, not [`INK`]**, asked for the next day: at [`INK`] the panels "look
-/// black; mix a little colour in, like the midas palette — very dark teal,
-/// close to black". This is [`ACCENT`]'s hue pressed almost to black, and it
-/// stays darker than [`SURFACE`] so a card in a panel still reads as lying on
-/// it (`the_panel_is_the_hubs_page`).
-pub const PANEL: Color32 = Color32::from_rgb(0x0B, 0x19, 0x18);
+/// **Measured off the hub, 2026-11-10.** At [`INK`] the panels "looked black";
+/// a teal pressed nearly to black (`#0B1918`) was still "too little colour",
+/// and the person pointed at the hub's question card. The hub draws that card
+/// `#192627` on a `#141A1C` page, with its options as `#141A1C` wells inside
+/// it — so here a panel is the card's teal and a card *inside* a panel is
+/// [`SURFACE`], a step darker, as the hub's options are
+/// (`the_panel_is_the_hubs_card`).
+pub const PANEL: Color32 = Color32::from_rgb(0x19, 0x26, 0x27);
 
 /// The hairline round a panel, a window or a box over the map: the midas hub's
 /// `--m-border` (dark), solid. The shadow does the lifting; this only keeps a
@@ -3104,12 +3106,12 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
-    /// The panel is a very dark teal: solid, cooler and never warmer (the
+    /// The panel is the midas hub's card: solid, cooler and never warmer (the
     /// brown a mix of the brand orange produced, red above blue, is what this
-    /// pins against), visibly teal rather than black, and darker than the
-    /// cards on it, so a [`SURFACE`] card in a panel reads as lying on it.
+    /// pins against), visibly teal rather than black, and a step lighter than
+    /// the [`SURFACE`] wells inside it, as the hub's options are in its card.
     #[test]
-    fn the_panel_is_a_very_dark_teal() {
+    fn the_panel_is_the_hubs_card() {
         assert_eq!(PANEL.a(), 255, "the panel is solid: {PANEL:?}");
         assert!(
             PANEL.r() <= PANEL.b() && PANEL.r() <= PANEL.g(),
@@ -3119,7 +3121,7 @@ mod tests {
             PANEL.g() > PANEL.r() + 8,
             "the panel has gone black: {PANEL:?}"
         );
-        assert!(luminance(PANEL) < luminance(SURFACE));
+        assert!(luminance(SURFACE) < luminance(PANEL));
     }
 
     #[test]

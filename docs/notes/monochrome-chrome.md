@@ -86,8 +86,8 @@ the type, and the round controls were tinted but never blurred, so two kinds
 of "glass" sat side by side.
 
 What replaced it is the midas hub's layering, value for value, at one
-darkness: `PANEL`, `GLASS` and `OVERLAY` are all one very dark teal (`#0B1918`, not `INK`: "it looks black, mix in a little teal") under a
-soft shadow, cards inside a panel are `SURFACE`, and every rim is the hub's
+darkness: `PANEL`, `GLASS` and `OVERLAY` are all the hub's dark teal card (`#192627`, measured off its question card; `INK` "looked black" and `#0B1918` had too little colour) under a
+soft shadow, cards inside a panel are `SURFACE` wells a step darker, as the hub's options are, and every rim is the hub's
 border (`PANEL_RIM`, `#2A3536`). Floating cards were `SURFACE` for one round
 and the person saw them as "panels lighter than others; they must be dark". The
 discs are flat plates under one shadow: the sheen and the accent glow went
