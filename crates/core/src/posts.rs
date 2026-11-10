@@ -74,6 +74,98 @@ pub struct NewPost {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<String>,
     pub place: PostPlace,
+    /// A content warning: shown in place of the post until a reader opens it
+    /// (Mastodon's "CW", sent as the note's `summary`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// The picture should be blurred until a reader asks to see it.
+    #[serde(default)]
+    pub sensitive: bool,
+    /// What the picture shows, in words, for a reader who cannot see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_alt: Option<String>,
+}
+
+/// Longest content warning, in characters.
+pub const MAX_WARNING: usize = 100;
+/// Longest picture description, in characters: Mastodon's own limit.
+pub const MAX_PICTURE_ALT: usize = 1500;
+/// Most pictures kept from a post from elsewhere.
+pub const MAX_PICTURES: usize = 4;
+
+/// One more picture on a post from elsewhere, after the first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostPicture {
+    pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+}
+
+/// Switch a like or a boost on or off (`/api/posts/{id}/like`, `…/boost`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Toggle {
+    pub on: bool,
+}
+
+/// A reader reports a post (`/api/posts/{id}/report`). It goes to the
+/// community's moderators, and, for a post from elsewhere when `forward` is
+/// set, to the server it came from too, without saying who reported it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewReport {
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub forward: bool,
+}
+
+/// What a notice is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoticeKind {
+    /// Somebody answered a post or reply of yours.
+    Reply,
+    /// Somebody named you in a post.
+    Mention,
+    /// Somebody liked a post or reply of yours.
+    Like,
+    /// Somebody passed a post of yours on to their followers.
+    Boost,
+    /// Somebody elsewhere follows you.
+    Follow,
+}
+
+/// Something that happened to you in public (`/api/fediverse/notices`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostNotice {
+    pub id: i64,
+    pub kind: NoticeKind,
+    pub who: PostAuthor,
+    /// The post or reply it is about: the reply itself for a reply or a
+    /// mention, yours for a like or a boost. `None` for a follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<Uuid>,
+    /// The community that post is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community: Option<Uuid>,
+    /// The start of that post's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    pub created_ms: i64,
+    pub read: bool,
+}
+
+/// Your notices, newest first, and how many are unread.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostNotices {
+    pub unread: u32,
+    pub items: Vec<PostNotice>,
+}
+
+/// Mark notices read, up to and including `up_to` (all of them when absent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadNotices {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<i64>,
 }
 
 /// A reply under a post. Replies are flat: a reply to a reply is a reply to the
@@ -135,6 +227,30 @@ pub struct PostDto {
     /// Lemmy's downvotes.
     #[serde(default)]
     pub dislikes: u32,
+    /// Times it was passed on, here or elsewhere.
+    #[serde(default)]
+    pub boosts: u32,
+    /// Whether the caller likes it.
+    #[serde(default)]
+    pub liked: bool,
+    /// Whether the caller passed it on.
+    #[serde(default)]
+    pub boosted: bool,
+    /// For a reply: the name of whoever wrote what it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<String>,
+    /// A content warning, shown in place of the post until it is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// Blur the pictures until a reader asks to see them.
+    #[serde(default)]
+    pub sensitive: bool,
+    /// What `picture` shows, in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_alt: Option<String>,
+    /// Pictures after the first, for a post from elsewhere that had several.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_pictures: Vec<PostPicture>,
 }
 
 /// What an author sends to change a post or reply's words. The place and the

@@ -25,9 +25,9 @@
 
 use cartopolis_core::point::PointView;
 use cartopolis_core::posts::{
-    is_handle, FollowDto, NewPost, PersonPosts, PostAuthor, PostDto, PostPlace, PostReport,
-    PostThread, PublicCommunity, PublicInfo, PublicSettings, ReportAction, SourceKind, WhoPosts,
-    MAX_PLACE_NAME, MAX_POST_TEXT, POSTS_PAGE,
+    is_handle, FollowDto, NewPost, PersonPosts, PostAuthor, PostDto, PostPicture, PostPlace,
+    PostReport, PostThread, PublicCommunity, PublicInfo, PublicSettings, ReportAction, SourceKind,
+    WhoPosts, MAX_PICTURE_ALT, MAX_PLACE_NAME, MAX_POST_TEXT, MAX_WARNING, POSTS_PAGE,
 };
 use cartopolis_core::CommunityRole;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -343,6 +343,23 @@ fn clean_text(text: &str) -> Result<String, Refusal> {
     Ok(t.to_string())
 }
 
+/// At most `max` characters of `s`, trimmed.
+fn cut(s: &str, max: usize) -> String {
+    s.trim().chars().take(max).collect()
+}
+
+/// An optional line of text: trimmed, `None` when blank, refused when longer
+/// than `max` characters.
+fn clean_optional(text: Option<&str>, max: usize) -> Result<Option<String>, Refusal> {
+    let Some(t) = text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    if t.chars().count() > max {
+        return Err(Refusal::TooLong);
+    }
+    Ok(Some(t.to_string()))
+}
+
 fn clean_place(place: &PostPlace) -> Result<PostPlace, Refusal> {
     if !place.in_range() {
         return Err(Refusal::BadPlace);
@@ -393,13 +410,16 @@ pub fn create_post(
     {
         return Err(Refusal::BadPicture);
     }
+    let warning = clean_optional(new.warning.as_deref(), MAX_WARNING)?;
+    let picture_alt = clean_optional(new.picture_alt.as_deref(), MAX_PICTURE_ALT)?;
     let id = Uuid::new_v4();
     let view = place.view;
     conn.execute(
         "INSERT INTO posts (id, community, parent, ap_id, author_account, text, picture,
                             lat, lng, place_name, view_alt, view_pitch, view_yaw, created_ms,
-                            snapshot)
-         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                            snapshot, warning, sensitive, picture_alt)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17)",
         params![
             id.to_string(),
             community.to_string(),
@@ -414,29 +434,33 @@ pub fn create_post(
             view.map(|v| f64::from(v.pitch)),
             view.map(|v| f64::from(v.yaw)),
             now_ms,
-            new.snapshot
+            new.snapshot,
+            warning,
+            new.sensitive && new.picture.is_some(),
+            picture_alt.filter(|_| new.picture.is_some())
         ],
     )?;
     Ok(id)
 }
 
 /// The post a reply should hang under: `id` itself if it is a post, its parent
-/// if it is a reply. Hidden posts take no replies.
-fn thread_root(conn: &Connection, id: Uuid) -> Result<(Uuid, Uuid), Refusal> {
-    let row: Option<(String, Option<String>)> = conn
+/// if it is a reply. Hidden posts take no replies. Answers the community, that
+/// post, and the fediverse id of `id` itself, which is what the reply answers.
+fn thread_root(conn: &Connection, id: Uuid) -> Result<(Uuid, Uuid, String), Refusal> {
+    let row: Option<(String, Option<String>, String)> = conn
         .query_row(
-            "SELECT community, parent FROM posts WHERE id = ?1 AND hidden_by IS NULL",
+            &format!("SELECT community, parent, ap_id FROM posts WHERE id = ?1 AND {SHOWN}"),
             params![id.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let (community, parent) = row.ok_or(Refusal::NoSuchPost)?;
+    let (community, parent, ap_id) = row.ok_or(Refusal::NoSuchPost)?;
     let community = Uuid::parse_str(&community).map_err(|_| Refusal::NoSuchPost)?;
     let root = match parent {
         Some(p) => Uuid::parse_str(&p).map_err(|_| Refusal::NoSuchPost)?,
         None => id,
     };
-    Ok((community, root))
+    Ok((community, root, ap_id))
 }
 
 /// A reply written here, by anybody signed in.
@@ -449,14 +473,15 @@ pub fn create_reply(
     now_ms: i64,
 ) -> Result<(Uuid, Uuid), Refusal> {
     let text = clean_text(text)?;
-    let (community, root) = thread_root(conn, to)?;
+    let (community, root, answers) = thread_root(conn, to)?;
     if !public(conn, community)?.is_some_and(|p| p.enabled) {
         return Err(Refusal::PostsOff);
     }
     let id = Uuid::new_v4();
     conn.execute(
-        "INSERT INTO posts (id, community, parent, ap_id, author_account, text, created_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO posts (id, community, parent, ap_id, author_account, text, created_ms,
+                            in_reply_to)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             id.to_string(),
             community.to_string(),
@@ -464,7 +489,8 @@ pub fn create_reply(
             super::post_url(base, id),
             author,
             text,
-            now_ms
+            now_ms,
+            answers
         ],
     )?;
     Ok((id, community))
@@ -487,12 +513,39 @@ pub struct PostRow {
     pub url: Option<String>,
     pub created_ms: i64,
     pub edited_ms: Option<i64>,
+    /// Hidden by a moderator, or from a blocked server.
     pub hidden: bool,
+    /// The fediverse id of the post or reply this reply answers; `None` for a
+    /// post, and for a reply stored before it was kept (it answers `parent`).
+    pub in_reply_to: Option<String>,
+    pub warning: Option<String>,
+    pub sensitive: bool,
+    pub picture_alt: Option<String>,
+    pub more_pictures: Vec<PostPicture>,
 }
 
-const POST_COLUMNS: &str = "id, community, parent, ap_id, author_account, author_actor, via_actor,
+/// SQL, over an unaliased `posts` row, that is true when its author or the
+/// source that brought it lives on a blocked server (`blocklist`). Such a
+/// post stays stored, so an unblock brings it back, and reads as hidden.
+macro_rules! from_blocked_server {
+    () => {
+        "EXISTS (SELECT 1 FROM fedi_actors a
+             WHERE a.id IN (posts.author_actor, posts.via_actor)
+                 AND EXISTS (SELECT 1 FROM fedi_server_blocks b
+                     WHERE a.host = b.host OR a.host LIKE '%.' || b.host))"
+    };
+}
+
+/// SQL, over an unaliased `posts` row, that is true when readers see it.
+const SHOWN: &str = concat!("(hidden_by IS NULL AND NOT ", from_blocked_server!(), ")");
+
+const POST_COLUMNS: &str = concat!(
+    "id, community, parent, ap_id, author_account, author_actor, via_actor,
      text, picture, lat, lng, place_name, view_alt, view_pitch, view_yaw, url, created_ms,
-     edited_ms, hidden_by, snapshot";
+     edited_ms, (hidden_by IS NOT NULL OR ",
+    from_blocked_server!(),
+    "), snapshot, in_reply_to, warning, sensitive, picture_alt, more_pictures"
+);
 
 fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
     let uuid = |s: String| Uuid::parse_str(&s).unwrap_or_default();
@@ -529,8 +582,16 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PostRow> {
         url: r.get(15)?,
         created_ms: r.get(16)?,
         edited_ms: r.get(17)?,
-        hidden: r.get::<_, Option<String>>(18)?.is_some(),
+        hidden: r.get(18)?,
         snapshot: r.get(19)?,
+        in_reply_to: r.get(20)?,
+        warning: r.get(21)?,
+        sensitive: r.get(22)?,
+        picture_alt: r.get(23)?,
+        more_pictures: r
+            .get::<_, Option<String>>(24)?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -557,7 +618,7 @@ pub fn rows_by_ap_id(conn: &Connection, ap_id: &str) -> Result<Vec<PostRow>, Ref
 /// The replies under a post, oldest first, hidden ones left out.
 pub fn replies_of(conn: &Connection, root: Uuid) -> Result<Vec<PostRow>, Refusal> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {POST_COLUMNS} FROM posts WHERE parent = ?1 AND hidden_by IS NULL
+        "SELECT {POST_COLUMNS} FROM posts WHERE parent = ?1 AND {SHOWN}
          ORDER BY created_ms, id"
     ))?;
     let rows = stmt.query_map(params![root.to_string()], read_row)?;
@@ -566,27 +627,104 @@ pub fn replies_of(conn: &Connection, root: Uuid) -> Result<Vec<PostRow>, Refusal
 
 /// Who wrote a row, as a reader is shown them.
 fn author_of(conn: &Connection, row: &PostRow, server: &str) -> Result<PostAuthor, Refusal> {
-    if let Some(account) = &row.author_account {
-        let name: String = conn
-            .query_row(
-                "SELECT username FROM accounts WHERE id = ?1",
-                params![account],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or_else(|| crate::db::DELETED_ACCOUNT_NAME.to_string());
-        return Ok(PostAuthor {
-            address: format!("{name}@{server}"),
-            name,
-            local: true,
-        });
+    match &row.author_account {
+        Some(account) => local_author(conn, account, server),
+        None => remote_author(conn, row.author_actor.as_deref().unwrap_or_default()),
     }
-    let actor = row.author_actor.as_deref().unwrap_or_default();
+}
+
+/// An account here, as a reader is shown it.
+pub fn local_author(conn: &Connection, account: &str, server: &str) -> Result<PostAuthor, Refusal> {
+    let name: String = conn
+        .query_row(
+            "SELECT username FROM accounts WHERE id = ?1",
+            params![account],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| crate::db::DELETED_ACCOUNT_NAME.to_string());
+    Ok(PostAuthor {
+        address: format!("{name}@{server}"),
+        name,
+        local: true,
+    })
+}
+
+/// An actor elsewhere, as a reader is shown it: its name when we have read
+/// it, its id otherwise.
+pub fn remote_author(conn: &Connection, actor: &str) -> Result<PostAuthor, Refusal> {
     Ok(actor_label(conn, actor)?.unwrap_or_else(|| PostAuthor {
         name: actor.to_string(),
         address: actor.to_string(),
         local: false,
     }))
+}
+
+/// Somebody here likes a post (`on`), or stops (`!on`). Their like is kept
+/// as any other, under their own actor, so the count is one count. Answers
+/// whether anything changed.
+pub fn like(
+    conn: &Connection,
+    account: &str,
+    id: Uuid,
+    on: bool,
+    base: &str,
+    now_ms: i64,
+) -> Result<(PostRow, bool), Refusal> {
+    let post = row(conn, id)?
+        .filter(|r| !r.hidden)
+        .ok_or(Refusal::NoSuchPost)?;
+    let actor = super::person_url(base, account);
+    let changed = if on {
+        conn.execute(
+            "INSERT OR IGNORE INTO post_votes (object, actor, activity, value, created_ms)
+             VALUES (?1, ?2, ?3, 1, ?4)",
+            params![post.ap_id, actor, like_id(base, account, id), now_ms],
+        )? == 1
+    } else {
+        unvote(conn, &actor, None, Some(&post.ap_id))? > 0
+    };
+    Ok((post, changed))
+}
+
+/// The id of somebody here's like of a post: one per person and post, so an
+/// Undo can name it.
+#[must_use]
+pub fn like_id(base: &str, account: &str, post: Uuid) -> String {
+    format!("{}/likes/{post}", super::person_url(base, account))
+}
+
+/// The id of somebody here's boost of a post.
+#[must_use]
+pub fn boost_id(base: &str, account: &str, post: Uuid) -> String {
+    format!("{}/boosts/{post}", super::person_url(base, account))
+}
+
+/// Somebody passes a post on (`actor`, here or elsewhere), or takes it back.
+/// Answers whether anything changed. Only a post that is here counts.
+pub fn boost(
+    conn: &Connection,
+    object: &str,
+    actor: &str,
+    activity: &str,
+    on: bool,
+    now_ms: i64,
+) -> Result<bool, Refusal> {
+    if on {
+        if rows_by_ap_id(conn, object)?.is_empty() {
+            return Ok(false);
+        }
+        Ok(conn.execute(
+            "INSERT OR IGNORE INTO post_boosts (object, actor, activity, created_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![object, actor, activity, now_ms],
+        )? == 1)
+    } else {
+        Ok(conn.execute(
+            "DELETE FROM post_boosts WHERE actor = ?2 AND (object = ?1 OR activity = ?3)",
+            params![object, actor, activity],
+        )? > 0)
+    }
 }
 
 /// How a remote account is shown, if we have it.
@@ -621,7 +759,7 @@ pub fn dto(
 ) -> Result<PostDto, Refusal> {
     let replies: i64 = if row.parent.is_none() {
         conn.query_row(
-            "SELECT COUNT(*) FROM posts WHERE parent = ?1 AND hidden_by IS NULL",
+            &format!("SELECT COUNT(*) FROM posts WHERE parent = ?1 AND {SHOWN}"),
             params![row.id.to_string()],
             |r| r.get(0),
         )?
@@ -638,6 +776,39 @@ pub fn dto(
         params![row.ap_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let boosts: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM post_boosts WHERE object = ?1",
+        params![row.ap_id],
+        |r| r.get(0),
+    )?;
+    // The caller's own like and boost are stored under their actor, which
+    // ends in their account id (`person_url`).
+    let (liked, boosted) = match caller {
+        Some(me) => {
+            let mine = format!("%/ap/u/{me}");
+            let has = |table: &str| -> rusqlite::Result<bool> {
+                conn.query_row(
+                    &format!(
+                        "SELECT EXISTS (SELECT 1 FROM {table} WHERE object = ?1 AND actor LIKE ?2)"
+                    ),
+                    params![row.ap_id, mine],
+                    |r| r.get(0),
+                )
+            };
+            (has("post_votes")?, has("post_boosts")?)
+        }
+        None => (false, false),
+    };
+    let answers = match (row.parent, row.in_reply_to.as_deref()) {
+        (Some(_), Some(to)) => match rows_by_ap_id(conn, to)?
+            .into_iter()
+            .find(|r| r.community == row.community)
+        {
+            Some(r) => Some(author_of(conn, &r, server)?.name),
+            None => None,
+        },
+        _ => None,
+    };
     Ok(PostDto {
         id: row.id,
         community: row.community,
@@ -655,6 +826,14 @@ pub fn dto(
         mine: caller.is_some() && row.author_account.as_deref() == caller,
         likes: u32::try_from(likes).unwrap_or(0),
         dislikes: u32::try_from(dislikes).unwrap_or(0),
+        boosts: u32::try_from(boosts).unwrap_or(0),
+        liked,
+        boosted,
+        answers,
+        warning: row.warning.clone(),
+        sensitive: row.sensitive,
+        picture_alt: row.picture_alt.clone(),
+        more_pictures: row.more_pictures.clone(),
     })
 }
 
@@ -675,7 +854,7 @@ pub fn feed(
     }
     let mut stmt = conn.prepare(&format!(
         "SELECT {POST_COLUMNS} FROM posts
-         WHERE community = ?1 AND parent IS NULL AND hidden_by IS NULL AND created_ms < ?2
+         WHERE community = ?1 AND parent IS NULL AND {SHOWN} AND created_ms < ?2
          ORDER BY created_ms DESC, id LIMIT ?3"
     ))?;
     let rows = stmt
@@ -940,9 +1119,18 @@ pub fn open_reports(
         let Some(post) = row(conn, post)? else {
             continue;
         };
-        let reporter = match actor_label(conn, &reporter)? {
-            Some(l) => l.address,
-            None => super::fetch::host_of(&reporter).unwrap_or(reporter),
+        // Somebody here reports under their own actor (`person_url`).
+        let here: Option<String> = conn
+            .query_row(
+                "SELECT username FROM accounts WHERE ?1 LIKE '%/ap/u/' || id",
+                params![reporter],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let reporter = match (here, actor_label(conn, &reporter)?) {
+            (Some(name), _) => format!("{name}@{server}"),
+            (None, Some(l)) => l.address,
+            (None, None) => super::fetch::host_of(&reporter).unwrap_or(reporter),
         };
         out.push(PostReport {
             id,
@@ -1015,15 +1203,11 @@ pub fn person_posts(
         .optional()?;
     let (account, username, picture) = found.ok_or(Refusal::NoSuchPerson)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM posts p JOIN community_public c ON c.community = p.community
-         WHERE p.author_account = ?1 AND p.parent IS NULL AND p.hidden_by IS NULL
-             AND c.enabled = 1
-         ORDER BY p.created_ms DESC LIMIT ?2",
-        POST_COLUMNS
-            .split(',')
-            .map(|c| format!("p.{}", c.trim()))
-            .collect::<Vec<_>>()
-            .join(", ")
+        "SELECT {POST_COLUMNS} FROM posts WHERE id IN
+             (SELECT p.id FROM posts p JOIN community_public c ON c.community = p.community
+              WHERE p.author_account = ?1 AND p.parent IS NULL AND p.hidden_by IS NULL
+                  AND c.enabled = 1)
+         ORDER BY created_ms DESC LIMIT ?2"
     ))?;
     let rows = stmt
         .query_map(
@@ -1087,6 +1271,15 @@ pub struct Remote {
     pub created_ms: i64,
     /// The post here it answers, for a reply.
     pub parent: Option<Uuid>,
+    /// What it answers, by fediverse id, for a reply: `parent`'s, or one of
+    /// the replies under it.
+    pub in_reply_to: Option<String>,
+    /// Its content warning, whether its pictures are sensitive, what the
+    /// first shows in words, and the pictures after the first.
+    pub warning: Option<String>,
+    pub sensitive: bool,
+    pub picture_alt: Option<String>,
+    pub more_pictures: Vec<PostPicture>,
 }
 
 /// Store a post from elsewhere in a community. Answers its id here, or `None`
@@ -1106,8 +1299,10 @@ pub fn store_remote(
     let n = conn.execute(
         "INSERT OR IGNORE INTO posts (id, community, parent, ap_id, author_actor, via_actor, text,
                                       picture, lat, lng, place_name, view_alt, view_pitch,
-                                      view_yaw, url, created_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                      view_yaw, url, created_ms, in_reply_to, warning, sensitive,
+                                      picture_alt, more_pictures)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18, ?19, ?20, ?21)",
         params![
             id.to_string(),
             community.to_string(),
@@ -1124,10 +1319,31 @@ pub fn store_remote(
             view.map(|v| f64::from(v.pitch)),
             view.map(|v| f64::from(v.yaw)),
             post.url,
-            post.created_ms
+            post.created_ms,
+            post.parent.and(post.in_reply_to.as_deref()),
+            post.warning.as_deref().map(|w| cut(w, MAX_WARNING)),
+            post.sensitive,
+            post.picture_alt.as_deref().map(|a| cut(a, MAX_PICTURE_ALT)),
+            (!post.more_pictures.is_empty())
+                .then(|| serde_json::to_string(&post.more_pictures).unwrap_or_default())
         ],
     )?;
     Ok((n == 1).then_some(id))
+}
+
+/// What a post from elsewhere says and shows, as read on arrival or on an
+/// edit (`inbox::read_content`).
+#[derive(Debug, Clone, Default)]
+pub struct Content {
+    pub text: String,
+    pub picture: Option<String>,
+    pub picture_alt: Option<String>,
+    pub more_pictures: Vec<PostPicture>,
+    /// How many pictures the post listed, copied or not: an edit that lists
+    /// some but whose copies all failed keeps the pictures it had.
+    pub pictures_listed: usize,
+    pub warning: Option<String>,
+    pub sensitive: bool,
 }
 
 /// Another server says a post changed. Only its own author's server may say
@@ -1136,14 +1352,45 @@ pub fn update_remote(
     conn: &Connection,
     ap_id: &str,
     author_actor: &str,
-    text: &str,
+    content: &Content,
     now_ms: i64,
 ) -> Result<usize, Refusal> {
-    let text: String = text.trim().chars().take(MAX_POST_TEXT * 4).collect();
-    Ok(conn.execute(
-        "UPDATE posts SET text = ?3, edited_ms = ?4 WHERE ap_id = ?1 AND author_actor = ?2",
-        params![ap_id, author_actor, text, now_ms],
-    )?)
+    let text: String = content
+        .text
+        .trim()
+        .chars()
+        .take(MAX_POST_TEXT * 4)
+        .collect();
+    let n = conn.execute(
+        "UPDATE posts SET text = ?3, edited_ms = ?4, warning = ?5, sensitive = ?6
+         WHERE ap_id = ?1 AND author_actor = ?2",
+        params![
+            ap_id,
+            author_actor,
+            text,
+            now_ms,
+            content.warning.as_deref().map(|w| cut(w, MAX_WARNING)),
+            content.sensitive
+        ],
+    )?;
+    if content.picture.is_some() || content.pictures_listed == 0 {
+        conn.execute(
+            "UPDATE posts SET picture = ?3, picture_alt = ?4, more_pictures = ?5
+             WHERE ap_id = ?1 AND author_actor = ?2",
+            params![
+                ap_id,
+                author_actor,
+                content.picture,
+                content
+                    .picture_alt
+                    .as_deref()
+                    .map(|a| cut(a, MAX_PICTURE_ALT)),
+                (!content.more_pictures.is_empty())
+                    .then(|| serde_json::to_string(&content.more_pictures).unwrap_or_default())
+            ],
+        )?;
+    }
+    Ok(n)
 }
 
 /// Another server says a post is gone. Its replies here go with it.
@@ -1281,6 +1528,7 @@ pub fn forget_account(
     let mut stmt = conn.prepare(&format!(
         "SELECT {POST_COLUMNS} FROM posts WHERE author_account = ?1"
     ))?;
+    super::notices::forget_account(conn, account)?;
     let rows = stmt
         .query_map(params![account], read_row)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1408,6 +1656,13 @@ mod tests {
         .unwrap();
     }
 
+    fn words(text: &str) -> Content {
+        Content {
+            text: text.into(),
+            ..Content::default()
+        }
+    }
+
     fn post(text: &str) -> NewPost {
         NewPost {
             text: text.into(),
@@ -1423,6 +1678,9 @@ mod tests {
                     yaw: 15.0,
                 }),
             },
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
         }
     }
 
@@ -1585,6 +1843,35 @@ mod tests {
     }
 
     #[test]
+    fn somebody_here_likes_once_and_sees_it_and_can_take_it_back() {
+        let w = world();
+        on(&w, "oosterpoort");
+        let p = create_post(
+            &w.conn,
+            &w.member,
+            w.community,
+            &post("Plant swap"),
+            BASE,
+            1,
+        )
+        .unwrap();
+        let seen = |who: &str| {
+            let r = row(&w.conn, p).unwrap().unwrap();
+            let d = dto(&w.conn, &r, Some(who), SERVER).unwrap();
+            (d.likes, d.liked)
+        };
+        assert!(like(&w.conn, &w.outsider, p, true, BASE, 2).unwrap().1);
+        assert!(
+            !like(&w.conn, &w.outsider, p, true, BASE, 3).unwrap().1,
+            "once"
+        );
+        assert_eq!(seen(&w.outsider), (1, true));
+        assert_eq!(seen(&w.owner), (1, false));
+        assert!(like(&w.conn, &w.outsider, p, false, BASE, 4).unwrap().1);
+        assert_eq!(seen(&w.outsider), (0, false));
+    }
+
+    #[test]
     fn replies_are_flat_and_anybody_signed_in_may_reply() {
         let w = world();
         on(&w, "oosterpoort");
@@ -1608,6 +1895,10 @@ mod tests {
             vec![r1, r2]
         );
         assert!(t.replies[1].mine);
+        // …but remembers whom it answers, which other servers thread it by.
+        let answers = |id| row(&w.conn, id).unwrap().unwrap().in_reply_to;
+        assert_eq!(answers(r1), Some(super::super::post_url(BASE, p)));
+        assert_eq!(answers(r2), Some(super::super::post_url(BASE, r1)));
     }
 
     #[test]
@@ -1644,6 +1935,11 @@ mod tests {
             url: Some("https://mastodon.example/@anna/1".into()),
             created_ms: 5,
             parent: None,
+            in_reply_to: None,
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
+            more_pictures: Vec::new(),
         };
         let id = store_remote(&w.conn, w.community, &remote)
             .unwrap()
@@ -1654,13 +1950,20 @@ mod tests {
                 &w.conn,
                 &remote.ap_id,
                 "https://elsewhere/users/x",
-                "spam",
+                &words("spam"),
                 6
             )
             .unwrap(),
             0
         );
-        update_remote(&w.conn, &remote.ap_id, &remote.author_actor, "Heron!", 6).unwrap();
+        update_remote(
+            &w.conn,
+            &remote.ap_id,
+            &remote.author_actor,
+            &words("Heron!"),
+            6,
+        )
+        .unwrap();
         let r = row(&w.conn, id).unwrap().unwrap();
         assert_eq!((r.text.as_str(), r.edited_ms), ("Heron!", Some(6)));
         let shown = dto(&w.conn, &r, None, SERVER).unwrap();
@@ -1687,6 +1990,11 @@ mod tests {
             url: None,
             created_ms: 1,
             parent: None,
+            in_reply_to: None,
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
+            more_pictures: Vec::new(),
         };
         store_remote(&w.conn, w.community, &remote).unwrap();
         assert_eq!(

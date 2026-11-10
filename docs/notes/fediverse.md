@@ -1,7 +1,7 @@
 ---
 topic: fediverse
-triggers: [ActivityPub, fediverse, Mastodon, Lemmy, webfinger, "public posts", "crates/simulator/src/fediverse", posts.rs, community_public, fedi_deliveries, blocklist, "HTTP signatures", fedi_servers, post_votes, post_reports, fedi_gone_accounts, "pages/public", reader_url]
-updated: 2026-10-21
+triggers: [ActivityPub, fediverse, Mastodon, Lemmy, webfinger, "public posts", "crates/simulator/src/fediverse", posts.rs, community_public, fedi_deliveries, blocklist, "HTTP signatures", fedi_servers, post_votes, post_reports, fedi_gone_accounts, "pages/public", reader_url, post_notices, notices.rs, post_boosts, fedi_server_health, community_posts.rs]
+updated: 2026-11-10
 ---
 
 # Public posts and the fediverse
@@ -101,6 +101,66 @@ checked against Lemmy's source (0.19) and changed:
   there first), and NodeInfo's `activeMonth` (from `stats.db`, not published
   below `MIN_PEOPLE`) and `localComments`.
 
+## Activity, and closing gaps (2026-11-10)
+
+The live server then had one public community, eight posts and one follower;
+an audit of the code found the gaps below, and the user asked for all of them.
+
+- **A block holds through other servers.** The inbox checked only the server
+  that *signed* a delivery, so a followed Lemmy community or a relay could pass
+  on a post from a blocked server. Now the author's and the booster's servers
+  are checked too (`accept_object`), nothing is fetched from a blocked server
+  (`Ctx::fetch`, `copy_picture`), and a delivery queued before a block is
+  dropped when it comes due. Blocking also cuts ties at once
+  (`blocklist::sever`: followers, follows, the queue). Posts already stored from
+  a blocked server stay in the table but read as hidden (`posts::SHOWN`, a
+  join on `fedi_actors.host`), so an unblock brings them back.
+- **An `Undo` given only by an id undoes only that follow.** It used to delete
+  every follow the sender had here when the id was not a vote's — a bare-id
+  undo of a boost silently unfollowed everything. `fedi_followers.follow_id`
+  keeps each follow's id; rows from before it have none and are left alone.
+- **A reply keeps whom it answers** (`posts.in_reply_to`, the fediverse id),
+  while `parent` stays the thread's first post and the feed stays flat. The
+  outgoing note's `inReplyTo` names the answered reply and mentions its author,
+  so Mastodon threads it and tells them; the API already took a reply's id as
+  the thing to answer, and the app and web page now offer "Reply" on replies.
+- **A dead server waits on its own** (`fedi_server_health`). A delivery that
+  gets no answer, a 5xx or a 429 marks the server down for the backoff (or its
+  `Retry-After`); what is queued for it is postponed untried, and a batch takes
+  at most two deliveries per server, so one slow server cannot hold up the rest.
+- **The inbox is rate-limited**: 300 deliveries a minute per signing server
+  (a 429 with `Retry-After: 60` beyond), and at most 16 activities worked on at
+  once (`InboxLimits`).
+- **Votes from a followed Lemmy community count**: its `Announce` of a `Like`,
+  `Dislike` or `Undo` of one, believed only for a post that community brought.
+  A Lemmy removal is believed when the object answers 404/410 *or* a
+  `Tombstone`.
+- **Notices** (`fediverse::notices`, `post_notices`, `/api/fediverse/notices`):
+  a reply to what you wrote (or to the thread you started), a mention, a like,
+  a boost, a new follower — from here and from elsewhere, once each. The web
+  page shows them as **Activity** on the rail; the app as an Activity row in
+  the chat list. They are not pushed to a phone.
+- **People here like, boost and report.** A like is a `Like` to the author's
+  server and the community it came through (Lemmy counts votes there); a boost
+  is the person's own `Announce`, to their followers and the author. Liking or
+  boosting makes an account findable from outside, as posting does
+  (`is_public_person`): it is a public act under their address. A report goes
+  to the community's moderators like one from elsewhere; with "also tell its
+  server" it is forwarded as a `Flag` from this server's own actor, without the
+  reporter's name, as Mastodon forwards. Boosts of posts here from elsewhere
+  are counted (`post_boosts`) and their undoing too.
+- **Content warnings, sensitive pictures, descriptions, several pictures.** A
+  note's `summary` is kept as its warning (no longer folded into the text as
+  `[cw]`); a Lemmy post marked NSFW gets "Sensitive content"; `sensitive`
+  blurs; each picture's `name` is kept as its description; up to four pictures
+  are copied (`more_pictures`). Outgoing posts carry the author's warning,
+  `sensitive` and their own description of the photo. An edit from elsewhere
+  changes pictures and the warning too, not only the words.
+- **A person's outbox lists their public posts** as `Create`s (it was always
+  empty), and a community's outbox gives its real `totalItems`.
+- **A followed account that moves is followed at its new address** (`Move`,
+  checked against the new actor's `alsoKnownAs`).
+
 ## Things that must stay true
 
 - **Every request to another server goes through `fetch::Client`.** Its resolver
@@ -138,10 +198,15 @@ origin, so it must not change once anybody follows anything.
 
 ## Not done
 
-- **Reports go out nowhere**: a member here cannot report a post from elsewhere
-  to its server. The community's own report path is topic-shaped (a group id
-  and a sequence number) and has no slot for a post.
-- **Nobody here can like a post.** Likes are counted from elsewhere only.
+- **Following a person elsewhere from your own account.** There is no
+  personal timeline for their posts to land in; a community follows sources,
+  people do not.
+- **Notices on a phone that is closed.** The push channel (`push.rs`) carries
+  only call wake-ups; notices are read when the app or page asks.
+- **A post's language** (`contentMap`) is not sent: nothing here knows it.
+- **Video and audio from elsewhere** are dropped; only pictures are copied.
+- **A forwarded report to Lemmy** goes out as this server's `Flag`; Lemmy may
+  want the reporter as a person. Untried.
 - **Not yet tried against a live Lemmy.** The shapes above were checked
   against Lemmy's source; the first follow of a Lemmy community and the first
   Lemmy follower are the test.

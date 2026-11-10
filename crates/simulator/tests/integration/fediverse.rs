@@ -272,6 +272,9 @@ async fn a_post_crosses_to_a_following_server_and_a_reply_comes_back() {
         picture: None,
         snapshot: None,
         place: place.clone(),
+        warning: None,
+        sensitive: false,
+        picture_alt: None,
     };
     let (status, posted) = call(
         "POST",

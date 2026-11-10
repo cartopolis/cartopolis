@@ -19,12 +19,14 @@ use std::time::Duration;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
-use super::fetch::{host_of, Client};
+use super::fetch::{host_of, Client, FetchError};
 use super::servers::{self, Family};
 use super::{blocklist, objects, posts, signer_url, signing, Federation};
 
 /// Deliveries tried at once.
 const BATCH: usize = 16;
+/// Deliveries to one server in a batch, so a slow server cannot fill it.
+const PER_SERVER: usize = 2;
 /// Attempts before an activity is given up on.
 const MAX_ATTEMPTS: i64 = 18;
 /// How long the worker sleeps when nothing is due and nothing wakes it.
@@ -189,7 +191,111 @@ enum Outcome {
     /// The other server refused it for good (a 4xx other than a timeout or a
     /// rate limit): retrying would be refused the same way.
     Refused(String),
-    Retry(String),
+    /// Try again later. `down` when the server itself is the trouble (it did
+    /// not answer, failed, or asked to slow down), with how long it asked for.
+    Retry {
+        why: String,
+        down: bool,
+        retry_after: Option<Duration>,
+    },
+}
+
+/// What to send now: due deliveries, at most `PER_SERVER` to any one server
+/// so that a slow one cannot fill a batch. A delivery for a blocked server is
+/// dropped; one for a server that is down waits for it, untried.
+fn take_due(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Due>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, inbox, signer, body, attempts FROM fedi_deliveries
+         WHERE next_ms <= ?1 ORDER BY next_ms LIMIT ?2",
+    )?;
+    let candidates: Vec<Due> = stmt
+        .query_map(params![now_ms, (BATCH * 8) as i64], |r| {
+            Ok(Due {
+                id: r.get(0)?,
+                inbox: r.get(1)?,
+                signer: r.get(2)?,
+                body: r.get(3)?,
+                attempts: r.get(4)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let mut out: Vec<Due> = Vec::new();
+    let mut per_server: std::collections::HashMap<String, usize> = Default::default();
+    for d in candidates {
+        let Some(host) = host_of(&d.inbox) else {
+            conn.execute("DELETE FROM fedi_deliveries WHERE id = ?1", params![d.id])?;
+            continue;
+        };
+        if blocklist::is_blocked(conn, &host)? {
+            conn.execute("DELETE FROM fedi_deliveries WHERE id = ?1", params![d.id])?;
+            continue;
+        }
+        let down_until = down_until(conn, &host)?;
+        if down_until > now_ms {
+            conn.execute(
+                "UPDATE fedi_deliveries SET next_ms = ?2 WHERE id = ?1",
+                params![d.id, down_until],
+            )?;
+            continue;
+        }
+        let n = per_server.entry(host).or_default();
+        if *n < PER_SERVER && out.len() < BATCH {
+            *n += 1;
+            out.push(d);
+        }
+    }
+    Ok(out)
+}
+
+/// Until when deliveries to `host` wait, in ms; 0 when it is up.
+fn down_until(conn: &Connection, host: &str) -> rusqlite::Result<i64> {
+    use rusqlite::OptionalExtension as _;
+    Ok(conn
+        .query_row(
+            "SELECT down_until_ms FROM fedi_server_health WHERE host = ?1",
+            params![host],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+/// A delivery reached `host`: it is up.
+fn server_up(conn: &Connection, host: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM fedi_server_health WHERE host = ?1",
+        params![host],
+    )?;
+    Ok(())
+}
+
+/// `host` failed: everything for it waits, longer each time it fails again,
+/// or as long as it asked. Answers until when.
+fn server_down(
+    conn: &Connection,
+    host: &str,
+    retry_after: Option<Duration>,
+    now_ms: i64,
+) -> rusqlite::Result<i64> {
+    use rusqlite::OptionalExtension as _;
+    let failures: i64 = conn
+        .query_row(
+            "SELECT failures FROM fedi_server_health WHERE host = ?1",
+            params![host],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let wait = retry_after
+        .unwrap_or_else(|| backoff(failures))
+        .min(Duration::from_secs(6 * 3600));
+    let until = now_ms.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
+    conn.execute(
+        "INSERT INTO fedi_server_health (host, failures, down_until_ms) VALUES (?1, 1, ?2)
+         ON CONFLICT (host) DO UPDATE SET failures = failures + 1, down_until_ms = ?2",
+        params![host, until],
+    )?;
+    Ok(until)
 }
 
 /// Send what is due until the server stops. Runs on the tokio runtime; the
@@ -206,27 +312,13 @@ pub async fn run(conn: Arc<Mutex<Connection>>, fed: Federation) {
         }
         let due: Vec<Due> = {
             let Ok(c) = conn.lock() else { return };
-            let mut stmt = match c.prepare(
-                "SELECT id, inbox, signer, body, attempts FROM fedi_deliveries
-                 WHERE next_ms <= ?1 ORDER BY next_ms LIMIT ?2",
-            ) {
-                Ok(s) => s,
+            match take_due(&c, now) {
+                Ok(d) => d,
                 Err(e) => {
                     tracing::warn!("fediverse delivery: {e}");
                     return;
                 }
-            };
-            stmt.query_map(params![now, BATCH as i64], |r| {
-                Ok(Due {
-                    id: r.get(0)?,
-                    inbox: r.get(1)?,
-                    signer: r.get(2)?,
-                    body: r.get(3)?,
-                    attempts: r.get(4)?,
-                })
-            })
-            .and_then(Iterator::collect)
-            .unwrap_or_default()
+            }
         };
         if due.is_empty() {
             let _ = tokio::time::timeout(IDLE, fed.wake.notified()).await;
@@ -263,11 +355,22 @@ pub async fn run(conn: Arc<Mutex<Connection>>, fed: Federation) {
                                 }
                                 Outcome::Sent
                             }
+                            Err(FetchError::Throttled(_, secs)) => Outcome::Retry {
+                                why: "asked to slow down".into(),
+                                down: true,
+                                retry_after: secs.map(Duration::from_secs),
+                            },
                             Err(e) => match e.status() {
-                                Some(s) if (400..500).contains(&s) && s != 408 && s != 429 => {
+                                Some(s) if (400..500).contains(&s) && s != 408 => {
                                     Outcome::Refused(e.to_string())
                                 }
-                                _ => Outcome::Retry(e.to_string()),
+                                // A 408 is this delivery's trouble; no answer
+                                // or a 5xx is the server's.
+                                status => Outcome::Retry {
+                                    why: e.to_string(),
+                                    down: status != Some(408),
+                                    retry_after: None,
+                                },
                             },
                         }
                     }
@@ -281,25 +384,42 @@ pub async fn run(conn: Arc<Mutex<Connection>>, fed: Federation) {
                 continue;
             };
             let Ok(c) = conn.lock() else { return };
+            let host = host_of(&inbox).unwrap_or_default();
             let done = match outcome {
                 Outcome::Sent => {
                     tracing::debug!(%inbox, "fediverse: delivered");
+                    let _ = server_up(&c, &host);
                     true
                 }
                 Outcome::Refused(why) => {
                     tracing::info!(%inbox, %why, "fediverse: delivery refused, dropped");
+                    let _ = server_up(&c, &host);
                     true
                 }
-                Outcome::Retry(why) if attempts + 1 >= MAX_ATTEMPTS => {
+                Outcome::Retry { why, .. } if attempts + 1 >= MAX_ATTEMPTS => {
                     tracing::warn!(%inbox, %why, "fediverse: delivery given up");
                     true
                 }
-                Outcome::Retry(why) => {
-                    let wait = i64::try_from(backoff(attempts).as_millis()).unwrap_or(i64::MAX);
+                Outcome::Retry {
+                    why,
+                    down,
+                    retry_after,
+                } => {
+                    let now = super::now_ms();
+                    let own = now.saturating_add(
+                        i64::try_from(backoff(attempts).as_millis()).unwrap_or(i64::MAX),
+                    );
+                    // The server's wait, when it is the server; this
+                    // delivery's own otherwise.
+                    let next = if down {
+                        server_down(&c, &host, retry_after, now).unwrap_or(own)
+                    } else {
+                        own
+                    };
                     tracing::info!(%inbox, %why, attempt = attempts + 1, "fediverse: delivery failed, will retry");
                     let _ = c.execute(
                         "UPDATE fedi_deliveries SET attempts = attempts + 1, next_ms = ?2 WHERE id = ?1",
-                        params![id, super::now_ms().saturating_add(wait)],
+                        params![id, next],
                     );
                     false
                 }
@@ -418,5 +538,47 @@ mod tests {
         assert_eq!(person["object"], "https://c.test/ap/u/a1");
         assert_eq!(person["removeData"], true);
         assert_eq!(tell_gone_accounts(&conn, "https://c.test", 2).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_down_server_waits_untried_and_cannot_fill_a_batch() {
+        let conn = crate::db::open_and_migrate(":memory:").unwrap();
+        let body = serde_json::json!({"type": "Create"});
+        for _ in 0..5 {
+            enqueue(&conn, "https://slow.test/inbox", "instance", &body, 1).unwrap();
+        }
+        enqueue(&conn, "https://up.test/inbox", "instance", &body, 1).unwrap();
+        let hosts =
+            |due: &[Due]| -> Vec<String> { due.iter().filter_map(|d| host_of(&d.inbox)).collect() };
+        assert_eq!(
+            hosts(&take_due(&conn, 10).unwrap()),
+            ["slow.test", "slow.test", "up.test"],
+            "at most two for one server"
+        );
+        let until = server_down(&conn, "slow.test", None, 10).unwrap();
+        assert_eq!(until, 10 + 60_000);
+        assert_eq!(hosts(&take_due(&conn, 20).unwrap()), ["up.test"]);
+        let waiting: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fedi_deliveries WHERE next_ms = ?1 AND attempts = 0",
+                params![until],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(waiting, 5, "postponed, not counted as tried");
+        // Down again: a longer wait; as long as it asks, when it asks.
+        assert_eq!(server_down(&conn, "slow.test", None, 0).unwrap(), 120_000);
+        assert_eq!(
+            server_down(&conn, "slow.test", Some(Duration::from_secs(5)), 0).unwrap(),
+            5_000
+        );
+        server_up(&conn, "slow.test").unwrap();
+        assert_eq!(down_until(&conn, "slow.test").unwrap(), 0);
+        // Blocked meanwhile: dropped.
+        blocklist::block(&conn, "up.test", "", 1).unwrap();
+        enqueue(&conn, "https://up.test/inbox", "instance", &body, 1).ok();
+        assert!(hosts(&take_due(&conn, i64::MAX / 2).unwrap())
+            .iter()
+            .all(|h| h == "slow.test"));
     }
 }

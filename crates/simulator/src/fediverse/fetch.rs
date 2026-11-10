@@ -45,6 +45,9 @@ pub enum FetchError {
     Transport(String, String),
     #[error("{0} sent something unreadable: {1}")]
     Unreadable(String, String),
+    /// A 429, with the seconds its `Retry-After` asked for when it said.
+    #[error("{0} asked to slow down")]
+    Throttled(String, Option<u64>),
 }
 
 impl FetchError {
@@ -53,6 +56,7 @@ impl FetchError {
     pub fn status(&self) -> Option<u16> {
         match self {
             Self::Status(_, s) => Some(*s),
+            Self::Throttled(..) => Some(429),
             _ => None,
         }
     }
@@ -317,6 +321,11 @@ impl Client {
         }
         match req.send_bytes(body) {
             Ok(resp) => Ok(resp.status()),
+            Err(ureq::Error::Status(429, resp)) => Err(FetchError::Throttled(
+                inbox.into(),
+                resp.header("Retry-After")
+                    .and_then(|v| v.trim().parse().ok()),
+            )),
             Err(ureq::Error::Status(code, _)) => Err(FetchError::Status(inbox.into(), code)),
             Err(e) => Err(FetchError::Transport(inbox.into(), e.to_string())),
         }

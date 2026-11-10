@@ -521,8 +521,11 @@ pub fn note(
         "source": { "content": row.text, "mediaType": "text/plain" },
         "published": rfc3339_utc(u64::try_from(row.created_ms).unwrap_or(0)),
         "tag": tag,
-        "sensitive": false,
+        "sensitive": row.sensitive || row.warning.is_some(),
     });
+    if let Some(w) = &row.warning {
+        v["summary"] = json!(escape_html(w));
+    }
     if let Some(edited) = row.edited_ms {
         v["updated"] = json!(rfc3339_utc(u64::try_from(edited).unwrap_or(0)));
     }
@@ -551,7 +554,12 @@ pub fn note(
     let mut attachments = Vec::new();
     let pictures = [
         (&row.snapshot, snapshot_alt(row.place.as_ref())),
-        (&row.picture, place_alt(row.place.as_ref())),
+        (
+            &row.picture,
+            row.picture_alt
+                .clone()
+                .unwrap_or_else(|| place_alt(row.place.as_ref())),
+        ),
     ];
     for (hash, alt) in pictures {
         let Some(hash) = hash else { continue };
@@ -639,6 +647,50 @@ pub fn announce_as(id: &str, base: &str, community: Uuid, object: Value) -> Valu
         "cc": [format!("{group}/followers")],
         "audience": group,
         "object": object,
+    })
+}
+
+/// Somebody here likes a post. Addressed to its author, who is told, and to
+/// the community it came through, which counts it (Lemmy's vote goes there).
+#[must_use]
+pub fn person_like(id: &str, actor: &str, object: &str, to: &[String]) -> Value {
+    json!({
+        "id": id,
+        "type": "Like",
+        "actor": actor,
+        "object": object,
+        "to": to,
+    })
+}
+
+/// Somebody here passes a post on to their followers.
+#[must_use]
+pub fn person_boost(id: &str, actor: &str, object: &str, author: Option<&str>) -> Value {
+    let mut cc = vec![json!(format!("{actor}/followers"))];
+    cc.extend(author.map(|a| json!(a)));
+    json!({
+        "id": id,
+        "type": "Announce",
+        "actor": actor,
+        "object": object,
+        "to": [PUBLIC],
+        "cc": cc,
+        "published": rfc3339_utc(u64::try_from(super::now_ms()).unwrap_or(0)),
+    })
+}
+
+/// This server passes on a report about a post to the server it came from,
+/// as itself, as Mastodon does: the reporter's name stays here.
+#[must_use]
+pub fn flag(base: &str, author: &str, object: &str, reason: &str) -> Value {
+    let instance = super::instance_url(base);
+    json!({
+        "id": format!("{instance}/flags/{}", Uuid::new_v4()),
+        "type": "Flag",
+        "actor": instance,
+        "object": [author, object],
+        "content": reason,
+        "to": [author],
     })
 }
 
@@ -965,13 +1017,8 @@ pub fn object_text(v: &Value) -> String {
             .map(html_to_text)
             .unwrap_or_default()
     });
+    // A note's `summary` is its content warning, kept apart (`object_warning`).
     let mut text = String::new();
-    if let Some(cw) = v.get("summary").and_then(Value::as_str) {
-        let cw = html_to_text(cw);
-        if !cw.is_empty() && kind(v) == "Note" {
-            text.push_str(&format!("[{cw}]\n\n"));
-        }
-    }
     // A Lemmy post (`Page`) has a title as well as a body; a note's `name`, when
     // it has one, is usually its own first line again.
     if let Some(name) = v.get("name").and_then(Value::as_str) {
@@ -1070,9 +1117,36 @@ fn hrefs(html: &str) -> Vec<String> {
     out
 }
 
+/// An object's content warning: a note's `summary` (Mastodon's CW), or, for
+/// a post marked sensitive with none (Lemmy's NSFW has no words), a plain one.
+/// A Lemmy post's `summary` is not a warning, and is not read as one.
+#[must_use]
+pub fn object_warning(v: &Value) -> Option<String> {
+    let summary = v
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(html_to_text)
+        .filter(|s| !s.is_empty() && kind(v) == "Note");
+    summary.or_else(|| object_sensitive(v).then(|| "Sensitive content".to_string()))
+}
+
+/// Whether an object's pictures are marked sensitive.
+#[must_use]
+pub fn object_sensitive(v: &Value) -> bool {
+    v.get("sensitive").and_then(Value::as_bool).unwrap_or(false)
+}
+
 /// The first picture attached to an object, if any.
 #[must_use]
 pub fn image_url(v: &Value) -> Option<String> {
+    images(v).into_iter().next().map(|(url, _)| url)
+}
+
+/// The pictures attached to an object, in order, each with what it shows in
+/// words when it says (`name`, as Mastodon and Lemmy send it); at most
+/// `MAX_PICTURES`.
+#[must_use]
+pub fn images(v: &Value) -> Vec<(String, Option<String>)> {
     let mut candidates: Vec<&Value> = Vec::new();
     match v.get("attachment") {
         Some(Value::Array(a)) => candidates.extend(a),
@@ -1084,15 +1158,16 @@ pub fn image_url(v: &Value) -> Option<String> {
         Some(a) => candidates.push(a),
         None => {}
     }
-    candidates.into_iter().find_map(|a| {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for a in candidates {
         let media = a.get("mediaType").and_then(Value::as_str).unwrap_or("");
         let is_image = matches!(kind(a), "Image")
             || media.starts_with("image/")
             || (kind(a) == "Document" && media.is_empty());
         if !is_image {
-            return None;
+            continue;
         }
-        match a.get("url") {
+        let url = match a.get("url") {
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Array(urls)) => urls.iter().find_map(|u| {
                 u.get("href")
@@ -1102,8 +1177,22 @@ pub fn image_url(v: &Value) -> Option<String> {
             }),
             Some(Value::Object(o)) => o.get("href").and_then(Value::as_str).map(str::to_string),
             _ => None,
+        };
+        let Some(url) = url else { continue };
+        if out.iter().any(|(u, _)| *u == url) {
+            continue;
         }
-    })
+        let alt = a
+            .get("name")
+            .and_then(Value::as_str)
+            .map(html_to_text)
+            .filter(|s| !s.is_empty());
+        out.push((url, alt));
+        if out.len() == cartopolis_core::posts::MAX_PICTURES {
+            break;
+        }
+    }
+    out
 }
 
 /// When an object was published, as Unix milliseconds.
@@ -1157,6 +1246,11 @@ mod tests {
             created_ms: 1_791_306_000_000,
             edited_ms: None,
             hidden: false,
+            in_reply_to: None,
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
+            more_pictures: Vec::new(),
         }
     }
 

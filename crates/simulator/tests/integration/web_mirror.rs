@@ -109,6 +109,17 @@ fn post_dto() {
         mine: false,
         likes: 0,
         dislikes: 0,
+        boosts: 0,
+        liked: false,
+        boosted: false,
+        answers: Some(String::new()),
+        warning: Some(String::new()),
+        sensitive: false,
+        picture_alt: Some(String::new()),
+        more_pictures: vec![cartopolis_core::posts::PostPicture {
+            hash: String::new(),
+            alt: Some(String::new()),
+        }],
     };
     let report = cartopolis_core::posts::PostReport {
         id: uuid::Uuid::nil(),
@@ -131,6 +142,22 @@ fn post_dto() {
     assert_eq!(web_fields("PostReport"), keys(&report), "{drift}");
     assert_eq!(web_fields("PersonPosts"), keys(&person), "{drift}");
     assert_eq!(web_fields("FollowLink"), keys(&link), "{drift}");
+    let notices = cartopolis_core::posts::PostNotices {
+        unread: 0,
+        items: vec![cartopolis_core::posts::PostNotice {
+            id: 0,
+            kind: cartopolis_core::posts::NoticeKind::Reply,
+            who: author.clone(),
+            post: Some(uuid::Uuid::nil()),
+            community: Some(uuid::Uuid::nil()),
+            excerpt: Some(String::new()),
+            created_ms: 0,
+            read: false,
+        }],
+    };
+    assert_eq!(web_fields("PostNotices"), keys(&notices), "{drift}");
+    assert_eq!(web_fields("PostNotice"), keys(&notices.items[0]), "{drift}");
+    assert_eq!(web_fields("PostPicture"), keys(&post.more_pictures[0]), "{drift}");
     assert_eq!(web_fields("PostPlace"), keys(&place), "{drift}");
     assert_eq!(web_fields("PostAuthor"), keys(&author), "{drift}");
     assert_eq!(

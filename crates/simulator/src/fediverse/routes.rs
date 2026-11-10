@@ -24,8 +24,8 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use cartopolis_core::permissions::Permission;
 use cartopolis_core::posts::{
-    EditPost, FollowLink, NewPost, NewReply, PersonPosts, PostDto, PostReport, PublicInfo,
-    PublicSettings, ReportAction,
+    EditPost, FollowLink, NewPost, NewReply, NewReport, NoticeKind, PersonPosts, PostDto,
+    PostNotices, PostReport, PublicInfo, PublicSettings, ReadNotices, ReportAction, Toggle,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::inbox::{self, Ctx};
+use super::notices::{self, Who};
 use super::objects::{self, id_of, Mention, NoteExtras, ReplyTo};
 use super::posts::{self, PostRow, Refusal};
 use super::{
@@ -61,7 +62,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/ap/actor", get(instance_actor))
         .route("/ap/inbox", post(shared_inbox).layer(inbox_limit))
         .route("/ap/u/{id}", get(person_actor))
-        .route("/ap/u/{id}/outbox", get(empty_outbox))
+        .route("/ap/u/{id}/outbox", get(person_outbox))
         .route("/ap/u/{id}/followers", get(person_followers))
         .route("/ap/u/{id}/inbox", post(shared_inbox).layer(inbox_limit))
         .route("/ap/c/{id}", get(group_actor))
@@ -106,6 +107,11 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/fediverse/follow-link", get(follow_link))
         .route("/api/posts/{id}/replies", post(reply))
         .route("/api/posts/{id}/hide", post(hide_post))
+        .route("/api/posts/{id}/like", post(like_post))
+        .route("/api/posts/{id}/boost", post(boost_post))
+        .route("/api/posts/{id}/report", post(report_post))
+        .route("/api/fediverse/notices", get(list_notices))
+        .route("/api/fediverse/notices/read", post(read_notices))
         .route(
             "/api/admin/fediverse/blocks",
             get(list_server_blocks).post(add_server_block),
@@ -189,6 +195,8 @@ fn parse_id(id: &str) -> Result<Uuid, Response> {
 fn is_public_person(conn: &Connection, account: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM posts WHERE author_account = ?1)
+             OR EXISTS (SELECT 1 FROM post_votes WHERE actor LIKE '%/ap/u/' || ?1)
+             OR EXISTS (SELECT 1 FROM post_boosts WHERE actor LIKE '%/ap/u/' || ?1)
              OR EXISTS (SELECT 1 FROM community_members m
                         JOIN community_public p ON p.community = m.community
                         WHERE m.account = ?1 AND m.role < 2 AND p.enabled = 1)",
@@ -618,12 +626,46 @@ fn collection(id: &str, total: i64, items: Option<Vec<Value>>) -> Response {
     activity_json(objects::document(v))
 }
 
-async fn empty_outbox(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
-    collection(
-        &format!("{}/outbox", person_url(&state.fedi.base, &id)),
-        0,
-        Some(Vec::new()),
-    )
+/// A person's public posts, newest first, as the `Create`s that made them:
+/// what Misskey and Pleroma show as somebody's history when they are first
+/// looked up. Empty for somebody who never posted, whose actor is not there.
+async fn person_outbox(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
+    let Ok(account) = Uuid::parse_str(&id) else {
+        return not_found();
+    };
+    let fed = state.fedi.clone();
+    let account = account.to_string();
+    let page = with_db(&state, |c| {
+        let shown = "FROM posts p JOIN community_public cp ON cp.community = p.community
+             WHERE p.author_account = ?1 AND p.hidden_by IS NULL AND cp.enabled = 1";
+        let total: i64 =
+            c.query_row(&format!("SELECT COUNT(*) {shown}"), params![account], |r| {
+                r.get(0)
+            })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT p.id {shown} ORDER BY p.created_ms DESC LIMIT ?2"
+        ))?;
+        let ids: Vec<String> = stmt
+            .query_map(params![account, OUTBOX_ITEMS], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut items = Vec::new();
+        for id in ids.iter().filter_map(|i| Uuid::parse_str(i).ok()) {
+            if let Some(row) = posts::row(c, id).map_err(|e| anyhow::anyhow!(e))? {
+                if let Some(note) = local_note(c, &fed, &row)? {
+                    items.push(objects::create(&fed.base, note, &row));
+                }
+            }
+        }
+        Ok((total, items))
+    });
+    match page {
+        Ok((total, items)) => collection(
+            &format!("{}/outbox", person_url(&fed.base, &account)),
+            total,
+            Some(items),
+        ),
+        Err(e) => e.into_response(),
+    }
 }
 
 /// Who follows a local actor is nobody else's business; how many is.
@@ -689,16 +731,28 @@ async fn group_moderators(State(state): State<HttpState>, Path(id): Path<String>
     )
 }
 
-/// What a local row looks like as an object: the note, with the thread it
-/// answers when it is a reply.
+/// What a reply answers: the post or reply it was written to, or the thread's
+/// first post when that one is gone or was never kept.
+fn answered(conn: &Connection, row: &PostRow) -> anyhow::Result<Option<PostRow>> {
+    let Some(root) = row.parent else {
+        return Ok(None);
+    };
+    if let Some(to) = &row.in_reply_to {
+        let rows = posts::rows_by_ap_id(conn, to).map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(r) = rows.into_iter().find(|r| r.community == row.community) {
+            return Ok(Some(r));
+        }
+    }
+    posts::row(conn, root).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// What a local row looks like as an object: the note, with the post or reply
+/// it answers when it is a reply.
 fn local_note(conn: &Connection, fed: &Federation, row: &PostRow) -> anyhow::Result<Option<Value>> {
     let Some(public) = posts::public(conn, row.community).map_err(|e| anyhow::anyhow!(e))? else {
         return Ok(None);
     };
-    let parent = match row.parent {
-        Some(p) => posts::row(conn, p).map_err(|e| anyhow::anyhow!(e))?,
-        None => None,
-    };
+    let parent = answered(conn, row)?;
     let parent_author = parent.as_ref().map(|p| objects::author_url(&fed.base, p));
     let reply_to = parent.as_ref().map(|p| ReplyTo {
         ap_id: &p.ap_id,
@@ -763,7 +817,15 @@ async fn group_outbox(State(state): State<HttpState>, Path(id): Path<String>) ->
     });
     match items {
         Ok(Some(items)) => {
-            let n = i64::try_from(items.len()).unwrap_or(0);
+            let n = with_db(&state, |c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM posts WHERE community = ?1 AND parent IS NULL
+                         AND hidden_by IS NULL AND author_account IS NOT NULL",
+                    params![community.to_string()],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap_or(0);
             collection(
                 &format!("{}/outbox", group_url(&fed.base, community)),
                 n,
@@ -922,6 +984,21 @@ async fn shared_inbox(
     if blocked {
         return StatusCode::ACCEPTED.into_response();
     }
+    // A flood from one server is told to come back later, which every server
+    // does; and only so many activities are worked on at once, each of which
+    // may mean fetching from elsewhere. The permit is held until the activity
+    // is handled.
+    let limits = state.fedi.inbox_limits.clone();
+    if !limits.per_server.allow(&key_host) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "60")],
+        )
+            .into_response();
+    }
+    let Ok(permit) = limits.working.clone().acquire_owned().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     let path = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), |p| p.as_str().to_string());
@@ -1008,6 +1085,7 @@ async fn shared_inbox(
         if let Err(e) = inbox::handle(&ctx, &actor, &activity) {
             tracing::info!(from = %actor.id, kind = objects::kind(&activity), "fediverse: activity not handled: {e:#}");
         }
+        drop(permit);
     });
     StatusCode::ACCEPTED.into_response()
 }
@@ -1123,8 +1201,15 @@ fn send_note(conn: &Connection, fed: &Federation, row: &PostRow, sent: Sent) -> 
         .into_iter()
         .map(|m| m.actor)
         .collect();
-    if let Some(parent) = row.parent.and_then(|p| posts::row(conn, p).ok().flatten()) {
-        also.extend(parent.author_actor);
+    // The thread's author and the one answered, when they are elsewhere.
+    for answered in [
+        row.parent.and_then(|p| posts::row(conn, p).ok().flatten()),
+        answered(conn, row).ok().flatten(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        also.extend(answered.author_actor);
     }
     let group = posts::group_local(row.community);
     let followers = delivery::inboxes(conn, Some(&group), &[])?;
@@ -1310,6 +1395,7 @@ async fn reply(
     let dto = db(&state, |c| {
         let (reply, _) = posts::create_reply(c, &by, id, &text, &fed.base, super::now_ms())?;
         posts::set_mentions(c, reply, &mentions)?;
+        notices::tell_replied(c, reply, Who::Here(&by), super::now_ms())?;
         let row = posts::row(c, reply)?.ok_or(Refusal::NoSuchPost)?;
         if let Err(e) = publish(c, &fed, &row) {
             tracing::warn!("fediverse: reply not published: {e:#}");
@@ -1380,6 +1466,204 @@ async fn hide_post(
         }
         Ok(())
     })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Somebody here likes a post or reply, or stops. A post from elsewhere has
+/// its author's server told, and the community it came through (Lemmy counts
+/// votes there); one written here has its author told.
+async fn like_post(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(t): Json<Toggle>,
+) -> ApiResult<Json<PostDto>> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let by = principal.to_string();
+    let fed = state.fedi.clone();
+    let dto = db(&state, |c| {
+        let now = super::now_ms();
+        let (row, changed) = posts::like(c, &by, id, t.on, &fed.base, now)?;
+        if changed {
+            if t.on {
+                notices::tell_author(c, &row.ap_id, NoticeKind::Like, Who::Here(&by), now)?;
+            }
+            if let Err(e) = send_like(c, &fed, &by, &row, t.on) {
+                tracing::warn!("fediverse: like not sent: {e:#}");
+            }
+        }
+        posts::dto(c, &row, Some(&by), &fed.server)
+    })?;
+    Ok(Json(dto))
+}
+
+/// Where a like or a boost of `row` from here is sent: the author's server
+/// and the community it came through, when they are elsewhere.
+fn told_of(row: &PostRow) -> Vec<String> {
+    row.author_actor
+        .iter()
+        .chain(row.via_actor.iter())
+        .cloned()
+        .collect()
+}
+
+fn send_like(
+    conn: &Connection,
+    fed: &Federation,
+    account: &str,
+    row: &PostRow,
+    on: bool,
+) -> anyhow::Result<()> {
+    let to = told_of(row);
+    if !fed.enabled || to.is_empty() {
+        return Ok(());
+    }
+    let actor = person_url(&fed.base, account);
+    let like = objects::person_like(
+        &posts::like_id(&fed.base, account, row.id),
+        &actor,
+        &row.ap_id,
+        &to,
+    );
+    let body = if on {
+        like
+    } else {
+        objects::undo(&actor, like)
+    };
+    let inboxes = delivery::inboxes(conn, None, &to)?;
+    delivery::fan_out(
+        conn,
+        &inboxes,
+        &posts::person_local(account),
+        &objects::document(body),
+        super::now_ms(),
+    )?;
+    fed.wake.notify_one();
+    Ok(())
+}
+
+/// Somebody here passes a post on to their own followers, or takes it back.
+/// Only a post, not a reply, and not one of their own.
+async fn boost_post(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(t): Json<Toggle>,
+) -> ApiResult<Json<PostDto>> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let by = principal.to_string();
+    let fed = state.fedi.clone();
+    let dto = db(&state, |c| {
+        let row = posts::row(c, id)?
+            .filter(|r| !r.hidden && r.parent.is_none())
+            .ok_or(Refusal::NoSuchPost)?;
+        if row.author_account.as_deref() == Some(by.as_str()) {
+            return Err(Refusal::NotYours);
+        }
+        let now = super::now_ms();
+        let actor = person_url(&fed.base, &by);
+        let activity = posts::boost_id(&fed.base, &by, id);
+        if posts::boost(c, &row.ap_id, &actor, &activity, t.on, now)? {
+            if t.on {
+                notices::tell_author(c, &row.ap_id, NoticeKind::Boost, Who::Here(&by), now)?;
+            }
+            if let Err(e) = send_boost(c, &fed, &by, &row, t.on) {
+                tracing::warn!("fediverse: boost not sent: {e:#}");
+            }
+        }
+        posts::dto(c, &row, Some(&by), &fed.server)
+    })?;
+    Ok(Json(dto))
+}
+
+fn send_boost(
+    conn: &Connection,
+    fed: &Federation,
+    account: &str,
+    row: &PostRow,
+    on: bool,
+) -> anyhow::Result<()> {
+    if !fed.enabled {
+        return Ok(());
+    }
+    let actor = person_url(&fed.base, account);
+    let boost = objects::person_boost(
+        &posts::boost_id(&fed.base, account, row.id),
+        &actor,
+        &row.ap_id,
+        row.author_actor.as_deref(),
+    );
+    let body = if on {
+        boost
+    } else {
+        objects::undo(&actor, boost)
+    };
+    let local = posts::person_local(account);
+    let inboxes = delivery::inboxes(conn, Some(&local), &told_of(row))?;
+    delivery::fan_out(
+        conn,
+        &inboxes,
+        &local,
+        &objects::document(body),
+        super::now_ms(),
+    )?;
+    fed.wake.notify_one();
+    Ok(())
+}
+
+/// Somebody here reports a post or reply. It waits for the community's
+/// moderators like a report from elsewhere; for a post from elsewhere,
+/// `forward` also sends it to the server it came from, as this server rather
+/// than as them.
+async fn report_post(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(report): Json<NewReport>,
+) -> ApiResult<StatusCode> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let by = principal.to_string();
+    let reason = masked(&state, &report.reason);
+    let fed = state.fedi.clone();
+    db(&state, |c| {
+        let row = posts::row(c, id)?
+            .filter(|r| !r.hidden)
+            .ok_or(Refusal::NoSuchPost)?;
+        let now = super::now_ms();
+        posts::report(c, &row.ap_id, &person_url(&fed.base, &by), &reason, now)?;
+        if report.forward && fed.enabled {
+            if let Some(author) = &row.author_actor {
+                let flag = objects::flag(&fed.base, author, &row.ap_id, &reason);
+                let inboxes = delivery::inboxes(c, None, &told_of(&row))?;
+                delivery::fan_out(c, &inboxes, "instance", &objects::document(flag), now)?;
+                fed.wake.notify_one();
+            }
+        }
+        Ok(())
+    })?;
+    tracing::info!(post = %id, forwarded = report.forward, "public post reported");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What happened to the caller in public.
+async fn list_notices(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<PostNotices>> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let by = principal.to_string();
+    let server = state.fedi.server.clone();
+    Ok(Json(db(&state, |c| notices::list(c, &by, &server))?))
+}
+
+async fn read_notices(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(r): Json<ReadNotices>,
+) -> ApiResult<StatusCode> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let by = principal.to_string();
+    db(&state, |c| Ok(notices::mark_read(c, &by, r.up_to)?))?;
     Ok(StatusCode::NO_CONTENT)
 }
 

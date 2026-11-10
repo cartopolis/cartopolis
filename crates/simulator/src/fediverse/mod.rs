@@ -38,6 +38,7 @@ pub mod blocklist;
 pub mod delivery;
 pub mod fetch;
 pub mod inbox;
+pub mod notices;
 pub mod objects;
 pub mod posts;
 pub mod routes;
@@ -71,7 +72,38 @@ pub struct Federation {
     /// The picture store, to say what a public picture is (its type and size)
     /// in the objects that name it.
     pub asset_dir: String,
+    /// What keeps the inbox from being used to make this server work: how
+    /// often one server may deliver, and how many activities are worked on at
+    /// once (each may fetch objects, keys and pictures from elsewhere).
+    pub inbox_limits: Arc<InboxLimits>,
 }
+
+/// Limits on the inbox (`routes::shared_inbox`).
+pub struct InboxLimits {
+    /// Deliveries per sending server per minute.
+    pub per_server: crate::registration::Throttle,
+    /// Activities worked on at once.
+    pub working: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for InboxLimits {
+    fn default() -> Self {
+        Self {
+            per_server: crate::registration::Throttle::new(
+                INBOX_PER_SERVER_PER_MINUTE,
+                std::time::Duration::from_secs(60),
+            ),
+            working: Arc::new(tokio::sync::Semaphore::new(INBOX_WORKING)),
+        }
+    }
+}
+
+/// Deliveries one server may make a minute. A busy Mastodon server sends a
+/// community with a few hundred followers there well under this; more is a
+/// flood, refused with a 429 that it retries later.
+const INBOX_PER_SERVER_PER_MINUTE: u32 = 300;
+/// Activities worked on at once; the rest wait their turn.
+const INBOX_WORKING: usize = 16;
 
 impl Federation {
     #[must_use]
@@ -91,6 +123,7 @@ impl Federation {
             wake: Arc::new(tokio::sync::Notify::new()),
             client: fetch::Client::new(config.fediverse_allow_private),
             asset_dir: config.asset_dir.clone(),
+            inbox_limits: Arc::new(InboxLimits::default()),
         }
     }
 }

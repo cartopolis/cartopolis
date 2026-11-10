@@ -771,6 +771,51 @@ export interface PostDto {
     likes: number
     /** Lemmy's downvotes. */
     dislikes: number
+    /** Times it was passed on, here or elsewhere. */
+    boosts: number
+    /** Whether the caller likes it. */
+    liked: boolean
+    /** Whether the caller passed it on. */
+    boosted: boolean
+    /** For a reply: the name of whoever wrote what it answers. */
+    answers?: string
+    /** A content warning, shown in place of the post until it is opened. */
+    warning?: string
+    /** Blur the pictures until a reader asks to see them. */
+    sensitive: boolean
+    /** What `picture` shows, in words. */
+    picture_alt?: string
+    /** Pictures after the first, for a post from elsewhere that had several. */
+    more_pictures?: PostPicture[]
+}
+
+/** One more picture on a post from elsewhere. */
+export interface PostPicture {
+    hash: string
+    alt?: string
+}
+
+/** What a notice is about. */
+export type NoticeKind = 'reply' | 'mention' | 'like' | 'boost' | 'follow'
+
+/** Something that happened to you in public (`/api/fediverse/notices`). */
+export interface PostNotice {
+    id: number
+    kind: NoticeKind
+    who: PostAuthor
+    /** The post or reply it is about; none for a follow. */
+    post?: string
+    community?: string
+    /** The start of that post's words. */
+    excerpt?: string
+    created_ms: number
+    read: boolean
+}
+
+/** Your notices, newest first. */
+export interface PostNotices {
+    unread: number
+    items: PostNotice[]
 }
 
 /** A report about a post, sent by another server for the moderators. */

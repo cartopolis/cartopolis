@@ -127,6 +127,7 @@ pub fn replace_shared(
             params![e.host, e.reason, now_ms],
         )?;
     }
+    sever(&tx)?;
     tx.commit()?;
     Ok(n)
 }
@@ -138,7 +139,45 @@ pub fn block(conn: &Connection, host: &str, reason: &str, now_ms: i64) -> rusqli
          ON CONFLICT (host) DO UPDATE SET source = 'admin', reason = ?2",
         params![host.trim().to_ascii_lowercase(), reason, now_ms],
     )?;
+    sever(conn)?;
     Ok(())
+}
+
+/// SQL that is true when the `fedi_actors` row aliased `a` lives on a blocked
+/// server (the server or any domain above it).
+pub const ACTOR_BLOCKED: &str = "EXISTS (SELECT 1 FROM fedi_server_blocks b
+     WHERE a.host = b.host OR a.host LIKE '%.' || b.host)";
+
+/// Cut every tie with blocked servers: their followers stop being sent to,
+/// what communities here follow there is dropped, and what was queued for
+/// them is not sent. Their posts stay stored but are not shown (`posts`
+/// reads past them), so an unblock brings them back. Answers how many ties
+/// went.
+pub fn sever(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut n = conn.execute(
+        &format!(
+            "DELETE FROM fedi_followers WHERE actor IN
+                 (SELECT a.id FROM fedi_actors a WHERE {ACTOR_BLOCKED})"
+        ),
+        [],
+    )?;
+    n += conn.execute(
+        &format!(
+            "DELETE FROM community_follows WHERE actor IN
+                 (SELECT a.id FROM fedi_actors a WHERE {ACTOR_BLOCKED})"
+        ),
+        [],
+    )?;
+    let mut stmt = conn.prepare("SELECT id, inbox FROM fedi_deliveries")?;
+    let queued: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (id, inbox) in queued {
+        if super::fetch::host_of(&inbox).is_none_or(|h| is_blocked(conn, &h).unwrap_or(true)) {
+            n += conn.execute("DELETE FROM fedi_deliveries WHERE id = ?1", params![id])?;
+        }
+    }
+    Ok(n)
 }
 
 /// The operator unblocks a server. An entry the shared list holds comes back
