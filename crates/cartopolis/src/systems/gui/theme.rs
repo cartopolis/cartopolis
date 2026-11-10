@@ -44,7 +44,7 @@
 //!
 //! **Every surface is solid** (since 2026-11-08, "a bad implementation of
 //! glass"): the midas hub's layering, one darkness. [`PANEL`], [`GLASS`] and
-//! [`OVERLAY`] are all the hub's dark teal card, with darker [`SURFACE`] wells inside and a soft
+//! [`OVERLAY`] are all one dark teal, with [`CARD`] blocks inside, close to it, and a soft
 //! shadow, with the hub's hairline ([`PANEL_RIM`]). Nothing shows through.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
@@ -90,8 +90,8 @@ use crate::systems::icons;
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
 /// boot backdrop. Also the ink on an [`ACCENT`] plate.
 pub const INK: Color32 = Color32::from_rgb(0x0F, 0x14, 0x16);
-/// The surface ramp's bottom above [`INK`]: a card *inside* a panel (a list
-/// group, a chat row): a well a step darker than the panel's teal.
+/// The surface ramp's bottom above [`INK`]: control plates and wells (a
+/// button at rest, a text field's frame). A card in a panel is [`CARD`].
 pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x1A, 0x1C);
 /// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
 /// striped rows, anything that should read as sitting *on* a panel.
@@ -271,17 +271,22 @@ pub const OVERLAY: Color32 = PANEL;
 pub const GLASS: Color32 = PANEL;
 
 /// Every panel's surface — docked, full-screen on a phone, floating over the
-/// map: the midas hub's card, a dark teal (solid and one tone since
-/// 2026-11-08).
+/// map: a dark teal (solid and one tone since 2026-11-08).
 ///
-/// **Measured off the hub, 2026-11-10.** At [`INK`] the panels "looked black";
-/// a teal pressed nearly to black (`#0B1918`) was still "too little colour",
-/// and the person pointed at the hub's question card. The hub draws that card
-/// `#192627` on a `#141A1C` page, with its options as `#141A1C` wells inside
-/// it — so here a panel is the card's teal and a card *inside* a panel is
-/// [`SURFACE`], a step darker, as the hub's options are
-/// (`the_panel_is_the_hubs_card`).
-pub const PANEL: Color32 = Color32::from_rgb(0x19, 0x26, 0x27);
+/// **Found with the person, 2026-11-10.** At [`INK`] the panels "looked
+/// black"; a teal pressed nearly to black (`#0B1918`) was "too little
+/// colour", and the person pointed at the midas hub's question card
+/// (`#192627`). With that, and [`SURFACE`] wells in it as the hub's options
+/// are, the blocks had "too much contrast against the background: the
+/// background a little darker, the blocks a little lighter" — so this is the
+/// hub's teal a step down, and the cards inside are [`CARD`], close to it.
+pub const PANEL: Color32 = Color32::from_rgb(0x17, 0x23, 0x24);
+
+/// A card inside a panel ([`list_group`], a chat or contact row): just off
+/// [`PANEL`], a touch darker and greyer, so a group of rows reads as one block
+/// by its hairline and shadow rather than by a jump in tone (2026-11-10, see
+/// [`PANEL`]).
+pub const CARD: Color32 = Color32::from_rgb(0x16, 0x1F, 0x21);
 
 /// The hairline round a panel, a window or a box over the map: the midas hub's
 /// `--m-border` (dark), solid. The shadow does the lifting; this only keeps a
@@ -2271,7 +2276,7 @@ const LIST_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xF
 /// reads as a few blocks of related things rather than one long column.
 pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let out = egui::Frame::NONE
-        .fill(SURFACE)
+        .fill(CARD)
         .stroke(egui::Stroke::new(1.0, LIST_LINE))
         .shadow(CARD_SHADOW)
         .corner_radius(egui::CornerRadius::same(16))
@@ -3106,12 +3111,14 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
-    /// The panel is the midas hub's card: solid, cooler and never warmer (the
-    /// brown a mix of the brand orange produced, red above blue, is what this
-    /// pins against), visibly teal rather than black, and a step lighter than
-    /// the [`SURFACE`] wells inside it, as the hub's options are in its card.
+    /// The panel is a dark teal: solid, cooler and never warmer (the brown a
+    /// mix of the brand orange produced, red above blue, is what this pins
+    /// against), visibly teal rather than black — and the blocks in it are
+    /// close to it, since a jump in tone between the two was "too much
+    /// contrast" (2026-11-10): a block is told apart by its hairline and its
+    /// shadow, not by being much lighter or darker.
     #[test]
-    fn the_panel_is_the_hubs_card() {
+    fn the_panel_is_a_dark_teal_with_quiet_blocks() {
         assert_eq!(PANEL.a(), 255, "the panel is solid: {PANEL:?}");
         assert!(
             PANEL.r() <= PANEL.b() && PANEL.r() <= PANEL.g(),
@@ -3121,7 +3128,11 @@ mod tests {
             PANEL.g() > PANEL.r() + 8,
             "the panel has gone black: {PANEL:?}"
         );
-        assert!(luminance(SURFACE) < luminance(PANEL));
+        assert!(
+            contrast(CARD, PANEL) < 1.08,
+            "the blocks jump off the panel: {}",
+            contrast(CARD, PANEL)
+        );
     }
 
     #[test]

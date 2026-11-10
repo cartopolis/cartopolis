@@ -63,10 +63,10 @@ const AVATAR_TONES: [egui::Color32; 6] = [
     egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
 ];
 /// A row's resting card, so the list reads as a stack of rounded rows on the
-/// screen rather than as text on black: [`theme::SURFACE`] on the [`theme::PANEL`]
+/// screen rather than as text on black: [`theme::CARD`] on the [`theme::PANEL`]
 /// page under a [`theme::CARD_SHADOW`], the midas hub's card (2026-11-01; it
 /// was white at 4 %, a lighter card on a lighter page and no shadow).
-pub(crate) const ROW_CARD: egui::Color32 = theme::SURFACE;
+pub(crate) const ROW_CARD: egui::Color32 = theme::CARD;
 
 /// Blend `base` toward `over` by `k`.
 pub(crate) fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
