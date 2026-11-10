@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body><div class="fig">
+<h1>Every server is a home and a layer; peers mix their layers in one view</h1>
+<p class="sub">Three servers, one Earth. A person is connected only to their own server and sees, wherever they stand, the things and people of every server in their network. <span class="tag">NEW</span> everything on this sheet except the servers themselves.</p>
+<svg width="1680" height="760" viewBox="0 0 1680 760">
+<defs>
+<marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c9c3b6"/></marker>
+<marker id="ao" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e8862a"/></marker>
+<marker id="ab" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5aa7c8"/></marker>
+</defs>
+<g transform="translate(20,20)">
+ <rect class="box" x="0" y="0" width="500" height="430" rx="14"/>
+ <text class="t" x="24" y="40">cartopolis.org</text>
+ <text class="s" x="24" y="66">peering: open · shares: people, things, chat</text>
+ <rect class="home" x="24" y="90" width="452" height="150" rx="10"/>
+ <text class="o t" x="44" y="122">Home</text>
+ <text x="44" y="152">accounts · devices and keys · private chats</text>
+ <text x="44" y="178">communities · contacts · blocks · inventory</text>
+ <text x="44" y="204">posts (ActivityPub) · calls · push · tokens</text>
+ <text class="s" x="44" y="230">jeroen@cartopolis.org · sanne@cartopolis.org</text>
+ <rect class="world" x="24" y="260" width="452" height="150" rx="10"/>
+ <text class="b t" x="44" y="292">Layer</text>
+ <text x="44" y="322">its people, wherever they stand</text>
+ <text x="44" y="348">its things: the market on the Grote Markt</text>
+ <text class="s" x="44" y="380">Here chat · voice · looks · its scripts run here</text>
+</g>
+<g transform="translate(590,20)">
+ <rect class="box" x="0" y="0" width="500" height="430" rx="14"/>
+ <text class="t" x="24" y="40">rug.example</text>
+ <text class="s" x="24" y="66">peering: listed (the Groningen network) · voice off</text>
+ <rect class="home" x="24" y="90" width="452" height="150" rx="10"/>
+ <text class="o t" x="44" y="122">Home</text>
+ <text x="44" y="152">students' accounts, their chats and</text>
+ <text x="44" y="178">communities, on the university's disk</text>
+ <text class="s" x="44" y="230">anna@rug.example</text>
+ <rect class="world" x="24" y="260" width="452" height="150" rx="10"/>
+ <text class="b t" x="44" y="292">Layer</text>
+ <text x="44" y="322">the campus built out · a stand on the Grote Markt</text>
+ <text x="44" y="348">anna, standing at that stand</text>
+ <text class="s" x="44" y="380">one authority: its things are simulated only here</text>
+</g>
+<g transform="translate(1160,20)">
+ <rect class="box" x="0" y="0" width="500" height="430" rx="14"/>
+ <text class="t" x="24" y="40">school.example</text>
+ <text class="s" x="24" y="66">peering: closed</text>
+ <rect class="home" x="24" y="90" width="452" height="150" rx="10"/>
+ <text class="o t" x="44" y="122">Home</text>
+ <text x="44" y="152">pupils' accounts</text>
+ <text class="s" x="44" y="230">chat federation may still be on</text>
+ <rect class="world" x="24" y="260" width="452" height="150" rx="10"/>
+ <text class="b t" x="44" y="292">Layer</text>
+ <text x="44" y="322">their classroom projects, seen by nobody else</text>
+ <text class="s" x="44" y="380">still publishes its document, so its</text>
+ <text class="s" x="44" y="404">people can be found by address</text>
+</g>
+<path class="arrow b" d="M 520,335 L 590,335"/><path class="arrow b" d="M 590,350 L 520,350"/>
+<text class="b" x="470" y="490">peered: one signed stream each way carries people, things and nearby chat inside each other's interest areas</text>
+<path class="arrow dash" d="M 1090,160 L 1160,160"/>
+<text class="s" x="1000" y="530">fediverse and chat only: posts, the block list, the server document</text>
+<!-- the view -->
+<g transform="translate(20,570)">
+ <rect class="new" x="0" y="0" width="1640" height="160" rx="12"/>
+ <text class="o t" x="20" y="36">What jeroen sees on the Grote Markt, connected to cartopolis.org only</text>
+ <text x="20" y="70">the market (his own layer) · the student stand and anna at it (rug.example's layer, faded if that server is slow) · nothing of school.example</text>
+ <text x="20" y="98">he can hide rug.example's layer as he hides a map layer; he can touch the stand (his address crosses, the stand's script runs on rug.example); he cannot edit it</text>
+ <text class="s" x="20" y="134">where his avatar stands decides what is within reach, never which server he is on · https://rug.example/go?place=… opens the place with that layer shown</text>
+</g>
+</svg></div></body></html>

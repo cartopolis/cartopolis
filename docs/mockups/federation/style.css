@@ -1,0 +1,23 @@
+body{margin:0;background:#0d1214;color:#e6e1d6;font:16px/1.4 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.fig{width:1760px;padding:40px;box-sizing:border-box}
+h1{font-size:28px;font-weight:600;margin:0 0 6px}
+p.sub{margin:0 0 24px;color:#9aa39c;font-size:17px}
+svg{display:block}
+.box{fill:#161d20;stroke:#3a4a4f;stroke-width:2}
+.home{fill:#1b2a2e;stroke:#e8862a;stroke-width:2.5}
+.world{fill:#152025;stroke:#5aa7c8;stroke-width:2.5}
+.new{fill:#2a1f14;stroke:#e8862a;stroke-width:2;stroke-dasharray:7 5}
+.zone{fill:none;stroke:#3a4a4f;stroke-width:1.5}
+.zone.on{fill:#1f3340;stroke:#5aa7c8;stroke-width:2}
+.zone.phys{fill:#2a2418}
+text{fill:#e6e1d6;font-size:17px}
+text.t{font-size:21px;font-weight:600}
+text.s{fill:#9aa39c;font-size:15px}
+text.o{fill:#e8862a}
+text.b{fill:#5aa7c8}
+.arrow{stroke:#c9c3b6;stroke-width:2.2;fill:none;marker-end:url(#a)}
+.arrow.o{stroke:#e8862a;marker-end:url(#ao)}
+.arrow.b{stroke:#5aa7c8;marker-end:url(#ab)}
+.arrow.dash{stroke-dasharray:8 6}
+.life{stroke:#3a4a4f;stroke-width:2}
+.tag{fill:#e8862a;font-size:13px;font-weight:700;letter-spacing:.5px}

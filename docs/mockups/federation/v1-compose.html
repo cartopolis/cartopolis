@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body><div class="fig">
+<h1>The home is the gateway: it composes the view and sets the limits</h1>
+<p class="sub">One connection, as today. Everything from other servers passes the home's spatial index, budgets, trust levels and filters before a client sees it. <span class="tag">NEW</span> the peer tasks and the limits; the index is stage 1's.</p>
+<svg width="1680" height="620" viewBox="0 0 1680 620">
+<defs>
+<marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c9c3b6"/></marker>
+<marker id="ao" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e8862a"/></marker>
+<marker id="ab" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5aa7c8"/></marker>
+</defs>
+<rect class="box" x="40" y="60" width="240" height="110" rx="12"/><text class="t" x="60" y="100">the app</text><text class="s" x="60" y="130">one connection</text>
+<rect class="box" x="40" y="200" width="240" height="110" rx="12"/><text class="t" x="60" y="240">another app</text><text class="s" x="60" y="270">same server</text>
+<g transform="translate(420,30)">
+ <rect class="home" x="0" y="0" width="760" height="560" rx="14"/>
+ <text class="o t" x="20" y="36">cartopolis.org</text>
+ <rect class="box" x="20" y="60" width="720" height="130" rx="10"/>
+ <text class="t" x="40" y="92">the tick, untouched by peers</text>
+ <text x="40" y="122">reads the spatial index: home avatars and things, peer avatars and things with server and age</text>
+ <text x="40" y="150">assembles one frame per connection from what is within its person's reach, minus hidden layers</text>
+ <text class="s" x="40" y="176">never waits on a peer; a peer's lag is an age on its entries, not a late tick</text>
+ <rect class="box" x="20" y="210" width="350" height="330" rx="10"/>
+ <text class="t" x="40" y="242">a task per peer stream</text>
+ <text x="40" y="272">bounded queue, drop oldest</text>
+ <text x="40" y="298">writes into the index under short locks</text>
+ <text x="40" y="324">asks Rate { lower } when behind</text>
+ <text x="40" y="350">drops the peer past 5 s of lag, 10 min</text>
+ <text x="40" y="376">keeps peer_things current</text>
+ <text x="40" y="402">forwards Say, Touch, Block, Gone</text>
+ <text class="s" x="40" y="440">the client never sees a peer's address,</text>
+ <text class="s" x="40" y="464">a peer never sees a client's</text>
+ <rect class="box" x="390" y="210" width="350" height="330" rx="10"/>
+ <text class="t" x="410" y="242">limits per peer (Admin › Network)</text>
+ <text x="410" y="272">shares: people · things · chat · voice</text>
+ <text x="410" y="298">trust: full · things only · people only · none</text>
+ <text x="410" y="324">things within one reach: 200</text>
+ <text x="410" y="350">thing updates a second: 50</text>
+ <text x="410" y="376">model bytes on disk: 2 GB</text>
+ <text x="410" y="402">media URLs: full trust only</text>
+ <text x="410" y="428">models: hash-checked, upload limits, licence gate</text>
+ <text x="410" y="454">nearby lines: the home's word filter, both servers' blocks</text>
+ <text class="s" x="410" y="492">a layer can be hidden per person,</text>
+ <text class="s" x="410" y="516">dropped per server, ended per peering</text>
+</g>
+<path class="arrow" d="M 280,115 L 410,115"/><path class="arrow o" d="M 420,140 L 290,140"/>
+<path class="arrow" d="M 280,255 L 410,255"/><path class="arrow o" d="M 420,280 L 290,280"/>
+<rect class="world" x="1300" y="60" width="340" height="110" rx="12"/><text class="b t" x="1320" y="100">rug.example</text><text class="s" x="1320" y="130">peered · people, things, chat · full trust</text>
+<rect class="world" x="1300" y="200" width="340" height="110" rx="12"/><text class="b t" x="1320" y="240">buurt.example</text><text class="s" x="1320" y="270">peered · things only · slow: faded</text>
+<rect class="box" x="1300" y="340" width="340" height="110" rx="12"/><text class="t" x="1320" y="380">school.example</text><text class="s" x="1320" y="410">closed · not in view</text>
+<path class="arrow b" d="M 1300,115 L 1190,115"/><path class="arrow o" d="M 1180,140 L 1290,140"/>
+<path class="arrow b" d="M 1300,255 L 1190,255"/><path class="arrow o" d="M 1180,280 L 1290,280"/>
+</svg></div></body></html>

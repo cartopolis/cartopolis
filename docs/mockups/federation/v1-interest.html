@@ -1,0 +1,45 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body><div class="fig">
+<h1>Interest is a radius around each person, never a cell</h1>
+<p class="sub">Today every client receives every avatar every tick and every prim at the handshake. Instead each connection receives what is within reach of its person, found in a spatial index the server keeps. Peers' avatars and things sit in the same index with their server and freshness on them. Nothing about the world is cut up: no squares, no cells, no borders. <span class="tag">NEW</span> the per-connection frame; the index is an implementation detail.</p>
+<svg width="1680" height="600" viewBox="0 0 1680 600">
+<defs>
+<marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c9c3b6"/></marker>
+</defs>
+<g transform="translate(40,30)">
+ <rect class="box" x="0" y="0" width="900" height="420" rx="14"/>
+ <text class="s" x="20" y="30">the city, as the index holds it: every avatar and prim by its place on Earth</text>
+ <!-- radius circles -->
+ <circle cx="300" cy="230" r="150" fill="#1f3340" fill-opacity=".55" stroke="#5aa7c8" stroke-width="2"/>
+ <circle cx="300" cy="230" r="9" fill="#e8862a"/><text class="o" x="316" y="236">you</text>
+ <circle cx="640" cy="235" r="150" fill="#2a1f14" fill-opacity=".45" stroke="#e8862a" stroke-width="2" stroke-dasharray="7 5"/>
+ <circle cx="640" cy="235" r="9" fill="#e6e1d6"/><text x="656" y="241">anna</text>
+ <!-- people -->
+ <circle cx="230" cy="160" r="6" fill="#e6e1d6"/><circle cx="380" cy="300" r="6" fill="#e6e1d6"/><circle cx="350" cy="130" r="6" fill="#e6e1d6"/>
+ <circle cx="560" cy="330" r="6" fill="#e6e1d6"/><circle cx="730" cy="180" r="6" fill="#e6e1d6"/>
+ <circle cx="80" cy="60" r="6" fill="#56605b"/><circle cx="850" cy="80" r="6" fill="#56605b"/><circle cx="120" cy="390" r="6" fill="#56605b"/><circle cx="820" cy="400" r="6" fill="#56605b"/>
+ <!-- prims -->
+ <rect x="250" y="270" width="10" height="10" fill="#5aa7c8"/><rect x="410" y="180" width="10" height="10" fill="#5aa7c8"/><rect x="690" y="300" width="10" height="10" fill="#5aa7c8"/><rect x="60" y="300" width="10" height="10" fill="#56605b"/>
+ <text class="s" x="20" y="400">blue circle: what you receive · dashed: what anna receives · grey: what neither frame carries · overlapping circles cost nothing extra</text>
+</g>
+<g transform="translate(980,30)">
+ <rect class="box" x="0" y="0" width="660" height="420" rx="12"/>
+ <text class="t" x="20" y="36">Each tick</text>
+ <text x="20" y="72">1  each avatar's state is encoded once, as today</text>
+ <text x="20" y="100">2  the index answers "who is within reach of this person"</text>
+ <text x="20" y="128">3  a connection's frame is assembled from those states</text>
+ <text x="20" y="156">4  a prim that comes within reach is sent; one that leaves is forgotten</text>
+ <text x="20" y="184">5  Here chat, voice and "who was near whom" ask the same index</text>
+ <text class="s" x="20" y="228">Reach: the shout radius (300 m) and a margin; a camera high up asks</text>
+ <text class="s" x="20" y="252">for a wider, sparser reach, the way the map streams by altitude.</text>
+ <text class="s" x="20" y="292">Needs first: the avatar's authoritative position as a place on Earth.</text>
+ <text class="s" x="20" y="316">Today it is metres in its own client's map frame.</text>
+ <text class="s" x="20" y="356">The index is a server detail (an R-tree, a sorted geohash: whatever</text>
+ <text class="s" x="20" y="380">measures fastest). Nothing of it is on the wire or in the database.</text>
+</g>
+<g transform="translate(40,480)">
+ <text class="t" x="0" y="0">What it replaces</text>
+ <text class="s" x="0" y="34">one broadcast channel · every avatar to every client every tick · every prim to every client at the handshake · a quadratic "near" scan</text>
+ <text class="s" x="0" y="62">Measured 2026-09-15: prims in every snapshot cost 6 % of the tick and 3.2 MB/s per client for something no client read (simulator-tick-budget.md).</text>
+ <text class="s" x="0" y="90">The physics engine keeps its own 0.01° frames because Rapier is f32; that is a detail of one subsystem, and nothing here builds on it.</text>
+</g>
+</svg></div></body></html>

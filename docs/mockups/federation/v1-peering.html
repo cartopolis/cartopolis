@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body><div class="fig">
+<h1>Peering: what two servers exchange</h1>
+<p class="sub">cartopolis.org and rug.example agree to mix. The client talks to its home only; the peers talk to each other over one signed stream, inside each other's interest areas. <span class="tag">NEW</span> all of it; the signing and the fetch guard are the fediverse's, built.</p>
+<svg width="1680" height="800" viewBox="0 0 1680 800">
+<defs>
+<marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c9c3b6"/></marker>
+<marker id="ao" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#e8862a"/></marker>
+<marker id="ab" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5aa7c8"/></marker>
+</defs>
+<rect class="box" x="60" y="10" width="260" height="54" rx="10"/><text class="t" x="80" y="44">jeroen's app</text>
+<rect class="home" x="700" y="10" width="280" height="54" rx="10"/><text class="o t" x="720" y="44">cartopolis.org</text>
+<rect class="world" x="1340" y="10" width="280" height="54" rx="10"/><text class="b t" x="1360" y="44">rug.example</text>
+<line class="life" x1="190" y1="64" x2="190" y2="780"/>
+<line class="life" x1="840" y1="64" x2="840" y2="780"/>
+<line class="life" x1="1480" y1="64" x2="1480" y2="780"/>
+<path class="arrow o" d="M 840,110 L 1470,110"/>
+<text x="860" y="100">1  POST /federation/peers { shares offered } · signed with the instance key</text>
+<path class="arrow b" d="M 1480,150 L 850,150"/>
+<text x="860" y="176">   peered { shares: people, things, chat } · at once (open) or after an operator's yes (listed)</text>
+<path class="arrow o" d="M 840,220 L 1470,220"/><path class="arrow b" d="M 1480,240 L 850,240"/>
+<text x="860" y="210">2  wss://…/federation/stream, one per pair, signed at the upgrade</text>
+<path class="arrow o dash" d="M 840,290 L 1470,290"/>
+<text class="s" x="860" y="316">3  Interest { areas }: merged circles where its people are, every few seconds, both ways</text>
+<path class="arrow b dash" d="M 1480,350 L 850,350"/>
+<text class="s" x="860" y="376">4  GET /federation/things?near=… once per new area → cached · models by hash, licence-gated</text>
+<path class="arrow b" d="M 1480,410 L 850,410"/>
+<text x="860" y="436">5  every tick: Avatars { anna: geo, heading, velocity } · Things · Say — inside the areas only</text>
+<text class="s" x="860" y="462">read on a task of its own into the spatial index · bounded queue, drop oldest · freshness on every state</text>
+<path class="arrow o" d="M 840,500 L 200,500"/>
+<text x="210" y="526">6  WorldSnapshot: what is within jeroen's reach, home and peer alike, minus hidden layers · anna carries age_ms</text>
+<path class="arrow" d="M 190,570 L 830,570"/>
+<text x="210" y="596">7  Touch { the stand }  (as today)</text>
+<path class="arrow o" d="M 840,610 L 1470,610"/>
+<text x="860" y="636">   Touch { jeroen@cartopolis.org, thing, point } → the script runs there → Things come back</text>
+<path class="arrow o dash" d="M 840,680 L 1470,680"/>
+<text class="s" x="860" y="706">8  Rate { hz } when rug.example falls behind · dropped 10 min past 5 s of lag, the operator told</text>
+<text class="s" x="210" y="760">the app never learns rug.example's address and rug.example never learns the app's; blocks and the word filter apply on both servers' fan-out</text>
+</svg></div></body></html>
