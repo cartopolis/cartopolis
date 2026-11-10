@@ -1057,7 +1057,7 @@ pub fn setup_camera(
     // low down so the map reads, rising for the limb from orbit — see
     // `globe::ATMOSPHERE_DENSITY_NEAR`), so it's handed to that system as a shared
     // handle. The planet spawns with it below.
-    let medium = scattering_media.add(ScatteringMedium::default());
+    let medium = scattering_media.add(crate::systems::globe::earth_air(1.0, 1.0));
     commands.insert_resource(crate::systems::globe::AtmosphereMedia {
         space: medium.clone(),
     });

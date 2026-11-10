@@ -1174,6 +1174,54 @@ const MEDIUM_REBUILD_STEP: f32 = 0.05;
 pub struct AtmosphereMedia {
     pub space: Handle<bevy::light::atmosphere::ScatteringMedium>,
 }
+
+/// The haze in the air over the Netherlands: aerosol optical depth at 550 nm.
+///
+/// Bevy's `ScatteringMedium::earth` carries 0.005, a column cleaner than any
+/// sky over a European lowland, and with its two Mie coefficients swapped, so
+/// that what little haze there is absorbs nine tenths of the light it meets
+/// instead of scattering it (Hillaire 2020, which the preset follows, has
+/// 3.996e-6 /m scattering and 0.444e-6 /m absorption). That sky is a deep
+/// saturated blue to the horizon and lights the ground weakly and blue: on
+/// mac-2 (2026-11-10, the Poelestraat at 13:30 in June, every surface a grey
+/// of albedo 0.2) ground in shade was 3.4 stops under ground in sun and four
+/// times as blue as red. At 0.1 — a clear summer day here; a hazy one is 0.2
+/// and more — it is 2.7 stops, the photographer's "open shade is two and a half
+/// to three stops", a third as blue, and the sky goes the pale blue it is.
+/// `docs/notes/light-against-photographs.md`.
+const AEROSOL_OPTICAL_DEPTH: f32 = 0.1;
+
+/// The share of the haze's extinction that is scattering (its single
+/// scattering albedo), as in Hillaire's preset.
+const AEROSOL_SCATTERING_SHARE: f32 = 0.9;
+
+/// The haze's scale height, as bevy's preset: 1.2 km.
+const AEROSOL_SCALE_HEIGHT_M: f32 = 1_200.0;
+
+/// Earth's air: bevy's `ScatteringMedium::earth` with its aerosol term put
+/// right and as thick as [`AEROSOL_OPTICAL_DEPTH`] times `haze` (1 in the
+/// city, 0 from orbit, where the globe's look was tuned on the clean preset's
+/// near-zero haze), then `density` times as dense throughout.
+pub fn earth_air(density: f32, haze: f32) -> bevy::light::atmosphere::ScatteringMedium {
+    use bevy::light::atmosphere::{PhaseFunction, ScatteringMedium};
+    let mut air = ScatteringMedium::default();
+    for term in &mut air.terms {
+        if matches!(term.phase, PhaseFunction::Mie { .. }) {
+            // Extinction at sea level, per metre: an exponential profile's
+            // optical depth is its sea-level value times its scale height. Never
+            // less than the preset's own column, which is the haze from orbit.
+            let preset = term.scattering.x + term.absorption.x;
+            let extinction = (AEROSOL_OPTICAL_DEPTH * haze / AEROSOL_SCALE_HEIGHT_M).max(preset);
+            // Grey: a haze that takes more blue than red (Ångström 1.3) reddens
+            // a low sun, but it drew a lilac band along the horizon (mac-2,
+            // 2026-11-10, `gm_12`), sky meeting the map's far edge.
+            term.scattering = Vec3::splat(extinction * AEROSOL_SCATTERING_SHARE);
+            term.absorption = Vec3::splat(extinction * (1.0 - AEROSOL_SCATTERING_SHARE));
+        }
+    }
+    air.with_density_multiplier(density)
+}
+
 /// Bevy's default sky samples, restored at ground level (LookupTexture mode
 /// only raymarches in its LUT builds, so this is mostly for correctness).
 const GROUND_SKY_SAMPLES: u32 = 16;
@@ -1422,11 +1470,11 @@ pub fn update_globe_visibility(
             (1.0f32.lerp(ATMOSPHERE_DENSITY_NEAR, city_fade)).lerp(SPACE_ATMOSPHERE_DENSITY, sf);
         // The medium is an asset; rewriting it rebuilds its falloff/phase LUTs, so
         // re-derive it only when the density has actually drifted (a handful of
-        // times across a full zoom, not every frame).
+        // times across a full zoom, not every frame). The haze fades over the
+        // same climb as the density, so the density's drift covers it.
         if (density - *applied_density).abs() > MEDIUM_REBUILD_STEP {
             if let Some(mut medium) = scattering_media.get_mut(&media.space) {
-                *medium = bevy::light::atmosphere::ScatteringMedium::default()
-                    .with_density_multiplier(density);
+                *medium = earth_air(density, 1.0 - city_fade);
                 *applied_density = density;
             }
         }

@@ -1221,10 +1221,12 @@ pub(crate) fn apply_distance_fog(
     let Ok((cell, tf, mut fog)) = camera.single_mut() else {
         return;
     };
-    // The atmosphere itself stays a clear sky: boosting Nishita's Mie scattering
-    // with density was tried and abandoned — single scattering *darkens* the low
-    // sky instead of whitening it. The horizon-haze shell fogs the sky instead
-    // (see update_horizon_haze), veiling the whole dome as density rises.
+    // The atmosphere itself keeps a clear day's haze (`globe::earth_air`): boosting
+    // its Mie term with the fog density was tried and abandoned because it
+    // *darkened* the low sky instead of whitening it — bevy's preset had the
+    // aerosol absorbing, not scattering, which `earth_air` now puts right. The
+    // horizon-haze shell fogs the sky instead (see update_horizon_haze), veiling
+    // the whole dome as density rises.
     let altitude = globe.altitude_m(cell, tf) as f32;
     let density = dev.fog_density * systems::free_camera::fog_altitude_factor(altitude);
 
