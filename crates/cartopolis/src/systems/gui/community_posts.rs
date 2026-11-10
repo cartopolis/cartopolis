@@ -17,11 +17,12 @@ use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use cartopolis_core::point::{Point, PointView};
 use cartopolis_core::posts::{
-    suggest_handle, EditPost, NewPost, NewReply, PostDto, PostPlace, PostReport, PostThread,
-    PublicInfo, PublicSettings, ReportAction, SourceKind, WhoPosts, MAX_POST_TEXT,
+    suggest_handle, EditPost, NewPost, NewReply, NewReport, NoticeKind, PostDto, PostNotices,
+    PostPlace, PostReport, PostThread, PublicInfo, PublicSettings, ReadNotices, ReportAction,
+    SourceKind, Toggle, WhoPosts, MAX_PICTURE_ALT, MAX_POST_TEXT, MAX_WARNING,
 };
 use cartopolis_core::{CommunityDto, CommunityRole};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::systems::chats::{avatar, raised_frame, ChatKind};
@@ -50,6 +51,13 @@ pub struct Draft {
     /// The snapshot of the world, also in the picture store
     /// (`utils::world_polaroid`).
     pub snapshot: Option<String>,
+    /// A content warning, shown in place of the post until opened; `None`
+    /// when off.
+    pub warning: Option<String>,
+    /// What the picture shows, in words.
+    pub alt: String,
+    /// Blur the picture until a reader asks to see it.
+    pub sensitive: bool,
 }
 
 enum Done {
@@ -64,6 +72,12 @@ enum Done {
     Changed(Uuid, Result<(), String>),
     /// A community's reports from other servers, for its moderators.
     Reports(Uuid, Result<Vec<PostReport>, String>),
+    /// A like or a boost changed a post: the post as it is now.
+    Toggled(Result<PostDto, String>),
+    /// A report went to the moderators.
+    Reported(Result<(), String>),
+    /// What happened to this account in public.
+    Notices(Result<PostNotices, String>),
 }
 
 /// Everything the Posts half of the panel holds.
@@ -77,6 +91,19 @@ pub struct Posts {
     thread_open: Option<Uuid>,
     pub draft: Option<Draft>,
     reply: String,
+    /// The reply being answered, when it is one rather than the post: its id
+    /// and its author's name.
+    reply_to: Option<(Uuid, String)>,
+    /// The post being reported: what the reporter says, and whether it goes
+    /// to its own server too.
+    reporting: Option<(Uuid, String, bool)>,
+    /// Posts behind a content warning or with a sensitive picture that the
+    /// reader opened.
+    shown: HashSet<Uuid>,
+    /// Replies, mentions, likes, boosts and followers, once read.
+    pub notices: Option<PostNotices>,
+    /// When they were last read.
+    notices_at: Option<bevy::platform::time::Instant>,
     handle: String,
     follow: String,
     /// Something went wrong, in words, until the next thing works.
@@ -185,6 +212,7 @@ impl Posts {
         self.thread_open = Some(post);
         self.thread = None;
         self.reply.clear();
+        self.reply_to = None;
         self.spawn(async move { Done::Thread(json(api_get(&format!("/api/posts/{post}")).await)) });
     }
 
@@ -200,7 +228,53 @@ impl Posts {
             place,
             picture: None,
             snapshot: None,
+            warning: None,
+            alt: String::new(),
+            sensitive: false,
         });
+    }
+
+    /// A post changed (a like, a boost): put it wherever it is shown.
+    fn replace(&mut self, post: PostDto) {
+        let lists = self
+            .feeds
+            .values_mut()
+            .chain(self.thread.as_mut().map(|t| &mut t.replies).into_iter());
+        for list in lists {
+            for p in list.iter_mut().filter(|p| p.id == post.id) {
+                *p = post.clone();
+            }
+        }
+        if let Some(t) = self.thread.as_mut().filter(|t| t.post.id == post.id) {
+            t.post = post;
+        }
+    }
+
+    /// Like a post or pass it on (`what` is `like` or `boost`), or take that
+    /// back.
+    fn toggle(&mut self, post: Uuid, what: &'static str, on: bool) {
+        let body = serde_json::to_string(&Toggle { on }).unwrap_or_default();
+        self.spawn(async move {
+            Done::Toggled(json(
+                api_post(&format!("/api/posts/{post}/{what}"), Some(body)).await,
+            ))
+        });
+    }
+
+    /// Read this account's notices again, at most once a minute.
+    pub fn refresh_notices(&mut self, force: bool) {
+        let due = self.notices_at.is_none_or(|t| t.elapsed().as_secs() >= 60);
+        if !force && !due {
+            return;
+        }
+        self.notices_at = Some(bevy::platform::time::Instant::now());
+        self.spawn(async move { Done::Notices(json(api_get("/api/fediverse/notices").await)) });
+    }
+
+    /// How many notices are unread, for a badge.
+    #[must_use]
+    pub fn unread_notices(&self) -> u32 {
+        self.notices.as_ref().map_or(0, |n| n.unread)
     }
 
     /// Whether anything is still on its way.
@@ -364,6 +438,7 @@ impl Posts {
                 Done::Replied(root, Ok(reply)) => {
                     self.sending = false;
                     self.reply.clear();
+                    self.reply_to = None;
                     if let Some(t) = self.thread.as_mut().filter(|t| t.post.id == root) {
                         t.replies.push(reply);
                         t.post.replies += 1;
@@ -376,6 +451,14 @@ impl Posts {
                         self.open_thread(post);
                     }
                 }
+                Done::Toggled(Ok(post)) => self.replace(post),
+                Done::Reported(Ok(())) => {
+                    self.reporting = None;
+                    self.note = Some("Reported. The moderators will look at it.".into());
+                }
+                Done::Notices(Ok(n)) => self.notices = Some(n),
+                // Signed out, or a server older than notices: nothing to show.
+                Done::Notices(Err(_)) => {}
                 Done::Snapshot(Ok(hash)) => {
                     self.snapshot_busy = false;
                     if let Some(d) = self.draft.as_mut() {
@@ -392,6 +475,8 @@ impl Posts {
                 | Done::Posted(_, Err(e))
                 | Done::Replied(_, Err(e))
                 | Done::Reports(_, Err(e))
+                | Done::Toggled(Err(e))
+                | Done::Reported(Err(e))
                 | Done::Changed(_, Err(e)) => {
                     self.sending = false;
                     self.note = Some(said(&e));
@@ -671,6 +756,265 @@ fn reports_list(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
     }
 }
 
+/// Below a draft's pictures: a content warning, and for a photo what it shows
+/// in words and whether to blur it.
+fn draft_extras(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, has_picture: bool) {
+    let Some(d) = cs.posts.draft.as_mut() else {
+        return;
+    };
+    let mut warn = d.warning.is_some();
+    if theme::checkbox(ui, &mut warn, "Content warning")
+        .on_hover_text("Readers see only the warning until they open the post")
+        .changed()
+    {
+        d.warning = warn.then(String::new);
+    }
+    if let Some(w) = d.warning.as_mut() {
+        crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(w)
+                .id(egui::Id::new(("post_warning", community)))
+                .desired_width(ui.available_width())
+                .char_limit(MAX_WARNING)
+                .hint_text("What readers see before they open it"),
+        );
+    }
+    if has_picture {
+        crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(&mut d.alt)
+                .id(egui::Id::new(("post_alt", community)))
+                .desired_width(ui.available_width())
+                .char_limit(MAX_PICTURE_ALT)
+                .hint_text("What the photo shows, for people who can't see it"),
+        );
+        theme::checkbox(
+            ui,
+            &mut d.sensitive,
+            "Sensitive: blur the photo until opened",
+        );
+    }
+}
+
+/// Like, pass on, and answer a post or reply. Counts include what other
+/// servers sent: Mastodon's favourites and boosts, Lemmy's votes.
+fn actions_row(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) {
+    let likes = if p.dislikes > 0 {
+        format!("{}  {} · {} down", icons::STAR, p.likes, p.dislikes)
+    } else {
+        format!("{}  {}", icons::STAR, p.likes)
+    };
+    if theme::chip(ui, &likes, p.liked)
+        .on_hover_text(if p.liked {
+            "Take your like back"
+        } else {
+            "Like"
+        })
+        .clicked()
+    {
+        cs.posts.toggle(p.id, "like", !p.liked);
+    }
+    if p.parent.is_none() {
+        let boosts = format!("{}  {}", icons::SHARE, p.boosts);
+        if p.mine {
+            if p.boosts > 0 {
+                ui.label(
+                    egui::RichText::new(boosts)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::p().text_dim),
+                );
+            }
+        } else if theme::chip(ui, &boosts, p.boosted)
+            .on_hover_text(if p.boosted {
+                "Stop passing it on"
+            } else {
+                "Pass it on to the people who follow you"
+            })
+            .clicked()
+        {
+            cs.posts.toggle(p.id, "boost", !p.boosted);
+        }
+    } else if theme::chip(ui, &format!("{}  Reply", icons::CHAT), false)
+        .on_hover_text(format!("Answer {}", p.author.name))
+        .clicked()
+    {
+        cs.posts.reply_to = Some((p.id, p.author.name.clone()));
+        if cs.posts.reply.trim().is_empty() && !p.author.local {
+            cs.posts.reply = format!("@{} ", p.author.address);
+        }
+    }
+}
+
+/// A post behind a content warning: the warning, and Show or Hide. Answers
+/// whether the post's words and pictures are hidden.
+fn warning_gate(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) -> bool {
+    let Some(w) = &p.warning else {
+        return false;
+    };
+    let hidden = !p.mine && !cs.posts.shown.contains(&p.id);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(format!("{}  {w}", icons::WARNING)).color(theme::p().warn));
+        if !p.mine && theme::chip(ui, if hidden { "Show" } else { "Hide" }, false).clicked() {
+            if hidden {
+                cs.posts.shown.insert(p.id);
+            } else {
+                cs.posts.shown.remove(&p.id);
+            }
+        }
+    });
+    hidden
+}
+
+/// A sensitive picture stays a button until it is asked for. Answers whether
+/// the picture may be drawn.
+fn sensitive_gate(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) -> bool {
+    if !p.sensitive || p.mine || cs.posts.shown.contains(&p.id) {
+        return true;
+    }
+    if theme::chip(ui, "Sensitive photo: tap to show", false).clicked() {
+        cs.posts.shown.insert(p.id);
+    }
+    false
+}
+
+/// What somebody reporting a post says, and whether it goes to its own server.
+fn report_box(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) {
+    let Some((_, reason, forward)) = cs.posts.reporting.as_mut().filter(|r| r.0 == p.id) else {
+        return;
+    };
+    ui.separator();
+    crate::systems::text_touch::field(
+        ui,
+        egui::TextEdit::multiline(reason)
+            .id(egui::Id::new(("post_report", p.id)))
+            .desired_rows(2)
+            .desired_width(ui.available_width())
+            .char_limit(1000)
+            .hint_text("What is wrong with it? (optional)"),
+    );
+    if !p.author.local {
+        let server = p.author.address.split('@').nth(1).unwrap_or("its server");
+        theme::checkbox(
+            ui,
+            forward,
+            format!("Also tell {server}, without your name"),
+        );
+    }
+    let body = serde_json::to_string(&NewReport {
+        reason: reason.trim().to_string(),
+        forward: *forward,
+    })
+    .unwrap_or_default();
+    ui.horizontal(|ui| {
+        if theme::action_button(ui, format!("{} Report", icons::FLAG)).clicked() {
+            let post = p.id;
+            cs.posts.spawn(async move {
+                Done::Reported(
+                    api_post(&format!("/api/posts/{post}/report"), Some(body))
+                        .await
+                        .map(|_| ()),
+                )
+            });
+        }
+        if theme::action_button(ui, "Cancel").clicked() {
+            cs.posts.reporting = None;
+        }
+    });
+}
+
+/// Replies, mentions, likes, boosts and new followers on this account's public
+/// posts, here and from other servers, newest first. Drawing it marks them
+/// read; a notice about a post answers that post and its community.
+pub fn notices_list(ui: &mut egui::Ui, cs: &mut Communities) -> Option<(Uuid, Uuid)> {
+    cs.posts.refresh_notices(false);
+    let Some(list) = cs.posts.notices.as_mut() else {
+        theme::busy(ui, "Reading what happened…");
+        return None;
+    };
+    if list.unread > 0 {
+        let up_to = list.items.iter().map(|n| n.id).max();
+        list.unread = 0;
+        let body = serde_json::to_string(&ReadNotices { up_to }).unwrap_or_default();
+        cs.posts.spawn(async move {
+            Done::Changed(
+                Uuid::nil(),
+                api_post("/api/fediverse/notices/read", Some(body))
+                    .await
+                    .map(|_| ()),
+            )
+        });
+    }
+    let Some(list) = cs.posts.notices.clone() else {
+        return None;
+    };
+    if list.items.is_empty() {
+        theme::note(
+            ui,
+            "Nothing yet. Replies, likes and followers on your public posts show here.",
+        );
+    }
+    let now = now_ms();
+    let mut open = None;
+    for n in &list.items {
+        let (icon, words) = match n.kind {
+            NoticeKind::Reply => (icons::CHAT, "replied"),
+            NoticeKind::Mention => (icons::LABEL, "mentioned you"),
+            NoticeKind::Like => (icons::STAR, "likes your post"),
+            NoticeKind::Boost => (icons::SHARE, "passed on your post"),
+            NoticeKind::Follow => (icons::FOLLOW, "follows you"),
+        };
+        let card = raised_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                avatar(ui, &n.who.name, ChatKind::Private, 28.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{icon}  {} {words}", n.who.name)).color(
+                            if n.read {
+                                theme::p().text
+                            } else {
+                                theme::p().cream
+                            },
+                        ),
+                    );
+                    let mut line = ago(n.created_ms, now);
+                    if !n.who.local {
+                        line = format!("{} · {line}", n.who.address);
+                    }
+                    ui.label(egui::RichText::new(line).size(theme::SIZE_SUB).color(
+                        if n.who.local {
+                            theme::p().text_dim
+                        } else {
+                            theme::PUBLIC
+                        },
+                    ));
+                    if let Some(e) = &n.excerpt {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(e)
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::p().text_dim),
+                            )
+                            .truncate(),
+                        );
+                    }
+                });
+            });
+        });
+        if let (Some(post), Some(community)) = (n.post, n.community) {
+            let r = card.response.interact(egui::Sense::click());
+            if theme::named(ui, r, &n.who.name)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                open = Some((community, post));
+            }
+        }
+        ui.add_space(4.0);
+    }
+    open
+}
+
 /// One post, as a card. Answers whether it was tapped (to open its thread).
 fn post_card(
     ui: &mut egui::Ui,
@@ -716,8 +1060,8 @@ fn post_card(
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let can_act = p.mine || moderates;
-                if can_act && theme::kebab_button(ui).clicked()
+                // Anybody may report what is not theirs.
+                if theme::kebab_button(ui).clicked()
                 {
                     cs.posts.menu_for = if cs.posts.menu_for == Some(p.id) {
                         None
@@ -727,29 +1071,52 @@ fn post_card(
                 }
             });
         });
-        if cs.posts.editing.as_ref().is_some_and(|(e, _)| *e == p.id) {
+        if let Some(to) = &p.answers {
+            ui.label(
+                egui::RichText::new(format!("{}  to {to}", icons::CHAT))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::p().text_dim),
+            );
+        }
+        let hidden = warning_gate(ui, cs, p);
+        if hidden {
+            // Behind its warning: the words and pictures wait.
+        } else if cs.posts.editing.as_ref().is_some_and(|(e, _)| *e == p.id) {
             edit_box(ui, cs, c.id, p.id);
         } else {
             ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::p().text)).wrap());
         }
+        let pictures_shown = !hidden && sensitive_gate(ui, cs, p);
         // The polaroid keeps its own proportions: its frame is
         // part of the picture, and a crop would cut them off.
-        if let Some(t) = &snapshot {
+        if let Some(t) = snapshot.as_ref().filter(|_| !hidden) {
             let w = ui.available_width().min(420.0);
             let size = t.size_vec2();
             ui.add(
                 egui::Image::new(t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))),
             );
         }
-        if let Some(t) = &picture {
+        let more = p
+            .more_pictures
+            .iter()
+            .filter_map(|x| cs.picture(ui.ctx(), Some(&x.hash)).map(|t| (t, x.alt.clone())));
+        let pictures: Vec<_> = picture
+            .into_iter()
+            .map(|t| (t, p.picture_alt.clone()))
+            .chain(more)
+            .collect();
+        for (t, alt) in pictures.iter().filter(|_| pictures_shown) {
             let w = ui.available_width();
             let size = t.size_vec2();
             let h = (w * size.y / size.x.max(1.0)).min(220.0);
-            ui.add(
+            let shown = ui.add(
                 egui::Image::new(t)
                     .fit_to_exact_size(egui::vec2(w, h))
                     .corner_radius(10.0),
             );
+            if let Some(alt) = alt {
+                shown.on_hover_text(alt);
+            }
         }
         ui.horizontal_wrapped(|ui| {
             match &p.place {
@@ -771,15 +1138,7 @@ fn post_card(
                     );
                 }
             }
-            // Votes from other servers: Mastodon's favourites, Lemmy's votes.
-            let votes = match (p.likes, p.dislikes) {
-                (0, 0) => None,
-                (l, 0) => Some(format!("{l} like{}", if l == 1 { "" } else { "s" })),
-                (l, d) => Some(format!("{l} up · {d} down")),
-            };
-            if let Some(v) = votes {
-                ui.label(egui::RichText::new(v).size(theme::SIZE_SUB).color(theme::p().text_dim));
-            }
+            actions_row(ui, cs, p);
             if p.parent.is_none() && tappable {
                 let n = p.replies;
                 if theme::chip(
@@ -851,6 +1210,14 @@ fn post_card(
                     }
                 }
             });
+            if !p.mine
+                && theme::action_button(ui, format!("{} Report", icons::FLAG))
+                    .on_hover_text("To this community's moderators")
+                    .clicked()
+            {
+                cs.posts.reporting = Some((p.id, String::new(), false));
+                cs.posts.menu_for = None;
+            }
             if moderates && !p.author.local {
                 theme::note(
                     ui,
@@ -858,6 +1225,7 @@ fn post_card(
                 );
             }
         }
+        report_box(ui, cs, p);
     });
     if tappable {
         let card = frame.response.interact(egui::Sense::click());
@@ -951,6 +1319,21 @@ fn thread_view(
         ui.add_space(4.0);
     }
     ui.add_space(6.0);
+    if let Some((_, name)) = cs.posts.reply_to.clone() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{}  To {name}", icons::CHAT))
+                    .size(theme::SIZE_SUB)
+                    .color(theme::p().text_dim),
+            );
+            if theme::close_button(ui)
+                .on_hover_text("Answer the post instead")
+                .clicked()
+            {
+                cs.posts.reply_to = None;
+            }
+        });
+    }
     crate::systems::text_touch::field(
         ui,
         egui::TextEdit::multiline(&mut cs.posts.reply)
@@ -975,10 +1358,11 @@ fn thread_view(
         })
         .unwrap_or_default();
         let root = t.post.id;
+        let to = cs.posts.reply_to.as_ref().map_or(root, |(id, _)| *id);
         cs.posts.spawn(async move {
             Done::Replied(
                 root,
-                json(api_post(&format!("/api/posts/{root}/replies"), Some(body)).await),
+                json(api_post(&format!("/api/posts/{to}/replies"), Some(body)).await),
             )
         });
     }
@@ -1110,6 +1494,7 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             }
         }
     }
+    draft_extras(ui, cs, c.id, picture.is_some());
     ui.add_space(6.0);
     // Camera and Upload, the same two round buttons wherever a picture can be
     // added (`docs/mockups/social-camera/`). The camera's In world mode is
@@ -1191,6 +1576,13 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                 cs.posts.sending = true;
                 let body = serde_json::to_string(&NewPost {
                     text: d.text.trim().to_string(),
+                    sensitive: d.sensitive && d.picture.is_some(),
+                    picture_alt: Some(d.alt.trim().to_string())
+                        .filter(|a| !a.is_empty() && d.picture.is_some()),
+                    warning: d
+                        .warning
+                        .map(|w| w.trim().to_string())
+                        .filter(|w| !w.is_empty()),
                     picture: d.picture,
                     snapshot: d.snapshot,
                     place,
@@ -1739,6 +2131,14 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
                 mine: false,
                 likes: replies * 2,
                 dislikes: 0,
+                boosts: 0,
+                liked: false,
+                boosted: false,
+                answers: None,
+                warning: None,
+                sensitive: false,
+                picture_alt: None,
+                more_pictures: Vec::new(),
             }
         };
     let mut feed = vec![
@@ -1793,6 +2193,9 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
             }),
             picture: None,
             snapshot: None,
+            warning: None,
+            alt: String::new(),
+            sensitive: false,
         });
     }
 }
@@ -1855,6 +2258,14 @@ mod tests {
             mine: false,
             likes: 0,
             dislikes: 0,
+            boosts: 0,
+            liked: false,
+            boosted: false,
+            answers: None,
+            warning: None,
+            sensitive: false,
+            picture_alt: None,
+            more_pictures: Vec::new(),
         };
         posts
             .feeds
@@ -1875,4 +2286,45 @@ mod tests {
         posts.layer = true;
         assert_eq!(posts.map_posts().len(), 2);
     }
+}
+/// Activity: what happened to this account's public posts, as a screen of its
+/// own over the chat list. A notice about a post opens that post's thread on
+/// its community's page.
+pub fn activity_screen(ui: &mut egui::Ui, cs: &mut Communities) {
+    let clicked = ui
+        .add(egui::Button::new(format!("{}  Chats", icons::CHEVRON_LEFT)).frame(false))
+        .clicked();
+    if theme::page_back(ui.ctx(), clicked) {
+        cs.screen = None;
+        return;
+    }
+    ui.label(
+        egui::RichText::new("Activity")
+            .size(theme::SIZE_TITLE)
+            .color(theme::p().cream),
+    );
+    theme::note(
+        ui,
+        "Replies, mentions, likes and followers on your public posts, here and on other servers.",
+    );
+    ui.add_space(6.0);
+    if let Some((community, post)) = notices_list(ui, cs) {
+        cs.posts.focus(community, post);
+        cs.screen = Some(crate::systems::communities::Screen::Community(community));
+    }
+}
+
+/// The way into Activity from the chat list, while there is any. Answers
+/// whether it was tapped.
+pub fn activity_entry(ui: &mut egui::Ui, cs: &mut Communities) -> bool {
+    cs.posts.refresh_notices(false);
+    let Some(n) = cs.posts.notices.as_ref().filter(|n| !n.items.is_empty()) else {
+        return false;
+    };
+    let label = if n.unread > 0 {
+        format!("{}  Activity · {} new", icons::STAR, n.unread)
+    } else {
+        format!("{}  Activity on your posts", icons::STAR)
+    };
+    theme::chip(ui, &label, n.unread > 0).clicked()
 }

@@ -1521,6 +1521,9 @@ fn list_screen(
                 if pick.is_some() {
                     act.calendar_pick = pick;
                 }
+                if crate::systems::community_posts::activity_entry(ui, communities) {
+                    communities.screen = Some(crate::systems::communities::Screen::Activity);
+                }
                 ui.add_space(4.0);
             }
             if !rows.is_empty() {

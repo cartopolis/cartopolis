@@ -79,6 +79,8 @@ pub enum Screen {
     Invite(String),
     /// "Post this view" from the map: which community to post it in.
     PostTo,
+    /// Replies, likes and followers on this account's public posts.
+    Activity,
 }
 
 /// A form being filled in: starting or editing a community.
@@ -800,6 +802,7 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
             Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
             Screen::Invite(code) => invite_screen(ui, communities, &code, &mut out),
             Screen::PostTo => crate::systems::community_posts::pick_community(ui, communities),
+            Screen::Activity => crate::systems::community_posts::activity_screen(ui, communities),
         });
     out
 }
