@@ -63,6 +63,21 @@ Verder: `predicted_dt` staat nooit (egui rekent met 1/60 s, een telefoon haalt
 25–40 ms), JPEG-decode en opslag op de UI-thread, negen eigen paginastapels,
 vegen als drempel in plaats van beweging, een toetsenbord dat bedekt en niets
 schuift, en de egui-pass als tweede volledige pass over het eindbeeld.
+(Oorzaak 9 is intussen gemeten: sessie s663 ziet op mac-2 ~0,3 ms per frame
+voor `egui_pass`, 2026-11-10. Samenvoegen met upscaling is daarmee geen
+prioriteit; de telefoon moet nog gemeten worden.)
+
+## Wat er gebouwd is
+
+- **Stap 1** (51a3b6d0): `systems::motion`, de instelling Motion, komen en
+  gaan voor de kaartjes en de ring, 360 / 240 ms voor de panelen, de
+  druk-schaal op ronde knoppen, de frame-pacing die een lopende animatie als
+  bezig telt, `predicted_dt`, en de vier klok-fades die om hertekening vragen.
+  De dock en het menu wachten op sessie s651, die beide hertekent.
+- **Stap 2** (8fa8164d): `motion::grabber` / `motion::follow`: de plek- en
+  gebouwkaart volgen de vinger en rusten op twee en drie hoogten; de
+  routekaart en het lensblad nemen dezelfde grabber.
+- **Stap 3, begin**: `motion::page_turn`, eerst voor Settings.
 
 Wat het wordt: `theme::motion` als de ene plek voor tijd en curve (zoals `theme`
 dat voor kleur is), een dunne laag over `ctx.animate_*` zodat egui zelf weet
