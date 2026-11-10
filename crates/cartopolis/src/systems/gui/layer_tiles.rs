@@ -3,9 +3,10 @@
 //! hit-testing live here; which layers exist and what they switch is
 //! `data_layers::render_data_layers_panel`.
 //!
-//! A tile is the switch, whole: the panel used to be ~40 checkboxes three levels
-//! deep, and a checkbox row is a 20 pt target on a phone. A tile is a thumb's
-//! width and the full rectangle answers the tap.
+//! A layer is a row with its switch, whole: the panel used to be ~40 checkboxes
+//! three levels deep, and a checkbox row is a 20 pt target on a phone. A row is
+//! the full width of the panel and answers the tap anywhere on it (it was a
+//! tile, three to a row, until 2026-11-10).
 
 use egui::{
     Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -162,12 +163,23 @@ pub struct GridResponse {
     pub changed: bool,
 }
 
-/// Height of a tile, points.
-const TILE_H: f32 = 70.0;
+/// Gap between the base-map cards, points.
 const GAP: f32 = 7.0;
 
-/// A grid of tiles, three to a row. Each entry is the tile and the switch it
-/// drives; `open` is the tile whose options are showing, drawn with its ⋯ lit.
+/// Height of one layer row, points: a list row in the Settings panel's
+/// family, so a finger has the whole line.
+const ROW_H: f32 = 48.0;
+
+/// The layers of a group, as one card of rows — an icon, the layer's name and
+/// its switch on the right, a hairline between rows — the way the Settings
+/// panel draws its lists (`theme::list_group`). Each entry is the row and the
+/// switch it drives; `open` is the row whose options are showing, drawn with
+/// its ⋯ lit.
+///
+/// **A list since 2026-11-10.** It was a grid of tiles, three to a row, each
+/// its own bordered card with a small switch in its corner; beside the
+/// Settings panel's grouped rows the person called the tiles "cheap". The
+/// whole row still answers the tap, as the tile did.
 pub fn tile_grid(
     ui: &mut Ui,
     tiles: &mut [(Tile<'_>, &mut bool)],
@@ -175,154 +187,128 @@ pub fn tile_grid(
 ) -> GridResponse {
     let mut out = GridResponse::default();
     let w = ui.available_width();
-    let tile_w = ((w - 2.0 * GAP) / 3.0).floor();
-    for (row_i, row) in tiles.chunks_mut(3).enumerate() {
-        let (row_rect, _) = ui.allocate_exact_size(Vec2::new(w, TILE_H), Sense::hover());
-        for (col_i, (tile, on)) in row.iter_mut().enumerate() {
-            let index = row_i * 3 + col_i;
-            let rect = Rect::from_min_size(
-                Pos2::new(
-                    row_rect.left() + col_i as f32 * (tile_w + GAP),
-                    row_rect.top(),
-                ),
-                Vec2::new(tile_w, TILE_H),
+    let n = tiles.len();
+    let (card, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H * n as f32), Sense::hover());
+    let corner = CornerRadius::same(16);
+    ui.painter()
+        .add(theme::card_shadow().as_shape(card, corner));
+    ui.painter().rect(
+        card,
+        corner,
+        theme::p().card,
+        Stroke::new(1.0, theme::p().list_line),
+        StrokeKind::Inside,
+    );
+    for (index, (tile, on)) in tiles.iter_mut().enumerate() {
+        let rect = Rect::from_min_size(
+            Pos2::new(card.left(), card.top() + index as f32 * ROW_H),
+            Vec2::new(w, ROW_H),
+        );
+        // The ⋯ sits left of the switch.
+        let more_rect = Rect::from_center_size(
+            Pos2::new(rect.right() - 66.0, rect.center().y),
+            Vec2::new(30.0, ROW_H),
+        );
+        let resp = theme::named(
+            ui,
+            ui.interact(rect, ui.id().with(("tile", tile.label)), Sense::click()),
+            tile.label,
+        );
+        // The ⋯ *after* the row: egui gives a press to the widget registered
+        // last, so this is what lets the ⋯ win its patch.
+        let more_resp = tile.more.then(|| {
+            let resp = ui.interact(
+                more_rect,
+                ui.id().with(("tile_more", tile.label)),
+                Sense::click(),
             );
-            // Beside the switch on the top row, so the label below keeps the
-            // tile's full width (it broke "Satellites" mid-word in the corner).
-            let more_rect = Rect::from_min_size(
-                Pos2::new(rect.right() - 66.0, rect.top() + 2.0),
-                Vec2::new(30.0, 28.0),
-            );
-            let resp = theme::named(
-                ui,
-                ui.interact(rect, ui.id().with(("tile", tile.label)), Sense::click()),
-                tile.label,
-            );
-            // The ⋯ corner *after* the tile: egui gives a press to the widget
-            // registered last, so this is what lets the corner win its patch.
-            let more_resp = tile.more.then(|| {
-                let resp = ui.interact(
-                    more_rect,
-                    ui.id().with(("tile_more", tile.label)),
-                    Sense::click(),
-                );
-                theme::named(ui, resp, &format!("More: {}", tile.label))
-            });
-            let more_hit = more_resp.as_ref().is_some_and(|r| r.clicked());
-            if more_hit {
-                out.more = Some(index);
-            } else if resp.clicked() {
-                **on = !**on;
-                out.changed = true;
-            }
-            if let Some(why) = tile.unseen.filter(|_| **on) {
-                resp.clone().on_hover_text(why);
-            }
-            paint_tile(ui, rect, tile, **on, resp.hovered(), open == Some(index));
+            theme::named(ui, resp, &format!("More: {}", tile.label))
+        });
+        let more_hit = more_resp.as_ref().is_some_and(|r| r.clicked());
+        if more_hit {
+            out.more = Some(index);
+        } else if resp.clicked() {
+            **on = !**on;
+            out.changed = true;
         }
-        ui.add_space(GAP);
+        if let Some(why) = tile.unseen.filter(|_| **on) {
+            resp.clone().on_hover_text(why);
+        }
+        paint_row(
+            ui,
+            rect,
+            tile,
+            **on,
+            resp.hovered(),
+            open == Some(index),
+            index + 1 < n,
+        );
     }
+    ui.add_space(8.0);
     out
 }
 
-fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, open: bool) {
+fn paint_row(
+    ui: &Ui,
+    rect: Rect,
+    tile: &Tile<'_>,
+    on: bool,
+    hovered: bool,
+    open: bool,
+    rule: bool,
+) {
     let painter = ui.painter();
     let dim = on && tile.unseen.is_some();
-    // A card as the midas hub draws one (a surface, a quiet hairline, a soft
-    // shadow); a layer that is on is the hub's soft teal with an accent rim.
-    let (fill, stroke) = if on && !dim {
-        (theme::p().tile_on, Stroke::new(1.2, theme::p().accent))
-    } else if hovered {
-        (theme::p().surface_raised, Stroke::new(1.0, theme::p().line))
-    } else {
-        (
-            theme::p().surface,
-            Stroke::new(1.0, theme::p().surface_hover),
-        )
-    };
-    painter.add(theme::card_shadow().as_shape(rect, CornerRadius::same(theme::RADIUS_LG)));
+    if hovered {
+        painter.rect_filled(
+            rect.shrink(1.0),
+            CornerRadius::same(14),
+            theme::p().surface_raised,
+        );
+    }
+    if rule {
+        painter.hline(
+            (rect.left() + 48.0)..=rect.right(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, theme::p().list_line),
+        );
+    }
     let text = if dim {
         theme::p().text_dim
-    } else if on {
-        theme::p().cream
     } else {
         theme::p().text
     };
-    painter.rect(
-        rect,
-        CornerRadius::same(14),
-        fill,
-        stroke,
-        StrokeKind::Inside,
-    );
     painter.text(
-        rect.left_top() + Vec2::new(10.0, 9.0),
-        Align2::LEFT_TOP,
+        Pos2::new(rect.left() + 24.0, rect.center().y),
+        Align2::CENTER_CENTER,
         tile.icon,
-        FontId::proportional(20.0),
+        FontId::proportional(18.0),
         if on && !dim {
             theme::p().accent_word
-        } else {
-            text
-        },
-    );
-    // The label, wrapped into the tile and anchored to its bottom.
-    let galley = painter.layout(
-        tile.label.to_string(),
-        FontId::proportional(theme::SIZE_SUB),
-        text,
-        rect.width() - 16.0,
-    );
-    painter.galley(
-        Pos2::new(rect.left() + 10.0, rect.bottom() - 9.0 - galley.size().y),
-        galley,
-        text,
-    );
-    // The switch, top right: a pill with a knob, so the state reads even
-    // without the tint (and for a dimmed one, which loses it).
-    let pill = Rect::from_min_size(
-        rect.right_top() + Vec2::new(-34.0, 9.0),
-        Vec2::new(25.0, 14.0),
-    );
-    painter.rect_filled(
-        pill,
-        CornerRadius::same(7),
-        if on {
-            theme::p().accent
-        } else {
-            theme::p().surface_hover
-        },
-    );
-    let knob_x = if on {
-        pill.right() - 7.0
-    } else {
-        pill.left() + 7.0
-    };
-    painter.circle_filled(
-        Pos2::new(knob_x, pill.center().y),
-        5.0,
-        if on {
-            theme::p().knob_on
         } else {
             theme::p().text_dim
         },
     );
-    // Left of the switch, on the top row.
-    let corner = Pos2::new(pill.left() - 6.0, pill.center().y);
-    if tile.more {
-        painter.text(
-            corner,
-            Align2::RIGHT_CENTER,
-            icons::MORE,
-            FontId::proportional(18.0),
-            if open {
-                theme::p().accent
-            } else {
-                theme::p().text_dim
-            },
+    // The name, cut to the room left of the ⋯ and the switch.
+    let room = rect.width() - 48.0 - if tile.more { 92.0 } else { 62.0 };
+    let galley = painter.layout(
+        tile.label.to_string(),
+        FontId::proportional(theme::SIZE_BODY),
+        text,
+        room,
+    );
+    let label_h = galley.size().y;
+    let label_w = galley.size().x;
+    painter.galley(
+        Pos2::new(rect.left() + 48.0, rect.center().y - label_h * 0.5),
+        galley,
+        text,
+    );
+    if tile.nl {
+        let r = Rect::from_min_size(
+            Pos2::new(rect.left() + 48.0 + label_w + 6.0, rect.center().y - 6.0),
+            Vec2::new(18.0, 12.0),
         );
-    } else if tile.nl {
-        let r = Rect::from_min_size(corner - Vec2::new(18.0, 6.0), Vec2::new(18.0, 12.0));
         painter.rect_stroke(
             r,
             CornerRadius::same(3),
@@ -337,6 +323,47 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
             theme::p().text_dim,
         );
     }
+    if tile.more {
+        painter.text(
+            Pos2::new(rect.right() - 66.0, rect.center().y),
+            Align2::CENTER_CENTER,
+            icons::MORE,
+            FontId::proportional(18.0),
+            if open {
+                theme::p().accent
+            } else {
+                theme::p().text_dim
+            },
+        );
+    }
+    // The switch, right: a pill with a knob.
+    let pill = Rect::from_center_size(
+        Pos2::new(rect.right() - 30.0, rect.center().y),
+        Vec2::new(34.0, 20.0),
+    );
+    painter.rect_filled(
+        pill,
+        CornerRadius::same(10),
+        if on {
+            theme::p().accent
+        } else {
+            theme::p().surface_hover
+        },
+    );
+    let knob_x = if on {
+        pill.right() - 10.0
+    } else {
+        pill.left() + 10.0
+    };
+    painter.circle_filled(
+        Pos2::new(knob_x, pill.center().y),
+        7.0,
+        if on {
+            theme::p().knob_on
+        } else {
+            theme::p().text_dim
+        },
+    );
 }
 
 /// The ground: one choice of three, as cards.

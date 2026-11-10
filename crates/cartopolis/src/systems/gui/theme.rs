@@ -2519,6 +2519,83 @@ pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
     out
 }
 
+/// A row of a page's actions as one card: equal cells split by hairlines,
+/// each an icon over its word — the actions under a community's name. Returns
+/// the cell tapped. `on` cells (a form that is open below) wear the accent.
+///
+/// It replaces a row of separate outlined buttons, which beside the grouped
+/// lists of the Settings panel looked "cheap" (2026-11-10): one card with
+/// quiet dividers is the same family as [`list_group`].
+pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<usize> {
+    if cells.is_empty() {
+        return None;
+    }
+    let w = ui.available_width();
+    let (card, _) = ui.allocate_exact_size(egui::vec2(w, 60.0), egui::Sense::hover());
+    let corner = CornerRadius::same(16);
+    ui.painter().add(card_shadow().as_shape(card, corner));
+    ui.painter().rect(
+        card,
+        corner,
+        p().card,
+        Stroke::new(1.0, p().list_line),
+        egui::StrokeKind::Inside,
+    );
+    let cell_w = w / cells.len() as f32;
+    let mut picked = None;
+    for (i, (icon, label, on)) in cells.iter().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(card.left() + i as f32 * cell_w, card.top()),
+            egui::vec2(cell_w, card.height()),
+        );
+        let resp = ui.interact(
+            rect,
+            ui.id().with(("action_strip", i)),
+            egui::Sense::click(),
+        );
+        let resp = named(ui, resp, label);
+        if resp.clicked() {
+            picked = Some(i);
+        }
+        let painter = ui.painter();
+        if resp.hovered() || *on {
+            painter.rect_filled(
+                rect.shrink(3.0),
+                CornerRadius::same(12),
+                if *on {
+                    p().accent_muted
+                } else {
+                    p().surface_raised
+                },
+            );
+        }
+        if i > 0 {
+            painter.vline(
+                rect.left(),
+                (rect.top() + 12.0)..=(rect.bottom() - 12.0),
+                Stroke::new(1.0, p().list_line),
+            );
+        }
+        painter.text(
+            egui::pos2(rect.center().x, rect.top() + 21.0),
+            egui::Align2::CENTER_CENTER,
+            *icon,
+            FontId::proportional(18.0),
+            p().accent_word,
+        );
+        painter.text(
+            egui::pos2(rect.center().x, rect.bottom() - 15.0),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            FontId::proportional(SIZE_SUB),
+            p().text,
+        );
+        paint_focus_ring(ui, &resp, rect, false);
+    }
+    ui.add_space(8.0);
+    picked
+}
+
 /// One row of a [`list_group`]: an icon on a small raised square, a title, an
 /// optional line under it, and `end` on the right. `tone` is the icon's ink
 /// ([`Palette::accent`] for most, [`Palette::warn`] on the admin pages, [`Palette::error`] for a row that

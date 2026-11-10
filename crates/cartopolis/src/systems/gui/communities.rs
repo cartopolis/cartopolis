@@ -1312,38 +1312,45 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     );
     ui.add_space(4.0);
     let may_start = moderates || c.settings.members_start_topics;
-    let shown_actions = 1 + usize::from(may_start) + 2 * usize::from(moderates);
-    ui.horizontal(|ui| {
-        let w = theme::equal_width(ui, shown_actions);
-        if moderates
-            // "Invite", not "People": the count beside it is who is in it,
-            // and two buttons that read "People" did two different things.
-            && theme::secondary_toggle(ui, icons::ADD, "Invite", w, cs.adding)
-                .on_hover_text("Add people")
-                .clicked()
-        {
+    // One card of actions (`theme::action_strip`), each an icon over its word.
+    // "Invite", not "People": two cells that read "People" did two different
+    // things; the people are "People 5".
+    #[derive(Clone, Copy)]
+    enum Act {
+        Invite,
+        Topic,
+        People,
+        Edit,
+    }
+    let people_word = format!("People {}", c.members.len());
+    let mut acts: Vec<(Act, (&str, &str, bool))> = Vec::new();
+    if moderates {
+        acts.push((Act::Invite, (icons::ADD, "Invite", cs.adding)));
+    }
+    if may_start {
+        acts.push((Act::Topic, (icons::ADD, "New topic", cs.starting_topic)));
+    }
+    acts.push((Act::People, (icons::GROUP, people_word.as_str(), false)));
+    if moderates {
+        acts.push((Act::Edit, (icons::SETTINGS, "Edit", false)));
+    }
+    let cells: Vec<_> = acts.iter().map(|(_, cell)| *cell).collect();
+    match theme::action_strip(ui, &cells).map(|i| acts[i].0) {
+        Some(Act::Invite) => {
             cs.adding = !cs.adding;
             cs.starting_topic = false;
         }
-        if may_start
-            && theme::secondary_toggle(ui, icons::ADD, "Topic", w, cs.starting_topic)
-                .on_hover_text("Start a topic")
-                .clicked()
-        {
+        Some(Act::Topic) => {
             cs.starting_topic = !cs.starting_topic;
             cs.adding = false;
         }
-        if theme::secondary_button(ui, icons::GROUP, &c.members.len().to_string(), w)
-            .on_hover_text("Who is in it")
-            .clicked()
-        {
-            cs.screen = Some(Screen::People(id));
-        }
-        if moderates && theme::secondary_button(ui, icons::SETTINGS, "Edit", w).clicked() {
+        Some(Act::People) => cs.screen = Some(Screen::People(id)),
+        Some(Act::Edit) => {
             cs.draft = Draft::of(&c);
             cs.screen = Some(Screen::Edit(id));
         }
-    });
+        None => {}
+    }
     if cs.adding {
         raised_frame().show(ui, |ui| {
             crate::systems::text_touch::field(
