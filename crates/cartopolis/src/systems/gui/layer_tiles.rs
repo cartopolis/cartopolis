@@ -129,13 +129,13 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
         );
         if counts[i] > 0 {
             let badge = Pos2::new(centre.x + DISC / 2.0 - 4.0, col.top() + 5.0);
-            painter.circle_filled(badge, 8.0, theme::p().cream);
+            painter.circle_filled(badge, 8.0, theme::p().gold);
             painter.text(
                 badge,
                 Align2::CENTER_CENTER,
                 counts[i].to_string(),
                 FontId::proportional(10.0),
-                theme::p().ink,
+                theme::p().on_gold,
             );
         }
     }
@@ -379,28 +379,16 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
     let w = ui.available_width();
     let card_w = ((w - 2.0 * GAP) / 3.0).floor();
     let (row, _) = ui.allocate_exact_size(Vec2::new(w, 54.0), Sense::hover());
+    // Three plain cards, the chosen one rimmed and its icon in the accent.
+    // They were painted in the ground's own colours (paper beige, an aerial
+    // olive), which the person found ugly beside the rest (2026-11-10).
     let cards = [
-        (
-            Basemap::Drawn,
-            "Drawn map",
-            Color32::from_rgb(0xE6, 0xE0, 0xD2),
-            theme::DARK.ink,
-        ),
-        (
-            Basemap::Aerial,
-            "Aerial photo",
-            Color32::from_rgb(0x5E, 0x6B, 0x52),
-            Color32::WHITE,
-        ),
-        (
-            Basemap::None,
-            "No ground",
-            theme::p().surface_hover,
-            theme::p().text,
-        ),
+        (Basemap::Drawn, "Drawn map"),
+        (Basemap::Aerial, "Aerial photo"),
+        (Basemap::None, "No ground"),
     ];
     let mut picked = None;
-    for (i, (choice, label, fill, ink)) in cards.into_iter().enumerate() {
+    for (i, (choice, label)) in cards.into_iter().enumerate() {
         let rect = Rect::from_min_size(
             Pos2::new(row.left() + i as f32 * (card_w + GAP), row.top()),
             Vec2::new(card_w, row.height()),
@@ -414,15 +402,25 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
             picked = Some(choice);
         }
         let sel = current == choice;
+        let ink = if sel {
+            theme::p().accent_word
+        } else {
+            theme::p().text
+        };
         let painter = ui.painter();
+        painter.add(theme::card_shadow().as_shape(rect, CornerRadius::same(12)));
         painter.rect(
             rect,
             CornerRadius::same(12),
-            fill,
+            if resp.hovered() && !sel {
+                theme::p().surface_raised
+            } else {
+                theme::p().card
+            },
             if sel {
                 Stroke::new(2.0, theme::p().accent)
             } else {
-                Stroke::new(1.0, theme::p().overlay_line)
+                Stroke::new(1.0, theme::p().list_line)
             },
             StrokeKind::Inside,
         );

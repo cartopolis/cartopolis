@@ -29,14 +29,14 @@
 //! Three consequences worth knowing before editing a value:
 //!
 //!   - **The state ladder is monotonic in lightness** — rest ([`Palette::surface_raised`])
-//!     → hover ([`Palette::surface_hover`] plus an [`Palette::accent`] rim) → pressed
-//!     ([`Palette::accent_muted`], a deep teal, plus an [`Palette::accent_ring`] rim) → engaged
-//!     (an [`Palette::accent`] plate carrying [`Palette::ink`]). Each step is up, so state still
+//!     → hover ([`Palette::surface_hover`] plus a [`Palette::accent_word`] rim) → pressed
+//!     ([`Palette::accent_muted`], a deep teal, plus the same rim) → engaged
+//!     (an [`Palette::accent`] plate carrying [`Palette::on_accent`]). Each step is up, so state still
 //!     reads for someone who cannot see the hue.
-//!   - **Text on the accent is [`Palette::ink`], never [`Palette::cream`]** — [`Palette::cream`] on the
-//!     teal measures 1.9:1. This is what `active.weak_bg_fill` being
-//!     [`Palette::accent_muted`] protects (see [`widgets`]): a pressed button carries a
-//!     light label, so its fill is the deep teal, not the accent.
+//!   - **Text on the accent is [`Palette::on_accent`], white** (since 2026-11-10,
+//!     on a deep teal; it was dark ink on a bright one). A pressed button keeps
+//!     its fill [`Palette::accent_muted`] (see [`widgets`]), so its label stays
+//!     [`Palette::cream`].
 //!   - **Two constants deliberately share a value.** [`Palette::accent_text`] and
 //!     [`Palette::accent_bright`] are both pure white: one is type, one is a stroke, they
 //!     answer to different tests. Keeping both names is what lets one move
@@ -59,9 +59,9 @@
 //!
 //! Contrast was checked against the surface each colour actually lands on:
 //! [`Palette::text`] is 14.3:1 on [`Palette::surface`], [`Palette::text_dim`] 9.4:1, [`Palette::accent_text`] 17.6:1.
-//! Plain [`Palette::accent`] is 8.6:1, comfortable as a fill, a rule or a ring on any
+//! Plain [`Palette::accent`] is 3.9:1, enough for a fill, a rule or a ring (3:1) on any
 //! surface in the ramp. Anything sitting *on* an accent fill is drawn in
-//! [`Palette::on_accent`] (9.1:1) rather than [`Palette::cream`] (1.9:1).
+//! [`Palette::on_accent`], white, at 4.5:1.
 //! (The numbers in this note are the dark theme's.)
 //!
 //! **Two palettes, since 2026-11-10.** Everything above describes [`DARK`],
@@ -124,9 +124,10 @@ pub struct Palette {
     /// which shared this value until the light theme split them (2026-11-10).
     pub ink: Color32,
     /// The ink on an [`Palette::accent`] plate (an engaged disc, a ticked box,
-    /// the primary button's label): `#0F1416` in both themes, since the accent
-    /// is a teal light enough to carry it in both. [`Palette::cream`] on the teal measures
-    /// 1.9:1 in the dark theme, so a plate is never labelled in it.
+    /// the primary button's label): white in both themes, on a deep teal
+    /// (`#2B837E`, 4.5:1). Until 2026-11-10 the plate was the bright
+    /// `#5CC6C0` with `#0F1416` on it, and the person found "a teal button
+    /// with black text" not nice.
     pub on_accent: Color32,
     /// The ink on a status-coloured plate ([`Palette::error`], [`Palette::warn`]
     /// as a fill — an armed confirm, a raised hand): [`Palette::ink`] in the
@@ -158,37 +159,31 @@ pub struct Palette {
     /// fixed ratio cannot be a translucent one, because what it composites over
     /// changes with the surface under it.
     pub line: Color32,
-    /// The live tone — **teal**: `#5CC6C0` dark, the same hue deeper on the
-    /// light theme (`#34938E`, see [`LIGHT`]). Selected segments,
-    /// ticked boxes, hover and focus rings, sliders, and the plate an engaged
+    /// The live tone — **teal**, `#2B837E` in both themes (since 2026-11-10;
+    /// it was the bright `#5CC6C0` with dark ink on it). Selected segments,
+    /// ticked boxes, sliders, the primary button and the plate an engaged
     /// control wears: the one saturated colour in the chrome, so it always
-    /// means "this is the live thing". It carries [`Palette::on_accent`] at
-    /// 9.1:1, so anything filled with it is labelled in that.
+    /// means "this is the live thing". It carries [`Palette::on_accent`]
+    /// (white) at 4.5:1, so anything filled with it is labelled in that.
     pub accent: Color32,
     /// The accent at the top of its ladder, as a **stroke**: the text cursor,
     /// a text-selection handle, the rim on a *held* control (north-up lock,
     /// caps lock). White in the dark theme, the hub's deep accent text in the
     /// light one.
     pub accent_bright: Color32,
-    /// The fill an accent plate lifts to under the pointer
-    /// ([`primary_button_sized`]): white in the dark theme (the same value as
-    /// [`Palette::accent_bright`], which it was until the light theme needed a
-    /// fill that still carries [`Palette::on_accent`]), the hub's own accent
-    /// in the light one.
+    /// The fill an accent plate changes to under the pointer
+    /// ([`primary_button_sized`]): a step deeper, so the white label still
+    /// reads (5.1:1).
     pub accent_lift: Color32,
-    /// The ring around an *accent-filled* widget: the pressed button, the
-    /// focused control, a dock disc whose panel is open.
-    ///
-    /// Two jobs: on the [`Palette::accent_muted`] of a pressed button it is the
-    /// boundary (7.4:1 dark, well over the 3:1 a UI component needs), and on
-    /// the [`Palette::accent`] plate of an engaged disc it is the rim. In the
-    /// light theme it is a deeper teal than the hub's, because the plate itself
-    /// is only 2:1 on a white page and the ring is what bounds it there.
+    /// The rim of an *accent-filled* plate: an engaged disc, a dock disc whose
+    /// panel is open. A deeper teal than the plate, so the white glyph inside
+    /// would read on it too (5.8:1). The rim of a pressed or hovered *button*
+    /// is [`Palette::accent_word`] instead, which clears 3:1 on those fills.
     pub accent_ring: Color32,
     /// The accent, pushed *down* — the fill of an accent-filled button while
     /// the pointer is held on it. A press moves the opposite way from a hover,
     /// or the two states are one state. Its label is still
-    /// [`Palette::on_accent`], at 6.5:1 (dark).
+    /// [`Palette::on_accent`], at 5.8:1.
     pub accent_pressed: Color32,
     /// The top of the *text* ladder — [`Palette::text`] → [`Palette::cream`]
     /// → this. Links, speaker names, emphasised values, the open menu entry.
@@ -290,6 +285,12 @@ pub struct Palette {
     /// The knob of a switch that is on, over its accent track: dark ink in
     /// the dark theme, white in the light one, as a light UI draws a switch.
     pub knob_on: Color32,
+    /// A count on a round button (the layer categories): the midas hub's gold,
+    /// its one accent besides the teal, with [`Palette::on_gold`] on it. It was
+    /// a cream or near-black disc, which read as a black dot (2026-11-10).
+    pub gold: Color32,
+    /// The ink on [`Palette::gold`].
+    pub on_gold: Color32,
     /// Whether egui's dark visuals are the base ([`visuals`]).
     pub dark: bool,
 }
@@ -298,17 +299,17 @@ pub struct Palette {
 /// theme (2026-10-10) and laid out as the midas hub lays out its dark mode.
 pub const DARK: Palette = Palette {
     ink: Color32::from_rgb(0x0F, 0x14, 0x16),
-    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
+    on_accent: Color32::WHITE,
     on_status: Color32::from_rgb(0x0F, 0x14, 0x16),
     surface: Color32::from_rgb(0x14, 0x1A, 0x1C),
     surface_raised: Color32::from_rgb(0x1F, 0x28, 0x29),
     surface_hover: Color32::from_rgb(0x2A, 0x35, 0x36),
     line: Color32::from_rgb(0x63, 0x79, 0x7C),
-    accent: Color32::from_rgb(0x5C, 0xC6, 0xC0),
+    accent: Color32::from_rgb(0x2B, 0x83, 0x7E),
     accent_bright: Color32::WHITE,
-    accent_lift: Color32::WHITE,
-    accent_ring: Color32::from_rgb(0xA8, 0xDC, 0xD8),
-    accent_pressed: Color32::from_rgb(0x3F, 0xA9, 0xA2),
+    accent_lift: Color32::from_rgb(0x27, 0x7A, 0x75),
+    accent_ring: Color32::from_rgb(0x24, 0x70, 0x6C),
+    accent_pressed: Color32::from_rgb(0x24, 0x70, 0x6C),
     accent_text: Color32::WHITE,
     accent_word: Color32::from_rgb(0xA8, 0xDC, 0xD8),
     accent_muted: Color32::from_rgb(0x26, 0x3F, 0x42),
@@ -327,7 +328,9 @@ pub const DARK: Palette = Palette {
     list_line: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22),
     shadow: 1.0,
     tile_on: Color32::from_rgb(0x26, 0x3F, 0x42),
-    knob_on: Color32::from_rgb(0x0F, 0x14, 0x16),
+    knob_on: Color32::from_rgb(0xE2, 0xE9, 0xEA),
+    gold: Color32::from_rgb(0xD8, 0xC0, 0x7A),
+    on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
     dark: true,
 };
 
@@ -346,17 +349,17 @@ pub const DARK: Palette = Palette {
 ///     plate's ink).
 pub const LIGHT: Palette = Palette {
     ink: Color32::from_rgb(0xE7, 0xED, 0xED),
-    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
+    on_accent: Color32::WHITE,
     on_status: Color32::WHITE,
     surface: Color32::WHITE,
     surface_raised: Color32::from_rgb(0xF8, 0xFA, 0xFA),
     surface_hover: Color32::from_rgb(0xE7, 0xED, 0xED),
     line: Color32::from_rgb(0x78, 0x8B, 0x8E),
-    accent: Color32::from_rgb(0x34, 0x93, 0x8E),
+    accent: Color32::from_rgb(0x2B, 0x83, 0x7E),
     accent_bright: Color32::from_rgb(0x17, 0x69, 0x6A),
-    accent_lift: Color32::from_rgb(0x5C, 0xC6, 0xC0),
-    accent_ring: Color32::from_rgb(0x31, 0x8C, 0x87),
-    accent_pressed: Color32::from_rgb(0x31, 0x8C, 0x87),
+    accent_lift: Color32::from_rgb(0x27, 0x7A, 0x75),
+    accent_ring: Color32::from_rgb(0x24, 0x70, 0x6C),
+    accent_pressed: Color32::from_rgb(0x24, 0x70, 0x6C),
     accent_text: Color32::from_rgb(0x17, 0x69, 0x6A),
     accent_word: Color32::from_rgb(0x17, 0x69, 0x6A),
     accent_muted: Color32::from_rgb(0xD9, 0xF0, 0xEE),
@@ -376,6 +379,8 @@ pub const LIGHT: Palette = Palette {
     shadow: 0.6,
     tile_on: Color32::WHITE,
     knob_on: Color32::WHITE,
+    gold: Color32::from_rgb(0xE0, 0xBC, 0x5C),
+    on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
     dark: false,
 };
 
@@ -841,13 +846,12 @@ fn widgets(c: &Palette) -> Widgets {
         // quieter than [`Palette::line`]; this one keeps the 3:1 a control boundary
         // needs (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
         inactive: visuals(c.surface, c.line, c.text),
-        hovered: visuals(c.surface_raised, c.accent, c.cream),
-        // Pressed / focused — **one fill, not two.** `bg_fill` (the graphical
-        // fill: slider grab, checkbox box) could take the full accent but
-        // `weak_bg_fill` (the button fill) carries a [`Palette::cream`] label, which
-        // measures 1.9:1 on the teal — so both are the dark [`Palette::accent_muted`],
-        // which carries [`Palette::cream`] at 10.5:1 and looks the same whether a control
-        // is a button or a checkbox.
+        hovered: visuals(c.surface_raised, c.accent_word, c.cream),
+        // Pressed / focused — **one fill, not two.** `weak_bg_fill` (the button
+        // fill) carries a [`Palette::cream`] label, so both fills are the deep
+        // [`Palette::accent_muted`], which carries [`Palette::cream`] at 10.5:1
+        // (dark) and looks the same whether a control is a button or a
+        // checkbox; its rim is [`Palette::accent_word`], clear of that fill.
         //
         // `fg_stroke` must stay bright regardless: egui derives
         // `Visuals::strong_text_color` from it, so *every* `RichText::strong()` in
@@ -855,7 +859,7 @@ fn widgets(c: &Palette) -> Widgets {
         // turn every bold value in the UI near-invisible.
         active: WidgetVisuals {
             expansion: 1.0,
-            ..visuals(c.accent_muted, c.accent_ring, c.cream)
+            ..visuals(c.accent_muted, c.accent_word, c.cream)
         },
         // An open menu button keeps the hover surface but drops the bright ring —
         // the popup below it is the thing to look at now.
@@ -2916,12 +2920,16 @@ pub fn segmented<T: PartialEq + Copy>(
     // The midas hub's segmented control (`m-segmented`): a sunken track with a
     // hairline, and the chosen option a raised card on it — not an accent
     // plate. The accent stays for the one primary action on a page.
+    //
+    // Since 2026-11-10 the track is a card like the lists around it and the
+    // chosen option the accent plate: the deep well with a raised card on it
+    // was "ugly" (the person, of the Clouds switch).
     let p = ui.painter().clone();
-    p.rect_filled(rect, CornerRadius::same(RADIUS), self::p().ink);
+    p.rect_filled(rect, CornerRadius::same(RADIUS_LG), self::p().card);
     p.rect_stroke(
         rect,
-        CornerRadius::same(RADIUS),
-        Stroke::new(1.0, self::p().surface_hover),
+        CornerRadius::same(RADIUS_LG),
+        Stroke::new(1.0, self::p().list_line),
         egui::StrokeKind::Inside,
     );
     let mut changed = false;
@@ -2938,18 +2946,15 @@ pub fn segmented<T: PartialEq + Copy>(
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, *label)
         });
         let (fill, ink) = if on {
-            (self::p().surface_raised, self::p().cream)
+            (self::p().accent, self::p().on_accent)
         } else if resp.is_pointer_button_down_on() {
-            (self::p().surface, self::p().cream)
+            (self::p().surface_hover, self::p().cream)
         } else if resp.hovered() {
-            (Color32::TRANSPARENT, self::p().cream)
+            (self::p().surface_raised, self::p().cream)
         } else {
             (Color32::TRANSPARENT, self::p().text_dim)
         };
-        let corner = CornerRadius::same(RADIUS - 3);
-        if on {
-            p.add(segment_shadow().as_shape(r, corner));
-        }
+        let corner = CornerRadius::same(RADIUS_LG - 3);
         p.rect_filled(r, corner, fill);
         p.text(
             r.center(),
@@ -3756,27 +3761,17 @@ mod tests {
             ("text on surface", c.text, c.surface, 14.3),
             ("text_dim on surface", c.text_dim, c.surface, 9.4),
             ("accent_text on surface", c.accent_text, c.surface, 17.6),
-            ("accent on surface", c.accent, c.surface, 8.6),
-            ("on_accent on accent", c.on_accent, c.accent, 9.1),
+            ("accent on surface", c.accent, c.surface, 3.9),
+            ("on_accent on accent", c.on_accent, c.accent, 4.5),
             ("cream on accent_muted", c.cream, c.accent_muted, 10.5),
             ("line on surface", c.line, c.surface, 3.8),
-            (
-                "accent_ring on accent_muted",
-                c.accent_ring,
-                c.accent_muted,
-                7.4,
-            ),
+            ("accent_lift label", c.on_accent, c.accent_lift, 5.1),
+            ("accent_ring label", c.on_accent, c.accent_ring, 5.8),
             (
                 "on_accent on accent_pressed",
                 c.on_accent,
                 c.accent_pressed,
-                6.5,
-            ),
-            (
-                "cream on accent (the rejected pairing)",
-                c.cream,
-                c.accent,
-                1.9,
+                5.8,
             ),
         ] {
             // Compare at the precision the prose actually claims: the docs say
@@ -3788,16 +3783,6 @@ mod tests {
                 "{claim}: the docs say {stated:.1}:1, the colours measure {got:.2}:1"
             );
         }
-        // …and the pairing the whole `active` fill argument rests on: an
-        // accent-filled button cannot carry a cream label, which is why both of
-        // `active`'s fills are the muted accent and why anything actually
-        // filled with the accent is labelled in its ink.
-        let cream_on_accent = contrast(c.cream, c.accent);
-        assert!(
-            cream_on_accent < 3.0,
-            "cream on the accent measures {cream_on_accent:.2} — if that is now over 3.0 the \
-             note by `active` about why buttons take the muted accent needs rewriting"
-        );
     }
 
     /// egui derives three app-wide text colours from the widget table rather
@@ -3818,9 +3803,10 @@ mod tests {
         }
     }
 
-    /// The dark palette is today's look, value for value: the light theme was
-    /// added beside it, and nothing about the dark one was to move. The old
-    /// constants' values, pinned.
+    /// The dark palette is the look the person signed off, value for value:
+    /// the light theme was added beside it and moved none of it. The accent
+    /// plates went a deeper teal with white ink on 2026-11-10, at the
+    /// person's word; anything else that moves here should be asked for too.
     #[test]
     fn the_dark_palette_is_the_look_it_was() {
         let rgb = |c: Color32| (c.r(), c.g(), c.b(), c.a());
@@ -3829,9 +3815,9 @@ mod tests {
         assert_eq!(rgb(DARK.surface_raised), (0x1F, 0x28, 0x29, 255));
         assert_eq!(rgb(DARK.surface_hover), (0x2A, 0x35, 0x36, 255));
         assert_eq!(rgb(DARK.line), (0x63, 0x79, 0x7C, 255));
-        assert_eq!(rgb(DARK.accent), (0x5C, 0xC6, 0xC0, 255));
-        assert_eq!(rgb(DARK.accent_ring), (0xA8, 0xDC, 0xD8, 255));
-        assert_eq!(rgb(DARK.accent_pressed), (0x3F, 0xA9, 0xA2, 255));
+        assert_eq!(rgb(DARK.accent), (0x2B, 0x83, 0x7E, 255));
+        assert_eq!(rgb(DARK.accent_ring), (0x24, 0x70, 0x6C, 255));
+        assert_eq!(rgb(DARK.accent_pressed), (0x24, 0x70, 0x6C, 255));
         assert_eq!(rgb(DARK.accent_muted), (0x26, 0x3F, 0x42, 255));
         assert_eq!(rgb(DARK.cream), (0xF4, 0xF8, 0xF8, 255));
         assert_eq!(rgb(DARK.text), (0xE2, 0xE9, 0xEA, 255));
@@ -3841,13 +3827,15 @@ mod tests {
         assert_eq!(rgb(DARK.panel), (0x17, 0x23, 0x24, 255));
         assert_eq!(rgb(DARK.card), (0x16, 0x1F, 0x21, 255));
         assert_eq!(rgb(DARK.panel_rim), (0x2A, 0x35, 0x36, 255));
-        for same in [DARK.on_accent, DARK.on_status] {
-            assert_eq!(same, DARK.ink, "the dark theme's inks are its ink");
-        }
-        for white in [DARK.accent_bright, DARK.accent_lift, DARK.accent_text] {
+        assert_eq!(
+            DARK.on_status, DARK.ink,
+            "a status plate is labelled in ink"
+        );
+        for white in [DARK.on_accent, DARK.accent_bright, DARK.accent_text] {
             assert_eq!(white, Color32::WHITE);
         }
-        assert_eq!(DARK.accent_word, DARK.accent_ring);
+        assert_eq!(rgb(DARK.accent_lift), (0x27, 0x7A, 0x75, 255));
+        assert_eq!(rgb(DARK.accent_word), (0xA8, 0xDC, 0xD8, 255));
         assert_eq!((DARK.overlay, DARK.glass), (DARK.panel, DARK.panel));
         assert_eq!(DARK.overlay_line, DARK.panel_rim);
         assert_eq!(DARK.shadow, 1.0);
