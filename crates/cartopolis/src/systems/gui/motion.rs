@@ -164,6 +164,12 @@ impl Presence {
 /// non-interactive (`Area::interactable(pres.open)`, or `ui.disable()`) while
 /// it leaves, so a tap in the last 240 ms lands on what is underneath.
 pub fn presence(ctx: &Context, id: Id, open: bool) -> Presence {
+    presence_timed(ctx, id, open, ENTER, LEAVE)
+}
+
+/// [`presence`] with its own times (the keyboard answers a tap and takes
+/// [`LEAVE`] to come). Both go to nothing under reduced motion.
+pub fn presence_timed(ctx: &Context, id: Id, open: bool, enter: f32, leave: f32) -> Presence {
     let id = id.with("presence");
     let seen_id = id.with("seen");
     let seen =
@@ -171,13 +177,29 @@ pub fn presence(ctx: &Context, id: Id, open: bool) -> Presence {
     if !seen && open {
         ctx.animate_bool_with_time(id, false, 0.0);
     }
-    let secs = if open { enter_time() } else { leave_time() };
+    let secs = if reduced() {
+        0.0
+    } else if open {
+        enter
+    } else {
+        leave
+    };
     let linear = ctx.animate_bool_with_time(id, open, secs);
     Presence {
         open,
         linear,
         t: ease_out(linear),
     }
+}
+
+/// Forget a surface's presence, so its next appearance under `id` arrives
+/// from nothing again — for a surface that is not drawn at all while away
+/// (the keyboard), whose `presence` would otherwise find it already seen.
+pub fn forget(ctx: &Context, id: Id) {
+    let id = id.with("presence");
+    ctx.data_mut(|d| {
+        d.remove::<bool>(id.with("seen"));
+    });
 }
 
 /// Keep the last value of something that comes and goes for as long as its
@@ -220,6 +242,27 @@ pub fn enter(ui: &mut Ui, pres: Presence, lift: f32) {
         layer,
         TSTransform::from_translation(egui::vec2(0.0, (1.0 - t) * lift)),
     );
+}
+
+/// Only the fade of a presence, for a surface that moves its paint rather
+/// than its layer (`shift_painted`).
+pub fn fade(ui: &mut Ui, pres: Presence) {
+    ui.multiply_opacity(pres.t.clamp(0.0, 1.0));
+}
+
+/// Move what `layer` has painted this pass `lift` points towards where it
+/// came from, by the presence's remaining distance — the picture moves and
+/// the hit boxes do not. For a surface whose taps must land where it will
+/// rest from its first frame (the keyboard: a finger is already on its way
+/// to a key while it rises). Call it after the area has been shown.
+pub fn shift_painted(ctx: &Context, layer: egui::LayerId, pres: Presence, lift: f32) {
+    let t = pres.t.clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.transform_layer_shapes(
+            layer,
+            TSTransform::from_translation(egui::vec2(0.0, (1.0 - t) * lift)),
+        );
+    }
 }
 
 /// Apply a presence to a floating `Area` that is *new* and small, the ring and

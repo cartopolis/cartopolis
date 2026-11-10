@@ -745,6 +745,8 @@ impl OnScreenKeyboard {
         }
         if !kb.open {
             kb.slab = None;
+            // So the next open rises again (`draw`'s `motion::presence`).
+            crate::systems::motion::forget(ctx, egui::Id::new("onscreen_keyboard_rise"));
             return Vec::new();
         }
 
@@ -966,6 +968,21 @@ fn track_fingers(
 fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fingers: &[Finger]) {
     let id = egui::Id::new("onscreen_keyboard");
     let glyphs = Glyphs::resolve();
+    // The slab rises from the edge it docks to, in the time a surface takes to
+    // *leave* rather than arrive: it answers a tap in a field, and nobody
+    // wants to wait for it. Forgotten on close (`pass`), so every open rises.
+    let rise = crate::systems::motion::presence_timed(
+        ctx,
+        egui::Id::new("onscreen_keyboard_rise"),
+        true,
+        crate::systems::motion::LEAVE,
+        crate::systems::motion::LEAVE,
+    );
+    let lift = if slab.rect.top() <= 1.0 {
+        -slab.rect.height()
+    } else {
+        slab.rect.height()
+    };
 
     egui::Area::new(id)
         // **Above `Foreground`, where the rest of the app's chrome lives, and
@@ -998,6 +1015,7 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fi
         // would fight the top/bottom flip `layout` just made.
         .constrain(false)
         .show(ctx, |ui| {
+            crate::systems::motion::fade(ui, rise);
             ui.set_clip_rect(slab.rect.expand(2.0));
             let visuals = ui.visuals().clone();
             let radius = visuals.widgets.inactive.corner_radius;
@@ -1101,6 +1119,14 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fi
     }
 
     // Keep the keyboard above everything else at this `Order`, every frame.
+    // The picture rises; the keys' hit boxes are where they will rest from the
+    // first frame, so a finger already on its way to one lands on it.
+    crate::systems::motion::shift_painted(
+        ctx,
+        egui::LayerId::new(egui::Order::Tooltip, id),
+        rise,
+        lift,
+    );
     ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, id));
 }
 

@@ -656,6 +656,11 @@ fn pin(
             // on its spot. The rect still senses the click — half a pixel of offset
             // between the hit area and the silhouette is not something you can aim at.
             let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
+            // A pin seen for the first time pops about its head (`motion::pop`);
+            // one that merely scrolls back into view does not.
+            let pres =
+                crate::systems::motion::presence(ui.ctx(), egui::Id::new(("place_pin", id)), true);
+            crate::systems::motion::pop(ui, pres, centre);
             let painter = ui.painter();
 
             // A soft contact shadow at the tip, so the pin reads as standing on
@@ -717,6 +722,12 @@ fn point_pin(
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             ui.set_clip_rect(map_rect);
+            let pres = crate::systems::motion::presence(
+                ui.ctx(),
+                egui::Id::new(("chat_point_pin", id)),
+                true,
+            );
+            crate::systems::motion::pop(ui, pres, tip);
             let p = ui.painter();
             let mut job = egui::text::LayoutJob::simple_singleline(
                 name.to_string(),
