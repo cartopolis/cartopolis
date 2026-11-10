@@ -27,7 +27,7 @@
 /// The basemap renderer's revision. Part of every stored tile's key.
 ///
 /// Update it to what `the_revision_names_what_the_renderer_draws` prints.
-pub const RENDER_REVISION: u64 = 0x0e45_c98e_97cd_9cec;
+pub const RENDER_REVISION: u64 = 0xd3ff_1e86_ff52_8502;
 
 /// FNV-1a, 64 bit: written out rather than `DefaultHasher`, whose output Rust
 /// does not promise to keep between releases — a toolchain update would
@@ -127,8 +127,8 @@ fn measure() -> u64 {
     for tile in &lowzoom {
         flat(tile, SubTile::WHOLE, 256, Z10_TILE_M, true);
     }
-    // A border between countries, which no recorded tile crosses, and the
-    // home country's outline over it, in the far style.
+    // A border between countries, which no recorded tile crosses, in the far
+    // style.
     let border = TileData::parse(&synth::tile(&[synth::uint_tagged_line_layer(
         "boundaries",
         4096,
@@ -136,10 +136,6 @@ fn measure() -> u64 {
         &[(300, 3800), (1800, 2200), (3900, 400)],
     )]))
     .expect("a synthetic border parses");
-    let home = FarDetail {
-        country: vec![vec![[0.2, 0.1], [0.8, 0.3], [0.6, 0.9], [0.1, 0.7]]],
-        ..FarDetail::default()
-    };
     let pixels = render_mvt_detailed(
         &border,
         SubTile::WHOLE,
@@ -148,7 +144,7 @@ fn measure() -> u64 {
         &underlay,
         &[],
         &Survey::default(),
-        &home,
+        &FarDetail::default(),
     )
     .expect("a synthetic tile draws");
     h.write(&pixels);

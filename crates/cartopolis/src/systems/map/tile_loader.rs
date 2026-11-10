@@ -379,10 +379,7 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
         return None;
     }
     let GlobeTilePayload::Vector {
-        bytes,
-        underlay,
-        country,
-        ..
+        bytes, underlay, ..
     } = payload
     else {
         return None;
@@ -391,7 +388,6 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     hash_fills(&mut h, underlay);
-    hash_rings(&mut h, country);
     Some(format!(
         "rendered-globe/{:016x}/{size}/{}/{}/{}-{:016x}.png",
         cartopolis_geo::render_revision::RENDER_REVISION,
@@ -438,21 +434,9 @@ fn hash_far(h: &mut impl std::hash::Hasher, far: &vector_tiles::FarDetail) {
     use std::hash::Hash;
     far.painted.hash(h);
     far.shadow.map(|s| s.map(f32::to_bits)).hash(h);
-    hash_rings(h, &far.country);
     for b in &far.buildings {
         b.height_m.to_bits().hash(h);
         for p in &b.outline {
-            p.map(f32::to_bits).hash(h);
-        }
-    }
-}
-
-/// Fold the home country's rings into a rendered-tile cache key.
-fn hash_rings(h: &mut impl std::hash::Hasher, rings: &[Vec<[f32; 2]>]) {
-    use std::hash::Hash;
-    for ring in rings {
-        ring.len().hash(h);
-        for p in ring {
             p.map(f32::to_bits).hash(h);
         }
     }
@@ -776,7 +760,6 @@ async fn far_detail(
         buildings: Vec::new(),
         shadow: Some(shadow),
         painted,
-        country: crate::systems::home_country::rings_for(source).await,
     };
     if source.z >= FAR_BUILDINGS_ZOOM || source.z + FAR_BUILDINGS_LEVELS < FAR_BUILDINGS_ZOOM {
         return detail;
@@ -945,7 +928,6 @@ pub async fn fetch_globe_tile_payload(
         sub,
         source,
         underlay,
-        country: crate::systems::home_country::rings_for(source).await,
     })
 }
 
@@ -962,9 +944,6 @@ pub enum GlobeTilePayload {
         /// The land cover, painted under everything ([`landcover_underlay`]).
         /// This is most of what the globe shows: below z8 the map has no land.
         underlay: Arc<Vec<crate::systems::vector_tiles::OverlayFill>>,
-        /// The home country's outline in the tile's unit square
-        /// (`home_country::rings_for`), drawn as the far map's border.
-        country: Vec<Vec<[f32; 2]>>,
     },
 }
 
@@ -992,7 +971,6 @@ impl GlobeTilePayload {
                 sub,
                 source,
                 underlay,
-                country,
             } => {
                 // One parse for both passes — and, through `parse_shared`, one for
                 // every other tile magnified from the same ancestor. The render and
@@ -1003,19 +981,13 @@ impl GlobeTilePayload {
                 let tile = parse_shared(source, &bytes)?;
                 #[cfg(heap_labels)]
                 crate::platform::heap::labels::set("globe: draw layers");
-                let far = vector_tiles::FarDetail {
-                    country,
-                    ..vector_tiles::FarDetail::default()
-                };
-                let pixels = vector_tiles::render_mvt_detailed(
+                let pixels = vector_tiles::render_mvt_layered(
                     &tile,
                     sub,
                     size,
                     source_ground_m(source),
                     &underlay,
                     &[],
-                    &vector_tiles::NO_SURVEY,
-                    &far,
                 )
                 .map_err(|e| e.to_string())?;
                 let mut rgba = image::RgbaImage::from_raw(size, size, pixels)

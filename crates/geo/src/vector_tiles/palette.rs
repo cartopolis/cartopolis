@@ -180,8 +180,6 @@ pub mod painted {
     pub const LOCAL_STREET: u32 = 0xD9_D2_C4;
     pub const RAIL: u32 = 0xEF_E6_D2;
     pub const RAIL_CASING: u32 = 0x3B_34_30;
-    /// The home country's outline, drawn with a glow (the mockup's orange).
-    pub const COUNTRY_BORDER: u32 = 0xFD_60_12;
     /// A border between two other countries: the mockup's cream.
     pub const NEIGHBOUR_BORDER: u32 = 0xD9_CB_B0;
     /// Roof tones, picked per building by a hash of its outline: Dutch tile red,

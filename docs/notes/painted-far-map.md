@@ -1,6 +1,6 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, map_light.wesl, home_country.rs, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+triggers: [painted.rs, map_light.wesl, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
 updated: 2026-11-03
 ---
 
@@ -151,27 +151,16 @@ Netherlands, the vertical sides fall 47 px apart on both tiers, the expected
 The cell's sides are normal to the lattice's six neighbours, at 0° and ±60°;
 the first build used ±30° and drew bow-ties at every vertex.
 
-## The home country's border
+## Borders between countries
 
-As on v1-macro (asked 2026-11-02, "the shot must be equal"): the Netherlands
-is outlined whole — coast, islands and land borders — in
-`palette::painted::COUNTRY_BORDER`, a sharp line with a wide stroke clipped to
-the inside so the glow falls inward only (`painted::paint_country`). Borders
-between other countries are the mockup's thin cream (`NEIGHBOUR_BORDER`),
-provinces and borders at sea the grey `BOUNDARY`.
+Borders between countries are the v1-macro mockup's thin cream
+(`palette::painted::NEIGHBOUR_BORDER`), provinces and borders at sea the grey
+`BOUNDARY`. No recorded tile crosses a country border, so the render-revision
+measure draws a synthetic one.
 
-The lines are the tile's own: the edge of its `ocean` layer (the OSM coast)
-and its `boundaries` between countries. Natural Earth's 1:10m countries, as
-the mockup used (`atlas areas ne-admin0-europe`, 69 countries, 593 KB,
-fetched once by `systems::home_country`), only pick which of them are the
-country's (`COUNTRY_REACH_M` around it) and where the glow may fall. Drawn
-from Natural Earth alone the line was a kilometre off the Wadden islands —
-invisible at 350 km, 25 px at 60 km — and a tile-size cut-off left half the
-coast orange in one view at 120 km. Two other sources lost earlier:
-Shortbread's `boundaries` alone have no coast, and the Kadaster's country
-(`cbs-land-2024`) is the municipalities' territory, a few kilometres out to
-sea and round the Wadden Sea.
-
-Every far tile waits for the outline before it is drawn, because it is part
-of the stored tile's key. No recorded tile crosses a country border, so the
-render-revision measure draws a synthetic border and outline.
+The mockup also outlined the Netherlands whole in orange with an inward glow,
+and from 2026-11-02 the far map did too (`paint_country`, fed Natural
+Earth's `ne-admin0-europe` by `systems::home_country`). Removed 2026-11-10 at
+the owner's request: it did not render well from space, where the zoom from the
+globe to the city passes over it. `atlas areas ne-admin0-europe` still writes
+the outline; nothing in the client reads it.

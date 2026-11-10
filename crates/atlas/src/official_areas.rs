@@ -21,7 +21,7 @@
 //! - **`ne-admin1-europe`**: Natural Earth's admin-1 over Europe, no figures;
 //!   a province rung for scenarios beyond the Netherlands.
 //! - **`ne-admin0-europe`**: Natural Earth's countries over Europe, no
-//!   figures; the outline the painted far map borders the home country with.
+//!   figures.
 //!
 //! A figure over time is a **series**: one field per year under one key
 //! (`AreaSet::field_at`), which a scenario's clock of years plays through.
@@ -154,10 +154,9 @@ pub fn natural_earth_europe(source: &Value) -> anyhow::Result<AreaSet> {
     .with_rung(Rung::Province))
 }
 
-/// Natural Earth's countries over Europe, ~200 m tolerance: the outline the
-/// painted far map borders the home country with (`systems::home_country`),
-/// which follows the coast and takes in the islands, where the Kadaster's
-/// country runs out to sea with the municipalities.
+/// Natural Earth's countries over Europe, ~200 m tolerance: an outline that
+/// follows the coast and takes in the islands, where the Kadaster's country
+/// runs out to sea with the municipalities.
 pub fn natural_earth_countries_europe(source: &Value) -> anyhow::Result<AreaSet> {
     Ok(AreaSet::new(
         "ne-admin0-europe".into(),
