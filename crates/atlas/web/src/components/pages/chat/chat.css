@@ -3961,3 +3961,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* An icon inside a line of words sits in the line, not above it. */
+:is(.post-via, .post-notice-text, .post-warning, .chat-pane-h) .chat-icon {
+    display: inline-block;
+    height: 1em;
+    vertical-align: -0.125em;
+    width: 1em;
+}
