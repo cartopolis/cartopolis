@@ -1091,3 +1091,23 @@ async fn revoking_a_token_ends_its_open_connection() {
     .await;
     assert_eq!(ended, Ok(true), "the connection outlived its revoked token");
 }
+
+#[tokio::test]
+async fn the_services_document_names_what_the_operator_configured() {
+    let (handle, _dir) = server().await;
+    let url = format!(
+        "{}{}",
+        http_base(&handle),
+        cartopolis_core::services::SERVICES_PATH
+    );
+    // Unauthenticated: the client asks before it has anything to present.
+    let (status, body) = api("GET", url, None, None).await;
+    assert_eq!(status, 200, "{body}");
+    let directory: cartopolis_core::services::ServiceDirectory =
+        serde_json::from_value(body).unwrap();
+    assert_eq!(
+        directory,
+        cartopolis_core::services::ServiceDirectory::default(),
+        "a server that configures nothing names cartopolis.org's services"
+    );
+}

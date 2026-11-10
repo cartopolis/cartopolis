@@ -835,6 +835,11 @@ pub fn apply_network_snapshot(
                 } else {
                     Some(api_base_url)
                 };
+                // Where its search, map data and terrain are (`crate::services`).
+                // Needs no token, so it is asked whenever there is a base.
+                if let Some(base) = &api_base {
+                    crate::services::fetch(base);
+                }
                 match api_base {
                     Some(base) if !session_token.is_empty() => {
                         model_assets::set_endpoint(&base, &session_token);

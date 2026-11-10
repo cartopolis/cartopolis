@@ -18,6 +18,7 @@ pub mod point;
 pub mod posts;
 pub mod protocol;
 pub mod script_api;
+pub mod services;
 pub mod shot_env;
 pub mod sounds;
 pub mod tone;

@@ -63,6 +63,21 @@ pub struct SimConfig {
     /// No trailing slash; the client appends `/api/...`.
     #[serde(default)]
     pub api_base_url: String,
+    /// Where this server's geo services are, told to clients at
+    /// `GET /api/services` ([`cartopolis_core::services`]). Each defaults to
+    /// cartopolis.org's, so a server that sets none sends its players where they
+    /// always went. Flat rather than a `[services]` table for the reason
+    /// [`Self::mail`] gives: `CARTO_GEOCODER_URL` is what an operator writes.
+    #[serde(default = "default_geocoder_url")]
+    pub geocoder_url: String,
+    #[serde(default = "default_osm_query_url")]
+    pub osm_query_url: String,
+    #[serde(default = "default_map_data_url")]
+    pub map_data_url: String,
+    #[serde(default = "default_terrain_url")]
+    pub terrain_url: String,
+    #[serde(default = "default_height_url")]
+    pub height_url: String,
     /// Directory from which *.png texture files are served to clients.
     #[serde(default = "default_texture_dir")]
     pub texture_dir: String,
@@ -239,6 +254,26 @@ fn default_osm_tile_url_template() -> String {
     cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
 }
 
+fn default_geocoder_url() -> String {
+    cartopolis_core::services::DEFAULT_GEOCODER_URL.into()
+}
+
+fn default_osm_query_url() -> String {
+    cartopolis_core::services::DEFAULT_OSM_QUERY_URL.into()
+}
+
+fn default_map_data_url() -> String {
+    cartopolis_core::services::DEFAULT_MAP_DATA_URL.into()
+}
+
+fn default_terrain_url() -> String {
+    cartopolis_core::services::DEFAULT_TERRAIN_URL.into()
+}
+
+fn default_height_url() -> String {
+    cartopolis_core::services::DEFAULT_HEIGHT_URL.into()
+}
+
 fn default_texture_dir() -> String {
     "data/textures".into()
 }
@@ -267,6 +302,11 @@ impl Default for SimConfig {
             max_scripts: default_max_scripts(),
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
+            geocoder_url: default_geocoder_url(),
+            osm_query_url: default_osm_query_url(),
+            map_data_url: default_map_data_url(),
+            terrain_url: default_terrain_url(),
+            height_url: default_height_url(),
             texture_dir: default_texture_dir(),
             asset_dir: default_asset_dir(),
             moderation_words: default_moderation_words(),
@@ -341,6 +381,18 @@ impl SimConfig {
             from: self.mail_from.clone(),
             from_name: self.mail_from_name.clone(),
             public_base_url: self.public_base_url.clone(),
+        }
+    }
+
+    /// The geo services, in the shape `GET /api/services` answers.
+    #[must_use]
+    pub fn services(&self) -> cartopolis_core::services::ServiceDirectory {
+        cartopolis_core::services::ServiceDirectory {
+            geocoder: self.geocoder_url.clone(),
+            osm_query: self.osm_query_url.clone(),
+            map_data: self.map_data_url.clone(),
+            terrain: self.terrain_url.clone(),
+            height: self.height_url.clone(),
         }
     }
 

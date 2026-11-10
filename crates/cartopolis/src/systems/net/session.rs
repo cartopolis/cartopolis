@@ -809,6 +809,7 @@ fn teardown(
     // to is a fetch that answers 401 forever, and the models it would fetch belong
     // to a world that is no longer on screen.
     crate::systems::model_assets::clear_endpoint();
+    crate::services::clear();
     // And the panel's copy of the lists, for the same reason: an inventory
     // belongs to an account on a server, and showing the last server's after
     // signing in to a different one is worse than showing nothing.

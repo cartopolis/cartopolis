@@ -703,15 +703,19 @@ fn patch_from(req: HeightRequest, bytes: &[u8]) -> Result<HeightPatch, String> {
 /// Groningen's southern ring was an open trench — over the roofed tunnel it reads
 /// −7.4 m NAP where people now walk on a park at +2.4.
 ///
-/// `CARTO_HEIGHT_URL` overrides it; an empty value asks PDOK directly.
+/// `CARTO_HEIGHT_URL` overrides it, then the server's (`crate::services`); an
+/// empty value asks PDOK directly.
 fn atlas_height_url() -> Option<String> {
-    let url = std::env::var("CARTO_HEIGHT_URL").unwrap_or_else(|_| {
-        if cfg!(target_arch = "wasm32") {
-            "/height".to_string()
-        } else {
-            "https://cartopolis.org/height".to_string()
-        }
-    });
+    let url = std::env::var("CARTO_HEIGHT_URL")
+        .ok()
+        .or_else(crate::services::height)
+        .unwrap_or_else(|| {
+            if cfg!(target_arch = "wasm32") {
+                "/height".to_string()
+            } else {
+                cartopolis_core::services::DEFAULT_HEIGHT_URL.to_string()
+            }
+        });
     (!url.is_empty()).then_some(url)
 }
 

@@ -22,7 +22,7 @@
 use crate::components::OsmBuildingMesh;
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
-use crate::platform::sync::{Arc, Mutex, OnceLock, RwLock};
+use crate::platform::sync::{Arc, Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -59,7 +59,7 @@ const OVERPASS_SELF_CONCURRENCY: usize = 4;
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
 /// load — see `docs/guides/server.md`). Override with `CARTO_OVERPASS_URL`.
-const DEFAULT_OVERPASS_URL: &str = "https://overpass.cartopolis.org/api/interpreter";
+const DEFAULT_OVERPASS_URL: &str = cartopolis_core::services::DEFAULT_OSM_QUERY_URL;
 
 /// Public Overpass instance, tried only after the primary endpoint has exhausted
 /// its retries. Our own instance being down (or not yet seeded for the area you
@@ -70,10 +70,13 @@ const DEFAULT_OVERPASS_URL: &str = "https://overpass.cartopolis.org/api/interpre
 /// generates, so it is a degraded mode, not a peer.
 const FALLBACK_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 
-/// Resolve the primary Overpass endpoint from `CARTO_OVERPASS_URL`, falling back to
-/// the self-hosted default.
+/// Resolve the primary Overpass endpoint from `CARTO_OVERPASS_URL`, then the
+/// server's (`crate::services`), then the self-hosted default.
 fn overpass_url() -> String {
-    std::env::var("CARTO_OVERPASS_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.to_string())
+    std::env::var("CARTO_OVERPASS_URL")
+        .ok()
+        .or_else(crate::services::osm_query)
+        .unwrap_or_else(|| DEFAULT_OVERPASS_URL.to_string())
 }
 
 /// Pace for live Overpass queries: `(max concurrent, min spacing between them)`.
@@ -83,20 +86,22 @@ fn overpass_url() -> String {
 /// own (`overpass.cartopolis.org`), which has no such budget, and pacing it
 /// politely made the far building ring and the POI layers stream several times
 /// slower than the server requires. Localhost counts as ours too; any *other*
-/// override is assumed public and keeps the polite pace automatically.
+/// override is assumed public and keeps the polite pace automatically. So is the
+/// one the connected server names: it is that server's own, and it said so.
+///
+/// Worked out per call rather than once, since the server's answer arrives after
+/// startup; it is an env read and a lock read per dispatch.
 pub(crate) fn overpass_pace() -> (usize, Duration) {
-    static PACE: OnceLock<(usize, Duration)> = OnceLock::new();
-    *PACE.get_or_init(|| {
-        let url = overpass_url();
-        let ours = url == DEFAULT_OVERPASS_URL
-            || url.starts_with("http://localhost")
-            || url.starts_with("http://127.");
-        if ours {
-            (OVERPASS_SELF_CONCURRENCY, Duration::ZERO)
-        } else {
-            (1, OVERPASS_THROTTLE)
-        }
-    })
+    let url = overpass_url();
+    let ours = url == DEFAULT_OVERPASS_URL
+        || crate::services::osm_query().is_some_and(|s| s == url)
+        || url.starts_with("http://localhost")
+        || url.starts_with("http://127.");
+    if ours {
+        (OVERPASS_SELF_CONCURRENCY, Duration::ZERO)
+    } else {
+        (1, OVERPASS_THROTTLE)
+    }
 }
 
 /// The endpoints a query walks, in order, with the attempts each one gets.
@@ -145,7 +150,7 @@ fn pace_fallback() {
 /// `/buildings/{CACHE_ZOOM}/{x}/{y}.json` plus a `/coverage.json` manifest, so
 /// covered cells parse through the same `parse_buildings` path as Overpass — only
 /// the source differs. Override with `CARTO_3DBAG_URL`; empty disables 3DBAG.
-const DEFAULT_3DBAG_URL: &str = "https://3dbag.cartopolis.org";
+const DEFAULT_3DBAG_URL: &str = cartopolis_core::services::DEFAULT_MAP_DATA_URL;
 
 /// Camera altitude (m, geocentric) above which no 3D building is drawn or
 /// streamed, in either tier — the far map's painted footprints and shadows
@@ -162,9 +167,13 @@ const DEFAULT_3DBAG_URL: &str = "https://3dbag.cartopolis.org";
 pub const BUILDINGS_TOP_ALT: f32 = 10_000.0;
 
 /// Resolve the 3DBAG host from `CARTO_3DBAG_URL` (empty string disables 3DBAG,
-/// falling back to OSM buildings everywhere).
+/// falling back to OSM buildings everywhere), then the server's map data
+/// (`crate::services`), then the self-hosted default.
 pub(crate) fn tdbag_url() -> String {
-    std::env::var("CARTO_3DBAG_URL").unwrap_or_else(|_| DEFAULT_3DBAG_URL.to_string())
+    std::env::var("CARTO_3DBAG_URL")
+        .ok()
+        .or_else(crate::services::map_data)
+        .unwrap_or_else(|| DEFAULT_3DBAG_URL.to_string())
 }
 
 /// Which fixed-zoom cells the 3DBAG host serves, loaded once from its coverage

@@ -205,15 +205,19 @@ pub fn covered(lat: f64, lng: f64) -> bool {
 
 /// The tile URL template, `{z}/{x}/{y}`. `CARTO_TERRAIN_URL` overrides it and an
 /// empty value switches tiles off. The browser build asks its own origin, which is
-/// atlas — same origin keeps it inside the page's cross-origin isolation.
+/// atlas — same origin keeps it inside the page's cross-origin isolation. A
+/// server that names other terrain (`crate::services`) is asked instead.
 fn template() -> Option<String> {
-    let t = std::env::var("CARTO_TERRAIN_URL").unwrap_or_else(|_| {
-        if cfg!(target_arch = "wasm32") {
-            "/terrain/{z}/{x}/{y}?grid=513&ahn=6".to_string()
-        } else {
-            "https://cartopolis.org/terrain/{z}/{x}/{y}?grid=513&ahn=6".to_string()
-        }
-    });
+    let t = std::env::var("CARTO_TERRAIN_URL")
+        .ok()
+        .or_else(crate::services::terrain)
+        .unwrap_or_else(|| {
+            if cfg!(target_arch = "wasm32") {
+                "/terrain/{z}/{x}/{y}?grid=513&ahn=6".to_string()
+            } else {
+                cartopolis_core::services::DEFAULT_TERRAIN_URL.to_string()
+            }
+        });
     (!t.is_empty()).then_some(t)
 }
 

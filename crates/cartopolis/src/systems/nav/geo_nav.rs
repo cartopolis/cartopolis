@@ -19,7 +19,7 @@
 
 use crate::components::FreeCamera;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::sync::{Arc, LazyLock, Mutex};
+use crate::platform::sync::{Arc, Mutex};
 use crate::systems::egui_manager::EguiMut;
 use std::time::Duration;
 use web_time::Instant;
@@ -42,7 +42,7 @@ use cartopolis_core::world::tile_to_meters;
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract — see `docs/guides/server.md`). Override with
 /// `CARTO_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
-const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.cartopolis.org";
+const DEFAULT_NOMINATIM_URL: &str = cartopolis_core::services::DEFAULT_GEOCODER_URL;
 
 /// A teleport this close to the map anchor moves the camera in the frame it is
 /// in rather than re-anchoring (`apply_teleport`). The near field is flat around
@@ -51,10 +51,13 @@ const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.cartopolis.org";
 pub const SHORT_JUMP_M: f64 = 3_000.0;
 
 /// Resolve the Nominatim base URL (no trailing slash) from `CARTO_NOMINATIM_URL`,
-/// falling back to the self-hosted default. Callers append `/search`, `/reverse`, …
+/// then the server's geocoder (`crate::services`), then the self-hosted default.
+/// Callers append `/search`, `/reverse`, …
 pub(crate) fn nominatim_base_url() -> String {
     std::env::var("CARTO_NOMINATIM_URL")
-        .unwrap_or_else(|_| DEFAULT_NOMINATIM_URL.to_string())
+        .ok()
+        .or_else(crate::services::geocoder)
+        .unwrap_or_else(|| DEFAULT_NOMINATIM_URL.to_string())
         .trim_end_matches('/')
         .to_string()
 }
@@ -68,14 +71,16 @@ pub(crate) fn nominatim_base_url() -> String {
 const DEBOUNCE: Duration = Duration::from_millis(60);
 /// Minimum spacing between requests. The self-hosted instance has no rate policy
 /// (near-live); the public API allows at most one request per second, so stay
-/// polite when `CARTO_NOMINATIM_URL` points back at `nominatim.openstreetmap.org`.
-static MIN_REQUEST_INTERVAL: LazyLock<Duration> = LazyLock::new(|| {
+/// polite when the geocoder (`CARTO_NOMINATIM_URL`, or the server's) points back at
+/// `nominatim.openstreetmap.org`. Asked per request: the server's answer arrives
+/// after startup.
+fn min_request_interval() -> Duration {
     if nominatim_base_url().contains("openstreetmap.org") {
         Duration::from_secs(1)
     } else {
         Duration::from_millis(40)
     }
-});
+}
 /// How many lookups may be outstanding at once.
 ///
 /// This used to be 1, which made a single slow reply stall *every* later
@@ -1414,7 +1419,7 @@ pub fn drive_geocode(
     let debounced = nav.last_edit.is_some_and(|t| t.elapsed() >= DEBOUNCE);
     let throttled = nav
         .last_sent_at
-        .is_some_and(|t| t.elapsed() < *MIN_REQUEST_INTERVAL);
+        .is_some_and(|t| t.elapsed() < min_request_interval());
     let fresh = query != nav.last_sent || nav.force_search;
     // `place_from_link`, not `parse_location`: a pasted cartopolis link is a place
     // this client can answer on its own, and sending it to Nominatim as a search

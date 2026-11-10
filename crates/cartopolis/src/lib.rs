@@ -28,6 +28,7 @@ mod quality;
 mod render_halt;
 mod render_setup;
 mod resources;
+mod services;
 mod shader_store;
 mod simd_baseline;
 #[cfg(test)]

@@ -109,6 +109,7 @@ pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/api/health", get(health))
+        .route(cartopolis_core::services::SERVICES_PATH, get(services))
         .route("/api/register", get(registration_status).post(register))
         .route("/api/register/verify", post(verify_registration))
         .route("/api/register/resend", post(resend_verification))
@@ -300,6 +301,14 @@ async fn push_key(State(state): State<HttpState>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// Where this server's geo services are (`cartopolis_core::services`). Public:
+/// the client asks before anything else, and it names only public addresses.
+async fn services(
+    State(state): State<HttpState>,
+) -> Json<cartopolis_core::services::ServiceDirectory> {
+    Json(state.config.services())
 }
 
 async fn health(State(state): State<HttpState>) -> Json<serde_json::Value> {
