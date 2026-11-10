@@ -3254,7 +3254,37 @@ fn channel_is_direct(chat: &ChatState, key: &str) -> bool {
     })
 }
 
+/// A line of the thread. A line seen for the first time rises 6 pt and fades
+/// in (the hub's `msg-enter`); a thread opened cold rises as one, since every
+/// line is new at once.
+#[allow(clippy::too_many_arguments)]
 fn bubble(
+    ui: &mut egui::Ui,
+    chat: &ChatState,
+    line: &ChatLine,
+    group: bool,
+    number: Option<usize>,
+    act: &mut Actions,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
+    topic: Option<&TopicContext>,
+    admin: bool,
+) {
+    let pres = crate::systems::motion::presence(
+        ui.ctx(),
+        egui::Id::new(("chat_line", line.sender_id, line.arrived.to_bits())),
+        true,
+    );
+    if pres.t < 1.0 {
+        ui.add_space((1.0 - pres.t) * 6.0);
+    }
+    ui.scope(|ui| {
+        crate::systems::motion::fade(ui, pres);
+        bubble_body(ui, chat, line, group, number, act, pictures, topic, admin);
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bubble_body(
     ui: &mut egui::Ui,
     chat: &ChatState,
     line: &ChatLine,
