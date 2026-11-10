@@ -77,7 +77,20 @@ prioriteit; de telefoon moet nog gemeten worden.)
 - **Stap 2** (8fa8164d): `motion::grabber` / `motion::follow`: de plek- en
   gebouwkaart volgen de vinger en rusten op twee en drie hoogten; de
   routekaart en het lensblad nemen dezelfde grabber.
-- **Stap 3, begin**: `motion::page_turn`, eerst voor Settings.
+- **Stap 3** (67a14abc, 3a9a357a): `motion::page_turn` in Settings,
+  Communities, Calendar, Admin en Contacts: een pagina komt van rechts over
+  een ouder die een derde wijkt en donkerder wordt, en gaat zo terug. Geen
+  gedeelde `PageStack` (het ontwerp noemde er een): elk paneel houdt zijn
+  eigen paginastaat en geeft een sleutel en een diepte mee; dat was genoeg
+  voor de overgang en raakte de dismiss-ladder niet. Chats en You wachten op
+  s651.
+- **Stap 5, deels** (82306ef2, en de regel erna): het toetsenbord komt omhoog
+  van zijn rand (alleen het beeld; de tikvlakken liggen meteen waar ze
+  rusten), een nieuwe marker popt, een nieuw bericht stijgt 6 pt. Nog niet:
+  rijen die glijden, schimrijen bij laden, licht-naar-donker in 600 ms.
+- **Open**: de dock en het menu (na s651), stap 4 is s651's werk, stap 0 en
+  6 (meten op de OnePlus 15) zodra een build met dit werk op het toestel
+  staat.
 
 Wat het wordt: `theme::motion` als de ene plek voor tijd en curve (zoals `theme`
 dat voor kleur is), een dunne laag over `ctx.animate_*` zodat egui zelf weet
