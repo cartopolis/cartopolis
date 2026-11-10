@@ -49,9 +49,10 @@ use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::cell_ring;
 use crate::systems::collision::{BuildingColliders, Footprint};
+use crate::systems::coverage::CoverageSlot;
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::osm_buildings::{
-    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, MeshData,
+    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, tdbag_url, MeshData,
 };
 use crate::systems::scatter::{
     self, build_vegetation_meshes, srgb_to_linear_rgb, TreeForm, TreeInstance, TREE_FADE_END,
@@ -233,12 +234,49 @@ async fn fetch_cell_text(cx: i64, cy: i64) -> Result<String, String> {
             }
         }
     }
-    let (north, west) = tile_to_lat_lng(cx, cy, DETAIL_ZOOM);
-    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, DETAIL_ZOOM);
-    let bbox = format!("{south},{west},{north},{east}");
-    let fetched = overpass_query(&detail_query(&bbox)).await?;
+    let host = tdbag_url();
+    let pre_cut = if COVERAGE.covers(cx, cy) && !host.is_empty() {
+        let url = format!("{host}/street/{DETAIL_ZOOM}/{cx}/{cy}.json");
+        match fetch_atlas_text(url.clone()).await {
+            Ok(text) => Some(text),
+            Err(e) => {
+                tracing::debug!(%url, error = %e, "pre-cut street cell unavailable; asking Overpass");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let fetched = match pre_cut {
+        Some(text) => text,
+        None => {
+            let (north, west) = tile_to_lat_lng(cx, cy, DETAIL_ZOOM);
+            let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, DETAIL_ZOOM);
+            let bbox = format!("{south},{west},{north},{east}");
+            overpass_query(&detail_query(&bbox)).await?
+        }
+    };
     storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
     Ok(fetched)
+}
+
+/// The atlas host's street cells (`crate::osm::layers::street` in atlas): the
+/// answer to [`detail_query`] for each cell, cut from the OpenStreetMap extract,
+/// so a covered cell needs no Overpass. Same cache key and parse either way.
+static COVERAGE: CoverageSlot = CoverageSlot::new("street", "/street/coverage.json", DETAIL_ZOOM);
+
+/// How long dispatch waits for that manifest before asking Overpass for
+/// everything, as `tall_structures` does.
+const COVERAGE_WAIT_SECS: f64 = 3.0;
+
+/// The pre-cut file, if it is there and is a document rather than an error page.
+async fn fetch_atlas_text(url: String) -> Result<String, String> {
+    let bytes = crate::platform::http::fetch(crate::platform::http::Request::get(url)).await?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    if !text.trim_start().starts_with('{') {
+        return Err("not a JSON document".into());
+    }
+    Ok(text)
 }
 
 fn tag_str<'a>(tags: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
@@ -1376,6 +1414,8 @@ pub struct StreetDetail {
     light_pool: Vec<Entity>,
     /// Count of spawned mesh entities, for the shot harness.
     pub spawned_meshes: usize,
+    /// When the lane first wanted cells, for [`COVERAGE_WAIT_SECS`].
+    coverage_wait_since: Option<f64>,
 }
 
 impl Default for StreetDetail {
@@ -1411,6 +1451,7 @@ impl Default for StreetDetail {
             signal_materials: None,
             light_pool: Vec::new(),
             spawned_meshes: 0,
+            coverage_wait_since: None,
         }
     }
 }
@@ -1537,10 +1578,16 @@ pub fn update_street_detail(
         });
     }
 
-    // Dispatch: fetch on the IO pool, parse + mesh on the worker pool.
+    // Dispatch: fetch on the IO pool, parse + mesh on the worker pool. Held
+    // until the atlas manifest has answered (or the wait ran out), so a covered
+    // cell is not sent to Overpass in the moment before the answer lands.
+    COVERAGE.ensure(now_secs);
+    let since = *sd.coverage_wait_since.get_or_insert(now_secs);
     let mut jobs = Vec::new();
-    while let Some(cell) = sd.cells.next_job(now_secs) {
-        jobs.push(cell);
+    if COVERAGE.revision() > 0 || now_secs - since >= COVERAGE_WAIT_SECS {
+        while let Some(cell) = sd.cells.next_job(now_secs) {
+            jobs.push(cell);
+        }
     }
     let sink = sd.cells.sink();
     for (cx, cy) in jobs {

@@ -31,6 +31,7 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::storage;
+use crate::systems::coverage::CoverageSlot;
 use crate::systems::driver::{nearest_on_polyline, DriverState, RouteGeom};
 use crate::systems::navigation::RouteState;
 use crate::systems::osm_buildings::overpass_query;
@@ -126,7 +127,11 @@ pub fn drive_route_ahead(
     mut ahead: ResMut<RouteAhead>,
     route: Res<RouteState>,
     driver: Res<DriverState>,
+    time: Res<Time>,
 ) {
+    if driver.active {
+        SPEEDS_COVERAGE.ensure(time.elapsed_secs_f64());
+    }
     if !driver.active {
         if ahead.generation.is_some() {
             ahead.reset();
@@ -221,6 +226,9 @@ async fn fetch_corridor(
     if corridor.len() < 2 {
         return Err("route too short for a corridor".into());
     }
+    if let Some(text) = speeds_from_atlas(points).await {
+        return parse_corridor(&text, points, cum, total_m);
+    }
     let query = corridor_query(corridor);
     let key = corridor_cache_key(&query);
     let text = match storage::get_string(storage::Namespace::Cache, &key).await {
@@ -238,6 +246,59 @@ async fn fetch_corridor(
         }
     };
     parse_corridor(&text, points, cum, total_m)
+}
+
+/// The atlas host's z14 cells of roads with a speed limit (atlas's `speeds`
+/// dataset, cut from the OpenStreetMap extract).
+static SPEEDS_COVERAGE: CoverageSlot =
+    CoverageSlot::new("speeds", "/speeds/coverage.json", SPEEDS_ZOOM);
+const SPEEDS_ZOOM: u32 = 14;
+
+/// Every way with a speed limit in the cells the route passes through, as one
+/// Overpass-shaped document — or `None` when any of those cells is not covered
+/// or does not arrive, and the corridor is asked of Overpass instead.
+///
+/// More than the corridor query answers (a whole cell, not 25 m either side), and
+/// that is harmless: [`parse_corridor`] keeps only a way within
+/// [`SPEED_MATCH_M`] of the route.
+async fn speeds_from_atlas(points: &[[f64; 2]]) -> Option<String> {
+    let host = crate::systems::osm_buildings::tdbag_url();
+    if host.is_empty() {
+        return None;
+    }
+    let mut cells: Vec<(i64, i64)> = points
+        .iter()
+        .map(|p| cartopolis_core::world::lat_lng_to_tile(p[0], p[1], SPEEDS_ZOOM))
+        .collect();
+    cells.sort_unstable();
+    cells.dedup();
+    if !cells.iter().all(|&(x, y)| SPEEDS_COVERAGE.covers(x, y)) {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut elements = Vec::new();
+    for (x, y) in cells {
+        let key = format!("route_ahead/speeds/{SPEEDS_ZOOM}/{x}/{y}.json");
+        let text = match storage::get_string(storage::Namespace::Cache, &key).await {
+            Some(cached) => cached,
+            None => {
+                let url = format!("{host}/speeds/{SPEEDS_ZOOM}/{x}/{y}.json");
+                let text =
+                    crate::platform::http::fetch_string(crate::platform::http::Request::get(url))
+                        .await
+                        .ok()?;
+                storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+                text
+            }
+        };
+        let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
+        for el in doc.get("elements")?.as_array()? {
+            if seen.insert(el.get("id").and_then(serde_json::Value::as_i64)) {
+                elements.push(el.clone());
+            }
+        }
+    }
+    Some(serde_json::json!({ "elements": elements }).to_string())
 }
 
 /// The Overpass QL for one corridor.

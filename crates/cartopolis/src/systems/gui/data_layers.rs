@@ -45,6 +45,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
+use crate::systems::coverage::CoverageSlot;
 use crate::systems::icons;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
@@ -1195,7 +1196,10 @@ pub fn update_data_layers(
 
     // Dispatch queued cells as detached fetch+build tasks (ADR-033 seam).
     let results = dl.cells.sink();
-    while let Some((li, cx, cy)) = dl.cells.next_job(now_secs) {
+    // A raster basemap's markers come from the Overpass pass; hold it until the
+    // atlas manifests have answered, so a covered cell reads its file.
+    let settled = from_tile || coverage_settled(now_secs);
+    while let Some((li, cx, cy)) = settled.then(|| dl.cells.next_job(now_secs)).flatten() {
         let results = results.clone();
         let ground = terrain.snapshot();
         let template = template.clone();
@@ -1240,7 +1244,8 @@ pub fn update_data_layers(
 
     // …and the detail pass, on its own throttled budget.
     let detail_sink = dl.details.sink();
-    while let Some((li, cx, cy)) = dl.details.next_job(now_secs) {
+    let settled = coverage_settled(now_secs);
+    while let Some((li, cx, cy)) = settled.then(|| dl.details.next_job(now_secs)).flatten() {
         let detail_sink = detail_sink.clone();
         IoTaskPool::get()
             .spawn(async move {
@@ -3259,6 +3264,36 @@ fn build_layer_cell(
     }))
 }
 
+/// The atlas host's cells for the layers it cuts from the OpenStreetMap extract
+/// (atlas's `transit` and `shops` datasets), each the answer to that layer's
+/// [`LayerDef::query`] for the cell.
+static TRANSIT_COVERAGE: CoverageSlot =
+    CoverageSlot::new("transit", "/transit/coverage.json", LAYER_ZOOM);
+static SHOPS_COVERAGE: CoverageSlot =
+    CoverageSlot::new("shops", "/shops/coverage.json", LAYER_ZOOM);
+
+fn coverage(key: &str) -> Option<&'static CoverageSlot> {
+    match key {
+        "transit" => Some(&TRANSIT_COVERAGE),
+        "shops" => Some(&SHOPS_COVERAGE),
+        _ => None,
+    }
+}
+
+/// How long the Overpass passes wait for those manifests before asking Overpass
+/// for everything, as `tall_structures` does.
+const COVERAGE_WAIT_SECS: f64 = 3.0;
+
+/// Whether the manifests have answered, or the wait for them is over.
+fn coverage_settled(now_secs: f64) -> bool {
+    static SINCE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    TRANSIT_COVERAGE.ensure(now_secs);
+    SHOPS_COVERAGE.ensure(now_secs);
+    let since = *SINCE.get_or_init(|| now_secs);
+    (TRANSIT_COVERAGE.revision() > 0 && SHOPS_COVERAGE.revision() > 0)
+        || now_secs - since >= COVERAGE_WAIT_SECS
+}
+
 /// Cache key for one layer cell.
 fn cell_cache_key(key: &str, cx: i64, cy: i64) -> String {
     format!("layers/{}/{}/{}/{}.json", key, LAYER_ZOOM, cx, cy)
@@ -3289,6 +3324,25 @@ async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, Str
     let key = cell_cache_key(def.key, cx, cy);
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
+    }
+
+    // A cell atlas cut from the OpenStreetMap extract is the same answer as a
+    // file; anything else, or a file that does not arrive, is asked of Overpass.
+    let host = crate::systems::osm_buildings::tdbag_url();
+    if coverage(def.key).is_some_and(|c| c.covers(cx, cy)) && !host.is_empty() {
+        let url = format!("{host}/{}/{LAYER_ZOOM}/{cx}/{cy}.json", def.key);
+        match crate::platform::http::fetch_string(crate::platform::http::Request::get(url.clone()))
+            .await
+        {
+            Ok(text) if text.trim_start().starts_with('{') => {
+                storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
+                return Ok(text);
+            }
+            Ok(_) => tracing::debug!(%url, "pre-cut layer cell is not a document; asking Overpass"),
+            Err(e) => {
+                tracing::debug!(%url, error = %e, "pre-cut layer cell unavailable; asking Overpass")
+            }
+        }
     }
 
     let (north, west) = tile_to_lat_lng(cx, cy, LAYER_ZOOM);
