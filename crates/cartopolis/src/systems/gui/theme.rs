@@ -1606,59 +1606,6 @@ pub fn round_button(
     round_button_on(ui, icon, tooltip, selected, (p().overlay, p().overlay_line))
 }
 
-/// One button of the dock: a tall rounded plate with its glyph and its word
-/// inside, [`ROUND_BUTTON_SIZE`] wide and [`DOCK_BUTTON_HEIGHT`] tall.
-///
-/// It was a round disc with the word painted under it on the map in a dark
-/// halo; over a busy city the halo smudged the word, worst in the light theme
-/// ("the text under the floating buttons", 2026-11-10). Inside the plate the
-/// word is on the panel's own tone, so it reads the same over any map.
-pub fn dock_button(
-    ui: &mut egui::Ui,
-    icon: &str,
-    word: &str,
-    tooltip: &str,
-    selected: bool,
-) -> egui::Response {
-    let size = egui::vec2(ROUND_BUTTON_SIZE, DOCK_BUTTON_HEIGHT);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let resp = named(ui, resp, tooltip);
-    let (fill, rim, ink, word_ink) = match (selected, resp.hovered()) {
-        (true, _) => (p().accent, p().accent_ring, p().on_accent, p().on_accent),
-        (false, true) => (p().surface_hover, p().overlay_line, p().cream, p().cream),
-        (false, false) => (p().overlay, p().overlay_line, p().text, p().text_dim),
-    };
-    let corner = CornerRadius::same(14);
-    let painter = ui.painter();
-    painter.add(lift_shadow().as_shape(rect, corner));
-    painter.rect(
-        rect,
-        corner,
-        fill,
-        Stroke::new(1.0, rim),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        egui::pos2(rect.center().x, rect.top() + 18.0),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        FontId::proportional(17.0),
-        ink,
-    );
-    painter.text(
-        egui::pos2(rect.center().x, rect.bottom() - 11.0),
-        egui::Align2::CENTER_CENTER,
-        word,
-        FontId::proportional(SIZE_TINY),
-        word_ink,
-    );
-    paint_focus_ring(ui, &resp, rect, false);
-    resp.on_hover_text(tooltip)
-}
-
-/// Height of a [`dock_button`]: the glyph's disc and its word, in one plate.
-pub const DOCK_BUTTON_HEIGHT: f32 = 50.0;
-
 fn round_button_on(
     ui: &mut egui::Ui,
     icon: &str,
@@ -2100,6 +2047,20 @@ pub fn actions_are_small() -> bool {
 /// key columns will not fit in 393 dp — and it is the one that keeps the target
 /// hittable while leaving the row legible.
 const ACTION_PAD_X: f32 = 6.0;
+
+/// A word that is an action beside a panel's title — Map layers' Reset: the
+/// accent's text, no frame, a soft plate under the pointer. A small outlined
+/// button there read as "unstyled" (2026-11-10).
+pub fn header_action(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(SIZE_BODY)
+                .color(p().accent_word),
+        )
+        .frame_when_inactive(false),
+    )
+}
 
 /// An icon action that sits *beside* something — the route panel's pick /
 /// use-my-position / clear, the address bar's flag, a bookmark's rename and

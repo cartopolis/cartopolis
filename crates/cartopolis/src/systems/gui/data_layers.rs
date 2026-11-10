@@ -2871,7 +2871,7 @@ pub fn render_data_layers_panel(
         // the ~900 pt of rows that a blanked map gives you no reason to scroll
         // through.
         close = crate::systems::theme::panel_header_with(ui, panel.icon(), panel.label(), |ui| {
-            if crate::systems::theme::action_button(ui, "Reset")
+            if crate::systems::theme::header_action(ui, "Reset")
                 .on_hover_text("Switch every layer back to how it ships")
                 .clicked()
             {

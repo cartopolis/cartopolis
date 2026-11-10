@@ -115,12 +115,16 @@ pub fn reserved_bottom() -> f32 {
 /// The glass bar's margin round the discs, where there is room for it.
 const BAR_PAD: f32 = 4.0;
 
-/// The room the word takes in a dock button, below its glyph. The dock was six bare glyphs, and two of them
+/// The word under each disc. The dock was six bare glyphs, and two of them
 /// (the view mode, Saved) said nothing a person could guess
 /// (`docs/mockups/ux-review`).
-const LABEL_H: f32 = theme::DOCK_BUTTON_HEIGHT - theme::ROUND_BUTTON_SIZE;
+const LABEL_H: f32 = 14.0;
 
-/// A dock button: its glyph and its word in one plate (`theme::dock_button`).
+/// A dock button: a round button with its word under it, on the map.
+///
+/// The word is light with a narrow shadow under it, as a map draws its own
+/// labels: a full halo round it smudged over a busy city, and a plate round
+/// button and word together was "only uglier" (both 2026-11-10).
 fn labelled(
     ui: &mut egui::Ui,
     word: &str,
@@ -128,7 +132,43 @@ fn labelled(
     tooltip: &str,
     selected: bool,
 ) -> egui::Response {
-    theme::dock_button(ui, icon, word, tooltip, selected)
+    ui.allocate_ui_with_layout(
+        egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE + LABEL_H),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let resp = theme::round_button(ui, icon, tooltip, selected);
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(theme::ROUND_BUTTON_SIZE + 12.0, LABEL_H),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            let at = rect.center() + egui::vec2(0.0, 1.0);
+            let font = egui::FontId::proportional(theme::SIZE_TINY + 0.5);
+            for d in [
+                egui::vec2(0.0, 1.0),
+                egui::vec2(0.5, 0.5),
+                egui::vec2(-0.5, 0.5),
+            ] {
+                painter.text(
+                    at + d,
+                    egui::Align2::CENTER_CENTER,
+                    word,
+                    font.clone(),
+                    egui::Color32::from_black_alpha(170),
+                );
+            }
+            painter.text(
+                at,
+                egui::Align2::CENTER_CENTER,
+                word,
+                font,
+                theme::DARK.cream,
+            );
+            resp
+        },
+    )
+    .inner
 }
 
 /// The bar's margin at this viewport: [`BAR_PAD`], or what is left once the
