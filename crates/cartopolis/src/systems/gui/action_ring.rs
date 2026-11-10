@@ -90,11 +90,15 @@ pub fn show(
     // not a dismissal. Remember the frame the ring first showed.
     let frame = ctx.cumulative_pass_nr();
     let first = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(id.with("opened"), || frame));
+    // New and small: it pops about its centre (`motion::pop`). A ring's `id`
+    // is new for each ring, so each one arrives.
+    let pres = crate::systems::motion::presence(ctx, id, true);
 
     let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
         .fixed_pos(centre - extent)
         .show(ctx, |ui| {
+            crate::systems::motion::pop(ui, pres, centre);
             let (rect, _) =
                 ui.allocate_exact_size(extent * 2.0 + Vec2::new(0.0, 60.0), Sense::hover());
             let c = rect.min + extent;

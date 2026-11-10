@@ -111,6 +111,12 @@ pub struct EguiManager {
     /// map, in egui points. Read by [`Self::owns_click`]; `None` before the first
     /// pass has ended.
     map_rect: Option<egui::Rect>,
+    /// Whether the last pass had an animation in progress — egui asked to be
+    /// drawn again *now* (`repaint_delay` zero), which is what every
+    /// `animate_*` does on each pass it moves. Read by
+    /// `frame_pacing::present_rate`, so a surface arriving over a still map
+    /// is drawn at the full rate and not the idle one.
+    ui_animating: bool,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -295,14 +301,17 @@ pub fn right_panel(
     let mut close = false;
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
-    responsive_right_panel(id, compact, viewport_w, wide_width).show_collapsible(
-        egui.ui_mut(),
-        &mut open,
-        |ui| {
-            close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
-            body(ui);
-        },
-    );
+    let ctx = egui.ctx().clone();
+    crate::systems::motion::with_panel_time(&ctx, open, || {
+        responsive_right_panel(id, compact, viewport_w, wide_width).show_collapsible(
+            egui.ui_mut(),
+            &mut open,
+            |ui| {
+                close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
+                body(ui);
+            },
+        );
+    });
     // Returned so a panel with teardown of its own (the search panel drops its
     // suggestion popup and its focus claim) can hook the same moment.
     let closed = close || (open_before && !open);
@@ -332,14 +341,17 @@ pub fn bottom_sheet(
         .fill(crate::systems::theme::p().panel)
         .stroke(egui::Stroke::new(1.0, crate::systems::theme::p().panel_rim))
         .inner_margin(egui::Margin::symmetric(14, 10));
-    egui::Panel::bottom(id)
-        .frame(frame)
-        .resizable(false)
-        .exact_size(height)
-        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
-            body(ui);
-        });
+    let ctx = egui.ctx().clone();
+    crate::systems::motion::with_panel_time(&ctx, open, || {
+        egui::Panel::bottom(id)
+            .frame(frame)
+            .resizable(false)
+            .exact_size(height)
+            .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+                close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
+                body(ui);
+            });
+    });
     let closed = close || (open_before && !open);
     if closed {
         *slot = crate::resources::RightPanel::None;
@@ -397,6 +409,7 @@ impl Default for EguiManager {
             modal: false,
             injected: Vec::new(),
             map_rect: None,
+            ui_animating: false,
         }
     }
 }
@@ -532,6 +545,14 @@ impl EguiManager {
     /// it does not.
     pub fn animating(&self) {
         self.ctx.request_repaint_after(ANIMATING_REDRAW);
+    }
+
+    /// Whether the UI moved on its own last pass (a `motion` in progress), as
+    /// opposed to merely wanting a look within a quarter second. The idle
+    /// throttle counts it as busy.
+    #[must_use]
+    pub fn ui_animating(&self) -> bool {
+        self.ui_animating
     }
 
     /// Logical viewport size in points (physical pixels ÷ display scale), as egui
@@ -1263,6 +1284,11 @@ pub fn begin_egui_frame(
     let mut raw_input = egui::RawInput {
         screen_rect: Some(screen_rect),
         time: Some(egui_manager.elapsed_time),
+        // The frame egui should plan for. Left at its default (1/60 s) egui
+        // advanced its animations and the kinetic scroll by a sixtieth on a
+        // phone frame of 25–40 ms, so a fling ran slow exactly where it is
+        // most used. The last frame's length is the best guess for this one.
+        predicted_dt: time.delta_secs().clamp(1.0 / 240.0, 0.1),
         events,
         focused: true,
         ..Default::default()
@@ -1397,6 +1423,9 @@ pub fn end_egui_frame(
         .viewport_output
         .get(&egui::ViewportId::ROOT)
         .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+    // Zero, and only zero: `animating()`'s quarter-second ask (a clock
+    // readout) is not motion the frame rate has to keep up with.
+    egui_manager.ui_animating = repaint_delay.is_zero();
     let quiet = geometry_still_current(repaint_delay, *since_write);
     if !force
         && quiet

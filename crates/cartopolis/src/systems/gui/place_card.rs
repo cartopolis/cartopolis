@@ -92,27 +92,31 @@ pub fn render_place_card(
             *right_panel = RightPanel::None;
         }
     }
-    let Some(place) = card.place.clone() else {
-        return;
-    };
     // The dock's own suppression rules, and for the dock's reasons: each of
     // these owns the bottom of the screen, and an `Area` cannot be put behind a
     // panel. Hidden, not closed — the place is still the subject when the
-    // keyboard or the panel goes away.
-    if driver.active || keyboard.is_open() || menu.open {
+    // keyboard or the panel goes away. And the route planner at any width: it
+    // is a bottom sheet now (`navigation::SheetDetent`), anchored to the same
+    // centre-bottom this card is, so on a desktop window the two would be drawn
+    // on top of each other. Hidden rather than closed, as above — "Route to" is
+    // a verb on *this* place, and it is still the subject when the planner goes
+    // away.
+    let hidden = driver.active
+        || keyboard.is_open()
+        || menu.open
+        || (egui.compact() && !right_panel.is(RightPanel::None))
+        || right_panel.is(RightPanel::Route);
+    // The card rises from the dock and sinks back (`motion::linger`): the place
+    // it was showing is still drawn, untouchable, for the last `motion::LEAVE`
+    // after `card.place` is cleared.
+    let ctx = egui.ctx();
+    let Some((place, pres)) = crate::systems::motion::linger(
+        ctx,
+        egui::Id::new("place_card"),
+        if hidden { None } else { card.place.clone() },
+    ) else {
         return;
-    }
-    if egui.compact() && !right_panel.is(RightPanel::None) {
-        return;
-    }
-    // And the route planner at any width: it is a bottom sheet now
-    // (`navigation::SheetDetent`), anchored to the same centre-bottom this card
-    // is, so on a desktop window the two would be drawn on top of each other.
-    // Hidden rather than closed, as above — "Route to" is a verb on *this* place,
-    // and it is still the subject when the planner goes away.
-    if right_panel.is(RightPanel::Route) {
-        return;
-    }
+    };
 
     let cam = camera.get();
     let viewer = cam
@@ -121,11 +125,12 @@ pub fn render_place_card(
     let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
 
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let ctx = egui.ctx();
     let mut close = false;
     egui::Area::new(egui::Id::new("place_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+        .interactable(pres.open)
         .show(ctx, |ui| {
+            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN));
                 // Header: the name leads, the close button takes the corner. The

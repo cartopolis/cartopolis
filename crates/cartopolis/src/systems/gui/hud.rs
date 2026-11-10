@@ -301,6 +301,9 @@ fn locate_overlay(
             }
             if matches!(gps, GpsQuality::Waiting) {
                 paint_search_sweep(p, c, face.radius, time);
+                // The sweep reads the clock; without this it stands still on
+                // every frame nobody touches the screen.
+                p.ctx().request_repaint();
             }
             // The caption, and it is the half that reaches a phone at all: every
             // other report this button can make is in `hover`, and a touch device

@@ -491,6 +491,10 @@ pub fn render_chat_bubbles(
         if alpha <= 0.0 {
             continue;
         }
+        if alpha < 1.0 {
+            // A fade reads the clock; egui has to be told it moves.
+            ctx.request_repaint();
+        }
         let speaker = lines.last().map(|l| l.sender.clone()).unwrap_or_default();
         let bodies: Vec<String> = lines.iter().map(|l| l.body.clone()).collect();
         anchored.at(head);
@@ -702,6 +706,9 @@ pub fn render_chat_transcript(
                 };
                 if alpha <= 0.0 {
                     continue;
+                }
+                if alpha < 1.0 {
+                    ctx.request_repaint();
                 }
                 // Which chat a run is in, only where it is not the one being
                 // answered and not Here (the default, and what the bubbles carry).

@@ -964,6 +964,10 @@ pub fn style_for(touch: bool) -> egui::Style {
         visuals: visuals(),
         ..Default::default()
     };
+    // What egui's own widgets ease over (a checkbox, a collapsing header, a
+    // scroll fade): a *state* change (`motion::STATE`). A surface's slide sets
+    // its own time round its call (`motion::with_panel_time`).
+    style.animation_time = super::motion::STATE;
 
     let s = &mut style.spacing;
     // The "cramped" fix is mostly here. egui's defaults are 3 pt between rows and
@@ -1622,16 +1626,19 @@ fn round_button_on(
         (false, true) => (p().surface_hover, p().accent, p().cream),
         (false, false) => (rest.0, rest.1, p().text),
     };
+    // Under the finger the disc gives a little (`motion::press`): the one
+    // acknowledgement a painted control can make before its action shows.
+    let press = super::motion::press(&resp);
     paint_disc(
         ui.painter(),
         rect.center(),
-        ROUND_BUTTON_SIZE * 0.5 - 1.0,
+        (ROUND_BUTTON_SIZE * 0.5 - 1.0) * press,
         Disc {
             fill,
             ring,
             ink,
             icon,
-            icon_size: 17.0,
+            icon_size: 17.0 * press,
             ring_width: 1.5,
         },
     );
@@ -1820,7 +1827,7 @@ pub fn map_disc(
         (false, true) => (p().surface_hover, p().accent, p().cream),
         (false, false) => (p().overlay, p().overlay_line, p().text),
     };
-    let radius = size * 0.5 - 1.0;
+    let radius = (size * 0.5 - 1.0) * super::motion::press(&resp);
     let p = ui.painter();
     paint_disc_shadow(p, rect.center(), radius, lift_shadow());
     p.circle_filled(rect.center(), radius, fill);

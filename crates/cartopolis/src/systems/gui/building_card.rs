@@ -90,28 +90,38 @@ pub fn render_building_card(
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
     identity: Res<crate::resources::AuthIdentity>,
 ) {
-    let Some(id) = selection.selected.clone() else {
-        return;
-    };
     // The dock's suppression rules, and the place card's — each of these owns the
     // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
     // not cleared: the building is still the subject, and its glass is still on
     // the map, when the keyboard or the panel goes away.
-    if driver.active || menu.open || keyboard.is_open() {
+    let hidden = driver.active
+        || menu.open
+        || keyboard.is_open()
+        || (egui.compact() && !right_panel.is(RightPanel::None))
+        || right_panel.is(RightPanel::Route);
+    // The card rises from the dock and sinks back (`motion::linger`): the
+    // building it was showing is still drawn, untouchable, for the last
+    // `motion::LEAVE` after the selection is cleared.
+    let ctx = egui.ctx();
+    let Some((id, pres)) = crate::systems::motion::linger(
+        ctx,
+        egui::Id::new("building_card"),
+        if hidden {
+            None
+        } else {
+            selection.selected.clone()
+        },
+    ) else {
         return;
-    }
-    if egui.compact() && !right_panel.is(RightPanel::None) {
-        return;
-    }
-    if right_panel.is(RightPanel::Route) {
-        return;
-    }
+    };
 
     // A building whose cell has streamed out from under the selection. The card
     // goes rather than showing a row of blanks — and so does the selection, since
     // there is nothing left to draw glass around either.
     let Some(fact) = facts.building(&id).cloned() else {
-        selection.clear();
+        if pres.open {
+            selection.clear();
+        }
         return;
     };
     let shell = lod.shell_measure(&id);
@@ -123,7 +133,6 @@ pub fn render_building_card(
 
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-    let ctx = egui.ctx();
     let mut close = false;
     let mut open: Option<String> = None;
     let mut look: Option<bool> = None;
@@ -133,7 +142,9 @@ pub fn render_building_card(
     let looking = cutaway.looking.as_deref() == Some(&*id);
     egui::Area::new(egui::Id::new("building_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+        .interactable(pres.open)
         .show(ctx, |ui| {
+            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(width);
                 header(ui, &fact, &addresses, &mut close);

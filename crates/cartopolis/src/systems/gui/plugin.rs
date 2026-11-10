@@ -85,7 +85,12 @@ impl Plugin for GuiPlugin {
         // in Input, before anything paints, so a frame is one theme throughout.
         app.add_systems(
             Update,
-            systems::ui_theme::follow_the_light.in_set(ClientPhase::Input),
+            (
+                systems::ui_theme::follow_the_light,
+                // And how much it moves (`systems::motion`), for the same reason.
+                systems::motion::apply_pref,
+            )
+                .in_set(ClientPhase::Input),
         );
 
         // The app's own updates (`systems::app_update`): a `Foreground` pill or

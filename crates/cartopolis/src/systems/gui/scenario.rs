@@ -38,6 +38,7 @@ use crate::components::FreeCamera;
 use crate::resources::MapAnchor;
 use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
+use crate::systems::motion;
 use crate::systems::place_pins;
 use crate::systems::theme::{self, scenario as ink};
 use bevy::prelude::*;
@@ -1316,8 +1317,8 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
             tapped = Some(i);
         }
         let ctx = ui.ctx();
-        let lit = ctx.animate_bool_with_time(id.with("lit"), singled.is_none_or(|b| b == i), 0.15);
-        let up = ctx.animate_bool_with_time(id.with("up"), singled == Some(i), 0.15);
+        let lit = motion::toggle(ctx, id.with("lit"), singled.is_none_or(|b| b == i), 0.15);
+        let up = motion::toggle(ctx, id.with("up"), singled == Some(i), 0.15);
         let seg = seg.expand2(egui::vec2(0.0, 2.5 * up));
         let round = (LEGEND_BAR_PTS * 0.5) as u8;
         let mut corners = egui::CornerRadius::ZERO;
@@ -1343,9 +1344,7 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
     // The marker glides to the band of the place under the crosshair.
     if let Some(band) = here.and_then(|p| o.band_at(o.layer, p)) {
         let target = bar.left() + w * (band as f32 + 0.5);
-        let x = ui
-            .ctx()
-            .animate_value_with_time(ui.id().with("lens_mark"), target, 0.25);
+        let x = motion::value(ui.ctx(), ui.id().with("lens_mark"), target, 0.25);
         let tip = bar.top() - 2.0;
         ui.painter().add(egui::Shape::convex_polygon(
             vec![
@@ -1562,9 +1561,7 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
     let (r, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::click());
     let resp = theme::named(ui, resp, &name);
-    let hot = ui
-        .ctx()
-        .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
+    let hot = motion::toggle(ui.ctx(), resp.id.with("hot"), resp.hovered(), 0.12);
     let p = ui.painter();
     p.rect(
         r,
@@ -1641,8 +1638,8 @@ fn figure_row(
         egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, label)
     });
     let ctx = ui.ctx();
-    let hot = ctx.animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
-    let lit = ctx.animate_bool_with_time(resp.id.with("on"), on, 0.18);
+    let hot = motion::toggle(ctx, resp.id.with("hot"), resp.hovered(), 0.12);
+    let lit = motion::toggle(ctx, resp.id.with("on"), on, 0.18);
     let p = ui.painter();
     let fill = lerp_colour(
         lerp_colour(egui::Color32::TRANSPARENT, theme::p().surface_hover, hot),
@@ -2280,9 +2277,7 @@ fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
     let d = theme::close_button_size().max(32.0);
     let (r, resp) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::click());
     let resp = theme::named(ui, resp, if playing { "Pause" } else { "Play" });
-    let hot = ui
-        .ctx()
-        .animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
+    let hot = motion::toggle(ui.ctx(), resp.id.with("hot"), resp.hovered(), 0.12);
     let p = ui.painter();
     let c = r.center();
     p.circle_filled(

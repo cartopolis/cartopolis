@@ -721,7 +721,8 @@ fn zoom_rail_control(
                 if hovered || state.list_open {
                     state.active_at = now;
                 }
-                let awake = ctx.animate_bool_with_time(
+                let awake = crate::systems::motion::toggle(
+                    ctx,
                     egui::Id::new("zoom_rail_awake"),
                     now - state.active_at < RAIL_AWAKE_SECS,
                     0.4,
@@ -943,7 +944,8 @@ fn zoom_rail_control(
 
                 // The step's name beside the thumb, while the rail is awake
                 // and no end is offering the next scale there.
-                let shown = ctx.animate_bool_with_time(
+                let shown = crate::systems::motion::toggle(
+                    ctx,
                     egui::Id::new("zoom_rail_name"),
                     now - state.active_at < RAIL_AWAKE_SECS,
                     0.25,

@@ -411,6 +411,10 @@ pub fn render_login_screen(
     }
     let dt = time.delta_secs();
     screen.anim = (screen.anim + dt / FADE_S).min(1.0);
+    if screen.anim < 1.0 {
+        // The rise reads the clock; egui must be told to draw it again.
+        egui.ctx().request_repaint();
+    }
     // Ease-out: fast to visible, settling into place.
     let t = 1.0 - (1.0 - screen.anim) * (1.0 - screen.anim);
 

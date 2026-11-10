@@ -970,6 +970,16 @@ fn general_tab(
 
     ui.add_space(8.0);
     ui.separator();
+    section(ui, "Motion");
+    let motions = crate::resources::MotionPref::ALL.map(|m| (m, m.label()));
+    crate::systems::theme::segmented(ui, &mut prefs.motion, &motions);
+    theme::note(
+        ui,
+        "Reduced keeps buttons answering under the finger, and makes cards and pages appear in place.",
+    );
+
+    ui.add_space(8.0);
+    ui.separator();
     section(ui, "Developer");
     theme::checkbox(
         ui,

@@ -298,3 +298,21 @@ fn the_clock_is_web_time_where_the_web_runs() {
         bad.join("\n")
     );
 }
+
+/// Time and curve live in `systems::motion` (`docs/mockups/fluid-ui/`): a
+/// panel says what kind of change it draws and takes the duration from there,
+/// so the five durations stay five and the reduced-motion setting reaches
+/// everything. egui's `animate_*` is called in that one module only.
+#[test]
+fn every_animation_goes_through_motion() {
+    let hits: Vec<_> = ["animate_bool", "animate_value"]
+        .iter()
+        .flat_map(|n| code_lines_with(n))
+        .filter(|hit| !hit.contains("systems/gui/motion.rs"))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "animate through `motion::presence` / `toggle` / `value` / `press`, never egui's `animate_*` directly:\n{}",
+        hits.join("\n")
+    );
+}

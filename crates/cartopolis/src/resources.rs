@@ -173,6 +173,33 @@ impl Units {
     }
 }
 
+/// How much the UI moves (`systems::motion`). `Reduced` zeroes coming and
+/// going and keeps press and state, which are feedback. Named variants on the
+/// wire, as [`Units`]. **It follows this setting and never the frame rate.**
+///
+/// There is no "follow the system" yet: Android's animator scale needs a JNI
+/// read and the web's `prefers-reduced-motion` a line in `index.html`; both
+/// are a `System` variant to add here when one is wired.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionPref {
+    #[default]
+    Normal,
+    Reduced,
+}
+
+impl MotionPref {
+    pub const ALL: [Self; 2] = [Self::Normal, Self::Reduced];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Reduced => "Reduced",
+        }
+    }
+}
+
 /// The render budget the user asks for, as opposed to the one
 /// [`crate::quality`] detects.
 ///
@@ -433,6 +460,9 @@ pub struct AppPrefs {
     /// they read when they grow a second unit system.
     #[serde(default)]
     pub units: Units,
+    /// How much the UI moves. Applied each frame by `motion::apply_pref`.
+    #[serde(default)]
+    pub motion: MotionPref,
     /// Hold the screen awake while the app is in front
     /// (`frame_pacing::apply_screen_wakelock`, `platform::keep_awake`). Named
     /// for driver mode, which was all it covered until 2026-11-04; the name
@@ -617,6 +647,7 @@ impl Default for AppPrefs {
     fn default() -> Self {
         Self {
             units: Units::default(),
+            motion: MotionPref::default(),
             keep_screen_on: yes(),
             voice_guidance: yes(),
             quality: QualityPreset::default(),
@@ -2208,6 +2239,7 @@ mod tests {
     fn settings_round_trip_through_json() {
         let prefs = AppPrefs {
             units: Units::Imperial,
+            motion: MotionPref::Reduced,
             keep_screen_on: false,
             voice_guidance: false,
             quality: QualityPreset::Low,

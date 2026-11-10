@@ -37,6 +37,7 @@ pub mod login_screen;
 pub mod lua_highlight;
 pub mod map_osd;
 pub mod model_library;
+pub mod motion;
 pub mod onscreen_keyboard;
 pub mod place_card;
 pub mod place_names;

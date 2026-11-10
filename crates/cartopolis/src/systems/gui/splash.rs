@@ -586,6 +586,12 @@ pub fn boot_splash(
     // relative to its centre, the wordmark walks off the bottom-right corner.
     let viewport = egui.viewport_pts();
     let ctx = egui.ctx();
+    // Both fades read the clock, and egui does not know that: without this
+    // ask a quiet frame re-presents the last geometry and the fade stands
+    // still until something is touched (`egui-quiet-frame-staleness.md`).
+    if splash.fading.is_some() || splash.elapsed < FADE_IN_S {
+        ctx.request_repaint();
+    }
 
     // A foreground layer painted directly, rather than a window or a panel: this
     // covers everything, takes no input, and needs no layout.
