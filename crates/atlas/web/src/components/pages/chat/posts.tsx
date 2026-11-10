@@ -316,7 +316,6 @@ export function FollowFrom(address: string, group: boolean) {
     return (
         <form
             class="post-follow-from"
-            key={`from-${address}`}
             onsubmit={(e: Event) => {
                 e.preventDefault()
                 void go()
