@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css"><link rel="stylesheet" href="fluid.css">
+</head><body>
+
+<h1>Vloeiend · 3 · <b>Waarom het hapert, en wat er verandert</b></h1>
+<p class="lede">Dit blad is gelezen uit de code op <code>main</code> (035fe5af, 2026-11-10), niet gemeten op een telefoon: dat is stap 0 van het plan
+onderaan. Negen dingen maken de UI nu schokkerig of hard, elk met waar het staat en wat het wordt. Daarna de volgorde waarin het gebouwd
+wordt, zo dat elke stap op zichzelf landt en iets laat zien.</p>
+
+<h2 class="sec"><span>1</span>Negen oorzaken</h2>
+<div class="findings">
+  <div class="finding"><h3><span class="n">1</span>Sluiten is altijd een knip</h3>
+    <p>Elke zwevende <code>Area</code> (dock, menu, ring, kaartjes, welcome) vervaagt <i>in</i> via egui's standaard (0,2 s), maar egui vervaagt een Area nooit <i>uit</i>. Het paneel schuift (egui's <code>show_collapsible</code>, 0,2 s), de rest komt en gaat in één frame: de actiering, het menu, de kaartjes, het toetsenbord, de camerakaart, elke pagina in een paneel.</p>
+    <div class="where">action_ring.rs:94 · ui.rs:96 · dock.rs:225 · onscreen_keyboard.rs · navigation.rs:2073</div>
+    <div class="fix">tekent <code>theme::motion</code> het komen én gaan zelf: een vlak dat sluit blijft nog 240 ms getekend met zijn eigen 1→0, en pas dan verdwijnt het uit de boom. Eén functie, <code>motion::presence(ctx, id, open)</code>, die ook de "nog even tekenen"-toestand bewaart.</div></div>
+
+  <div class="finding"><h3><span class="n">2</span>Een stil scherm halveert het tempo</h3>
+    <p>Na 2 s zonder camerabeweging, toets of vinger zakt de framerate naar de helft (vloer 30, <code>frame_pacing.rs</code>). <b>Een lopende UI-animatie telt niet als bezig</b>: een kaartje dat opkomt terwijl de kaart stilstaat, loopt op 30 fps. Dat is precies het moment waarop je ernaar kijkt.</p>
+    <div class="where">systems/dev/frame_pacing.rs:162-215 (IDLE_AFTER_S)</div>
+    <div class="fix">telt egui's eigen <code>repaint_delay</code> (eindig zolang een <code>animate_*</code> loopt) als bezig, en een vinger op het glas ook. De rustmodus blijft voor een echt stil scherm; de animatie krijgt het volle tempo.</div></div>
+
+  <div class="finding"><h3><span class="n">3</span>Tijd-animaties bevriezen op stille frames</h3>
+    <p>Op een stil frame slaat <code>end_egui_frame</code> het tessellatiewerk over en tekent de vorige geometrie. Dat is goed (<code>egui-quiet-frame-staleness.md</code>), maar vijf animaties lezen zelf de klok en vragen geen repaint: de splash-fade, de inlogkaart, de chat-fades, de GPS-zoekveeg op Locate, de 4 s-timer van het gesprek. Ze lopen alleen door als iets anders het frame wakker houdt.</p>
+    <div class="where">splash.rs:494 · login_screen.rs:412 · chat_overlay.rs:251,490 · hud.rs:498 · call_screen.rs:664</div>
+    <div class="fix">loopt alles via <code>motion</code>, dat via <code>ctx.animate_*</code> zelf om repaints vraagt zolang het loopt en daarna niet meer. <code>animating()</code> (één repaint per 250 ms) blijft wat het is: een grens voor staleness, geen framerate.</div></div>
+
+  <div class="finding"><h3><span class="n">4</span>egui rekent met een frame van 1/60 s</h3>
+    <p><code>predicted_dt</code> wordt nooit gezet, dus egui neemt 16,7 ms aan. Op een telefoon die een stad tekent is een frame 25–40 ms. Alles wat egui per frame vooruitzet (kinetisch scrollen: wrijving 1000 pt/s², de wis-animaties) loopt daar te traag.</p>
+    <div class="where">egui_manager.rs:1120,1265 (RawInput.time) · egui scroll_area.rs:856</div>
+    <div class="fix">krijgt <code>RawInput.predicted_dt</code> de gemeten frametijd (gefilterd, zoals <code>frame_pacing</code> hem al kent). Scrollen voelt dan op elke telefoon hetzelfde.</div></div>
+
+  <div class="finding"><h3><span class="n">5</span>Werk op de UI-thread</h3>
+    <p>De eerste keer dat een foto in beeld komt leest, decodeert en uploadt de UI-code hem ter plekke: bladwijzers, communityfoto's, gezichten. De agenda leest en schrijft zijn opslag in een UI-systeem. Het camerascherm doet een blokkerende HTTP-call (reverse geocode). Elk ervan is één lang frame op het moment dat een lijst opent.</p>
+    <div class="where">bookmarks.rs:1051,1599 · communities.rs:357 · faces.rs:366 · calendar.rs:730,784 · camera_screen.rs:392</div>
+    <div class="fix">gaan decoderen en lezen door <code>platform::workers</code> (de regel die al geldt) en komt het resultaat een frame later; tot die tijd staat de schimrij van blad 2. De HTTP-call wordt een taak met een status in het kaartje.</div></div>
+
+  <div class="finding"><h3><span class="n">6</span>Negen eigen paginastapels</h3>
+    <p>Chats, communities, contacts, calendar, settings, admin, de ontwerper, de modelbibliotheek en posts hebben elk een eigen <code>enum</code> met "waar ben ik". Geen van hen kan een overgang tekenen, want geen weet wat de vorige pagina was, en Back moest per stapel aan de ladder worden geleerd.</p>
+    <div class="where">chats.rs:128 · communities.rs:71 · contacts.rs:167 · calendar.rs:534 · settings.rs:97 · admin.rs:142</div>
+    <div class="fix">is er één <code>PageStack&lt;P&gt;</code> in <code>motion</code>: push, pop, pop_to_root, en bij het tekenen de vorige pagina nog 360 ms erbij, verschoven. De dismiss-ladder leest die ene stapel.</div></div>
+
+  <div class="finding"><h3><span class="n">7</span>Een veeg is een drempel, geen beweging</h3>
+    <p>De routekaart en het lensblad kennen een "flick": voorbij <code>GRABBER_FLICK_PTS</code> springt het naar de andere stand. De vinger beweegt niets terwijl hij sleept, en er is geen snelheid: een trage duw en een snelle veeg doen hetzelfde. Panelen kennen geen veeg; terug-vegen bestaat niet.</p>
+    <div class="where">nav/navigation.rs:2073-2108 · scenario.rs:1213</div>
+    <div class="fix">volgt een kaartje de vinger 1:1 (<code>motion::Sheet</code> met rusten kijkje · half · vol), en bij loslaten kiest het de rust die de snelheid van de vinger voorspelt (positie + v × 0,2 s). Dezelfde <code>Sheet</code> drijft de routekaart, het lensblad, Share en de kaartjes.</div></div>
+
+  <div class="finding"><h3><span class="n">8</span>Het toetsenbord bedekt, en schuift niets</h3>
+    <p>De slab staat op <code>Order::Tooltip</code> en legt zich óver de inhoud; alleen de chatcomposer, de inlogkaart en de routekaart maken zelf ruimte. Een paneel is al opgemaakt als het toetsenbord komt, dus een veld onderin een pagina verdwijnt eronder.</p>
+    <div class="where">onscreen_keyboard.rs:376-452 · chat_overlay.rs:952 · login_screen.rs:418</div>
+    <div class="fix">publiceert het toetsenbord zijn hoogte één frame vooruit (het weet al dat een veld focus heeft), en elke pagina en elk kaartje trekt die af van zijn hoogte en scrollt het veld in beeld, in dezelfde 240 ms waarin de slab opkomt.</div></div>
+
+  <div class="finding"><h3><span class="n">9</span>De UI-pass is een tweede volledige pass</h3>
+    <p>egui tekent over het eindbeeld in een eigen pass met <code>LoadOp::Load</code>: het 1080×2340-oppervlak van een telefoon wordt elk frame gelezen en geschreven, ook als er alleen een schakelaar staat. De survey noemt samenvoegen met <code>upscaling</code> "de echte winst". Daarnaast nemen 28 systemen <code>ResMut&lt;EguiManager&gt;</code>, wat Update grotendeels serialiseert.</p>
+    <div class="where">render-performance-survey.md:671,863 · egui_manager.rs:1550</div>
+    <div class="fix">is dit de laatste stap, met een meting ervoor en erna: de egui-pass in de upscaling-pass, en de Area-only systemen op <code>EguiRef</code> zodat ze parallel lopen. Zonder meting niet beginnen: het is de duurste stap en de enige waarvan de winst niet zeker is.</div></div>
+</div>
+
+<h2 class="sec"><span>2</span>Wat "vloeiend" meetbaar maakt</h2>
+<div class="rules" style="grid-template-columns:repeat(4,1fr)">
+  <div class="rule"><h3>Stap 0 · eerst meten<i>op de OnePlus 15</i></h3><p>Vier scènes, elk 10 s met <code>perf</code> op het toestel: (a) kaart stil, kaartje opent en sluit, 5×; (b) Chats open, scrollen met een veeg; (c) wisselen World ↔ Community 5×; (d) toetsenbord op en neer in een gesprek. Opgeslagen: frametijden, het 95e percentiel, het aantal frames boven 33 ms, en de tijd in de egui-pass. <b>Deze getallen komen in deze README</b> voor er iets verandert.</p></div>
+  <div class="rule"><h3>De lat<i>na stap 6</i></h3><p>Tijdens een beweging van blad 2 geen frame boven 33 ms op de OnePlus 15 over de binnenstad; het 95e percentiel onder 20 ms. De egui-pass onder 2 ms met Chats open. Op het web (Fairphone 4) dezelfde scènes: geen frame boven 50 ms. Een beweging die dat niet haalt wordt korter of valt af; de instelling Reduced is daar geen antwoord op.</p></div>
+  <div class="rule"><h3>Wat er niet verandert</h3><p>De stille-frame-overslag blijft. <code>WorldAnchored</code> blijft. Het paneel-chain blijft de ene volgorde. Geen tweede animatiesysteem naast egui's: <code>motion</code> is een dunne laag over <code>ctx.animate_*</code>, zodat egui zelf weet wanneer het moet hertekenen en wanneer niet.</p></div>
+  <div class="rule"><h3>Wat de tests pinnen</h3><p><code>motion</code> krijgt tests zoals <code>theme</code> ze heeft: elke tijd komt uit de vijf; Reduced zet komen en gaan op 0 en laat druk en toestand staan; een <code>Sheet</code> die losgelaten wordt op 1200 pt/s omlaag sluit vanuit elke rust; een <code>PageStack</code> tekent na een pop de oude pagina precies 240 ms. En een bronregel in <code>source_rules.rs</code>: geen <code>animate_bool</code> buiten <code>motion</code>.</p></div>
+</div>
+
+<h2 class="sec"><span>3</span>Zes stappen, elk landt alleen</h2>
+<div class="phases">
+  <div class="phase"><div class="n">Stap 1</div><h3>motion, en komen & gaan</h3><p>De module met de vijf tijden en twee curves, de instelling Motion, <code>presence</code> voor elke Area en elk paneel, <code>press</code> op elke ronde knop en elke <code>b2</code>-knop. Oorzaken 1, 2, 3.</p><div class="sees">niets sluit meer in één frame; knoppen geven onder de vinger mee; een kaartje dat opkomt loopt op volle snelheid.</div></div>
+  <div class="phase"><div class="n">Stap 2</div><h3>Het kaartje</h3><p><code>motion::Sheet</code> met drie rusten en de vinger erin, voor de plek-, gebouw-, persoon- en afspraakkaart, de routekaart, het lensblad en Share. De ring wordt het kijkje. Oorzaak 7.</p><div class="sees">blad 1 §2 en filmstrook A. Nog met de dock en het menu van nu.</div></div>
+  <div class="phase"><div class="n">Stap 3</div><h3>Pagina's</h3><p>Eén <code>PageStack</code>; de negen enums gaan erop over, één module per commit. Push en pop met de schuif van filmstrook B, veeg-terug van de linkerrand, ✕ naar de wortel. Oorzaak 6.</p><div class="sees">pagina's in Settings, Chats en Community komen van rechts en gaan naar rechts; Back volgt de ladder zonder per-module code.</div></div>
+  <div class="phase"><div class="n">Stap 4</div><h3>De twee ruimtes</h3><p>De schakelaar World | Community, de zoekbalk met je gezicht, de ronde knoppen; de dock en het ☰-menu vervallen; de tabel van blad 1 §4 wordt uitgevoerd. Dit is redesign v2, en de grootste stap.</p><div class="sees">blad 1 helemaal, en filmstrook C.</div></div>
+  <div class="phase"><div class="n">Stap 5</div><h3>Markers, lijsten, toetsenbord, licht</h3><p>De pop van een nieuwe marker, het stijgen van een nieuw bericht, rijen die glijden, schimrijen bij laden, het toetsenbord dat ruimte maakt, en de 600 ms van licht naar donker (de palette interpoleert via <code>Palette::lerp</code>). Oorzaken 5 en 8.</p><div class="sees">filmstrook D; een lijst die opent zonder hik.</div></div>
+  <div class="phase"><div class="n">Stap 6</div><h3>Meten, en de pass</h3><p>Stap 0 opnieuw. Wat de lat niet haalt wordt hier gefixt: <code>predicted_dt</code>, de Area-only systemen op <code>EguiRef</code>, en als de egui-pass het is, samenvoegen met upscaling. Oorzaken 4 en 9.</p><div class="sees">de getallen in de README naast die van stap 0.</div></div>
+</div>
+
+<script src="icons.js"></script></body></html>

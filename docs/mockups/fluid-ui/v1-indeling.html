@@ -1,0 +1,198 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css"><link rel="stylesheet" href="fluid.css">
+<style>
+.lt.mapbg { background:url(map-today.jpg) center/cover; }
+</style></head><body>
+
+<h1>Vloeiend · 1 · <b>De indeling</b></h1>
+<p class="lede">Gevraagd 2026-11-10: "we willen dat egui veel vloeiender werkt, betere ux heeft met animaties, beter design en een logische
+indeling qua navigatie." Drie bladen: <b>de indeling</b> (dit blad), <b>de beweging</b> en <b>vloeiend</b>. Dit blad bouwt op
+<code>redesign/</code> v2 (World en Community uit elkaar, 2026-11-08): het legt de app in <b>zes lagen</b>, zodat elke overgang op het
+tweede blad één regel heeft, en zet elk scherm van nu op zijn plek. Het thema van vraag 1 (midas' kleuren, licht en donker, effen
+panelen, ronde knoppen) is sinds 2026-11-10 op <code>main</code>; alles wat hier getekend is, is <span class="tag">nieuw</span>.</p>
+
+<h2 class="sec"><span>1</span>Zes lagen, van de kaart tot het toetsenbord</h2>
+<p class="lede">Elke laag heeft één vorm, één manier om te komen en te gaan, en één antwoord op Back. Wat op een laag staat, mag
+nooit iets op een lagere laag zijn werk afnemen: de kaart blijft bewegen onder een kaartje, een pagina blijft staan onder een
+bedekking.</p>
+
+<div class="layers">
+  <div class="layer"><div class="n">0</div><h3>De ruimte</h3><p>De kaart (World) of de Community-pagina. Precies één van de twee, altijd.</p>
+    <div class="how"><b>Komt</b> als de andere gaat: kruisvervaging. <b>Back</b> doet hier niets; op Android gaat de app naar de achtergrond.</div></div>
+  <div class="layer"><div class="n">1</div><h3>Het chroom</h3><p>Zoekbalk en je gezicht bovenaan, ronde knoppen rechts, kompas links, de schakelaar World | Community onderaan. In Community: titel, de drie tabs Chats · Groups · Calendar, dezelfde schakelaar.</p>
+    <div class="how"><b>Staat er altijd</b>, behalve onder een bedekking (laag 4). Wijkt alleen: de knoppen schuiven op voor een kaartje.</div></div>
+  <div class="layer"><div class="n">2</div><h3>Kaartjes</h3><p>Over de kaart: plek, gebouw, persoon, afspraak, route, laag-blad, Share. <b>Eén tegelijk</b>; een nieuw kaartje vervangt het oude.</p>
+    <div class="how"><b>Komt</b> van onderen, <b>gaat</b> naar beneden; rust op drie hoogten (hieronder). <b>Back</b> sluit het.</div></div>
+  <div class="layer"><div class="n">3</div><h3>Pagina's</h3><p>In Community en onder You: lijst → item → detail. Nooit dieper dan drie. Op desktop in het paneel naast de kaart.</p>
+    <div class="how"><b>Komt</b> van rechts, <b>gaat</b> naar rechts. <b>Back</b> één pagina, en de knop ‹ zegt waarheen. ✕ naar de lijst.</div></div>
+  <div class="layer"><div class="n">4</div><h3>Bedekkingen</h3><p>Het hele scherm, de rest staat stil: inloggen, Camera, een gesprek (call), de avatar-ontwerper, de script-editor, Welcome.</p>
+    <div class="how"><b>Komt</b> van onderen over alles, <b>gaat</b> naar beneden. <b>Back</b> sluit, en vraagt als er iets verloren gaat.</div></div>
+  <div class="layer"><div class="n">5</div><h3>Toetsenbord</h3><p>Het eigen toetsenbord, onderaan, alleen zolang een tekstveld focus heeft. Wat eronder zou vallen schuift mee omhoog.</p>
+    <div class="how"><b>Komt</b> omhoog, <b>gaat</b> omlaag; de schakelaar duikt eronder weg. <b>Back</b> sluit eerst dit.</div></div>
+</div>
+
+<h2 class="sec"><span>2</span>Een kaartje rust op drie hoogten</h2>
+<p class="lede">Eén kaartje voor alles wat op de kaart staat. Het komt op als <b>kijkje</b> (titel en de hoofdactie), een duw omhoog maakt het
+<b>half</b> (tegels en feiten), nog een duw <b>vol</b> (alles, met de kaart als strook erboven). Omlaag duwen of ✕ sluit het. De kaart blijft
+bewegen; een kijkje bedekt nooit meer dan het onderste kwart.</p>
+
+<div class="row">
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="rcol" style="right:10px;top:92px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+  <div class="mk sel" style="left:120px;top:270px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#building"/></svg></div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="grab2"></div>
+    <div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div style="margin-top:12px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>K1</span>Kijkje</h3><ul>
+  <li>Titel, één regel feiten, <b>de hoofdactie</b>. Het greepje erboven zegt dat het omhoog kan.</li>
+  <li>De marker op de kaart is <b>groter en teal</b> zolang zijn kaartje open is.</li>
+  <li>Dit is wat elke tik op de kaart oplevert, ook een lange druk.</li></ul></div></div>
+
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+  <div class="mk sel" style="left:120px;top:150px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#building"/></svg></div></div>
+  <div class="sheet2" style="bottom:72px">
+    <div class="grab2"></div>
+    <div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div style="margin:12px 0 10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+    <div class="h-row" style="gap:6px"><div class="tile2"><svg class="i s"><use href="#bookmark"/></svg>Save</div><div class="tile2"><svg class="i s"><use href="#building"/></svg>Inside</div><div class="tile2"><svg class="i s"><use href="#camera"/></svg>Photo</div><div class="tile2"><svg class="i s"><use href="#share"/></svg>Share</div></div>
+    <div style="margin-top:12px"><div class="kv"><span>Built</span>1482</div><div class="kv"><span>Height</span>97 m</div><div class="kv"><span>District</span>Binnenstad</div></div>
+  </div>
+  <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+</div>
+<div class="cap"><h3><span>K2</span>Half</h3><ul>
+  <li>De tegels en de eerste feiten. De kaart <b>schuift mee omhoog</b> zodat de marker boven het kaartje blijft.</li>
+  <li>Dezelfde inhoud als v2's gebouwkaartje; alleen de hoogte is nieuw.</li></ul></div></div>
+
+<div class="cell"><div class="phone p275 lt mapbg">
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div class="mk sel" style="left:120px;top:62px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#building"/></svg></div></div>
+  <div class="sheet2 full" style="top:120px;bottom:0;border-radius:20px 20px 0 0">
+    <div class="grab2"></div>
+    <div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div style="margin:12px 0 10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div>
+    <div class="h-row" style="gap:6px"><div class="tile2"><svg class="i s"><use href="#bookmark"/></svg>Save</div><div class="tile2"><svg class="i s"><use href="#building"/></svg>Inside</div><div class="tile2"><svg class="i s"><use href="#camera"/></svg>Photo</div><div class="tile2"><svg class="i s"><use href="#share"/></svg>Share</div></div>
+    <div style="margin-top:12px"><div class="kv"><span>Built</span>1482</div><div class="kv"><span>Height</span>97 m</div><div class="kv"><span>Floor area</span>620 m²</div><div class="kv"><span>District</span>Binnenstad</div><div class="kv"><span>Address</span>Martinikerkhof 1</div></div>
+    <div class="head2">Here lately</div>
+    <div class="list2"><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">photo · yesterday</div></div></div><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">post · Tuesday</div></div></div></div>
+    <div style="margin-top:10px"><span class="b2 t">Official record ↗</span></div>
+  </div>
+</div>
+<div class="cap"><h3><span>K3</span>Vol</h3><ul>
+  <li>Alles over de plek, scrollbaar. De kaart blijft een <b>strook</b> met de marker erin: je weet nog waar je bent.</li>
+  <li>De schakelaar is weg: vol is een pagina. Omlaag duwen brengt het kaartje terug naar half, dan kijkje.</li>
+  <li>"Here lately" zijn de bruggen ① van v2: posts en foto's met deze plek, elk opent in Community.</li></ul></div></div>
+
+<div class="cell"><div class="phone p275 lt">
+  <div class="page2"></div>
+  <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+  <div style="position:absolute;left:8px;right:8px;top:36px;display:flex;align-items:center;gap:4px;height:44px">
+    <div class="back2"><svg class="i s"><use href="#left"/></svg>Chats</div><div class="grow"></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+  <div style="position:absolute;left:14px;right:14px;top:88px">
+    <div class="h-row"><div class="av" style="background:#6B9A2E">S</div><div><div class="ttl">sanne</div><div class="st">sharing location · 60 min</div></div></div>
+    <div class="bub them">Ben er over 10 min, bij de toren?</div>
+    <div class="bub me">Ja, ik sta aan de Grote Markt-kant</div>
+    <div class="bub them"><div class="mini-map"><div class="mk" style="left:60px;top:30px"><div class="disc" style="background:#6B9A2E;width:22px;height:22px;font-size:10px">S</div></div></div>Vismarkt · 700 m away<div style="margin-top:6px"><span class="b2 s sm"><svg class="i s"><use href="#map"/></svg>Show in world</span></div></div>
+  </div>
+  <div class="composer2"><div class="grow">Message</div><div class="rb sm on"><svg class="i s"><use href="#send"/></svg></div></div>
+</div>
+<div class="cap"><h3><span>K4</span>Een pagina, twee diep</h3><ul>
+  <li>Community ▸ Chats ▸ sanne. <b>‹ Chats</b> zegt waar Back heen gaat; ✕ sluit naar de lijst, altijd rechtsboven.</li>
+  <li>Een gedeelde plek is een <b>voorbeeldje</b> met "Show in world" ②, nooit een kaart in de pagina.</li>
+  <li>Dieper dan drie bestaat niet: een derde pagina (sanne's profiel) is het einde.</li></ul></div></div>
+</div>
+
+<h2 class="sec"><span>3</span>Desktop: dezelfde lagen, naast elkaar</h2>
+<p class="lede">Op een breed venster wordt laag 2 een paneel van 400 pt rechts, en laag 3 stapelt daarin. De kaart blijft heel; de schakelaar staat
+onder in de kaart. Niets heeft op desktop een andere naam of een andere plek dan op de telefoon, alleen de breedte verschilt.</p>
+
+<div class="desk lt" style="background:url(map-today.jpg) center/cover;width:1500px;height:760px;border-radius:14px">
+  <div class="dsbar"><svg class="i s"><use href="#search"/></svg>Search places</div>
+  <div class="av" style="position:absolute;right:420px;top:18px;background:#2E8F82;z-index:10">J</div>
+  <div class="rcol" style="right:420px;top:76px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div><div class="rb"><svg class="i"><use href="#camera"/></svg></div></div>
+  <div class="rb sm" style="position:absolute;left:18px;top:76px;color:#e0533c"><svg class="i s"><use href="#north"/></svg></div>
+  <div class="mk" style="left:420px;top:330px"><div class="disc" style="background:#6B9A2E">S</div><div class="lbl">sanne</div></div>
+  <div class="mk sel" style="left:700px;top:260px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#cal"/></svg></div><div class="lbl">Vismarkt dinner · 22:30</div></div>
+  <div class="space" style="left:550px;transform:none"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  <div class="dpanel">
+    <div style="display:flex;align-items:center;gap:4px;height:44px"><div class="back2"><svg class="i s"><use href="#left"/></svg>Calendar</div><div class="grow"></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+    <div class="st" style="margin-top:10px;font-weight:600;color:var(--accent-text)">Garage 44</div>
+    <div class="ptitle">Vismarkt dinner</div>
+    <div class="st">Today 22:30 – 00:30 · sanne, karim going</div>
+    <div class="h-row" style="gap:8px;margin:14px 0"><span class="b2 p" style="flex:1">Going</span><span class="b2 s" style="flex:1">Not going</span></div>
+    <div class="list2"><div class="r2"><div class="ic"><svg class="i s"><use href="#pin"/></svg></div><div>Vismarkt<div class="d">Groningen · 700 m away</div></div><span class="b2 t sm">Show in world</span></div></div>
+    <div class="head2">Who's going</div>
+    <div class="list2"><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne</div></div><div class="r2"><div class="av sm" style="background:#C2447A">K</div><div>karim</div></div><div class="r2"><div class="av sm" style="background:#2E8F82">J</div><div>you<div class="d">going</div></div></div></div>
+    <div class="head2">Said about it</div>
+    <div class="list2"><div class="r2"><div class="av sm" style="background:#C2447A">K</div><div>karim<div class="d">I'll bring the drill</div></div></div></div>
+  </div>
+</div>
+<div class="cap" style="max-width:1500px"><ul>
+  <li><b>Het paneel is laag 2 én 3.</b> Een kaartje (plek, gebouw) staat erin als één pagina; een Community-pad stapelt erin met ‹ en ✕. Op desktop is er dus geen kijkje/half/vol: het paneel is altijd vol.</li>
+  <li><b>De kaart laat zien wat het paneel zegt</b>: de afspraak in het paneel is de teal marker op de kaart, "Show in world" vliegt erheen. Bij Community zonder plek-inhoud blijft de kaart gewoon staan.</li>
+  <li>De ronde knoppen staan <b>tegen het paneel</b> aan, niet tegen de vensterrand: ze horen bij de kaart.</li></ul></div>
+
+<h2 class="sec"><span>4</span>Elk scherm van nu, op zijn plek</h2>
+<p class="lede">De 33 schermen die <code>docs/phone-ui-shots.toml</code> fotografeert, met hun ruimte en hun laag. Wat hier verdwijnt, verdwijnt
+omdat het ergens anders al staat. "Bereik" is het aantal tikken vanaf de kaart.</p>
+
+<div class="cols2">
+<table class="map">
+<tr><th>Nu (shot)</th><th>Straks</th><th>Laag · bereik</th></tr>
+<tr><td>none (de kaart)</td><td>World</td><td>0 · 0</td></tr>
+<tr><td>menu (☰)</td><td>vervalt: You rechtsboven</td><td>3 · 1</td></tr>
+<tr><td>search</td><td>World ▸ zoekbalk; hits als lijst over de kaart</td><td>2 · 1</td></tr>
+<tr><td>layers</td><td>World ▸ ronde knop Layers; een blad (kaartje)</td><td>2 · 1</td></tr>
+<tr><td>places (saved)</td><td>You ▸ Saved places; en de zoekbalk leeg toont ze</td><td>3 · 1</td></tr>
+<tr><td>route</td><td>World ▸ kaartje van de plek ▸ Route here; de route is een kijkje</td><td>2 · 2</td></tr>
+<tr><td>chats</td><td>Community ▸ Chats</td><td>0 · 1</td></tr>
+<tr><td>communities</td><td>Community ▸ Groups</td><td>0 · 1</td></tr>
+<tr><td>community</td><td>Community ▸ Groups ▸ groep</td><td>3 · 2</td></tr>
+<tr><td>you</td><td>You (je gezicht), overal rechtsboven</td><td>3 · 1</td></tr>
+<tr><td>youadmin</td><td>You ▸ Admin, alleen met de rechten</td><td>3 · 2</td></tr>
+<tr><td>settings</td><td>You ▸ Settings</td><td>3 · 2</td></tr>
+<tr><td>graphics</td><td>You ▸ Settings ▸ Graphics (de derde en laatste)</td><td>3 · 3</td></tr>
+<tr><td>tokens</td><td>You ▸ Settings ▸ Account; op desktop en web</td><td>3 · 3</td></tr>
+<tr><td>safety</td><td>You ▸ Settings ▸ Privacy and safety</td><td>3 · 3</td></tr>
+<tr><td>admin, adminreports</td><td>You ▸ Admin ▸ Reports</td><td>3 · 3</td></tr>
+<tr><td>appearance</td><td>You ▸ Avatar; de ontwerper zelf is een bedekking</td><td>4 · 2</td></tr>
+</table>
+<table class="map">
+<tr><th>Nu (shot)</th><th>Straks</th><th>Laag · bereik</th></tr>
+<tr><td>contacts</td><td>Community ▸ Chats ▸ (+) New ▸ People</td><td>3 · 2</td></tr>
+<tr><td>personcard</td><td>World: marker ▸ kijkje; Community: profielpagina</td><td>2 / 3 · 1</td></tr>
+<tr><td>newchat</td><td>Community ▸ Chats ▸ (+) New</td><td>3 · 2</td></tr>
+<tr><td>findcommunity</td><td>Community ▸ Groups ▸ zoekveld bovenaan</td><td>3 · 1</td></tr>
+<tr><td>calendar</td><td>Community ▸ Calendar</td><td>0 · 1</td></tr>
+<tr><td>calendarplan</td><td>Community ▸ Calendar ▸ (+) Plan</td><td>3 · 2</td></tr>
+<tr><td>chatthread</td><td>Community ▸ Chats ▸ gesprek</td><td>3 · 2</td></tr>
+<tr><td>place, building</td><td>World ▸ kaartje (kijkje · half · vol)</td><td>2 · 1</td></tr>
+<tr><td>camera</td><td>World ▸ ronde knop Camera: bedekking</td><td>4 · 1</td></tr>
+<tr><td>call</td><td>bedekking, vanuit een gesprek of een inkomend gesprek</td><td>4 · –</td></tr>
+<tr><td>reminder</td><td>een regel bovenaan Community ("Needs you"), geen eigen scherm</td><td>0 · 1</td></tr>
+<tr><td>signin</td><td>You (grijs rondje) ▸ Sign in: bedekking</td><td>4 · 1</td></tr>
+<tr><td>welcome</td><td>bedekking, één keer</td><td>4 · –</td></tr>
+<tr><td>dev</td><td>You ▸ Settings ▸ General ▸ Developer; Ctrl+Shift+D</td><td>3 · 4*</td></tr>
+<tr><td>lens-blad, zoom-rail, actie-ring</td><td>World: Layers-blad; de rail blijft een kaartknop; de ring wordt het kijkje</td><td>2 · 1</td></tr>
+<tr><td>bestuurder (driver)</td><td>World in een eigen stand: chroom weg, één kaart bovenaan</td><td>1 · –</td></tr>
+</table>
+</div>
+<p class="note" style="margin-top:8px">* Developer tools is de enige uitzondering op "nooit dieper dan drie", en heeft daarom een sneltoets.</p>
+
+<h2 class="sec"><span>5</span>Zes regels</h2>
+<div class="principles" style="grid-template-columns:repeat(6,1fr)">
+  <div><h3><i>1</i>Eén tik, één ding</h3><p>Een tik opent precies één laag erbij. Nooit een kaartje én een pagina, nooit een paneel dat een ander paneel sluit zonder dat je het ziet gaan.</p></div>
+  <div><h3><i>2</i>Nooit dieper dan drie</h3><p>Lijst → item → detail. Wat een vierde zou zijn, wordt een kaartje of een rij op het derde.</p></div>
+  <div><h3><i>3</i>Back is één stap en zegt waarheen</h3><p>De ladder van <code>dismiss.rs</code>: toetsenbord, bedekking, pagina, kaartje. De ‹ draagt de naam van de pagina eronder.</p></div>
+  <div><h3><i>4</i>De schakelaar is altijd te bereiken</h3><p>Behalve onder een bedekking en onder het toetsenbord. Een kaartje schuift hem nooit weg; vol is een pagina en heeft ✕.</p></div>
+  <div><h3><i>5</i>De kaart blijft de kaart</h3><p>Onder een kijkje of half beweegt hij, en de marker van het open kaartje blijft in beeld: het kaartje schuift de kaart op, niet andersom.</p></div>
+  <div><h3><i>6</i>Je gezicht is de ingang naar jou</h3><p>Rechtsboven in beide ruimtes: profiel, avatar, saved places, settings, admin, sign in/out. Het ☰-menu bestaat niet meer.</p></div>
+</div>
+
+<script src="icons.js"></script></body></html>

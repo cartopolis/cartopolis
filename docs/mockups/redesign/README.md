@@ -85,7 +85,7 @@ Een ander account (Mastodon, Codeberg …) staat onder "or with". Je profiel hee
 
 ![account](v2-account.png)
 
-Nog niets besloten.
+Nog niets besloten. Vervolg op 2026-11-10 in `fluid-ui/`: v2's indeling als lagenmodel, de beweging erbij, en waarom egui hapert.
 
 ## v1 (vervangen door v2)
 ### Wat er nu misgaat, de regels en de indeling

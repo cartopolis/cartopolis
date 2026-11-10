@@ -1,0 +1,75 @@
+/* v2: midas's own tokens (midas web/src/theme.css, lift shadows from web/src/app.css),
+   light and dark, on the frames that carry .lt or .dk. */
+.lt { --bg:#f1f5f5; --surface:#ffffff; --raised:#f8fafa; --sunken:#e7eded; --text:#1f2829; --strong:#0f1416; --dim:#546568; --faint:#84979a;
+  --border:#dae3e3; --accent:#5cc6c0; --accent-text:#17696a; --accent-soft:#d9f0ee; --on-accent:#0f1416; --warn:#855700; --warn-soft:#fbf1da;
+  --danger:#b3361e; --danger-soft:#fce8e4; --hover:rgb(15 20 22 / 5%);
+  --lift-1:0 1px 2px rgb(15 20 22 / 6%), 0 1px 1px rgb(15 20 22 / 4%);
+  --lift-2:0 8px 24px -8px rgb(15 20 22 / 22%), 0 2px 6px rgb(15 20 22 / 6%); }
+.dk { --bg:#0f1416; --surface:#141a1c; --raised:#1f2829; --sunken:#121819; --text:#e2e9ea; --strong:#f4f8f8; --dim:#aac2c6; --faint:#63797c;
+  --border:#2a3536; --accent:#5cc6c0; --accent-text:#a8dcd8; --accent-soft:#263f42; --on-accent:#0f1416; --warn:#d8c07a; --warn-soft:#302916;
+  --danger:#f2a296; --danger-soft:#361d19; --hover:rgb(244 248 248 / 6%);
+  --lift-1:0 1px 2px rgb(0 0 0 / 30%), 0 1px 1px rgb(0 0 0 / 20%);
+  --lift-2:0 8px 24px -8px rgb(0 0 0 / 60%), 0 2px 6px rgb(0 0 0 / 30%); }
+.lt, .dk { color:var(--text); }
+.lt .status, .lt .status span { color:#0f1416; }
+
+/* Round map buttons, made solid: 48 pt, one surface, one shadow. */
+.rb { width:48px; height:48px; border-radius:50%; background:var(--surface); color:var(--text); display:flex; align-items:center; justify-content:center; box-shadow:var(--lift-2); flex:none; position:relative; }
+.rb.on { background:var(--accent); color:var(--on-accent); }
+.rb.sm { width:40px; height:40px; }
+.rb .dot { position:absolute; top:-2px; right:-2px; min-width:18px; height:18px; border-radius:9px; background:var(--c-brand,#fd6012); color:#fff; font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center; padding:0 4px; }
+.rcol { position:absolute; display:flex; flex-direction:column; gap:12px; z-index:10; }
+
+/* The dock, solid. */
+.dock2 { position:absolute; left:14px; right:14px; bottom:22px; height:68px; border-radius:34px; background:var(--surface); box-shadow:var(--lift-2); display:flex; justify-content:space-around; align-items:center; padding:0 8px; z-index:12; }
+.dock2 div { display:flex; flex-direction:column; align-items:center; gap:3px; font-size:12px; font-weight:600; color:var(--dim); width:62px; }
+.dock2 div.on { color:var(--accent-text); }
+.dock2 div.on svg { background:var(--accent-soft); border-radius:14px; padding:4px 12px; width:46px; height:30px; }
+
+/* Cards and lists, midas style. */
+.card2 { background:var(--surface); border-radius:22px; box-shadow:var(--lift-2); }
+.page2 { position:absolute; inset:0; background:var(--bg); }
+.list2 { background:var(--surface); border-radius:14px; box-shadow:var(--lift-1); border:1px solid var(--border); overflow:hidden; }
+.r2 { display:flex; align-items:center; gap:14px; min-height:56px; padding:10px 16px; border-bottom:1px solid var(--border); font-size:15.5px; }
+.r2:last-child { border-bottom:0; }
+.r2 .d { font-size:13px; color:var(--dim); }
+.r2 .ic { color:var(--dim); flex:none; }
+.r2 .chev { color:var(--faint); margin-left:auto; flex:none; }
+.head2 { font-size:13px; font-weight:600; color:var(--dim); margin:20px 4px 8px; }
+.head2 span { color:var(--faint); font-weight:400; margin-left:4px; }
+.b2 { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:44px; padding:0 18px; border-radius:22px; font-weight:600; font-size:15px; white-space:nowrap; }
+.b2.p { background:var(--accent); color:var(--on-accent); }
+.b2.s { background:var(--surface); color:var(--text); border:1px solid var(--border); box-shadow:var(--lift-1); }
+.b2.t { color:var(--accent-text); padding:0 6px; }
+.b2.sm { height:36px; font-size:14px; padding:0 14px; }
+.needs { border:1.5px solid #fd6012; border-left-width:4px; border-radius:12px; background:var(--surface); padding:12px 14px; display:flex; align-items:center; gap:10px; }
+.seg2 { display:flex; background:var(--sunken); border-radius:12px; padding:4px; gap:4px; }
+.seg2 div { flex:1; height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:var(--dim); }
+.seg2 div.on { background:var(--surface); color:var(--strong); box-shadow:var(--lift-1); }
+.kv { display:flex; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--border); font-size:15px; }
+.kv span { color:var(--dim); }
+.kv:last-child { border-bottom:0; }
+.x2 { width:36px; height:36px; border-radius:50%; background:var(--sunken); color:var(--dim); display:flex; align-items:center; justify-content:center; flex:none; }
+.swatches { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+.sw { width:150px; border-radius:12px; overflow:hidden; border:1px solid rgba(255,255,255,.1); font-size:12.5px; }
+.sw div:first-child { height:48px; }
+.sw div:last-child { padding:6px 10px; background:#131A1C; color:var(--sheet-dim); }
+.sw b { color:var(--sheet-cream); font-weight:600; display:block; }
+.col3 { display:grid; grid-template-columns:390px 390px 390px 1fr; gap:34px; align-items:start; }
+.colhead { font-size:15px; font-weight:600; color:var(--sheet-cream); margin-bottom:12px; }
+.colhead span { color:var(--sheet-dim); font-weight:400; }
+
+/* Drawn at the app's own size: a phone is 275 pt wide (412 px at the client's 1.5,
+   ui-vocabulary.md), shown at the same width as the "today" captures beside it,
+   so a 56 pt row here is a 56 pt row there. */
+.p275 { width:275px; height:595px; zoom:1.418; border-radius:32px; box-shadow:0 0 0 7px #1a2124, 0 0 0 8px #2b3438, 0 20px 40px rgba(0,0,0,.5); }
+.p275 .status { height:32px; padding:0 20px; font-size:11px; }
+.p275 .status .notch { width:76px; height:20px; top:7px; }
+.p275 .dock2 { left:8px; right:8px; bottom:12px; height:60px; border-radius:30px; padding:0 4px; }
+.p275 .dock2 div { width:46px; font-size:11px; }
+.p275 .dock2 div.on svg { padding:3px 8px; width:38px; height:26px; }
+.p275 .rcol { gap:10px; }
+.r2 > div { min-width:0; flex:1; }
+.r2 .d { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.p275 .b2 { padding:0 12px; font-size:14px; }
+.r2 > div.av { flex:none; min-width:0; }

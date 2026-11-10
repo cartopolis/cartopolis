@@ -1,0 +1,227 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="v2.css"><link rel="stylesheet" href="fluid.css">
+</head><body>
+
+<h1>Vloeiend · 2 · <b>De beweging</b></h1>
+<p class="lede">Nu komt en gaat alles in één frame: een paneel staat er, of staat er niet. Dit blad geeft elke laag van blad 1 <b>één beweging</b>,
+met de tijden en de curves van de midas-hub (<code>web/src/app.css</code>: <code>--dur-press</code> 120 ms, <code>--dur-state</code> 200 ms,
+<code>--dur-enter</code> 360 ms, <code>--ease-out</code>, <code>--ease-spring</code>), zodat de app en de web-UI hetzelfde aanvoelen. Een beweging zegt
+<b>waar iets vandaan komt en waar het heen gaat</b>; wat dat niet zegt, beweegt niet. Alles hier is <span class="tag">nieuw</span>.</p>
+
+<h2 class="sec"><span>1</span>Vijf tijden, twee curves</h2>
+<div class="tokens">
+  <div class="tok"><b>Druk</b><div class="v">120 ms</div><p>Een knop onder de vinger: schaal 0,94, terug bij loslaten. Lang genoeg om te zien, te kort om op te wachten.</p></div>
+  <div class="tok"><b>Toestand</b><div class="v">200 ms</div><p>Kleur en rand van aan/uit, hover, een tab die wisselt, kruisvervaging tussen de twee ruimtes, een label dat verschijnt.</p></div>
+  <div class="tok"><b>Komen</b><div class="v">360 ms</div><p>Een kaartje, een pagina, een bedekking, het toetsenbord. Altijd met <i>ease-out</i>: snel weg van waar het was, zacht aan waar het blijft.</p></div>
+  <div class="tok"><b>Gaan</b><div class="v">240 ms</div><p>Tweederde van komen. Wat weggaat hoeft niemand te volgen; het moet vooral uit de weg zijn voor de volgende tik.</p></div>
+  <div class="tok"><b>Omgeving</b><div class="v">600 ms</div><p>Licht naar donker wanneer de zon onder gaat (het thema volgt de zon). Niemand heeft erom getikt, dus het mag traag en onopvallend.</p></div>
+</div>
+<div class="tokens" style="grid-template-columns:1fr 1fr 2fr 1fr">
+  <div class="tok"><b>ease-out</b><div class="v" style="font-size:15px">cubic-bezier(0.2, 0.8, 0.2, 1)</div>
+    <svg class="curve" viewBox="0 0 200 70"><line x1="0" y1="65" x2="200" y2="65"/><line x1="0" y1="5" x2="200" y2="5"/><path d="M0 65 C40 17, 40 5, 200 5"/></svg>
+    <p>Na een derde van de tijd is 86 % van de weg afgelegd. Dat is waarom 360 ms niet traag voelt: wat je ziet is in 120 ms grotendeels op zijn plek.</p></div>
+  <div class="tok"><b>spring</b><div class="v" style="font-size:15px">cubic-bezier(0.34, 1.56, 0.64, 1)</div>
+    <svg class="curve" viewBox="0 0 200 70"><line x1="0" y1="65" x2="200" y2="65"/><line x1="0" y1="5" x2="200" y2="5"/><path d="M0 65 C68 -29, 128 5, 200 5"/></svg>
+    <p>Schiet 6 % door en komt terug. Alleen voor wat <i>nieuw</i> is en klein: een marker die verschijnt, een teller die erbij komt. Nooit voor een vlak.</p></div>
+  <div class="tok"><b>Hoe het in egui heet</b>
+    <p style="margin-top:6px"><code>theme::motion</code> wordt de ene plek, zoals <code>theme</code> dat voor kleur is: <code>motion::enter(ctx, id, open)</code> geeft 0‥1 via
+    <code>ctx.animate_bool_with_time_and_easing(id, open, 0.36, ease_out)</code>, <code>motion::press(&amp;response)</code> de schaal, <code>motion::pop</code> de spring.
+    egui vraagt zelf om een repaint zolang zo'n waarde loopt en daarna niet meer, dus de stille-frame-overslag (<code>egui-quiet-frame-staleness.md</code>) blijft staan.
+    <b>Geen enkel paneel schrijft zelf een tijd</b>; de vijf tijden en twee curves staan alleen in <code>motion</code>.</p></div>
+  <div class="tok"><b>Minder beweging</b>
+    <p style="margin-top:6px">Settings ▸ General ▸ <b>Motion: Normal / Reduced</b>, standaard wat het systeem zegt (Android's animator-schaal, <code>prefers-reduced-motion</code> op het web).
+    Reduced zet komen en gaan op 0 en houdt toestand (200 ms) en druk: dat is terugkoppeling, geen versiering. Het volgt de instelling en <b>nooit de framerate</b>:
+    een haperende telefoon krijgt geen stillere UI, maar een snellere (blad 3).</p></div>
+</div>
+
+<h2 class="sec"><span>2</span>Eén beweging per laag</h2>
+<div class="rules">
+  <div class="rule"><h3>0 · Wisselen van ruimte<i>200 ms · toestand</i></h3><p>World en Community <b>kruisvervagen</b>; de komende ruimte stijgt 10 pt (midas' <code>rise</code>). Geen schuif opzij: het zijn geen buren in een rij maar twee plekken, en de schakelaar onderaan staat stil terwijl ze wisselen. De kaart rendert door onder Community's eerste frames, daarna slaapt hij.</p></div>
+  <div class="rule"><h3>1 · Het chroom<i>200 ms</i></h3><p>Staat stil. Een ronde knop die "aan" gaat wisselt van kleur in 200 ms; de zoekbalk wordt breder wanneer hij focus krijgt (het gezicht schuift weg, 200 ms) en krimpt terug. De knoppen rechts <b>schuiven omhoog</b> met een kaartje dat half wordt, in dezelfde curve als het kaartje.</p></div>
+  <div class="rule"><h3>2 · Kaartjes<i>360 / 240 ms · ease-out</i></h3><p><b>Komen van onderen</b>, gaan naar beneden. Een duw volgt de vinger 1:1; bij loslaten gaat het naar de dichtstbijzijnde rust (kijkje · half · vol), met de snelheid van de vinger erin: een veeg omlaag van meer dan 1200 pt/s sluit, hoe hoog het ook stond. Een nieuw kaartje over een oud: het oude zakt 240 ms, het nieuwe komt 360 ms, overlappend.</p></div>
+  <div class="rule"><h3>3 · Pagina's<i>360 / 240 ms · ease-out</i></h3><p>De nieuwe pagina <b>schuift van rechts</b> over de oude, die 30 % naar links wijkt en 30 % donkerder wordt. Terug is het omgekeerde, in 240 ms. Een veeg vanaf de linkerrand volgt de vinger (en op Android 16 is dat de systeem-Back met voorvertoning). ✕ naar de lijst: alle pagina's gaan in één beweging, niet een voor een.</p></div>
+  <div class="rule"><h3>4 · Bedekkingen<i>360 / 240 ms</i></h3><p>Komen <b>van onderen over alles</b>, met een scherm van inkt op 40 % eronder dat in 200 ms opkomt. Camera en een gesprek zijn donker in beide thema's en nemen bij het komen het hele scherm, ook de statusbalk. Gaan: omlaag, en de ruimte eronder was al die tijd stil (hij rendert niet; blad 3).</p></div>
+  <div class="rule"><h3>5 · Toetsenbord<i>240 ms · ease-out</i></h3><p>Komt omhoog in 240 ms, want het is een antwoord op een tik in een veld en niemand wil erop wachten. <b>Het veld schuift mee</b>: het kaartje of de pagina scrollt in dezelfde curve zodat het veld 12 pt boven de toetsen staat. De schakelaar vervaagt in 120 ms vóór de slab komt, zodat er nooit twee dingen op dezelfde rand staan.</p></div>
+  <div class="rule"><h3>Markers en pins<i>360 ms · spring / 120 ms</i></h3><p>Een marker die <b>nieuw</b> is (iemand deelt een locatie, een post komt binnen) <i>popt</i>: schaal 0,6 → 1 met de spring. Een marker die weggaat vervaagt in 120 ms. De marker van het open kaartje groeit naar 1,15 in 200 ms en krijgt de teal ring. Markers die alleen <i>meeschuiven</i> met de kaart bewegen niet uit zichzelf: ze staan op de kaart.</p></div>
+  <div class="rule"><h3>Lijsten en berichten<i>280 ms / 200 ms</i></h3><p>Een nieuw bericht of een nieuwe rij <b>stijgt</b> 6 pt en vervaagt in (midas' <code>msg-enter</code>). Rijen die van plek wisselen (een gesprek dat bovenaan komt) <b>glijden</b> naar hun nieuwe plek in 200 ms; niets springt. Een teller die verschijnt popt; een teller die van 4 naar 5 gaat beweegt niet.</p></div>
+  <div class="rule"><h3>Laden<i>1,6 s · ademen</i></h3><p>Een lijst die op de server wacht toont <b>schimrijen</b> die ademen (midas' <code>breathe</code>), op de plek waar de rijen komen, zodat niets verspringt als ze er zijn. Nooit een draaiend wiel over de kaart. Een knop die iets op afstand doet houdt het idioom van nu: 1,5 s een ander glyph op de knop zelf.</p></div>
+</div>
+<div class="rules" style="grid-template-columns:repeat(4,1fr)">
+  <div class="rule never"><h3>Nooit: tekst die beweegt terwijl je leest</h3><p>Een lijst die binnenkomt stijgt als geheel, niet rij voor rij met vertraging. Een label op de kaart vervaagt in, maar schuift nooit opzij voor een buurman.</p></div>
+  <div class="rule never"><h3>Nooit: de kaart die stilvalt</h3><p>Onder een kijkje of half rendert de kaart door en reageert op de vinger. Alleen Community (zonder plek in beeld) en een bedekking zetten hem stil.</p></div>
+  <div class="rule never"><h3>Nooit: iets dat vanzelf sluit onder de vinger</h3><p>Een kaartje gaat alleen weg door ✕, Back, een veeg omlaag of een nieuw kaartje. Niet door een tik op de kaart, niet door een timer, niet omdat de framerate daalt.</p></div>
+  <div class="rule never"><h3>Nooit: een beweging zonder richting</h3><p>Geen zoom-vanuit-het-midden voor een paneel, geen draai, geen stuiter op een vlak. Komt van onderen → gaat naar beneden; komt van rechts → gaat naar rechts. Als je niet kunt zeggen waarvandaan, dan vervaagt het.</p></div>
+</div>
+
+<h2 class="sec"><span>3</span>Vier filmstroken</h2>
+<p class="lede">Vier momenten van elke overgang, op de maat van de app (275 pt). De waarden zijn de curve: na 120 ms van een beweging van 360 ms is 86 % afgelegd, na 240 ms 98 %.</p>
+
+<h3 class="colhead" style="margin-top:22px">A · Een kaartje komt op <span>— tik op een gebouw</span></h3>
+<div class="strip">
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk" style="left:120px;top:300px"><div class="disc" style="background:#fff;color:#17696a;width:30px;height:30px"><svg class="i s"><use href="#building"/></svg></div></div>
+    <div class="sheet2" style="bottom:-160px">
+      <div class="grab2"></div><div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin-top:10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>0 ms</b>De vinger lift. Het kaartje staat onder de rand; de marker is nog wit.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk" style="left:118px;top:296px"><div class="disc" style="background:#8fd8d2;color:#0f1416;width:35px;height:35px;box-shadow:0 0 0 3px rgba(92,198,192,.25)"><svg class="i s"><use href="#building"/></svg></div></div>
+    <div class="sheet2" style="bottom:50px;opacity:.9">
+      <div class="grab2"></div><div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin-top:10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>120 ms</b>86 % van de weg: het kaartje is al bijna op zijn plek. De marker groeit en kleurt (200 ms).</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk sel" style="left:116px;top:294px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#building"/></svg></div></div>
+    <div class="sheet2" style="bottom:65px">
+      <div class="grab2"></div><div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin-top:10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>240 ms</b>98 %. De laatste 3 pt zijn de zachte landing; de marker heeft zijn ring.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk sel" style="left:116px;top:294px"><div class="disc" style="background:#5cc6c0;color:#0f1416;width:38px;height:38px"><svg class="i s"><use href="#building"/></svg></div></div>
+    <div class="sheet2" style="bottom:68px">
+      <div class="grab2"></div><div class="h-row"><div class="grow"><div class="ttl">Martinitoren</div><div class="st">Tower · 97 m · 450 m away</div></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div style="margin-top:10px"><span class="b2 p" style="width:100%"><svg class="i s"><use href="#route"/></svg>Route here</span></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>360 ms</b>Rust: kijkje. Een duw omhoog maakt het half; een veeg omlaag sluit het in 240 ms.</div></div>
+</div>
+
+<h3 class="colhead" style="margin-top:34px">B · Een pagina komt <span>— Chats ▸ sanne</span></h3>
+<div class="strip">
+  <div class="frame"><div class="phone p275 lt"><div class="page2"></div>
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+      <div class="list2"><div class="r2" style="background:var(--hover)"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">sharing location · 60 min</div></div></div><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div></div><div class="r2"><div class="av sm" style="background:#8A4FC8">F</div><div>Fietsers Groningen<div class="d">joris: 10:00 at the station</div></div></div></div>
+    </div>
+    <div class="space"><div><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>0 ms</b>Tik op sanne: de rij licht op (druk, 120 ms). De pagina staat rechts buiten beeld.</div></div>
+  <div class="frame"><div class="phone p275 lt"><div class="page2"></div>
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;transform:translateX(-71px)">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+      <div class="list2"><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">sharing location · 60 min</div></div></div><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div></div><div class="r2"><div class="av sm" style="background:#8A4FC8">F</div><div>Fietsers Groningen<div class="d">joris: 10:00 at the station</div></div></div></div>
+    </div>
+    <div class="scrim" style="opacity:.26"></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;transform:translateX(38px);box-shadow:-8px 0 24px rgba(0,0,0,.25)">
+      <div style="display:flex;align-items:center;gap:4px;height:40px"><div class="back2"><svg class="i s"><use href="#left"/></svg>Chats</div><div class="grow"></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="h-row" style="margin-top:8px;padding:0 6px"><div class="av" style="background:#6B9A2E">S</div><div><div class="ttl">sanne</div><div class="st">sharing location · 60 min</div></div></div>
+      <div class="bub them" style="margin-left:6px">Ben er over 10 min, bij de toren?</div><div class="bub me" style="margin-right:6px">Ja, ik sta aan de Grote Markt-kant</div>
+    </div>
+    <div class="space"><div><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>120 ms</b>De pagina is 86 % binnen; de lijst wijkt 30 % naar links en wordt donkerder.</div></div>
+  <div class="frame"><div class="phone p275 lt"><div class="page2"></div>
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;transform:translateX(-81px)">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+    </div>
+    <div class="scrim" style="opacity:.3"></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;transform:translateX(5px);box-shadow:-8px 0 24px rgba(0,0,0,.25)">
+      <div style="display:flex;align-items:center;gap:4px;height:40px"><div class="back2"><svg class="i s"><use href="#left"/></svg>Chats</div><div class="grow"></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="h-row" style="margin-top:8px;padding:0 6px"><div class="av" style="background:#6B9A2E">S</div><div><div class="ttl">sanne</div><div class="st">sharing location · 60 min</div></div></div>
+      <div class="bub them" style="margin-left:6px">Ben er over 10 min, bij de toren?</div><div class="bub me" style="margin-right:6px">Ja, ik sta aan de Grote Markt-kant</div>
+    </div>
+    <div class="space"><div><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>240 ms</b>98 %. De schakelaar onderaan heeft de hele tijd stilgestaan.</div></div>
+  <div class="frame"><div class="phone p275 lt"><div class="page2"></div>
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0">
+      <div style="display:flex;align-items:center;gap:4px;height:40px"><div class="back2"><svg class="i s"><use href="#left"/></svg>Chats</div><div class="grow"></div><div class="x2"><svg class="i s"><use href="#close"/></svg></div></div>
+      <div class="h-row" style="margin-top:8px;padding:0 6px"><div class="av" style="background:#6B9A2E">S</div><div><div class="ttl">sanne</div><div class="st">sharing location · 60 min</div></div></div>
+      <div class="bub them" style="margin-left:6px">Ben er over 10 min, bij de toren?</div><div class="bub me" style="margin-right:6px">Ja, ik sta aan de Grote Markt-kant</div>
+      <div class="bub them" style="margin-left:6px;opacity:.55;transform:translateY(4px)">Top, tot zo</div>
+    </div>
+    <div class="composer2"><div class="grow">Message</div><div class="rb sm on"><svg class="i s"><use href="#send"/></svg></div></div>
+  </div><div class="t"><b>360 ms</b>Rust. Een bericht dat nu binnenkomt stijgt 6 pt en vervaagt in (280 ms). Terug: ‹ of een veeg van links, 240 ms.</div></div>
+</div>
+
+<h3 class="colhead" style="margin-top:34px">C · Wisselen van ruimte <span>— World → Community</span></h3>
+<div class="strip">
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk" style="left:70px;top:250px"><div class="disc" style="background:#6B9A2E">S</div><div class="lbl">sanne</div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div style="background:var(--hover)"><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>0 ms</b>Tik op Community. De schakelaar reageert eerst (druk).</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar" style="opacity:.3"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px;opacity:.3"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;opacity:.7;transform:translateY(3px)">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+      <div class="needs" style="margin-bottom:8px"><div class="grow"><b>2 message requests</b><div class="d" style="font-size:12px;color:var(--dim)">jeroen and 1 more</div></div><span class="b2 p sm">Answer</span></div>
+      <div class="list2"><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div></div><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">sharing location · 60 min</div></div></div></div>
+    </div>
+    <div class="space"><div style="color:var(--dim)"><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>60 ms</b>Kruisvervaging op 70 %; Community stijgt zijn laatste 3 pt. De schakelaar is al om.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0;opacity:.93">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+      <div class="needs" style="margin-bottom:8px"><div class="grow"><b>2 message requests</b><div class="d" style="font-size:12px;color:var(--dim)">jeroen and 1 more</div></div><span class="b2 p sm">Answer</span></div>
+      <div class="list2"><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div></div><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">sharing location · 60 min</div></div></div></div>
+    </div>
+    <div class="space"><div style="color:var(--dim)"><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community <span class="n">5</span></div></div>
+  </div><div class="t"><b>120 ms</b>93 %. De kaart is nog net zichtbaar en rendert nog; na dit frame slaapt hij.</div></div>
+  <div class="frame"><div class="phone p275 lt"><div class="page2"></div>
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="pageslide" style="position:absolute;inset:0;background:var(--bg);padding:34px 8px 0">
+      <div class="h-row" style="padding:0 6px"><div class="ptitle" style="font-size:20px">Community</div><div class="grow"></div><div class="av sm" style="background:#2E8F82">J</div></div>
+      <div class="seg2" style="margin:10px 0"><div class="on">Chats</div><div>Groups</div><div>Calendar</div></div>
+      <div class="needs" style="margin-bottom:8px"><div class="grow"><b>2 message requests</b><div class="d" style="font-size:12px;color:var(--dim)">jeroen and 1 more</div></div><span class="b2 p sm">Answer</span></div>
+      <div class="list2"><div class="r2"><div class="av sm" style="background:#4566D6">G</div><div>Garage 44<div class="d">karim: I'll bring the drill</div></div></div><div class="r2"><div class="av sm" style="background:#6B9A2E">S</div><div>sanne<div class="d">sharing location · 60 min</div></div></div><div class="r2"><div class="av sm" style="background:#8A4FC8">F</div><div>Fietsers Groningen<div class="d">joris: 10:00 at the station</div></div></div></div>
+    </div>
+    <div class="space"><div style="color:var(--dim)"><svg class="i s"><use href="#map"/></svg>World</div><div class="on"><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>200 ms</b>Rust. De teller op de schakelaar is weg: je kijkt ernaar. Terug naar World is dezelfde vervaging, de kaart wordt eerst wakker.</div></div>
+</div>
+
+<h3 class="colhead" style="margin-top:34px">D · Een knop en een marker <span>— Locate, en iemand die zijn plek deelt</span></h3>
+<div class="strip">
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb" style="transform:scale(.94);background:var(--sunken)"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>0 ms</b>Vinger op Locate: schaal 0,94, een tint donkerder (120 ms). Nog niets gebeurt.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb" style="background:#a9dedb;color:#0f1416"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>120 ms</b>Losgelaten: terug naar 1,0, en de knop kleurt naar "aan" (200 ms). De kaart begint zijn eigen glijvlucht.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb on"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk" style="left:70px;top:250px"><div class="disc" style="background:#6B9A2E;transform:scale(1.06)">S</div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>240 ms</b>sanne deelt haar plek: de marker popt (spring), nu op 1,06. Het label is er nog niet.</div></div>
+  <div class="frame"><div class="phone p275 lt mapbg">
+    <div class="status"><span>9:41</span><span class="notch"></span><span>82%</span></div>
+    <div class="sbar"><svg class="i s"><use href="#search"/></svg>Search places<div class="av" style="background:#2E8F82">J</div></div>
+    <div class="rcol" style="right:10px;top:84px"><div class="rb"><svg class="i"><use href="#layers"/></svg></div><div class="rb"><svg class="i"><use href="#plane"/></svg></div><div class="rb on"><svg class="i"><use href="#locate"/></svg></div></div>
+    <div class="mk" style="left:70px;top:250px"><div class="disc" style="background:#6B9A2E">S</div><div class="lbl">sanne</div></div>
+    <div class="space"><div class="on"><svg class="i s"><use href="#map"/></svg>World</div><div><svg class="i s"><use href="#people"/></svg>Community</div></div>
+  </div><div class="t"><b>360 ms</b>De marker staat op 1,0 en het label vervaagt in (200 ms). Verdwijnt ze weer, dan vervaagt alles in 120 ms.</div></div>
+</div>
+
+<script src="icons.js"></script></body></html>
