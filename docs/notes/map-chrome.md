@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
-updated: 2026-11-04
+triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, welcome.rs, MainMenu, "face sheet", "World | Community", "space switch", chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
+updated: 2026-11-10
 ---
 
 # The map chrome
@@ -71,118 +71,127 @@ What it cost:
   on-screen keyboard (`docs/notes/touch-input.md`) docks a slab over the bottom
   half of the screen. Typing a search on a phone put the answers behind the keys.
 
-## What it is now: the dock owns the chrome
+## What it is now: two spaces, one switch, your face (2026-11-10)
 
-Up to six discs along the bottom edge (`dock.rs`), left to right, each with its
-word under it in `SIZE_TINY` (`dock::labelled`, since 2026-11-04: bare glyphs
-left the view-mode disc and Saved for a person to guess, `docs/mockups/ux-review`;
-`reserved_bottom` includes the word's 12 pt):
+The person approved the v2 navigation (`docs/mockups/redesign`, 2026-11-08,
+built 2026-11-10): the app is two spaces, **World** (the map with round
+buttons on it) and **Community** (chats, groups, the calendar — the
+`RightPanel::Chat` page, the whole screen on a phone and a side panel on a
+desktop). The dock below had mixed the two in one row, and "the navigation is
+not intuitive" was about that. All of it is `dock.rs`:
 
 | | |
 |---|---|
-| 🔍 Search | a panel (`geo_nav::render_search_panel`), field and hits, `Ctrl+L` |
-| 💬 Say | only with a session; raises the composer over the map, opens no panel |
-| view mode | Follow → Fly → Earth, one tap a step (`dock::mode_disc`) |
-| 📷 Camera | like every disc, the accent while open; not on the web, which has no camera (`camera_screen`) |
-| ★ Saved | saved places — **and where a place is saved**, "+ Place" |
-| ☰ Menu | the main menu (`ui::render_main_menu`) |
+| bottom, centred | **World \| Community**, always — signed out too, in both spaces, in the same place. A 48 pt pill (`theme::p().surface`, the chosen side the accent plate with white ink, the unread count a gold `p().gold`/`on_gold` badge on Community) |
+| top | a **"Search places" pill** that opens the Search panel (`Ctrl+L` still does), anchored at the map's top right, at most 420 pt; **your face** at its end |
+| right column, under the bar | Layers, the view mode (Follow → Fly → Earth, its word under it), Locate (drawn by `hud` at the slot `dock::right_column` gives it, its caption to its left), Camera where there is one |
+| left column, under the bar | the compass, the lens, the light disc, and Say in a session (`dock::left_slot`) |
 
-Layers went the other way, to a disc in the **top-left corner** above the compass
-(`dock::reserved_top`, read by `hud::render_map_controls`). It is the map's own
-settings rather than a destination, which is the same thing the compass and the
-locate button under it are.
+**Your face replaced the ☰ menu** and opens the same sheet from the search
+bar and from the Community page's top right (`ui::render_main_menu`; one
+face, not two — on a desktop with Community open the bar drops its own). It
+is a bottom sheet on a phone and a 320 pt card under the face on a desktop:
+who you are (signed out a grey person, "Not signed in", and Sign in…), Your
+profile and Share link (the Community's You page), then list rows (`theme::
+list_row`, 50 pt): Avatar, Saved places, Models · Settings, Admin, About ·
+Developer tools and Share diagnostics with the developer setting · Exit on the
+desktop, and Sign out… last, in red, arming before it acts. Saved places lost
+its dock disc to it: the places are yours, not the map's. Community left it:
+that is the switch.
 
-The menu disc closes the row. It was the app's own **mark** at first — the way
-into "everything else" being the logo, which is the affordance the corner card
-had — and that was wrong for one reason: in a row where every other disc is a
-picture of what it does, a logo is decoration, and nothing about it said there
-was a menu behind it. It carries `icons::MENU` since 2026-08-17; the mark is
-still the splash's and the sign-in card's, where a brand belongs. The card it
-opens is anchored to the bottom centre rather than to the disc, because the dock's
-width depends on whether there is a session (Chat comes and goes) and a card
-measured from the disc would move under a menu that should not move.
+**Signed out, Community is not a dead end.** It is the card that says what
+signing in is for (`welcome::Welcome::community`, the first-launch card), with
+Sign in, Create account and "Not now, just the map"; signing in from it opens
+the Community page. Back and Escape put it away as a rung of their own
+(`dismiss::Rung::SignedOutCommunity`, last).
 
-**One menu on every viewport**, and it holds what has nowhere else to be. Since
-2026-11-04: who you are, as text at the top (it was the hover text of a "Log
-out" first row, which a phone never shows), or Sign in… with a line saying what
-for; Avatar, Community, Models, Settings, About; Developer tools and Share
-diagnostics only with Settings ▸ General ▸ Developer on (`AppPrefs::developer_menu`,
-off by default, Ctrl+Shift+D either way); then **Sign out**, last, arming before
-it acts; and Exit on the desktop only — an Android app does not quit and a
-browser tab is the browser's. A menu whose contents depend on the window width
-is two menus.
+**On a phone the switch stays over Community** — it is the way back — and the
+page leaves `reserved_bottom` free under it; inside a chat it stands down, since
+the composer has the bottom edge. Over every other full-screen panel the map's
+chrome drops, as before.
 
-**Three entries are session-bound**: Community, Models and — since
-2026-09-10 — Appearance. The first two are obvious (there is nobody to have said
-anything, and an inventory belongs to an account). Appearance is the arguable
-one, and it costs something real: an offline avatar is on screen wearing whatever
-`user.json` last remembered, and this hides the only way to change a body you can
-still see. The argument for it anyway is that an appearance is a thing other
-people look at — that is what it is *for* — so alone on the map the panel is a
-wardrobe with no occasion. Nothing is lost; the saved choice comes back with the
-session that gives it a point.
+**It is in the panel chain now, at its tail** (`render_dock`, where the old top
+switch was). On a desktop a side panel takes the right of the window, and the
+bar and the switch have to sit over the map that is left — which is the root
+`Ui`'s leftover rect, known only once every panel has drawn. That puts the
+faces *after* the sheet they open in the frame, so a tap on a face is a tap
+outside the sheet when the sheet tests for one: `ui::MainMenu::face` is last
+frame's face rect, which the sheet leaves to the face to answer. (The old order
+— the dock before the menu, and a `toggled` flag — had the same problem the
+other way round.)
 
-**What left it, and why.** Back / Forward / Home and Set Home / Copy link went to
-the **Search panel** — a history belongs beside the field you navigate with, and
-both view actions name the place that field just took you to. The menu had become
-half a navigator, two taps from the address bar it was a history of.
+**Measured fits** (unit tests, the phone being 274 × 600 pt — the shots' 412 ×
+900 px at 1.5 — and the web phone 214 pt wide): the switch and the bar take the
+viewport less the margins, so both fit by construction
+(`dock::the_switch_and_the_bar_fit_a_phone`); the right column ends at 268 pt
+with Locate and Camera, and the right edge's touch stack grows up from the
+switch to 276 pt in Follow
+(`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`). To get
+there **the hand button moved beside the face disc** instead of above it (a
+fourth tier reached into the column), and **the locate caption moved to the
+left of its disc** instead of under it. Earth's zoom rail
+stands over the switch on a phone (top at 300 pt) and **hangs under the column
+on a desktop** (`MapChrome::right_bottom`, last frame's); centred on the edge,
+it met the column on a short window. The floor picker hangs there too.
 
-**The entries are list rows, not buttons** (`theme::menu_entry`). Justified
-`ui.button`s draw a full-width plate each, so the card read as a stack of primary
-actions — with the four `selectable_label` panel entries between them drawing no
-frame at all, i.e. two visual vocabularies in one card and neither of them saying
-which entries were *on*. A row highlights on hover and carries its state in the
-accent. The one deliberate plate left is the camera switcher, which is three
-`theme::chip`s on one line: it is a switcher, chips are what this app's switchers
-look like, and three list rows for it pushed Exit below the fold.
+Everything else that sat at the top edge moved under the bar
+(`dock::reserved_top`): the location-sharing chip, the update pill, the
+camera-attach chip, the lens's column, the Midas link button (a second column,
+left of the right one) and the community filter chip (truncated to the room
+between the two columns). The walk guide's turn card keeps the top: the bar
+stands down while a walk is guided, as it does in a chat's World view, whose
+header has the top.
 
 ### Consequences worth knowing
 
-- **The status readout is gone** (2026-09-10), and so is the performance
-  overlay. Both were anchored boxes over the map that duplicated a panel: the
-  readout's position, altitude and street address are the Developer tools' View
-  tab, its sun and weather chips are Settings ▸ World, and the overlay's frame
-  rate and entity count are the Frame tab, which says considerably more (worst
-  frame, jitter, triangles by producer, upload bytes, residency). Both existed
-  because the panel holding those numbers was once behind a keyboard chord —
-  which stopped being true when Developer tools got a menu entry, and neither
-  removal was made until somebody noticed the reason had expired. The
-  top-left column is compass and locate only now; it is measured, not pinned,
-  since the locate button only exists when there is an avatar.
-- **`dock::reserved_top` / `reserved_bottom` are the two edges** everything else
-  anchors against. A second copy of that arithmetic is how the scale bar and the
-  thumbstick drift when the dock grows an entry.
-- **Place pins cull against `reserved_top`/`reserved_bottom` too.** They are the
-  one overlay drawn *after* everything else, at the same `Order::Middle` the dock
-  uses, so within that order a pin raised later wins egui's hit test. On a phone
-  the dock is ~240 pt of a 274 pt viewport, so a saved place near the bottom edge
-  was taking the taps meant for Search and the app menu. Same reasoning as the
-  keyboard subtraction beside it; the two edges were simply never added.
-- **The dock is not unconditionally at the bottom.** The on-screen keyboard docks
-  a slab to the same edge, so the dock stands down entirely while it is up — the
-  same `Area`-over-`Area` reasoning driver mode already uses. "It is only an
-  overlay" is not an exemption: an `Area` left underneath is still interactive and
-  eats the taps meant for the keys.
-- **A compact panel is the whole screen**, and egui paints floating `Area`s above
-  panels with no z-order that says otherwise. So the discs, the compass column and
-  the menu all drop while one is open on a narrow viewport. On a wide one the
-  panel docks to the right and never reaches those corners.
-- Driver mode suppresses all of it: it owns the screen and puts its manoeuvre
-  card in the top-left corner. Note this held only for the chrome *written* for
-  driver mode — the place pins and the interact prompt came from elsewhere and
-  never learned about it, so teardrops kept drawing over the navigation map (and
-  a pin's click is a `Teleport`) and driving past a bench popped "Sit at Bench"
-  into the speed pill's band. Anything new that draws over the map has to opt
-  out explicitly; there is no ambient "driver mode is on" that hides an `Area`.
-- **The dock's spacing is responsive, its disc size is not.** Signed in the row
-  is five discs = 240 pt, against ≈214 pt on the web phone tier — it overflowed
-  symmetrically, losing the Search disc and the mark, which are the two the
-  layout exists to place. `dock::disc_spacing` closes the gaps instead of
-  shrinking the targets. A sixth entry does not fit the web tier at any spacing, and the
-  answer then is that Chat folds into the mark's menu on the narrow tier.
-  The web never has the camera, so its widest row is still five; a phone at
-  274 pt takes the sixth at 7 pt gaps. The mode disc spent 2026-10-18 in the
-  top right corner to make room, and was not found there.
+- **`dock::reserved_top` / `reserved_bottom` are the two edges** everything
+  else anchors against: the bar's band (68 pt) and the switch's (60 pt, it was
+  74 with the dock's words). A second copy of that arithmetic is how the scale
+  bar and the thumbstick drift.
+- **Place pins cull against both**, being the one overlay drawn after
+  everything else at the chrome's `Order::Middle`: a pin raised later wins
+  egui's hit test, so a saved place near an edge would take the taps meant for
+  the switch or the search bar.
+- **The keyboard stands the switch and the bar down**: it docks a slab to the
+  bottom edge (or flips to the top), and an `Area` left underneath is still
+  interactive and eats the taps meant for the keys.
+- **A compact panel is the whole screen**, and egui paints floating `Area`s
+  above panels with no z-order that says otherwise; so the bar and both columns
+  drop while any panel is open on a phone. The columns also drop with a side
+  panel on a desktop, as the compass always has — the panel docks to the edge
+  they stand on.
+- Driver mode and the camera suppress all of it. Anything new that draws over
+  the map has to opt out of driver mode explicitly; there is no ambient "driver
+  mode is on" that hides an `Area`.
+
+## Superseded: the dock owns the chrome (2026-08 → 2026-11-10)
+
+Up to six discs along the bottom edge, left to right, each with its word under
+it: Search, Say, the view mode, Camera, Saved, Menu; Layers and the lens in the
+top-left corner above the compass; a Community | World switch at the top of the
+map, signed in only. What it taught, and what the face's sheet kept:
+
+- **Words under discs.** Bare glyphs left the view-mode disc and Saved for a
+  person to guess (`docs/mockups/ux-review`, 2026-11-04). The mode disc keeps
+  its word; the other buttons in the column are the mockup's bare discs, named
+  for `ui_tree` and with a tooltip.
+- **The menu disc was the app's mark at first**, and that was wrong: in a row of
+  pictures-of-what-they-do a logo reads as decoration. It carried `icons::MENU`
+  from 2026-08-17; your face is the third answer and the mockup's.
+- **One menu on every viewport**, holding what has nowhere else to be. A menu
+  whose contents depend on the window width is two menus. The sheet keeps it.
+- **Session-bound entries**: Avatar and Models only in a session (an
+  appearance is a thing other people look at; an inventory belongs to an
+  account). Back / Forward / Home, Set Home and Copy link left the menu for the
+  Search panel, beside the field they navigate from.
+- **Entries are list rows, not buttons**: justified `ui.button`s drew a
+  full-width plate each and read as a form of primary actions.
+- **Spacing, not size, gave way on the web phone**: five discs were 240 pt
+  against ≈214, and the row overflowed symmetrically, losing the two discs the
+  layout existed to place. One switch of two sides has no such arithmetic.
+- **The mode disc spent 2026-10-18 in the top right corner and was not found
+  there.** It is back on the right, now under the search bar in a column of
+  map buttons — the place every phone map has taught.
 
 ## The mark and the wordmark are drawn, not shipped
 

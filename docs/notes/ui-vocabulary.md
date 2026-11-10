@@ -1,6 +1,6 @@
 ---
 topic: ui
-triggers: [theme.rs, ui_theme.rs, dismiss.rs, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
+triggers: [theme.rs, ui_theme.rs, dismiss.rs, UiTheme, ui_theme, "Appearance", map_disc, round_button, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
 updated: 2026-11-10
 ---
 
@@ -34,10 +34,13 @@ holds the look as it was (value for value, pinned by
 `the_dark_palette_is_the_look_it_was`) and `theme::LIGHT` the midas hub's light
 tokens in the same roles. Read the palette where you paint — never into a
 `const`, `static` or cached field, which keeps the other theme's colour after a
-flip. What switches it is the app's light setting (`systems::ui_theme`, in
-`ClientPhase::Input`): Light → light, Dark → dark, Auto or a set time → light
-while the sun is above the horizon at the anchor; `CARTO_UI_THEME=light|dark`
-forces one for a capture. On a flip `theme::apply_visuals` replaces only the
+flip. What switches it is **its own setting since 2026-11-10**,
+`AppPrefs::ui_theme` (Settings ▸ General ▸ Appearance: Auto / Light / Dark,
+saved with the other settings; `systems::ui_theme`, in `ClientPhase::Input`):
+Auto is light while the real sun is above the horizon at the map, whatever the
+sky is set to. Until then it followed the scene's light (`SunMode`, the light
+disc), so a dark UI made the map night; the scene's light now changes only the
+sky. `CARTO_UI_THEME=light|dark` forces one for a capture. On a flip `theme::apply_visuals` replaces only the
 egui visuals, so spacing and the debug switches survive. Brand and data
 colours (`BRAND`, the council, the code colours, the map labels, the call
 buttons, the scenario inks) stay `const`. **What was `INK` is two roles now**:
@@ -45,6 +48,16 @@ buttons, the scenario inks) stay `const`. **What was `INK` is two roles now**:
 grey in the light theme) and `on_accent` the ink on an accent plate (`#0F1416`
 in both); `on_status` is the ink on a warning or error plate (white on the
 light theme) and `accent_word` the accent-coloured word on a soft accent tag.
+**The map's round buttons have their own four roles** (2026-11-10):
+`map_fill`, `map_ink`, `map_rim` and `map_mark` — the plate, glyph and rim of
+`map_disc` / `round_button` at rest, the search pill and the World | Community
+track, and the zoom rail's thumb. In the dark theme they are the values those
+controls always had (`overlay`, `text`, `overlay_line`, `cream`; pinned by
+`the_dark_palette_is_the_look_it_was`). In the light theme they are white, the
+deep accent teal `#17696A` and a faint teal rim: the person's "the light
+buttons have no teal theme at all" was black glyphs on white discs, with teal
+left only on the one plate that was on
+(`the_map_buttons_wear_the_teal_in_both_themes`).
 Surfaces that are dark in both themes — the splash (it is `index.html`'s
 loader), the call and camera screens, the script editor's code box, anything
 on a `LABEL_CHIP` — draw inside `theme::dark_here` with

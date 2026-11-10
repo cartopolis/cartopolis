@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
-updated: 2026-10-17
+updated: 2026-11-10
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -295,6 +295,14 @@ bar that was anchored to the same corner. Anchored to the bottom, the right edge
 is one column that grows upwards and the pair keeps a single position across all
 four states. The scale bar moved to the bottom-left and sits above whatever
 `map_osd::bottom_left_reserved` says the stick claims.
+
+**Since 2026-11-10 the right edge has two owners**: the map's column of round
+buttons (Layers, the view mode, Locate, Camera) comes down from under the search
+bar, and these controls grow up from the World | Community switch. On a 600 pt
+phone Follow's stack reaches 276 pt from the top and the column ends at 268, so
+the hand button stands *beside* the face disc instead of above it, and the
+locate disc's caption sits to its left rather than under it
+(`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`).
 
 The stick's *magnitude* is kept, which is the whole difference from the gestures
 it replaced: `camera_controls` derives a throttle from `move_direction.length()`

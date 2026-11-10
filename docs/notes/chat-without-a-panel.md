@@ -1,7 +1,7 @@
 ---
 topic: chat
 triggers: [chat.rs, chat_overlay.rs, "speech bubble", "transcript", "composer", "nearby chat", dock.rs]
-updated: 2026-08-22
+updated: 2026-11-10
 ---
 
 # Chat is not a panel
@@ -17,6 +17,12 @@ ambient transcript that fades, and a composer that exists only while you write.
 `systems::chat` keeps the state and one panel that is now a **log and its
 settings** — the backlog, the blocks, the microphone, the report form
 — reached from ☰ rather than from the dock.
+
+**Since 2026-11-10 the Say disc is in the map's left column**, under the
+compass, the lens and the light (`dock::left_slot(3)`, in a session only): the
+dock it sat in became one World | Community switch, and Say is a world thing —
+it opens the composer over the map, above the transcript in the same
+bottom-left corner. It still writes to the open chat in a chat's World view.
 
 ## What was measured against the old panel, and lost
 
