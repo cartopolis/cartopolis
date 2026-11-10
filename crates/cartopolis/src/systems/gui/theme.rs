@@ -44,7 +44,7 @@
 //!
 //! **Every surface is solid** (since 2026-11-08, "a bad implementation of
 //! glass"): the midas hub's layering, one darkness. [`PANEL`], [`GLASS`] and
-//! [`OVERLAY`] are all its page ([`INK`]), with [`SURFACE`] cards inside and a soft
+//! [`OVERLAY`] are all one very dark teal page, with [`SURFACE`] cards inside and a soft
 //! shadow, with the hub's hairline ([`PANEL_RIM`]). Nothing shows through.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
@@ -271,10 +271,15 @@ pub const OVERLAY: Color32 = PANEL;
 pub const GLASS: Color32 = PANEL;
 
 /// Every panel's surface — docked, full-screen on a phone, floating over the
-/// map: the midas hub's page, [`INK`], with [`SURFACE`] cards on it under
-/// [`CARD_SHADOW`]. The layering is most of the hub's depth (2026-11-01, and
-/// solid and one darkness since 2026-11-08).
-pub const PANEL: Color32 = INK;
+/// map: a very dark teal, with [`SURFACE`] cards on it under [`CARD_SHADOW`]
+/// (solid and one darkness since 2026-11-08).
+///
+/// **Teal, not [`INK`]**, asked for the next day: at [`INK`] the panels "look
+/// black; mix a little colour in, like the midas palette — very dark teal,
+/// close to black". This is [`ACCENT`]'s hue pressed almost to black, and it
+/// stays darker than [`SURFACE`] so a card in a panel still reads as lying on
+/// it (`the_panel_is_the_hubs_page`).
+pub const PANEL: Color32 = Color32::from_rgb(0x0B, 0x19, 0x18);
 
 /// The hairline round a panel, a window or a box over the map: the midas hub's
 /// `--m-border` (dark), solid. The shadow does the lifting; this only keeps a
@@ -3099,16 +3104,20 @@ mod tests {
     ///
     /// [`OVERLAY`] is the other half, and it was worse, because its background is
     /// not in this file at all.
-    /// The panel is the midas hub's page: solid, leaning the way the ramp does —
-    /// cooler, never warmer (the brown a mix of the brand orange produced, red
-    /// above blue, is what this pins against) — and darker than the cards on
-    /// it, so a [`SURFACE`] card in a panel reads as lying on it.
+    /// The panel is a very dark teal: solid, cooler and never warmer (the
+    /// brown a mix of the brand orange produced, red above blue, is what this
+    /// pins against), visibly teal rather than black, and darker than the
+    /// cards on it, so a [`SURFACE`] card in a panel reads as lying on it.
     #[test]
-    fn the_panel_is_the_hubs_page() {
+    fn the_panel_is_a_very_dark_teal() {
         assert_eq!(PANEL.a(), 255, "the panel is solid: {PANEL:?}");
         assert!(
             PANEL.r() <= PANEL.b() && PANEL.r() <= PANEL.g(),
             "the panel has a warm cast: {PANEL:?}"
+        );
+        assert!(
+            PANEL.g() > PANEL.r() + 8,
+            "the panel has gone black: {PANEL:?}"
         );
         assert!(luminance(PANEL) < luminance(SURFACE));
     }
