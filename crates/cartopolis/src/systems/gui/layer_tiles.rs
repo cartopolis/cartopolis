@@ -231,7 +231,7 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
     // A card as the midas hub draws one (a surface, a quiet hairline, a soft
     // shadow); a layer that is on is the hub's soft teal with an accent rim.
     let (fill, stroke) = if on && !dim {
-        (theme::p().accent_muted, Stroke::new(1.2, theme::p().accent))
+        (theme::p().tile_on, Stroke::new(1.2, theme::p().accent))
     } else if hovered {
         (theme::p().surface_raised, Stroke::new(1.0, theme::p().line))
     } else {
@@ -302,7 +302,7 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
         Pos2::new(knob_x, pill.center().y),
         5.0,
         if on {
-            theme::p().on_accent
+            theme::p().knob_on
         } else {
             theme::p().text_dim
         },
@@ -361,7 +361,7 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
         ),
         (
             Basemap::Aerial,
-            "Aerial photo · NL",
+            "Aerial photo",
             Color32::from_rgb(0x5E, 0x6B, 0x52),
             Color32::WHITE,
         ),

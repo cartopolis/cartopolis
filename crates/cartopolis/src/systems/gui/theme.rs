@@ -283,6 +283,13 @@ pub struct Palette {
     /// How dark the shadows are, as a factor on their alpha: a light page
     /// takes the hub's faint lift, not the dark theme's deep one.
     pub shadow: f32,
+    /// The fill of a tile or card that is *on* (a layer tile): the soft teal
+    /// in the dark theme; white in the light one, where the soft teal read
+    /// as washed out (2026-11-10) and the accent rim and icon say "on".
+    pub tile_on: Color32,
+    /// The knob of a switch that is on, over its accent track: dark ink in
+    /// the dark theme, white in the light one, as a light UI draws a switch.
+    pub knob_on: Color32,
     /// Whether egui's dark visuals are the base ([`visuals`]).
     pub dark: bool,
 }
@@ -319,6 +326,8 @@ pub const DARK: Palette = Palette {
     overlay_soft: Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 140),
     list_line: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22),
     shadow: 1.0,
+    tile_on: Color32::from_rgb(0x26, 0x3F, 0x42),
+    knob_on: Color32::from_rgb(0x0F, 0x14, 0x16),
     dark: true,
 };
 
@@ -364,7 +373,9 @@ pub const LIGHT: Palette = Palette {
     overlay_line: Color32::from_rgb(0xDA, 0xE3, 0xE3),
     overlay_soft: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 150),
     list_line: Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 22),
-    shadow: 0.35,
+    shadow: 0.6,
+    tile_on: Color32::WHITE,
+    knob_on: Color32::WHITE,
     dark: false,
 };
 
