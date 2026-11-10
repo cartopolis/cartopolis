@@ -247,6 +247,8 @@ pub struct ScenarioView {
     error: Option<(String, String)>,
     /// How much of the lens is up. Kept when the lens or its figure changes.
     sheet: Sheet,
+    /// The finger on the sheet's grabber (`motion::grabber`).
+    sheet_drag: motion::SheetDrag,
 }
 
 impl Default for ScenarioView {
@@ -256,6 +258,7 @@ impl Default for ScenarioView {
             loading: None,
             error: None,
             sheet: Sheet::from_env(),
+            sheet_drag: motion::SheetDrag::default(),
         }
     }
 }
@@ -1003,10 +1006,6 @@ const BODY_MIN_PTS: f32 = 120.0;
 /// What the open figure's key costs at the head of the figures: its line,
 /// its scale and the place row.
 const KEY_PTS: f32 = 110.0;
-/// The grabber's row, its bar, and the drag in one frame that moves it.
-const GRABBER_ROW_PTS: f32 = 16.0;
-const GRABBER_W: f32 = 40.0;
-const GRABBER_FLICK_PTS: f32 = 3.0;
 /// A figure's row, and the scale drawn small in it.
 const ROW_PTS: f32 = 34.0;
 const MINI_RAMP: egui::Vec2 = egui::vec2(40.0, 6.0);
@@ -1138,6 +1137,7 @@ pub fn render_scenario_chrome(
         open,
         loading,
         error,
+        sheet_drag,
         ..
     } = &mut *view;
     let shown_area = area.order(egui::Order::Foreground).show(&ctx, |ui| {
@@ -1146,7 +1146,7 @@ pub fn render_scenario_chrome(
             // content reaches for the available width grows every frame.
             ui.set_width(width);
             if shape == Shape::Sheet {
-                asked.sheet = grabber(ui);
+                asked.sheet = grabber(ui, sheet_drag);
             }
             match (shown, open.as_mut()) {
                 (Sheet::Shelf, _) => shelf_body(ui, layers.scenario.as_deref(), body_h, &mut asked),
@@ -1210,25 +1210,15 @@ fn paint_frame(ctx: &egui::Context, mode: Mode) {
     }
 }
 
-/// The bar that says the sheet moves, and moves it: a tap or a flick down
-/// puts it away, an open lens staying on.
-fn grabber(ui: &mut egui::Ui) -> Option<Sheet> {
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), GRABBER_ROW_PTS),
-        egui::Sense::click_and_drag(),
-    );
-    let resp = theme::named(ui, resp, "Put the sheet away");
-    let live = resp.hovered() || resp.dragged();
-    ui.painter().rect_filled(
-        egui::Rect::from_center_size(rect.center(), egui::vec2(GRABBER_W, 4.0)),
-        egui::CornerRadius::same(theme::RADIUS_PILL),
-        if live {
-            theme::p().accent
-        } else {
-            theme::p().line
-        },
-    );
-    (resp.clicked() || resp.drag_delta().y >= GRABBER_FLICK_PTS).then_some(Sheet::Hidden)
+/// The bar that says the sheet moves, and moves it (`motion::grabber`): a tap
+/// or a pull down puts it away, an open lens staying on. One rest, so a pull
+/// up only rubber-bands.
+fn grabber(ui: &mut egui::Ui, drag: &mut motion::SheetDrag) -> Option<Sheet> {
+    use motion::{Rest, SheetMove};
+    match motion::grabber(ui, drag, Rest::Peek, &[Rest::Peek], "Put the sheet away") {
+        SheetMove::Stay => None,
+        SheetMove::To(_) | SheetMove::Close => Some(Sheet::Hidden),
+    }
 }
 
 /// The mode as a chip: what kind of truth the colours are.

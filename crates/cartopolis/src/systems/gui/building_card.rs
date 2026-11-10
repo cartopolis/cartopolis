@@ -36,6 +36,14 @@ use crate::systems::theme;
 /// surfaces that rise from the same edge are the same object at different times.
 const CARD_WIDTH: f32 = 320.0;
 
+/// The card's three rests: the name and the ways in; the first facts; all of
+/// them, with the map a strip above.
+const RESTS: [crate::systems::motion::Rest; 3] = [
+    crate::systems::motion::Rest::Peek,
+    crate::systems::motion::Rest::Half,
+    crate::systems::motion::Rest::Full,
+];
+
 /// How many addresses are listed before the rest become a count.
 ///
 /// A block of flats has hundreds of them and this is a card, not a directory. Six
@@ -89,6 +97,7 @@ pub fn render_building_card(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
     identity: Res<crate::resources::AuthIdentity>,
+    mut last_shown: Local<Option<std::sync::Arc<str>>>,
 ) {
     // The dock's suppression rules, and the place card's — each of these owns the
     // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
@@ -133,6 +142,13 @@ pub fn render_building_card(
 
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
+    let full_h = egui.viewport_pts().y * 0.5;
+    // A new building starts at the peek, however far the last one was pulled.
+    if last_shown.as_deref() != Some(&*id) {
+        selection.card_rest = Default::default();
+        selection.card_drag = Default::default();
+        *last_shown = Some(id.clone());
+    }
     let mut close = false;
     let mut open: Option<String> = None;
     let mut look: Option<bool> = None;
@@ -144,20 +160,47 @@ pub fn render_building_card(
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .interactable(pres.open)
         .show(ctx, |ui| {
-            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
+            use crate::systems::motion::{self, Rest, SheetMove};
+            let rest = selection.card_rest;
+            motion::follow(
+                ui,
+                egui::Id::new("building_card"),
+                pres,
+                &mut selection.card_drag,
+                motion::LIFT,
+                rest == Rest::Full,
+            );
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(width);
+                // The grabber: a pull up shows the facts, then all of them; a
+                // pull or a flick down puts the card away.
+                match motion::grabber(
+                    ui,
+                    &mut selection.card_drag,
+                    rest,
+                    &RESTS,
+                    "Expand or collapse",
+                ) {
+                    SheetMove::Stay => {}
+                    SheetMove::To(rest) => selection.card_rest = rest,
+                    SheetMove::Close => close = true,
+                }
+                let rest = selection.card_rest;
                 header(ui, &fact, &addresses, &mut close);
                 ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    // A block of flats has more rows than a phone has screen. The
-                    // card keeps its own height and scrolls inside it rather than
-                    // growing until it swallows the map — the failure
-                    // `driver`'s bottom bar hit when it sized to content.
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        rows(ui, &fact, shell, &addresses);
-                    });
+                if rest >= Rest::Half {
+                    egui::ScrollArea::vertical()
+                        // A block of flats has more rows than a phone has screen.
+                        // The card keeps its own height and scrolls inside it
+                        // rather than growing until it swallows the map — the
+                        // failure `driver`'s bottom bar hit when it sized to
+                        // content. Full takes half the screen; the map stays a
+                        // strip above it.
+                        .max_height(if rest == Rest::Full { full_h } else { 260.0 })
+                        .show(ui, |ui| {
+                            rows(ui, &fact, shell, &addresses);
+                        });
+                }
                 ui.add_space(6.0);
                 // The two ways into the building: look inside it here, or open its
                 // floor plan in the editor — where its owner changes it, and
@@ -203,6 +246,9 @@ pub fn render_building_card(
                     }
                 });
                 ui.add_space(4.0);
+                if rest == Rest::Peek {
+                    return;
+                }
                 ui.horizontal(|ui| {
                     let can_open = open_url_supported();
                     /// Shown on hover where the button is dead, so the greying is

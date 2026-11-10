@@ -323,6 +323,8 @@ pub struct RouteState {
     pub from_editing: bool,
     /// How much of the planner's sheet is up. See [`SheetDetent`].
     pub sheet: SheetDetent,
+    /// The finger on the sheet's grabber (`motion::grabber`).
+    pub sheet_drag: crate::systems::motion::SheetDrag,
     /// Where the sheet landed last frame, in egui points; `None` when it is not
     /// up.
     ///
@@ -367,6 +369,7 @@ impl Default for RouteState {
             picking: None,
             from_editing: false,
             sheet: SheetDetent::default(),
+            sheet_drag: Default::default(),
             sheet_rect: None,
             generation: 0,
             solved_for: None,
@@ -1995,18 +1998,6 @@ const SHEET_HEADER_BARE_PTS: f32 = 72.0;
 /// overflow visibly rather than collapse a control to nothing.
 const SHEET_BODY_MIN_PTS: f32 = 96.0;
 
-/// Height of the grabber's row, the bar drawn in it, and how thick that bar is.
-const GRABBER_ROW_PTS: f32 = 16.0;
-const GRABBER_WIDTH_PTS: f32 = 40.0;
-const GRABBER_THICKNESS_PTS: f32 = 4.0;
-/// Points of drag **in one frame** that count as a flick on the grabber.
-///
-/// Read per frame rather than accumulated from a drag origin on purpose: the
-/// answer is a two-state detent, so the first frame that clears the threshold
-/// has already said everything a longer drag could, and the alternative is
-/// cross-frame state for a control whose entire range is one bit.
-const GRABBER_FLICK_PTS: f32 = 3.0;
-
 /// How tall the scrolling body may be, given the viewport and how far up from
 /// the bottom edge the sheet is sitting.
 /// What the parts above and below the body cost.
@@ -2071,39 +2062,29 @@ fn sheet_bottom(
 }
 
 /// The grabber: the short bar that says the sheet moves, and the control that
-/// moves it. Returns the detent it was asked to go to, if any.
-fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), GRABBER_ROW_PTS),
-        egui::Sense::click_and_drag(),
-    );
-    let resp = theme::named(ui, resp, "Expand or collapse");
-    let live = resp.hovered() || resp.dragged();
-    ui.painter().rect_filled(
-        egui::Rect::from_center_size(
-            rect.center(),
-            egui::vec2(GRABBER_WIDTH_PTS, GRABBER_THICKNESS_PTS),
-        ),
-        egui::CornerRadius::same(theme::RADIUS_PILL),
-        if live {
-            theme::p().accent
-        } else {
-            theme::p().line
-        },
-    );
-    if resp.clicked() {
-        return Some(match detent {
-            SheetDetent::Peek => SheetDetent::Full,
-            SheetDetent::Full => SheetDetent::Peek,
-        });
-    }
-    let dy = resp.drag_delta().y;
-    if dy <= -GRABBER_FLICK_PTS {
-        Some(SheetDetent::Full)
-    } else if dy >= GRABBER_FLICK_PTS {
-        Some(SheetDetent::Peek)
-    } else {
-        None
+/// moves it (`motion::grabber`: it follows the finger, and the finger's speed
+/// decides). Returns the detent it was asked to go to, if any; a flick down
+/// from the peek is a collapse, not a close — the planner's ✕ closes it.
+fn grabber(
+    ui: &mut egui::Ui,
+    drag: &mut crate::systems::motion::SheetDrag,
+    detent: SheetDetent,
+) -> Option<SheetDetent> {
+    use crate::systems::motion::{self, Rest, SheetMove};
+    let rest = match detent {
+        SheetDetent::Peek => Rest::Peek,
+        SheetDetent::Full => Rest::Full,
+    };
+    match motion::grabber(
+        ui,
+        drag,
+        rest,
+        &[Rest::Peek, Rest::Full],
+        "Expand or collapse",
+    ) {
+        SheetMove::Stay => None,
+        SheetMove::To(Rest::Full) => Some(SheetDetent::Full),
+        SheetMove::To(_) | SheetMove::Close => Some(SheetDetent::Peek),
     }
 }
 
@@ -2239,9 +2220,21 @@ pub fn render_route_sheet(
     let mut close = false;
     let mut asked_detent = None;
     let ctx = egui.ctx();
+    // The sheet comes up from the bottom edge (`motion::follow`), and moves
+    // with the finger on its grabber.
+    let pres = crate::systems::motion::presence(ctx, egui::Id::new("route_sheet"), true);
+    let at_top = route.sheet == SheetDetent::Full;
     let area = egui::Area::new(egui::Id::new("route_sheet"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(ctx, |ui| {
+            crate::systems::motion::follow(
+                ui,
+                egui::Id::new("route_sheet"),
+                pres,
+                &mut route.sheet_drag,
+                crate::systems::motion::LIFT,
+                at_top,
+            );
             frame.show(ui, |ui| {
                 // Pin the width before anything is laid out: this is a floating
                 // `Area`, so a child reaching for the available width would grow
@@ -2250,7 +2243,8 @@ pub fn render_route_sheet(
                 // at all to scroll inside until something states one.
                 ui.set_width(width);
 
-                asked_detent = grabber(ui, route.sheet);
+                let asked_now = route.sheet;
+                asked_detent = grabber(ui, &mut route.sheet_drag, asked_now);
 
                 // Travel modes across the top, with the ✕ in the corner. Organic
                 // Maps puts the modes above the fields because the mode changes

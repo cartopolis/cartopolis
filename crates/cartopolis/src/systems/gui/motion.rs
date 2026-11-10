@@ -35,7 +35,9 @@ pub const ENTER: f32 = 0.36;
 /// A surface leaving: two thirds of arriving. Nobody follows what goes; it has
 /// to be out of the way before the next tap.
 pub const LEAVE: f32 = 0.24;
-/// A change nobody asked for — light to dark as the sun sets.
+/// A change nobody asked for — light to dark as the sun sets. (Its reader,
+/// the palette crossfade in `ui_theme`, is the design's fifth step.)
+#[allow(dead_code)]
 pub const AMBIENT: f32 = 0.6;
 
 /// How far a surface that arrives from below starts under its resting place.
@@ -77,6 +79,7 @@ pub fn leave_time() -> f32 {
 }
 
 /// [`AMBIENT`] under the setting.
+#[allow(dead_code)]
 #[must_use]
 pub fn ambient_time() -> f32 {
     if reduced() {
@@ -151,12 +154,6 @@ impl Presence {
     pub fn visible(&self) -> bool {
         self.open || self.linear > 0.001
     }
-
-    /// Fully there.
-    #[must_use]
-    pub fn settled(&self) -> bool {
-        self.open && self.linear >= 1.0
-    }
 }
 
 /// The presence of a surface keyed by `id`: [`ENTER`] towards shown, [`LEAVE`]
@@ -211,7 +208,10 @@ pub fn linger<T: Clone + Send + Sync + 'static>(
 
 /// Apply a presence to the floating `Area` `ui` draws in: it comes up
 /// `lift` points from under its resting place and fades in, and goes the same
-/// way back. Call it first thing inside the area's closure.
+/// way back. Call it first thing inside the area's closure. (Its first
+/// readers, the dock and the menu, come once session s651's redraw of both
+/// has landed; the cards use [`follow`], which is this plus the finger.)
+#[allow(dead_code)]
 pub fn enter(ui: &mut Ui, pres: Presence, lift: f32) {
     let t = pres.t.clamp(0.0, 1.0);
     ui.multiply_opacity(t);
@@ -266,6 +266,130 @@ pub fn toggle(ctx: &Context, id: Id, on: bool, secs: f32) -> f32 {
 #[must_use]
 pub fn value(ctx: &Context, id: Id, target: f32, secs: f32) -> f32 {
     ctx.animate_value_with_time(id, target, secs)
+}
+
+/// A sheet's resting heights, lowest first: the title and the one action; the
+/// tiles and the first facts; everything, scrolling.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum Rest {
+    #[default]
+    Peek,
+    Half,
+    Full,
+}
+
+/// What a sheet does once the finger lets go of its grabber.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SheetMove {
+    Stay,
+    To(Rest),
+    Close,
+}
+
+/// What a sheet remembers between frames about the finger on its grabber.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SheetDrag {
+    /// How far the finger has moved the sheet from its rest this drag, in
+    /// points, down positive. The sheet follows it 1:1 (`follow`).
+    offset: f32,
+    /// Where a let-go sheet glides back to its rest from; consumed by
+    /// `follow` on the next pass.
+    settle_from: Option<f32>,
+}
+
+/// The grabber row: as tall as a finger needs, the bar 40 × 4.
+pub const GRABBER_ROW: f32 = 16.0;
+const GRABBER_WIDTH: f32 = 40.0;
+const GRABBER_THICKNESS: f32 = 4.0;
+/// How far a sheet has to be taken (finger plus a fifth of a second of its
+/// speed) to go to the next rest rather than back to this one.
+const DRAG_STEP: f32 = 48.0;
+/// How far ahead the finger's speed is read, so a short fast flick counts.
+const PROJECT_S: f32 = 0.2;
+/// A flick down faster than this closes the sheet from any rest.
+pub const FLICK_CLOSE: f32 = 1200.0;
+/// How much of an upward pull past the top rest the sheet gives.
+const RUBBER: f32 = 0.35;
+
+/// The bar that says a sheet moves, and moves it. It follows the finger
+/// (`follow` draws the offset), and on release goes where the finger's speed
+/// says: a step up or down `rests` (lowest first), back to `rest`, or
+/// closed — a flick down faster than [`FLICK_CLOSE`] closes from any rest, a
+/// slower one from the lowest. A tap steps up, and from the top back to the
+/// bottom.
+pub fn grabber(
+    ui: &mut Ui,
+    drag: &mut SheetDrag,
+    rest: Rest,
+    rests: &[Rest],
+    name: &str,
+) -> SheetMove {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), GRABBER_ROW),
+        egui::Sense::click_and_drag(),
+    );
+    let resp = super::theme::named(ui, resp, name);
+    let live = resp.hovered() || resp.dragged();
+    ui.painter().rect_filled(
+        egui::Rect::from_center_size(rect.center(), egui::vec2(GRABBER_WIDTH, GRABBER_THICKNESS)),
+        egui::CornerRadius::same(super::theme::RADIUS_PILL),
+        if live {
+            super::theme::p().accent
+        } else {
+            super::theme::p().line
+        },
+    );
+    let at = rests.iter().position(|r| *r == rest).unwrap_or(0);
+    let up = rests.get(at + 1).copied();
+    let down = at.checked_sub(1).map(|i| rests[i]);
+    if resp.dragged() {
+        drag.offset += resp.drag_delta().y;
+    }
+    if resp.drag_stopped() {
+        let speed = ui.ctx().input(|i| i.pointer.velocity().y);
+        let projected = drag.offset + speed * PROJECT_S;
+        drag.settle_from = Some(drag.offset);
+        drag.offset = 0.0;
+        return if speed >= FLICK_CLOSE {
+            SheetMove::Close
+        } else if projected <= -DRAG_STEP {
+            up.map_or(SheetMove::Stay, SheetMove::To)
+        } else if projected >= DRAG_STEP {
+            down.map_or(SheetMove::Close, SheetMove::To)
+        } else {
+            SheetMove::Stay
+        };
+    }
+    if resp.clicked() {
+        return SheetMove::To(up.unwrap_or_else(|| rests.first().copied().unwrap_or(rest)));
+    }
+    SheetMove::Stay
+}
+
+/// Where the sheet is drawn this pass: its entrance (`enter`), plus the
+/// finger's offset while it is held — rubber-banded past the top rest when
+/// `at_top` — plus the glide back to rest after a release. First thing
+/// inside the sheet's `Area`, instead of `enter`.
+pub fn follow(ui: &mut Ui, id: Id, pres: Presence, drag: &mut SheetDrag, lift: f32, at_top: bool) {
+    let ctx = ui.ctx().clone();
+    let settle_id = id.with("settle");
+    if let Some(from) = drag.settle_from.take() {
+        // Seed the glide at where the finger left the sheet, then let it go.
+        let _ = ctx.animate_value_with_time(settle_id, from, 0.0);
+    }
+    let settle = value(&ctx, settle_id, 0.0, LEAVE);
+    let held = if at_top && drag.offset < 0.0 {
+        drag.offset * RUBBER
+    } else {
+        drag.offset
+    };
+    let t = pres.t.clamp(0.0, 1.0);
+    ui.multiply_opacity(t);
+    let layer = ui.layer_id();
+    ctx.set_transform_layer(
+        layer,
+        TSTransform::from_translation(egui::vec2(0.0, (1.0 - t) * lift + held + settle)),
+    );
 }
 
 /// Run `f` — a `Panel::show_collapsible`, whose slide reads
@@ -361,7 +485,7 @@ mod tests {
         assert!(mid.linear > 0.2 && mid.linear < 0.6, "{mid:?}");
         assert!(mid.t > mid.linear, "ease-out runs ahead of linear: {mid:?}");
         let (done, _) = at(1.0, true);
-        assert!(done.settled(), "{done:?}");
+        assert!(done.open && done.linear >= 1.0, "{done:?}");
         // A settled surface no longer asks to be drawn *now*. (Not `MAX`: a
         // fresh context asks for a look or two of its own in its first passes.)
         let (_, delay) = at(1.5, true);

@@ -56,7 +56,17 @@ pub struct CardPlace {
 #[derive(Resource, Default)]
 pub struct PlaceCard {
     pub place: Option<CardPlace>,
+    /// How much of the card is up: the name and Route here, or the rest too.
+    pub rest: crate::systems::motion::Rest,
+    /// The finger on its grabber.
+    pub drag: crate::systems::motion::SheetDrag,
 }
+
+/// The card's two rests: there is not enough on a place for a third.
+const RESTS: [crate::systems::motion::Rest; 2] = [
+    crate::systems::motion::Rest::Peek,
+    crate::systems::motion::Rest::Full,
+];
 
 /// Width of the card. Fixed for the reason the main menu's is: this is an
 /// anchored, size-to-content `Area`, and content that reaches for the available
@@ -87,6 +97,8 @@ pub fn render_place_card(
     // panel, or the card floats over the list it came from.
     if let Some(place) = nav.pending_card.take() {
         card.place = Some(place);
+        card.rest = crate::systems::motion::Rest::Peek;
+        card.drag = Default::default();
         *saved_at = None;
         if right_panel.is(RightPanel::Search) {
             *right_panel = RightPanel::None;
@@ -130,9 +142,25 @@ pub fn render_place_card(
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .interactable(pres.open)
         .show(ctx, |ui| {
-            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
+            use crate::systems::motion::{self, Rest, SheetMove};
+            let rest = card.rest;
+            motion::follow(
+                ui,
+                egui::Id::new("place_card"),
+                pres,
+                &mut card.drag,
+                motion::LIFT,
+                rest == Rest::Full,
+            );
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN));
+                // The grabber: a pull up shows the rest, a pull or a flick down
+                // puts the card away.
+                match motion::grabber(ui, &mut card.drag, rest, &RESTS, "Expand or collapse") {
+                    SheetMove::Stay => {}
+                    SheetMove::To(rest) => card.rest = rest,
+                    SheetMove::Close => close = true,
+                }
                 // Header: the name leads, the close button takes the corner. The
                 // close button first — a truncating label asks for every point
                 // available, so laid out the other way it pushes the ✕ off the
@@ -255,6 +283,26 @@ pub fn render_place_card(
                         }
                     });
                 });
+                // Pulled up: what ⋯ holds, as rows, and where the place is.
+                if card.rest == Rest::Full {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
+                        nav.route_from(&place.name, place.lat, place.lng);
+                    }
+                    if session.is_online()
+                        && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
+                    {
+                        nav.pending_label = Some(place.name.clone());
+                        nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("{:.5}, {:.5}", place.lat, place.lng))
+                            .size(theme::SIZE_TINY)
+                            .color(theme::p().text_dim),
+                    );
+                }
             });
         });
     if close {

@@ -132,6 +132,11 @@ pub struct BuildingSelection {
     /// The building the user picked, if any. Cleared by a click on empty world,
     /// by the card's close button, and by a re-anchor.
     pub selected: Option<Arc<str>>,
+    /// How much of the building card is up, and the finger on its grabber
+    /// (`building_card`, `motion::grabber`). Here rather than in the card
+    /// because the selection is the state the card is a view of.
+    pub card_rest: crate::systems::motion::Rest,
+    pub card_drag: crate::systems::motion::SheetDrag,
     /// The building the avatar is standing in, from
     /// [`InteriorFloors::building_at`].
     pub indoors: Option<Arc<str>>,
