@@ -394,7 +394,7 @@ pub fn follow(ui: &mut Ui, id: Id, pres: Presence, drag: &mut SheetDrag, lift: f
 
 /// A page turn in progress: which page is leaving, how deep it was, when it
 /// started.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Turn<K> {
     from: K,
     from_depth: u8,
@@ -428,7 +428,7 @@ const PARENT_DIM: f32 = 0.3;
 /// to the right when it shrank. Both pages are drawn, untouchable, for
 /// [`ENTER`]; `draw` is therefore asked for the old key as well as the new one
 /// while a turn runs, and must be able to draw either.
-pub fn page_turn<K: Copy + PartialEq + Send + Sync + 'static>(
+pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
     ui: &mut Ui,
     id: Id,
     key: K,
@@ -452,10 +452,11 @@ pub fn page_turn<K: Copy + PartialEq + Send + Sync + 'static>(
         }
         _ => {}
     }
-    ctx.data_mut(|d| d.insert_temp(last_id, (key, depth)));
+    ctx.data_mut(|d| d.insert_temp(last_id, (key.clone(), depth)));
 
     let secs = enter_time();
-    let progress = turn.map(|t| {
+    let turning = turn.is_some();
+    let progress = turn.as_ref().map(|t| {
         if secs <= 0.0 {
             1.0
         } else {
@@ -484,7 +485,7 @@ pub fn page_turn<K: Copy + PartialEq + Send + Sync + 'static>(
     };
     match (turn, progress) {
         (Some(t), Some(p)) if p < 1.0 => {
-            ctx.data_mut(|d| d.insert_temp(turn_id, t));
+            ctx.data_mut(|d| d.insert_temp(turn_id, t.clone()));
             ctx.request_repaint();
             let (old_dx, new_dx, dim) = turn_offsets(depth > t.from_depth, ease_out(p));
             let (old_dim, new_dim) = if depth > t.from_depth {
@@ -502,7 +503,7 @@ pub fn page_turn<K: Copy + PartialEq + Send + Sync + 'static>(
             }
         }
         _ => {
-            if turn.is_some() {
+            if turning {
                 ctx.data_mut(|d| d.remove::<Turn<K>>(turn_id));
             }
             page(ui, key, "page", 0.0, true, 0.0);

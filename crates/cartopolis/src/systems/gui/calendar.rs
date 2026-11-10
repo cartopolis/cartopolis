@@ -1062,12 +1062,24 @@ pub fn screen(
     now: u64,
     out: &mut Out,
 ) {
-    match cal.page {
-        Page::List | Page::Month => overview(ui, cal, chat, communities, now, out),
-        Page::Detail => detail(ui, cal, chat, communities, now, out),
-        Page::New => new_page(ui, cal, chat, communities, now, out),
-        Page::Settings => settings(ui, cal, communities, out),
-    }
+    // List and Month are one page with a switch on it, not a turn.
+    let key = if cal.page == Page::Month {
+        Page::List
+    } else {
+        cal.page
+    };
+    crate::systems::motion::page_turn(
+        ui,
+        egui::Id::new("calendar_page"),
+        key,
+        u8::from(key != Page::List),
+        |ui, page| match page {
+            Page::List | Page::Month => overview(ui, cal, chat, communities, now, out),
+            Page::Detail => detail(ui, cal, chat, communities, now, out),
+            Page::New => new_page(ui, cal, chat, communities, now, out),
+            Page::Settings => settings(ui, cal, communities, out),
+        },
+    );
 }
 
 fn overview(

@@ -791,18 +791,39 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
     let Some(screen) = communities.screen.clone() else {
         return out;
     };
+    // How deep a screen is, for the turn's direction: a community under the
+    // list, its people and its form under the community.
+    let depth = |s: &Screen| match s {
+        Screen::Find | Screen::Create | Screen::Invite(_) | Screen::PostTo | Screen::Activity => 1,
+        Screen::Preview(_) | Screen::Community(_) => 2,
+        Screen::Edit(_) | Screen::People(_) => 3,
+    };
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show(ui, |ui| match screen {
-            Screen::Find => find_screen(ui, communities, &mut out),
-            Screen::Preview(id) => preview_screen(ui, communities, id, &mut out),
-            Screen::Create => create_screen(ui, communities, &mut out),
-            Screen::Community(id) => community_screen(ui, communities, id, me, &mut out),
-            Screen::Edit(id) => edit_screen(ui, communities, id, &mut out),
-            Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
-            Screen::Invite(code) => invite_screen(ui, communities, &code, &mut out),
-            Screen::PostTo => crate::systems::community_posts::pick_community(ui, communities),
-            Screen::Activity => crate::systems::community_posts::activity_screen(ui, communities),
+        .show(ui, |ui| {
+            crate::systems::motion::page_turn(
+                ui,
+                egui::Id::new("community_screen"),
+                screen.clone(),
+                depth(&screen),
+                |ui, screen| match screen {
+                    Screen::Find => find_screen(ui, communities, &mut out),
+                    Screen::Preview(id) => preview_screen(ui, communities, id, &mut out),
+                    Screen::Create => create_screen(ui, communities, &mut out),
+                    Screen::Community(id) => {
+                        community_screen(ui, communities, id, me, &mut out);
+                    }
+                    Screen::Edit(id) => edit_screen(ui, communities, id, &mut out),
+                    Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
+                    Screen::Invite(code) => invite_screen(ui, communities, &code, &mut out),
+                    Screen::PostTo => {
+                        crate::systems::community_posts::pick_community(ui, communities);
+                    }
+                    Screen::Activity => {
+                        crate::systems::community_posts::activity_screen(ui, communities);
+                    }
+                },
+            );
         });
     out
 }

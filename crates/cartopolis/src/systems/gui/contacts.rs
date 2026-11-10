@@ -1268,13 +1268,23 @@ pub fn screen(
 ) {
     let mut act = Act::default();
     let now = now_ms();
-    match sub {
-        Sub::Requests => requests_screen(ui, contacts, &mut act, now),
-        Sub::Request(name) => request_screen(ui, contacts, chat, name, &mut act, now),
-        Sub::Contacts => contacts_screen(ui, contacts, &mut act, now),
-        Sub::Add => add_screen(ui, contacts, me, &mut act),
-        Sub::Privacy => privacy_screen(ui, contacts, &mut act),
-    }
+    let depth = match sub {
+        Sub::Requests | Sub::Contacts => 1,
+        Sub::Request(_) | Sub::Add | Sub::Privacy => 2,
+    };
+    crate::systems::motion::page_turn(
+        ui,
+        egui::Id::new("contacts_screen"),
+        sub.clone(),
+        depth,
+        |ui, sub| match &sub {
+            Sub::Requests => requests_screen(ui, contacts, &mut act, now),
+            Sub::Request(name) => request_screen(ui, contacts, chat, name, &mut act, now),
+            Sub::Contacts => contacts_screen(ui, contacts, &mut act, now),
+            Sub::Add => add_screen(ui, contacts, me, &mut act),
+            Sub::Privacy => privacy_screen(ui, contacts, &mut act),
+        },
+    );
 
     if act.back && view.sub_root.as_ref() == Some(sub) {
         // Opened from the You page: back goes there.

@@ -419,15 +419,26 @@ pub fn render_admin_panel(
                 }
             }
             let page = admin.page.clone();
-            match page {
-                Page::Home => home(ui, &mut admin, &identity),
-                Page::Reports => reports_page(ui, &mut admin),
-                Page::Report(id) => report_page(ui, &mut admin, &identity, id),
-                Page::Accounts => accounts_page(ui, &mut admin),
-                Page::Account(id) => account_page(ui, &mut admin, &identity, &id),
-                Page::Roles => roles_page(ui, &mut admin),
-                Page::Claims => claims_page(ui, &mut admin),
-            }
+            let depth = match page {
+                Page::Home => 0,
+                Page::Reports | Page::Accounts | Page::Roles | Page::Claims => 1,
+                Page::Report(_) | Page::Account(_) => 2,
+            };
+            crate::systems::motion::page_turn(
+                ui,
+                egui::Id::new("admin_page"),
+                page,
+                depth,
+                |ui, page| match page {
+                    Page::Home => home(ui, &mut admin, &identity),
+                    Page::Reports => reports_page(ui, &mut admin),
+                    Page::Report(id) => report_page(ui, &mut admin, &identity, id),
+                    Page::Accounts => accounts_page(ui, &mut admin),
+                    Page::Account(id) => account_page(ui, &mut admin, &identity, &id),
+                    Page::Roles => roles_page(ui, &mut admin),
+                    Page::Claims => claims_page(ui, &mut admin),
+                },
+            );
         });
     // Every page's title carries the panel's close (`theme::back_title`).
     if !open || theme::take_panel_close(egui.ctx()) {
