@@ -45,9 +45,11 @@ use crate::systems::{icons, theme};
 // already has ink, surface, raised, accent, brand and cream at the same values.
 
 /// The hairline around a floating card and the segmented control: the midas
-/// hub's border ([`theme::PANEL_RIM`]). It was white at 14 % (`--gline`), the
+/// hub's border ([`theme::Palette::panel_rim`]). It was white at 14 % (`--gline`), the
 /// lit edge of a glass pane, until the chrome went solid on 2026-11-08.
-pub(crate) const GLINE: egui::Color32 = theme::PANEL_RIM;
+pub(crate) fn gline() -> egui::Color32 {
+    theme::p().panel_rim
+}
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
 ///
 /// Lifted from the mockup's muted set on 2026-10-04: on the ink screen those
@@ -63,10 +65,12 @@ const AVATAR_TONES: [egui::Color32; 6] = [
     egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
 ];
 /// A row's resting card, so the list reads as a stack of rounded rows on the
-/// screen rather than as text on black: [`theme::CARD`] on the [`theme::PANEL`]
-/// page under a [`theme::CARD_SHADOW`], the midas hub's card (2026-11-01; it
+/// screen rather than as text on black: [`theme::Palette::card`] on the [`theme::Palette::panel`]
+/// page under a [`theme::card_shadow()`], the midas hub's card (2026-11-01; it
 /// was white at 4 %, a lighter card on a lighter page and no shadow).
-pub(crate) const ROW_CARD: egui::Color32 = theme::CARD;
+pub(crate) fn row_card() -> egui::Color32 {
+    theme::p().card
+}
 
 /// Blend `base` toward `over` by `k`.
 pub(crate) fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
@@ -540,12 +544,23 @@ pub(crate) fn segmented(
     p.rect_filled(
         rect,
         egui::CornerRadius::same(theme::RADIUS),
-        if glass { theme::GLASS } else { theme::INK },
+        if glass {
+            theme::p().glass
+        } else {
+            theme::p().ink
+        },
     );
     p.rect_stroke(
         rect,
         egui::CornerRadius::same(theme::RADIUS),
-        egui::Stroke::new(1.0, if glass { GLINE } else { theme::SURFACE_HOVER }),
+        egui::Stroke::new(
+            1.0,
+            if glass {
+                gline()
+            } else {
+                theme::p().surface_hover
+            },
+        ),
         egui::StrokeKind::Inside,
     );
     let corner = egui::CornerRadius::same(theme::RADIUS - 3);
@@ -572,9 +587,9 @@ pub(crate) fn segmented(
             theme::paint_raised(&p, r, corner);
         }
         let ink = if selected || resp.hovered() {
-            theme::CREAM
+            theme::p().cream
         } else {
-            theme::TEXT_DIM
+            theme::p().text_dim
         };
         match seg {
             Seg::Community => {
@@ -637,13 +652,13 @@ pub(crate) fn top_bar(
         p.circle_stroke(
             rect.center(),
             disc / 2.0 + 1.0,
-            egui::Stroke::new(1.0, GLINE),
+            egui::Stroke::new(1.0, gline()),
         );
         let name = if me.is_empty() { "?" } else { me };
         paint_avatar(p, rect.center(), name, ChatKind::Private, disc - 2.0);
         if waiting {
             let c = rect.right_top() + egui::vec2(-4.0, 4.0);
-            p.circle_filled(c, 6.5, theme::PANEL);
+            p.circle_filled(c, 6.5, theme::p().panel);
             p.circle_filled(c, 5.0, theme::BRAND);
         }
         out.you = resp
@@ -666,10 +681,10 @@ pub(crate) fn circle_button(
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, hint));
     let (fill, ink) = match (hot, enabled) {
-        (true, true) => (theme::ACCENT, theme::INK),
-        (true, false) => (theme::ACCENT_MUTED, theme::TEXT_DIM),
-        (false, _) if resp.hovered() => (theme::SURFACE_HOVER, theme::TEXT),
-        (false, _) => (theme::SURFACE_RAISED, theme::TEXT),
+        (true, true) => (theme::p().accent, theme::p().on_accent),
+        (true, false) => (theme::p().accent_muted, theme::p().text_dim),
+        (false, _) if resp.hovered() => (theme::p().surface_hover, theme::p().text),
+        (false, _) => (theme::p().surface_raised, theme::p().text),
     };
     let p = ui.painter();
     p.circle_filled(rect.center(), 19.0, fill);
@@ -725,9 +740,9 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
     let p = ui.painter();
     let card = egui::CornerRadius::same(14);
     let fill = if resp.hovered() || resp.is_pointer_button_down_on() {
-        theme::SURFACE_HOVER
+        theme::p().surface_hover
     } else {
-        ROW_CARD
+        row_card()
     };
     theme::paint_card(p, rect, card, fill);
     // Something new in it: a brand stripe down the card's left edge, so an
@@ -765,7 +780,7 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
             egui::Align2::RIGHT_TOP,
             &row.time,
             egui::FontId::proportional(12.0),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         )
         .width()
             + 8.0
@@ -778,7 +793,7 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
             egui::Align2::LEFT_TOP,
             icons::LOCK,
             egui::FontId::proportional(13.0),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         );
         r.right() + 5.0
     } else {
@@ -789,7 +804,7 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
         egui::pos2(name_x, rect.top() + 14.0),
         &row.name,
         15.5,
-        theme::CREAM,
+        theme::p().cream,
         rect.right() - name_x - time_w - 8.0,
     );
     let (preview, tint) = if sending && row.kind == ChatKind::Private {
@@ -798,9 +813,9 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
         (
             row.preview.clone(),
             if row.unread > 0 {
-                theme::TEXT
+                theme::p().text
             } else {
-                theme::TEXT_DIM
+                theme::p().text_dim
             },
         )
     };
@@ -1091,7 +1106,7 @@ pub fn render_chats_panel(
     crate::systems::egui_manager::responsive_right_panel("chats_panel", compact, viewport_w, 360.0)
         .frame(
             egui::Frame::NONE
-                .fill(theme::PANEL)
+                .fill(theme::p().panel)
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
@@ -1331,7 +1346,7 @@ fn list_screen(
                         draft.latitude, draft.longitude
                     ))
                 ))
-                .color(theme::CREAM),
+                .color(theme::p().cream),
             );
             crate::systems::text_touch::field(
                 ui,
@@ -1353,8 +1368,8 @@ fn list_screen(
     // Search: the list as you type, by name or by the last line. On this
     // device only; it does not search message history.
     egui::Frame::NONE
-        .fill(theme::SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0, GLINE))
+        .fill(theme::p().surface_raised)
+        .stroke(egui::Stroke::new(1.0, gline()))
         .corner_radius(egui::CornerRadius::same(14))
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
@@ -1362,7 +1377,7 @@ fn list_screen(
                 ui.label(
                     egui::RichText::new(icons::SEARCH)
                         .size(17.0)
-                        .color(theme::LINE),
+                        .color(theme::p().line),
                 );
                 crate::systems::text_touch::field(
                     ui,
@@ -1567,9 +1582,9 @@ fn list_screen(
         fab,
         egui::CornerRadius::same(18),
         if resp.hovered() {
-            theme::CREAM
+            theme::p().cream
         } else {
-            theme::ACCENT
+            theme::p().accent
         },
     );
     p.text(
@@ -1577,7 +1592,12 @@ fn list_screen(
         egui::Align2::CENTER_CENTER,
         icons::ADD,
         egui::FontId::proportional(26.0),
-        theme::INK,
+        // On the hovered cream plate, the ink; on the accent, its own ink.
+        if resp.hovered() {
+            theme::p().ink
+        } else {
+            theme::p().on_accent
+        },
     );
     if resp.clicked() {
         view.new_chat = true;
@@ -1604,9 +1624,9 @@ fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
         rect,
         card,
         if resp.hovered() || resp.is_pointer_button_down_on() {
-            theme::SURFACE_HOVER
+            theme::p().surface_hover
         } else {
-            ROW_CARD
+            row_card()
         },
     );
     if row.kind == ChatKind::Here {
@@ -1615,7 +1635,7 @@ fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
     p.rect_stroke(
         rect,
         card,
-        egui::Stroke::new(1.0, GLINE),
+        egui::Stroke::new(1.0, gline()),
         egui::StrokeKind::Inside,
     );
     let face = egui::pos2(rect.left() + 12.0 + 14.0, rect.top() + 12.0 + 14.0);
@@ -1645,7 +1665,7 @@ fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
         egui::pos2(face.x + 22.0, face.y - 9.5),
         &row.name,
         14.5,
-        theme::CREAM,
+        theme::p().cream,
         name_room,
     );
     paint_line(
@@ -1653,7 +1673,7 @@ fn public_tile(ui: &mut egui::Ui, row: &Row, w: f32) -> egui::Response {
         egui::pos2(rect.left() + 12.0, rect.bottom() - 24.0),
         &row.preview,
         12.5,
-        theme::TEXT_DIM,
+        theme::p().text_dim,
         rect.width() - 24.0,
     );
     resp
@@ -1675,7 +1695,7 @@ fn new_choice(ui: &mut egui::Ui, icon: &str, title: &str, line: &str, brand: boo
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
     let inner = egui::Frame::NONE
         .fill(if hovered {
-            theme::SURFACE_HOVER
+            theme::p().surface_hover
         } else {
             egui::Color32::TRANSPARENT
         })
@@ -1686,21 +1706,34 @@ fn new_choice(ui: &mut egui::Ui, icon: &str, title: &str, line: &str, brand: boo
             ui.horizontal(|ui| {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, egui::CornerRadius::same(12), theme::SURFACE_RAISED);
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::same(12),
+                    theme::p().surface_raised,
+                );
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     icon,
                     egui::FontId::proportional(20.0),
-                    if brand { theme::BRAND } else { theme::ACCENT },
+                    if brand {
+                        theme::BRAND
+                    } else {
+                        theme::p().accent
+                    },
                 );
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(egui::RichText::new(title).size(15.0).color(theme::CREAM));
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(15.0)
+                            .color(theme::p().cream),
+                    );
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(line).size(12.5).color(theme::TEXT_DIM),
+                            egui::RichText::new(line)
+                                .size(12.5)
+                                .color(theme::p().text_dim),
                         )
                         .wrap(),
                     );
@@ -1773,8 +1806,8 @@ fn new_sheet(
                         egui::Sense::click(),
                     );
                     let sheet = egui::Frame::NONE
-                        .fill(theme::SURFACE)
-                        .stroke(egui::Stroke::new(1.0, GLINE))
+                        .fill(theme::p().surface)
+                        .stroke(egui::Stroke::new(1.0, gline()))
                         .corner_radius(egui::CornerRadius {
                             nw: 24,
                             ne: 24,
@@ -1799,7 +1832,7 @@ fn new_sheet(
                                     egui::vec2(40.0, 5.0),
                                 ),
                                 egui::CornerRadius::same(3),
-                                theme::LINE,
+                                theme::p().line,
                             );
                             new_sheet_body(ui, chat, kind, act);
                         });
@@ -1817,7 +1850,11 @@ fn new_sheet(
 fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, act: &mut Actions) {
     match *kind {
         NewKind::Choose => {
-            ui.label(egui::RichText::new("New").size(18.0).color(theme::CREAM));
+            ui.label(
+                egui::RichText::new("New")
+                    .size(18.0)
+                    .color(theme::p().cream),
+            );
             ui.add_space(6.0);
             if new_choice(
                 ui,
@@ -1865,7 +1902,7 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
             ui.label(
                 egui::RichText::new("Message a person")
                     .size(18.0)
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             ui.add_space(4.0);
             let field = crate::systems::text_touch::field(
@@ -1897,7 +1934,7 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
             ui.label(
                 egui::RichText::new("Start a group")
                     .size(18.0)
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             ui.add_space(4.0);
             crate::systems::text_touch::field(
@@ -1962,11 +1999,11 @@ fn you_screen(
                 // ways to make one (`systems::faces`).
                 crate::systems::faces::you_picture(ui, faces, me, &mut act.panel);
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new(me).size(22.0).color(theme::CREAM));
+                ui.label(egui::RichText::new(me).size(22.0).color(theme::p().cream));
                 ui.label(
                     egui::RichText::new(address)
                         .size(13.5)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 ui.add_space(12.0);
                 // The two pills, centred as a pair.
@@ -1975,10 +2012,10 @@ fn you_screen(
                         egui::Button::new(
                             egui::RichText::new(format!("{icon}  {text}"))
                                 .size(13.5)
-                                .color(theme::TEXT),
+                                .color(theme::p().text),
                         )
-                        .fill(theme::SURFACE_RAISED)
-                        .stroke(egui::Stroke::new(1.0, GLINE))
+                        .fill(theme::p().surface_raised)
+                        .stroke(egui::Stroke::new(1.0, gline()))
                         .corner_radius(egui::CornerRadius::same(12))
                         .min_size(egui::vec2(0.0, 36.0)),
                     )
@@ -2007,7 +2044,7 @@ fn you_screen(
                     "Contacts",
                     None,
                     theme::RowEnd::Count(contacts.contacts.len()),
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
                 {
@@ -2035,7 +2072,7 @@ fn you_screen(
                         contacts.settings.policy,
                     )),
                     theme::RowEnd::Chevron,
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
                 {
@@ -2050,7 +2087,7 @@ fn you_screen(
                     "Settings",
                     None,
                     theme::RowEnd::Chevron,
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
                 {
@@ -2064,7 +2101,7 @@ fn you_screen(
                         RightPanel::Admin.label(),
                         None,
                         theme::RowEnd::Badge(waiting),
-                        theme::WARN,
+                        theme::p().warn,
                     )
                     .clicked()
                     {
@@ -2077,7 +2114,7 @@ fn you_screen(
                     "Sign out",
                     None,
                     theme::RowEnd::Nothing,
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
                 {
@@ -2108,7 +2145,7 @@ fn chat_header(
             egui::Label::new(
                 egui::RichText::new(icons::CHEVRON_LEFT)
                     .size(26.0)
-                    .color(theme::TEXT),
+                    .color(theme::p().text),
             )
             .sense(egui::Sense::click()),
         );
@@ -2123,7 +2160,7 @@ fn chat_header(
         avatar(ui, name, kind, 34.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(egui::RichText::new(name).size(16.0).color(theme::CREAM));
+            ui.label(egui::RichText::new(name).size(16.0).color(theme::p().cream));
             // Somebody sharing where their phone is says so under the name,
             // in the blue that means only that.
             let theirs: Vec<_> = chat.locations.iter().filter(|l| l.channel == key).collect();
@@ -2145,7 +2182,7 @@ fn chat_header(
                         egui::Label::new(
                             egui::RichText::new(format!("{} {}", t.sub, icons::CHEVRON_RIGHT))
                                 .size(12.0)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         )
                         .sense(egui::Sense::click()),
                     )
@@ -2158,7 +2195,7 @@ fn chat_header(
                 ui.label(
                     egui::RichText::new(subtitle(kind))
                         .size(12.0)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             }
         });
@@ -2247,7 +2284,7 @@ fn chat_screen(
     ui.painter().hline(
         (full.left() - 12.0)..=(full.right() + 12.0),
         y,
-        egui::Stroke::new(1.0, GLINE),
+        egui::Stroke::new(1.0, gline()),
     );
     ui.add_space(8.0);
     // A chat that is still your request to somebody holds one message until
@@ -2273,14 +2310,14 @@ fn chat_screen(
     // can take every point of height that is left and scroll. The band is the
     // design's composer: ink, a hairline on top, "+", the field, send.
     egui::Panel::bottom(egui::Id::new("chats_composer_band"))
-        .frame(egui::Frame::NONE.fill(theme::PANEL))
+        .frame(egui::Frame::NONE.fill(theme::p().panel))
         .show_separator_line(false)
         .show(ui, |ui| {
             let top = ui.max_rect().top();
             ui.painter().hline(
                 (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
                 top,
-                egui::Stroke::new(1.0, GLINE),
+                egui::Stroke::new(1.0, gline()),
             );
             ui.add_space(10.0);
             let sending = pictures.sending(key);
@@ -2294,7 +2331,7 @@ fn chat_screen(
                             format!("Sending {sending} pictures…")
                         })
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                     );
                 });
             }
@@ -2305,7 +2342,7 @@ fn chat_screen(
                 ui.label(
                     egui::RichText::new(format!("Could not get a picture: {why}"))
                         .size(theme::SIZE_SUB)
-                        .color(theme::WARN),
+                        .color(theme::p().warn),
                 );
             }
             composer(ui, chat, view, key, kind_of(key), act, now);
@@ -2447,14 +2484,14 @@ fn meeting_card(
     let w = (ui.available_width() * 0.86).clamp(220.0, 360.0);
     let frame = |live: bool| {
         egui::Frame::NONE
-            .fill(theme::SURFACE_RAISED)
+            .fill(theme::p().surface_raised)
             .corner_radius(egui::CornerRadius::same(18))
             .stroke(egui::Stroke::new(
                 if live { 2.0 } else { 1.0 },
                 if live {
-                    theme::ACCENT
+                    theme::p().accent
                 } else {
-                    theme::OVERLAY_LINE
+                    theme::p().overlay_line
                 },
             ))
             .inner_margin(egui::Margin::same(12))
@@ -2464,7 +2501,7 @@ fn meeting_card(
             egui::RichText::new(format!("{icon}  {}", text.to_uppercase()))
                 .size(11.0)
                 .strong()
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     };
     let title = |ui: &mut egui::Ui, text: &str| {
@@ -2472,7 +2509,7 @@ fn meeting_card(
             egui::RichText::new(text)
                 .size(15.5)
                 .strong()
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
     };
     match meeting {
@@ -2515,7 +2552,7 @@ fn meeting_card(
                 ui.label(
                     egui::RichText::new(format!("{}–{}", clock_time(date), clock_time(end)))
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 if let Some(rule) = crate::systems::calendar::rule_words(plan) {
                     let next = if date != plan.start_ms || plan.next_date(now, offset).is_some() {
@@ -2526,11 +2563,11 @@ fn meeting_card(
                     ui.label(
                         egui::RichText::new(format!("{rule}{next}"))
                             .size(theme::SIZE_SUB)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                 }
                 if let Some(text) = &plan.text {
-                    ui.label(egui::RichText::new(text).size(13.0).color(theme::TEXT));
+                    ui.label(egui::RichText::new(text).size(13.0).color(theme::p().text));
                 }
                 for (i, item) in plan.agenda.iter().enumerate() {
                     let minutes = if item.minutes > 0 {
@@ -2541,7 +2578,7 @@ fn meeting_card(
                     ui.label(
                         egui::RichText::new(format!("{}. {}{minutes}", i + 1, item.name))
                             .size(13.0)
-                            .color(theme::TEXT),
+                            .color(theme::p().text),
                     );
                 }
                 if !going.is_empty() {
@@ -2549,7 +2586,7 @@ fn meeting_card(
                     ui.label(
                         egui::RichText::new(format!("{} going", going.join(", ")))
                             .size(12.5)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                 }
                 ui.add_space(8.0);
@@ -2654,7 +2691,7 @@ fn meeting_card(
                 ui.label(
                     egui::RichText::new(format!("{}  {who} {text}", icons::EVENT))
                         .size(12.0)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             });
         }
@@ -2705,13 +2742,13 @@ fn meeting_card(
                     p.rect(
                         rect,
                         egui::CornerRadius::same(10),
-                        theme::SURFACE,
+                        theme::p().surface,
                         egui::Stroke::new(
                             1.0,
                             if picked {
-                                theme::ACCENT
+                                theme::p().accent
                             } else {
-                                theme::OVERLAY_LINE
+                                theme::p().overlay_line
                             },
                         ),
                         egui::StrokeKind::Inside,
@@ -2727,7 +2764,7 @@ fn meeting_card(
                         p.rect_filled(
                             bar,
                             egui::CornerRadius::same(9),
-                            theme::ACCENT.gamma_multiply(0.22),
+                            theme::p().accent.gamma_multiply(0.22),
                         );
                     }
                     let mark = if picked {
@@ -2740,14 +2777,14 @@ fn meeting_card(
                         egui::Align2::LEFT_CENTER,
                         format!("{mark}{option}"),
                         egui::FontId::proportional(13.5),
-                        theme::TEXT,
+                        theme::p().text,
                     );
                     p.text(
                         rect.right_center() - egui::vec2(12.0, 0.0),
                         egui::Align2::RIGHT_CENTER,
                         who.len().to_string(),
                         egui::FontId::proportional(13.0),
-                        theme::TEXT_DIM,
+                        theme::p().text_dim,
                     );
                     if response.clicked() {
                         let choices = if poll.multiple {
@@ -2779,7 +2816,7 @@ fn meeting_card(
                         if voters == 1 { "vote" } else { "votes" }
                     ))
                     .size(12.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
             });
         }
@@ -2787,9 +2824,9 @@ fn meeting_card(
             ui.horizontal_wrapped(|ui| {
                 ui.set_max_width(w);
                 let tint = match kind {
-                    NoteKind::Decision => theme::ACCENT,
-                    NoteKind::Action => theme::WARN,
-                    NoteKind::Note => theme::TEXT_DIM,
+                    NoteKind::Decision => theme::p().accent,
+                    NoteKind::Action => theme::p().warn,
+                    NoteKind::Note => theme::p().text_dim,
                 };
                 ui.label(
                     egui::RichText::new(kind.label().to_uppercase())
@@ -2800,7 +2837,7 @@ fn meeting_card(
                 ui.label(
                     egui::RichText::new(format!("{text} · {}", who(line)))
                         .size(13.5)
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                 );
             });
         }
@@ -2825,7 +2862,7 @@ fn meeting_card(
                         r.people.join(", ")
                     ))
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
                 for kind in [NoteKind::Decision, NoteKind::Action, NoteKind::Note] {
                     let notes: Vec<_> = r.notes.iter().filter(|n| n.kind == kind).collect();
@@ -2837,13 +2874,13 @@ fn meeting_card(
                         egui::RichText::new(format!("{}s", kind.label()))
                             .size(12.5)
                             .strong()
-                            .color(theme::CREAM),
+                            .color(theme::p().cream),
                     );
                     for n in notes {
                         ui.label(
                             egui::RichText::new(format!("•  {}", n.text))
                                 .size(13.0)
-                                .color(theme::TEXT),
+                                .color(theme::p().text),
                         );
                     }
                 }
@@ -2853,13 +2890,13 @@ fn meeting_card(
                         egui::RichText::new(&p.question)
                             .size(12.5)
                             .strong()
-                            .color(theme::CREAM),
+                            .color(theme::p().cream),
                     );
                     for (o, n) in &p.results {
                         ui.label(
                             egui::RichText::new(format!("{o}: {n}"))
                                 .size(13.0)
-                                .color(theme::TEXT),
+                                .color(theme::p().text),
                         );
                     }
                 }
@@ -2875,7 +2912,7 @@ fn meeting_card(
                             ui.label(
                                 egui::RichText::new(format!("{who}: {text}"))
                                     .size(12.5)
-                                    .color(theme::TEXT),
+                                    .color(theme::p().text),
                             );
                         }
                     });
@@ -2991,9 +3028,9 @@ fn meetup_card(
     };
     let w = (ui.available_width() * 0.86).clamp(220.0, 330.0);
     egui::Frame::NONE
-        .fill(theme::SURFACE_RAISED)
+        .fill(theme::p().surface_raised)
         .corner_radius(egui::CornerRadius::same(18))
-        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(w);
@@ -3001,21 +3038,21 @@ fn meetup_card(
                 egui::RichText::new(format!("{}  Meet at {place}", icons::FLAG))
                     .size(15.5)
                     .strong()
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             ui.label(
                 egui::RichText::new(format!("{when} · {by}"))
                     .size(12.5)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add_space(6.0);
             for (name, status) in &people {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(name).size(13.0).color(theme::TEXT));
+                    ui.label(egui::RichText::new(name).size(13.0).color(theme::p().text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(status).size(12.0).color(
                             if status == "going" {
-                                theme::TEXT_DIM
+                                theme::p().text_dim
                             } else {
                                 theme::REAL_LOCATION
                             },
@@ -3048,7 +3085,7 @@ fn meetup_card(
                                 from.to_lowercase()
                             ))
                             .size(12.5)
-                            .color(theme::TEXT),
+                            .color(theme::p().text),
                         );
                     });
             }
@@ -3115,7 +3152,7 @@ fn meetup_draft(ui: &mut egui::Ui, chat: &ChatState, key: &str, now: u64, act: &
         ui.label(
             egui::RichText::new(format!("{}  Meet at {place}", icons::FLAG))
                 .size(15.0)
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
         let halfway = chat.locations.iter().any(|l| l.channel == key);
         theme::note(
@@ -3136,7 +3173,7 @@ fn meetup_draft(ui: &mut egui::Ui, chat: &ChatState, key: &str, now: u64, act: &
                     now,
                     local_offset_s(m.start_ms),
                 ))
-                .color(theme::TEXT),
+                .color(theme::p().text),
             );
             if theme::action_button(ui, "+15 min").clicked() {
                 act.meetup_shift = Some(15);
@@ -3181,7 +3218,7 @@ fn day_chip(ui: &mut egui::Ui, text: &str) {
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(11.5),
-        theme::TEXT_DIM,
+        theme::p().text_dim,
     );
     let size = galley.size() + egui::vec2(20.0, 6.0);
     let (row, _) = ui.allocate_exact_size(
@@ -3189,10 +3226,16 @@ fn day_chip(ui: &mut egui::Ui, text: &str) {
         egui::Sense::hover(),
     );
     let pill = egui::Rect::from_center_size(row.center(), size);
-    ui.painter()
-        .rect_filled(pill, egui::CornerRadius::same(10), theme::SURFACE_RAISED);
-    ui.painter()
-        .galley(pill.center() - galley.size() / 2.0, galley, theme::TEXT_DIM);
+    ui.painter().rect_filled(
+        pill,
+        egui::CornerRadius::same(10),
+        theme::p().surface_raised,
+    );
+    ui.painter().galley(
+        pill.center() - galley.size() / 2.0,
+        galley,
+        theme::p().text_dim,
+    );
     ui.add_space(4.0);
 }
 
@@ -3227,7 +3270,7 @@ fn bubble(
                 egui::RichText::new("Message removed by a moderator")
                     .italics()
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         });
         return;
@@ -3243,12 +3286,16 @@ fn bubble(
     // on the speaker's side tucked in.
     let (fill, ink, dim) = if mine {
         (
-            theme::ACCENT,
-            theme::INK,
+            theme::p().accent,
+            theme::p().on_accent,
             egui::Color32::from_rgb(0x4A, 0x55, 0x5A),
         )
     } else {
-        (theme::SURFACE_RAISED, theme::TEXT, theme::TEXT_DIM)
+        (
+            theme::p().surface_raised,
+            theme::p().text,
+            theme::p().text_dim,
+        )
     };
     let corners = if mine {
         egui::CornerRadius {
@@ -3276,7 +3323,7 @@ fn bubble(
                     egui::RichText::new(&line.sender)
                         .size(theme::SIZE_SUB)
                         .strong()
-                        .color(theme::ACCENT_TEXT),
+                        .color(theme::p().accent_text),
                 );
             });
         }
@@ -3370,7 +3417,7 @@ fn bubble(
                                 egui::RichText::new(who)
                                     .size(theme::SIZE_SUB)
                                     .strong()
-                                    .color(theme::ACCENT_TEXT),
+                                    .color(theme::p().accent_text),
                             )
                             .sense(egui::Sense::click()),
                         );
@@ -3490,18 +3537,18 @@ fn picture_tile(
         }
         Shown::Loading => {
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            ui.painter().rect_filled(rect, 10.0, theme::SURFACE);
+            ui.painter().rect_filled(rect, 10.0, theme::p().surface);
             ui.put(rect, egui::Spinner::new());
         }
         Shown::Failed(_) => {
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            ui.painter().rect_filled(rect, 10.0, theme::SURFACE);
+            ui.painter().rect_filled(rect, 10.0, theme::p().surface);
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "This picture could not be opened",
                 egui::FontId::proportional(12.0),
-                theme::TEXT_DIM,
+                theme::p().text_dim,
             );
         }
     }
@@ -3548,7 +3595,7 @@ fn picture_viewer(
                 ui.label(
                     egui::RichText::new(format!("This picture could not be opened: {why}"))
                         .size(13.0)
-                        .color(theme::WARN),
+                        .color(theme::p().warn),
                 );
             }
         });
@@ -3633,14 +3680,14 @@ fn point_card(
     let title_g = p.layout(
         title,
         egui::FontId::proportional(14.5),
-        theme::CREAM,
+        theme::p().cream,
         w - 24.0,
     );
     let sub_g = sub.map(|s| {
         p.layout(
             s,
             egui::FontId::proportional(12.0),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
             w - 24.0,
         )
     });
@@ -3671,7 +3718,7 @@ fn point_card(
             se: r,
         }
     };
-    p.rect_filled(rect, corners, theme::SURFACE_RAISED);
+    p.rect_filled(rect, corners, theme::p().surface_raised);
 
     // The picture. A point carries the camera and no image yet, so this is
     // where the image goes rather than an invented one: a few faint streets
@@ -3704,21 +3751,21 @@ fn point_card(
     );
     // `.pt .n`: the number, cream on the picture's top left.
     let badge = egui::pos2(img.left() + 8.0 + 12.0, img.top() + 8.0 + 12.0);
-    p.circle_filled(badge, 12.0, theme::CREAM);
+    p.circle_filled(badge, 12.0, theme::p().cream);
     p.text(
         badge,
         egui::Align2::CENTER_CENTER,
         number.to_string(),
         egui::FontId::proportional(13.0),
-        theme::INK,
+        theme::p().ink,
     );
 
     let mut y = img.bottom() + 8.0;
     let th = title_g.size().y;
-    p.galley(egui::pos2(rect.left() + 12.0, y), title_g, theme::CREAM);
+    p.galley(egui::pos2(rect.left() + 12.0, y), title_g, theme::p().cream);
     y += th + 2.0;
     if let Some(g) = sub_g {
-        p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::TEXT_DIM);
+        p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::p().text_dim);
     }
     // The first mockup's "Open in world" (`.card .go`) in brand orange, and
     // beside it Route, in chat-world v4's button row (`.btnrow`): a point is a
@@ -3758,17 +3805,17 @@ fn point_card(
         route,
         egui::CornerRadius::same(10),
         if on_route {
-            theme::SURFACE_HOVER.gamma_multiply(1.4)
+            theme::p().surface_hover.gamma_multiply(1.4)
         } else {
-            theme::SURFACE_HOVER
+            theme::p().surface_hover
         },
     );
     centred_row(
         &p,
         route,
         &[
-            (icons::ROUTE.to_string(), 15.0, theme::TEXT),
-            ("Route".to_string(), 13.5, theme::TEXT),
+            (icons::ROUTE.to_string(), 15.0, theme::p().text),
+            ("Route".to_string(), 13.5, theme::p().text),
         ],
         6.0,
     );
@@ -3776,7 +3823,7 @@ fn point_card(
         p.rect_stroke(
             rect,
             corners,
-            egui::Stroke::new(1.5, theme::ACCENT),
+            egui::Stroke::new(1.5, theme::p().accent),
             egui::StrokeKind::Inside,
         );
     }
@@ -3961,7 +4008,11 @@ fn attach_menu(
                         if theme::round_button(ui, icon, hint, *on).clicked() {
                             picked = Some(*label);
                         }
-                        ui.label(egui::RichText::new(*label).size(12.0).color(theme::TEXT));
+                        ui.label(
+                            egui::RichText::new(*label)
+                                .size(12.0)
+                                .color(theme::p().text),
+                        );
                     },
                 );
             }
@@ -3992,7 +4043,7 @@ fn attach_menu(
     }
     if view.share_open && !sharing {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("for").color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new("for").color(theme::p().text_dim));
             for (label, minutes) in [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)] {
                 if theme::action_button(ui, label).clicked() {
                     act.share = Some((key.to_string(), minutes * 60_000));
@@ -4044,7 +4095,7 @@ fn repeat_fields(
     ui.label(
         egui::RichText::new("Repeats")
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.horizontal_wrapped(|ui| {
         for (label, rule) in [
@@ -4069,7 +4120,7 @@ fn repeat_fields(
         ui.label(
             egui::RichText::new("Until")
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         let last = dates.len().saturating_sub(1);
         if theme::chip(ui, "No end", at.is_none()).clicked() {
@@ -4092,7 +4143,7 @@ fn repeat_fields(
                         crate::systems::calendar::short_day(dates[i]),
                         i + 1
                     ))
-                    .color(theme::TEXT),
+                    .color(theme::p().text),
                 );
                 if theme::action_button(ui, "+1").clicked() {
                     *until_ms = dates.get((i + 1).min(last)).copied();
@@ -4132,7 +4183,7 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
         ui.label(
             egui::RichText::new(format!("{icon}  {title}"))
                 .size(15.0)
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
         theme::note(ui, note);
         ui.add_space(4.0);
@@ -4162,7 +4213,7 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
                             now,
                             local_offset_s(*start_ms),
                         ))
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                     );
                     for (label, shift) in [("+15 min", 15i64), ("+1 day", 1440)] {
                         if theme::action_button(ui, label).clicked() {
@@ -4257,7 +4308,7 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
             let ready = !view.draft.trim().is_empty();
             let send = circle_button(ui, icons::SEND, true, ready, "Send");
             let field = egui::Frame::NONE
-                .fill(theme::SURFACE_RAISED)
+                .fill(theme::p().surface_raised)
                 .corner_radius(egui::CornerRadius::same(20))
                 .inner_margin(egui::Margin::symmetric(14, 9))
                 .show(ui, |ui| {
@@ -4271,7 +4322,7 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
                                     egui::Label::new(
                                         egui::RichText::new(icons::PIN)
                                             .size(18.0)
-                                            .color(theme::TEXT_DIM),
+                                            .color(theme::p().text_dim),
                                     )
                                     .sense(egui::Sense::click()),
                                 );
@@ -4290,9 +4341,11 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
                                     .id(egui::Id::new(id))
                                     .frame(egui::Frame::NONE)
                                     .font(egui::FontId::proportional(14.5))
-                                    .text_color(theme::TEXT)
+                                    .text_color(theme::p().text)
                                     .desired_width(ui.available_width())
-                                    .hint_text(egui::RichText::new("Message").color(theme::LINE)),
+                                    .hint_text(
+                                        egui::RichText::new("Message").color(theme::p().line),
+                                    ),
                             )
                         })
                         .inner
@@ -4317,8 +4370,8 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
 /// A raised block inside the ink panel, for the forms and menus.
 pub(crate) fn raised_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(theme::SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0, GLINE))
+        .fill(theme::p().surface_raised)
+        .stroke(egui::Stroke::new(1.0, gline()))
         .corner_radius(egui::CornerRadius::same(14))
         .inner_margin(egui::Margin::same(12))
 }
@@ -4327,8 +4380,8 @@ pub(crate) fn raised_frame() -> egui::Frame {
 /// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
 pub(crate) fn glass_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(theme::GLASS)
-        .stroke(egui::Stroke::new(1.0, GLINE))
+        .fill(theme::p().glass)
+        .stroke(egui::Stroke::new(1.0, gline()))
         .corner_radius(egui::CornerRadius::same(20))
         .inner_margin(egui::Margin::symmetric(12, 10))
 }
@@ -4854,7 +4907,7 @@ pub fn render_chat_world(
                         ui.label(
                             egui::RichText::new(&name)
                                 .size(theme::SIZE_BODY)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         );
                         if segmented(ui, "Chat", 170.0, Seg::World, 0, false)
                             == Some(Seg::Community)

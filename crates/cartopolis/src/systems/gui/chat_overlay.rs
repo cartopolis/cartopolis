@@ -536,8 +536,8 @@ fn bubble(
             // also appears as read as one person.
             let tone = crate::systems::chats::tone_for(speaker);
             let frame = egui::Frame::NONE
-                .fill(theme::GLASS)
-                .stroke(egui::Stroke::new(1.0, crate::systems::chats::GLINE))
+                .fill(theme::p().glass)
+                .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(11, 7))
                 .shadow(lift())
@@ -551,7 +551,9 @@ fn bubble(
                         for body in bodies {
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(body).size(BODY_PT).color(theme::CREAM),
+                                    egui::RichText::new(body)
+                                        .size(BODY_PT)
+                                        .color(theme::p().cream),
                                 )
                                 .wrap(),
                             );
@@ -567,7 +569,7 @@ fn bubble(
                     egui::pos2(tip.x + 7.0, r.bottom()),
                     tip,
                 ],
-                theme::GLASS,
+                theme::p().glass,
                 egui::Stroke::NONE,
             ));
         });
@@ -802,9 +804,9 @@ fn draw_run(
     let max_w = (column - FACE_PT - 8.0) * 0.86;
     let last = run.lines.len().saturating_sub(1);
     let (fill, ink) = if run.mine {
-        (theme::ACCENT, theme::INK)
+        (theme::p().accent, theme::p().on_accent)
     } else {
-        (theme::GLASS, theme::CREAM)
+        (theme::p().glass, theme::p().cream)
     };
     let tone = chats::tone_for(&run.sender);
     let bubbles = |ui: &mut egui::Ui, hit: &mut RunHit| {
@@ -833,7 +835,7 @@ fn draw_run(
                 .stroke(if run.mine {
                     egui::Stroke::NONE
                 } else {
-                    egui::Stroke::new(1.0, chats::GLINE)
+                    egui::Stroke::new(1.0, chats::gline())
                 })
                 .corner_radius(corners)
                 .inner_margin(egui::Margin::symmetric(12, 7))
@@ -869,7 +871,7 @@ fn draw_run(
                     egui::RichText::new("You")
                         .size(NAME_PT)
                         .strong()
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             } else {
                 // Their colour, lifted toward white so it reads on glass and on
@@ -902,7 +904,7 @@ fn draw_run(
                 ui.label(
                     egui::RichText::new(format!("· {tag}"))
                         .size(NAME_PT)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             }
         });
@@ -1084,13 +1086,14 @@ pub fn render_chat_composer(
                         if scope_count > 1 {
                             // A small swap mark on the disc: it is a switch.
                             let c = rect.right_bottom() - egui::vec2(5.0, 5.0);
-                            ui.painter().circle_filled(c, 8.0, theme::SURFACE_RAISED);
+                            ui.painter()
+                                .circle_filled(c, 8.0, theme::p().surface_raised);
                             ui.painter().text(
                                 c,
                                 egui::Align2::CENTER_CENTER,
                                 icons::SWAP,
                                 egui::FontId::proportional(11.0),
-                                theme::CREAM,
+                                theme::p().cream,
                             );
                         }
                         if scope
@@ -1125,7 +1128,7 @@ pub fn render_chat_composer(
                                 "Send",
                             );
                             let field = egui::Frame::NONE
-                                .fill(theme::SURFACE_RAISED)
+                                .fill(theme::p().surface_raised)
                                 .corner_radius(egui::CornerRadius::same(19))
                                 .inner_margin(egui::Margin::symmetric(14, 9))
                                 .show(ui, |ui| {
@@ -1144,9 +1147,9 @@ pub fn render_chat_composer(
                                                                 .size(NAME_PT)
                                                                 .strong()
                                                                 .color(if shout {
-                                                                    theme::ACCENT
+                                                                    theme::p().accent
                                                                 } else {
-                                                                    theme::TEXT_DIM
+                                                                    theme::p().text_dim
                                                                 }),
                                                         )
                                                         .sense(egui::Sense::click()),
@@ -1170,11 +1173,11 @@ pub fn render_chat_composer(
                                                     .id(egui::Id::new("chat_composer_field"))
                                                     .frame(egui::Frame::NONE)
                                                     .font(egui::FontId::proportional(BODY_PT))
-                                                    .text_color(theme::TEXT)
+                                                    .text_color(theme::p().text)
                                                     .desired_width(ui.available_width())
                                                     .hint_text(
                                                         egui::RichText::new(hint.as_str())
-                                                            .color(theme::LINE),
+                                                            .color(theme::p().line),
                                                     ),
                                             )
                                         },

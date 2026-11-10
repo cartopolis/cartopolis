@@ -317,11 +317,15 @@ pub fn page(ui: &mut egui::Ui, tokens: &mut AccessTokens, may_elevate: bool) {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    egui::RichText::new(&t.label).size(14.5).color(theme::CREAM),
+                                    egui::RichText::new(&t.label)
+                                        .size(14.5)
+                                        .color(theme::p().cream),
                                 );
                                 if t.elevated {
                                     ui.label(
-                                        egui::RichText::new("admin").size(11.0).color(theme::WARN),
+                                        egui::RichText::new("admin")
+                                            .size(11.0)
+                                            .color(theme::p().warn),
                                     );
                                 }
                             });
@@ -339,7 +343,7 @@ pub fn page(ui: &mut egui::Ui, tokens: &mut AccessTokens, may_elevate: bool) {
                                     day(t.created_at)
                                 ))
                                 .size(12.0)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                             );
                             if theme::confirm_button(
                                 ui,
@@ -393,7 +397,7 @@ pub fn page(ui: &mut egui::Ui, tokens: &mut AccessTokens, may_elevate: bool) {
     ui.label(
         egui::RichText::new("Your password, to confirm")
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     theme::password_field(ui, &mut tokens.password);
     ui.add_space(6.0);

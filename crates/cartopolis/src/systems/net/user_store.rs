@@ -571,7 +571,7 @@ pub struct PlaceFolder {
 }
 
 /// Pin colour for a place that is in no folder: the brand accent (`#FD6012`,
-/// `theme::ACCENT`).
+/// `theme::Palette::accent`).
 ///
 /// It was the classic map red (`#E73E36`) — borrowed from every other map, and
 /// the only saturated colour in this app that belonged to nothing in it. Every

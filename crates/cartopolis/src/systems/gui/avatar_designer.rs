@@ -1608,7 +1608,7 @@ fn header(ui: &mut egui::Ui, label: &str, says: String) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(says).color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(says).color(theme::p().text_dim));
         });
     });
 }
@@ -1618,13 +1618,13 @@ fn ends_row(ui: &mut egui::Ui, ends: (&str, &str)) {
         ui.label(
             egui::RichText::new(ends.0)
                 .size(theme::SIZE_CHIP)
-                .color(theme::LINE),
+                .color(theme::p().line),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(ends.1)
                     .size(theme::SIZE_CHIP)
-                    .color(theme::LINE),
+                    .color(theme::p().line),
             );
         });
     });
@@ -1660,9 +1660,9 @@ fn disc(ui: &mut egui::Ui, c: [u8; 3], chosen: bool, hover: &str) -> egui::Respo
     let r = d * 0.5 - 4.0;
     p.circle_filled(centre, r, egui::Color32::from_rgb(c[0], c[1], c[2]));
     if chosen {
-        p.circle_stroke(centre, r + 2.5, egui::Stroke::new(2.0, theme::ACCENT));
+        p.circle_stroke(centre, r + 2.5, egui::Stroke::new(2.0, theme::p().accent));
     } else {
-        p.circle_stroke(centre, r, egui::Stroke::new(1.0, theme::LINE));
+        p.circle_stroke(centre, r, egui::Stroke::new(1.0, theme::p().line));
     }
     response.on_hover_text(hover)
 }

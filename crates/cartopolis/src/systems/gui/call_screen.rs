@@ -200,45 +200,49 @@ pub fn render_call_screen(
             .fixed_pos(egui::Pos2::ZERO)
             .order(egui::Order::Foreground)
             .show(&ctx, |ui| {
-                ui.set_clip_rect(full);
-                // Swallow every touch the controls do not take, so nothing
-                // reaches the map or the panels underneath.
-                let backdrop = ui.allocate_rect(full, egui::Sense::click());
-                let backdrop = theme::named(ui, backdrop, "Show or hide the controls");
-                ui.painter().rect_filled(full, 0.0, theme::INK);
-                match mode {
-                    Mode::Incoming(r) => {
-                        let chat_label = label_of(&r.group);
-                        if incoming_screen(ui, full, r, chat_label.as_deref(), &mut request) {
-                            calls.minimized = true;
+                theme::dark_here(|| {
+                    // Dark in both themes, as a phone's call screen is.
+                    theme::use_dark_visuals(ui);
+                    ui.set_clip_rect(full);
+                    // Swallow every touch the controls do not take, so nothing
+                    // reaches the map or the panels underneath.
+                    let backdrop = ui.allocate_rect(full, egui::Sense::click());
+                    let backdrop = theme::named(ui, backdrop, "Show or hide the controls");
+                    ui.painter().rect_filled(full, 0.0, theme::p().ink);
+                    match mode {
+                        Mode::Incoming(r) => {
+                            let chat_label = label_of(&r.group);
+                            if incoming_screen(ui, full, r, chat_label.as_deref(), &mut request) {
+                                calls.minimized = true;
+                            }
+                        }
+                        Mode::InCall => {
+                            if backdrop.clicked() {
+                                st.controls = !st.controls;
+                                st.touched = Some(web_time::Instant::now());
+                            }
+                            let group = active.clone().unwrap_or_default();
+                            let key = channel_key(&group);
+                            let lines = chat
+                                .channels
+                                .iter()
+                                .find(|c| c.key == key)
+                                .map_or(&[][..], |c| c.lines.as_slice());
+                            in_call_screen(
+                                ui,
+                                full,
+                                &mut calls,
+                                &mut st,
+                                label_of(&group),
+                                &me,
+                                lines,
+                                &mut request,
+                            );
                         }
                     }
-                    Mode::InCall => {
-                        if backdrop.clicked() {
-                            st.controls = !st.controls;
-                            st.touched = Some(web_time::Instant::now());
-                        }
-                        let group = active.clone().unwrap_or_default();
-                        let key = channel_key(&group);
-                        let lines = chat
-                            .channels
-                            .iter()
-                            .find(|c| c.key == key)
-                            .map_or(&[][..], |c| c.lines.as_slice());
-                        in_call_screen(
-                            ui,
-                            full,
-                            &mut calls,
-                            &mut st,
-                            label_of(&group),
-                            &me,
-                            lines,
-                            &mut request,
-                        );
-                    }
-                }
-                // Repaint for the pulse, the timer and the controls' fade.
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                    // Repaint for the pulse, the timer and the controls' fade.
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                })
             });
     }
 
@@ -495,7 +499,7 @@ fn fold_button(ui: &mut egui::Ui, full: egui::Rect) -> bool {
     if resp.hovered() {
         p.circle_filled(c, d * 0.5, egui::Color32::from_white_alpha(30));
     }
-    centred(p, c, icons::BACK, 24.0, theme::CREAM);
+    centred(p, c, icons::BACK, 24.0, theme::p().cream);
     resp.clicked()
 }
 
@@ -507,12 +511,12 @@ fn encrypted_line(p: &egui::Painter, pos: egui::Pos2, agent: bool) {
     let (text, colour) = if agent {
         (
             format!("{} AI agent · what you say goes to OpenAI", icons::LOCK),
-            theme::WARN,
+            theme::p().warn,
         )
     } else {
         (
             format!("{} End-to-end encrypted", icons::LOCK),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         )
     };
     centred(p, pos, &text, theme::SIZE_SUB, colour);
@@ -546,7 +550,13 @@ fn incoming_screen(
     }
     paint_avatar(&p, disc_c, &name, ChatKind::Private, disc);
     let below = disc_c.y + disc * 0.5;
-    centred(&p, egui::pos2(x, below + 40.0), &name, 28.0, theme::CREAM);
+    centred(
+        &p,
+        egui::pos2(x, below + 40.0),
+        &name,
+        28.0,
+        theme::p().cream,
+    );
     let what = match chat_label {
         Some(chat) if !chat.eq_ignore_ascii_case(&name) => format!("Incoming call · {chat}"),
         _ => "Incoming call".to_string(),
@@ -556,7 +566,7 @@ fn incoming_screen(
         egui::pos2(x, below + 72.0),
         &what,
         theme::SIZE_BODY,
-        theme::TEXT,
+        theme::p().text,
     );
     encrypted_line(&p, egui::pos2(x, below + 96.0), r.agent);
 
@@ -594,14 +604,14 @@ fn incoming_screen(
         egui::pos2(decline.x, label_y),
         "Decline",
         theme::SIZE_SUB,
-        theme::TEXT,
+        theme::p().text,
     );
     centred(
         &p,
         egui::pos2(answer.x, label_y),
         "Answer",
         theme::SIZE_SUB,
-        theme::TEXT,
+        theme::p().text,
     );
     folded
 }
@@ -798,7 +808,7 @@ fn in_call_screen(
             p.circle_stroke(
                 c,
                 disc * 0.5 + 6.0,
-                egui::Stroke::new(3.0, theme::ACCENT_RING),
+                egui::Stroke::new(3.0, theme::p().accent_ring),
             );
         }
         paint_avatar(&p, c, &title, ChatKind::Private, disc);
@@ -808,7 +818,7 @@ fn in_call_screen(
                 c + egui::vec2(disc * 0.42, disc * 0.36),
                 r,
                 40.0,
-                theme::CREAM,
+                theme::p().cream,
             );
         }
         centred(
@@ -816,14 +826,14 @@ fn in_call_screen(
             egui::pos2(x, c.y + disc * 0.5 + 40.0),
             &title,
             28.0,
-            theme::CREAM,
+            theme::p().cream,
         );
         centred(
             &p,
             egui::pos2(x, c.y + disc * 0.5 + 72.0),
             &status,
             theme::SIZE_BODY,
-            theme::TEXT,
+            theme::p().text,
         );
     }
 
@@ -850,8 +860,8 @@ fn in_call_screen(
         );
         if calls.muted {
             let badge = egui::pos2(rect.min.x + 16.0, rect.max.y - 16.0);
-            p.circle_filled(badge, 12.0, theme::CREAM);
-            centred(&p, badge, icons::MIC_OFF, 14.0, theme::INK);
+            p.circle_filled(badge, 12.0, theme::p().cream);
+            centred(&p, badge, icons::MIC_OFF, 14.0, theme::p().ink);
         }
         if let Some(r) = calls.reaction_of(SELF_TILE) {
             centred(
@@ -859,7 +869,7 @@ fn in_call_screen(
                 egui::pos2(rect.max.x - 18.0, rect.max.y - 20.0),
                 &r.emoji,
                 26.0,
-                theme::CREAM,
+                theme::p().cream,
             );
         }
     }
@@ -897,14 +907,14 @@ fn in_call_screen(
                 egui::pos2(x, full.min.y + EDGE + 14.0),
                 &title,
                 theme::SIZE_HEADING,
-                theme::CREAM,
+                theme::p().cream,
             );
             centred(
                 &p,
                 egui::pos2(x, full.min.y + EDGE + 38.0),
                 &format!("{} {status}", icons::LOCK),
                 theme::SIZE_SUB,
-                theme::TEXT,
+                theme::p().text,
             );
         }
         dock(ui, full, calls, st, request);
@@ -918,7 +928,7 @@ fn in_call_screen(
         let galley = p.layout(
             text,
             egui::FontId::proportional(theme::SIZE_BODY + 2.0),
-            theme::CREAM,
+            theme::p().cream,
             width - 28.0,
         );
         let h = galley.size().y + 30.0;
@@ -941,9 +951,9 @@ fn in_call_screen(
             egui::Align2::LEFT_TOP,
             who,
             egui::FontId::proportional(theme::SIZE_TINY),
-            theme::ACCENT_RING,
+            theme::p().accent_ring,
         );
-        p.galley(rect.min + egui::vec2(14.0, 24.0), galley, theme::CREAM);
+        p.galley(rect.min + egui::vec2(14.0, 24.0), galley, theme::p().cream);
     }
 
     // ── A sheet over it all ────────────────────────────────────────────────
@@ -964,11 +974,12 @@ fn in_call_screen(
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::ZERO)
             .show(ui.ctx(), |ui| {
+                theme::use_dark_visuals(ui);
                 ui.set_width(width);
                 ui.set_max_height(max_h);
                 let frame = egui::Frame::NONE
-                    .fill(theme::SURFACE)
-                    .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+                    .fill(theme::p().surface)
+                    .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
                     .corner_radius(egui::CornerRadius {
                         nw: 22,
                         ne: 22,
@@ -989,7 +1000,7 @@ fn in_call_screen(
                     ui.painter().rect_filled(
                         egui::Rect::from_center_size(grab.center(), egui::vec2(38.0, 5.0)),
                         3.0,
-                        theme::TEXT_DIM,
+                        theme::p().text_dim,
                     );
                     egui::ScrollArea::vertical().max_height(max_h - 60.0).show(
                         ui,
@@ -1075,7 +1086,7 @@ fn name_chip(p: &egui::Painter, at: egui::Pos2, text: &str, bottom: bool) -> egu
     let galley = p.layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(theme::SIZE_SUB),
-        theme::CREAM,
+        theme::p().cream,
     );
     let pad = egui::vec2(8.0, 3.0);
     let size = galley.size() + 2.0 * pad;
@@ -1090,7 +1101,7 @@ fn name_chip(p: &egui::Painter, at: egui::Pos2, text: &str, bottom: bool) -> egu
         egui::CornerRadius::same(theme::RADIUS_PILL),
         egui::Color32::from_black_alpha(160),
     );
-    p.galley(chip.min + pad, galley, theme::CREAM);
+    p.galley(chip.min + pad, galley, theme::p().cream);
     chip
 }
 
@@ -1120,7 +1131,7 @@ fn tile_badges(p: &egui::Painter, rect: egui::Rect, person: &Person) {
         let galley = p.layout_no_wrap(
             text,
             egui::FontId::proportional(theme::SIZE_SUB),
-            theme::INK,
+            theme::p().ink,
         );
         let pad = egui::vec2(8.0, 3.0);
         let chip =
@@ -1128,9 +1139,9 @@ fn tile_badges(p: &egui::Painter, rect: egui::Rect, person: &Person) {
         p.rect_filled(
             chip,
             egui::CornerRadius::same(theme::RADIUS_PILL),
-            theme::WARN,
+            theme::p().warn,
         );
-        p.galley(chip.min + pad, galley, theme::INK);
+        p.galley(chip.min + pad, galley, theme::p().ink);
     }
     if let Some(r) = &person.reaction {
         centred(
@@ -1138,7 +1149,7 @@ fn tile_badges(p: &egui::Painter, rect: egui::Rect, person: &Person) {
             egui::pos2(rect.max.x - 26.0, rect.max.y - 30.0),
             r,
             34.0,
-            theme::CREAM,
+            theme::p().cream,
         );
     }
 }
@@ -1150,7 +1161,7 @@ fn grid_tile(ui: &egui::Ui, rect: egui::Rect, person: &Person) {
     match person.texture {
         Some(tex) => paint_picture(ui, rect, tex, radius, true),
         None => {
-            p.rect_filled(rect, radius, theme::SURFACE_RAISED);
+            p.rect_filled(rect, radius, theme::p().surface_raised);
             let d = (rect.width().min(rect.height()) * 0.42).clamp(32.0, 120.0);
             paint_avatar(p, rect.center(), &person.name, ChatKind::Private, d);
         }
@@ -1160,7 +1171,7 @@ fn grid_tile(ui: &egui::Ui, rect: egui::Rect, person: &Person) {
         p.rect_stroke(
             rect,
             radius,
-            egui::Stroke::new(3.0, theme::ACCENT_RING),
+            egui::Stroke::new(3.0, theme::p().accent_ring),
             egui::StrokeKind::Inside,
         );
     }
@@ -1181,7 +1192,7 @@ fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
         d * 0.5,
         egui::Color32::from_white_alpha(if resp.hovered() { 46 } else { 30 }),
     );
-    centred(p, c, icons::GROUP, 22.0, theme::CREAM);
+    centred(p, c, icons::GROUP, 22.0, theme::p().cream);
     let hands = calls.members().iter().filter(|m| m.hand.is_some()).count()
         + if calls.hosting() {
             calls.extras().waiting.len()
@@ -1189,9 +1200,13 @@ fn people_button(ui: &mut egui::Ui, full: egui::Rect, calls: &Calls) -> bool {
             0
         };
     let (count, fill, ink) = if hands > 0 {
-        (hands, theme::WARN, theme::INK)
+        (hands, theme::p().warn, theme::p().ink)
     } else {
-        (calls.members().len(), theme::SURFACE_RAISED, theme::CREAM)
+        (
+            calls.members().len(),
+            theme::p().surface_raised,
+            theme::p().cream,
+        )
     };
     if count > 0 {
         let b = c + egui::vec2(d * 0.38, -d * 0.36);
@@ -1236,7 +1251,7 @@ fn dock(
             egui::pos2(cx, y + d * 0.5 + LABEL_GAP * 0.5 + 2.0),
             text,
             theme::SIZE_TINY,
-            theme::TEXT,
+            theme::p().text,
         );
     };
     let mut touched = false;
@@ -1285,7 +1300,7 @@ fn dock(
         p.circle_stroke(
             egui::pos2(cx, y),
             d * 0.5 + 3.0,
-            egui::Stroke::new(3.0, theme::WARN),
+            egui::Stroke::new(3.0, theme::p().warn),
         );
     }
     let tip = if raised {
@@ -1348,9 +1363,9 @@ fn sheet_row(ui: &mut egui::Ui, icon: &str, text: &str, on: Option<bool>) -> boo
             track,
             10.0,
             if on {
-                theme::ACCENT
+                theme::p().accent
             } else {
-                theme::SURFACE_RAISED
+                theme::p().surface_raised
             },
         );
         let knob = if on {
@@ -1361,7 +1376,11 @@ fn sheet_row(ui: &mut egui::Ui, icon: &str, text: &str, on: Option<bool>) -> boo
         p.circle_filled(
             egui::pos2(knob, track.center().y),
             7.0,
-            if on { theme::INK } else { theme::TEXT_DIM },
+            if on {
+                theme::p().on_accent
+            } else {
+                theme::p().text_dim
+            },
         );
     }
     resp.clicked()
@@ -1446,7 +1465,7 @@ fn more_sheet(
         ui.label(
             egui::RichText::new(&link)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         if theme::secondary_button(ui, icons::COPY, "Copy the guest link", 0.0).clicked() {
             ui.ctx().copy_text(link);
@@ -1533,7 +1552,7 @@ fn people_sheet(
     ui.label(
         egui::RichText::new(format!("People · {}", members.len()))
             .size(theme::SIZE_PANEL_TITLE)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     let waiting = calls.extras().waiting;
     if hosting && !waiting.is_empty() {
@@ -1544,7 +1563,7 @@ fn people_sheet(
                 ui.label(
                     egui::RichText::new(format!("{}{guest}", w.username))
                         .size(theme::SIZE_BODY)
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::chip(ui, "Turn away", false).clicked() {
@@ -1573,13 +1592,13 @@ fn people_sheet(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!("{} {}", icons::HAND, i + 1))
-                        .color(theme::WARN)
+                        .color(theme::p().warn)
                         .size(theme::SIZE_BODY),
                 );
                 ui.label(
                     egui::RichText::new(&m.username)
                         .size(theme::SIZE_BODY)
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                 );
                 if hosting {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1706,7 +1725,7 @@ fn people_sheet(
         ui.label(
             egui::RichText::new("Tap a person for what a host can do.")
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     }
 }
@@ -1756,7 +1775,7 @@ fn notes_sheet(
                 egui::RichText::new(&plan.title)
                     .size(theme::SIZE_BODY)
                     .strong()
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             for (i, item) in plan.agenda.iter().enumerate() {
                 let current = at.as_ref().is_some_and(|a| a.index == i);
@@ -1776,11 +1795,11 @@ fn notes_sheet(
                 };
                 ui.horizontal(|ui| {
                     let colour = if current {
-                        theme::ACCENT
+                        theme::p().accent
                     } else if done {
-                        theme::TEXT_DIM
+                        theme::p().text_dim
                     } else {
-                        theme::TEXT
+                        theme::p().text
                     };
                     let mut name = egui::RichText::new(format!("{}. {}", i + 1, item.name))
                         .size(14.0)
@@ -1796,16 +1815,16 @@ fn notes_sheet(
                         match clock {
                             Some((text, over)) => {
                                 ui.label(egui::RichText::new(text).size(12.5).color(if over {
-                                    theme::WARN
+                                    theme::p().warn
                                 } else {
-                                    theme::ACCENT
+                                    theme::p().accent
                                 }));
                             }
                             None if item.minutes > 0 => {
                                 ui.label(
                                     egui::RichText::new(format!("{} min", item.minutes))
                                         .size(12.5)
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::p().text_dim),
                                 );
                             }
                             None => {}
@@ -1845,9 +1864,9 @@ fn notes_sheet(
         any = true;
         ui.horizontal_wrapped(|ui| {
             let tint = match kind {
-                NoteKind::Decision => theme::ACCENT,
-                NoteKind::Action => theme::WARN,
-                NoteKind::Note => theme::TEXT_DIM,
+                NoteKind::Decision => theme::p().accent,
+                NoteKind::Action => theme::p().warn,
+                NoteKind::Note => theme::p().text_dim,
             };
             ui.label(
                 egui::RichText::new(kind.label().to_uppercase())
@@ -1858,7 +1877,7 @@ fn notes_sheet(
             ui.label(
                 egui::RichText::new(format!("{text} · {}", l.sender))
                     .size(13.5)
-                    .color(theme::TEXT),
+                    .color(theme::p().text),
             );
         });
     }
@@ -1921,7 +1940,7 @@ fn leave_sheet(
     ui.label(
         egui::RichText::new("Leave the call?")
             .size(theme::SIZE_PANEL_TITLE)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     let others = calls.others().len();
     if sheet_row(ui, icons::BACK, "Leave — the call goes on", None) {
@@ -1976,7 +1995,7 @@ fn folded_bar(
         egui::Align2::LEFT_CENTER,
         format!("{}  {who}", icons::CALL),
         egui::FontId::proportional(theme::SIZE_BODY),
-        theme::CREAM,
+        theme::DARK.cream,
     );
     // The timer just left of the buttons.
     let buttons_w = 2.0 * CALL_BUTTON_SMALL + 8.0 + 6.0;
@@ -1985,7 +2004,7 @@ fn folded_bar(
         egui::Align2::RIGHT_CENTER,
         status,
         egui::FontId::monospace(theme::SIZE_SUB),
-        theme::CREAM,
+        theme::DARK.cream,
     );
     let y = rect.center().y;
     let hang = egui::pos2(rect.max.x - 6.0 - CALL_BUTTON_SMALL * 0.5, y);
@@ -2031,12 +2050,12 @@ fn ringing_banner(
     p.rect_filled(
         rect,
         egui::CornerRadius::same(theme::RADIUS_LG),
-        theme::SURFACE_RAISED,
+        theme::p().surface_raised,
     );
     p.rect_stroke(
         rect,
         egui::CornerRadius::same(theme::RADIUS_LG),
-        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+        egui::Stroke::new(1.0, theme::p().overlay_line),
         egui::StrokeKind::Inside,
     );
     let name = r.who.join(", ");
@@ -2048,7 +2067,7 @@ fn ringing_banner(
         egui::Align2::LEFT_CENTER,
         &name,
         egui::FontId::proportional(theme::SIZE_VALUE),
-        theme::CREAM,
+        theme::p().cream,
     );
     let sub = if in_a_call {
         "Incoming call · answering ends this one".to_string()
@@ -2063,7 +2082,7 @@ fn ringing_banner(
         egui::Align2::LEFT_CENTER,
         sub,
         egui::FontId::proportional(theme::SIZE_SUB),
-        theme::TEXT_DIM,
+        theme::p().text_dim,
     );
     let y = rect.center().y;
     let answer = egui::pos2(rect.max.x - 12.0 - CALL_BUTTON_SMALL * 0.5, y);
@@ -2099,7 +2118,7 @@ fn notice_chip(ui: &mut egui::Ui, width: f32, text: &str) -> bool {
     let galley = ui.painter().layout(
         text.to_string(),
         egui::FontId::proportional(theme::SIZE_BODY),
-        theme::CREAM,
+        theme::DARK.cream,
         width - 32.0,
     );
     let h = galley.size().y + 20.0;
@@ -2114,7 +2133,7 @@ fn notice_chip(ui: &mut egui::Ui, width: f32, text: &str) -> bool {
     p.galley(
         egui::pos2(rect.center().x - galley.size().x * 0.5, rect.min.y + 10.0),
         galley,
-        theme::CREAM,
+        theme::DARK.cream,
     );
     resp.on_hover_text("Dismiss").clicked()
 }
@@ -2197,20 +2216,23 @@ fn waiting_screen(
             egui::pos2(x + r * a.cos(), y + r * a.sin())
         })
         .collect();
-    p.add(egui::Shape::line(arc, egui::Stroke::new(3.0, theme::WARN)));
+    p.add(egui::Shape::line(
+        arc,
+        egui::Stroke::new(3.0, theme::p().warn),
+    ));
     centred(
         &p,
         egui::pos2(x, y + 54.0),
         chat_label.unwrap_or("The call"),
         26.0,
-        theme::CREAM,
+        theme::p().cream,
     );
     centred(
         &p,
         egui::pos2(x, y + 88.0),
         "Waiting for a host to let you in",
         theme::SIZE_BODY,
-        theme::TEXT,
+        theme::p().text,
     );
     encrypted_line(
         &p,
@@ -2236,7 +2258,7 @@ fn waiting_screen(
         c + egui::vec2(0.0, CALL_BUTTON_LARGE * 0.5 + 12.0),
         "Leave",
         theme::SIZE_TINY,
-        theme::TEXT,
+        theme::p().text,
     );
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(40));
@@ -2264,7 +2286,7 @@ fn meeting_chips(
         let galley = p.layout_no_wrap(
             text,
             egui::FontId::proportional(theme::SIZE_SUB),
-            theme::CREAM,
+            theme::p().cream,
         );
         let rect = egui::Rect::from_center_size(
             egui::pos2(full.center().x, y),
@@ -2275,7 +2297,7 @@ fn meeting_chips(
             egui::CornerRadius::same(theme::RADIUS_PILL),
             theme::CALL_END_RED.gamma_multiply(0.8),
         );
-        p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::CREAM);
+        p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::p().cream);
         y += 30.0;
     }
     // This device's own screen going out: said where it cannot be missed,
@@ -2290,7 +2312,7 @@ fn meeting_chips(
         let galley = p.layout_no_wrap(
             text,
             egui::FontId::proportional(theme::SIZE_SUB),
-            theme::CREAM,
+            theme::p().cream,
         );
         let rect = egui::Rect::from_center_size(
             egui::pos2(full.center().x, y),
@@ -2301,7 +2323,7 @@ fn meeting_chips(
             egui::CornerRadius::same(theme::RADIUS_PILL),
             theme::CALL_END_RED.gamma_multiply(0.85),
         );
-        p.galley(rect.min + egui::vec2(10.0, 6.0), galley, theme::CREAM);
+        p.galley(rect.min + egui::vec2(10.0, 6.0), galley, theme::p().cream);
         let stop = ui.interact(rect, ui.id().with("stop_sharing"), egui::Sense::click());
         if theme::named(ui, stop, "Stop sharing your screen").clicked() {
             *request = Some(CallRequest::Share(false));
@@ -2328,7 +2350,7 @@ fn meeting_chips(
     let galley = p.layout_no_wrap(
         text,
         egui::FontId::proportional(theme::SIZE_SUB),
-        theme::INK,
+        theme::p().ink,
     );
     let rect = egui::Rect::from_center_size(
         egui::pos2(full.center().x, y),
@@ -2337,9 +2359,9 @@ fn meeting_chips(
     p.rect_filled(
         rect,
         egui::CornerRadius::same(theme::RADIUS_PILL),
-        theme::ACCENT,
+        theme::p().accent,
     );
-    p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::INK);
+    p.galley(rect.min + egui::vec2(10.0, 4.0), galley, theme::p().ink);
     if rooms.may_move {
         let back = egui::Rect::from_min_size(
             egui::pos2(rect.max.x + 6.0, rect.min.y),
@@ -2357,7 +2379,7 @@ fn meeting_chips(
             back.center(),
             "Back to the call",
             theme::SIZE_SUB,
-            theme::CREAM,
+            theme::p().cream,
         );
         if resp.clicked() {
             if let Some(me) = calls.me() {

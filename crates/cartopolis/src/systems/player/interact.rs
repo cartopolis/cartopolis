@@ -653,7 +653,7 @@ pub fn render_interaction_prompt(
                         if ui
                             .button(
                                 egui::RichText::new(format!("{glyph}  Stand up{hint}"))
-                                    .color(theme::TEXT)
+                                    .color(theme::p().text)
                                     .strong(),
                             )
                             .clicked()
@@ -666,7 +666,7 @@ pub fn render_interaction_prompt(
                         // Nothing in range: what is left is the line naming what
                         // was last acted on, which is a receipt and not a button.
                         if let Some(last) = &receipt {
-                            ui.label(egui::RichText::new(last).color(theme::TEXT).strong());
+                            ui.label(egui::RichText::new(last).color(theme::p().text).strong());
                         }
                         return;
                     };
@@ -676,7 +676,7 @@ pub fn render_interaction_prompt(
                     if ui
                         .button(
                             egui::RichText::new(format!("{}  {}{hint}", t.glyph, t.line()))
-                                .color(theme::TEXT)
+                                .color(theme::p().text)
                                 .strong(),
                         )
                         .clicked()

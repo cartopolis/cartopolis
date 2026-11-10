@@ -396,14 +396,14 @@ fn frame_tab(
                 ui,
                 "pipelines",
                 &format!("{} FAILED", health.errored.len()),
-                theme::ERROR,
+                theme::p().error,
             );
             for label in &health.errored {
                 ui.label(
                     egui::RichText::new(label)
                         .monospace()
                         .size(theme::SIZE_TINY)
-                        .color(theme::ERROR),
+                        .color(theme::p().error),
                 );
             }
         }
@@ -577,7 +577,7 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
     let row = |ui: &mut egui::Ui, name: &str, value: Option<f64>, unit: &str, decimals: usize| {
         match value {
             Some(v) => stat(ui, name, &format!("{v:.decimals$} {unit}")),
-            None => stat_colored(ui, name, "not measured", theme::TEXT_DIM),
+            None => stat_colored(ui, name, "not measured", theme::p().text_dim),
         }
     };
 
@@ -797,9 +797,9 @@ fn walk_test(
         return;
     };
     let tone = match word {
-        HandWord::Following => theme::ACCENT_BRIGHT,
-        HandWord::CameraBusy => theme::WARN,
-        _ => theme::TEXT_DIM,
+        HandWord::Following => theme::p().accent_bright,
+        HandWord::CameraBusy => theme::p().warn,
+        _ => theme::p().text_dim,
     };
     ui.label(
         egui::RichText::new(word.text())
@@ -808,7 +808,7 @@ fn walk_test(
             .color(tone),
     );
     if let Some(problem) = high.problem() {
-        ui.label(egui::RichText::new(problem).color(theme::WARN));
+        ui.label(egui::RichText::new(problem).color(theme::p().warn));
     }
     if let Some((ran, readings)) = high.running_for() {
         let s = ran.as_secs();
@@ -858,7 +858,7 @@ fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
                 "{on} on — this run's rendering is not evidence. Restart to apply a change."
             ))
             .small()
-            .color(theme::ACCENT_TEXT),
+            .color(theme::p().accent_text),
         );
     }
     ui.add_space(4.0);
@@ -869,7 +869,7 @@ fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
             continue;
         };
         theme::checkbox(ui, value, label);
-        ui.label(egui::RichText::new(help).small().color(theme::TEXT_DIM));
+        ui.label(egui::RichText::new(help).small().color(theme::p().text_dim));
         ui.add_space(4.0);
     }
 }
@@ -919,7 +919,7 @@ impl DevView<'_, '_> {
 /// panel of numbers wants to be scanned down the left edge, and the moment two
 /// rows disagree about where the value starts it stops being scannable.
 fn stat(ui: &mut egui::Ui, name: &str, value: &str) {
-    stat_colored(ui, name, value, theme::CREAM);
+    stat_colored(ui, name, value, theme::p().cream);
 }
 
 /// [`stat`] with the value in a chosen colour — for the rows that report a
@@ -931,7 +931,7 @@ fn stat_colored(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color32
             egui::Label::new(
                 egui::RichText::new(name)
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             ),
         );
         ui.label(

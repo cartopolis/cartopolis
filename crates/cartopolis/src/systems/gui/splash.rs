@@ -101,7 +101,7 @@ const MAX_FADE_STRETCH: f32 = 2.0;
 /// How long the logo, wordmark and motto take to fade *up* at launch.
 ///
 /// **The backdrop is not part of it, and that is the whole design.**
-/// [`theme::SURFACE`] is painted opaque from the first frame, because what is
+/// [`theme::Palette::surface`] is painted opaque from the first frame, because what is
 /// behind this layer is the 3D view with nothing streamed into it yet — fading
 /// the panel itself in would open the app on a flash of empty void and then hide
 /// it again, which is worse than no transition at all. So the backdrop is there
@@ -121,7 +121,7 @@ const FADE_IN_S: f32 = 0.45;
 const STREETS_SVG: &str = include_str!("../../../../atlas/web/src/img/groningen.svg");
 
 /// How strongly the streets show: `--c-map` in the web theme, which is
-/// [`theme::TEXT_DIM`] at 9 % over the page (`web_theme.rs`).
+/// [`theme::Palette::text_dim`] at 9 % over the page (`web_theme.rs`).
 const STREETS_INK: f32 = 0.09;
 
 /// One stroke width's worth of the plan, in the drawing's own units.
@@ -237,7 +237,9 @@ fn paint_streets(painter: &egui::Painter, rect: egui::Rect, alpha: f32) {
     let (size, layers) = streets();
     let scale = (rect.width() / size.x).max(rect.height() / size.y);
     let origin = rect.center() - *size * scale * 0.5;
-    let ink = theme::SURFACE.lerp_to_gamma(theme::TEXT_DIM, STREETS_INK);
+    let ink = theme::DARK
+        .surface
+        .lerp_to_gamma(theme::DARK.text_dim, STREETS_INK);
     let ink =
         egui::Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), (alpha * 255.0) as u8);
     let mut shapes = Vec::new();
@@ -606,7 +608,7 @@ pub fn boot_splash(
 
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
-    painter.rect_filled(rect, 0.0, fade(theme::SURFACE, backdrop, 1.0));
+    painter.rect_filled(rect, 0.0, fade(theme::DARK.surface, backdrop, 1.0));
     // The street plan behind the web's glass, at the web's strength.
     paint_streets(&painter, rect, backdrop);
 
@@ -629,7 +631,7 @@ pub fn boot_splash(
         egui::Align2::CENTER_CENTER,
         MOTTO,
         egui::FontId::proportional(theme::SPLASH_MOTTO),
-        fade(theme::TEXT_DIM, content, 0.9),
+        fade(theme::DARK.text_dim, content, 0.9),
     );
 
     // The track and the line under it — `index.html`'s `#track` / `#bar` /
@@ -643,7 +645,7 @@ pub fn boot_splash(
     painter.rect_filled(
         track,
         TRACK_H * 0.5,
-        fade(theme::SURFACE_RAISED, content, 1.0),
+        fade(theme::DARK.surface_raised, content, 1.0),
     );
     let bar = if splash.bar > BAR_SWEEP_BELOW {
         // A measured fill, from the left.
@@ -662,14 +664,14 @@ pub fn boot_splash(
         .intersect(track)
     };
     if bar.width() > 0.0 {
-        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::ACCENT, content, 1.0));
+        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::DARK.accent, content, 1.0));
     }
     painter.text(
         egui::pos2(c.x, c.y + 128.0),
         egui::Align2::CENTER_CENTER,
         &label,
         egui::FontId::proportional(STATUS_TEXT),
-        fade(theme::TEXT_DIM, content, 0.75),
+        fade(theme::DARK.text_dim, content, 0.75),
     );
 }
 

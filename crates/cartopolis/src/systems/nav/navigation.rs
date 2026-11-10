@@ -2085,7 +2085,11 @@ fn grabber(ui: &mut egui::Ui, detent: SheetDetent) -> Option<SheetDetent> {
             egui::vec2(GRABBER_WIDTH_PTS, GRABBER_THICKNESS_PTS),
         ),
         egui::CornerRadius::same(theme::RADIUS_PILL),
-        if live { theme::ACCENT } else { theme::LINE },
+        if live {
+            theme::p().accent
+        } else {
+            theme::p().line
+        },
     );
     if resp.clicked() {
         return Some(match detent {
@@ -2283,7 +2287,7 @@ pub fn render_route_sheet(
                             Endpoint::To => "Click the map to set the destination…",
                         })
                         .size(theme::SIZE_SUB)
-                        .color(theme::ACCENT_TEXT),
+                        .color(theme::p().accent_text),
                     );
                 }
 
@@ -2392,13 +2396,13 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
                     egui::RichText::new(format_duration(r.duration_s))
                         .size(SUMMARY_TIME_PTS)
                         .family(theme::brand_family())
-                        .color(theme::CREAM),
+                        .color(theme::p().cream),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format!("arrive {arrive}"))
                             .size(theme::SIZE_VALUE)
-                            .color(theme::TEXT),
+                            .color(theme::p().text),
                     );
                 });
             });
@@ -2417,7 +2421,7 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
                 egui::Label::new(
                     egui::RichText::new(line)
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 )
                 .truncate(),
             );
@@ -2426,7 +2430,7 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
             ui.label(
                 egui::RichText::new("Set a start and a destination to plan a route.")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         }
     }
@@ -2436,7 +2440,7 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
 /// salmon text above the fields read as a heading, not as the answer.
 fn failure_notice(ui: &mut egui::Ui, msg: &str) {
     egui::Frame::NONE
-        .fill(theme::ERROR.gamma_multiply(0.12))
+        .fill(theme::p().error.gamma_multiply(0.12))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_SM))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
@@ -2450,13 +2454,16 @@ fn failure_notice(ui: &mut egui::Ui, msg: &str) {
                 0.0,
                 egui::TextFormat::simple(
                     egui::FontId::proportional(theme::SIZE_VALUE),
-                    theme::ERROR,
+                    theme::p().error,
                 ),
             );
             job.append(
                 msg,
                 8.0,
-                egui::TextFormat::simple(egui::FontId::proportional(theme::SIZE_SUB), theme::TEXT),
+                egui::TextFormat::simple(
+                    egui::FontId::proportional(theme::SIZE_SUB),
+                    theme::p().text,
+                ),
             );
             ui.add(egui::Label::new(job).wrap());
         });
@@ -2534,7 +2541,7 @@ fn start_label_width(ui: &egui::Ui, mode: TravelMode, gps: bool, avatar: bool) -
     let galley = ui.painter().layout_no_wrap(
         start_label(mode, gps, avatar),
         egui::FontId::proportional(theme::SIZE_VALUE),
-        theme::INK,
+        theme::p().ink,
     );
     galley.size().x + 2.0 * ui.spacing().button_padding.x + 8.0
 }
@@ -2579,7 +2586,7 @@ fn start_button(
                     egui::Label::new(
                         egui::RichText::new(&label)
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     )
                     .wrap(),
                 );
@@ -2599,7 +2606,7 @@ fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) 
                 ui.label(
                     egui::RichText::new(icons::maneuver(step.maneuver))
                         .size(theme::SIZE_VALUE)
-                        .color(theme::ACCENT_TEXT),
+                        .color(theme::p().accent_text),
                 );
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(step.instruction()).size(theme::SIZE_SUB));
@@ -2607,7 +2614,7 @@ fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) 
                         ui.label(
                             egui::RichText::new(format_distance(step.distance_m))
                                 .size(theme::SIZE_CHIP)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                     }
                 });
@@ -2682,7 +2689,7 @@ fn endpoint_card(
                     ui.painter().hline(
                         left..=ui.max_rect().right(),
                         y,
-                        egui::Stroke::new(1.0, theme::OVERLAY_LINE.gamma_multiply(0.6)),
+                        egui::Stroke::new(1.0, theme::p().overlay_line.gamma_multiply(0.6)),
                     );
                     rows[1] = endpoint_line(ui, route, Endpoint::To, here, actions);
                 },
@@ -2723,11 +2730,11 @@ fn paint_rail(ui: &egui::Ui, rows: [egui::Rect; 2]) {
         egui::Stroke::new(2.0, marker_color(ROUTE_START_RGB)),
     );
     p.circle_filled(b, 5.5, marker_color(ROUTE_FINISH_RGB));
-    p.circle_stroke(b, 5.5, egui::Stroke::new(1.5, theme::CREAM));
+    p.circle_stroke(b, 5.5, egui::Stroke::new(1.5, theme::p().cream));
     let (top, bottom) = (a.y + 9.0, b.y - 9.0);
     for i in 0..3 {
         let y = top + (bottom - top) * (i as f32 + 0.5) / 3.0;
-        p.circle_filled(egui::pos2(x, y), 1.3, theme::TEXT_DIM);
+        p.circle_filled(egui::pos2(x, y), 1.3, theme::p().text_dim);
     }
 }
 
@@ -2746,7 +2753,7 @@ fn start_line(
     }
     let mine = route.from.label == HERE_LABEL;
     let (text, colour) = if mine {
-        (HERE_LABEL.to_string(), theme::ACCENT)
+        (HERE_LABEL.to_string(), theme::p().accent)
     } else {
         (
             route
@@ -2754,7 +2761,7 @@ fn start_line(
                 .label
                 .trim_start_matches(PICKED_PREFIX)
                 .to_string(),
-            theme::TEXT,
+            theme::p().text,
         )
     };
     let h = card_line_height();
@@ -2838,7 +2845,7 @@ fn endpoint_line(
                                 egui::Button::new(
                                     egui::RichText::new(icons::CLEAR)
                                         .size(theme::SIZE_VALUE)
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::p().text_dim),
                                 )
                                 .frame(false)
                                 .min_size(egui::vec2(clear, clear)),
@@ -2852,7 +2859,7 @@ fn endpoint_line(
                         ui.add(
                             egui::Spinner::new()
                                 .size(theme::SIZE_BODY)
-                                .color(theme::ACCENT),
+                                .color(theme::p().accent),
                         );
                     }
                 });

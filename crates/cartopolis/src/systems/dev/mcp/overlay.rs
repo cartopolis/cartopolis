@@ -85,26 +85,26 @@ pub fn render_mcp_activity(
                         ui.add(
                             egui::Spinner::new()
                                 .size(theme::SIZE_SUB)
-                                .color(theme::ACCENT),
+                                .color(theme::p().accent),
                         );
                     }
                     ui.label(
                         egui::RichText::new("Editor")
                             .size(theme::SIZE_CHIP)
-                            .color(theme::CREAM)
+                            .color(theme::p().cream)
                             .strong(),
                     );
                     ui.label(
                         egui::RichText::new(bridge.listen.display().to_string())
                             .size(theme::SIZE_TINY)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                 });
                 for entry in live {
                     let colour = match entry.outcome {
-                        Outcome::Working => theme::ACCENT,
-                        Outcome::Done => theme::TEXT_DIM,
-                        Outcome::Failed => theme::ERROR,
+                        Outcome::Working => theme::p().accent,
+                        Outcome::Done => theme::p().text_dim,
+                        Outcome::Failed => theme::p().error,
                     };
                     ui.horizontal_top(|ui| {
                         ui.label(
@@ -117,7 +117,7 @@ pub fn render_mcp_activity(
                             egui::Label::new(
                                 egui::RichText::new(&entry.detail)
                                     .size(theme::SIZE_TINY)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             )
                             .wrap(),
                         );

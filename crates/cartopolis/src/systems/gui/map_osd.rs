@@ -748,7 +748,7 @@ fn zoom_rail_control(
                     ui,
                     RAIL_DISC,
                     state.list_open,
-                    theme::ACCENT_RING,
+                    theme::p().accent_ring,
                     egui::Sense::click(),
                 );
                 let ink = if state.list_open || scale == Scale::Globe || resp.hovered() {
@@ -771,7 +771,7 @@ fn zoom_rail_control(
                         ui,
                         RAIL_DISC,
                         false,
-                        theme::ACCENT_RING,
+                        theme::p().accent_ring,
                         egui::Sense::click_and_drag(),
                     );
                     let p = ui.painter();
@@ -781,33 +781,40 @@ fn zoom_rail_control(
                             p.circle_stroke(
                                 face.center,
                                 face.radius + 1.5,
-                                egui::Stroke::new(1.5, theme::ACCENT),
+                                egui::Stroke::new(1.5, theme::p().accent),
                             );
                             let done = if up { rail.push } else { -rail.push }.max(0.0);
                             if done > 0.0 {
-                                paint_arc(p, face.center, face.radius + 3.5, done, theme::CREAM);
+                                paint_arc(
+                                    p,
+                                    face.center,
+                                    face.radius + 3.5,
+                                    done,
+                                    theme::p().cream,
+                                );
                             }
                             // Its name beside it, with the way it goes.
                             let font = egui::FontId::proportional(theme::SIZE_SUB);
                             let text =
                                 format!("{} {}", if up { "Out to" } else { "In to" }, to.label());
                             let at = egui::pos2(face.center.x - face.radius - 10.0, face.center.y);
-                            let galley = p.layout_no_wrap(text.clone(), font.clone(), theme::CREAM);
+                            let galley =
+                                p.layout_no_wrap(text.clone(), font.clone(), theme::p().cream);
                             let tag = egui::Align2::RIGHT_CENTER
                                 .anchor_size(at, galley.size())
                                 .expand2(egui::vec2(7.0, 3.0));
                             p.rect_filled(
                                 tag,
                                 egui::CornerRadius::same(theme::RADIUS),
-                                theme::OVERLAY,
+                                theme::p().overlay,
                             );
                             p.rect_stroke(
                                 tag,
                                 egui::CornerRadius::same(theme::RADIUS),
-                                egui::Stroke::new(1.0, theme::ACCENT),
+                                egui::Stroke::new(1.0, theme::p().accent),
                                 egui::StrokeKind::Inside,
                             );
-                            p.text(at, egui::Align2::RIGHT_CENTER, text, font, theme::CREAM);
+                            p.text(at, egui::Align2::RIGHT_CENTER, text, font, theme::p().cream);
                         }
                         None => paint_mark(
                             p,
@@ -904,9 +911,9 @@ fn zoom_rail_control(
                 // what is public and beyond the street), plain on the globe.
                 let p = ui.painter();
                 let (top, bottom) = (egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom()));
-                p.line_segment([top, bottom], egui::Stroke::new(4.0, theme::OVERLAY));
+                p.line_segment([top, bottom], egui::Stroke::new(4.0, theme::p().overlay));
                 let tone = if scale == Scale::Globe {
-                    theme::TEXT_DIM
+                    theme::p().text_dim
                 } else {
                     theme::PUBLIC.gamma_multiply(0.8)
                 };
@@ -924,14 +931,14 @@ fn zoom_rail_control(
                     p.circle_stroke(
                         egui::pos2(x, y_at(position_of(scale, to))),
                         8.0,
-                        egui::Stroke::new(2.0, theme::CREAM),
+                        egui::Stroke::new(2.0, theme::p().cream),
                     );
                 }
-                p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::CREAM);
+                p.circle_filled(egui::pos2(x, thumb_y), 7.0, theme::p().cream);
                 p.circle_stroke(
                     egui::pos2(x, thumb_y),
                     9.5,
-                    egui::Stroke::new(3.0, theme::OVERLAY_LINE),
+                    egui::Stroke::new(3.0, theme::p().overlay_line),
                 );
 
                 // The step's name beside the thumb, while the rail is awake
@@ -948,12 +955,23 @@ fn zoom_rail_control(
                     let at = egui::pos2(x - 16.0, thumb_y);
                     let mut p = ui.painter().clone();
                     p.multiply_opacity(shown);
-                    let galley = p.layout_no_wrap(label.to_string(), font.clone(), theme::CREAM);
+                    let galley =
+                        p.layout_no_wrap(label.to_string(), font.clone(), theme::p().cream);
                     let tag = egui::Align2::RIGHT_CENTER
                         .anchor_size(at, galley.size())
                         .expand2(egui::vec2(7.0, 3.0));
-                    p.rect_filled(tag, egui::CornerRadius::same(theme::RADIUS), theme::OVERLAY);
-                    p.text(at, egui::Align2::RIGHT_CENTER, label, font, theme::CREAM);
+                    p.rect_filled(
+                        tag,
+                        egui::CornerRadius::same(theme::RADIUS),
+                        theme::p().overlay,
+                    );
+                    p.text(
+                        at,
+                        egui::Align2::RIGHT_CENTER,
+                        label,
+                        font,
+                        theme::p().cream,
+                    );
                 }
 
                 let (resp, next) = end_disc(ui, false);
@@ -982,7 +1000,7 @@ fn zoom_rail_control(
                     let galley = ui.painter().layout_no_wrap(
                         s.label().to_string(),
                         font.clone(),
-                        theme::CREAM,
+                        theme::p().cream,
                     );
                     let h = RAIL_DISC + 4.0;
                     let w = galley.size().x + h + 24.0;
@@ -992,27 +1010,27 @@ fn zoom_rail_control(
                     let on = s == scale;
                     let p = ui.painter();
                     let fill = if resp.hovered() {
-                        theme::SURFACE_HOVER
+                        theme::p().surface_hover
                     } else {
-                        theme::OVERLAY
+                        theme::p().overlay
                     };
                     let round = egui::CornerRadius::same(theme::RADIUS_PILL);
                     p.rect_filled(rect, round, fill);
                     p.rect_stroke(
                         rect,
                         round,
-                        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                        egui::Stroke::new(1.0, theme::p().overlay_line),
                         egui::StrokeKind::Inside,
                     );
                     let c = egui::pos2(rect.right() - h / 2.0, rect.center().y);
                     let r = h / 2.0 - 3.0;
                     let (plate, ink) = if on {
-                        (theme::ACCENT, theme::INK)
+                        (theme::p().accent, theme::p().on_accent)
                     } else {
                         (
-                            theme::SURFACE_RAISED,
+                            theme::p().surface_raised,
                             if s == Scale::Globe {
-                                theme::CREAM
+                                theme::p().cream
                             } else {
                                 theme::PUBLIC
                             },
@@ -1025,7 +1043,11 @@ fn zoom_rail_control(
                         egui::Align2::RIGHT_CENTER,
                         s.label(),
                         font,
-                        if on { theme::CREAM } else { theme::TEXT },
+                        if on {
+                            theme::p().cream
+                        } else {
+                            theme::p().text
+                        },
                     );
                     if resp.clicked() || fingers.lifted_in(rect) {
                         goal = Some(if on {
@@ -1266,9 +1288,9 @@ fn hand_button(
         .or_else(|| stand_in.then_some(HandWord::Following));
     let on = word.is_some();
     let tone = match word {
-        Some(HandWord::Following) => theme::ACCENT_BRIGHT,
-        Some(HandWord::CameraBusy) => theme::WARN,
-        _ => theme::ACCENT_RING,
+        Some(HandWord::Following) => theme::p().accent_bright,
+        Some(HandWord::CameraBusy) => theme::p().warn,
+        _ => theme::p().accent_ring,
     };
     let above = actions_bottom_offset()
         + pair_height()
@@ -1325,7 +1347,7 @@ fn hand_button(
                     ui.close();
                 }
                 if let Some(problem) = body.high.problem() {
-                    ui.label(egui::RichText::new(problem).color(theme::WARN));
+                    ui.label(egui::RichText::new(problem).color(theme::p().warn));
                 }
                 ui.label(
                     egui::RichText::new(
@@ -1333,7 +1355,7 @@ fn hand_button(
                          camera sees is kept.",
                     )
                     .size(theme::SIZE_CHIP)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
             });
         });
@@ -1523,7 +1545,7 @@ fn round_button(ui: &mut egui::Ui, mark: Mark, on: bool) -> egui::Response {
         ui,
         CONTROL_SIZE,
         on,
-        theme::ACCENT_RING,
+        theme::p().accent_ring,
         egui::Sense::click_and_drag(),
     );
     paint_mark(
@@ -1712,13 +1734,13 @@ fn thumbstick(
             // across, and at the opacity the buttons use it was the heaviest
             // thing on the screen — a black hole in the bottom-left corner of the
             // map, larger and darker than every control it shares an edge with
-            // put together. [`theme::OVERLAY_SOFT`] keeps the map visible through
+            // put together. [`theme::Palette::overlay_soft`] keeps the map visible through
             // it; the hairline is what says where the travel ends.
-            p.circle_filled(centre, STICK_RADIUS, theme::OVERLAY_SOFT);
+            p.circle_filled(centre, STICK_RADIUS, theme::p().overlay_soft);
             p.circle_stroke(
                 centre,
                 STICK_RADIUS,
-                egui::Stroke::new(1.5, theme::OVERLAY_LINE),
+                egui::Stroke::new(1.5, theme::p().overlay_line),
             );
             // The knob shows where the thumb has taken it, which is the whole of
             // the feedback: without it a proportional stick is indistinguishable
@@ -1729,9 +1751,9 @@ fn thumbstick(
             let travel = STICK_RADIUS - STICK_KNOB_RADIUS - 2.0;
             let knob = centre + egui::vec2(wish.x, -wish.y) * travel;
             let (fill, ring) = if wish == Vec2::ZERO {
-                (theme::OVERLAY, theme::OVERLAY_LINE)
+                (theme::p().overlay, theme::p().overlay_line)
             } else {
-                (theme::ACCENT_MUTED, theme::ACCENT_RING)
+                (theme::p().accent_muted, theme::p().accent_ring)
             };
             p.circle_filled(knob, STICK_KNOB_RADIUS, fill);
             p.circle_stroke(knob, STICK_KNOB_RADIUS, egui::Stroke::new(1.5, ring));

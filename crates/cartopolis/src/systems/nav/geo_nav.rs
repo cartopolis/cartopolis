@@ -1294,7 +1294,7 @@ fn suggestion_row_inner(
                     egui::Label::new(
                         egui::RichText::new(distance_label(here, (s.lat, s.lng)))
                             .small()
-                            .color(theme::ACCENT_TEXT),
+                            .color(theme::p().accent_text),
                     )
                     .selectable(false),
                 );
@@ -1802,7 +1802,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                     ui.label(
                         egui::RichText::new(msg.as_str())
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                 }
             }

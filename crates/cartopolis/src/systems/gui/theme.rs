@@ -2,11 +2,11 @@
 //!
 //! **Deep teal.** A teal-grey ramp — `#0F1416` ink, `#141A1C` surface,
 //! `#1F2829` raised, `#2A3536` hover — carries the chrome, and the live things
-//! are a clear **teal**: [`ACCENT`] `#5CC6C0`, with [`INK`] on it, and its dark
-//! half [`ACCENT_MUTED`] `#263F42` for a selected row or a pressed button. The
+//! are a clear **teal**: [`Palette::accent`] `#5CC6C0`, with [`Palette::ink`] on it, and its dark
+//! half [`Palette::accent_muted`] `#263F42` for a selected row or a pressed button. The
 //! values are read off Android's keyboard in its teal dark theme (2026-10-10),
 //! which is the look asked for: the surface, the key and the shift-key teal are
-//! that keyboard's own. [`WARN`] and [`ERROR`] are the only other hues, and
+//! that keyboard's own. [`Palette::warn`] and [`Palette::error`] are the only other hues, and
 //! [`BRAND`] — the logo's orange — stays with the mark, the wordmark and the
 //! badges, where against teal it is the logo's original pairing.
 //!
@@ -28,24 +28,24 @@
 //!
 //! Three consequences worth knowing before editing a value:
 //!
-//!   - **The state ladder is monotonic in lightness** — rest ([`SURFACE_RAISED`])
-//!     → hover ([`SURFACE_HOVER`] plus an [`ACCENT`] rim) → pressed
-//!     ([`ACCENT_MUTED`], a deep teal, plus an [`ACCENT_RING`] rim) → engaged
-//!     (an [`ACCENT`] plate carrying [`INK`]). Each step is up, so state still
+//!   - **The state ladder is monotonic in lightness** — rest ([`Palette::surface_raised`])
+//!     → hover ([`Palette::surface_hover`] plus an [`Palette::accent`] rim) → pressed
+//!     ([`Palette::accent_muted`], a deep teal, plus an [`Palette::accent_ring`] rim) → engaged
+//!     (an [`Palette::accent`] plate carrying [`Palette::ink`]). Each step is up, so state still
 //!     reads for someone who cannot see the hue.
-//!   - **Text on the accent is [`INK`], never [`CREAM`]** — [`CREAM`] on the
+//!   - **Text on the accent is [`Palette::ink`], never [`Palette::cream`]** — [`Palette::cream`] on the
 //!     teal measures 1.9:1. This is what `active.weak_bg_fill` being
-//!     [`ACCENT_MUTED`] protects (see [`widgets`]): a pressed button carries a
+//!     [`Palette::accent_muted`] protects (see [`widgets`]): a pressed button carries a
 //!     light label, so its fill is the deep teal, not the accent.
-//!   - **Two constants deliberately share a value.** [`ACCENT_TEXT`] and
-//!     [`ACCENT_BRIGHT`] are both pure white: one is type, one is a stroke, they
+//!   - **Two constants deliberately share a value.** [`Palette::accent_text`] and
+//!     [`Palette::accent_bright`] are both pure white: one is type, one is a stroke, they
 //!     answer to different tests. Keeping both names is what lets one move
 //!     without the other.
 //!
 //! **Every surface is solid** (since 2026-11-08, "a bad implementation of
-//! glass"): the midas hub's layering, one darkness. [`PANEL`], [`GLASS`] and
-//! [`OVERLAY`] are all one dark teal, with [`CARD`] blocks inside, close to it, and a soft
-//! shadow, with the hub's hairline ([`PANEL_RIM`]). Nothing shows through.
+//! glass"): the midas hub's layering, one darkness. [`Palette::panel`], [`Palette::glass`] and
+//! [`Palette::overlay`] are all one dark teal, with [`Palette::card`] blocks inside, close to it, and a soft
+//! shadow, with the hub's hairline ([`Palette::panel_rim`]). Nothing shows through.
 //!
 //! Two things this replaces, both of which the UI used to get by default:
 //!
@@ -58,10 +58,19 @@
 //!     double the vertical rhythm and give buttons a real hit area.
 //!
 //! Contrast was checked against the surface each colour actually lands on:
-//! [`TEXT`] is 14.3:1 on [`SURFACE`], [`TEXT_DIM`] 9.4:1, [`ACCENT_TEXT`] 17.6:1.
-//! Plain [`ACCENT`] is 8.6:1, comfortable as a fill, a rule or a ring on any
+//! [`Palette::text`] is 14.3:1 on [`Palette::surface`], [`Palette::text_dim`] 9.4:1, [`Palette::accent_text`] 17.6:1.
+//! Plain [`Palette::accent`] is 8.6:1, comfortable as a fill, a rule or a ring on any
 //! surface in the ramp. Anything sitting *on* an accent fill is drawn in
-//! [`INK`] (9.1:1) rather than [`CREAM`] (1.9:1).
+//! [`Palette::on_accent`] (9.1:1) rather than [`Palette::cream`] (1.9:1).
+//! (The numbers in this note are the dark theme's.)
+//!
+//! **Two palettes, since 2026-11-10.** Everything above describes [`DARK`],
+//! which is the look as it was, value for value. [`LIGHT`] is the midas hub's
+//! light tokens put in the same roles; the chrome reads the one in force
+//! through [`p`], and `systems::ui_theme` picks it from the app's light
+//! setting (Light, Dark, or Auto by the sun). The map's own labels, the splash,
+//! the call and camera screens and the script editor's code box stay dark in
+//! both ([`dark_here`], [`use_dark_visuals`]).
 //!
 //! [`install`] is called once, from `EguiManager::default`, before the first
 //! pass — early enough that the brand font family is bound on frame one, which
@@ -83,93 +92,347 @@ use egui::{
     Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::systems::icons;
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
-/// Deeper than any of the surface tones: text-edit wells, code blocks, and the
-/// boot backdrop. Also the ink on an [`ACCENT`] plate.
-pub const INK: Color32 = Color32::from_rgb(0x0F, 0x14, 0x16);
-/// The surface ramp's bottom above [`INK`]: control plates and wells (a
-/// button at rest, a text field's frame). A card in a panel is [`CARD`].
-pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x1A, 0x1C);
-/// The ramp's middle. One step up from [`SURFACE`]: buttons at rest,
-/// striped rows, anything that should read as sitting *on* a panel.
-pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1F, 0x28, 0x29);
-/// The ramp's top. Hover, and open menus over a panel.
-pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x2A, 0x35, 0x36);
-/// Hairlines: separators, widget frames, indent guides.
+/// The chrome's tones, one field per role. There are two of them, [`DARK`] and
+/// [`LIGHT`], and [`p`] answers the one in force; every chrome colour in the
+/// client is `theme::Palette::field`, read when it is painted, so flipping the
+/// theme ([`set_light`]) repaints the next frame without anything holding a
+/// copy.
 ///
-/// **Lightened on 2026-08-14, and the reason is WCAG 1.4.11.** (It was a slate
-/// blue then and is a neutral grey now; the argument and the ratio survived the
-/// repaint unchanged, which is what the number below is for.)
-/// A button at rest is [`SURFACE_RAISED`] on [`SURFACE`], which is ~1.2:1 of
-/// fill difference — so the hairline is the *only* channel that says "this is a
-/// control", and at 1.92:1 it was not saying it. What had been carrying the UI
-/// is that a panel is dense enough for position to do the work; a control on its
-/// own had no boundary. This measures 3.8:1 on [`SURFACE`] and clears the
-/// 3:1 floor for a UI component boundary.
+/// **Map a role, not a value.** The light palette is the midas hub's light
+/// tokens (midas `web/src/theme.css`, the first value of each `light-dark()`,
+/// which are [`web_theme`](super::web_theme)'s `L_*`), each put in the slot
+/// whose *job* it does: [`Palette::panel`] is the page, [`Palette::card`] the
+/// white card on it, [`Palette::cream`] the strongest text — near-black in the
+/// light theme — and [`Palette::line`] the hub's strong border, since it is
+/// what identifies a control.
 ///
-/// It is a **solid teal-grey, not white-at-an-alpha**, which the old glass rims were:
-/// a hairline that has to clear a fixed ratio cannot be a translucent one,
-/// because what it composites over changes with the surface under it.
-pub const LINE: Color32 = Color32::from_rgb(0x63, 0x79, 0x7C);
+/// Brand and data colours are not here: [`BRAND`], [`REAL_LOCATION`],
+/// [`PUBLIC`], the council, the code colours, the map labels
+/// ([`LABEL_CHIP`] and friends), the call buttons and the scenario inks stay
+/// `const`, the same in both themes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    /// Deeper than any of the surface tones: text-edit wells, code blocks, a
+    /// segmented control's track. In the light theme it is the hub's sunken
+    /// tone. **Not the ink on an accent plate** — that is [`Palette::on_accent`],
+    /// which shared this value until the light theme split them (2026-11-10).
+    pub ink: Color32,
+    /// The ink on an [`Palette::accent`] plate (an engaged disc, a ticked box,
+    /// the primary button's label): `#0F1416` in both themes, since the accent
+    /// is a teal light enough to carry it in both. [`Palette::cream`] on the teal measures
+    /// 1.9:1 in the dark theme, so a plate is never labelled in it.
+    pub on_accent: Color32,
+    /// The ink on a status-coloured plate ([`Palette::error`], [`Palette::warn`]
+    /// as a fill — an armed confirm, a raised hand): [`Palette::ink`] in the
+    /// dark theme, where the status tones are light; white in the light theme,
+    /// where they are dark.
+    pub on_status: Color32,
+    /// The surface ramp's bottom above [`Palette::ink`]: control plates (a
+    /// button at rest) and the widget table's noninteractive fill. A card in a
+    /// panel is [`Palette::card`].
+    pub surface: Color32,
+    /// One step up from [`Palette::surface`] (in the light theme, a step
+    /// toward the page): a button under the pointer, striped rows, a
+    /// segmented control's chosen card.
+    pub surface_raised: Color32,
+    /// The ramp's far end: hover in a list, open menus over a panel.
+    pub surface_hover: Color32,
+    /// Hairlines that identify a control: widget frames, separators, indent
+    /// guides.
+    ///
+    /// **Lightened on 2026-08-14, and the reason is WCAG 1.4.11.** A button at
+    /// rest is [`Palette::surface_raised`] on [`Palette::surface`], ~1.2:1 of
+    /// fill difference — so the hairline is the *only* channel that says "this
+    /// is a control", and at 1.92:1 it was not saying it. This measures 3.8:1
+    /// on the dark surface and clears the 3:1 floor for a UI component
+    /// boundary; the light one is the hub's strong border taken a step darker
+    /// (`#84979A` → `#788B8E`), which is what clears 3:1 on the light page.
+    ///
+    /// It is **solid, not white-at-an-alpha**: a hairline that has to clear a
+    /// fixed ratio cannot be a translucent one, because what it composites over
+    /// changes with the surface under it.
+    pub line: Color32,
+    /// The live tone — **teal**: `#5CC6C0` dark, the same hue deeper on the
+    /// light theme (`#34938E`, see [`LIGHT`]). Selected segments,
+    /// ticked boxes, hover and focus rings, sliders, and the plate an engaged
+    /// control wears: the one saturated colour in the chrome, so it always
+    /// means "this is the live thing". It carries [`Palette::on_accent`] at
+    /// 9.1:1, so anything filled with it is labelled in that.
+    pub accent: Color32,
+    /// The accent at the top of its ladder, as a **stroke**: the text cursor,
+    /// a text-selection handle, the rim on a *held* control (north-up lock,
+    /// caps lock). White in the dark theme, the hub's deep accent text in the
+    /// light one.
+    pub accent_bright: Color32,
+    /// The fill an accent plate lifts to under the pointer
+    /// ([`primary_button_sized`]): white in the dark theme (the same value as
+    /// [`Palette::accent_bright`], which it was until the light theme needed a
+    /// fill that still carries [`Palette::on_accent`]), the hub's own accent
+    /// in the light one.
+    pub accent_lift: Color32,
+    /// The ring around an *accent-filled* widget: the pressed button, the
+    /// focused control, a dock disc whose panel is open.
+    ///
+    /// Two jobs: on the [`Palette::accent_muted`] of a pressed button it is the
+    /// boundary (7.4:1 dark, well over the 3:1 a UI component needs), and on
+    /// the [`Palette::accent`] plate of an engaged disc it is the rim. In the
+    /// light theme it is a deeper teal than the hub's, because the plate itself
+    /// is only 2:1 on a white page and the ring is what bounds it there.
+    pub accent_ring: Color32,
+    /// The accent, pushed *down* — the fill of an accent-filled button while
+    /// the pointer is held on it. A press moves the opposite way from a hover,
+    /// or the two states are one state. Its label is still
+    /// [`Palette::on_accent`], at 6.5:1 (dark).
+    pub accent_pressed: Color32,
+    /// The top of the *text* ladder — [`Palette::text`] → [`Palette::cream`]
+    /// → this. Links, speaker names, emphasised values, the open menu entry.
+    /// White in the dark theme (emphasis is lightness there); the hub's deep
+    /// teal link colour in the light one.
+    pub accent_text: Color32,
+    /// Words in the accent on a soft accent tag ([`Palette::accent_muted`]),
+    /// the web's `--m-accent-text`: the pale [`Palette::accent_ring`] in the
+    /// dark theme, the hub's deep teal in the light one (where the ring is too
+    /// light to be read as type on the tag).
+    pub accent_word: Color32,
+    /// The soft half of the accent: a pressed button, a selected row, a text
+    /// selection, an "on" tag. Dark, a deep teal that carries
+    /// [`Palette::cream`] at 10.5:1; light, the hub's accent-soft.
+    ///
+    /// This is what keeps the ladder safe. `active.weak_bg_fill` carries a
+    /// label drawn in egui's `strong_text_color`, which is
+    /// [`Palette::cream`]; filling it with [`Palette::accent`] instead would
+    /// put a light label on a light plate.
+    pub accent_muted: Color32,
+    /// The strongest text: headings and the one or two things that must read
+    /// brightest (dark) or darkest (light). egui's `strong_text_color`.
+    pub cream: Color32,
+    /// Body text.
+    pub text: Color32,
+    /// Secondary text: units, coordinates, hints. Also `index.html`'s muted
+    /// tone in the dark theme, so the pre-wasm splash and this one agree —
+    /// **change it in both**.
+    ///
+    /// Lifted on 2026-08-14: this is the colour egui hands to
+    /// `weak_text_color`, i.e. the one that lands on every surface in the ramp,
+    /// and it measured 4.40:1 on the hover step and 4.12:1 inside an overlay box
+    /// over bright map imagery. Both now clear 4.5.
+    pub text_dim: Color32,
+    /// Warnings. **One of the two colours the chrome keeps** besides the
+    /// accent, for the reason road signs are not brand-coloured: caution and
+    /// fault are statements about the world, not decoration. A desaturated gold
+    /// on the dark theme, the hub's amber-brown on the light.
+    pub warn: Color32,
+    /// Errors. Warm rather than pure red so it belongs to the same palette;
+    /// lifted from `#E88B7D` on 2026-08-14 (dark), because an error is the one
+    /// string that must be readable wherever it lands.
+    pub error: Color32,
+    /// The fill of the boxes that float *over* the map (status HUD, stats,
+    /// driver chrome, the dock, the round map buttons): [`Palette::panel`],
+    /// solid.
+    ///
+    /// **Solid since 2026-11-08**, asked for that day: "a bad implementation of
+    /// glass". What a box stands on is said by its shadow ([`card_shadow`],
+    /// `Visuals::window_shadow`), not by the map showing through
+    /// (`monochrome-chrome.md` has the glass's history). **The same as a
+    /// panel**, also asked that day: "some panels are lighter than others; they
+    /// must be dark". One tone for every surface a person reads as a panel;
+    /// only a card *inside* one stands off it.
+    pub overlay: Color32,
+    /// The window and popup fill: [`Palette::overlay`]'s tone. The name stays
+    /// for the call sites that paint "the card a window is".
+    pub glass: Color32,
+    /// Every panel's surface — docked, full-screen on a phone, floating over
+    /// the map.
+    ///
+    /// **Dark: found with the person, 2026-11-10.** At the ink the panels
+    /// "looked black"; a teal pressed nearly to black (`#0B1918`) was "too
+    /// little colour", and the person pointed at the midas hub's question card
+    /// (`#192627`). With that, and surface wells in it as the hub's options
+    /// are, the blocks had "too much contrast against the background" — so this
+    /// is the hub's teal a step down, and the cards inside are
+    /// [`Palette::card`], close to it. **Light:** the hub's page, with white
+    /// cards on it.
+    pub panel: Color32,
+    /// A card inside a panel ([`list_group`], a chat or contact row). Dark:
+    /// just off [`Palette::panel`], so a group of rows reads as one block by
+    /// its hairline and shadow rather than by a jump in tone. Light: white.
+    pub card: Color32,
+    /// The hairline round a panel, a window or a box over the map: the midas
+    /// hub's `--m-border`, solid. The shadow does the lifting; this only keeps
+    /// a card's edge.
+    pub panel_rim: Color32,
+    /// The rim around a box or a round button over the map:
+    /// [`Palette::panel_rim`]. It never identifies a *control* — that is
+    /// [`Palette::line`]'s job.
+    pub overlay_line: Color32,
+    /// The fill of a control that is a *guide* rather than a plate — the
+    /// thumbstick's well, which at [`Palette::overlay`]'s opacity read as a hole
+    /// punched in the map rather than as something to put a thumb on. Half the
+    /// coverage; nothing legible sits on it. The floor is the other direction:
+    /// at alpha 90 the well vanished into pale beige map.
+    pub overlay_soft: Color32,
+    /// The rule between the rows of a [`list_group`]: the text tone at a low
+    /// alpha, so it is a hairline on any card.
+    pub list_line: Color32,
+    /// How dark the shadows are, as a factor on their alpha: a light page
+    /// takes the hub's faint lift, not the dark theme's deep one.
+    pub shadow: f32,
+    /// Whether egui's dark visuals are the base ([`visuals`]).
+    pub dark: bool,
+}
 
-/// The live tone — **teal**. Selected segments, ticked boxes, hover and
-/// focus rings, sliders, and the plate an engaged control wears: the one
-/// saturated colour in the chrome, so it always means "this is the live thing".
-///
-/// The teal the ramp is tinted with, brought up to full voice. It carries
-/// [`INK`] at 9.1:1 and [`CREAM`] at only 1.9:1, so anything filled with it is
-/// labelled in [`INK`].
-pub const ACCENT: Color32 = Color32::from_rgb(0x5C, 0xC6, 0xC0);
-/// The accent at the top of its ladder: the text cursor, a text-selection
-/// handle, the rim on a *held* control (north-up lock, caps lock).
-///
-/// Deliberately the same value as [`ACCENT_TEXT`] — see the module note. This
-/// one is a **stroke**; that one is type.
-pub const ACCENT_BRIGHT: Color32 = Color32::WHITE;
+/// Today's look: the deep teal, read off Android's keyboard in its teal dark
+/// theme (2026-10-10) and laid out as the midas hub lays out its dark mode.
+pub const DARK: Palette = Palette {
+    ink: Color32::from_rgb(0x0F, 0x14, 0x16),
+    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
+    on_status: Color32::from_rgb(0x0F, 0x14, 0x16),
+    surface: Color32::from_rgb(0x14, 0x1A, 0x1C),
+    surface_raised: Color32::from_rgb(0x1F, 0x28, 0x29),
+    surface_hover: Color32::from_rgb(0x2A, 0x35, 0x36),
+    line: Color32::from_rgb(0x63, 0x79, 0x7C),
+    accent: Color32::from_rgb(0x5C, 0xC6, 0xC0),
+    accent_bright: Color32::WHITE,
+    accent_lift: Color32::WHITE,
+    accent_ring: Color32::from_rgb(0xA8, 0xDC, 0xD8),
+    accent_pressed: Color32::from_rgb(0x3F, 0xA9, 0xA2),
+    accent_text: Color32::WHITE,
+    accent_word: Color32::from_rgb(0xA8, 0xDC, 0xD8),
+    accent_muted: Color32::from_rgb(0x26, 0x3F, 0x42),
+    cream: Color32::from_rgb(0xF4, 0xF8, 0xF8),
+    text: Color32::from_rgb(0xE2, 0xE9, 0xEA),
+    text_dim: Color32::from_rgb(0xAA, 0xC2, 0xC6),
+    warn: Color32::from_rgb(0xD8, 0xC0, 0x7A),
+    error: Color32::from_rgb(0xF2, 0xA2, 0x96),
+    overlay: Color32::from_rgb(0x17, 0x23, 0x24),
+    glass: Color32::from_rgb(0x17, 0x23, 0x24),
+    panel: Color32::from_rgb(0x17, 0x23, 0x24),
+    card: Color32::from_rgb(0x16, 0x1F, 0x21),
+    panel_rim: Color32::from_rgb(0x2A, 0x35, 0x36),
+    overlay_line: Color32::from_rgb(0x2A, 0x35, 0x36),
+    overlay_soft: Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 140),
+    list_line: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22),
+    shadow: 1.0,
+    dark: true,
+};
 
-/// The ring around an *accent-filled* widget: the pressed button, the focused
-/// control, a dock disc whose panel is open, the panel header's medallion.
+/// The midas hub's light theme (2026-11-10), role for role. Three values move
+/// off the hub's, each for a ratio a test holds:
 ///
-/// A pale teal, brighter than [`ACCENT`] on purpose, doing two jobs: on the
-/// dark [`ACCENT_MUTED`] of a pressed button it is the boundary (7.4:1, well
-/// over the 3:1 a UI component needs), and on the [`ACCENT`] plate of an
-/// engaged disc it is the lit top rim that makes the plate read as a raised
-/// thing rather than as a sticker.
-pub const ACCENT_RING: Color32 = Color32::from_rgb(0xA8, 0xDC, 0xD8);
-/// The accent, pushed *down* — the fill of an accent-filled button while the
-/// pointer is held on it.
-///
-/// A press has to move the surface in the opposite direction from a hover, or
-/// the two states are one state: [`primary_button_sized`] lifts to
-/// [`ACCENT_BRIGHT`] under the pointer and sinks to this while held, which is
-/// what makes a click on the app's one call-to-action *feel* like a click. Its
-/// label is still [`INK`], at 6.5:1.
-pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(0x3F, 0xA9, 0xA2);
-/// The top of the *text* ladder — [`TEXT`] → [`CREAM`] → this. Links, speaker
-/// names, emphasised values.
-///
-/// Emphasis in type is lightness, not the accent: the teal is for controls,
-/// and text in it would make every link look pressable and every value look
-/// selected.
-pub const ACCENT_TEXT: Color32 = Color32::WHITE;
-/// The dark half of the accent: a pressed button, a selected row, a text
-/// selection. A deep teal — the keyboard's shift key — dark enough to carry
-/// [`CREAM`] at 10.5:1 and light enough to be a step above [`SURFACE_HOVER`].
-///
-/// This is what keeps the ladder safe. `active.weak_bg_fill` carries a label
-/// drawn in egui's `strong_text_color`, which is [`CREAM`]; filling it with
-/// [`ACCENT`] instead would put a light label on a light plate.
-pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x26, 0x3F, 0x42);
+///   - [`Palette::accent`] is the hub's `#5CC6C0` taken down to `#34938E`, the
+///     same hue: the hub's accent is 2.0:1 on white, and a plate, a slider's
+///     fill or a hover ring that identifies a control needs 3:1 against the
+///     surface it sits on (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
+///     The hub's own value is what a plate lifts to under the pointer
+///     ([`Palette::accent_lift`]), so it is still seen.
+///   - [`Palette::line`] is its strong border a step darker (3:1 on the page).
+///   - [`Palette::accent_ring`] / [`Palette::accent_pressed`] are a deeper teal
+///     than its accent-hover (3:1 round a pressed tag, 4.5:1 under the
+///     plate's ink).
+pub const LIGHT: Palette = Palette {
+    ink: Color32::from_rgb(0xE7, 0xED, 0xED),
+    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
+    on_status: Color32::WHITE,
+    surface: Color32::WHITE,
+    surface_raised: Color32::from_rgb(0xF8, 0xFA, 0xFA),
+    surface_hover: Color32::from_rgb(0xE7, 0xED, 0xED),
+    line: Color32::from_rgb(0x78, 0x8B, 0x8E),
+    accent: Color32::from_rgb(0x34, 0x93, 0x8E),
+    accent_bright: Color32::from_rgb(0x17, 0x69, 0x6A),
+    accent_lift: Color32::from_rgb(0x5C, 0xC6, 0xC0),
+    accent_ring: Color32::from_rgb(0x31, 0x8C, 0x87),
+    accent_pressed: Color32::from_rgb(0x31, 0x8C, 0x87),
+    accent_text: Color32::from_rgb(0x17, 0x69, 0x6A),
+    accent_word: Color32::from_rgb(0x17, 0x69, 0x6A),
+    accent_muted: Color32::from_rgb(0xD9, 0xF0, 0xEE),
+    cream: Color32::from_rgb(0x0F, 0x14, 0x16),
+    text: Color32::from_rgb(0x1F, 0x28, 0x29),
+    text_dim: Color32::from_rgb(0x54, 0x65, 0x68),
+    warn: Color32::from_rgb(0x85, 0x57, 0x00),
+    error: Color32::from_rgb(0xB3, 0x36, 0x1E),
+    overlay: Color32::from_rgb(0xF1, 0xF5, 0xF5),
+    glass: Color32::from_rgb(0xF1, 0xF5, 0xF5),
+    panel: Color32::from_rgb(0xF1, 0xF5, 0xF5),
+    card: Color32::WHITE,
+    panel_rim: Color32::from_rgb(0xDA, 0xE3, 0xE3),
+    overlay_line: Color32::from_rgb(0xDA, 0xE3, 0xE3),
+    overlay_soft: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 150),
+    list_line: Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 22),
+    shadow: 0.35,
+    dark: false,
+};
+
+static DARK_PALETTE: Palette = DARK;
+static LIGHT_PALETTE: Palette = LIGHT;
+static LIGHT_ON: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Set while [`dark_here`] draws something that is dark in both themes.
+    static DARK_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The palette in force. Read it where a colour is painted, never into a
+/// `const`, a `static` or a cached field: a copy taken before [`set_light`]
+/// keeps the other theme's colour.
+#[must_use]
+pub fn p() -> &'static Palette {
+    if LIGHT_ON.load(Ordering::Relaxed) && !DARK_HERE.with(std::cell::Cell::get) {
+        &LIGHT_PALETTE
+    } else {
+        &DARK_PALETTE
+    }
+}
+
+/// Draw `add` in the dark palette whatever the theme: a screen that is dark in
+/// both, as a phone's call and camera screens are (a picture, or the dark
+/// stage a call shows before one arrives). [`p`] answers [`DARK`] on this
+/// thread until it returns; give each `Ui` drawn inside it
+/// [`use_dark_visuals`] too, since egui's own widgets read the style, not
+/// [`p`].
+pub fn dark_here<R>(add: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DARK_HERE.with(|d| d.set(self.0));
+        }
+    }
+    let _restore = Restore(DARK_HERE.with(|d| d.replace(true)));
+    add()
+}
+
+/// Give `ui` (and what it lays out) the dark visuals, for a surface drawn in
+/// [`dark_here`]. Nothing to do while the theme is dark.
+pub fn use_dark_visuals(ui: &mut egui::Ui) {
+    if is_light() {
+        ui.style_mut().visuals = visuals_of(&DARK);
+    }
+}
+
+/// Switch the chrome to the light theme or back. Only the palette: the egui
+/// style that holds its colours is re-applied by [`apply_visuals`], which
+/// `ui_theme::follow_the_light` calls when the answer changes.
+pub fn set_light(on: bool) {
+    LIGHT_ON.store(on, Ordering::Relaxed);
+}
+
+/// Is the light theme in force?
+#[must_use]
+pub fn is_light() -> bool {
+    LIGHT_ON.load(Ordering::Relaxed)
+}
 
 /// **The brand orange, kept for the brand.**
 ///
 /// Its scope is the logo — the pin of [`paint_mark`], the tail
 /// of the wordmark ([`WORDMARK_TAIL_COLOR`]) and, in `index.html`, the
 /// loader's mark and progress bar — plus the few things that must shout: an
-/// unread badge, the live dot. The live *controls* are [`ACCENT`], its softer
+/// unread badge, the live dot. The live *controls* are [`Palette::accent`], its softer
 /// sibling, and must not use this.
 ///
 /// The separation is the point. While the chrome was orange this was spelled
@@ -201,42 +464,12 @@ pub const COUNCIL: Color32 = Color32::from_rgb(0x2F, 0x4A, 0x7A);
 /// blue, light enough to read.
 pub const COUNCIL_LIGHT: Color32 = Color32::from_rgb(0x9D, 0xB7, 0xE6);
 
-/// Off-white. Headings and the one or two things that must read brightest.
-pub const CREAM: Color32 = Color32::from_rgb(0xF4, 0xF8, 0xF8);
-/// Body text.
-pub const TEXT: Color32 = Color32::from_rgb(0xE2, 0xE9, 0xEA);
-/// Secondary text: units, coordinates, hints. Also `index.html`'s muted tone,
-/// so the pre-wasm splash and this one agree — **change it in both**.
-///
-/// Lifted on 2026-08-14, and re-hued with the rest of the ramp on 2026-09-10 at
-/// the same lightness. The value before that was measured on
-/// [`SURFACE`] alone, and this is the colour egui hands to
-/// `weak_text_color`, i.e. the one that lands on every surface in the ramp: it
-/// measured 4.40:1 on [`SURFACE_HOVER`] and 4.12:1 inside an [`OVERLAY`] box
-/// over bright map imagery. Both now clear 4.5.
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xAA, 0xC2, 0xC6);
-/// Warnings — a desaturated gold.
-///
-/// **One of the two colours the monochrome chrome keeps**, and it keeps them for
-/// the same reason road signs are not brand-coloured: caution and fault are
-/// *statements about the world*, not decoration, and a grey warning is a warning
-/// nobody reads as one. It also picked up the jobs the retired second accent
-/// used to do wherever those were really caution — a clipping microphone meter,
-/// an unsaved script, a frame that took longer than two 60 Hz frames.
-pub const WARN: Color32 = Color32::from_rgb(0xD8, 0xC0, 0x7A);
-/// Errors. Warm rather than pure red so it belongs to the same palette.
-///
-/// Lifted from `#E88B7D` on 2026-08-14, for the reason [`TEXT_DIM`] was: an
-/// error is the one string that must be readable wherever it lands, and it
-/// measured 3.84:1 on [`SURFACE_HOVER`] and 3.59:1 in an [`OVERLAY`] box over a
-/// bright basemap.
-pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
-
-// Script editor syntax colours (`lua_highlight`), on the code box's [`INK`].
-// Their own constants rather than borrowed ones: [`WARN`] on every string
-// would read as a page of warnings.
+// Script editor syntax colours (`lua_highlight`), on the code box's ink —
+// [`DARK`]'s in both themes: the script editor keeps a dark code box in the
+// light theme, so these are one set. Their own constants rather than borrowed
+// ones: a warning tone on every string would read as a page of warnings.
 /// Keywords — the accent, so the structure of a script is what stands out.
-pub const CODE_KEYWORD: Color32 = ACCENT;
+pub const CODE_KEYWORD: Color32 = Color32::from_rgb(0x5C, 0xC6, 0xC0);
 /// String literals — a warm sand.
 pub const CODE_STRING: Color32 = Color32::from_rgb(0xE6, 0xB8, 0x86);
 /// Numbers and `true` / `false` / `nil`.
@@ -248,60 +481,9 @@ pub const CODE_API: Color32 = Color32::from_rgb(0x8F, 0xCB, 0xFF);
 /// Any other call.
 pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
 
-/// The fill of the boxes that float *over* the map (status HUD, stats, driver
-/// chrome, the dock, the round map buttons): [`PANEL`]'s dark, solid.
-///
-/// **Solid since 2026-11-08**, asked for that day: "a bad implementation of
-/// glass". These were 92 % over a blurred, saturated copy of the frame, and on
-/// a busy city the blur came through as a brown wash behind the type. What a
-/// box stands on is said by its shadow ([`CARD_SHADOW`],
-/// `Visuals::window_shadow`), not by the map showing through.
-/// `monochrome-chrome.md` has the glass's history, so nobody walks it again.
-///
-/// **[`INK`], the same as a panel**, also asked that day: drawn as
-/// [`SURFACE`], the floating cards (the menu, a building, a person) came out a
-/// step lighter than the panels, and "some panels are lighter than others;
-/// they must be dark". One darkness for every surface a person reads as a
-/// panel; only a card *inside* one ([`SURFACE`]) stands a step off it.
-pub const OVERLAY: Color32 = PANEL;
-
-/// The window and popup fill: [`OVERLAY`]'s dark. The name stays for the call
-/// sites that paint "the card a window is"; there is no translucency left in
-/// the chrome.
-pub const GLASS: Color32 = PANEL;
-
-/// Every panel's surface — docked, full-screen on a phone, floating over the
-/// map: a dark teal (solid and one tone since 2026-11-08).
-///
-/// **Found with the person, 2026-11-10.** At [`INK`] the panels "looked
-/// black"; a teal pressed nearly to black (`#0B1918`) was "too little
-/// colour", and the person pointed at the midas hub's question card
-/// (`#192627`). With that, and [`SURFACE`] wells in it as the hub's options
-/// are, the blocks had "too much contrast against the background: the
-/// background a little darker, the blocks a little lighter" — so this is the
-/// hub's teal a step down, and the cards inside are [`CARD`], close to it.
-pub const PANEL: Color32 = Color32::from_rgb(0x17, 0x23, 0x24);
-
-/// A card inside a panel ([`list_group`], a chat or contact row): just off
-/// [`PANEL`], a touch darker and greyer, so a group of rows reads as one block
-/// by its hairline and shadow rather than by a jump in tone (2026-11-10, see
-/// [`PANEL`]).
-pub const CARD: Color32 = Color32::from_rgb(0x16, 0x1F, 0x21);
-
-/// The hairline round a panel, a window or a box over the map: the midas hub's
-/// `--m-border` (dark), solid. The shadow does the lifting; this only keeps a
-/// card's edge where a dark card meets a dark map.
-pub const PANEL_RIM: Color32 = Color32::from_rgb(0x2A, 0x35, 0x36);
-
-/// The rim around a box or a round button over the map: [`PANEL_RIM`].
-///
-/// It was white at 22 %, a lit edge on a sheet of glass; on a solid card that
-/// read as a gloss line, so it is the hub's border now. It never identifies a
-/// *control* — that is [`LINE`]'s job.
-pub const OVERLAY_LINE: Color32 = PANEL_RIM;
 /// Backing for the small text chips painted straight onto the map — place-pin
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
-/// [`OVERLAY`] on purpose: these are a few words over an arbitrary tile, so
+/// [`Palette::overlay`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
 pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 235);
 /// Halo behind map text that has no chip to sit on — the street names
@@ -316,7 +498,7 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14
 /// Neutral, not tinted: the map underneath supplies all the hue in the frame.
 pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0x16, 0x17, 0x19, 190);
 /// The stroke inside [`LABEL_HALO`]: a warm off-white, the colour of road paint
-/// rather than of paper, and not [`CREAM`] — this one lies on tarmac in the
+/// rather than of paper, and not [`Palette::cream`] — this one lies on tarmac in the
 /// world, that one is the chrome's, and the two are free to move apart.
 pub const LABEL_INK: Color32 = Color32::from_rgb(0xF6, 0xF3, 0xEC);
 
@@ -631,7 +813,7 @@ pub fn row_height() -> f32 {
 
 // ─── Style ────────────────────────────────────────────────────────────────────
 
-fn widgets() -> Widgets {
+fn widgets(c: &Palette) -> Widgets {
     let visuals = |bg: Color32, line: Color32, fg: Color32| WidgetVisuals {
         bg_fill: bg,
         weak_bg_fill: bg,
@@ -642,18 +824,18 @@ fn widgets() -> Widgets {
     };
     Widgets {
         // Separators, indent guides and plain labels all read off this one.
-        noninteractive: visuals(SURFACE, LINE, TEXT),
+        noninteractive: visuals(c.surface, c.line, c.text),
         // At rest and under the pointer as the midas hub's `m-button`: a dark
         // surface that lifts a step under the pointer. The hub's hairline is
-        // quieter than [`LINE`]; this one keeps the 3:1 a control boundary
+        // quieter than [`Palette::line`]; this one keeps the 3:1 a control boundary
         // needs (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
-        inactive: visuals(SURFACE, LINE, TEXT),
-        hovered: visuals(SURFACE_RAISED, ACCENT, CREAM),
+        inactive: visuals(c.surface, c.line, c.text),
+        hovered: visuals(c.surface_raised, c.accent, c.cream),
         // Pressed / focused — **one fill, not two.** `bg_fill` (the graphical
         // fill: slider grab, checkbox box) could take the full accent but
-        // `weak_bg_fill` (the button fill) carries a [`CREAM`] label, which
-        // measures 1.9:1 on the teal — so both are the dark [`ACCENT_MUTED`],
-        // which carries [`CREAM`] at 10.5:1 and looks the same whether a control
+        // `weak_bg_fill` (the button fill) carries a [`Palette::cream`] label, which
+        // measures 1.9:1 on the teal — so both are the dark [`Palette::accent_muted`],
+        // which carries [`Palette::cream`] at 10.5:1 and looks the same whether a control
         // is a button or a checkbox.
         //
         // `fg_stroke` must stay bright regardless: egui derives
@@ -662,34 +844,45 @@ fn widgets() -> Widgets {
         // turn every bold value in the UI near-invisible.
         active: WidgetVisuals {
             expansion: 1.0,
-            ..visuals(ACCENT_MUTED, ACCENT_RING, CREAM)
+            ..visuals(c.accent_muted, c.accent_ring, c.cream)
         },
         // An open menu button keeps the hover surface but drops the bright ring —
         // the popup below it is the thing to look at now.
-        open: visuals(SURFACE_HOVER, LINE, CREAM),
+        open: visuals(c.surface_hover, c.line, c.cream),
     }
 }
 
-/// The full brand [`egui::Visuals`], built by overriding [`egui::Visuals::dark`]
-/// rather than from scratch so the fields this doesn't have an opinion about
-/// (notably the dark-mode font colour transfer function) stay at egui's tuned
-/// defaults.
+/// The full brand [`egui::Visuals`] for the palette in force ([`p`]).
+#[must_use]
 pub fn visuals() -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    v.widgets = widgets();
-    v.selection = Selection {
-        bg_fill: ACCENT_MUTED,
-        stroke: Stroke::new(1.0, CREAM),
+    visuals_of(p())
+}
+
+/// The brand [`egui::Visuals`] for one palette, built by overriding
+/// [`egui::Visuals::dark`] (or [`egui::Visuals::light`]) rather than from
+/// scratch so the fields this doesn't have an opinion about (notably the
+/// font colour transfer function) stay at egui's tuned defaults.
+#[must_use]
+pub fn visuals_of(c: &Palette) -> egui::Visuals {
+    let mut v = if c.dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
     };
-    v.hyperlink_color = ACCENT_TEXT;
-    v.faint_bg_color = SURFACE_RAISED;
-    v.extreme_bg_color = INK;
-    v.code_bg_color = INK;
-    v.warn_fg_color = WARN;
-    v.error_fg_color = ERROR;
+    v.widgets = widgets(c);
+    v.selection = Selection {
+        bg_fill: c.accent_muted,
+        stroke: Stroke::new(1.0, c.cream),
+    };
+    v.hyperlink_color = c.accent_text;
+    v.faint_bg_color = c.surface_raised;
+    v.extreme_bg_color = c.ink;
+    v.code_bg_color = c.ink;
+    v.warn_fg_color = c.warn;
+    v.error_fg_color = c.error;
     // Pin the weak/disabled tone instead of letting egui derive it by alpha —
     // this is the same grey-blue the two splashes use, and it is measured.
-    v.weak_text_color = Some(TEXT_DIM);
+    v.weak_text_color = Some(c.text_dim);
     // Disabled is the one tone egui still derived by alpha, and its default 0.5
     // put a disabled label at 4.1:1 on the panel — *dimmer than `TEXT_DIM` hint
     // text at 6.9:1*, so the sentence explaining why a control was unavailable
@@ -698,13 +891,13 @@ pub fn visuals() -> egui::Visuals {
     // state without making it a colour nobody can find.
     v.disabled_alpha = 0.65;
 
-    // The midas hub's layers: a page ([`PANEL`]) and cards on it ([`GLASS`],
-    // which is [`SURFACE`]), solid.
-    v.panel_fill = PANEL;
-    v.window_fill = GLASS;
+    // The midas hub's layers: a page ([`Palette::panel`]) and cards on it ([`Palette::glass`],
+    // which is [`Palette::surface`]), solid.
+    v.panel_fill = c.panel;
+    v.window_fill = c.glass;
     // The hub's hairline. The same one the boxes over the map wear: a docked
     // panel and a floating readout are the same material at two sizes.
-    v.window_stroke = Stroke::new(1.0, PANEL_RIM);
+    v.window_stroke = Stroke::new(1.0, c.panel_rim);
     v.window_corner_radius = CornerRadius::same(RADIUS_LG);
     // The popups are the cards over the map (a place, a building), so they take
     // the windows' radius: at 8 pt beside 14 pt panes they read as a
@@ -717,16 +910,16 @@ pub fn visuals() -> egui::Visuals {
         offset: [0, 8],
         blur: 24,
         spread: 0,
-        color: Color32::from_black_alpha(150),
+        color: Color32::from_black_alpha((150.0 * c.shadow) as u8),
     };
     v.popup_shadow = Shadow {
         offset: [0, 8],
         blur: 22,
         spread: 0,
-        color: Color32::from_black_alpha(125),
+        color: Color32::from_black_alpha((125.0 * c.shadow) as u8),
     };
 
-    v.text_cursor.stroke = Stroke::new(2.0, ACCENT_BRIGHT);
+    v.text_cursor.stroke = Stroke::new(2.0, c.accent_bright);
     // The filled part of a slider takes the accent, so a value reads at a glance.
     v.slider_trailing_fill = true;
     v
@@ -814,12 +1007,22 @@ pub fn style_for(touch: bool) -> egui::Style {
 /// The style is set for **both** themes. This integration never feeds egui a
 /// `system_theme`, so it would fall back to dark on its own — but a light-theme
 /// context left on egui's stock style is a latent white flash, and the app has
-/// exactly one look either way.
+/// exactly one look at a time, chosen by [`set_light`] rather than by egui's
+/// theme: both of egui's slots hold the palette in force.
 pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts());
     let style = std::sync::Arc::new(style());
     ctx.set_style_of(egui::Theme::Dark, style.clone());
     ctx.set_style_of(egui::Theme::Light, style);
+}
+
+/// Re-apply the palette in force to a context's style, after [`set_light`].
+///
+/// Only the visuals: the spacing, the type scale and the debug switches
+/// `EguiManager::default` turns off are left as they are.
+pub fn apply_visuals(ctx: &egui::Context) {
+    let v = visuals();
+    ctx.all_styles_mut(|style| style.visuals = v.clone());
 }
 
 // ─── The mark ─────────────────────────────────────────────────────────────────
@@ -939,7 +1142,7 @@ pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32
 }
 
 /// The mark's cream: the pin's keyline and dot, `#F2EFEA` in every copy of the
-/// icon. Not [`CREAM`], which is the chrome's text colour and a cooler white.
+/// icon. Not [`Palette::cream`], which is the chrome's text colour and a cooler white.
 const MARK_CREAM: Color32 = Color32::from_rgb(0xF2, 0xEF, 0xEA);
 
 // ─── Wordmark ─────────────────────────────────────────────────────────────────
@@ -958,7 +1161,7 @@ pub const WORDMARK_TAIL: &str = "polis";
 /// The tail's orange — [`BRAND`], and no longer the accent.
 ///
 /// **Named rather than written at each of the three sites, because they had
-/// already drifted.** This was [`ACCENT_TEXT`] (`#FFA470`) here while
+/// already drifted.** This was [`Palette::accent_text`] (`#FFA470`) here while
 /// `index.html`'s `#wordmark b` carried `#FF9457`, so the name was painted in two
 /// different colours on the two halves of one startup screen — and neither was
 /// the orange beside it: the mark's ring and the loader's progress bar are plain
@@ -975,18 +1178,21 @@ pub const WORDMARK_TAIL_COLOR: Color32 = BRAND;
 /// Laid out as two galleys and placed from their combined width, because
 /// `Align2::CENTER_CENTER` on each piece separately would centre each of them on
 /// the same point and stack the two words on top of each other.
+///
+/// Cream on the splash's dark in both themes ([`DARK`]): the splash is the
+/// same screen as `index.html`'s loader, which is dark.
 pub fn paint_wordmark(p: &egui::Painter, center: egui::Pos2, size: f32, alpha: f32) {
     let a = |c: Color32| {
         Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
     };
     let font = FontId::new(size, brand_family());
-    let head = p.layout_no_wrap(WORDMARK_HEAD.to_owned(), font.clone(), a(CREAM));
+    let head = p.layout_no_wrap(WORDMARK_HEAD.to_owned(), font.clone(), a(DARK.cream));
     let tail = p.layout_no_wrap(WORDMARK_TAIL.to_owned(), font, a(WORDMARK_TAIL_COLOR));
     let total = head.size().x + tail.size().x;
     let left = center.x - total * 0.5;
     let top = center.y - head.size().y * 0.5;
     let head_w = head.size().x;
-    p.galley(egui::pos2(left, top), head, a(CREAM));
+    p.galley(egui::pos2(left, top), head, a(DARK.cream));
     p.galley(egui::pos2(left + head_w, top), tail, a(WORDMARK_TAIL_COLOR));
 }
 
@@ -1000,7 +1206,7 @@ pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
         ui.label(
             egui::RichText::new(WORDMARK_HEAD)
                 .font(font.clone())
-                .color(CREAM),
+                .color(p().cream),
         );
         ui.label(
             egui::RichText::new(WORDMARK_TAIL)
@@ -1034,8 +1240,8 @@ pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
 /// invisible until you put two of them on screen at once.
 pub fn overlay_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(OVERLAY)
-        .stroke(Stroke::new(1.0, OVERLAY_LINE))
+        .fill(p().overlay)
+        .stroke(Stroke::new(1.0, p().overlay_line))
         .corner_radius(CornerRadius::same(RADIUS_LG))
         .inner_margin(Margin::symmetric(14, 12))
 }
@@ -1083,7 +1289,7 @@ pub fn chip_frame() -> egui::Frame {
 pub const PRIMARY_BUTTON_HEIGHT: f32 = 40.0;
 
 /// **The** call to action on a screen: filled with the accent, labelled in
-/// [`INK`] at [`SIZE_VALUE`], taller than an ordinary button, and at least
+/// [`Palette::ink`] at [`SIZE_VALUE`], taller than an ordinary button, and at least
 /// `min_width` points wide.
 ///
 /// There should be at most one per screen, and it should be the thing you came to
@@ -1110,12 +1316,12 @@ pub const PRIMARY_BUTTON_HEIGHT: f32 = 40.0;
 /// which the alternative — wrapping it in a `Align::Center` layout — would,
 /// centring a narrow button in its row as a side effect.
 ///
-/// **And it answers the pointer.** The fill was a flat [`ACCENT`] in every
+/// **And it answers the pointer.** The fill was a flat [`Palette::accent`] in every
 /// state, so the one control on the screen whose whole job is to be pressed gave
 /// nothing back when you pressed it — no hover, no press, no focus ring, on a
 /// button that then waits on a network round trip. It lifts to
-/// [`ACCENT_BRIGHT`] under the pointer, sinks to [`ACCENT_PRESSED`] while held,
-/// and wears an [`ACCENT_RING`] outline when the keyboard is on it. The state
+/// [`Palette::accent_bright`] under the pointer, sinks to [`Palette::accent_pressed`] while held,
+/// and wears an [`Palette::accent_ring`] outline when the keyboard is on it. The state
 /// comes from the *previous* pass's response, read under the id this button is
 /// about to take — the same thing egui's own `Button` does internally, and the
 /// reason `next_auto_id` is safe here is that it reports the next id without
@@ -1129,15 +1335,15 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
     let hovered = was.as_ref().is_some_and(egui::Response::hovered);
     let focused = was.as_ref().is_some_and(egui::Response::has_focus);
     let fill = if !ui.is_enabled() {
-        ACCENT_MUTED
+        p().accent_muted
     } else if held {
-        ACCENT_PRESSED
+        p().accent_pressed
     } else if hovered {
-        ACCENT_BRIGHT
+        p().accent_lift
     } else {
-        ACCENT
+        p().accent
     };
-    // Depth (see `LIFT_SHADOW`): the accent's glow under it and a lit top edge,
+    // Depth (see `lift_shadow`): the accent's glow under it and a lit top edge,
     // both gone while it is held — a pressed key is down in the glass. The glow
     // has to go *under* the button, so its slot is reserved before the button
     // paints and filled once the rect is known.
@@ -1149,12 +1355,12 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
             egui::RichText::new(label)
                 .size(SIZE_VALUE)
                 .strong()
-                .color(INK),
+                .color(p().on_accent),
             egui::Atom::grow(),
         ))
         .fill(fill)
         .stroke(if focused {
-            Stroke::new(FOCUS_RING, ACCENT_RING)
+            Stroke::new(FOCUS_RING, p().accent_ring)
         } else {
             Stroke::NONE
         })
@@ -1166,14 +1372,14 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
     if lit {
         ui.painter().set(
             glow_slot,
-            SEGMENT_SHADOW.as_shape(resp.rect, CornerRadius::same(RADIUS)),
+            segment_shadow().as_shape(resp.rect, CornerRadius::same(RADIUS)),
         );
     }
     resp
 }
 
 /// The button beside a [`primary_button_sized`]: as tall, on a lit surface
-/// with a hairline, the icon in the accent and the word in [`CREAM`].
+/// with a hairline, the icon in the accent and the word in [`Palette::cream`].
 ///
 /// It replaces two things that each read wrong in a card: an
 /// [`action_button`], which is an outline pill the size of a line of text and
@@ -1205,13 +1411,13 @@ pub fn secondary_toggle(
     let gap = 6.0;
     let mut icon_g = (!icon.is_empty()).then(|| {
         ui.painter()
-            .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), ACCENT)
+            .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), p().accent)
     });
     let word_g = (!label.is_empty()).then(|| {
         ui.painter().layout_no_wrap(
             label.to_string(),
             FontId::new(SIZE_BODY, brand_family()),
-            CREAM,
+            p().cream,
         )
     });
     let content = |icon: &Option<std::sync::Arc<egui::Galley>>| {
@@ -1251,22 +1457,22 @@ pub fn secondary_toggle(
     // The midas hub's button (`m-button`): a dark surface with a hairline and
     // a small shadow, the word and its icon in the strong text tone. Under the
     // pointer it lifts a step and the hairline takes the accent; "on" is the
-    // hub's soft teal tag. The hairline is [`LINE`], firmer than the hub's,
+    // hub's soft teal tag. The hairline is [`Palette::line`], firmer than the hub's,
     // for the 3:1 a control boundary needs.
     let (fill, line, ink) = if !enabled {
-        (SURFACE, SURFACE_HOVER, CREAM)
+        (p().surface, p().surface_hover, p().cream)
     } else if on {
-        (ACCENT_MUTED, ACCENT_MUTED, ACCENT_RING)
+        (p().accent_muted, p().accent_muted, p().accent_word)
     } else if held {
-        (SURFACE_HOVER, LINE, CREAM)
+        (p().surface_hover, p().line, p().cream)
     } else if resp.hovered() {
-        (SURFACE_RAISED, ACCENT, CREAM)
+        (p().surface_raised, p().accent, p().cream)
     } else {
-        (SURFACE, LINE, CREAM)
+        (p().surface, p().line, p().cream)
     };
     let p = ui.painter();
     if enabled && !held && !on {
-        p.add(SEGMENT_SHADOW.as_shape(rect, CornerRadius::same(RADIUS)));
+        p.add(segment_shadow().as_shape(rect, CornerRadius::same(RADIUS)));
     }
     p.rect(
         rect,
@@ -1321,14 +1527,14 @@ const FOCUS_RING: f32 = 2.0;
 /// **Two rings, dark under light**, because this one is drawn *outside* the
 /// control and therefore lands on whatever is behind it — which for the dock and
 /// the compass is the map, at any brightness the day and the imagery can produce.
-/// A single [`CREAM`] ring is 16.7:1 over the panel and invisible over white
-/// paper; a single [`INK`] one is the reverse. The pair cannot both disappear, so
+/// A single [`Palette::cream`] ring is 16.7:1 over the panel and invisible over white
+/// paper; a single [`Palette::ink`] one is the reverse. The pair cannot both disappear, so
 /// the outline is legible everywhere without the palette having to guess what is
 /// under it. It used to be the light ring alone, and the monochrome chrome makes
 /// that worse rather than better: there is no longer a saturated colour to fall
 /// back on.
 ///
-/// [`CREAM`] and not the accent for the inner ring: an accent ring is the
+/// [`Palette::cream`] and not the accent for the inner ring: an accent ring is the
 /// *pressed* state, and would say the wrong thing.
 fn paint_focus_ring(ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, round: bool) {
     if !resp.has_focus() {
@@ -1338,7 +1544,10 @@ fn paint_focus_ring(ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, roun
     let ring = rect.expand(FOCUS_RING);
     // Outer first, wider, so the light ring is drawn over the middle of it and
     // what is left either side is a dark edge on both flanks.
-    for (width, colour) in [(FOCUS_RING * 2.0, INK), (FOCUS_RING, CREAM)] {
+    for (width, colour) in [
+        (FOCUS_RING * 2.0, self::p().ink),
+        (FOCUS_RING, self::p().cream),
+    ] {
         let stroke = Stroke::new(width, colour);
         if round {
             p.circle_stroke(ring.center(), ring.width() * 0.5, stroke);
@@ -1360,7 +1569,7 @@ fn paint_focus_ring(ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, roun
 /// rounded *rect* whose corner radius is capped well below half its height — a
 /// "circular" button built that way is a squircle that reads as a mistake next to
 /// the genuinely round compass. `selected` is the open-panel state and wears the
-/// engaged plate — [`ACCENT`] with [`INK`] on it, the same inversion every "this
+/// engaged plate — [`Palette::accent`] with [`Palette::ink`] on it, the same inversion every "this
 /// is on" control in the app uses.
 pub fn round_button(
     ui: &mut egui::Ui,
@@ -1368,7 +1577,7 @@ pub fn round_button(
     tooltip: &str,
     selected: bool,
 ) -> egui::Response {
-    round_button_on(ui, icon, tooltip, selected, (OVERLAY, OVERLAY_LINE))
+    round_button_on(ui, icon, tooltip, selected, (p().overlay, p().overlay_line))
 }
 
 fn round_button_on(
@@ -1383,9 +1592,9 @@ fn round_button_on(
     let resp = named(ui, resp, tooltip);
     let hovered = resp.hovered();
     let (fill, ring, ink) = match (selected, hovered) {
-        (true, _) => (ACCENT, ACCENT_RING, INK),
-        (false, true) => (SURFACE_HOVER, ACCENT, CREAM),
-        (false, false) => (rest.0, rest.1, TEXT),
+        (true, _) => (p().accent, p().accent_ring, p().on_accent),
+        (false, true) => (p().surface_hover, p().accent, p().cream),
+        (false, false) => (rest.0, rest.1, p().text),
     };
     paint_disc(
         ui.painter(),
@@ -1467,22 +1676,36 @@ pub fn call_button(
         } else {
             c
         };
-        (c, c, CREAM)
+        // The glyph on a call colour is white in both themes, as on a phone.
+        (c, c, DARK.cream)
+    };
+    // The frosted plate of a switch that is on: white over the dark call
+    // screen, black over a light banner.
+    let veil = |a: u8| {
+        if p().dark {
+            Color32::from_white_alpha(a)
+        } else {
+            Color32::from_black_alpha(a / 2)
+        }
     };
     let (fill, ring, ink) = match tone {
         CallTone::HangUp => solid(CALL_END_RED),
         CallTone::Accept => solid(CALL_ACCEPT_GREEN),
-        CallTone::Off => (if hovered { ACCENT_RING } else { CREAM }, ACCENT_RING, INK),
+        CallTone::Off => (
+            if hovered { p().accent_ring } else { p().cream },
+            p().accent_ring,
+            p().ink,
+        ),
         CallTone::On => (
-            Color32::from_white_alpha(if pressed {
+            veil(if pressed {
                 70
             } else if hovered {
                 56
             } else {
                 38
             }),
-            Color32::from_white_alpha(46),
-            CREAM,
+            veil(46),
+            p().cream,
         ),
     };
     paint_disc(
@@ -1533,17 +1756,6 @@ pub const OSD_GAP: f32 = 8.0;
 /// it had become.
 pub const OSD_GROUP_GAP: f32 = 18.0;
 
-/// The fill of a control that is a *guide* rather than a plate — the
-/// thumbstick's well, which is [`ROUND_BUTTON_SIZE`]-and-a-half across and at
-/// [`OVERLAY`]'s opacity read as a hole punched in the map rather than as
-/// something to put a thumb on. Same graphite, half the coverage.
-///
-/// Nothing legible sits on it, which is what lets it go this far — [`OVERLAY`]'s
-/// own note is a contrast argument about the text inside a box, and there is no
-/// text here. The floor is the other direction: at alpha 90 the well vanished
-/// into pale beige map, and a stick you cannot see the travel of is a pad.
-pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 140);
-
 /// Where a [`map_disc`] wants its mark drawn, and in what ink.
 pub struct DiscFace {
     pub center: egui::Pos2,
@@ -1558,10 +1770,10 @@ pub struct DiscFace {
 /// the reason).
 ///
 /// `on` is the engaged state — a panel open, a lock held, a button pressed — and
-/// wears the same [`ACCENT`] plate a selected dock disc does, so "this is on" is
+/// wears the same [`Palette::accent`] plate a selected dock disc does, so "this is on" is
 /// one treatment everywhere on the map: a dark glyph on a teal plate, which
-/// is unmistakable against a map at any brightness. `tone` is the rim that engagement carries: [`ACCENT_RING`]
-/// normally, [`ACCENT_BRIGHT`] for the *held* states (north-up lock,
+/// is unmistakable against a map at any brightness. `tone` is the rim that engagement carries: [`Palette::accent_ring`]
+/// normally, [`Palette::accent_bright`] for the *held* states (north-up lock,
 /// follow-and-rotate), which also draw a second, heavier ring — with no second
 /// accent left, "held" is said by weight, not by colour.
 ///
@@ -1578,13 +1790,13 @@ pub fn map_disc(
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size), sense);
     let held = resp.is_pointer_button_down_on();
     let (fill, ring, ink) = match (on || held, resp.hovered()) {
-        (true, _) => (ACCENT, tone, INK),
-        (false, true) => (SURFACE_HOVER, ACCENT, CREAM),
-        (false, false) => (OVERLAY, OVERLAY_LINE, TEXT),
+        (true, _) => (p().accent, tone, p().on_accent),
+        (false, true) => (p().surface_hover, p().accent, p().cream),
+        (false, false) => (p().overlay, p().overlay_line, p().text),
     };
     let radius = size * 0.5 - 1.0;
     let p = ui.painter();
-    paint_disc_shadow(p, rect.center(), radius, LIFT_SHADOW);
+    paint_disc_shadow(p, rect.center(), radius, lift_shadow());
     p.circle_filled(rect.center(), radius, fill);
     p.circle_stroke(rect.center(), radius, Stroke::new(1.5, ring));
     paint_contact_edge(p, rect.center(), radius + 0.75);
@@ -1600,16 +1812,22 @@ pub fn map_disc(
 }
 
 /// Midas's gold: the hub's theme and its icon (midas `web/src/icon.svg`), which
-/// is [`WARN`]'s value because both are that theme's warning colour.
+/// is [`Palette::warn`]'s value because both are that theme's warning colour —
+/// in the light theme too, where the hub's warning is an amber-brown that
+/// reads on the light disc the mark sits on.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the link is native-only
-pub const MIDAS_GOLD: Color32 = WARN;
+#[must_use]
+pub fn midas_gold() -> Color32 {
+    p().warn
+}
 
 /// The Midas mark — an M of five joined points, the hub and its machines — in
-/// [`MIDAS_GOLD`], drawn on a disc of `radius` at `c`. Its geometry is the
+/// [`midas_gold`], drawn on a disc of `radius` at `c`. Its geometry is the
 /// icon's, in that SVG's 64-unit square centred on (32, 32); the gold square
 /// behind it there is the disc here.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn paint_midas_mark(p: &egui::Painter, c: egui::Pos2, radius: f32) {
+    let gold = midas_gold();
     let s = radius / 26.0;
     let at = |x: f32, y: f32| c + egui::vec2(x - 32.0, y - 32.0) * s;
     let points = [
@@ -1621,10 +1839,10 @@ pub fn paint_midas_mark(p: &egui::Painter, c: egui::Pos2, radius: f32) {
     ];
     p.add(egui::Shape::line(
         points.to_vec(),
-        Stroke::new(5.0 * s, MIDAS_GOLD),
+        Stroke::new(5.0 * s, gold),
     ));
     for pt in points {
-        p.circle_filled(pt, 4.0 * s, MIDAS_GOLD);
+        p.circle_filled(pt, 4.0 * s, gold);
     }
 }
 
@@ -1648,14 +1866,14 @@ struct Disc<'a> {
 /// A translucent-black hairline just outside a floating plate.
 ///
 /// **The cost of inverting the engaged state, and the fix for it.** An engaged
-/// disc is [`ACCENT`] now — a light plate — and the map's brightest regions are
+/// disc is [`Palette::accent`] now — a light plate — and the map's brightest regions are
 /// the sky and the near-white paper the basemap is printed on, so over those the
 /// plate and its lighter rim both dissolve and the control disappears at exactly
 /// the moment it is *on*. That is the same failure the *off* state used to have
 /// over bright tiles, which is why its ring went to 1.5 pt; the light plate needs
 /// the other half of the answer.
 ///
-/// Black at low alpha rather than [`INK`], for the reason [`OVERLAY_LINE`] is
+/// Black at low alpha rather than [`Palette::ink`], for the reason [`Palette::overlay_line`] is
 /// white at low alpha: it composites, so it is a soft contact shadow on anything
 /// pale and simply not there on anything dark — where the light rim is already
 /// doing the work. Both edges are always drawn and neither has a state to get
@@ -1677,45 +1895,48 @@ fn paint_contact_edge(p: &egui::Painter, center: egui::Pos2, radius: f32) {
 
 /// The shadow a floating control casts: a little below it and soft, so it
 /// reads as standing off the surface rather than printed on it.
-const LIFT_SHADOW: Shadow = Shadow {
-    offset: [0, 3],
-    blur: 12,
-    spread: 0,
-    color: Color32::from_black_alpha(100),
-};
+fn lift_shadow() -> Shadow {
+    shadow([0, 3], 12, 100)
+}
+
+/// A soft black shadow at `alpha` in the dark theme, scaled by
+/// [`Palette::shadow`]: on a light page the hub's lift is a faint one.
+fn shadow(offset: [i8; 2], blur: u8, alpha: u8) -> Shadow {
+    Shadow {
+        offset,
+        blur,
+        spread: 0,
+        color: Color32::from_black_alpha((f32::from(alpha) * p().shadow).round() as u8),
+    }
+}
 
 /// The shadow under a card in a panel ([`list_group`], a chat row, a community
 /// row): the midas hub's `--lift-2`, as near as one egui shadow comes — a few
-/// points down, soft, darker than the page, so a [`SURFACE`] card on a
-/// [`PANEL`] reads as lying on it rather than printed into it.
-pub const CARD_SHADOW: Shadow = Shadow {
-    offset: [0, 4],
-    blur: 14,
-    spread: 0,
-    color: Color32::from_black_alpha(150),
-};
+/// points down, soft, darker than the page, so a card on a panel reads as
+/// lying on it rather than printed into it.
+#[must_use]
+pub fn card_shadow() -> Shadow {
+    shadow([0, 4], 14, 150)
+}
 
 /// The shadow under the chosen option of a [`segmented`] control and under a
 /// button at rest: the hub's `--m-shadow`, close and small.
-const SEGMENT_SHADOW: Shadow = Shadow {
-    offset: [0, 1],
-    blur: 4,
-    spread: 0,
-    color: Color32::from_black_alpha(120),
-};
+fn segment_shadow() -> Shadow {
+    shadow([0, 1], 4, 120)
+}
 
 /// The chosen option of a segmented control, painted: a raised card with the
 /// small shadow ([`segmented`], the Community | World switch).
-pub fn paint_raised(p: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
-    p.add(SEGMENT_SHADOW.as_shape(rect, corner));
-    p.rect_filled(rect, corner, SURFACE_RAISED);
+pub fn paint_raised(painter: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
+    painter.add(segment_shadow().as_shape(rect, corner));
+    painter.rect_filled(rect, corner, p().surface_raised);
 }
 
-/// A card in a panel, painted: its [`CARD_SHADOW`] and then its fill. For the
+/// A card in a panel, painted: its [`card_shadow`] and then its fill. For the
 /// rows that are painted rather than laid out in a `Frame` (a `Frame` takes
-/// `.shadow(CARD_SHADOW)`).
+/// `.shadow(card_shadow())`).
 pub fn paint_card(p: &egui::Painter, rect: egui::Rect, corner: CornerRadius, fill: Color32) {
-    p.add(CARD_SHADOW.as_shape(rect, corner));
+    p.add(card_shadow().as_shape(rect, corner));
     p.rect_filled(rect, corner, fill);
 }
 
@@ -1729,7 +1950,7 @@ fn paint_disc_shadow(p: &egui::Painter, center: egui::Pos2, radius: f32, shadow:
 fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
     // A flat plate under one soft shadow, as the midas hub draws its round
     // buttons. The sheen and the accent's glow went with the glass (2026-11-08).
-    paint_disc_shadow(p, center, radius, LIFT_SHADOW);
+    paint_disc_shadow(p, center, radius, lift_shadow());
     p.circle_filled(center, radius, d.fill);
     paint_contact_edge(p, center, radius + d.ring_width * 0.5);
     p.circle_stroke(center, radius, Stroke::new(d.ring_width, d.ring));
@@ -1906,17 +2127,17 @@ fn menu_entry_full(
     });
     let hovered = enabled && resp.hovered();
     let ink = match (enabled, selected, hovered) {
-        (false, _, _) => TEXT_DIM.gamma_multiply(0.6),
-        (_, true, _) => ACCENT_TEXT,
-        (_, false, true) => CREAM,
-        _ => TEXT,
+        (false, _, _) => p().text_dim.gamma_multiply(0.6),
+        (_, true, _) => p().accent_text,
+        (_, false, true) => p().cream,
+        _ => p().text,
     };
     let p = ui.painter();
     if hovered || resp.is_pointer_button_down_on() {
         let fill = if resp.is_pointer_button_down_on() {
-            ACCENT_MUTED
+            self::p().accent_muted
         } else {
-            SURFACE_HOVER
+            self::p().surface_hover
         };
         p.rect_filled(rect, CornerRadius::same(RADIUS_SM), fill);
     }
@@ -1927,7 +2148,7 @@ fn menu_entry_full(
             rect.left_top() + egui::vec2(1.0, 5.0),
             egui::vec2(3.0, height - 10.0),
         );
-        p.rect_filled(bar, CornerRadius::same(2), ACCENT);
+        p.rect_filled(bar, CornerRadius::same(2), self::p().accent);
     }
     let x = rect.left() + 8.0;
     if !icon.is_empty() {
@@ -1986,9 +2207,9 @@ pub fn chip_sized(
 
 fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
     let (fill, stroke, ink) = if selected {
-        (ACCENT, ACCENT_RING, INK)
+        (p().accent, p().accent_ring, p().on_accent)
     } else {
-        (SURFACE_RAISED, LINE, TEXT)
+        (p().surface_raised, p().line, p().text)
     };
     egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
         .fill(fill)
@@ -2010,11 +2231,11 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (ACCENT_MUTED, ACCENT_RING, CREAM)
+        (p().accent_muted, p().accent_ring, p().cream)
     } else if resp.hovered() {
-        (SURFACE_HOVER, ACCENT, CREAM)
+        (p().surface_hover, p().accent, p().cream)
     } else {
-        (Color32::TRANSPARENT, Color32::TRANSPARENT, TEXT_DIM)
+        (Color32::TRANSPARENT, Color32::TRANSPARENT, p().text_dim)
     };
     let p = ui.painter();
     p.rect(
@@ -2056,11 +2277,11 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
     let resp = named(ui, resp, "More");
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (ACCENT_MUTED, ACCENT_RING, CREAM)
+        (p().accent_muted, p().accent_ring, p().cream)
     } else if resp.hovered() {
-        (SURFACE_HOVER, ACCENT, CREAM)
+        (p().surface_hover, p().accent, p().cream)
     } else {
-        (SURFACE_RAISED, LINE, TEXT_DIM)
+        (p().surface_raised, p().line, p().text_dim)
     };
     let p = ui.painter();
     p.rect(
@@ -2126,7 +2347,7 @@ pub fn panel_header_with(
             egui::pos2(band.left(), band.bottom() - 0.5),
             egui::pos2(band.right(), band.bottom() - 0.5),
         ],
-        Stroke::new(1.0, OVERLAY_LINE),
+        Stroke::new(1.0, p().overlay_line),
     );
 
     let close;
@@ -2155,7 +2376,7 @@ pub fn panel_header_with(
                 egui::Label::new(
                     egui::RichText::new(title)
                         .font(FontId::new(SIZE_PANEL_TITLE, brand_family()))
-                        .color(CREAM),
+                        .color(p().cream),
                 )
                 .truncate()
                 .selectable(false),
@@ -2196,11 +2417,11 @@ pub fn panel_header_with(
 /// ("ONLINE NOW"): a section title is a signpost, and drawn bold in the brightest
 /// tone it competed with the controls under it for the eye.
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    section_tinted(ui, title, TEXT_DIM);
+    section_tinted(ui, title, p().text_dim);
 }
 
 /// [`section`] in a colour of its own: the admin pages' headings are
-/// [`WARN`] gold, the colour Admin wears everywhere it appears
+/// [`Palette::warn`] gold, the colour Admin wears everywhere it appears
 /// (`docs/mockups/home-and-profile/v2`).
 ///
 /// Drawn as the midas hub heads its groups ("Running 4", `.home__head`):
@@ -2220,7 +2441,7 @@ pub fn section_tinted(ui: &mut egui::Ui, title: &str, tone: Color32) {
             ui.label(
                 egui::RichText::new(n)
                     .font(FontId::new(SIZE_SUB, brand_family()))
-                    .color(LINE),
+                    .color(p().line),
             );
         }
     });
@@ -2268,17 +2489,14 @@ pub enum RowEnd<'a> {
     Nothing,
 }
 
-/// The hairline between the rows of a [`list_group`].
-const LIST_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22);
-
 /// A list of rows on one rounded surface, with hairlines between them: the
 /// shape of the You page, Settings and Admin. One surface per group, so a page
 /// reads as a few blocks of related things rather than one long column.
 pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let out = egui::Frame::NONE
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, LIST_LINE))
-        .shadow(CARD_SHADOW)
+        .fill(p().card)
+        .stroke(egui::Stroke::new(1.0, p().list_line))
+        .shadow(card_shadow())
         .corner_radius(egui::CornerRadius::same(16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -2292,7 +2510,7 @@ pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
 
 /// One row of a [`list_group`]: an icon on a small raised square, a title, an
 /// optional line under it, and `end` on the right. `tone` is the icon's ink
-/// ([`ACCENT`] for most, [`WARN`] on the admin pages, [`ERROR`] for a row that
+/// ([`Palette::accent`] for most, [`Palette::warn`] on the admin pages, [`Palette::error`] for a row that
 /// destroys something, whose title takes the same colour).
 pub fn list_row(
     ui: &mut egui::Ui,
@@ -2308,23 +2526,23 @@ pub fn list_row(
     let resp = named(ui, resp, title);
     let p = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
-        p.rect_filled(rect, egui::CornerRadius::same(8), SURFACE_HOVER);
+        p.rect_filled(rect, egui::CornerRadius::same(8), self::p().surface_hover);
     }
     p.line_segment(
         [
             egui::pos2(rect.left() + 58.0, rect.bottom() - 0.5),
             egui::pos2(rect.right(), rect.bottom() - 0.5),
         ],
-        egui::Stroke::new(1.0, LIST_LINE),
+        egui::Stroke::new(1.0, self::p().list_line),
     );
     let chip = egui::Rect::from_center_size(
         egui::pos2(rect.left() + 12.0 + 16.0, rect.center().y),
         egui::Vec2::splat(32.0),
     );
-    let chip_fill = if tone == WARN {
-        WARN.gamma_multiply(0.14)
+    let chip_fill = if tone == self::p().warn {
+        self::p().warn.gamma_multiply(0.14)
     } else {
-        SURFACE_RAISED
+        self::p().surface_raised
     };
     p.rect_filled(chip, egui::CornerRadius::same(10), chip_fill);
     p.text(
@@ -2343,7 +2561,7 @@ pub fn list_row(
             egui::Align2::RIGHT_CENTER,
             crate::systems::icons::CHEVRON_RIGHT,
             egui::FontId::proportional(18.0),
-            LINE,
+            self::p().line,
         );
         *right -= 24.0;
     };
@@ -2356,7 +2574,7 @@ pub fn list_row(
                 egui::Align2::RIGHT_CENTER,
                 n.to_string(),
                 egui::FontId::proportional(13.0),
-                TEXT_DIM,
+                self::p().text_dim,
             );
             right = r.left() - 8.0;
         }
@@ -2384,7 +2602,7 @@ pub fn list_row(
                 egui::Align2::RIGHT_CENTER,
                 word,
                 egui::FontId::proportional(12.5),
-                TEXT_DIM,
+                self::p().text_dim,
             );
             right = r.left() - 8.0;
         }
@@ -2404,11 +2622,15 @@ pub fn list_row(
         let gy = y - g.size().y / 2.0;
         p.galley(egui::pos2(x, gy), g, color);
     };
-    let title_tone = if tone == ERROR { ERROR } else { TEXT };
+    let title_tone = if tone == self::p().error {
+        self::p().error
+    } else {
+        self::p().text
+    };
     match sub {
         Some(sub) => {
             line(title, 14.5, title_tone, rect.center().y - 9.0);
-            line(sub, 12.0, TEXT_DIM, rect.center().y + 10.0);
+            line(sub, 12.0, self::p().text_dim, rect.center().y + 10.0);
         }
         None => line(title, 14.5, title_tone, rect.center().y),
     }
@@ -2453,7 +2675,7 @@ pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut e
                         egui::Button::new(
                             egui::RichText::new(crate::systems::icons::BACK)
                                 .size(22.0)
-                                .color(CREAM),
+                                .color(p().cream),
                         )
                         .frame(false)
                         .min_size(egui::vec2(row_h, row_h)),
@@ -2461,7 +2683,7 @@ pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut e
                     .on_hover_text("Back");
                 back = page_back(ui.ctx(), resp.clicked());
                 ui.add(
-                    egui::Label::new(egui::RichText::new(title).size(18.0).color(CREAM))
+                    egui::Label::new(egui::RichText::new(title).size(18.0).color(p().cream))
                         .truncate()
                         .selectable(false),
                 );
@@ -2558,7 +2780,7 @@ pub fn press_page_back(ctx: &egui::Context) {
 }
 
 /// One control with several positions: a raised pill with equal-width
-/// segments, the chosen one on the [`ACCENT`] plate in [`INK`] — the Chats
+/// segments, the chosen one on the [`Palette::accent`] plate in [`Palette::ink`] — the Chats
 /// screen's toggle (`chats::segmented`) made general. Returns whether the
 /// value changed; `value` is written only on a click, so a caller holding a
 /// resource does not mark it changed every frame.
@@ -2592,7 +2814,7 @@ pub fn segmented<T: PartialEq + Copy>(
     let fits = |size: f32| {
         options.iter().all(|(_, label)| {
             ui.ctx().fonts_mut(|f| {
-                f.layout_no_wrap((*label).to_string(), FontId::proportional(size), TEXT)
+                f.layout_no_wrap((*label).to_string(), FontId::proportional(size), p().text)
                     .size()
                     .x
             }) <= seg_w - 8.0
@@ -2607,11 +2829,11 @@ pub fn segmented<T: PartialEq + Copy>(
     // hairline, and the chosen option a raised card on it — not an accent
     // plate. The accent stays for the one primary action on a page.
     let p = ui.painter().clone();
-    p.rect_filled(rect, CornerRadius::same(RADIUS), INK);
+    p.rect_filled(rect, CornerRadius::same(RADIUS), self::p().ink);
     p.rect_stroke(
         rect,
         CornerRadius::same(RADIUS),
-        Stroke::new(1.0, SURFACE_HOVER),
+        Stroke::new(1.0, self::p().surface_hover),
         egui::StrokeKind::Inside,
     );
     let mut changed = false;
@@ -2628,17 +2850,17 @@ pub fn segmented<T: PartialEq + Copy>(
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, *label)
         });
         let (fill, ink) = if on {
-            (SURFACE_RAISED, CREAM)
+            (self::p().surface_raised, self::p().cream)
         } else if resp.is_pointer_button_down_on() {
-            (SURFACE, CREAM)
+            (self::p().surface, self::p().cream)
         } else if resp.hovered() {
-            (Color32::TRANSPARENT, CREAM)
+            (Color32::TRANSPARENT, self::p().cream)
         } else {
-            (Color32::TRANSPARENT, TEXT_DIM)
+            (Color32::TRANSPARENT, self::p().text_dim)
         };
         let corner = CornerRadius::same(RADIUS - 3);
         if on {
-            p.add(SEGMENT_SHADOW.as_shape(r, corner));
+            p.add(segment_shadow().as_shape(r, corner));
         }
         p.rect_filled(r, corner, fill);
         p.text(
@@ -2671,7 +2893,7 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(SIZE_CHIP)
-            .color(TEXT_DIM)
+            .color(p().text_dim)
             .italics(),
     );
 }
@@ -2690,10 +2912,12 @@ pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
         ui.label(
             egui::RichText::new(headline)
                 .size(SIZE_BODY)
-                .color(TEXT_DIM),
+                .color(p().text_dim),
         );
         ui.add_space(4.0);
-        ui.add(egui::Label::new(egui::RichText::new(hint).size(SIZE_SUB).color(TEXT_DIM)).wrap());
+        ui.add(
+            egui::Label::new(egui::RichText::new(hint).size(SIZE_SUB).color(p().text_dim)).wrap(),
+        );
     });
     ui.add_space(12.0);
 }
@@ -2706,8 +2930,12 @@ pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
 /// spinners, in one app, for one meaning.
 pub fn busy(ui: &mut egui::Ui, label: &str) {
     ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(SIZE_BODY).color(ACCENT));
-        ui.label(egui::RichText::new(label).size(SIZE_SUB).color(TEXT_DIM));
+        ui.add(egui::Spinner::new().size(SIZE_BODY).color(p().accent));
+        ui.label(
+            egui::RichText::new(label)
+                .size(SIZE_SUB)
+                .color(p().text_dim),
+        );
     });
 }
 
@@ -2721,7 +2949,7 @@ pub fn busy_progress(ui: &mut egui::Ui, label: &str, done: usize, total: usize) 
 /// An inline failure with a Dismiss, returning `true` when dismissed so the
 /// caller clears its own `Option<String>`.
 ///
-/// On a faint [`ERROR`]-tinted chip rather than as bare coloured text, so that an
+/// On a faint [`Palette::error`]-tinted chip rather than as bare coloured text, so that an
 /// error can never again be styled as a footnote — the Search panel reported a
 /// geocoding failure through `ui.weak()`, which is the *quietest* tone in the
 /// palette, for the one string that most needs to be read.
@@ -2729,14 +2957,14 @@ pub fn busy_progress(ui: &mut egui::Ui, label: &str, done: usize, total: usize) 
 pub fn inline_error(ui: &mut egui::Ui, message: &str) -> bool {
     let mut dismissed = false;
     egui::Frame::NONE
-        .fill(ERROR.gamma_multiply(0.16))
-        .stroke(Stroke::new(1.0, ERROR.gamma_multiply(0.5)))
+        .fill(p().error.gamma_multiply(0.16))
+        .stroke(Stroke::new(1.0, p().error.gamma_multiply(0.5)))
         .corner_radius(CornerRadius::same(RADIUS_SM))
         .inner_margin(Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(message).size(SIZE_SUB).color(ERROR))
+                    egui::Label::new(egui::RichText::new(message).size(SIZE_SUB).color(p().error))
                         .wrap(),
                 );
             });
@@ -2808,9 +3036,13 @@ pub fn confirm_button(ui: &mut egui::Ui, id: egui::Id, label: &str, confirm_labe
 
     let resp = if armed {
         ui.add(
-            egui::Button::new(egui::RichText::new(confirm_label).color(INK).strong())
-                .fill(ERROR)
-                .corner_radius(CornerRadius::same(RADIUS_SM)),
+            egui::Button::new(
+                egui::RichText::new(confirm_label)
+                    .color(p().on_status)
+                    .strong(),
+            )
+            .fill(p().error)
+            .corner_radius(CornerRadius::same(RADIUS_SM)),
         )
     } else {
         action_button(ui, label)
@@ -2849,7 +3081,7 @@ pub fn checkbox(
     // A ticked box is a teal plate with a dark tick: "on" in the same
     // treatment as every other engaged control. egui strokes the tick in the
     // label's colour, so the box takes the accent through the style and the
-    // tick is painted again over it in [`INK`].
+    // tick is painted again over it in [`Palette::ink`].
     let was = *checked;
     ui.scope(|ui| {
         let square = CornerRadius::same(RADIUS_SM);
@@ -2862,8 +3094,8 @@ pub fn checkbox(
         ] {
             v.corner_radius = square;
             if was {
-                v.bg_fill = ACCENT;
-                v.bg_stroke = Stroke::new(1.0, ACCENT_RING);
+                v.bg_fill = p().accent;
+                v.bg_stroke = Stroke::new(1.0, p().accent_ring);
             }
         }
         let resp = ui.checkbox(checked, text);
@@ -2880,7 +3112,7 @@ pub fn checkbox(
                     egui::pos2(r.center().x, r.bottom()),
                     egui::pos2(r.right(), r.top()),
                 ],
-                Stroke::new(2.0, INK),
+                Stroke::new(2.0, p().on_accent),
             ));
         }
         resp
@@ -2939,9 +3171,9 @@ pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
             )
         });
         let ink = if resp.is_pointer_button_down_on() || shown {
-            ACCENT
+            p().accent
         } else {
-            TEXT_DIM
+            p().text_dim
         };
         paint_eye(ui.painter(), rect, shown, ink);
         paint_focus_ring(ui, &resp, rect, false);
@@ -3037,43 +3269,56 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    /// Both palettes, named, for the tests that hold in each.
+    const BOTH: [(&str, &Palette); 2] = [("dark", &DARK), ("light", &LIGHT)];
+
     /// The palette's whole claim is that it is *legible*, and a colour is very
     /// easy to nudge into looking nicer and reading worse. Pin the pairs that
-    /// actually occur: text on a panel, text on a selected row, text on the
-    /// pressed-button orange.
+    /// actually occur: text on a panel, text on a selected row, the ink on the
+    /// accent plate — in both themes.
     #[test]
     fn text_colours_clear_their_backgrounds() {
-        for (name, fg, bg, min) in [
-            ("body on panel", TEXT, SURFACE, 4.5),
-            ("body on raised", TEXT, SURFACE_RAISED, 4.5),
-            ("dim on panel", TEXT_DIM, SURFACE, 4.5),
-            ("heading on panel", CREAM, SURFACE, 4.5),
-            ("link on panel", ACCENT_TEXT, SURFACE, 4.5),
-            ("selected row", CREAM, ACCENT_MUTED, 4.5),
-            ("label on pressed button", CREAM, ACCENT_MUTED, 4.5),
-            ("ink on an engaged plate", INK, ACCENT, 4.5),
-            // The three fills [`primary_button_sized`] moves between. The label
-            // is [`INK`] in all of them — which since the repaint is the *easy*
-            // direction, all three being light tones, so these now guard against
-            // a future accent drifting dark rather than against the press going
-            // too far down.
-            ("primary label, hovered", INK, ACCENT_BRIGHT, 4.5),
-            ("primary label, pressed", INK, ACCENT_PRESSED, 4.5),
-            ("warning on panel", WARN, SURFACE, 4.5),
-            ("error on panel", ERROR, SURFACE, 4.5),
-            // The script editor's code box is `extreme_bg_color`, i.e. INK.
-            ("code text", TEXT, INK, 4.5),
-            ("code keyword", CODE_KEYWORD, INK, 4.5),
-            ("code string", CODE_STRING, INK, 4.5),
-            ("code literal", CODE_LITERAL, INK, 4.5),
-            ("code comment", CODE_COMMENT, INK, 4.5),
-            ("code api", CODE_API, INK, 4.5),
-            ("code call", CODE_CALL, INK, 4.5),
-            // Not text: a fill, a rule or a focus ring, which WCAG puts at 3:1.
-            ("focus ring on panel", ACCENT, SURFACE, 3.0),
+        for (theme, c) in BOTH {
+            for (name, fg, bg, min) in [
+                ("body on panel", c.text, c.surface, 4.5),
+                ("body on raised", c.text, c.surface_raised, 4.5),
+                ("dim on panel", c.text_dim, c.surface, 4.5),
+                ("heading on panel", c.cream, c.surface, 4.5),
+                ("link on panel", c.accent_text, c.surface, 4.5),
+                ("selected row", c.cream, c.accent_muted, 4.5),
+                ("label on pressed button", c.cream, c.accent_muted, 4.5),
+                ("accent word on its tag", c.accent_word, c.accent_muted, 4.5),
+                ("ink on an engaged plate", c.on_accent, c.accent, 4.5),
+                // The three fills [`primary_button_sized`] moves between, all
+                // labelled in the plate's ink.
+                ("primary label, hovered", c.on_accent, c.accent_lift, 4.5),
+                ("primary label, pressed", c.on_accent, c.accent_pressed, 4.5),
+                ("warning on panel", c.warn, c.surface, 4.5),
+                ("error on panel", c.error, c.surface, 4.5),
+                ("ink on an armed confirm", c.on_status, c.error, 4.5),
+                ("ink on a warning plate", c.on_status, c.warn, 4.5),
+                // Not text: a fill, a rule or a focus ring, which WCAG puts at 3:1.
+                ("focus ring on panel", c.accent, c.surface, 3.0),
+            ] {
+                let got = contrast(fg, bg);
+                assert!(got >= min, "{theme}: {name}: contrast {got:.2} < {min}");
+            }
+        }
+        // The script editor's code box is dark in both themes (`script_editor`
+        // gives it the dark visuals), so its colours are measured once, on
+        // the dark ink.
+        let ink = DARK.ink;
+        for (name, fg) in [
+            ("code text", DARK.text),
+            ("code keyword", CODE_KEYWORD),
+            ("code string", CODE_STRING),
+            ("code literal", CODE_LITERAL),
+            ("code comment", CODE_COMMENT),
+            ("code api", CODE_API),
+            ("code call", CODE_CALL),
         ] {
-            let got = contrast(fg, bg);
-            assert!(got >= min, "{name}: contrast {got:.2} < {min}");
+            let got = contrast(fg, ink);
+            assert!(got >= 4.5, "{name}: contrast {got:.2} < 4.5");
         }
     }
 
@@ -3099,335 +3344,371 @@ mod tests {
     /// The same at the other end — a night city, a dark aerial, deep water.
     const DARK_MAP: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
 
-    /// **Every surface a colour can land on, not just the panel fill.**
+    /// The panel is solid and cool, never warmer (the brown a mix of the brand
+    /// orange produced, red above blue, is what this pins against).
     ///
-    /// [`text_colours_clear_their_backgrounds`] pins eleven pairs and almost
-    /// every one is against [`SURFACE`] or an accent fill. That is the easy half
-    /// of the palette: the ramp exists precisely so things *can* sit on
-    /// [`SURFACE_RAISED`] and [`SURFACE_HOVER`], and egui puts them there without
-    /// being asked — `weak_text_color` inside an `open` menu is [`TEXT_DIM`] on
-    /// [`SURFACE_HOVER`], which measured 4.40 and is the failure this test was
-    /// written for.
-    ///
-    /// [`OVERLAY`] is the other half, and it was worse, because its background is
-    /// not in this file at all.
-    /// The panel is a dark teal: solid, cooler and never warmer (the brown a
-    /// mix of the brand orange produced, red above blue, is what this pins
-    /// against), visibly teal rather than black — and the blocks in it are
+    /// **Dark**, it is visibly teal rather than black, and the blocks in it are
     /// close to it, since a jump in tone between the two was "too much
     /// contrast" (2026-11-10): a block is told apart by its hairline and its
-    /// shadow, not by being much lighter or darker.
+    /// shadow. **Light** takes the hub's white cards on its page instead, a
+    /// step further apart (1.10:1), so the quiet-blocks rule is the dark
+    /// theme's.
     #[test]
     fn the_panel_is_a_dark_teal_with_quiet_blocks() {
-        assert_eq!(PANEL.a(), 255, "the panel is solid: {PANEL:?}");
+        for (theme, c) in BOTH {
+            let panel = c.panel;
+            assert_eq!(panel.a(), 255, "{theme}: the panel is solid: {panel:?}");
+            assert!(
+                panel.r() <= panel.b() && panel.r() <= panel.g(),
+                "{theme}: the panel has a warm cast: {panel:?}"
+            );
+        }
         assert!(
-            PANEL.r() <= PANEL.b() && PANEL.r() <= PANEL.g(),
-            "the panel has a warm cast: {PANEL:?}"
+            DARK.panel.g() > DARK.panel.r() + 8,
+            "the panel has gone black: {:?}",
+            DARK.panel
         );
         assert!(
-            PANEL.g() > PANEL.r() + 8,
-            "the panel has gone black: {PANEL:?}"
-        );
-        assert!(
-            contrast(CARD, PANEL) < 1.08,
+            contrast(DARK.card, DARK.panel) < 1.08,
             "the blocks jump off the panel: {}",
-            contrast(CARD, PANEL)
+            contrast(DARK.card, DARK.panel)
         );
     }
 
+    /// **Every surface a colour can land on, not just the panel fill.**
+    ///
+    /// [`text_colours_clear_their_backgrounds`] pins the pairs against
+    /// [`Palette::surface`] and the accent fills. That is the easy half of the
+    /// palette: the ramp exists precisely so things *can* sit on the raised and
+    /// hover steps, and egui puts them there without being asked —
+    /// `weak_text_color` inside an `open` menu is the dim tone on the hover
+    /// step, which measured 4.40 and is the failure this test was written for.
+    ///
+    /// The overlay is the other half, and it was worse, because its background
+    /// is not in this file at all: it is the map, at both ends of its
+    /// brightness. The boxes are solid now, so the composite is the fill; the
+    /// rows stay so a box made translucent again is measured over the map.
     #[test]
     fn text_clears_every_surface_it_can_land_on() {
-        let over_bright = over(OVERLAY, BRIGHT_MAP);
-        let over_dark = over(OVERLAY, DARK_MAP);
-        let glass_bright = over(GLASS, BRIGHT_MAP);
-        let glass_dark = over(GLASS, DARK_MAP);
+        for (theme, c) in BOTH {
+            let over_bright = over(c.overlay, BRIGHT_MAP);
+            let over_dark = over(c.overlay, DARK_MAP);
+            let glass_bright = over(c.glass, BRIGHT_MAP);
+            let glass_dark = over(c.glass, DARK_MAP);
+            for (name, fg, bg, min) in [
+                // The raised step: buttons under the pointer, striped rows.
+                ("dim on raised", c.text_dim, c.surface_raised, 4.5),
+                ("heading on raised", c.cream, c.surface_raised, 4.5),
+                ("link on raised", c.accent_text, c.surface_raised, 4.5),
+                ("warning on raised", c.warn, c.surface_raised, 4.5),
+                ("error on raised", c.error, c.surface_raised, 4.5),
+                (
+                    "held-state rim on raised",
+                    c.accent_bright,
+                    c.surface_raised,
+                    4.5,
+                ),
+                // The glyph on an engaged plate, the one place in the dark
+                // theme where dark type sits on a light fill.
+                ("ink on an engaged plate", c.on_accent, c.accent, 4.5),
+                (
+                    "ink on an engaged plate's rim",
+                    c.on_accent,
+                    c.accent_ring,
+                    4.5,
+                ),
+                // The hover step — and an *open* menu button sits here at rest.
+                ("body on hover", c.text, c.surface_hover, 4.5),
+                ("dim on hover", c.text_dim, c.surface_hover, 4.5),
+                ("heading on hover", c.cream, c.surface_hover, 4.5),
+                ("link on hover", c.accent_text, c.surface_hover, 4.5),
+                ("error on hover", c.error, c.surface_hover, 4.5),
+                // Text-edit wells, a segmented control's track.
+                ("body on ink", c.text, c.ink, 4.5),
+                ("dim on ink", c.text_dim, c.ink, 4.5),
+                ("link on ink", c.accent_text, c.ink, 4.5),
+                // The panels, and the cards in them.
+                ("body on a panel", c.text, c.panel, 4.5),
+                ("dim on a panel", c.text_dim, c.panel, 4.5),
+                ("hairline on a panel", c.line, c.panel, 3.0),
+                ("body on a card", c.text, c.card, 4.5),
+                ("dim on a card", c.text_dim, c.card, 4.5),
+                // The boxes over the map, against the map — both ends of it.
+                (
+                    "body on an overlay over bright map",
+                    c.text,
+                    over_bright,
+                    4.5,
+                ),
+                (
+                    "dim on an overlay over bright map",
+                    c.text_dim,
+                    over_bright,
+                    4.5,
+                ),
+                (
+                    "heading on an overlay over bright map",
+                    c.cream,
+                    over_bright,
+                    4.5,
+                ),
+                (
+                    "link on an overlay over bright map",
+                    c.accent_text,
+                    over_bright,
+                    4.5,
+                ),
+                (
+                    "warning on an overlay over bright map",
+                    c.warn,
+                    over_bright,
+                    4.5,
+                ),
+                (
+                    "error on an overlay over bright map",
+                    c.error,
+                    over_bright,
+                    4.5,
+                ),
+                ("body on an overlay over dark map", c.text, over_dark, 4.5),
+                (
+                    "dim on an overlay over dark map",
+                    c.text_dim,
+                    over_dark,
+                    4.5,
+                ),
+                // The panels and windows, over the map.
+                ("body on a panel over bright map", c.text, glass_bright, 4.5),
+                (
+                    "dim on a panel over bright map",
+                    c.text_dim,
+                    glass_bright,
+                    4.5,
+                ),
+                (
+                    "heading on a panel over bright map",
+                    c.cream,
+                    glass_bright,
+                    4.5,
+                ),
+                (
+                    "link on a panel over bright map",
+                    c.accent_text,
+                    glass_bright,
+                    4.5,
+                ),
+                (
+                    "warning on a panel over bright map",
+                    c.warn,
+                    glass_bright,
+                    4.5,
+                ),
+                (
+                    "error on a panel over bright map",
+                    c.error,
+                    glass_bright,
+                    4.5,
+                ),
+                ("body on a panel over dark map", c.text, glass_dark, 4.5),
+                ("dim on a panel over dark map", c.text_dim, glass_dark, 4.5),
+            ] {
+                let got = contrast(fg, bg);
+                assert!(got >= min, "{theme}: {name}: contrast {got:.2} < {min}");
+            }
+        }
+
+        // The map's own labels are dark in both themes (`LABEL_CHIP`,
+        // `LABEL_HALO`): a few words on an arbitrary tile, and the text on
+        // them is the dark palette's.
         let chip_bright = over(LABEL_CHIP, BRIGHT_MAP);
         let halo_bright = over(LABEL_HALO, BRIGHT_MAP);
         let halo_dark = over(LABEL_HALO, DARK_MAP);
-
-        for (name, fg, bg, min) in [
-            // The raised step: buttons at rest, striped rows, the header band.
-            ("dim on raised", TEXT_DIM, SURFACE_RAISED, 4.5),
-            ("heading on raised", CREAM, SURFACE_RAISED, 4.5),
-            ("link on raised", ACCENT_TEXT, SURFACE_RAISED, 4.5),
-            ("warning on raised", WARN, SURFACE_RAISED, 4.5),
-            ("error on raised", ERROR, SURFACE_RAISED, 4.5),
-            (
-                "held-state rim on raised",
-                ACCENT_BRIGHT,
-                SURFACE_RAISED,
-                4.5,
-            ),
-            // The glyph on an engaged plate, which is the one place in the app
-            // where dark type sits on a light fill.
-            ("ink on an engaged plate", INK, ACCENT, 4.5),
-            ("ink on an engaged plate's rim", INK, ACCENT_RING, 4.5),
-            // The hover step — and an *open* menu button sits here at rest, so
-            // this is not a transient a mouse merely passes through.
-            ("body on hover", TEXT, SURFACE_HOVER, 4.5),
-            ("dim on hover", TEXT_DIM, SURFACE_HOVER, 4.5),
-            ("heading on hover", CREAM, SURFACE_HOVER, 4.5),
-            ("link on hover", ACCENT_TEXT, SURFACE_HOVER, 4.5),
-            ("error on hover", ERROR, SURFACE_HOVER, 4.5),
-            // Text-edit wells and code blocks.
-            ("body on ink", TEXT, INK, 4.5),
-            ("dim on ink", TEXT_DIM, INK, 4.5),
-            ("link on ink", ACCENT_TEXT, INK, 4.5),
-            // The docked panels, which are this warm ink.
-            ("body on a panel", TEXT, PANEL, 4.5),
-            ("dim on a panel", TEXT_DIM, PANEL, 4.5),
-            ("hairline on a panel", LINE, PANEL, 3.0),
-            // The boxes over the map, against the map — both ends of it.
-            ("body on an overlay over bright map", TEXT, over_bright, 4.5),
-            (
-                "dim on an overlay over bright map",
-                TEXT_DIM,
-                over_bright,
-                4.5,
-            ),
-            (
-                "heading on an overlay over bright map",
-                CREAM,
-                over_bright,
-                4.5,
-            ),
-            (
-                "link on an overlay over bright map",
-                ACCENT_TEXT,
-                over_bright,
-                4.5,
-            ),
-            (
-                "warning on an overlay over bright map",
-                WARN,
-                over_bright,
-                4.5,
-            ),
-            (
-                "error on an overlay over bright map",
-                ERROR,
-                over_bright,
-                4.5,
-            ),
-            ("body on an overlay over dark map", TEXT, over_dark, 4.5),
-            ("dim on an overlay over dark map", TEXT_DIM, over_dark, 4.5),
-            // The chip has to hold over *anything*: a few words on an arbitrary
-            // tile with no panel anywhere near them.
-            ("chip label over bright map", CREAM, chip_bright, 4.5),
-            ("chip dim over bright map", TEXT_DIM, chip_bright, 4.5),
-            // And the halo, the same promise inverted: pale ink on its dark
-            // halo, over a sunlit square at one end and night tarmac at the
-            // other.
-            ("street name over bright map", LABEL_INK, halo_bright, 4.5),
-            ("street name over dark map", LABEL_INK, halo_dark, 4.5),
-            // **The panels themselves, since they became glass.** A docked panel
-            // used to be opaque, so `SURFACE` above covered it; it is [`GLASS`]
-            // now and the map is behind every label in it. This is the row that
-            // holds the alpha honest — a panel made prettier by being more
-            // transparent fails here, in the case that matters (a form of dim
-            // hint text over white paper) rather than in review.
-            ("body on a panel over bright map", TEXT, glass_bright, 4.5),
-            (
-                "dim on a panel over bright map",
-                TEXT_DIM,
-                glass_bright,
-                4.5,
-            ),
-            (
-                "heading on a panel over bright map",
-                CREAM,
-                glass_bright,
-                4.5,
-            ),
-            (
-                "link on a panel over bright map",
-                ACCENT_TEXT,
-                glass_bright,
-                4.5,
-            ),
-            (
-                "warning on a panel over bright map",
-                WARN,
-                glass_bright,
-                4.5,
-            ),
-            ("error on a panel over bright map", ERROR, glass_bright, 4.5),
-            ("body on a panel over dark map", TEXT, glass_dark, 4.5),
-            ("dim on a panel over dark map", TEXT_DIM, glass_dark, 4.5),
+        for (name, fg, bg) in [
+            ("chip label over bright map", DARK.cream, chip_bright),
+            ("chip dim over bright map", DARK.text_dim, chip_bright),
+            ("street name over bright map", LABEL_INK, halo_bright),
+            ("street name over dark map", LABEL_INK, halo_dark),
         ] {
             let got = contrast(fg, bg);
-            assert!(got >= min, "{name}: contrast {got:.2} < {min}");
+            assert!(got >= 4.5, "{name}: contrast {got:.2} < 4.5");
         }
     }
 
-    /// **The state ladder rises, and in a monochrome palette that is the whole
-    /// design.** Rest → hover → pressed → engaged, each one lighter than the last:
-    /// with no hue left to say "this control is doing something", lightness is the
-    /// only channel there is, and a ladder that doubles back is a UI where two
-    /// different states look the same.
-    ///
-    /// Worth a test rather than a comment because each rung is picked for its own
-    /// reasons — the pressed fill has to carry [`CREAM`], the engaged plate has to
-    /// carry [`INK`], the hover step has to be visible over a map — and nothing
-    /// but this asserts they still come in order afterwards.
+    /// **The state ladder moves one way.** Rest → hover → pressed → engaged,
+    /// each a step further from the rest surface — lighter on the dark theme,
+    /// darker on the light one: lightness is the channel that still says "this
+    /// control is doing something" to someone who cannot see the hue, and a
+    /// ladder that doubles back is a UI where two different states look the
+    /// same.
     #[test]
     fn the_state_ladder_rises() {
-        let rungs = [
-            ("rest", SURFACE_RAISED),
-            ("hover", SURFACE_HOVER),
-            ("pressed", ACCENT_MUTED),
-            ("engaged", ACCENT),
-        ];
-        for pair in rungs.windows(2) {
-            let ((lo_name, lo), (hi_name, hi)) = (pair[0], pair[1]);
+        for (theme, c) in BOTH {
+            let rungs = [
+                ("rest", c.surface_raised),
+                ("hover", c.surface_hover),
+                ("pressed", c.accent_muted),
+                ("engaged", c.accent),
+            ];
+            // +1 when the ladder climbs (dark), -1 when it descends (light).
+            let way = (luminance(c.accent) - luminance(c.surface_raised)).signum();
+            for pair in rungs.windows(2) {
+                let ((lo_name, lo), (hi_name, hi)) = (pair[0], pair[1]);
+                assert!(
+                    (luminance(hi) - luminance(lo)) * way > 0.0,
+                    "{theme}: {hi_name} ({:.3}) is not a step past {lo_name} ({:.3})",
+                    luminance(hi),
+                    luminance(lo)
+                );
+            }
+            // And the two ends are far enough apart to be told apart at a
+            // glance, which "strictly monotonic" alone does not promise.
+            let got = contrast(c.accent, c.surface_raised);
             assert!(
-                luminance(hi) > luminance(lo),
-                "{hi_name} ({:.3}) is not lighter than {lo_name} ({:.3})",
-                luminance(hi),
-                luminance(lo)
+                got >= 3.0,
+                "{theme}: engaged against rest: contrast {got:.2} < 3.0"
             );
         }
-        // And the two ends are far enough apart to be told apart at a glance,
-        // which "strictly increasing" alone does not promise.
-        let got = contrast(ACCENT, SURFACE_RAISED);
-        assert!(got >= 3.0, "engaged against rest: contrast {got:.2} < 3.0");
     }
 
     /// **A control has to be findable before its label matters**, and WCAG puts
     /// that boundary at 3:1 (1.4.11) — the same bar as a focus ring, for the same
     /// reason: it is the only thing saying *here is a thing you can press*.
     ///
-    /// This is the check the palette never had and was furthest from passing. A
-    /// button at rest is [`SURFACE_RAISED`] on [`SURFACE`], which is 1.24:1 of
-    /// fill difference, framed by a [`LINE`] hairline that used to measure
-    /// 1.92:1. Neither channel identified the control; what had been carrying it
-    /// is that panels are dense enough for position to do the work.
+    /// A button at rest is the raised step on the surface, about 1.2:1 of fill
+    /// difference, framed by a [`Palette::line`] hairline that used to measure
+    /// 1.92:1 on the dark theme. Neither channel identified the control.
     ///
-    /// Two pairs are deliberately *not* asserted, and saying so is the point of
-    /// writing them down: `SURFACE_HOVER` against `SURFACE_RAISED` (1.27) is a
-    /// *change* of state rather than the identification of a control, and the
-    /// accent ring arriving with it is what carries hover; and `LINE` against
-    /// `SURFACE_HOVER` only ever appears on an `open` menu button, where the
-    /// popup below it is the thing being looked at.
+    /// Two pairs are deliberately *not* asserted: the hover step against the
+    /// raised one is a *change* of state rather than the identification of a
+    /// control, and the accent ring arriving with it is what carries hover; and
+    /// the line against the hover step only ever appears on an `open` menu
+    /// button, where the popup below it is the thing being looked at.
     #[test]
     fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
-        let v = visuals();
-        for (name, got) in [
-            (
-                "a button's border on a panel",
-                contrast(v.widgets.inactive.bg_stroke.color, SURFACE),
-            ),
-            (
-                "the hover ring against the fill it encloses",
-                contrast(v.widgets.hovered.bg_stroke.color, SURFACE_HOVER),
-            ),
-            (
-                "the pressed ring against the fill it encloses",
-                contrast(
-                    v.widgets.active.bg_stroke.color,
-                    v.widgets.active.weak_bg_fill,
+        for (theme, c) in BOTH {
+            let v = visuals_of(c);
+            for (name, got) in [
+                (
+                    "a button's border on a panel",
+                    contrast(v.widgets.inactive.bg_stroke.color, c.surface),
                 ),
-            ),
-            (
-                "the pressed ring against the panel outside it",
-                contrast(v.widgets.active.bg_stroke.color, SURFACE),
-            ),
-            (
-                "the engaged plate against the panel it sits on",
-                contrast(ACCENT, SURFACE),
-            ),
-            ("the glyph on an engaged plate", contrast(INK, ACCENT)),
-        ] {
-            assert!(got >= 3.0, "{name}: contrast {got:.2} < 3.0");
-        }
+                (
+                    "a button's border on the page",
+                    contrast(v.widgets.inactive.bg_stroke.color, c.panel),
+                ),
+                (
+                    "the hover ring against the fill it encloses",
+                    contrast(v.widgets.hovered.bg_stroke.color, c.surface_hover),
+                ),
+                (
+                    "the pressed ring against the fill it encloses",
+                    contrast(
+                        v.widgets.active.bg_stroke.color,
+                        v.widgets.active.weak_bg_fill,
+                    ),
+                ),
+                (
+                    "the pressed ring against the panel outside it",
+                    contrast(v.widgets.active.bg_stroke.color, c.surface),
+                ),
+                (
+                    "the engaged plate against the panel it sits on",
+                    contrast(c.accent, c.surface),
+                ),
+                (
+                    "the glyph on an engaged plate",
+                    contrast(c.on_accent, c.accent),
+                ),
+            ] {
+                assert!(got >= 3.0, "{theme}: {name}: contrast {got:.2} < 3.0");
+            }
 
-        // **The focus ring is two rings and has to be checked as two.** It is
-        // drawn *outside* the control, so its background is not in the palette at
-        // all — it is the map, at whatever brightness the imagery and the hour
-        // produce, or a panel, or the light plate of the control it encircles.
-        // `paint_focus_ring` answers that with a dark ring under a light one, and
-        // the property to assert is not that either clears 3:1 everywhere, but
-        // that **at least one of them does, on every background it can land on**.
-        for (name, bg) in [
-            ("a panel", SURFACE),
-            ("an overlay disc over bright map", over(OVERLAY, BRIGHT_MAP)),
-            ("an overlay disc over dark map", over(OVERLAY, DARK_MAP)),
-            ("the light plate of an engaged disc", ACCENT),
-            ("bare bright basemap", BRIGHT_MAP),
-            ("bare dark basemap", DARK_MAP),
-        ] {
-            let best = contrast(CREAM, bg).max(contrast(INK, bg));
-            assert!(
-                best >= 3.0,
-                "the keyboard-focus ring on {name}: neither half clears 3:1 \
-                 (best {best:.2})"
-            );
+            // **The focus ring is two rings and has to be checked as two.** It
+            // is drawn *outside* the control, so its background is the map at
+            // any brightness, or a panel, or the plate of the control it
+            // encircles. `paint_focus_ring` answers that with the ink under
+            // the strongest text tone — dark under light on the dark theme,
+            // the other way round on the light one — and the property is that
+            // **at least one of them clears 3:1 on every background**.
+            for (name, bg) in [
+                ("a panel", c.surface),
+                (
+                    "an overlay disc over bright map",
+                    over(c.overlay, BRIGHT_MAP),
+                ),
+                ("an overlay disc over dark map", over(c.overlay, DARK_MAP)),
+                ("the plate of an engaged disc", c.accent),
+                ("bare bright basemap", BRIGHT_MAP),
+                ("bare dark basemap", DARK_MAP),
+            ] {
+                let best = contrast(c.cream, bg).max(contrast(c.ink, bg));
+                assert!(
+                    best >= 3.0,
+                    "{theme}: the keyboard-focus ring on {name}: neither half clears \
+                     3:1 (best {best:.2})"
+                );
+            }
         }
     }
 
     /// The palette's own prose is a *claim*, and prose does not recompute.
     ///
     /// Three numbers in this file were wrong when this was written, all about
-    /// the same pair and none checkable by reading: [`INK`] on the old accent was
-    /// written as 5.9 in the module note and 6.0 further down, and the
+    /// the same pair and none checkable by reading: the ink on the old accent
+    /// was written as 5.9 in the module note and 6.0 further down, and the
     /// alternative it was compared against — "only 3.1:1" — was
-    /// [`Color32::WHITE`]'s ratio, not [`CREAM`]'s. Pin the ratios the file
-    /// commits to in writing, so editing a colour and not the paragraph beside it
-    /// is a failing test rather than a stale comment.
-    ///
-    /// It earned its keep at the repaint: every one of these numbers moved when
-    /// the chrome went monochrome, and the paragraphs quoting them are four
-    /// screens away from the constants.
+    /// [`Color32::WHITE`]'s ratio, not cream's. Pin the ratios the file
+    /// commits to in writing (the dark theme's, which the prose quotes), so
+    /// editing a colour and not the paragraph beside it is a failing test
+    /// rather than a stale comment.
     #[test]
     fn the_documented_ratios_are_the_measured_ones() {
+        let c = &DARK;
         for (claim, fg, bg, stated) in [
-            // 11.8461 — the module note said "11.9:1" from the day it was
-            // written, which is this rounded the wrong way. Nobody could have
-            // caught that by reading it; that is the point of the test.
-            ("TEXT on SURFACE", TEXT, SURFACE, 14.3),
-            ("TEXT_DIM on SURFACE", TEXT_DIM, SURFACE, 9.4),
-            ("ACCENT_TEXT on SURFACE", ACCENT_TEXT, SURFACE, 17.6),
-            ("ACCENT on SURFACE", ACCENT, SURFACE, 8.6),
-            ("INK on ACCENT", INK, ACCENT, 9.1),
-            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 10.5),
-            ("LINE on SURFACE", LINE, SURFACE, 3.8),
+            ("text on surface", c.text, c.surface, 14.3),
+            ("text_dim on surface", c.text_dim, c.surface, 9.4),
+            ("accent_text on surface", c.accent_text, c.surface, 17.6),
+            ("accent on surface", c.accent, c.surface, 8.6),
+            ("on_accent on accent", c.on_accent, c.accent, 9.1),
+            ("cream on accent_muted", c.cream, c.accent_muted, 10.5),
+            ("line on surface", c.line, c.surface, 3.8),
             (
-                "ACCENT_RING on ACCENT_MUTED",
-                ACCENT_RING,
-                ACCENT_MUTED,
+                "accent_ring on accent_muted",
+                c.accent_ring,
+                c.accent_muted,
                 7.4,
             ),
-            ("INK on ACCENT_PRESSED", INK, ACCENT_PRESSED, 6.5),
-            ("CREAM on ACCENT (the rejected pairing)", CREAM, ACCENT, 1.9),
+            (
+                "on_accent on accent_pressed",
+                c.on_accent,
+                c.accent_pressed,
+                6.5,
+            ),
+            (
+                "cream on accent (the rejected pairing)",
+                c.cream,
+                c.accent,
+                1.9,
+            ),
         ] {
             // Compare at the precision the prose actually claims: the docs say
             // "11.9:1", so the test that keeps them honest is whether the
-            // measurement *rounds* to that, not whether it equals it. An
-            // absolute tolerance here would be a second, unstated claim.
+            // measurement *rounds* to that, not whether it equals it.
             let got = contrast(fg, bg);
             assert!(
                 (got * 10.0).round() / 10.0 == stated,
                 "{claim}: the docs say {stated:.1}:1, the colours measure {got:.2}:1"
             );
         }
-        // …and the pairing the whole `active` fill argument rests on. It used to
-        // fail because the accent was too *dark* for cream (2.67); it now fails
-        // far harder because the accent is too light (1.45). Either way an
+        // …and the pairing the whole `active` fill argument rests on: an
         // accent-filled button cannot carry a cream label, which is why both of
-        // `active`'s fills are ACCENT_MUTED and why anything actually filled with
-        // ACCENT is labelled in INK.
-        let cream_on_accent = contrast(CREAM, ACCENT);
+        // `active`'s fills are the muted accent and why anything actually
+        // filled with the accent is labelled in its ink.
+        let cream_on_accent = contrast(c.cream, c.accent);
         assert!(
             cream_on_accent < 3.0,
-            "CREAM on ACCENT measures {cream_on_accent:.2} — if that is now over 3.0 the \
-             note by `active` about why buttons take ACCENT_MUTED needs rewriting"
-        );
-        // The other half of that rule: what an ACCENT plate *is* labelled in.
-        let ink_on_accent = contrast(INK, ACCENT);
-        assert!(
-            ink_on_accent >= 4.5,
-            "INK on ACCENT measures {ink_on_accent:.2} — the engaged plate carries \
-             a glyph, and this is the pair that has to hold"
+            "cream on the accent measures {cream_on_accent:.2} — if that is now over 3.0 the \
+             note by `active` about why buttons take the muted accent needs rewriting"
         );
     }
 
@@ -3436,13 +3717,52 @@ mod tests {
     /// from `weak_text_color`, and **`RichText::strong()` from `widgets.active`**.
     /// That last one is the trap: `active` is also the pressed-button state, so
     /// picking its `fg_stroke` to suit the fill silently recolours every bold
-    /// value in the app. Assert the three land where the palette says.
+    /// value in the app. Assert the three land where the palette says, in both
+    /// themes.
     #[test]
     fn derived_text_colours_come_from_the_palette() {
-        let v = visuals();
-        assert_eq!(v.text_color(), TEXT);
-        assert_eq!(v.weak_text_color(), TEXT_DIM);
-        assert_eq!(v.strong_text_color(), CREAM);
+        for (theme, c) in BOTH {
+            let v = visuals_of(c);
+            assert_eq!(v.text_color(), c.text, "{theme}");
+            assert_eq!(v.weak_text_color(), c.text_dim, "{theme}");
+            assert_eq!(v.strong_text_color(), c.cream, "{theme}");
+            assert_eq!(v.dark_mode, c.dark, "{theme}");
+        }
+    }
+
+    /// The dark palette is today's look, value for value: the light theme was
+    /// added beside it, and nothing about the dark one was to move. The old
+    /// constants' values, pinned.
+    #[test]
+    fn the_dark_palette_is_the_look_it_was() {
+        let rgb = |c: Color32| (c.r(), c.g(), c.b(), c.a());
+        assert_eq!(rgb(DARK.ink), (0x0F, 0x14, 0x16, 255));
+        assert_eq!(rgb(DARK.surface), (0x14, 0x1A, 0x1C, 255));
+        assert_eq!(rgb(DARK.surface_raised), (0x1F, 0x28, 0x29, 255));
+        assert_eq!(rgb(DARK.surface_hover), (0x2A, 0x35, 0x36, 255));
+        assert_eq!(rgb(DARK.line), (0x63, 0x79, 0x7C, 255));
+        assert_eq!(rgb(DARK.accent), (0x5C, 0xC6, 0xC0, 255));
+        assert_eq!(rgb(DARK.accent_ring), (0xA8, 0xDC, 0xD8, 255));
+        assert_eq!(rgb(DARK.accent_pressed), (0x3F, 0xA9, 0xA2, 255));
+        assert_eq!(rgb(DARK.accent_muted), (0x26, 0x3F, 0x42, 255));
+        assert_eq!(rgb(DARK.cream), (0xF4, 0xF8, 0xF8, 255));
+        assert_eq!(rgb(DARK.text), (0xE2, 0xE9, 0xEA, 255));
+        assert_eq!(rgb(DARK.text_dim), (0xAA, 0xC2, 0xC6, 255));
+        assert_eq!(rgb(DARK.warn), (0xD8, 0xC0, 0x7A, 255));
+        assert_eq!(rgb(DARK.error), (0xF2, 0xA2, 0x96, 255));
+        assert_eq!(rgb(DARK.panel), (0x17, 0x23, 0x24, 255));
+        assert_eq!(rgb(DARK.card), (0x16, 0x1F, 0x21, 255));
+        assert_eq!(rgb(DARK.panel_rim), (0x2A, 0x35, 0x36, 255));
+        for same in [DARK.on_accent, DARK.on_status] {
+            assert_eq!(same, DARK.ink, "the dark theme's inks are its ink");
+        }
+        for white in [DARK.accent_bright, DARK.accent_lift, DARK.accent_text] {
+            assert_eq!(white, Color32::WHITE);
+        }
+        assert_eq!(DARK.accent_word, DARK.accent_ring);
+        assert_eq!((DARK.overlay, DARK.glass), (DARK.panel, DARK.panel));
+        assert_eq!(DARK.overlay_line, DARK.panel_rim);
+        assert_eq!(DARK.shadow, 1.0);
     }
 
     /// The wordmark is the app's name split in two, and nothing else. It is
@@ -4187,7 +4507,7 @@ mod mark_preview {
                 },
                 |ui| {
                     let p = ui.painter();
-                    p.rect_filled(screen, 0.0, SURFACE);
+                    p.rect_filled(screen, 0.0, DARK.surface);
                     paint_mark(p, screen.center(), radius, 1.0);
                 },
             );

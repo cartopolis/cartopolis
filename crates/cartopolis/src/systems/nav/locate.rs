@@ -814,16 +814,16 @@ fn paint_accuracy_halo(
         here,
         radius,
         egui::Color32::from_rgba_unmultiplied(
-            theme::ACCENT.r(),
-            theme::ACCENT.g(),
-            theme::ACCENT.b(),
+            theme::p().accent.r(),
+            theme::p().accent.g(),
+            theme::p().accent.b(),
             26,
         ),
     );
     painter.circle_stroke(
         here,
         radius,
-        egui::Stroke::new(1.0, theme::ACCENT_RING.gamma_multiply(0.55)),
+        egui::Stroke::new(1.0, theme::p().accent_ring.gamma_multiply(0.55)),
     );
 }
 
@@ -846,11 +846,11 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
         egui::Color32::from_black_alpha(50),
     );
     let Some(forward) = facing else {
-        painter.circle_filled(here, ARROW_HALF_WIDTH * 0.72, theme::ACCENT);
+        painter.circle_filled(here, ARROW_HALF_WIDTH * 0.72, theme::p().accent);
         painter.circle_stroke(
             here,
             ARROW_HALF_WIDTH * 0.72,
-            egui::Stroke::new(2.0, theme::CREAM),
+            egui::Stroke::new(2.0, theme::p().cream),
         );
         return;
     };
@@ -875,7 +875,7 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
     for tri in [[nose, left, notch], [nose, notch, right_tail]] {
         painter.add(egui::Shape::convex_polygon(
             tri.to_vec(),
-            theme::ACCENT,
+            theme::p().accent,
             egui::Stroke::NONE,
         ));
     }
@@ -883,7 +883,7 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
     // hides the shared edge the fill was split on.
     painter.add(egui::Shape::closed_line(
         vec![nose, left, notch, right_tail],
-        egui::Stroke::new(1.6, theme::CREAM),
+        egui::Stroke::new(1.6, theme::p().cream),
     ));
 }
 

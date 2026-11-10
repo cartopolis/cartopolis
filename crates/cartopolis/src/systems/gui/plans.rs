@@ -440,7 +440,11 @@ pub fn render_plans(
                     n.area.iter().map(|p| project(p[0], p[1])).collect();
                 if let Some(mut ring) = ring {
                     ring.push(ring[0]);
-                    let colour = if is_open { theme::BRAND } else { theme::ACCENT };
+                    let colour = if is_open {
+                        theme::BRAND
+                    } else {
+                        theme::DARK.accent
+                    };
                     painter.extend(egui::Shape::dashed_line(
                         &ring,
                         egui::Stroke::new(2.0, colour),
@@ -509,9 +513,19 @@ fn dot(
             let p = ui.painter();
             // Painted at the exact projected point, not the rounded rect.
             if open {
-                p.circle(at, r, theme::BRAND, egui::Stroke::new(2.0, theme::CREAM));
+                p.circle(
+                    at,
+                    r,
+                    theme::BRAND,
+                    egui::Stroke::new(2.0, theme::DARK.cream),
+                );
             } else {
-                p.circle(at, r, theme::ACCENT, egui::Stroke::new(2.0, theme::INK));
+                p.circle(
+                    at,
+                    r,
+                    theme::DARK.accent,
+                    egui::Stroke::new(2.0, theme::DARK.ink),
+                );
             }
             resp.on_hover_cursor(egui::CursorIcon::PointingHand)
         })
@@ -548,7 +562,7 @@ fn council_square(
                 rect,
                 egui::CornerRadius::same(5),
                 theme::COUNCIL,
-                egui::Stroke::new(2.0, theme::CREAM),
+                egui::Stroke::new(2.0, theme::DARK.cream),
                 egui::StrokeKind::Middle,
             );
             // A tick for a decision taken, a dot for business still open.
@@ -558,7 +572,7 @@ fn council_square(
                 egui::Align2::CENTER_CENTER,
                 glyph,
                 egui::FontId::proportional(r * 1.3),
-                theme::CREAM,
+                theme::DARK.cream,
             );
             resp.on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Council business that names this place")
@@ -584,12 +598,12 @@ fn chip(ctx: &egui::Context, top: f32, drawn: usize, open: usize, high: bool) ->
                         ui.label(
                             egui::RichText::new(icons::FLAG)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         );
                         ui.label(
                             egui::RichText::new("Plans")
                                 .size(theme::SIZE_SUB)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         );
                         let what = if high {
                             "zoom in to see them".to_string()
@@ -599,7 +613,7 @@ fn chip(ctx: &egui::Context, top: f32, drawn: usize, open: usize, high: bool) ->
                         ui.label(
                             egui::RichText::new(what)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                         if !high && open > 0 {
                             ui.label(
@@ -695,7 +709,11 @@ fn notice_row(ui: &mut egui::Ui, n: &Notice, today: &str) -> bool {
     let open = n.open_on(today);
     ui.horizontal(|ui| {
         let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
-        let colour = if open { theme::BRAND } else { theme::ACCENT };
+        let colour = if open {
+            theme::BRAND
+        } else {
+            theme::DARK.accent
+        };
         ui.painter().circle_filled(dot.center(), 4.0, colour);
         let text = format!("{} · {}", pretty_date(&n.date), n.title);
         ui.add(
@@ -748,7 +766,7 @@ fn section(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_TINY)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
 }
 
@@ -796,7 +814,7 @@ pub fn render_plans_card(
                                     let colour = if n.open_on(&today) {
                                         theme::BRAND
                                     } else {
-                                        theme::TEXT_DIM
+                                        theme::p().text_dim
                                     };
                                     (
                                         format!(
@@ -822,7 +840,7 @@ pub fn render_plans_card(
                                     )
                                 }),
                                 (Card::Here { .. }, _) => {
-                                    Some(("Plans here".to_string(), theme::TEXT_DIM))
+                                    Some(("Plans here".to_string(), theme::p().text_dim))
                                 }
                                 _ => None,
                             };
@@ -836,7 +854,7 @@ pub fn render_plans_card(
                     ui.label(
                         egui::RichText::new("Reading what is published…")
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     return;
                 };
@@ -873,13 +891,13 @@ fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Op
     ui.label(
         egui::RichText::new(&n.title)
             .size(theme::SIZE_BODY)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     if !n.place.is_empty() {
         ui.label(
             egui::RichText::new(&n.place)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     }
     if let Some((line, running)) = deadline(n, today) {
@@ -887,7 +905,7 @@ fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Op
         let colour = if running {
             theme::BRAND
         } else {
-            theme::TEXT_DIM
+            theme::p().text_dim
         };
         ui.label(
             egui::RichText::new(line)
@@ -900,13 +918,13 @@ fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Op
         ui.label(
             egui::RichText::new(icons::OPEN_EXTERNAL)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         link(ui, "Read the notice", &notice_url(&n.id));
         ui.label(
             egui::RichText::new(&n.id)
                 .size(theme::SIZE_TINY)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     });
     if !n.council.is_empty() {
@@ -945,7 +963,7 @@ fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> O
     ui.label(
         egui::RichText::new(&c.title)
             .size(theme::SIZE_BODY)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     let names: Vec<&str> = c.places.iter().map(|p| p.name.as_str()).collect();
     ui.label(
@@ -966,7 +984,7 @@ fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> O
             ui.label(
                 egui::RichText::new(pretty_date(&s.date))
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             link(ui, &s.body, &s.url);
         });
@@ -983,7 +1001,7 @@ fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> O
                     c.documents.len() - 6
                 ))
                 .size(theme::SIZE_TINY)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
             );
         }
     }
@@ -1037,7 +1055,7 @@ fn here_body(
     ui.label(
         egui::RichText::new(summary)
             .size(theme::SIZE_SUB)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     let mut go = None;
     for (j, n) in near.iter().take(6) {
@@ -1049,7 +1067,7 @@ fn here_body(
         ui.label(
             egui::RichText::new("Turn on the Plans layer (Layers, Places) to see them all.")
                 .size(theme::SIZE_TINY)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     }
     go

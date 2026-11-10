@@ -81,6 +81,13 @@ impl Plugin for GuiPlugin {
             .init_resource::<systems::calendar::Calendar>()
             .init_resource::<systems::app_update::AppUpdate>();
 
+        // The chrome's palette follows the light (`systems::ui_theme`): settled
+        // in Input, before anything paints, so a frame is one theme throughout.
+        app.add_systems(
+            Update,
+            systems::ui_theme::follow_the_light.in_set(ClientPhase::Input),
+        );
+
         // The app's own updates (`systems::app_update`): a `Foreground` pill or
         // card over everything, so not in the panel chain; last, so the too-old
         // card's veil lies over every other area.

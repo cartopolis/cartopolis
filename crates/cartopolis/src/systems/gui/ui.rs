@@ -157,7 +157,7 @@ pub fn render_main_menu(
                                     egui::Label::new(
                                         egui::RichText::new(user.unwrap_or("Signed in"))
                                             .size(theme::SIZE_TITLE)
-                                            .color(theme::CREAM),
+                                            .color(theme::p().cream),
                                     )
                                     .truncate(),
                                 );
@@ -167,7 +167,7 @@ pub fn render_main_menu(
                                         sign_in.session.mode.where_()
                                     ))
                                     .size(theme::SIZE_SUB)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                                 );
                             } else {
                                 if theme::menu_entry(ui, icons::KEY, "Sign in…").clicked() {
@@ -184,7 +184,7 @@ pub fn render_main_menu(
                                             "Meet people, chat and join communities",
                                         )
                                         .size(theme::SIZE_SUB)
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::p().text_dim),
                                     );
                                 });
                             }
@@ -1139,8 +1139,8 @@ fn xyz_fields(
 /// a lit rim, the shared corner radius and real margins.
 fn dialog_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::window(style)
-        .fill(theme::GLASS)
-        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        .fill(theme::p().glass)
+        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
         .inner_margin(egui::Margin::symmetric(10, 10))
 }
 
@@ -1512,7 +1512,7 @@ fn surface_tab(
                         ui.label(
                             egui::RichText::new(note.as_str())
                                 .small()
-                                .color(crate::systems::theme::TEXT_DIM),
+                                .color(crate::systems::theme::p().text_dim),
                         );
                     }
                 })

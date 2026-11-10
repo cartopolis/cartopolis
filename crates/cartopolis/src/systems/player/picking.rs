@@ -410,12 +410,12 @@ pub fn render_marquee(mut egui: EguiMut, marquee: Res<MarqueeState>) {
     ));
 
     let fill = egui::Color32::from_rgba_unmultiplied(
-        theme::ACCENT.r(),
-        theme::ACCENT.g(),
-        theme::ACCENT.b(),
+        theme::p().accent.r(),
+        theme::p().accent.g(),
+        theme::p().accent.b(),
         28,
     );
-    let stroke = egui::Stroke::new(1.0_f32, theme::ACCENT_BRIGHT);
+    let stroke = egui::Stroke::new(1.0_f32, theme::p().accent_bright);
     painter.rect(
         rect,
         egui::CornerRadius::default(),

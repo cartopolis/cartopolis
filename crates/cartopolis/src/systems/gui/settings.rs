@@ -614,7 +614,7 @@ fn settings_home(
                     page.label(),
                     hint,
                     theme::RowEnd::Chevron,
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
                 {
@@ -628,7 +628,7 @@ fn settings_home(
                     "About",
                     None,
                     theme::RowEnd::Chevron,
-                    theme::ACCENT,
+                    theme::p().accent,
                 )
                 .clicked()
             {
@@ -659,7 +659,7 @@ fn privacy_tab(ui: &mut egui::Ui, people: &mut PeopleSettings, signed_in: bool) 
                         &name,
                         None,
                         theme::RowEnd::Word("Unblock"),
-                        theme::ACCENT,
+                        theme::p().accent,
                     )
                     .clicked()
                     {
@@ -714,7 +714,7 @@ fn controls_section(ui: &mut egui::Ui) {
                 egui::Label::new(
                     egui::RichText::new(keys)
                         .size(theme::SIZE_SUB)
-                        .color(theme::ACCENT_TEXT),
+                        .color(theme::p().accent_text),
                 )
                 .wrap(),
             );
@@ -722,7 +722,7 @@ fn controls_section(ui: &mut egui::Ui) {
                 egui::Label::new(
                     egui::RichText::new(what)
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                 )
                 .wrap(),
             );
@@ -797,7 +797,11 @@ pub const SAFETY_CONTACT: &str = "safety@cartopolis.org";
 /// Both places, deliberately. About is where a reviewer looks; Privacy and
 /// safety is where a person who has just been harassed looks.
 fn safety_section(ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new("Safety").strong().color(theme::CREAM));
+    ui.label(
+        egui::RichText::new("Safety")
+            .strong()
+            .color(theme::p().cream),
+    );
     ui.add(
         egui::Label::new(
             egui::RichText::new(
@@ -806,7 +810,7 @@ fn safety_section(ui: &mut egui::Ui) {
                  people who run this world.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         )
         .wrap(),
     );
@@ -814,12 +818,12 @@ fn safety_section(ui: &mut egui::Ui) {
         ui.label(
             egui::RichText::new("Contact:")
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.label(
             egui::RichText::new(SAFETY_CONTACT)
                 .size(theme::SIZE_SUB)
-                .color(theme::ACCENT_TEXT),
+                .color(theme::p().accent_text),
         );
     });
 }
@@ -842,7 +846,7 @@ fn account_tab(
         ui.label(
             egui::RichText::new("Your account has been deleted.")
                 .strong()
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
         theme::note(
             ui,
@@ -858,9 +862,9 @@ fn account_tab(
                 ui.label(
                     egui::RichText::new("Signed in as")
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
-                ui.label(egui::RichText::new(name).strong().color(theme::CREAM));
+                ui.label(egui::RichText::new(name).strong().color(theme::p().cream));
             });
         }
         None => {
@@ -879,7 +883,7 @@ fn account_tab(
     ui.label(
         egui::RichText::new("Delete this account")
             .strong()
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     ui.add(
         egui::Label::new(
@@ -889,7 +893,7 @@ fn account_tab(
                  name removed from it.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         )
         .wrap(),
     );
@@ -912,7 +916,7 @@ fn account_tab(
     ui.label(
         egui::RichText::new("Type your password to confirm")
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     theme::password_field(ui, &mut state.delete_password);
     let ready = !state.delete_password.is_empty();
@@ -1071,7 +1075,11 @@ fn receiver_section(
                 egui::Label::new(
                     egui::RichText::new(line)
                         .size(theme::SIZE_SUB)
-                        .color(if warn { theme::WARN } else { theme::TEXT }),
+                        .color(if warn {
+                            theme::p().warn
+                        } else {
+                            theme::p().text
+                        }),
                 )
                 .wrap(),
             );
@@ -1093,7 +1101,7 @@ fn receiver_section(
         ui.label(
             egui::RichText::new(text)
                 .size(theme::SIZE_CHIP)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     };
     // The port is chosen on the desktop only: on a phone the first supported
@@ -1341,7 +1349,7 @@ fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &Edit
                  socket only your own user account can open.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         )
         .wrap(),
     );
@@ -1364,7 +1372,7 @@ fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &Edit
         // because the reader's next move — close the other one, or switch this
         // off and on again — depends on knowing which it was.
         EditorServing::Failed(why) => {
-            ui.colored_label(theme::WARN, format!("Not listening: {why}"));
+            ui.colored_label(theme::p().warn, format!("Not listening: {why}"));
             theme::note(
                 ui,
                 "Another client on this machine is probably serving there. Switch this \
@@ -1386,14 +1394,14 @@ fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &Edit
             ui.label(
                 egui::RichText::new(label)
                     .size(theme::SIZE_CHIP)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&value)
                         .size(theme::SIZE_MONO)
                         .monospace()
-                        .color(theme::CREAM),
+                        .color(theme::p().cream),
                 )
                 .truncate(),
             );
@@ -1422,7 +1430,7 @@ fn allow_list_rows(ui: &mut egui::Ui, editor: &mut EditorRow) {
     ui.label(
         egui::RichText::new("People the agent may hear")
             .size(theme::SIZE_CHIP)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     if editor.allow_pinned {
         ui.label(
@@ -1433,7 +1441,7 @@ fn allow_list_rows(ui: &mut egui::Ui, editor: &mut EditorRow) {
             })
             .size(theme::SIZE_MONO)
             .monospace()
-            .color(theme::CREAM),
+            .color(theme::p().cream),
         );
         theme::note(ui, "Set by --mcp-allow for this run.");
     } else {
@@ -1478,7 +1486,7 @@ fn storage_section(ui: &mut egui::Ui, cache: &CacheReset) -> bool {
                  date. The map around you is then rebuilt from a fresh download.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         )
         .wrap(),
     );
@@ -1833,7 +1841,7 @@ fn graphics_tab(
              Thirteen full-screen passes when on."
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
     ui.add_space(6.0);
     tri_state(
@@ -1848,7 +1856,7 @@ fn graphics_tab(
              which is sharper and costs more memory traffic, follows at the next start.",
         )
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
 
     ui.add_space(8.0);
@@ -1880,7 +1888,7 @@ fn graphics_tab(
             "The sun's shadow maps. Applies immediately — the light is respawned."
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
 
     // Read before the rows below, because `tri_state` borrows `prefs` mutably and
@@ -1920,7 +1928,7 @@ fn graphics_tab(
             "Needs the full atmosphere — the simple sky has nothing to reflect."
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
 
     ui.add_space(6.0);
@@ -1951,7 +1959,7 @@ fn graphics_tab(
              at every step. Applies immediately."
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
 
     ui.add_space(6.0);
@@ -1967,7 +1975,7 @@ fn graphics_tab(
             "Needs a hardware graphics adapter — this one rasterises on the CPU."
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
 
     ui.add_space(8.0);
@@ -2037,7 +2045,7 @@ fn sky_section(
         }
         None => "The renderer has not chosen a sky yet.".to_string(),
     };
-    ui.label(egui::RichText::new(now).small().color(theme::TEXT_DIM));
+    ui.label(egui::RichText::new(now).small().color(theme::p().text_dim));
 }
 
 /// A checkbox over an `Option<bool>`, where `None` means "follow this device".
@@ -2066,7 +2074,7 @@ fn tri_state(ui: &mut egui::Ui, value: &mut Option<bool>, tier_default: bool, la
                 "Automatic — off for this device."
             })
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
     }
 }
@@ -2098,7 +2106,7 @@ fn frame_rate_row(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
         Some(0) => "As fast as the device can draw while you use it, 60 fps when nothing moves. Uses the most battery.".to_string(),
         Some(_) => "Lower saves battery and heat.".to_string(),
     };
-    ui.label(egui::RichText::new(note).small().color(theme::TEXT_DIM));
+    ui.label(egui::RichText::new(note).small().color(theme::p().text_dim));
 }
 
 /// The render-scale slider. Applies immediately: `RenderScale` is a `Resource`
@@ -2151,12 +2159,12 @@ fn render_scale_row(ui: &mut egui::Ui, prefs: &mut AppPrefs, target: Option<UVec
             hint
         })
         .small()
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
     ui.label(
         egui::RichText::new("The interface stays sharp; only the map softens.")
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
 }
 
@@ -2179,7 +2187,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
         play_tone = true;
     }
     if !cfg!(feature = "audio") {
-        ui.colored_label(theme::ERROR, "This build has no audio support.");
+        ui.colored_label(theme::p().error, "This build has no audio support.");
     }
 
     ui.add_space(10.0);
@@ -2198,7 +2206,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     ui.label(
         egui::RichText::new("Footsteps, wind, landings and the driving turn cues.")
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.add(
         egui::Slider::new(&mut prefs.voice_volume, 0.0..=1.0)
@@ -2208,7 +2216,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     ui.label(
         egui::RichText::new("How loudly people nearby are heard, before distance is applied.")
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
 
     ui.add_space(10.0);
@@ -2224,7 +2232,7 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
     if !AudioInput::available() {
         // The `platform::location` contract: say unavailable rather than show a
         // meter that can never move.
-        ui.colored_label(theme::ERROR, unavailable_reason());
+        ui.colored_label(theme::p().error, unavailable_reason());
         return;
     }
 
@@ -2239,7 +2247,7 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
     ui.label(
         egui::RichText::new("Lift a quiet headset. Aim for the middle of the bar while speaking.")
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
 
     let running = state.mic.is_some();
@@ -2269,7 +2277,7 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
     if let Some((meter, peak)) = observe_peak(state, prefs.capture_gain(), now, dt) {
         let mic = state.mic.as_ref().expect("observe_peak proved it is Some");
         if let Some(err) = mic.error() {
-            ui.colored_label(theme::ERROR, err);
+            ui.colored_label(theme::p().error, err);
         } else if !mic.is_receiving() {
             // Distinct from "silent": no callback has fired at all. On the web
             // this is usually the permission prompt still being open.
@@ -2322,7 +2330,7 @@ fn camera_section(ui: &mut egui::Ui, state: &mut SettingsState) {
             return;
         };
         if let Some(err) = cam.error() {
-            ui.colored_label(theme::ERROR, err);
+            ui.colored_label(theme::p().error, err);
             return;
         }
         if let Some(picture) = cam.take_preview() {
@@ -2398,7 +2406,11 @@ pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_SM), theme::INK);
+    p.rect_filled(
+        rect,
+        egui::CornerRadius::same(theme::RADIUS_SM),
+        theme::p().ink,
+    );
     let inner = rect.shrink2(egui::vec2(4.0, 4.0));
     let gap = 2.0;
     let n = METER_SEGMENTS as f32;
@@ -2437,8 +2449,8 @@ fn segment_colour(at: f32) -> egui::Color32 {
         return meter_colour(at);
     }
     let t = (at / 0.75).clamp(0.0, 1.0);
-    let low = egui::Rgba::from(theme::ACCENT_PRESSED);
-    let high = egui::Rgba::from(theme::ACCENT_BRIGHT);
+    let low = egui::Rgba::from(theme::p().accent_pressed);
+    let high = egui::Rgba::from(theme::p().accent_bright);
     egui::Color32::from(low * (1.0 - t) + high * t)
 }
 
@@ -2452,11 +2464,11 @@ fn segment_colour(at: f32) -> egui::Color32 {
 /// monochrome palette still says in colour.
 fn meter_colour(meter: f32) -> egui::Color32 {
     if meter > 0.9 {
-        theme::ERROR
+        theme::p().error
     } else if meter > 0.75 {
-        theme::WARN
+        theme::p().warn
     } else {
-        theme::ACCENT
+        theme::p().accent
     }
 }
 
@@ -2569,16 +2581,16 @@ pub fn render_about_panel(
                                 theme::SIZE_HEADING,
                                 theme::brand_family(),
                             ))
-                            .color(theme::CREAM),
+                            .color(theme::p().cream),
                     );
                     ui.label(
                         egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                            .color(theme::TEXT),
+                            .color(theme::p().text),
                     );
                     ui.label(
                         egui::RichText::new(build_line())
                             .size(theme::SIZE_CHIP)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     ui.add_space(6.0);
                     ui.label(
@@ -2587,7 +2599,7 @@ pub fn render_about_panel(
                          Everything below is used under its own licence.",
                         )
                         .size(theme::SIZE_CHIP)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                     );
                     ui.add_space(6.0);
                     ui.separator();
@@ -2604,7 +2616,7 @@ pub fn render_about_panel(
                         ui.label(
                             egui::RichText::new(&record.name)
                                 .strong()
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         );
                         if !record.role.is_empty() {
                             ui.label(egui::RichText::new(&record.role).size(theme::SIZE_CHIP));
@@ -2619,14 +2631,14 @@ pub fn render_about_panel(
                                 ui.label(
                                     egui::RichText::new(&record.license)
                                         .size(theme::SIZE_CHIP)
-                                        .color(theme::ACCENT_TEXT),
+                                        .color(theme::p().accent_text),
                                 );
                             }
                             if !record.scope.is_empty() {
                                 ui.label(
                                     egui::RichText::new(format!("· {}", record.scope))
                                         .size(theme::SIZE_CHIP)
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::p().text_dim),
                                 );
                             }
                         });
@@ -2639,7 +2651,7 @@ pub fn render_about_panel(
                                 egui::Button::new(
                                     egui::RichText::new(&record.url)
                                         .size(theme::SIZE_CHIP)
-                                        .color(theme::ACCENT_TEXT),
+                                        .color(theme::p().accent_text),
                                 )
                                 .frame(false),
                             );
@@ -2730,9 +2742,9 @@ mod tests {
     #[test]
     fn meter_warns_before_it_reaches_the_end() {
         // The bar must change colour below full scale, or it reads as a target.
-        assert_eq!(meter_colour(0.5), theme::ACCENT);
-        assert_eq!(meter_colour(0.8), theme::WARN);
-        assert_eq!(meter_colour(0.95), theme::ERROR);
+        assert_eq!(meter_colour(0.5), theme::p().accent);
+        assert_eq!(meter_colour(0.8), theme::p().warn);
+        assert_eq!(meter_colour(0.95), theme::p().error);
     }
 
     /// The Android arm has to be *reachable*, which is the whole bug: the APK is

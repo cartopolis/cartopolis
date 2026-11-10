@@ -822,7 +822,7 @@ pub fn person_menu(
     egui::Popup::context_menu(response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.label(egui::RichText::new(sender).strong().color(theme::CREAM));
+            ui.label(egui::RichText::new(sender).strong().color(theme::p().cream));
             ui.separator();
             if ui.button("Message privately").clicked() {
                 act(PersonAction::Message);
@@ -852,7 +852,7 @@ pub fn person_menu(
                 ui.label(
                     egui::RichText::new(format!("Moderator · {community}"))
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 if message.is_some()
                     && theme::confirm_button(
@@ -866,14 +866,18 @@ pub fn person_menu(
                     ui.close();
                 }
                 if ui
-                    .button(egui::RichText::new(format!("Remove from {topic}")).color(theme::ERROR))
+                    .button(
+                        egui::RichText::new(format!("Remove from {topic}")).color(theme::p().error),
+                    )
                     .clicked()
                 {
                     act(PersonAction::RemoveFromTopic);
                     ui.close();
                 }
                 if ui
-                    .button(egui::RichText::new("Remove from the community").color(theme::ERROR))
+                    .button(
+                        egui::RichText::new("Remove from the community").color(theme::p().error),
+                    )
                     .clicked()
                 {
                     act(PersonAction::RemoveFromCommunity);
@@ -885,7 +889,7 @@ pub fn person_menu(
                 ui.label(
                     egui::RichText::new("On this server · you are an admin")
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 if theme::confirm_button(
                     ui,
@@ -897,7 +901,7 @@ pub fn person_menu(
                     ui.close();
                 }
                 if ui
-                    .button(egui::RichText::new("Delete account…").color(theme::ERROR))
+                    .button(egui::RichText::new("Delete account…").color(theme::p().error))
                     .clicked()
                 {
                     act(PersonAction::DeleteAccount);
@@ -941,7 +945,7 @@ pub(crate) fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::Vo
     }
 
     let mut mode = voice.mode;
-    ui.label(egui::RichText::new("Voice").color(theme::TEXT));
+    ui.label(egui::RichText::new("Voice").color(theme::p().text));
     theme::segmented(
         ui,
         &mut mode,
@@ -1047,13 +1051,13 @@ pub(crate) fn render_report_dialog(
             ui.label(
                 egui::RichText::new(&draft.username)
                     .strong()
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             if let Some(message) = &draft.message {
                 theme::note(ui, &format!("“{message}”"));
             }
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("What happened?").color(theme::TEXT));
+            ui.label(egui::RichText::new("What happened?").color(theme::p().text));
             for reason in ReportReason::ALL {
                 ui.radio_value(&mut draft.reason, *reason, reason.label());
             }

@@ -173,7 +173,7 @@ fn reference_ui(ui: &mut egui::Ui) {
                 egui::RichText::new(
                     "Handlers you define — the host calls these when something happens:",
                 )
-                .color(theme::TEXT_DIM)
+                .color(theme::p().text_dim)
                 .small(),
             );
             for f in cartopolis_core::SCRIPT_EVENTS {
@@ -187,7 +187,7 @@ fn reference_ui(ui: &mut egui::Ui) {
                         ui.label(
                             egui::RichText::new(group.label())
                                 .strong()
-                                .color(theme::ACCENT_TEXT)
+                                .color(theme::p().accent_text)
                                 .small(),
                         );
                         any = true;
@@ -208,7 +208,7 @@ fn entry_ui(ui: &mut egui::Ui, f: &cartopolis_core::ScriptFn) {
         egui::RichText::new(f.signature)
             .monospace()
             .small()
-            .color(theme::TEXT),
+            .color(theme::p().text),
     )
     .on_hover_text(f.summary);
 }
@@ -217,9 +217,9 @@ fn entry_ui(ui: &mut egui::Ui, f: &cartopolis_core::ScriptFn) {
 /// are the one thing that must not read as ordinary output.
 fn level_color(level: ScriptLevel) -> egui::Color32 {
     match level {
-        ScriptLevel::Info => theme::TEXT,
-        ScriptLevel::Notice => theme::TEXT_DIM,
-        ScriptLevel::Error => theme::ERROR,
+        ScriptLevel::Info => theme::p().text,
+        ScriptLevel::Notice => theme::p().text_dim,
+        ScriptLevel::Error => theme::p().error,
     }
 }
 
@@ -276,7 +276,7 @@ pub fn render_script_panel(
             let Some(prim_id) = prim_id else {
                 ui.label(
                     egui::RichText::new("Hold or right-click an object and choose Script.")
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 return;
             };
@@ -285,9 +285,9 @@ pub fn render_script_panel(
                 ui.label(
                     egui::RichText::new(&prim_name)
                         .strong()
-                        .color(theme::ACCENT_TEXT),
+                        .color(theme::p().accent_text),
                 );
-                ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::p().text_dim));
                 // "Running" is the server's word for "I hold a compiled instance",
                 // which is not the same as "the source in this box" — hence the
                 // separate unsaved marker rather than one combined state.
@@ -303,13 +303,13 @@ pub fn render_script_panel(
                     )
                 };
                 ui.label(egui::RichText::new(dot).color(if editor.running {
-                    theme::ACCENT
+                    theme::p().accent
                 } else {
-                    theme::TEXT_DIM
+                    theme::p().text_dim
                 }))
                 .on_hover_text(tip);
                 if editor.is_dirty() {
-                    ui.label(egui::RichText::new("• unsaved").color(theme::WARN));
+                    ui.label(egui::RichText::new("• unsaved").color(theme::p().warn));
                 }
             });
 
@@ -323,7 +323,7 @@ pub fn render_script_panel(
                         b.prims_max,
                         b.script_memory_bytes / 1024
                     ))
-                    .color(theme::TEXT_DIM)
+                    .color(theme::p().text_dim)
                     .small(),
                 )
                 .on_hover_text(
@@ -393,7 +393,7 @@ pub fn render_script_panel(
                 });
 
             if !editor.fetched {
-                ui.label(egui::RichText::new("Loading…").color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new("Loading…").color(theme::p().text_dim));
                 return;
             }
 
@@ -413,6 +413,8 @@ pub fn render_script_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // The code box is dark in both themes: the code colours are one set.
+                    theme::use_dark_visuals(ui);
                     ui.add(
                         egui::TextEdit::multiline(&mut editor.source)
                             .code_editor()

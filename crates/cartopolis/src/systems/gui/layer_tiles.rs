@@ -97,11 +97,11 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
         let centre = Pos2::new(col.center().x, col.top() + DISC / 2.0);
         let painter = ui.painter();
         let fill = if on {
-            theme::ACCENT
+            theme::p().accent
         } else if resp.hovered() {
-            theme::SURFACE_HOVER
+            theme::p().surface_hover
         } else {
-            theme::SURFACE_RAISED
+            theme::p().surface_raised
         };
         painter.circle_filled(centre, DISC / 2.0, fill);
         painter.text(
@@ -109,24 +109,32 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
             Align2::CENTER_CENTER,
             cat.icon(),
             FontId::proportional(20.0),
-            if on { theme::INK } else { theme::TEXT },
+            if on {
+                theme::p().on_accent
+            } else {
+                theme::p().text
+            },
         );
         painter.text(
             Pos2::new(centre.x, col.top() + DISC + 3.0),
             Align2::CENTER_TOP,
             cat.label(),
             FontId::proportional(theme::SIZE_CHIP),
-            if on { theme::CREAM } else { theme::TEXT_DIM },
+            if on {
+                theme::p().cream
+            } else {
+                theme::p().text_dim
+            },
         );
         if counts[i] > 0 {
             let badge = Pos2::new(centre.x + DISC / 2.0 - 4.0, col.top() + 5.0);
-            painter.circle_filled(badge, 8.0, theme::CREAM);
+            painter.circle_filled(badge, 8.0, theme::p().cream);
             painter.text(
                 badge,
                 Align2::CENTER_CENTER,
                 counts[i].to_string(),
                 FontId::proportional(10.0),
-                theme::INK,
+                theme::p().ink,
             );
         }
     }
@@ -223,19 +231,22 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
     // A card as the midas hub draws one (a surface, a quiet hairline, a soft
     // shadow); a layer that is on is the hub's soft teal with an accent rim.
     let (fill, stroke) = if on && !dim {
-        (theme::ACCENT_MUTED, Stroke::new(1.2, theme::ACCENT))
+        (theme::p().accent_muted, Stroke::new(1.2, theme::p().accent))
     } else if hovered {
-        (theme::SURFACE_RAISED, Stroke::new(1.0, theme::LINE))
+        (theme::p().surface_raised, Stroke::new(1.0, theme::p().line))
     } else {
-        (theme::SURFACE, Stroke::new(1.0, theme::SURFACE_HOVER))
+        (
+            theme::p().surface,
+            Stroke::new(1.0, theme::p().surface_hover),
+        )
     };
-    painter.add(theme::CARD_SHADOW.as_shape(rect, CornerRadius::same(theme::RADIUS_LG)));
+    painter.add(theme::card_shadow().as_shape(rect, CornerRadius::same(theme::RADIUS_LG)));
     let text = if dim {
-        theme::TEXT_DIM
+        theme::p().text_dim
     } else if on {
-        theme::CREAM
+        theme::p().cream
     } else {
-        theme::TEXT
+        theme::p().text
     };
     painter.rect(
         rect,
@@ -249,7 +260,11 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
         Align2::LEFT_TOP,
         tile.icon,
         FontId::proportional(20.0),
-        if on && !dim { theme::ACCENT_RING } else { text },
+        if on && !dim {
+            theme::p().accent_word
+        } else {
+            text
+        },
     );
     // The label, wrapped into the tile and anchored to its bottom.
     let galley = painter.layout(
@@ -273,9 +288,9 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
         pill,
         CornerRadius::same(7),
         if on {
-            theme::ACCENT
+            theme::p().accent
         } else {
-            theme::SURFACE_HOVER
+            theme::p().surface_hover
         },
     );
     let knob_x = if on {
@@ -286,7 +301,11 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
     painter.circle_filled(
         Pos2::new(knob_x, pill.center().y),
         5.0,
-        if on { theme::INK } else { theme::TEXT_DIM },
+        if on {
+            theme::p().on_accent
+        } else {
+            theme::p().text_dim
+        },
     );
     // Left of the switch, on the top row.
     let corner = Pos2::new(pill.left() - 6.0, pill.center().y);
@@ -296,14 +315,18 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
             Align2::RIGHT_CENTER,
             icons::MORE,
             FontId::proportional(18.0),
-            if open { theme::ACCENT } else { theme::TEXT_DIM },
+            if open {
+                theme::p().accent
+            } else {
+                theme::p().text_dim
+            },
         );
     } else if tile.nl {
         let r = Rect::from_min_size(corner - Vec2::new(18.0, 6.0), Vec2::new(18.0, 12.0));
         painter.rect_stroke(
             r,
             CornerRadius::same(3),
-            Stroke::new(1.0, theme::OVERLAY_LINE),
+            Stroke::new(1.0, theme::p().overlay_line),
             StrokeKind::Inside,
         );
         painter.text(
@@ -311,7 +334,7 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile<'_>, on: bool, hovered: bool, ope
             Align2::CENTER_CENTER,
             "NL",
             FontId::proportional(8.5),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         );
     }
 }
@@ -334,7 +357,7 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
             Basemap::Drawn,
             "Drawn map",
             Color32::from_rgb(0xE6, 0xE0, 0xD2),
-            theme::INK,
+            theme::DARK.ink,
         ),
         (
             Basemap::Aerial,
@@ -345,8 +368,8 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
         (
             Basemap::None,
             "No ground",
-            theme::SURFACE_HOVER,
-            theme::TEXT,
+            theme::p().surface_hover,
+            theme::p().text,
         ),
     ];
     let mut picked = None;
@@ -370,9 +393,9 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
             CornerRadius::same(12),
             fill,
             if sel {
-                Stroke::new(2.0, theme::ACCENT)
+                Stroke::new(2.0, theme::p().accent)
             } else {
-                Stroke::new(1.0, theme::OVERLAY_LINE)
+                Stroke::new(1.0, theme::p().overlay_line)
             },
             StrokeKind::Inside,
         );
@@ -405,7 +428,7 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     let font = FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_string(), font, theme::TEXT);
+        .layout_no_wrap(label.to_string(), font, theme::p().text);
     let size = Vec2::new(galley.size().x + 30.0, 26.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = theme::named(ui, resp, label);
@@ -417,8 +440,10 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     painter.rect(
         rect,
         CornerRadius::same(13),
-        theme::SURFACE_RAISED.gamma_multiply(if *on { 1.0 } else { 0.7 }),
-        Stroke::new(1.0, theme::OVERLAY_LINE),
+        theme::p()
+            .surface_raised
+            .gamma_multiply(if *on { 1.0 } else { 0.7 }),
+        Stroke::new(1.0, theme::p().overlay_line),
         StrokeKind::Inside,
     );
     painter.circle_filled(
@@ -429,7 +454,7 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     painter.galley(
         Pos2::new(rect.left() + 22.0, rect.center().y - galley.size().y / 2.0),
         galley,
-        theme::TEXT.gamma_multiply(alpha),
+        theme::p().text.gamma_multiply(alpha),
     );
     resp.clicked()
 }

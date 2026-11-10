@@ -850,20 +850,26 @@ pub fn chat_name(
 }
 
 const MEETUP_TONE: egui::Color32 = theme::BRAND;
-const MEETING_TONE: egui::Color32 = theme::ACCENT;
+fn meeting_tone() -> egui::Color32 {
+    theme::p().accent
+}
 
 fn kind_tone(item: &Item) -> egui::Color32 {
     if item.is_meetup() {
         MEETUP_TONE
     } else {
-        MEETING_TONE
+        meeting_tone()
     }
 }
 
 /// The answer pill at a row's end.
 fn answer_pill(item: &Item) -> (String, egui::Color32, egui::Color32) {
     if item.skipped {
-        return ("Skipped".into(), theme::SURFACE_RAISED, theme::TEXT_DIM);
+        return (
+            "Skipped".into(),
+            theme::p().surface_raised,
+            theme::p().text_dim,
+        );
     }
     match item.mine {
         Some(Rsvp::Going) => (
@@ -874,9 +880,13 @@ fn answer_pill(item: &Item) -> (String, egui::Color32, egui::Color32) {
         Some(Rsvp::Maybe) => (
             "Maybe".into(),
             egui::Color32::from_rgb(0x30, 0x29, 0x16),
-            theme::WARN,
+            theme::p().warn,
         ),
-        Some(Rsvp::No) => ("Can't come".into(), theme::SURFACE_RAISED, theme::TEXT_DIM),
+        Some(Rsvp::No) => (
+            "Can't come".into(),
+            theme::p().surface_raised,
+            theme::p().text_dim,
+        ),
         None => (
             "Answer".into(),
             egui::Color32::from_rgb(0x4a, 0x24, 0x10),
@@ -914,7 +924,7 @@ pub fn row(
     let resp = theme::named(ui, resp, &item.title());
     let p = ui.painter_at(rect);
     if resp.hovered() {
-        p.rect_filled(rect, egui::CornerRadius::same(10), theme::SURFACE_HOVER);
+        p.rect_filled(rect, egui::CornerRadius::same(10), theme::p().surface_hover);
     }
     let fade = |c: egui::Color32| if faded { c.gamma_multiply(0.45) } else { c };
     let time_x = rect.left() + 52.0;
@@ -931,7 +941,7 @@ pub fn row(
         egui::Align2::RIGHT_CENTER,
         clock,
         font(14.5),
-        fade(theme::CREAM),
+        fade(theme::p().cream),
     );
     let under = day.map(str::to_string).or_else(|| {
         (!item.is_meetup()).then(|| {
@@ -951,7 +961,7 @@ pub fn row(
             egui::Align2::RIGHT_CENTER,
             under,
             font(11.0),
-            fade(theme::TEXT_DIM),
+            fade(theme::p().text_dim),
         );
     }
     let bar = egui::Rect::from_min_size(
@@ -975,24 +985,24 @@ pub fn row(
     }
     let text_x = bar.right() + 10.0;
     let text_w = (pill_rect.left() - 8.0 - text_x).max(40.0);
-    let title_galley = one_line(&p, item.title(), font(14.5), fade(theme::CREAM), text_w);
+    let title_galley = one_line(&p, item.title(), font(14.5), fade(theme::p().cream), text_w);
     let ty = mid - 9.0;
     if item.skipped || item.mine == Some(Rsvp::No) {
         let r = egui::Rect::from_center_size(
             egui::pos2(text_x + title_galley.size().x / 2.0, ty),
             title_galley.size(),
         );
-        p.galley(r.min, title_galley, fade(theme::CREAM));
+        p.galley(r.min, title_galley, fade(theme::p().cream));
         p.hline(
             r.x_range(),
             ty,
-            egui::Stroke::new(1.0, fade(theme::TEXT_DIM)),
+            egui::Stroke::new(1.0, fade(theme::p().text_dim)),
         );
     } else {
         p.galley(
             egui::pos2(text_x, ty - title_galley.size().y / 2.0),
             title_galley,
-            fade(theme::CREAM),
+            fade(theme::p().cream),
         );
     }
     let icon = if item.is_meetup() {
@@ -1010,11 +1020,11 @@ pub fn row(
             sub = format!("{icon} repeats · {chat_label}");
         }
     }
-    let sub_galley = one_line(&p, sub, font(12.0), fade(theme::TEXT_DIM), text_w);
+    let sub_galley = one_line(&p, sub, font(12.0), fade(theme::p().text_dim), text_w);
     p.galley(
         egui::pos2(text_x, mid + 10.0 - sub_galley.size().y / 2.0),
         sub_galley,
-        fade(theme::TEXT_DIM),
+        fade(theme::p().text_dim),
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1025,13 +1035,17 @@ fn heading(ui: &mut egui::Ui, text: &str, right: &str, today: bool) {
         ui.label(
             egui::RichText::new(text)
                 .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                .color(if today { theme::BRAND } else { theme::TEXT_DIM }),
+                .color(if today {
+                    theme::BRAND
+                } else {
+                    theme::p().text_dim
+                }),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(right)
                     .size(theme::SIZE_CHIP)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         });
     });
@@ -1131,10 +1145,18 @@ fn week_strip(ui: &mut egui::Ui, today: i64, chosen: i64, items: &[Item]) -> Opt
         });
         let p = ui.painter();
         if on {
-            p.rect_filled(r, egui::CornerRadius::same(12), theme::ACCENT);
+            p.rect_filled(r, egui::CornerRadius::same(12), theme::p().accent);
         }
-        let ink = if on { theme::INK } else { theme::CREAM };
-        let dim = if on { theme::INK } else { theme::TEXT_DIM };
+        let ink = if on {
+            theme::p().on_accent
+        } else {
+            theme::p().cream
+        };
+        let dim = if on {
+            theme::p().on_accent
+        } else {
+            theme::p().text_dim
+        };
         let date = civil(d);
         p.text(
             egui::pos2(r.center().x, r.top() + 11.0),
@@ -1159,11 +1181,11 @@ fn week_strip(ui: &mut egui::Ui, today: i64, chosen: i64, items: &[Item]) -> Opt
             })
             .map(|m| {
                 if on {
-                    theme::INK
+                    theme::p().on_accent
                 } else if m {
                     MEETUP_TONE
                 } else {
-                    MEETING_TONE
+                    meeting_tone()
                 }
             })
             .collect();
@@ -1279,7 +1301,7 @@ fn month(
         ui.label(
             egui::RichText::new(first.strftime("%B %Y").to_string())
                 .size(theme::SIZE_TITLE)
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let step = |dir: i32| {
@@ -1316,7 +1338,7 @@ fn month(
             egui::Align2::CENTER_CENTER,
             *d,
             egui::FontId::proportional(11.0),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         );
     }
     let weeks = ((lead + i64::from(first.days_in_month())) + 6) / 7;
@@ -1345,16 +1367,16 @@ fn month(
         });
         let p = ui.painter();
         if on {
-            p.rect_filled(r, egui::CornerRadius::same(12), theme::ACCENT);
+            p.rect_filled(r, egui::CornerRadius::same(12), theme::p().accent);
         }
         let ink = if on {
-            theme::INK
+            theme::p().on_accent
         } else if d == today {
             theme::BRAND
         } else if inside {
-            theme::TEXT
+            theme::p().text
         } else {
-            theme::LINE
+            theme::p().line
         };
         p.text(
             egui::pos2(r.center().x, r.top() + 14.0),
@@ -1372,11 +1394,11 @@ fn month(
             })
             .map(|mu| {
                 if on {
-                    theme::INK
+                    theme::p().on_accent
                 } else if mu {
                     MEETUP_TONE
                 } else {
-                    MEETING_TONE
+                    meeting_tone()
                 }
             })
             .collect();
@@ -1413,12 +1435,12 @@ fn names_line(ui: &mut egui::Ui, label: &str, names: &[String]) {
         ui.label(
             egui::RichText::new(format!("{label} {}", names.len()))
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.label(
             egui::RichText::new(names.join(", "))
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT),
+                .color(theme::p().text),
         );
     });
 }
@@ -1456,14 +1478,14 @@ fn detail(
             } else {
                 (
                     format!("{}  MEETING · A CALL", icons::VIDEOCAM),
-                    MEETING_TONE,
+                    meeting_tone(),
                 )
             };
             ui.label(egui::RichText::new(kicker).size(11.0).strong().color(tone));
             ui.label(
                 egui::RichText::new(item.title())
                     .size(theme::SIZE_PANEL_TITLE)
-                    .color(theme::CREAM),
+                    .color(theme::p().cream),
             );
             let when = if item.is_meetup() {
                 format!(
@@ -1482,7 +1504,7 @@ fn detail(
             ui.label(
                 egui::RichText::new(when)
                     .size(theme::SIZE_BODY)
-                    .color(theme::TEXT),
+                    .color(theme::p().text),
             );
             if let What::Meeting { plan } = &item.what {
                 if let Some(rule) = rule_words(plan) {
@@ -1492,7 +1514,7 @@ fn detail(
                     ui.label(
                         egui::RichText::new(format!("{rule}{nth}"))
                             .size(theme::SIZE_SUB)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                 }
             }
@@ -1509,7 +1531,7 @@ fn detail(
             ui.label(
                 egui::RichText::new(format!("{from} · {verb} by {by}"))
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add_space(10.0);
             match &item.what {
@@ -1586,19 +1608,23 @@ fn meeting_detail(
     });
     if let Some(text) = &plan.text {
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(text).size(13.0).color(theme::TEXT));
+        ui.label(egui::RichText::new(text).size(13.0).color(theme::p().text));
     }
     if !plan.agenda.is_empty() {
         theme::section(ui, "Agenda");
         for a in &plan.agenda {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&a.name).size(13.5).color(theme::TEXT));
+                ui.label(
+                    egui::RichText::new(&a.name)
+                        .size(13.5)
+                        .color(theme::p().text),
+                );
                 if a.minutes > 0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             egui::RichText::new(format!("{} min", a.minutes))
                                 .size(13.0)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                     });
                 }
@@ -1678,7 +1704,7 @@ fn meetup_detail(
                 walk_minutes(here, point)
             ))
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
         ui.add_space(6.0);
     }
@@ -1755,7 +1781,7 @@ fn new_page(
             long_day(day_start_ms(day) + 12 * 3_600_000)
         ))
         .size(theme::SIZE_TITLE)
-        .color(theme::CREAM),
+        .color(theme::p().cream),
     );
     ui.add_space(6.0);
     let mut kind = cal.new_kind;
@@ -1791,7 +1817,9 @@ fn new_page(
                     } else {
                         theme::RowEnd::Nothing
                     };
-                    if theme::list_row(ui, icons::CHAT, &name, None, end, theme::ACCENT).clicked() {
+                    if theme::list_row(ui, icons::CHAT, &name, None, end, theme::p().accent)
+                        .clicked()
+                    {
                         cal.new_chat = Some(c.key.clone());
                     }
                 }
@@ -1904,7 +1932,7 @@ pub fn coming_up(
                     ui.label(
                         egui::RichText::new(label)
                             .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -1915,7 +1943,7 @@ pub fn coming_up(
                                         icons::CHEVRON_RIGHT
                                     ))
                                     .size(13.0)
-                                    .color(theme::ACCENT),
+                                    .color(theme::p().accent),
                                 )
                                 .frame(false),
                             )
@@ -2022,11 +2050,15 @@ pub fn render_reminder(
                     };
                     ui.label(egui::RichText::new(icon).size(22.0).color(theme::BRAND));
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(&r.title).size(15.0).color(theme::CREAM));
+                        ui.label(
+                            egui::RichText::new(&r.title)
+                                .size(15.0)
+                                .color(theme::p().cream),
+                        );
                         ui.label(
                             egui::RichText::new(&r.line)
                                 .size(12.5)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {

@@ -1131,7 +1131,7 @@ pub fn render_satellite_menu(
                 ui.label(
                     egui::RichText::new(def.label)
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 ui.add_space(4.0);
                 egui::Grid::new("satellite_card_rows")
@@ -1139,7 +1139,7 @@ pub fn render_satellite_menu(
                     .spacing([12.0, 2.0])
                     .show(ui, |ui| {
                         let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                            ui.label(egui::RichText::new(k).color(theme::TEXT_DIM));
+                            ui.label(egui::RichText::new(k).color(theme::p().text_dim));
                             ui.label(v);
                             ui.end_row();
                         };

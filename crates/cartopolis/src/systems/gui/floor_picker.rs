@@ -81,7 +81,7 @@ pub fn render_floor_picker(
                     ui.label(
                         egui::RichText::new(format!("In the {room}"))
                             .size(theme::SIZE_SUB)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                 }
                 ui.add_space(4.0);
@@ -118,7 +118,7 @@ pub fn render_floor_picker(
                         "Generated from the register"
                     })
                     .size(theme::SIZE_TINY)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
                 if ui
                     .add_enabled(

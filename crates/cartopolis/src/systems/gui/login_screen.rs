@@ -450,7 +450,7 @@ pub fn render_login_screen(
             let (rect, resp) = ui.allocate_exact_size(viewport, egui::Sense::click_and_drag());
             let resp = theme::named(ui, resp, "Dismiss");
             let p = ui.painter();
-            p.rect_filled(rect, 0.0, dim(theme::INK, 0.78 * t));
+            p.rect_filled(rect, 0.0, dim(theme::DARK.ink, 0.78 * t));
             // A soft accent-tinted glow behind the card, built from nested rounded
             // rects because egui has no gradient primitive — the same trick the
             // boot splash uses to stand in for `index.html`'s radial one.
@@ -469,7 +469,7 @@ pub fn render_login_screen(
                 p.rect_filled(
                     card.expand(k * 14.0),
                     egui::CornerRadius::same(18 + i * 3),
-                    dim(theme::ACCENT, 0.020 * t * (6.0 - k) / 5.0),
+                    dim(theme::p().accent, 0.020 * t * (6.0 - k) / 5.0),
                 );
             }
             resp.clicked()
@@ -480,16 +480,16 @@ pub fn render_login_screen(
     // ── Card ─────────────────────────────────────────────────────────────────
     let card_id = egui::Id::new("sign_in_card");
     let frame = egui::Frame::NONE
-        // The card every window in the app is (`theme::GLASS`, solid).
-        .fill(theme::GLASS)
-        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        // The card every window in the app is (`theme::Palette::glass`, solid).
+        .fill(theme::p().glass)
+        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
         .inner_margin(egui::Margin::symmetric(CARD_PAD_X, CARD_PAD_Y))
         .shadow(egui::Shadow {
             offset: [0, 10],
             blur: 28,
             spread: 0,
-            color: dim(theme::INK, 0.55 * t),
+            color: dim(theme::DARK.ink, 0.55 * t),
         });
     let mut submit = false;
     let mut close = dismissed;
@@ -611,7 +611,7 @@ fn card_ui(
                 ui.label(
                     egui::RichText::new("Meet people, chat and join communities")
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             });
         });
@@ -636,7 +636,7 @@ fn card_ui(
                         egui::Button::new(
                             egui::RichText::new("Change")
                                 .size(theme::SIZE_SUB)
-                                .color(theme::ACCENT),
+                                .color(theme::p().accent),
                         )
                         .frame(false),
                     )
@@ -649,7 +649,7 @@ fn card_ui(
                         egui::Label::new(
                             egui::RichText::new(screen.server.trim())
                                 .size(theme::SIZE_BODY)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         )
                         .truncate(),
                     );
@@ -744,12 +744,12 @@ fn card_ui(
             ui.add(
                 egui::Spinner::new()
                     .size(theme::SIZE_VALUE)
-                    .color(theme::ACCENT),
+                    .color(theme::p().accent),
             );
             ui.label(
                 egui::RichText::new(session.status.label())
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         });
     } else if !ready {
@@ -764,14 +764,14 @@ fn card_ui(
         ui.label(
             egui::RichText::new(missing)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     } else if let Some(error) = &session.error {
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(error)
                 .size(theme::SIZE_SUB)
-                .color(theme::ERROR)
+                .color(theme::p().error)
                 .strong(),
         );
     }
@@ -786,14 +786,14 @@ fn card_ui(
             ui.label(
                 egui::RichText::new("New here?")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             if ui
                 .add(
                     egui::Button::new(
                         egui::RichText::new("Create an account")
                             .size(theme::SIZE_SUB)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     )
                     .frame(false),
                 )
@@ -834,7 +834,7 @@ fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
         ui.label(
             egui::RichText::new(error)
                 .size(theme::SIZE_SUB)
-                .color(theme::ERROR),
+                .color(theme::p().error),
         );
     }
     ui.add_space(4.0);
@@ -842,7 +842,7 @@ fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
         ui.label(
             egui::RichText::new("or with your account name")
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     });
 }
@@ -857,12 +857,12 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
             ui.add(
                 egui::Spinner::new()
                     .size(theme::SIZE_VALUE)
-                    .color(theme::ACCENT),
+                    .color(theme::p().accent),
             );
             ui.label(
                 egui::RichText::new("Opening your browser…")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         });
         return;
@@ -870,7 +870,7 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
     ui.label(
         egui::RichText::new("Finish in your browser")
             .size(theme::SIZE_VALUE)
-            .color(theme::TEXT)
+            .color(theme::p().text)
             .strong(),
     );
     ui.add_space(4.0);
@@ -881,7 +881,7 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
             p.provider.name
         ))
         .size(theme::SIZE_SUB)
-        .color(theme::TEXT_DIM),
+        .color(theme::p().text_dim),
     );
     ui.add_space(8.0);
     ui.vertical_centered(|ui| {
@@ -889,7 +889,7 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
             egui::RichText::new(&p.code)
                 .monospace()
                 .size(26.0)
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
     });
     ui.add_space(8.0);
@@ -897,12 +897,12 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
         ui.add(
             egui::Spinner::new()
                 .size(theme::SIZE_VALUE)
-                .color(theme::ACCENT),
+                .color(theme::p().accent),
         );
         ui.label(
             egui::RichText::new(format!("Waiting for {}…", p.provider.name))
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
     });
     ui.add_space(10.0);
@@ -920,14 +920,14 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
 fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentity) {
     let (dot, text) = match &session.status {
         SessionStatus::Online => (
-            theme::ACCENT_BRIGHT,
+            theme::p().accent_bright,
             match identity.username.as_deref() {
                 Some(user) => format!("{user} · {}", session.mode.where_()),
                 None => session.mode.where_(),
             },
         ),
-        SessionStatus::Offline => (theme::TEXT_DIM, "Not signed in".to_string()),
-        busy => (theme::WARN, busy.label().to_string()),
+        SessionStatus::Offline => (theme::p().text_dim, "Not signed in".to_string()),
+        busy => (theme::p().warn, busy.label().to_string()),
     };
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -935,7 +935,7 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
         ui.label(
             egui::RichText::new(text)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT),
+                .color(theme::p().text),
         );
     });
 }
@@ -951,7 +951,7 @@ fn field(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.label(
         egui::RichText::new(label)
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.add_space(2.0);
     ui.horizontal(add);
@@ -966,7 +966,7 @@ fn field_line(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
         ui.label(
             egui::RichText::new(label)
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         add(ui);
     });
@@ -1225,7 +1225,7 @@ mod tests {
 
                 let card_id = egui::Id::new("sign_in_card");
                 let frame_style = egui::Frame::NONE
-                    .fill(theme::SURFACE)
+                    .fill(theme::p().surface)
                     .inner_margin(egui::Margin::symmetric(CARD_PAD_X, CARD_PAD_Y));
                 let inner = egui::Window::new("sign in")
                     .id(card_id)

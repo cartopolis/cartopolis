@@ -241,14 +241,14 @@ pub fn responsive_right_panel(
     viewport_w: f32,
     wide_width: f32,
 ) -> egui::Panel {
-    // The page every panel shares (`theme::PANEL`, the midas hub's) and its
+    // The page every panel shares (`theme::Palette::panel`, the midas hub's) and its
     // hairline, with room round the content. egui's own side-panel margin is
     // 8 x 2 pt, which set every title and row against the panel's edge; it was
     // 14 x 10 until 2026-11-08 ("less cramped"). The Chats screen sets its own
     // frame over this one.
     let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::PANEL_RIM))
+        .fill(crate::systems::theme::p().panel)
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::p().panel_rim))
         .inner_margin(egui::Margin::symmetric(16, 14));
     if compact {
         egui::Panel::right(id)
@@ -329,8 +329,8 @@ pub fn bottom_sheet(
     let mut close = false;
     let height = egui.viewport_pts().y * share;
     let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::PANEL_RIM))
+        .fill(crate::systems::theme::p().panel)
+        .stroke(egui::Stroke::new(1.0, crate::systems::theme::p().panel_rim))
         .inner_margin(egui::Margin::symmetric(14, 10));
     egui::Panel::bottom(id)
         .frame(frame)

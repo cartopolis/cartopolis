@@ -476,7 +476,7 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(note)
-                    .color(theme::ERROR)
+                    .color(theme::p().error)
                     .size(theme::SIZE_SUB),
             );
             if ui.small_button(icons::CLEAR).clicked() {
@@ -519,7 +519,7 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
     if let Some(address) = &info.address {
         ui.label(
             egui::RichText::new(format!("@{address}"))
-                .color(theme::TEXT_DIM)
+                .color(theme::p().text_dim)
                 .size(theme::SIZE_SUB),
         );
     }
@@ -630,7 +630,9 @@ fn reports_list(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
                     .color(theme::PUBLIC),
             );
             if !r.reason.is_empty() {
-                ui.add(egui::Label::new(egui::RichText::new(&r.reason).color(theme::CREAM)).wrap());
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&r.reason).color(theme::p().cream)).wrap(),
+                );
             }
             ui.label(
                 egui::RichText::new(format!(
@@ -639,7 +641,7 @@ fn reports_list(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
                     first_line(&r.post.text, 120)
                 ))
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
             );
             ui.horizontal_wrapped(|ui| {
                 for (action, label) in [
@@ -694,7 +696,7 @@ fn post_card(
         ui.horizontal(|ui| {
             avatar(ui, &p.author.name, ChatKind::Private, 32.0);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(&p.author.name).color(theme::CREAM));
+                ui.label(egui::RichText::new(&p.author.name).color(theme::p().cream));
                 let mut line = if p.author.local {
                     "member".to_string()
                 } else {
@@ -710,7 +712,7 @@ fn post_card(
                 ui.label(
                     egui::RichText::new(line)
                         .size(theme::SIZE_SUB)
-                        .color(if p.author.local { theme::TEXT_DIM } else { theme::PUBLIC }),
+                        .color(if p.author.local { theme::p().text_dim } else { theme::PUBLIC }),
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -728,7 +730,7 @@ fn post_card(
         if cs.posts.editing.as_ref().is_some_and(|(e, _)| *e == p.id) {
             edit_box(ui, cs, c.id, p.id);
         } else {
-            ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::TEXT)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::p().text)).wrap());
         }
         // The polaroid keeps its own proportions: its frame is
         // part of the picture, and a crop would cut them off.
@@ -765,7 +767,7 @@ fn post_card(
                     ui.label(
                         egui::RichText::new("No place: listed, not pinned")
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                 }
             }
@@ -776,7 +778,7 @@ fn post_card(
                 (l, d) => Some(format!("{l} up · {d} down")),
             };
             if let Some(v) = votes {
-                ui.label(egui::RichText::new(v).size(theme::SIZE_SUB).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(v).size(theme::SIZE_SUB).color(theme::p().text_dim));
             }
             if p.parent.is_none() && tappable {
                 let n = p.replies;
@@ -993,7 +995,7 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         ui.label(
             egui::RichText::new("New post")
                 .size(theme::SIZE_TITLE)
-                .color(theme::CREAM),
+                .color(theme::p().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if theme::close_button(ui).on_hover_text("Discard").clicked() {
@@ -1021,9 +1023,9 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             egui::RichText::new(format!("{used} / {MAX_POST_TEXT}"))
                 .size(theme::SIZE_TINY)
                 .color(if used + 20 >= MAX_POST_TEXT {
-                    theme::WARN
+                    theme::p().warn
                 } else {
-                    theme::TEXT_DIM
+                    theme::p().text_dim
                 }),
         );
     });
@@ -1049,7 +1051,7 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                     ui.label(
                         egui::RichText::new(icons::PIN)
                             .size(20.0)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                     ui.vertical(|ui| match &place {
                         Some(p) => {
@@ -1057,13 +1059,13 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                                 format!("{:.5}, {:.5}", p.latitude, p.longitude)
                             });
                             ui.add(
-                                egui::Label::new(egui::RichText::new(name).color(theme::CREAM))
+                                egui::Label::new(egui::RichText::new(name).color(theme::p().cream))
                                     .truncate(),
                             );
                             ui.label(
                                 egui::RichText::new("Pinned where you are looking")
                                     .size(theme::SIZE_SUB)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                         }
                         None => theme::busy(ui, "Taking the view…"),
@@ -1129,14 +1131,14 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                         cs.pick_picture = true;
                     }
                 }
-                ui.label(egui::RichText::new(label).size(12.0).color(theme::TEXT));
+                ui.label(egui::RichText::new(label).size(12.0).color(theme::p().text));
             });
         }
         if picture.is_some() {
             ui.label(
                 egui::RichText::new("Another replaces the picture.")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         }
     });
@@ -1217,7 +1219,7 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             ui.label(
                 egui::RichText::new("Write something to post")
                     .size(theme::SIZE_TINY)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         });
     }
@@ -1259,7 +1261,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
             if cs.posts.handle.is_empty() {
                 cs.posts.handle = suggest_handle(&c.settings.name);
             }
-            ui.label(egui::RichText::new("The community's fediverse address").color(theme::CREAM));
+            ui.label(egui::RichText::new("The community's fediverse address").color(theme::p().cream));
             crate::systems::text_touch::field(
                 ui,
                 egui::TextEdit::singleline(&mut cs.posts.handle)
@@ -1276,10 +1278,10 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
                 ),
             );
         } else if let Some(address) = &info.address {
-            ui.label(egui::RichText::new(format!("@{address}")).color(theme::CREAM));
+            ui.label(egui::RichText::new(format!("@{address}")).color(theme::p().cream));
         }
         let mut who = info.settings.who_posts;
-        ui.label(egui::RichText::new("Who can post").size(theme::SIZE_SUB).color(theme::TEXT_DIM));
+        ui.label(egui::RichText::new("Who can post").size(theme::SIZE_SUB).color(theme::p().text_dim));
         let changed = theme::segmented(
             ui,
             &mut who,
@@ -1314,7 +1316,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
             return;
         }
         ui.separator();
-        ui.label(egui::RichText::new("This community follows").size(theme::SIZE_SUB).color(theme::TEXT_DIM));
+        ui.label(egui::RichText::new("This community follows").size(theme::SIZE_SUB).color(theme::p().text_dim));
         if !info.federating {
             theme::note(ui, "This server does not talk to other servers, so it follows nothing.");
             return;
@@ -1330,7 +1332,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
                 };
                 let state = if f.accepted { "" } else { " · waiting for their server" };
                 ui.label(egui::RichText::new(format!("{}  {}", icons::SHARE, f.address)).color(theme::PUBLIC));
-                ui.label(egui::RichText::new(format!("{kind}{state}")).size(theme::SIZE_SUB).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(format!("{kind}{state}")).size(theme::SIZE_SUB).color(theme::p().text_dim));
                 if ui.small_button(icons::CLEAR).on_hover_text("Stop following").clicked() {
                     let address = f.address.clone();
                     cs.posts.spawn(async move {
@@ -1368,7 +1370,7 @@ pub fn pick_community(ui: &mut egui::Ui, cs: &mut Communities) {
     ui.label(
         egui::RichText::new("Post this view publicly, to")
             .size(theme::SIZE_TITLE)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
     if let Some(p) = &cs.posts.from_view {
         ui.label(
@@ -1379,7 +1381,7 @@ pub fn pick_community(ui: &mut egui::Ui, cs: &mut Communities) {
                     .clone()
                     .unwrap_or_else(|| format!("{:.5}, {:.5}", p.latitude, p.longitude))
             ))
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
     }
     let mine: Vec<(Uuid, String)> = cs
@@ -1547,7 +1549,7 @@ pub fn render_filter_chip(
                                 egui::Label::new(
                                     egui::RichText::new(format!("Only {name} · {pinned} {posts}"))
                                         .size(theme::SIZE_SUB)
-                                        .color(theme::CREAM),
+                                        .color(theme::p().cream),
                                 )
                                 .sense(egui::Sense::click()),
                             )

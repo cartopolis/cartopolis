@@ -142,7 +142,7 @@ fn thousands(n: u64) -> String {
 /// A label with a dark halo, so it reads over anything.
 fn label(p: &egui::Painter, at: Pos2, align: egui::Align2, text: &str, size: f32, ink: Color32) {
     let font = egui::FontId::proportional(size);
-    let halo = alpha(theme::INK, ink.a() as f32 / 255.0);
+    let halo = alpha(theme::DARK.ink, ink.a() as f32 / 255.0);
     for d in [
         vec2(1.0, 0.0),
         vec2(-1.0, 0.0),
@@ -651,7 +651,7 @@ pub fn render_cosmos(
                 align: egui::Align2::LEFT_BOTTOM,
                 text: words.to_string(),
                 size: theme::SIZE_TINY,
-                ink: alpha(theme::TEXT_DIM, a),
+                ink: alpha(theme::DARK.text_dim, a),
             });
         }
     }
@@ -701,7 +701,7 @@ pub fn render_cosmos(
             text: format!("Galactic centre · {} light years", thousands(GC_LY as u64)),
             size: theme::SIZE_SUB,
             ink: alpha(
-                theme::TEXT,
+                theme::DARK.text,
                 gx * apart(gc_at, sun_at, 30.0, 80.0) * fade_out(alt, 2.0e21, 6.0e21),
             ),
         });
@@ -710,7 +710,7 @@ pub fn render_cosmos(
             align: egui::Align2::CENTER_TOP,
             text: "Milky Way · you".into(),
             size: theme::SIZE_BODY,
-            ink: alpha(theme::CREAM, gx * fade_in(alt, 2.0e21, 6.0e21)),
+            ink: alpha(theme::DARK.cream, gx * fade_in(alt, 2.0e21, 6.0e21)),
         });
     }
 
@@ -772,7 +772,7 @@ pub fn render_cosmos(
                 ),
                 size: theme::SIZE_TINY,
                 // At the top the whole survey is a dot; its names would bury it.
-                ink: alpha(theme::TEXT, a * fade_out(alt, 1.0e26, 6.0e26)),
+                ink: alpha(theme::DARK.text, a * fade_out(alt, 1.0e26, 6.0e26)),
             });
         }
     }
@@ -797,7 +797,7 @@ pub fn render_cosmos(
             align: egui::Align2::LEFT_BOTTOM,
             text: "every galaxy mapped here · 2 billion light years".into(),
             size: theme::SIZE_TINY,
-            ink: alpha(theme::TEXT, ea * fade_in(alt, 3.0e25, 3.0e26)),
+            ink: alpha(theme::DARK.text, ea * fade_in(alt, 3.0e25, 3.0e26)),
         });
     }
 
@@ -838,14 +838,14 @@ pub fn render_cosmos(
         p.circle_filled(
             q,
             if s.members > 1 { 3.5 } else { 2.5 },
-            alpha(theme::CREAM, a),
+            alpha(theme::DARK.cream, a),
         );
         star_tags.push(Tag {
             at: q + vec2(5.0, 0.0),
             align: egui::Align2::LEFT_CENTER,
             text: format!("{} · {:.1} ly", s.name, s.light_years),
             size: theme::SIZE_TINY,
-            ink: alpha(theme::TEXT, a),
+            ink: alpha(theme::DARK.text, a),
         });
     }
 
@@ -889,7 +889,7 @@ pub fn render_cosmos(
                 light_time_words(xyz.distance(earth))
             ),
             size: theme::SIZE_SUB,
-            ink: alpha(theme::CREAM, a),
+            ink: alpha(theme::DARK.cream, a),
         });
     }
     let sun_r = view.size(DVec3::ZERO, SUN_R_M).max(5.0);
@@ -961,7 +961,7 @@ pub fn render_cosmos(
             align: egui::Align2::CENTER_TOP,
             text: "Earth · you".into(),
             size: theme::SIZE_BODY,
-            ink: alpha(theme::CREAM, bd * you_apart),
+            ink: alpha(theme::DARK.cream, bd * you_apart),
         },
         Tag {
             at: sun_at + vec2(0.0, sun_r + 10.0),
@@ -979,7 +979,7 @@ pub fn render_cosmos(
                 light_time_words(MOON_DIST_M)
             ),
             size: theme::SIZE_SUB,
-            ink: alpha(theme::CREAM, ma),
+            ink: alpha(theme::DARK.cream, ma),
         },
     ];
     ordered.extend(planet_tags);
@@ -1037,7 +1037,7 @@ pub fn render_cosmos(
                     .unwrap_or_default()
             },
             theme::SIZE_SUB,
-            alpha(theme::TEXT_DIM, bd),
+            alpha(theme::DARK.text_dim, bd),
         );
     }
     label(
@@ -1046,7 +1046,7 @@ pub fn render_cosmos(
         egui::Align2::LEFT_BOTTOM,
         "To scale in the middle, squeezed towards the edge · rings at light-travel distances",
         theme::SIZE_SUB,
-        alpha(theme::TEXT_DIM, ruler),
+        alpha(theme::DARK.text_dim, ruler),
     );
     // Clear of the rail on the right and of the captions and the bar below.
     let mut room = screen.shrink2(vec2(48.0, 8.0));

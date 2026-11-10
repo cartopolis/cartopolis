@@ -33,7 +33,9 @@ use crate::systems::chats::ChatsView;
 use crate::systems::{icons, theme};
 
 /// Admin's colour, everywhere it appears: the web page's gold.
-const GOLD: egui::Color32 = theme::WARN;
+fn gold() -> egui::Color32 {
+    theme::p().warn
+}
 
 /// How often the open-report count behind the You page's badge is refreshed.
 const REPORT_POLL_SECS: f32 = 120.0;
@@ -392,7 +394,7 @@ pub fn render_admin_panel(
     crate::systems::egui_manager::responsive_right_panel("admin_panel", compact, viewport_w, 360.0)
         .frame(
             egui::Frame::NONE
-                .fill(theme::PANEL)
+                .fill(theme::p().panel)
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
@@ -452,7 +454,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if triage || accounts || roles {
-                theme::section_tinted(ui, "People", GOLD);
+                theme::section_tinted(ui, "People", gold());
                 theme::list_group(ui, |ui| {
                     if triage
                         && theme::list_row(
@@ -461,7 +463,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Reports",
                             Some("About a person, from anyone"),
                             theme::RowEnd::Badge(admin.open_reports),
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                     {
@@ -487,7 +489,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Accounts",
                             Some(&sub),
                             theme::RowEnd::Chevron,
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                         {
@@ -502,7 +504,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Roles",
                             Some("What each role may do"),
                             theme::RowEnd::Chevron,
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                     {
@@ -516,7 +518,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Building claims",
                             Some("Who holds which building"),
                             theme::RowEnd::Chevron,
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                     {
@@ -526,7 +528,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                 });
             }
             if overrides || library {
-                theme::section_tinted(ui, "Content", GOLD);
+                theme::section_tinted(ui, "Content", gold());
                 theme::list_group(ui, |ui| {
                     if overrides
                         && theme::list_row(
@@ -535,7 +537,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Building overrides",
                             None,
                             theme::RowEnd::Word("web page"),
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                     {
@@ -548,7 +550,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                             "Models",
                             Some("The shared library, street objects"),
                             theme::RowEnd::Word("web page"),
-                            GOLD,
+                            gold(),
                         )
                         .clicked()
                     {
@@ -557,7 +559,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                 });
             }
             if pipeline {
-                theme::section_tinted(ui, "Data", GOLD);
+                theme::section_tinted(ui, "Data", gold());
                 theme::list_group(ui, |ui| {
                     if theme::list_row(
                         ui,
@@ -565,7 +567,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                         "Pipeline",
                         Some("Map datasets per city"),
                         theme::RowEnd::Word("web page"),
-                        GOLD,
+                        gold(),
                     )
                     .clicked()
                     {
@@ -707,13 +709,13 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                 ui.label(
                     egui::RichText::new(&r.subject_username)
                         .size(14.5)
-                        .color(theme::CREAM),
+                        .color(theme::p().cream),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(short_time(&r.created_at))
                             .size(12.0)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                 });
             });
@@ -729,7 +731,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                         egui::RichText::new(format!("\u{201c}{said}\u{201d}"))
                             .italics()
                             .size(13.0)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     )
                     .truncate(),
                 );
@@ -738,7 +740,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                 Some(who) => format!("Reported by {who}"),
                 None => "Reported by a deleted account".into(),
             };
-            ui.label(egui::RichText::new(by).size(12.0).color(theme::LINE));
+            ui.label(egui::RichText::new(by).size(12.0).color(theme::p().line));
         });
     let rect = inner.response.rect;
     let resp = ui.interact(rect, ui.id().with(("report", r.id)), egui::Sense::click());
@@ -747,7 +749,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(8),
-            egui::Stroke::new(1.0, theme::LINE),
+            egui::Stroke::new(1.0, theme::p().line),
             egui::StrokeKind::Inside,
         );
     }
@@ -773,7 +775,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
         .show(ui, |ui| {
             // The line as it was reported, or the reporter's own words.
             egui::Frame::NONE
-                .fill(theme::SURFACE_RAISED)
+                .fill(theme::p().surface_raised)
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
@@ -782,14 +784,14 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                         ui.label(
                             egui::RichText::new(format!("\u{201c}{m}\u{201d}"))
                                 .size(14.0)
-                                .color(theme::TEXT),
+                                .color(theme::p().text),
                         );
                     }
                     if !r.note.is_empty() {
                         ui.label(
                             egui::RichText::new(format!("Note: {}", r.note))
                                 .size(13.0)
-                                .color(theme::TEXT),
+                                .color(theme::p().text),
                         );
                     }
                     ui.label(
@@ -802,7 +804,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                             short_time(&r.created_at)
                         ))
                         .size(12.0)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                     );
                 });
             ui.add_space(8.0);
@@ -834,7 +836,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                     &r.subject_username,
                     Some(&sub),
                     end,
-                    GOLD,
+                    gold(),
                 )
                 .clicked()
                 {
@@ -869,9 +871,9 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                     egui::Button::new(
                         egui::RichText::new("Mark handled")
                             .size(14.5)
-                            .color(theme::INK),
+                            .color(theme::p().on_status),
                     )
-                    .fill(GOLD)
+                    .fill(gold())
                     .corner_radius(egui::CornerRadius::same(14)),
                 )
                 .clicked();
@@ -1004,7 +1006,7 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                     } else {
                         theme::RowEnd::Word(status)
                     };
-                    let tone = if a.disabled { theme::ERROR } else { GOLD };
+                    let tone = if a.disabled { theme::p().error } else { gold() };
                     let icon = if a.disabled {
                         icons::CLEAR
                     } else {
@@ -1102,7 +1104,7 @@ fn account_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdenti
                     &format!("Reports about {}", a.username),
                     None,
                     theme::RowEnd::Count(reports),
-                    GOLD,
+                    gold(),
                 )
                 .clicked()
                 {
@@ -1113,7 +1115,7 @@ fn account_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdenti
             // Roles: ticked for each one held. `player` is everybody's.
             let may_roles = identity.may(Permission::RolesManage) || admin.demo;
             if let Some(roles) = admin.roles.ready().cloned() {
-                theme::section_tinted(ui, "Roles", GOLD);
+                theme::section_tinted(ui, "Roles", gold());
                 let mut want = held.clone();
                 let mut changed = false;
                 theme::list_group(ui, |ui| {
@@ -1200,10 +1202,10 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                 ui.label(
                                     egui::RichText::new(&role.name)
                                         .size(14.5)
-                                        .color(theme::CREAM),
+                                        .color(theme::p().cream),
                                 );
                                 if role.built_in {
-                                    chip(ui, "built in", theme::TEXT_DIM);
+                                    chip(ui, "built in", theme::p().text_dim);
                                 }
                             });
                             let people = if role.id == "player" {
@@ -1222,7 +1224,7 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                             ui.label(
                                 egui::RichText::new(people)
                                     .size(12.0)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                             let may: Vec<String> = role
                                 .permissions
@@ -1237,7 +1239,7 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                     egui::Label::new(
                                         egui::RichText::new(may.join(" · "))
                                             .size(12.0)
-                                            .color(theme::TEXT),
+                                            .color(theme::p().text),
                                     )
                                     .wrap(),
                                 );
@@ -1288,7 +1290,11 @@ fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                 Some(pc) => format!("{} · {pc}", c.address),
                                 None => c.address.clone(),
                             };
-                            ui.label(egui::RichText::new(place).size(14.5).color(theme::CREAM));
+                            ui.label(
+                                egui::RichText::new(place)
+                                    .size(14.5)
+                                    .color(theme::p().cream),
+                            );
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{} · since {}",
@@ -1296,7 +1302,7 @@ fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                     short_date(&c.claimed_at)
                                 ))
                                 .size(12.0)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                             );
                             if theme::confirm_button(
                                 ui,

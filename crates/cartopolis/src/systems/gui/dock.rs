@@ -139,7 +139,7 @@ fn labelled<R>(ui: &mut egui::Ui, word: &str, add: impl FnOnce(&mut egui::Ui) ->
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 word,
-                theme::TEXT,
+                theme::p().text,
             );
             r
         },

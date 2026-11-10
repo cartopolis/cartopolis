@@ -109,12 +109,16 @@ pub fn show(
                 let primary = i == 0;
                 let fill = match (primary, resp.hovered()) {
                     (true, false) => theme::BRAND,
-                    (true, true) => theme::ACCENT_PRESSED,
-                    (false, false) => theme::GLASS,
-                    (false, true) => theme::SURFACE_HOVER,
+                    (true, true) => theme::p().accent_pressed,
+                    (false, false) => theme::p().glass,
+                    (false, true) => theme::p().surface_hover,
                 };
-                let ink = if primary { Color32::WHITE } else { theme::TEXT };
-                painter.circle(p, BUTTON_R, fill, Stroke::new(1.0, theme::OVERLAY_LINE));
+                let ink = if primary {
+                    Color32::WHITE
+                } else {
+                    theme::p().text
+                };
+                painter.circle(p, BUTTON_R, fill, Stroke::new(1.0, theme::p().overlay_line));
                 painter.text(
                     p - Vec2::new(0.0, 6.0),
                     Align2::CENTER_CENTER,
@@ -146,13 +150,13 @@ pub fn show(
                 c,
                 CLOSE_R,
                 if close.hovered() {
-                    theme::SURFACE_HOVER
+                    theme::DARK.surface_hover
                 } else {
                     theme::LABEL_CHIP
                 },
             );
             let k = 5.5;
-            let s = Stroke::new(1.8, theme::TEXT_DIM);
+            let s = Stroke::new(1.8, theme::DARK.text_dim);
             painter.line_segment([c + Vec2::new(-k, -k), c + Vec2::new(k, k)], s);
             painter.line_segment([c + Vec2::new(k, -k), c + Vec2::new(-k, k)], s);
             if close.clicked() {
@@ -164,12 +168,12 @@ pub fn show(
             let title_g = painter.layout_no_wrap(
                 title.to_owned(),
                 FontId::proportional(theme::SIZE_BODY),
-                theme::CREAM,
+                theme::p().cream,
             );
             let detail_g = painter.layout_no_wrap(
                 detail.to_owned(),
                 FontId::proportional(theme::SIZE_CHIP),
-                theme::TEXT_DIM,
+                theme::p().text_dim,
             );
             let w = title_g.size().x.max(detail_g.size().x) + 24.0;
             let h = title_g.size().y
@@ -181,24 +185,24 @@ pub fn show(
                 + 12.0;
             let top = c.y + RADIUS + BUTTON_R + 8.0;
             let pill = Rect::from_center_size(Pos2::new(c.x, top + h / 2.0), Vec2::new(w, h));
-            painter.rect_filled(pill, 12.0, theme::GLASS);
+            painter.rect_filled(pill, 12.0, theme::p().glass);
             painter.rect_stroke(
                 pill,
                 12.0,
-                Stroke::new(1.0, theme::OVERLAY_LINE),
+                Stroke::new(1.0, theme::p().overlay_line),
                 egui::StrokeKind::Inside,
             );
             let title_h = title_g.size().y;
             painter.galley(
                 Pos2::new(c.x - title_g.size().x / 2.0, pill.top() + 6.0),
                 title_g,
-                theme::CREAM,
+                theme::p().cream,
             );
             if !detail.is_empty() {
                 painter.galley(
                     Pos2::new(c.x - detail_g.size().x / 2.0, pill.top() + 6.0 + title_h),
                     detail_g,
-                    theme::TEXT_DIM,
+                    theme::p().text_dim,
                 );
             }
             c

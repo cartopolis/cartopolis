@@ -216,7 +216,7 @@ pub fn render_building_card(
                             egui::Label::new(
                                 egui::RichText::new(&*id)
                                     .size(theme::SIZE_TINY)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             )
                             .truncate(),
                         );
@@ -265,7 +265,7 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
                         egui::Label::new(
                             egui::RichText::new(&title)
                                 .size(theme::SIZE_TITLE)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         )
                         .truncate()
                         .selectable(false),
@@ -279,7 +279,7 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
             egui::Label::new(
                 egui::RichText::new(&subtitle)
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             )
             .truncate()
             .selectable(false),
@@ -413,7 +413,7 @@ fn row(ui: &mut egui::Ui, name: &str, value: &str) {
     ui.label(
         egui::RichText::new(name)
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.label(egui::RichText::new(value).size(theme::SIZE_SUB));
     ui.end_row();

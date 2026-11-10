@@ -174,7 +174,11 @@ pub fn marker(
                 DISC,
             );
             if response.hovered() {
-                p.circle_stroke(centre, disc_r + RING, egui::Stroke::new(1.5, theme::CREAM));
+                p.circle_stroke(
+                    centre,
+                    disc_r + RING,
+                    egui::Stroke::new(1.5, theme::p().cream),
+                );
             }
             // The name, in a dark chip just under the tip.
             let galley = p.layout_no_wrap(name.to_string(), font.clone(), egui::Color32::WHITE);
@@ -227,7 +231,7 @@ pub fn balloon(
     const TAIL_X: f32 = 18.0;
     const TAIL: f32 = 6.0;
     let fill = if mine {
-        theme::ACCENT
+        theme::p().accent
     } else {
         egui::Color32::WHITE
     };
@@ -254,8 +258,12 @@ pub fn balloon(
                 .show(ui, |ui| {
                     ui.set_max_width(BALLOON_WIDTH - 22.0);
                     ui.add(
-                        egui::Label::new(egui::RichText::new(text).size(13.5).color(theme::INK))
-                            .wrap(),
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .size(13.5)
+                                .color(theme::p().on_accent),
+                        )
+                        .wrap(),
                     );
                 });
             let r = frame.response.rect;

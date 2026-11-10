@@ -68,7 +68,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
     // everywhere in the app now that there is no second accent to reserve for it.
     // What separates it from an ordinary engaged control is weight, not colour:
     // the lock draws a second ring at 2 pt over the disc's own 1.5 pt one.
-    let lock_color = theme::ACCENT_BRIGHT;
+    let lock_color = theme::p().accent_bright;
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Top-left: the status HUD moved into the top-right corner, so the compass
         // takes the opposite one to keep both clear of the docked panels.
@@ -116,12 +116,12 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             // halves differ, which they still do by two full steps of the ramp.
             p.add(egui::Shape::convex_polygon(
                 vec![c + north * (r * 0.86), c + w, c - w],
-                theme::ACCENT,
+                theme::p().accent,
                 egui::Stroke::NONE,
             ));
             p.add(egui::Shape::convex_polygon(
                 vec![c - north * (r * 0.64), c + w, c - w],
-                theme::TEXT_DIM,
+                theme::p().text_dim,
                 egui::Stroke::NONE,
             ));
             // "N" over the north tip.
@@ -163,7 +163,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
                     egui::Align2::CENTER_CENTER,
                     caption,
                     egui::FontId::proportional(theme::SIZE_TINY),
-                    theme::TEXT_DIM,
+                    theme::p().text_dim,
                 );
             }
             if interactive {
@@ -251,9 +251,9 @@ fn locate_overlay(
     // tunnel. `WARN` rather than a red — a poor fix is a caveat, not a fault, and
     // the map is still usable throughout.
     let tone = match (on, gps) {
-        (false, _) => theme::ACCENT_RING,
-        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => theme::WARN,
-        (true, _) => theme::ACCENT_BRIGHT,
+        (false, _) => theme::p().accent_ring,
+        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => theme::p().warn,
+        (true, _) => theme::p().accent_bright,
     };
     // Read before the `Area`'s closure, not inside it: `Context::input` takes the
     // context lock, and taking it again from within a closure the context is
@@ -396,10 +396,19 @@ fn light_overlay(
     egui::Area::new(egui::Id::new("light_disc"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(column_x(size), top))
         .show(ctx, |ui| {
-            let (resp, face) =
-                theme::map_disc(ui, size, *open, theme::ACCENT_RING, egui::Sense::click());
+            let (resp, face) = theme::map_disc(
+                ui,
+                size,
+                *open,
+                theme::p().accent_ring,
+                egui::Sense::click(),
+            );
             let resp = theme::named(ui, resp, "Light");
-            let behind = if *open { theme::ACCENT } else { theme::OVERLAY };
+            let behind = if *open {
+                theme::p().accent
+            } else {
+                theme::p().overlay
+            };
             paint_light_icon(
                 ui.painter(),
                 face.center,
@@ -433,7 +442,7 @@ fn light_overlay(
                             let font = egui::FontId::proportional(theme::SIZE_SUB);
                             let text_w = ui
                                 .painter()
-                                .layout_no_wrap(label.to_string(), font.clone(), theme::TEXT)
+                                .layout_no_wrap(label.to_string(), font.clone(), theme::p().text)
                                 .size()
                                 .x;
                             let (rect, resp) = ui.allocate_exact_size(
@@ -449,14 +458,14 @@ fn light_overlay(
                                 )
                             });
                             let (fill, ink) = match (on, resp.hovered()) {
-                                (true, _) => (theme::CREAM, theme::INK),
-                                (false, true) => (theme::SURFACE_HOVER, theme::CREAM),
-                                (false, false) => (egui::Color32::TRANSPARENT, theme::TEXT_DIM),
+                                (true, _) => (theme::p().cream, theme::p().ink),
+                                (false, true) => (theme::p().surface_hover, theme::p().cream),
+                                (false, false) => (egui::Color32::TRANSPARENT, theme::p().text_dim),
                             };
                             let p = ui.painter();
                             p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_PILL), fill);
                             let behind = if fill == egui::Color32::TRANSPARENT {
-                                theme::OVERLAY
+                                theme::p().overlay
                             } else {
                                 fill
                             };
@@ -514,7 +523,7 @@ fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, 
         .collect();
     painter.add(egui::Shape::line(
         points,
-        egui::Stroke::new(2.2, theme::ACCENT),
+        egui::Stroke::new(2.2, theme::p().accent),
     ));
 }
 
@@ -549,7 +558,7 @@ pub(crate) fn halo_text_aligned(
                 align,
                 text,
                 font.clone(),
-                theme::OVERLAY,
+                theme::p().overlay,
             );
         }
     }
@@ -743,11 +752,11 @@ fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved
             );
             let p = ui.painter();
             let base = rect.bottom();
-            let ink = theme::CREAM;
+            let ink = theme::p().cream;
             // A halo under the rule, not a filled box: the bar has to be legible
             // over both dark water and white paper, and a plate this small reads
             // as a piece of chrome that has come loose.
-            let halo = egui::Stroke::new(3.0, theme::OVERLAY);
+            let halo = egui::Stroke::new(3.0, theme::p().overlay);
             let rule = egui::Stroke::new(1.5, ink);
             for stroke in [halo, rule] {
                 p.line_segment(

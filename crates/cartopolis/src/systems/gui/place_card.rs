@@ -144,7 +144,7 @@ pub fn render_place_card(
                                     egui::Label::new(
                                         egui::RichText::new(&place.name)
                                             .size(theme::SIZE_TITLE)
-                                            .color(theme::CREAM),
+                                            .color(theme::p().cream),
                                     )
                                     .truncate()
                                     .selectable(false),
@@ -173,7 +173,7 @@ pub fn render_place_card(
                                     (place.lat, place.lng),
                                 ))
                                 .small()
-                                .color(theme::ACCENT_TEXT),
+                                .color(theme::p().accent_text),
                             )
                             .selectable(false),
                         );

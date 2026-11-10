@@ -190,7 +190,7 @@ pub fn spans(src: &str) -> Vec<(Range<usize>, Token)> {
 
 fn color(token: Token) -> egui::Color32 {
     match token {
-        Token::Plain => theme::TEXT,
+        Token::Plain => theme::DARK.text,
         Token::Keyword => theme::CODE_KEYWORD,
         Token::Literal => theme::CODE_LITERAL,
         Token::String => theme::CODE_STRING,

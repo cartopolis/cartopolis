@@ -96,18 +96,18 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
                     ui.label(
                         egui::RichText::new(icons::DOWNLOAD)
                             .size(theme::SIZE_TITLE)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new(title)
                                 .size(theme::SIZE_BODY)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                         );
                         ui.label(
                             egui::RichText::new(&line)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -122,7 +122,7 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
                             ui.add(
                                 egui::Spinner::new()
                                     .size(theme::SIZE_BODY)
-                                    .color(theme::ACCENT),
+                                    .color(theme::p().accent),
                             );
                         }
                     });
@@ -149,7 +149,7 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             ui.painter()
-                .rect_filled(screen, 0.0, theme::INK.gamma_multiply(0.82));
+                .rect_filled(screen, 0.0, theme::DARK.ink.gamma_multiply(0.82));
             // Every tap on the veil is taken here, so none reaches the world.
             // unnamed: a blocker under the card, not a control
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
@@ -165,7 +165,7 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
                     ui.label(
                         egui::RichText::new(icons::DOWNLOAD)
                             .size(theme::SIZE_PANEL_TITLE)
-                            .color(theme::ACCENT),
+                            .color(theme::p().accent),
                     );
                     ui.add_space(4.0);
                     match status {
@@ -181,7 +181,7 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
                             };
                             ui.add(egui::ProgressBar::new(fraction)
                                     .desired_height(8.0)
-                                    .fill(theme::ACCENT));
+                                    .fill(theme::p().accent));
                             line(ui, &megabytes(*done, *total));
                             line(ui, "Cartopolis closes when the update is in; a notification opens it again.");
                         }
@@ -233,7 +233,7 @@ fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_HEADING)
-            .color(theme::CREAM),
+            .color(theme::p().cream),
     );
 }
 
@@ -241,7 +241,7 @@ fn line(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
 }
 

@@ -13,14 +13,14 @@
 //! CARTO_WRITE_WEB_THEME=1 cargo test -p cartopolis web_theme
 //! ```
 //!
-//! **The dark half is the client.** Every dark value below is a [`theme`]
-//! constant; none is a fresh hex. **The light half is the web's own** — the
-//! client has no light mode, and a phone in daylight on a form needs one — and
-//! lives here so it is still in the one place UI colour is chosen, beside the
-//! dark value it answers to. It is the same ramp turned over, with the same
-//! teal cast, and the same [`theme::ACCENT`] carrying
-//! [`theme::INK`] in both modes, so a primary button is the same object in the
-//! client, on the dark page and on the light one.
+//! **The dark half is the client's [`theme::DARK`].** Every dark value below is
+//! one of its fields; none is a fresh hex. **The light half is the web's own**
+//! and lives here so it is still in the one place UI colour is chosen, beside
+//! the dark value it answers to. It is the same ramp turned over, with the same
+//! teal cast, and the same accent carrying the same ink in both modes, so a
+//! primary button is the same object in the client, on the dark page and on
+//! the light one. The client's own light theme ([`theme::LIGHT`], 2026-11-10)
+//! took these values, role for role, and is free to move apart from them.
 //!
 //! What is *not* generated is the page styling itself (`app.css` and the page
 //! stylesheets), which only ever names `--m-*` tokens — that rule is what makes
@@ -50,7 +50,7 @@ const L_SURFACE: Color32 = Color32::WHITE;
 const L_SURFACE_RAISED: Color32 = Color32::from_rgb(0xF8, 0xFA, 0xFA);
 const L_SURFACE_SUNKEN: Color32 = Color32::from_rgb(0xE7, 0xED, 0xED);
 /// Body text is the client's raised surface: the ramp, read the other way.
-const L_TEXT: Color32 = theme::SURFACE_RAISED;
+const L_TEXT: Color32 = theme::DARK.surface_raised;
 const L_TEXT_DIM: Color32 = Color32::from_rgb(0x54, 0x65, 0x68);
 const L_TEXT_FAINT: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
 const L_BORDER: Color32 = Color32::from_rgb(0xDA, 0xE3, 0xE3);
@@ -58,7 +58,7 @@ const L_BORDER: Color32 = Color32::from_rgb(0xDA, 0xE3, 0xE3);
 /// does on the dark ramp (WCAG 1.4.11): a field at rest has no other edge.
 const L_BORDER_STRONG: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
 /// Pushed under the pointer: the same move as [`theme::ACCENT_PRESSED`].
-const L_ACCENT_HOVER: Color32 = theme::ACCENT_PRESSED;
+const L_ACCENT_HOVER: Color32 = theme::DARK.accent_pressed;
 /// Links and accent-coloured words on white. The teal itself is too light to
 /// read there, so the text tint is a deep version of it.
 const L_ACCENT_TEXT: Color32 = Color32::from_rgb(0x17, 0x69, 0x6A);
@@ -76,11 +76,11 @@ const D_SUCCESS: Color32 = Color32::from_rgb(0x7C, 0xCF, 0x9B);
 const L_SUCCESS_SOFT: Color32 = Color32::from_rgb(0xE3, 0xF4, 0xE9);
 const D_SUCCESS_SOFT: Color32 = Color32::from_rgb(0x15, 0x2C, 0x1E);
 const L_WARNING: Color32 = Color32::from_rgb(0x85, 0x57, 0x00);
-const D_WARNING: Color32 = theme::WARN;
+const D_WARNING: Color32 = theme::DARK.warn;
 const L_WARNING_SOFT: Color32 = Color32::from_rgb(0xFB, 0xF1, 0xDA);
 const D_WARNING_SOFT: Color32 = Color32::from_rgb(0x30, 0x29, 0x16);
 const L_DANGER: Color32 = Color32::from_rgb(0xB3, 0x36, 0x1E);
-const D_DANGER: Color32 = theme::ERROR;
+const D_DANGER: Color32 = theme::DARK.error;
 const L_DANGER_SOFT: Color32 = Color32::from_rgb(0xFC, 0xE8, 0xE4);
 const D_DANGER_SOFT: Color32 = Color32::from_rgb(0x36, 0x1D, 0x19);
 
@@ -124,32 +124,41 @@ fn tokens() -> Vec<(&'static str, Value)> {
     vec![
         // Brand
         ("--c-brand", both(BRAND)),
-        ("--m-accent", both(ACCENT)),
-        ("--m-accent-hover", pair(L_ACCENT_HOVER, ACCENT_RING)),
+        ("--m-accent", both(DARK.accent)),
+        ("--m-accent-hover", pair(L_ACCENT_HOVER, DARK.accent_ring)),
         // Dark: the pale teal, so words in it read as well on the selected
         // fill ([`ACCENT_MUTED`]) as on a panel.
-        ("--m-accent-text", pair(L_ACCENT_TEXT, ACCENT_RING)),
-        ("--m-accent-soft", pair(L_ACCENT_SOFT, ACCENT_MUTED)),
-        ("--m-on-accent", both(INK)),
+        ("--m-accent-text", pair(L_ACCENT_TEXT, DARK.accent_ring)),
+        ("--m-accent-soft", pair(L_ACCENT_SOFT, DARK.accent_muted)),
+        ("--m-on-accent", both(DARK.on_accent)),
         // Surfaces, back to front
-        ("--m-bg", pair(L_BG, INK)),
-        ("--m-surface", pair(L_SURFACE, SURFACE)),
-        ("--m-surface-raised", pair(L_SURFACE_RAISED, SURFACE_RAISED)),
-        ("--m-surface-sunken", pair(L_SURFACE_SUNKEN, INK)),
+        ("--m-bg", pair(L_BG, DARK.ink)),
+        ("--m-surface", pair(L_SURFACE, DARK.surface)),
+        (
+            "--m-surface-raised",
+            pair(L_SURFACE_RAISED, DARK.surface_raised),
+        ),
+        ("--m-surface-sunken", pair(L_SURFACE_SUNKEN, DARK.ink)),
         (
             "--c-glass",
-            Pair(alpha(L_SURFACE, glass_pct), alpha(SURFACE, glass_pct)),
+            Pair(alpha(L_SURFACE, glass_pct), alpha(DARK.surface, glass_pct)),
         ),
-        ("--m-hover", Pair(alpha(INK, 5.0), alpha(CREAM, 6.0))),
-        ("--m-pressed", Pair(alpha(INK, 10.0), alpha(CREAM, 11.0))),
+        (
+            "--m-hover",
+            Pair(alpha(DARK.ink, 5.0), alpha(DARK.cream, 6.0)),
+        ),
+        (
+            "--m-pressed",
+            Pair(alpha(DARK.ink, 10.0), alpha(DARK.cream, 11.0)),
+        ),
         // Text and lines
-        ("--m-text", pair(L_TEXT, TEXT)),
-        ("--m-text-strong", pair(INK, CREAM)),
-        ("--m-text-dim", pair(L_TEXT_DIM, TEXT_DIM)),
-        ("--m-text-faint", pair(L_TEXT_FAINT, LINE)),
-        ("--m-border", pair(L_BORDER, SURFACE_HOVER)),
-        ("--m-border-strong", pair(L_BORDER_STRONG, LINE)),
-        ("--m-control-bg", pair(L_SURFACE, INK)),
+        ("--m-text", pair(L_TEXT, DARK.text)),
+        ("--m-text-strong", pair(DARK.ink, DARK.cream)),
+        ("--m-text-dim", pair(L_TEXT_DIM, DARK.text_dim)),
+        ("--m-text-faint", pair(L_TEXT_FAINT, DARK.line)),
+        ("--m-border", pair(L_BORDER, DARK.surface_hover)),
+        ("--m-border-strong", pair(L_BORDER_STRONG, DARK.line)),
+        ("--m-control-bg", pair(L_SURFACE, DARK.ink)),
         // Status
         ("--m-info", pair(L_INFO, D_INFO)),
         ("--m-info-soft", pair(L_INFO_SOFT, D_INFO_SOFT)),
@@ -159,15 +168,18 @@ fn tokens() -> Vec<(&'static str, Value)> {
         ("--m-warning-soft", pair(L_WARNING_SOFT, D_WARNING_SOFT)),
         ("--m-danger", pair(L_DANGER, D_DANGER)),
         ("--m-danger-soft", pair(L_DANGER_SOFT, D_DANGER_SOFT)),
-        ("--m-focus", Pair(alpha(ACCENT, 50.0), alpha(ACCENT, 55.0))),
+        (
+            "--m-focus",
+            Pair(alpha(DARK.accent, 50.0), alpha(DARK.accent, 55.0)),
+        ),
         (
             "--m-backdrop",
-            Pair(alpha(INK, 40.0), alpha(Color32::BLACK, 60.0)),
+            Pair(alpha(DARK.ink, 40.0), alpha(Color32::BLACK, 60.0)),
         ),
         // Dark: the midas hub's card shadow (`--lift-2`), as `theme::CARD_SHADOW`.
         (
             "--m-shadow-color",
-            Pair(alpha(INK, 8.0), alpha(Color32::BLACK, 60.0)),
+            Pair(alpha(DARK.ink, 8.0), alpha(Color32::BLACK, 60.0)),
         ),
         // Depth: what makes a surface read as a pane of glass and a button as
         // a thing standing on it (`depth.css`). Light from above: a rim and an
@@ -179,35 +191,38 @@ fn tokens() -> Vec<(&'static str, Value)> {
         // anything the app or the hub draws (2026-11-01).
         (
             "--c-glass-soft",
-            Pair(alpha(L_SURFACE, 62.0), alpha(SURFACE, glass_pct)),
+            Pair(alpha(L_SURFACE, 62.0), alpha(DARK.surface, glass_pct)),
         ),
         (
             "--c-rim",
-            Pair(alpha(Color32::WHITE, 85.0), alpha(CREAM, 9.0)),
+            Pair(alpha(Color32::WHITE, 85.0), alpha(DARK.cream, 9.0)),
         ),
         (
             "--c-rim-strong",
-            Pair(alpha(Color32::WHITE, 100.0), alpha(CREAM, 16.0)),
+            Pair(alpha(Color32::WHITE, 100.0), alpha(DARK.cream, 16.0)),
         ),
         (
             "--c-highlight",
-            Pair(alpha(Color32::WHITE, 90.0), alpha(CREAM, 8.0)),
+            Pair(alpha(Color32::WHITE, 90.0), alpha(DARK.cream, 8.0)),
         ),
         (
             "--c-shade",
-            Pair(alpha(INK, 7.0), alpha(Color32::BLACK, 35.0)),
+            Pair(alpha(DARK.ink, 7.0), alpha(Color32::BLACK, 35.0)),
         ),
         (
             "--c-glow",
-            Pair(alpha(ACCENT_PRESSED, 35.0), alpha(ACCENT, 32.0)),
+            Pair(alpha(DARK.accent_pressed, 35.0), alpha(DARK.accent, 32.0)),
         ),
-        ("--c-accent-top", both(ACCENT_RING)),
-        ("--c-accent-bottom", both(ACCENT_PRESSED)),
+        ("--c-accent-top", both(DARK.accent_ring)),
+        ("--c-accent-bottom", both(DARK.accent_pressed)),
         // The page behind the glass: Groningen's streets in one faint ink, so
         // a translucent pane has something with structure to blur. Glows and
         // a grid were tried first (2026-10-10) and were too even to read as
         // anything behind the glass.
-        ("--c-map", Pair(alpha(INK, 7.0), alpha(TEXT_DIM, 9.0))),
+        (
+            "--c-map",
+            Pair(alpha(DARK.ink, 7.0), alpha(DARK.text_dim, 9.0)),
+        ),
         // Shape and type
         (
             "--m-font",
@@ -299,7 +314,7 @@ mod tests {
     #[test]
     fn web_index_paints_the_generated_background() {
         let html = std::fs::read_to_string(path(INDEX_HTML)).unwrap();
-        for (mode, c) in [("light", L_BG), ("dark", INK)] {
+        for (mode, c) in [("light", L_BG), ("dark", DARK.ink)] {
             let want = hex(c);
             assert!(
                 html.contains(&format!("content=\"{want}\""))
@@ -321,19 +336,29 @@ mod tests {
             ("light dim on sunken", L_TEXT_DIM, L_SURFACE_SUNKEN, 4.5),
             ("light link", L_ACCENT_TEXT, L_SURFACE, 4.5),
             ("light link on soft", L_ACCENT_TEXT, L_ACCENT_SOFT, 4.5),
-            ("light ink on accent", INK, ACCENT, 4.5),
-            ("light ink on hover", INK, L_ACCENT_HOVER, 4.5),
+            ("light ink on accent", DARK.ink, DARK.accent, 4.5),
+            ("light ink on hover", DARK.ink, L_ACCENT_HOVER, 4.5),
             ("light control edge", L_BORDER_STRONG, L_SURFACE, 3.0),
             ("light info", L_INFO, L_INFO_SOFT, 4.5),
             ("light success", L_SUCCESS, L_SUCCESS_SOFT, 4.5),
             ("light warning", L_WARNING, L_WARNING_SOFT, 4.5),
             ("light danger", L_DANGER, L_DANGER_SOFT, 4.5),
-            ("dark body on bg", TEXT, INK, 4.5),
-            ("dark dim on raised", TEXT_DIM, SURFACE_RAISED, 4.5),
-            ("dark link", ACCENT_RING, SURFACE, 4.5),
-            ("dark link on soft", ACCENT_RING, ACCENT_MUTED, 4.5),
-            ("dark ink on hover", INK, ACCENT_RING, 4.5),
-            ("dark control edge", LINE, SURFACE, 3.0),
+            ("dark body on bg", DARK.text, DARK.ink, 4.5),
+            (
+                "dark dim on raised",
+                DARK.text_dim,
+                DARK.surface_raised,
+                4.5,
+            ),
+            ("dark link", DARK.accent_ring, DARK.surface, 4.5),
+            (
+                "dark link on soft",
+                DARK.accent_ring,
+                DARK.accent_muted,
+                4.5,
+            ),
+            ("dark ink on hover", DARK.ink, DARK.accent_ring, 4.5),
+            ("dark control edge", DARK.line, DARK.surface, 3.0),
             ("dark info", D_INFO, D_INFO_SOFT, 4.5),
             ("dark success", D_SUCCESS, D_SUCCESS_SOFT, 4.5),
             ("dark warning", D_WARNING, D_WARNING_SOFT, 4.5),

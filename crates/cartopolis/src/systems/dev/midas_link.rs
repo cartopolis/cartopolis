@@ -1264,21 +1264,26 @@ pub fn draw_link_button(
             egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
         )
         .show(ctx, |ui| {
-            let (resp, face) =
-                theme::map_disc(ui, size, false, theme::ACCENT_RING, egui::Sense::click());
+            let (resp, face) = theme::map_disc(
+                ui,
+                size,
+                false,
+                theme::p().accent_ring,
+                egui::Sense::click(),
+            );
             let resp = theme::named(ui, resp, "Midas");
             let p = ui.painter();
             if let Some(g) = glow {
                 p.circle_stroke(
                     face.center,
                     face.radius + 2.0 + 6.0 * (1.0 - g),
-                    egui::Stroke::new(3.0 * g, theme::MIDAS_GOLD.gamma_multiply(g)),
+                    egui::Stroke::new(3.0 * g, theme::midas_gold().gamma_multiply(g)),
                 );
             }
             theme::paint_midas_mark(p, face.center, face.radius);
             let dot = face.center + egui::vec2(1.0, -1.0) * face.radius * 0.74;
             p.circle_filled(dot, 5.0, theme::CALL_ACCEPT_GREEN);
-            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::INK));
+            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::p().ink));
             toggle = resp.on_hover_text("Midas").clicked();
         });
     if !link.card_open {
@@ -1301,7 +1306,7 @@ pub fn draw_link_button(
                 ui.label(
                     egui::RichText::new("Midas linked")
                         .size(theme::SIZE_SUB)
-                        .color(theme::CREAM)
+                        .color(theme::p().cream)
                         .strong(),
                 );
                 let call = match (&last, age) {
@@ -1313,7 +1318,7 @@ pub fn draw_link_button(
                 ui.label(
                     egui::RichText::new(call)
                         .size(theme::SIZE_CHIP)
-                        .color(theme::MIDAS_GOLD),
+                        .color(theme::midas_gold()),
                 );
                 let acts = match who {
                     Some(name) => format!("Sessions can act as {name}"),
@@ -1322,7 +1327,7 @@ pub fn draw_link_button(
                 ui.label(
                     egui::RichText::new(acts)
                         .size(theme::SIZE_TINY)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             });
         });

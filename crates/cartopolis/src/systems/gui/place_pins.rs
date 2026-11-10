@@ -105,11 +105,11 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
                                     crate::systems::icons::HERE,
                                     share.until_ms.saturating_sub(now) / 60_000 + 1
                                 ))
-                                .color(theme::INK),
+                                .color(theme::DARK.ink),
                             );
                             if ui
                                 .add(egui::Button::new(
-                                    egui::RichText::new("Stop").color(theme::INK).strong(),
+                                    egui::RichText::new("Stop").color(theme::DARK.ink).strong(),
                                 ))
                                 .clicked()
                             {
@@ -676,9 +676,9 @@ fn pin(
                 centre,
                 r * HOLE_R,
                 egui::Color32::from_rgba_unmultiplied(
-                    theme::CREAM.r(),
-                    theme::CREAM.g(),
-                    theme::CREAM.b(),
+                    theme::DARK.cream.r(),
+                    theme::DARK.cream.g(),
+                    theme::DARK.cream.b(),
                     235,
                 ),
             );
@@ -721,7 +721,7 @@ fn point_pin(
             let mut job = egui::text::LayoutJob::simple_singleline(
                 name.to_string(),
                 font.clone(),
-                theme::INK,
+                theme::DARK.ink,
             );
             job.wrap = egui::text::TextWrapping::truncate_at_width(170.0);
             let galley = p.layout_job(job);
@@ -755,29 +755,34 @@ fn point_pin(
                     egui::pos2(tip.x + 1.0, dot.y),
                 ),
                 egui::CornerRadius::ZERO,
-                theme::CREAM,
+                theme::DARK.cream,
             );
-            p.circle(dot, DOT_R, theme::CREAM, egui::Stroke::new(2.0, theme::INK));
+            p.circle(
+                dot,
+                DOT_R,
+                theme::DARK.cream,
+                egui::Stroke::new(2.0, theme::DARK.ink),
+            );
             let fill = if response.hovered() {
                 egui::Color32::WHITE
             } else {
-                theme::CREAM
+                theme::DARK.cream
             };
             p.rect_filled(head, egui::CornerRadius::same(14), fill);
             let n = egui::pos2(head.left() + 4.0 + 11.0, head.center().y);
-            p.circle_filled(n, 11.0, theme::INK);
+            p.circle_filled(n, 11.0, theme::DARK.ink);
             p.text(
                 n,
                 egui::Align2::CENTER_CENTER,
                 number,
                 egui::FontId::proportional(12.0),
-                theme::CREAM,
+                theme::DARK.cream,
             );
             let gs = galley.size();
             p.galley(
                 egui::pos2(n.x + 11.0 + 7.0, head.center().y - gs.y / 2.0),
                 galley,
-                theme::INK,
+                theme::DARK.ink,
             );
             response
         })
@@ -815,7 +820,7 @@ pub fn paint_pin_glyph(painter: &egui::Painter, rect: egui::Rect, color: egui::C
         color,
         egui::Stroke::new(1.0, rim),
     ));
-    painter.circle_filled(centre, r * HOLE_R, theme::CREAM);
+    painter.circle_filled(centre, r * HOLE_R, theme::DARK.cream);
 }
 
 /// Outline of the pin: the tip, then the head circle's arc from one tangent
@@ -846,7 +851,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
     let font = egui::FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
-        .layout_no_wrap(name.to_string(), font, theme::CREAM);
+        .layout_no_wrap(name.to_string(), font, theme::DARK.cream);
     let pad = theme::CHIP_PADDING;
     let mut chip = egui::Rect::from_center_size(
         egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
@@ -860,7 +865,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
     ));
     let painter = ui.painter();
     painter.rect_filled(chip, theme::RADIUS_SM, theme::LABEL_CHIP);
-    painter.galley(chip.min + pad, galley, theme::CREAM);
+    painter.galley(chip.min + pad, galley, theme::DARK.cream);
 }
 
 #[cfg(test)]

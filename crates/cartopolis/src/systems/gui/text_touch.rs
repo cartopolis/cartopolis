@@ -158,9 +158,9 @@ pub fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
 /// A teardrop: a disc with a corner pointing up at the character it marks.
 fn paint_handle(ui: &egui::Ui, centre: egui::Pos2, dragging: bool) {
     let colour = if dragging {
-        theme::ACCENT_BRIGHT
+        theme::p().accent_bright
     } else {
-        theme::ACCENT
+        theme::p().accent
     };
     let p = ui.painter();
     // The stem, drawn first so the disc covers where it meets the text.
@@ -175,7 +175,7 @@ fn paint_handle(ui: &egui::Ui, centre: egui::Pos2, dragging: bool) {
         centre,
         HANDLE_RADIUS,
         colour,
-        egui::Stroke::new(1.0, theme::INK),
+        egui::Stroke::new(1.0, theme::p().ink),
     );
 }
 

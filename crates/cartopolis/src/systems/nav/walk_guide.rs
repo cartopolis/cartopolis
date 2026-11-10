@@ -291,12 +291,12 @@ pub fn render_walk_guide(
                             ui.label(
                                 egui::RichText::new(countdown(progress.step_distance_m))
                                     .size(theme::SIZE_HEADING)
-                                    .color(theme::CREAM),
+                                    .color(theme::p().cream),
                             );
                             ui.label(
                                 egui::RichText::new(street)
                                     .size(theme::SIZE_SUB)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                         });
                     });
@@ -316,7 +316,7 @@ pub fn render_walk_guide(
                     ui.label(
                         egui::RichText::new("Walking you there · any key takes over")
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT),
+                            .color(theme::p().text),
                     );
                 });
             });
@@ -341,7 +341,7 @@ pub fn render_walk_guide(
                             ui.label(
                                 egui::RichText::new("You've arrived")
                                     .size(theme::SIZE_TITLE)
-                                    .color(theme::CREAM),
+                                    .color(theme::p().cream),
                             );
                         } else {
                             ui.label(
@@ -351,19 +351,19 @@ pub fn render_walk_guide(
                                     format_distance(progress.remaining_m)
                                 ))
                                 .size(theme::SIZE_VALUE)
-                                .color(theme::CREAM),
+                                .color(theme::p().cream),
                             );
                         }
                         ui.label(
                             egui::RichText::new(&destination)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                         if let Some(note) = guide.note {
                             ui.label(
                                 egui::RichText::new(note)
                                     .size(theme::SIZE_SUB)
-                                    .color(theme::WARN),
+                                    .color(theme::p().warn),
                             );
                         }
                     });
@@ -458,7 +458,7 @@ fn skip_list(
     ui.label(
         egui::RichText::new("Skip ahead to…")
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     for (label, along) in targets {
         let gap = format_distance((along - progress.along_m).max(0.0));

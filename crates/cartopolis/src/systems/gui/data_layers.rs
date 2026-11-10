@@ -1618,65 +1618,76 @@ pub fn render_poi_popup(
         .fixed_pos(anchor)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(egui.ctx_mut(), |ui| {
-            // A chip that happens to carry controls: the fill and the radius are
-            // `chip_frame`'s so it matches the pin labels it appears beside, and
-            // only the margin opens up — six points of padding around a close
-            // button and two actions reads as a cramped box, not as a chip.
-            theme::chip_frame()
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_max_width(240.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(&popup.title)
-                                .strong()
-                                .color(theme::CREAM),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::close_button(ui).clicked() {
-                                close = true;
-                            }
+            theme::dark_here(|| {
+                // Dark in both themes: it is a map label's chip (`LABEL_CHIP`).
+                theme::use_dark_visuals(ui);
+                // A chip that happens to carry controls: the fill and the radius are
+                // `chip_frame`'s so it matches the pin labels it appears beside, and
+                // only the margin opens up — six points of padding around a close
+                // button and two actions reads as a cramped box, not as a chip.
+                theme::chip_frame()
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_max_width(240.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&popup.title)
+                                    .strong()
+                                    .color(theme::p().cream),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::close_button(ui).clicked() {
+                                        close = true;
+                                    }
+                                },
+                            );
                         });
-                    });
-                    ui.label(
-                        egui::RichText::new(&popup.subtitle)
-                            .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
-                    );
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        // Both buttons hand their URL to `open_url`, which cannot
-                        // reach a browser on every platform. Grey them out there
-                        // rather than let a press do nothing — a control that
-                        // swallows a tap is indistinguishable from a broken app.
-                        let can_open = open_url_supported();
-                        /// Shown on hover where the buttons are dead, so the
-                        /// greying is explained rather than merely observed.
-                        const NO_BROWSER: &str = "Opening links isn't available on this platform";
-                        if let Some(url) = &popup.website {
+                        ui.label(
+                            egui::RichText::new(&popup.subtitle)
+                                .size(theme::SIZE_SUB)
+                                .color(theme::p().text_dim),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            // Both buttons hand their URL to `open_url`, which cannot
+                            // reach a browser on every platform. Grey them out there
+                            // rather than let a press do nothing — a control that
+                            // swallows a tap is indistinguishable from a broken app.
+                            let can_open = open_url_supported();
+                            /// Shown on hover where the buttons are dead, so the
+                            /// greying is explained rather than merely observed.
+                            const NO_BROWSER: &str =
+                                "Opening links isn't available on this platform";
+                            if let Some(url) = &popup.website {
+                                if ui
+                                    .add_enabled(
+                                        can_open,
+                                        egui::Button::new(format!(
+                                            "Website {}",
+                                            icons::OPEN_EXTERNAL
+                                        )),
+                                    )
+                                    .on_disabled_hover_text(NO_BROWSER)
+                                    .clicked()
+                                {
+                                    open = Some(url.clone());
+                                }
+                            }
                             if ui
-                                .add_enabled(
-                                    can_open,
-                                    egui::Button::new(format!("Website {}", icons::OPEN_EXTERNAL)),
-                                )
+                                .add_enabled(can_open, egui::Button::new("OSM"))
                                 .on_disabled_hover_text(NO_BROWSER)
                                 .clicked()
                             {
-                                open = Some(url.clone());
+                                open = Some(format!(
+                                    "https://www.openstreetmap.org/node/{}",
+                                    popup.osm_id
+                                ));
                             }
-                        }
-                        if ui
-                            .add_enabled(can_open, egui::Button::new("OSM"))
-                            .on_disabled_hover_text(NO_BROWSER)
-                            .clicked()
-                        {
-                            open = Some(format!(
-                                "https://www.openstreetmap.org/node/{}",
-                                popup.osm_id
-                            ));
-                        }
+                        });
                     });
-                });
+            })
         });
     if let Some(url) = open {
         open_url(&url);
@@ -2471,7 +2482,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("On the map")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add_space(4.0);
             tile_grid(
@@ -2501,13 +2512,13 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("From above")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Clouds")
                     .size(theme::SIZE_TINY)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             {
                 use crate::systems::user_store::GlobeCloudMode;
@@ -2552,12 +2563,12 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 ui.label(
                     egui::RichText::new(format!("{}  Lens open: {}", icons::POLL, open.label))
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT),
+                        .color(theme::p().text),
                 );
                 ui.label(
                     egui::RichText::new("Change it with the lens button, under this panel's")
                         .size(theme::SIZE_TINY)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             }
         }
@@ -2674,7 +2685,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     "Traffic, people and birds are made up; buses and trains are real.",
                 )
                 .size(theme::SIZE_SUB)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
             );
             ui.add_space(4.0);
             tile_grid(
@@ -2755,7 +2766,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("Tap a satellite to follow it or see its path.")
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
         }
     }
@@ -2773,7 +2784,7 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for ((_, label, _), on) in KINDS.iter().zip(dl.plans_kinds.iter_mut()) {
-                    crate::systems::layer_tiles::swatch_chip(ui, on, theme::ACCENT, label);
+                    crate::systems::layer_tiles::swatch_chip(ui, on, theme::p().accent, label);
                 }
                 crate::systems::layer_tiles::swatch_chip(
                     ui,
@@ -2795,7 +2806,7 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
                  in their titles.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
     });
 }
@@ -2815,8 +2826,8 @@ fn toggle_open(dl: &mut DataLayers, tapped: Option<&'static str>) {
 /// The raised box a tile's options open in, under the grid.
 fn options_box(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(theme::SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0, theme::OVERLAY_LINE))
+        .fill(theme::p().surface_raised)
+        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
         .corner_radius(12)
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
@@ -2884,7 +2895,7 @@ pub fn render_data_layers_panel(
                 ui.label(
                     egui::RichText::new(dl.category.subtitle())
                         .size(theme::SIZE_SUB)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
                 ui.add_space(6.0);
                 category_body(ui, dl, in_space, tdbag_available);

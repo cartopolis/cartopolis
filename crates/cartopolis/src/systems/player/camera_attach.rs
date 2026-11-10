@@ -207,7 +207,7 @@ pub fn render_attach_chip(
                     ui.label(
                         egui::RichText::new("Following")
                             .size(theme::SIZE_SUB)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     ui.label(egui::RichText::new(&label).strong());
                     ui.add_space(6.0);

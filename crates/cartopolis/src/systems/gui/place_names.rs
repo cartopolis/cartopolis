@@ -347,7 +347,7 @@ pub fn render_place_names(
                 painter.rect_stroke(
                     pill,
                     egui::CornerRadius::same(theme::RADIUS_PILL),
-                    egui::Stroke::new(1.5, theme::ACCENT),
+                    egui::Stroke::new(1.5, theme::DARK.accent),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -439,12 +439,12 @@ fn banner(
     let big = p.kind == PlaceKind::City;
     let name_size = if big { 13.5 } else { 12.0 };
     let font = egui::FontId::new(name_size, theme::brand_family());
-    let name = painter.layout_no_wrap(p.name.clone(), font, theme::CREAM);
+    let name = painter.layout_no_wrap(p.name.clone(), font, theme::DARK.cream);
     let pop = (p.population > 0).then(|| {
         painter.layout_no_wrap(
             population_label(p.population),
             egui::FontId::new(name_size - 2.5, theme::brand_family()),
-            theme::INK,
+            theme::DARK.ink,
         )
     });
     let h = name_size + 9.5;
@@ -456,12 +456,17 @@ fn banner(
     if !free(hit) {
         return None;
     }
-    painter.circle(at, 4.0, theme::CREAM, egui::Stroke::new(1.5, theme::INK));
+    painter.circle(
+        at,
+        4.0,
+        theme::DARK.cream,
+        egui::Stroke::new(1.5, theme::DARK.ink),
+    );
     painter.rect(
         rect,
         egui::CornerRadius::same(theme::RADIUS_PILL),
         CHIP,
-        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+        egui::Stroke::new(1.0, theme::DARK.overlay_line),
         egui::StrokeKind::Inside,
     );
     let mut x = rect.min.x + 3.0;
@@ -471,15 +476,15 @@ fn banner(
         painter.rect_filled(
             badge,
             egui::CornerRadius::same(theme::RADIUS_PILL),
-            theme::ACCENT,
+            theme::DARK.accent,
         );
-        painter.galley(badge.center() - pop.size() / 2.0, pop, theme::INK);
+        painter.galley(badge.center() - pop.size() / 2.0, pop, theme::DARK.ink);
         x = badge.max.x + 6.0;
     } else {
         x += 6.0;
     }
     let y = rect.center().y - name.size().y / 2.0;
-    painter.galley(egui::pos2(x, y), name, theme::CREAM);
+    painter.galley(egui::pos2(x, y), name, theme::DARK.cream);
     Some(Drawn {
         hit,
         pill: Some(rect),
@@ -500,7 +505,7 @@ fn station(
         painter.layout_no_wrap(
             p.name.clone(),
             egui::FontId::new(11.5, theme::brand_family()),
-            theme::CREAM,
+            theme::DARK.cream,
         )
     });
     let w = name
@@ -510,9 +515,9 @@ fn station(
     if !free(rect) {
         return None;
     }
-    painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::ACCENT));
+    painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::DARK.accent));
     // The train: a body, a window line, two wheels.
-    let s = egui::Stroke::new(1.3, theme::CREAM);
+    let s = egui::Stroke::new(1.3, theme::DARK.cream);
     let body = egui::Rect::from_min_max(at + egui::vec2(-3.5, -4.0), at + egui::vec2(3.5, 2.0));
     painter.rect_stroke(body, 1.0, s, egui::StrokeKind::Middle);
     painter.line_segment([at + egui::vec2(-3.5, 0.0), at + egui::vec2(3.5, 0.0)], s);
@@ -546,7 +551,7 @@ fn district(
         0.0,
         egui::TextFormat {
             font_id: egui::FontId::new(size, theme::brand_family()),
-            color: theme::CREAM,
+            color: theme::DARK.cream,
             extra_letter_spacing: 1.4,
             ..Default::default()
         },
@@ -581,7 +586,7 @@ fn haloed(painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui:
     ] {
         painter.galley_with_override_text_color(pos + d, galley.clone(), halo);
     }
-    painter.galley(pos, galley, theme::CREAM);
+    painter.galley(pos, galley, theme::DARK.cream);
 }
 
 #[cfg(test)]

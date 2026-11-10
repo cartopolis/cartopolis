@@ -2668,7 +2668,7 @@ pub fn render_driver_hud(
                         egui::Align2::CENTER_CENTER,
                         glyph,
                         egui::FontId::proportional(40.0),
-                        theme::CREAM,
+                        theme::p().cream,
                     );
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -2676,7 +2676,7 @@ pub fn render_driver_hud(
                             ui.label(big(
                                 &title,
                                 if instructing { 30.0 } else { 22.0 },
-                                theme::CREAM,
+                                theme::p().cream,
                             ));
                             // The turn after this one, when it follows at once —
                             // right-aligned, a footnote to the instruction.
@@ -2688,9 +2688,9 @@ pub fn render_driver_hud(
                                         ui.label(
                                             egui::RichText::new(icons::maneuver(next))
                                                 .size(18.0)
-                                                .color(theme::TEXT),
+                                                .color(theme::p().text),
                                         );
-                                        ui.label(small("then", theme::TEXT_DIM));
+                                        ui.label(small("then", theme::p().text_dim));
                                     },
                                 );
                             }
@@ -2700,7 +2700,7 @@ pub fn render_driver_hud(
                                 egui::Label::new(
                                     egui::RichText::new(sub.as_str())
                                         .size(theme::SIZE_BODY)
-                                        .color(theme::TEXT),
+                                        .color(theme::p().text),
                                 )
                                 .truncate(),
                             );
@@ -2793,8 +2793,8 @@ pub fn render_driver_hud(
                                 egui::Layout::top_down(egui::Align::Center),
                                 |ui| {
                                     ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(big(value, 19.0, theme::CREAM));
-                                    ui.label(small(caption, theme::TEXT_DIM));
+                                    ui.label(big(value, 19.0, theme::p().cream));
+                                    ui.label(small(caption, theme::p().text_dim));
                                 },
                             );
                         }
@@ -2818,7 +2818,7 @@ pub fn render_driver_hud(
                 let p = ui.painter();
                 p.line_segment(
                     [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                    egui::Stroke::new(3.0, theme::OVERLAY_LINE),
+                    egui::Stroke::new(3.0, theme::p().overlay_line),
                 );
                 if driven > 0.0 {
                     p.line_segment(
@@ -2849,11 +2849,11 @@ pub fn render_driver_hud(
                         ui.allocate_exact_size(egui::Vec2::splat(SPEED_DISC), egui::Sense::hover());
                     let p = ui.painter();
                     let c = rect.center();
-                    p.circle_filled(c, SPEED_DISC * 0.5, theme::OVERLAY);
+                    p.circle_filled(c, SPEED_DISC * 0.5, theme::p().overlay);
                     p.circle_stroke(
                         c,
                         SPEED_DISC * 0.5,
-                        egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+                        egui::Stroke::new(1.0, theme::p().overlay_line),
                     );
                     // Over the limit turns the *speed* red, not the sign: the sign
                     // states a fact about the road and reads the same whatever the
@@ -2863,14 +2863,14 @@ pub fn render_driver_hud(
                         egui::Align2::CENTER_CENTER,
                         format!("{speed_kmh:.0}"),
                         egui::FontId::new(22.0, theme::brand_family()),
-                        if over { SIGN_RED } else { theme::CREAM },
+                        if over { SIGN_RED } else { theme::p().cream },
                     );
                     p.text(
                         c + egui::vec2(0.0, 13.0),
                         egui::Align2::CENTER_CENTER,
                         "km/h",
                         egui::FontId::proportional(theme::SIZE_TINY),
-                        theme::TEXT_DIM,
+                        theme::p().text_dim,
                     );
                 });
             });
@@ -2937,7 +2937,7 @@ pub fn render_driver_hud(
                             egui::Label::new(
                                 egui::RichText::new(chip)
                                     .size(theme::SIZE_CHIP)
-                                    .color(theme::WARN),
+                                    .color(theme::DARK.warn),
                             )
                             .truncate(),
                         );
@@ -2984,21 +2984,21 @@ const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
 
 /// The card's colour once the trip is over. Same argument as [`DRIVE_BLUE`]: the
 /// card is read as signage, and "you are there" is green everywhere signage
-/// exists. Dark enough to carry `theme::CREAM` at the contrast the theme tests
+/// exists. Dark enough to carry `theme::Palette::cream` at the contrast the theme tests
 /// hold the rest of the UI to.
 const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
 
 /// The card's colour while the route is being replaced. Signage again, and here
 /// for a second reason: this was `theme::AMBER`, the palette's second accent,
-/// which the monochrome chrome retired. `theme::WARN` could not take it over —
+/// which the monochrome chrome retired. `theme::Palette::warn` could not take it over —
 /// that is a *type* colour, pale enough to read on a dark panel, and this is a
-/// card fill that has to carry `theme::CREAM`. So it is the amber a road sign
+/// card fill that has to carry `theme::Palette::cream`. So it is the amber a road sign
 /// would use, dark enough to be a plate.
 const REROUTE_AMBER: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x5A, 0x0C);
 
 /// The plate for what the display cannot fix — off the route with no reroute yet,
 /// or a reroute that came back empty. A sign red dark enough to carry
-/// `theme::CREAM`; `theme::ERROR` is a pale *text* colour and cannot be a plate.
+/// `theme::Palette::cream`; `theme::Palette::error` is a pale *text* colour and cannot be a plate.
 const OFF_ROUTE_RED: egui::Color32 = egui::Color32::from_rgb(0xA3, 0x2A, 0x22);
 
 /// The route line's own blue (`navigation`'s fill), for the trip bar's progress
@@ -3049,11 +3049,11 @@ fn approach_bar(ui: &mut egui::Ui, step_distance_m: f64) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::INK.gamma_multiply(0.35));
+    painter.rect_filled(rect, 2.0, theme::p().ink.gamma_multiply(0.35));
     if filled > 0.0 {
         let mut fill = rect;
         fill.set_width(rect.width() * filled);
-        painter.rect_filled(fill, 2.0, theme::CREAM);
+        painter.rect_filled(fill, 2.0, theme::p().cream);
     }
 }
 

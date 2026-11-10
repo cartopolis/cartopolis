@@ -581,7 +581,7 @@ pub fn render_model_library_panel(
                 } else {
                     "Models belong to your account. Sign in to see yours."
                 };
-                ui.label(egui::RichText::new(message).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(message).color(theme::p().text_dim));
                 return;
             }
 
@@ -625,7 +625,7 @@ pub fn render_model_library_panel(
                             );
                             ui.label(
                                 egui::RichText::new("Where did it come from?")
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                             for licence in
                                 [Licence::Own, Licence::Cc0, Licence::CcBy, Licence::Other]
@@ -653,7 +653,7 @@ pub fn render_model_library_panel(
                                         "You will be able to use this, but not share it.",
                                     )
                                     .small()
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                                 );
                             }
                             if ui.button("Upload").clicked() {
@@ -672,7 +672,7 @@ pub fn render_model_library_panel(
                             ui.label(
                                 egui::RichText::new(upload_format_hint())
                                     .small()
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                         }
                     } else {
@@ -685,20 +685,22 @@ pub fn render_model_library_panel(
                                  Anything in the library can be placed from here.",
                             )
                             .small()
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                         );
                     }
                     if busy {
-                        ui.label(egui::RichText::new("Working…").color(theme::TEXT_DIM));
+                        ui.label(egui::RichText::new("Working…").color(theme::p().text_dim));
                     } else if !status.is_empty() {
-                        ui.label(egui::RichText::new(&status).color(theme::TEXT_DIM));
+                        ui.label(egui::RichText::new(&status).color(theme::p().text_dim));
                     }
                 });
 
             egui::ScrollArea::vertical().show(ui, |ui| match tab {
                 Tab::Mine => {
                     if items.is_empty() {
-                        ui.label(egui::RichText::new("Nothing here yet.").color(theme::TEXT_DIM));
+                        ui.label(
+                            egui::RichText::new("Nothing here yet.").color(theme::p().text_dim),
+                        );
                     }
                     for item in &items {
                         if !needle.is_empty() && !item.name.to_lowercase().contains(&needle) {
@@ -708,17 +710,17 @@ pub fn render_model_library_panel(
                             ui.label(
                                 egui::RichText::new(&item.name)
                                     .strong()
-                                    .color(theme::ACCENT_TEXT),
+                                    .color(theme::p().accent_text),
                             );
                             ui.label(
                                 egui::RichText::new(format!("{} tri", item.triangles))
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                             if !item.folder.is_empty() {
                                 ui.label(
                                     egui::RichText::new(&item.folder)
                                         .small()
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::p().text_dim),
                                 );
                             }
                         });
@@ -771,7 +773,7 @@ pub fn render_model_library_panel(
                     if entries.is_empty() {
                         ui.label(
                             egui::RichText::new("Nobody has shared a model yet.")
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                         );
                     }
                     for entry in &entries {
@@ -782,7 +784,7 @@ pub fn render_model_library_panel(
                             ui.label(
                                 egui::RichText::new(&entry.name)
                                     .strong()
-                                    .color(theme::ACCENT_TEXT),
+                                    .color(theme::p().accent_text),
                             );
                             ui.label(
                                 egui::RichText::new(format!(
@@ -791,7 +793,7 @@ pub fn render_model_library_panel(
                                     entry.triangles,
                                     licence_label(&entry.licence)
                                 ))
-                                .color(theme::TEXT_DIM),
+                                .color(theme::p().text_dim),
                             );
                         });
                         // The credit line travels with the model. A CC-BY licence
@@ -801,7 +803,7 @@ pub fn render_model_library_panel(
                             ui.label(
                                 egui::RichText::new(&entry.attribution)
                                     .small()
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             );
                         }
                         ui.horizontal_wrapped(|ui| {

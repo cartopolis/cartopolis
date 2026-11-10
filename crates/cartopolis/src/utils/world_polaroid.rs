@@ -77,7 +77,7 @@ pub fn compose(
     let font = Font::from_bytes(crate::systems::theme::BRAND_TTF, FontSettings::default())
         .map_err(|e| format!("the brand font would not load: {e}"))?;
     let ink = {
-        let c = crate::systems::theme::INK;
+        let c = crate::systems::theme::DARK.ink;
         [c.r(), c.g(), c.b()]
     };
     let name = if place.trim().is_empty() {

@@ -76,7 +76,7 @@ pub fn render_welcome(
                 ui.label(
                     egui::RichText::new("Cartopolis is better with people")
                         .size(theme::SIZE_TITLE)
-                        .color(theme::CREAM),
+                        .color(theme::p().cream),
                 );
                 ui.add_space(2.0);
                 ui.label(
@@ -85,7 +85,7 @@ pub fn render_welcome(
                          near you.",
                     )
                     .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
                 ui.add_space(10.0);
                 let register = login.register_url();
@@ -120,7 +120,7 @@ pub fn render_welcome(
                             egui::Button::new(
                                 egui::RichText::new("Not now, just the map")
                                     .size(theme::SIZE_SUB)
-                                    .color(theme::TEXT_DIM),
+                                    .color(theme::p().text_dim),
                             )
                             .frame(false),
                         )

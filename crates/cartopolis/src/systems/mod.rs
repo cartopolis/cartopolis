@@ -62,7 +62,7 @@ pub use gui::{
     community_posts, contacts, cosmos, data_layers, dismiss, dock, egui_manager, external_signin,
     faces, floor_picker, hud, icons, layer_tiles, login_screen, lua_highlight, map_osd,
     model_library, onscreen_keyboard, place_card, place_names, place_pins, plans, scenario,
-    script_editor, settings, splash, text_touch, theme, ui, welcome, zoom_rail,
+    script_editor, settings, splash, text_touch, theme, ui, ui_theme, welcome, zoom_rail,
 };
 pub use map::prim_hand;
 pub use map::prim_sound;
