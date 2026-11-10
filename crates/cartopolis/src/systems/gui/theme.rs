@@ -297,6 +297,22 @@ pub struct Palette {
     /// told by its plate, its shape and its word, as in the hub, with
     /// [`Palette::line`] kept for what must be found by its edge alone.
     pub control_edge: Color32,
+    /// The plate of a round button over the map at rest ([`map_disc`],
+    /// [`round_button`]), the search pill and the World | Community track.
+    /// Dark: [`Palette::overlay`], as it was. Light: white, as the midas hub's
+    /// light buttons are.
+    pub map_fill: Color32,
+    /// The glyph on that plate. Dark: [`Palette::text`]. Light: the deep
+    /// accent teal (2026-11-10, "the light buttons have no teal theme at
+    /// all": they were black glyphs on white discs, and teal was left only on
+    /// the one plate that was on).
+    pub map_ink: Color32,
+    /// The rim round that plate. Dark: [`Palette::overlay_line`]. Light: a
+    /// faint teal, the brand's edge rather than a grey one.
+    pub map_rim: Color32,
+    /// A strong mark on the map's chrome that is not a glyph — the zoom
+    /// rail's thumb. Dark: [`Palette::cream`]. Light: the accent.
+    pub map_mark: Color32,
     /// Whether egui's dark visuals are the base ([`visuals`]).
     pub dark: bool,
 }
@@ -338,6 +354,10 @@ pub const DARK: Palette = Palette {
     gold: Color32::from_rgb(0xD8, 0xC0, 0x7A),
     on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
     control_edge: Color32::from_rgb(0x3A, 0x48, 0x49),
+    map_fill: Color32::from_rgb(0x17, 0x23, 0x24),
+    map_ink: Color32::from_rgb(0xE2, 0xE9, 0xEA),
+    map_rim: Color32::from_rgb(0x2A, 0x35, 0x36),
+    map_mark: Color32::from_rgb(0xF4, 0xF8, 0xF8),
     dark: true,
 };
 
@@ -389,6 +409,10 @@ pub const LIGHT: Palette = Palette {
     gold: Color32::from_rgb(0xE0, 0xBC, 0x5C),
     on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
     control_edge: Color32::from_rgb(0xC9, 0xD4, 0xD5),
+    map_fill: Color32::WHITE,
+    map_ink: Color32::from_rgb(0x17, 0x69, 0x6A),
+    map_rim: Color32::from_rgb(0x9F, 0xD1, 0xCD),
+    map_mark: Color32::from_rgb(0x2B, 0x83, 0x7E),
     dark: false,
 };
 
@@ -1607,7 +1631,7 @@ pub fn round_button(
     tooltip: &str,
     selected: bool,
 ) -> egui::Response {
-    round_button_on(ui, icon, tooltip, selected, (p().overlay, p().overlay_line))
+    round_button_on(ui, icon, tooltip, selected, (p().map_fill, p().map_rim))
 }
 
 fn round_button_on(
@@ -1624,7 +1648,7 @@ fn round_button_on(
     let (fill, ring, ink) = match (selected, hovered) {
         (true, _) => (p().accent, p().accent_ring, p().on_accent),
         (false, true) => (p().surface_hover, p().accent, p().cream),
-        (false, false) => (rest.0, rest.1, p().text),
+        (false, false) => (rest.0, rest.1, p().map_ink),
     };
     // Under the finger the disc gives a little (`motion::press`): the one
     // acknowledgement a painted control can make before its action shows.
@@ -1825,7 +1849,7 @@ pub fn map_disc(
     let (fill, ring, ink) = match (on || held, resp.hovered()) {
         (true, _) => (p().accent, tone, p().on_accent),
         (false, true) => (p().surface_hover, p().accent, p().cream),
-        (false, false) => (p().overlay, p().overlay_line, p().text),
+        (false, false) => (p().map_fill, p().map_rim, p().map_ink),
     };
     let radius = (size * 0.5 - 1.0) * super::motion::press(&resp);
     let p = ui.painter();
@@ -3893,6 +3917,34 @@ mod tests {
         assert_eq!((DARK.overlay, DARK.glass), (DARK.panel, DARK.panel));
         assert_eq!(DARK.overlay_line, DARK.panel_rim);
         assert_eq!(DARK.shadow, 1.0);
+        // The map's round buttons in the dark theme are what they were: the
+        // light theme's teal identity (2026-11-10) did not move them.
+        assert_eq!(
+            (DARK.map_fill, DARK.map_ink, DARK.map_rim, DARK.map_mark),
+            (DARK.overlay, DARK.text, DARK.overlay_line, DARK.cream)
+        );
+    }
+
+    /// The map's round buttons at rest, in both themes: the glyph reads on its
+    /// plate as text does (4.5:1), and in the light theme the plate is white
+    /// with a teal glyph — teal visibly the brand colour, not only on the one
+    /// plate that is on (2026-11-10).
+    #[test]
+    fn the_map_buttons_wear_the_teal_in_both_themes() {
+        for pal in [&DARK, &LIGHT] {
+            let c = contrast(pal.map_ink, pal.map_fill);
+            assert!(c >= 4.5, "map glyph on its plate is {c:.2}:1");
+            let m = contrast(pal.map_mark, pal.map_fill);
+            assert!(m >= 3.0, "the rail's thumb on a plate is {m:.2}:1");
+        }
+        assert_eq!(LIGHT.map_fill, Color32::WHITE);
+        // Teal: green and blue well above red, in the glyph and the rim.
+        for teal in [LIGHT.map_ink, LIGHT.map_rim, LIGHT.map_mark] {
+            assert!(
+                teal.g() > teal.r() + 40 && teal.b() > teal.r() + 40,
+                "{teal:?}"
+            );
+        }
     }
 
     /// The wordmark is the app's name split in two, and nothing else. It is
