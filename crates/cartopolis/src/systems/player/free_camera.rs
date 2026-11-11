@@ -1302,8 +1302,14 @@ pub fn setup_camera(
         // is fill, three shaded fragments per pixel (`quality::Budget::depth_prepass`).
         // Decided here for good, like `Hdr`: it adds a depth target every opaque
         // pipeline is specialised against, so it is not a thing to switch on a
-        // live camera.
-        if crate::env_value("CARTO_DEPTH_PREPASS").map_or(budget.depth_prepass, |v| v != "0") {
+        // live camera. `CARTO_DEPTH_PREPASS=0|1` decides it for one launch; without
+        // it, the Developer switch "No depth-first pass" can take it off, which is
+        // how the phone measures it with no adb.
+        let prepass = crate::env_value("CARTO_DEPTH_PREPASS").map_or_else(
+            || budget.depth_prepass && !crate::env_flag("CARTO_NO_DEPTH_PREPASS"),
+            |v| v != "0",
+        );
+        if prepass {
             cam.insert(bevy::core_pipeline::prepass::DepthPrepass);
         }
         // An experiment switch: bevy's two-phase GPU occlusion culling, which

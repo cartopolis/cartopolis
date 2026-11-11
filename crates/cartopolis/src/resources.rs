@@ -328,6 +328,8 @@ pub struct DebugSwitches {
     #[serde(default)]
     pub no_space_raymarch: bool,
     #[serde(default)]
+    pub no_depth_prepass: bool,
+    #[serde(default)]
     pub gpu_timings: bool,
 }
 
@@ -339,7 +341,7 @@ impl DebugSwitches {
     /// removing a layer. The help text is written for somebody holding a phone
     /// with no log, so it says what the answer *means* rather than what the
     /// switch does.
-    pub const SWITCHES: [(&'static str, &'static str, &'static str); 7] = [
+    pub const SWITCHES: [(&'static str, &'static str, &'static str); 8] = [
         (
             "CARTO_NO_ATMOSPHERE",
             "No sky at all",
@@ -377,6 +379,14 @@ impl DebugSwitches {
              limb; says whether the raymarch is what a slow orbit view is paying \
              for.",
         ),
+        (
+            "CARTO_NO_DEPTH_PREPASS",
+            "No depth-first pass",
+            "Stops the phone drawing the city's depth before its colours. \
+             Taken when the app starts. A phone that gets faster without it \
+             was hiding the city behind itself already, and was paying \
+             twice for the geometry.",
+        ),
         // The one switch here that adds rather than removes, and the one that can
         // take the app down with it: bevy's `RenderDiagnosticsPlugin` reads its
         // GPU timestamp buffers back on a task-pool thread, and on this project's
@@ -408,6 +418,7 @@ impl DebugSwitches {
             "CARTO_NO_OCEAN" => self.no_ocean,
             "CARTO_NO_DUAL_SOURCE" => self.no_dual_source,
             "CARTO_NO_SPACE_RAYMARCH" => self.no_space_raymarch,
+            "CARTO_NO_DEPTH_PREPASS" => self.no_depth_prepass,
             "CARTO_GPU_TIMINGS" => self.gpu_timings,
             _ => return None,
         })
@@ -422,6 +433,7 @@ impl DebugSwitches {
             "CARTO_NO_OCEAN" => &mut self.no_ocean,
             "CARTO_NO_DUAL_SOURCE" => &mut self.no_dual_source,
             "CARTO_NO_SPACE_RAYMARCH" => &mut self.no_space_raymarch,
+            "CARTO_NO_DEPTH_PREPASS" => &mut self.no_depth_prepass,
             "CARTO_GPU_TIMINGS" => &mut self.gpu_timings,
             _ => return None,
         })
