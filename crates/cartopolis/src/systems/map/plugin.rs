@@ -544,6 +544,7 @@ impl Plugin for MapPlugin {
                     sky::advance_day_cycle.before(sky::apply_day_night_cycle),
                 ),
                 sky::apply_day_night_cycle.after(systems::dev_panel::render_dev_panel),
+                sky::dim_sky_reflections_under_cloud.after(systems::dev_panel::render_dev_panel),
                 sky::manage_lights.after(systems::dev_panel::render_dev_panel),
                 sky::apply_distance_fog.after(systems::dev_panel::render_dev_panel),
                 (

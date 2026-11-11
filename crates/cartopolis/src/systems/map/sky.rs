@@ -307,21 +307,15 @@ pub(crate) const DAY_EXPOSURE_EV100: f32 = 13.6;
 /// tier's star compensation reads it now; the ground's own night exposure comes
 /// from the light meter.
 pub(crate) const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
-/// Stops of exposure lift at full overcast — the eye adapting to a duller sky,
-/// as [`eye_adaptation_stops`] is the eye adapting to dusk.
-///
-/// It has to *pay for the light the overcast model removes*, and at 0.4 it did
-/// not come close. [`overcast_lighting`] leaves ~20 klux of ground illuminance at
-/// noon against a clear sky's ~93 klux — 2.2 stops — so 0.4 of a lift rendered a
-/// grey day 1.8 stops (3.5×) under. That, and not the cloud shader, is most of
-/// what "the lighting is bad" was on the phone: a grey day is *soft*, not dark,
-/// and the eye does not experience it as three stops down from a sunny one.
-///
-/// Not the full 2.2 either: an overcast day should still read a little duller
-/// than a sunny one, and adapting the whole way would make the two identical.
-/// The residual ~0.6 stop is that difference, and `overcast_tests` holds it
-/// there — the three constants here only mean anything as a set.
-pub(crate) const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
+// There is no exposure lift for an overcast. One of 1.6 stops paid, on paper,
+// for the 2.2 stops of illuminance the deck takes (`overcast_lighting`), but on
+// a screen the deck takes none: its fill arrives from every direction, on every
+// wall the sun left in shade, and the clear sky's light stayed on under it. A
+// full overcast drew the city 1.4–1.5 stops *brighter* than a clear noon,
+// pale and of one tint (mac-1, 2026-11-11, `CARTO_QUALITY=balanced
+// CARTO_HANDSET=1`, mean linear luma of the city: clear 0.19, overcast 0.52).
+// With the clear sky dimmed under the deck and no lift it lands about half a
+// stop under clear, the duller-but-not-dark of a grey day.
 
 /// Stops the camera opens up for the time of day: a light meter with partial
 /// adaptation, the way an eye adapts.
@@ -335,10 +329,6 @@ pub(crate) const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
 /// those (night, twilight, the tone curve's toe and its day trim) on
 /// 2026-11-07; `docs/notes/exposure-and-adaptation.md` has the measurement and
 /// the alternatives.
-///
-/// The overcast lift is not in it: that one pays for the beam the overcast
-/// model takes off the ground, which the cloud deck, being that overcast,
-/// never lost.
 pub(crate) fn eye_adaptation_stops(hours: f32, decl_rad: f32) -> f32 {
     ADAPTATION * (METER_REFERENCE - metered_light(hours, decl_rad)) + TONE_CURVE_LIFT
 }
@@ -675,6 +665,19 @@ pub(crate) fn ambient_light(
     }
 }
 
+/// The part of [`ambient_light`] that is the clear sky's own light, or what
+/// stands in for it where there is no environment map. A cloud deck takes it
+/// away as it takes the beam ([`overcast_lighting`]): the deck's fill replaces
+/// the whole sky, not only the sun.
+pub(crate) fn clear_sky_ambient(hours: f32, decl_rad: f32, sky_ibl: bool) -> f32 {
+    let day = if sky_ibl {
+        AMBIENT_DAY_BRIGHTNESS
+    } else {
+        AMBIENT_DAY_BRIGHTNESS_NO_IBL
+    };
+    day * utils::sun::daylight(hours, decl_rad)
+}
+
 /// How much of the sky is cloud, 0 (clear) to 1 (overcast): thick cloud, and a
 /// little of the rain. One definition, because the ground lighting and the
 /// water's stand-in sky reflection (`water::update_water_waves`) both grey out on
@@ -690,8 +693,8 @@ pub(crate) fn overcast(dev: &DevPanelState) -> f32 {
 /// in two numbers and because the balance between them — not either one alone —
 /// is what has to hold (there is a test). The failure it replaces was a model
 /// that only ever *subtracted*: it cut the beam hard, added almost nothing back,
-/// and left [`OVERCAST_EXPOSURE_LIFT`] to pay for a three-stop hole with 0.4 of a
-/// stop. An overcast day is not a dim day, it is a day whose light arrives from
+/// and left an exposure lift to pay for a three-stop hole with 0.4 of a stop
+/// (there is no lift now: the comment by `NIGHT_EXPOSURE_LIFT` says why). An overcast day is not a dim day, it is a day whose light arrives from
 /// the whole sky instead of from one direction.
 pub(crate) fn overcast_lighting(overcast: f32) -> (f32, f32) {
     (
@@ -1047,11 +1050,10 @@ pub(crate) fn apply_day_night_cycle(
     // From space there's nothing to adapt to — the lit half of the planet is in full
     // daylight whatever the local clock says — so the day exposure holds.
     let day = utils::sun::daylight(dev.time_of_day, dev.sun_declination_rad);
-    let ground_ev = DAY_EXPOSURE_EV100
-        - eye_adaptation_stops(dev.time_of_day, dev.sun_declination_rad)
-        // A small lift so an overcast scene reads dim-but-legible rather than
-        // being crushed once the direct sun is pulled down.
-        - OVERCAST_EXPOSURE_LIFT * overcast;
+    // No lift for an overcast: the deck's fill pays for the beam it takes (the
+    // comment by `NIGHT_EXPOSURE_LIFT` has the measurement).
+    let ground_ev =
+        DAY_EXPOSURE_EV100 - eye_adaptation_stops(dev.time_of_day, dev.sun_declination_rad);
     if let Ok((_, _, mut exp, mut grading, bloom, _)) = camera.single_mut() {
         // Night vision fades out with the climb, as the exposure's adaptation
         // does: from orbit the lit half of the planet is in daylight.
@@ -1146,7 +1148,13 @@ pub(crate) fn apply_day_night_cycle(
         // beam lost above arrives here instead — flat, shadowless and cool rather
         // than sunlit-and-shadowed. Gated on daylight so a cloudy night is not lit
         // by a sky that has nothing to scatter.
-        let ground_brightness = ground.brightness + sky_fill * day;
+        // The clear sky's own light goes with the beam: before, the deck's fill
+        // came on top of it, and a full overcast drew the city 1.4–1.5 stops
+        // *brighter* than a clear noon (mac-1, 2026-11-11), pale and of one tint.
+        let ground_brightness = ground.brightness
+            - clear_sky_ambient(dev.time_of_day, dev.sun_declination_rad, sky_ibl)
+                * (1.0 - beam_factor)
+            + sky_fill * day;
         if overcast > 0.0 {
             let lum = ground_rgb.x * 0.2126 + ground_rgb.y * 0.7152 + ground_rgb.z * 0.0722;
             ground_rgb = ground_rgb.lerp(Vec4::new(lum, lum, lum, 1.0), 0.5 * overcast);
@@ -1194,6 +1202,33 @@ pub(crate) fn globe_light_direction(
     };
     real.lerp(reading.normalize_or(real), space.clamp(0.0, 1.0))
         .normalize_or(real)
+}
+
+/// Dim the sky's reflections under a cloud deck as the beam is dimmed.
+///
+/// The environment map is baked from bevy's atmosphere, which has no clouds: at
+/// full overcast it still lit the city with a clear blue sky, the deck's fill
+/// came on top, and an exposure lift (since removed) amplified both. So the clear
+/// sky's light goes with the beam ([`overcast_lighting`]), here for the map and
+/// in [`apply_day_night_cycle`] for the ambient that stands in for it. Written
+/// to `EnvironmentMapLight::intensity`, a field: adding or removing the
+/// component on a live camera is the hazard `render_features` documents.
+pub(crate) fn dim_sky_reflections_under_cloud(
+    dev: Res<DevPanelState>,
+    globe: Res<systems::globe::GlobeState>,
+    mut camera: Query<
+        (&GridCell, &Transform, &mut bevy::light::EnvironmentMapLight),
+        With<crate::components::FreeCamera>,
+    >,
+) {
+    let Ok((cell, tf, mut env)) = camera.single_mut() else {
+        return;
+    };
+    let space = globe.space_factor(cell, tf);
+    let (beam, _) = overcast_lighting(overcast(&dev) * (1.0 - space));
+    if (env.intensity - beam).abs() > 1e-3 {
+        env.intensity = beam;
+    }
 }
 
 /// Change in `GlobeState::space_factor` worth re-applying the lighting for. The
@@ -2463,14 +2498,23 @@ mod overcast_tests {
     // `cartopolis_materials` rather than defined beside its derive.
     use bevy::render::render_resource::ShaderType;
 
-    /// Ground illuminance under this model, for a coverage — beam plus fill, at
-    /// the sun's noon elevation.
+    /// Ground illuminance under this model, for a coverage — the beam, the clear
+    /// sky's light and the deck's fill, at the sun's noon elevation.
+    ///
+    /// The clear sky counts: it is the ambient stand-in where there is no
+    /// environment map, and the map is that much light where there is one
+    /// (`AMBIENT_DAY_BRIGHTNESS_NO_IBL` was matched to it on a screen). Leaving
+    /// it out let the model believe the deck took 2.2 stops while on the screen
+    /// it added 1.4, the sky staying on under the fill
+    /// (`dim_sky_reflections_under_cloud`).
     fn ground_lux(overcast: f32) -> f32 {
         let (hours, decl) = (12.0, 0.0);
         let (beam, fill) = overcast_lighting(overcast);
         let (_, lux) = sun_light(hours, decl, 0.0);
         let day = utils::sun::daylight(hours, decl);
-        lux * beam + ambient_light(hours, 0.0, decl, true).brightness + fill * day
+        lux * beam + ambient_light(hours, 0.0, decl, false).brightness
+            - clear_sky_ambient(hours, decl, false) * (1.0 - beam)
+            + fill * day
     }
 
     /// A clear sky must be untouched: every overcast term is a multiple of the
@@ -2481,23 +2525,16 @@ mod overcast_tests {
         assert_eq!(cloud_sky_floor(0.0), CLOUD_SKY_FLOOR_SCATTERED);
     }
 
-    /// The exposure lift has to pay for the light the model removes. It need not
-    /// pay *all* of it — an overcast day should still read a little duller — but
-    /// the gap is what the phone was rendering three times too dark through.
+    /// The model must stay a real dimming in illuminance — an overcast sky that
+    /// lit the ground as brightly as the sun would be no overcast at all. What
+    /// it costs on a screen is less (the fill reaches the shade the sun leaves),
+    /// which is why there is no exposure lift to pay for it.
     #[test]
-    fn the_exposure_lift_covers_most_of_the_light_the_deck_takes() {
+    fn the_deck_takes_light_from_the_ground() {
         let stops_lost = (ground_lux(0.0) / ground_lux(1.0)).log2();
-        // The model itself must stay a real dimming — an overcast sky that lit the
-        // ground as brightly as the sun would be no overcast at all.
         assert!(
             (1.0..3.0).contains(&stops_lost),
             "overcast should cost 1–3 stops, costs {stops_lost}"
-        );
-        let residual = stops_lost - OVERCAST_EXPOSURE_LIFT;
-        assert!(
-            (0.0..=0.75).contains(&residual),
-            "an overcast scene should land within ¾ of a stop of a sunny one, \
-             lands {residual} stops under"
         );
     }
 
@@ -2509,7 +2546,9 @@ mod overcast_tests {
         let (hours, decl) = (12.0, 0.0);
         let (beam, fill) = overcast_lighting(1.0);
         let (_, lux) = sun_light(hours, decl, 0.0);
-        let diffuse = ambient_light(hours, 0.0, decl, true).brightness + fill;
+        let diffuse = ambient_light(hours, 0.0, decl, false).brightness
+            - clear_sky_ambient(hours, decl, false) * (1.0 - beam)
+            + fill;
         assert!(
             diffuse > lux * beam,
             "the deck should out-light the beam it replaced: sky {diffuse}, sun {}",

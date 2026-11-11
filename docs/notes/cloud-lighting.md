@@ -205,9 +205,11 @@ the camera opens up toward dusk and night by up to 4.5 stops
 (`sky::eye_adaptation_stops`: the night and twilight lifts). The sky and the fog
 colour followed; the deck's lit side did not, so a sunset cloud's lit side was
 that many stops too dark — the muddy brown decks of the evening. `update_clouds`
-now multiplies the sun term by 2^stops. The overcast lift is left out on
-purpose: it pays for the beam the overcast model takes off the *ground*, which
-the deck, being that overcast, never lost.
+now multiplies the sun term by 2^stops. There was an overcast exposure lift
+beside it, left out of the deck on purpose; since 2026-11-11 there is none
+(`sky.rs`, beside `NIGHT_EXPOSURE_LIFT`): on a screen a full overcast drew the
+city brighter than a clear noon, so the deck lost the 1.6 stops the lift gave
+the whole frame.
 
 **And it follows the light the sky is drawn with** (`sky_light_dimming`,
 2026-10-18). The atmosphere is lit by `sun_light_cut`'s illuminance, which
