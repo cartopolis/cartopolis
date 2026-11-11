@@ -710,6 +710,17 @@ pub const DATASETS: &[Dataset] = &[
         run: crate::osm::run_shops,
     },
     Dataset {
+        id: "geocoder",
+        label: "Place search (OSM)",
+        description: "Every address, street, town and named place in the OpenStreetMap \
+                      extract, as the index atlas answers /geocode/search and \
+                      /geocode/reverse from in place of Nominatim. Replaces the one index \
+                      with the run's area: run it over the whole country.",
+        coverage: "geocoder/coverage.json",
+        typical_minutes: 30,
+        run: crate::geocoder::run,
+    },
+    Dataset {
         id: "osmbuildings",
         label: "Buildings (OSM)",
         description: "Every building and building part in the OpenStreetMap extract, per \

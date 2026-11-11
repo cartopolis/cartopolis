@@ -12,6 +12,7 @@ pub mod auth;
 pub mod config;
 pub mod coverage;
 pub mod designs;
+pub mod geocoder;
 pub mod http;
 pub mod jobs;
 pub mod landmark;
@@ -78,6 +79,7 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             mirror.spawn_refresh();
             mirror
         },
+        geocoder: Arc::new(geocoder::Geocoder::new(&config.data_dir)),
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, data_dir = %config.data_dir.display(), "atlas serving");

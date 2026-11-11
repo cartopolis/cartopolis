@@ -1,6 +1,6 @@
 ---
 topic: the-server-stack
-triggers: [crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
+triggers: [crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
 updated: 2026-11-10
 ---
 
@@ -99,3 +99,26 @@ Checked 2026-11-10 against Overpass, Groningen, Netherlands extract of that day:
 - **Headway** (Photon + Valhalla + PMTiles in Compose): one command, many services.
 - **Public tiles**: `tiles.versatiles.org` serves the same Shortbread schema as the
   mirror, so a server can point `osm_tile_url_template` there and host no tiles.
+
+## Place search without Nominatim (`crates/atlas/src/geocoder.rs`)
+
+Atlas's `geocoder` dataset indexes every address, street, named place and named
+amenity, shop, station and sight in the extract into one file,
+`<data_dir>/geocoder/index.bin`, which atlas answers `/geocode/search` and
+`/geocode/reverse` from in Nominatim's `jsonv2` shape; the server's
+`geocoder_url` points clients at `…/geocode`. Search is by word prefix, so it
+matches while typed, which Nominatim could not (`geocoding-latency.md`).
+
+Measured 2026-11-11, whole Netherlands, mac-1, release build:
+
+- 9,950,479 addresses on 248,602 streets, 281,216 places; a 201 MB file built in
+  14 min at 3.4 GB peak; loaded in 1.3–2.5 s.
+- Every query of a test set of 20 (towns, streets, addresses, postcodes,
+  stations, museums) answered in under 5 ms, most under 0.3 ms; a reverse
+  lookup in under 0.2 ms.
+- Ranking: a city before a hamlet of the same name, a station before a street
+  named after it; nearness to the asker (`viewbox`) outweighs an exact name, so
+  "Zuiderdiep" from Groningen finds the Gedempte Zuiderdiep, not the Zuiderdiep
+  40 km away.
+- **Not found:** anything mapped only as a relation — Schiphol's aerodrome is
+  one, so "Schiphol" finds the station and the hamlet but not the airport.

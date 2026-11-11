@@ -2626,6 +2626,7 @@ dependencies = [
  "i_overlay",
  "image",
  "osmpbf",
+ "postcard",
  "quick-xml",
  "rusqlite",
  "serde",

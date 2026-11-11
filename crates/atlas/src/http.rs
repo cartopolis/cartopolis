@@ -29,6 +29,8 @@ pub struct AtlasState {
     pub satellites: Arc<crate::satellites::SatelliteMirror>,
     /// `/plans/groningen.json`, the notices and council business on the map.
     pub plans: Arc<crate::plans::PlansMirror>,
+    /// `/geocode/search` and `/geocode/reverse`, in place of Nominatim.
+    pub geocoder: Arc<crate::geocoder::Geocoder>,
 }
 
 /// Only the paths Caddy sends here. The site root — the front page, the
@@ -47,6 +49,14 @@ pub fn router(state: AtlasState) -> Router {
         .route(
             "/plans/groningen.json",
             get(crate::plans::serve).with_state(state.plans.clone()),
+        )
+        .route(
+            "/geocode/search",
+            get(crate::geocoder::search).with_state(state.geocoder.clone()),
+        )
+        .route(
+            "/geocode/reverse",
+            get(crate::geocoder::reverse).with_state(state.geocoder.clone()),
         )
         .with_state(state)
         .nest("/api/pipeline", api)
@@ -211,6 +221,7 @@ mod tests {
             },
             satellites: Arc::new(crate::satellites::SatelliteMirror::new(dir.path(), "")),
             plans: Arc::new(crate::plans::PlansMirror::new(dir.path(), false)),
+            geocoder: Arc::new(crate::geocoder::Geocoder::new(dir.path())),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
