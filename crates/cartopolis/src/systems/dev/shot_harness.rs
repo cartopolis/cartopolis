@@ -2628,9 +2628,11 @@ const UI_ELEMENTS: &[&str] = &[
     "callgroup",
     "callfolded",
     // The Midas button as it stands while the device link is up, and its
-    // card open (`midas_link::draw_link_button`).
+    // card open, and a session's message beside it
+    // (`midas_link::draw_link_button`).
     "midaslink",
     "midascard",
+    "midastell",
     "all",
 ];
 
@@ -3235,8 +3237,9 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
     ));
 }
 
-/// `--ui midaslink` and `--ui midascard`: the Midas button as it stands while
-/// the device link is up, and with its card open. A scripted run is paired to
+/// `--ui midaslink`, `--ui midascard` and `--ui midastell`: the Midas button
+/// as it stands while the device link is up, with its card open, and with a
+/// session's `tell` beside it. A scripted run is paired to
 /// no hub, so the link is staged (`MidasLink::stage_for_capture`), with the
 /// account the docs hand out as the one sessions act as.
 #[cfg(not(target_arch = "wasm32"))]
@@ -3254,8 +3257,8 @@ pub fn hold_scripted_midas(
     let panels = harness.ui_for(progress.index);
     let all = panels.iter().any(|u| u == "all");
     let want = |k: &str| all || panels.iter().any(|u| u == k);
-    if want("midaslink") || want("midascard") {
-        link.stage_for_capture(want("midascard"));
+    if want("midaslink") || want("midascard") || want("midastell") {
+        link.stage_for_capture(want("midascard"), want("midastell"));
         identity.username = Some("jeroen".to_string());
     }
 }

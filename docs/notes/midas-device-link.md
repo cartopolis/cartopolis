@@ -1,7 +1,7 @@
 ---
 topic: the Midas device link (the app answering a developer's agent sessions)
 triggers: ["midas_link.rs", "MidasCall.java", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "mcp/film.rs", "mcp_server/src/local.rs", LocalTools]
-updated: 2026-11-07
+updated: 2026-11-11
 ---
 
 # The Midas device link
@@ -50,6 +50,19 @@ wrapped a syllable a line. The phone registers no activity box at all: no
 editor drives it there. A desktop with both moves the box under the button. What the agent may *read* is still `mcp::agent::Audience`, empty by
 default and set in Settings ▸ General ▸ Editor access, and `view` and `film`
 drop the chrome while that list is narrower than everyone.
+
+**A session can speak on the map: `tell` (2026-11-11).** The owner wanted
+to follow a session driving the phone without leaving the app for the Midas
+page to read what it was up to. `tell` puts a short message (400 characters at
+most) in a bubble left of the Midas button, signed with the session, its tail
+on the button. It stays until tapped away, replaced by the next `tell`, or its
+`seconds` pass; an empty text takes it down. It is the link's own tool, not
+the MCP server's: only a session on the hub has a person on the other side of
+the glass, and an editor on the desktop has its own window. It is not chat
+(`say` speaks in the world) and nobody else sees it. Like the button it stands
+down under an open panel and in driver mode, and comes back with the map; the
+call's answer says when it was kept but not shown. With the card open it
+stands under the card. `--ui midastell` captures it.
 
 A tool a build lacks is refused with "run the session's code on a build node",
 which is what the agent should do then (the hub's bridge says the same when the

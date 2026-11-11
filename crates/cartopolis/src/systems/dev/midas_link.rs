@@ -218,6 +218,44 @@ impl Sense {
     }
 }
 
+/// A message a session put beside the Midas button with `tell`.
+#[derive(Debug, Clone)]
+pub struct Told {
+    pub session: String,
+    pub text: String,
+    /// When it was told, so the map repaints for a new one.
+    pub at: web_time::Instant,
+    /// When it goes on its own; `None` keeps it until tapped or replaced.
+    pub until: Option<web_time::Instant>,
+}
+
+impl Told {
+    /// The message a `tell` call asks for, or `None` for an empty text, which
+    /// clears it.
+    fn from_call(call: &Call, now: web_time::Instant) -> Option<Self> {
+        let text = call.args["text"].as_str().unwrap_or("").trim();
+        if text.is_empty() {
+            return None;
+        }
+        let text: String = text.chars().take(TELL_MAX_CHARS).collect();
+        let until = call.args["seconds"]
+            .as_u64()
+            .filter(|s| *s > 0)
+            .map(|s| now + std::time::Duration::from_secs(s.min(TELL_MAX_S)));
+        Some(Self {
+            session: call.session.clone(),
+            text,
+            at: now,
+            until,
+        })
+    }
+}
+
+/// The longest `tell` the bubble holds: a few lines on a phone, not a page.
+const TELL_MAX_CHARS: usize = 400;
+/// The longest a timed `tell` stays.
+const TELL_MAX_S: u64 = 3600;
+
 #[derive(Resource)]
 pub struct MidasLink {
     pub config: LinkConfig,
@@ -237,6 +275,9 @@ pub struct MidasLink {
     push_shot: Option<Arc<Mutex<Option<Result<Vec<u8>, String>>>>>,
     /// The card beside the map's Midas button is open.
     pub card_open: bool,
+    /// What a session asked to tell the person (`tell`), shown beside the
+    /// button until it is tapped away, replaced, or its time is up.
+    pub told: Option<Told>,
     /// The MCP server's job channel, for the worker's in-process session.
     #[cfg(mcp)]
     jobs: Option<McpJobs>,
@@ -261,6 +302,7 @@ impl Default for MidasLink {
             linked_to: None,
             push_shot: None,
             card_open: false,
+            told: None,
             #[cfg(mcp)]
             jobs: None,
         }
@@ -288,11 +330,18 @@ impl MidasLink {
         (at.elapsed().as_secs_f32() < within_s).then(|| (tool.clone(), session.clone()))
     }
 
-    /// The link as it looks up, for `--ui midaslink` and `midascard`: a
+    /// The link as it looks up, for `--ui midaslink`, `midascard` and
+    /// `midastell` (a session's message beside the button): a
     /// scripted run is paired to no hub. Nothing is written, since `saved`
     /// follows `config`, and with no token no worker starts.
-    pub fn stage_for_capture(&mut self, card: bool) {
+    pub fn stage_for_capture(&mut self, card: bool, tell: bool) {
         self.loaded = true;
+        self.told = tell.then(|| Told {
+            session: "s669".to_string(),
+            text: "I am walking you to the Vismarkt. Tap the camera button when you are there, and I will take it from there.".to_string(),
+            at: web_time::Instant::now(),
+            until: None,
+        });
         self.config.on = true;
         self.saved = self.config.clone();
         self.card_open = card;
@@ -333,6 +382,11 @@ pub fn tools() -> Value {
         {"name": "record", "description": "Record the motion sensors (accelerometer, gyroscope, magnetometer; device axes, on CLOCK_BOOTTIME) and each new GNSS fix for a while: two CSV files. Runs precision mode for the recording.",
          "inputSchema": {"type": "object", "properties": {"seconds": {"type": "integer", "description": format!("how long, at most {RECORD_MAX_S}")}}, "required": ["seconds"]}},
         {"name": "gnss", "description": "The newest location fix — precision mode's, or the phone's ordinary location when that is off, saying which — with its accuracy, age, speed, course and the compass, and the external RTK receiver's report (its settings, state and events).", "inputSchema": none},
+        {"name": "tell", "description": "Show the person holding the phone a short message in a bubble beside the Midas button on the map, signed with this session's name, so they can follow along without leaving the app: what you are about to do, what you saw, or what they should tap or do next. It stays until they tap it away, the next tell replaces it, or `seconds` pass; an empty text takes it down. Shown on the map only, not over an open panel. This is not chat: nobody else sees it (`say` speaks in the world).",
+         "inputSchema": {"type": "object", "properties": {
+             "text": {"type": "string", "description": format!("the message, a few short sentences at most ({TELL_MAX_CHARS} characters); empty to take the bubble down")},
+             "seconds": {"type": "integer", "description": "take it down after this long; leave out to keep it until tapped or replaced"}
+         }, "required": ["text"]}},
     ])
 }
 
@@ -603,6 +657,8 @@ pub fn serve_calls(
     store: Res<crate::systems::user_store::UserStore>,
     locate: Option<Res<crate::systems::locate::LocateTracking>>,
     screen: Option<Res<crate::systems::camera_screen::CameraScreen>>,
+    right_panel: Res<crate::resources::RightPanel>,
+    driver: Res<crate::systems::driver::DriverState>,
 ) {
     let link = &mut *link;
     let now = web_time::Instant::now();
@@ -619,6 +675,15 @@ pub fn serve_calls(
                 link.sense.hold(now);
                 link.waiting.push(Waiting::Fix { call: call.clone(), since: now });
                 None
+            }
+            "tell" => {
+                link.told = Told::from_call(&call, now);
+                let hidden = !right_panel.is(crate::resources::RightPanel::None) || driver.active;
+                Some(text(match (&link.told, hidden) {
+                    (None, _) => "Taken down.",
+                    (Some(_), false) => "Shown beside the Midas button.",
+                    (Some(_), true) => "Kept, but not shown yet: a panel or driver mode covers the map, and the bubble appears beside the Midas button once the person is back on the map.",
+                }))
             }
             "precision_log" => Some(if log.is_empty() {
                 text("The log is empty: precision mode has not run since the app started (Developer tools ▸ Precision ▸ Start, or camera_frame / record).")
@@ -1233,14 +1298,28 @@ pub fn draw_link_button(
     identity: Option<Res<crate::resources::AuthIdentity>>,
     right_panel: Res<crate::resources::RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
-    mut seen: Local<(bool, Option<web_time::Instant>)>,
+    mut seen: Local<(bool, Option<web_time::Instant>, Option<web_time::Instant>)>,
 ) {
     let up = link.config.on && link.linked();
     let last = link.shared().last_call.clone();
-    // Both change on the worker's thread, which egui never hears of: without
-    // a repaint the button would appear, or glow, only at the next touch
+    // Timed out: gone before it is drawn.
+    if link
+        .told
+        .as_ref()
+        .and_then(|t| t.until)
+        .is_some_and(|u| web_time::Instant::now() >= u)
+    {
+        link.told = None;
+    }
+    // The link and the call change on the worker's thread, and a `tell` in
+    // `serve_calls`, which egui never hears of: without a repaint the button
+    // would appear, glow, or speak only at the next touch
     // (`egui-quiet-frame-staleness.md`).
-    let now_seen = (up, last.as_ref().map(|(_, _, at)| *at));
+    let now_seen = (
+        up,
+        last.as_ref().map(|(_, _, at)| *at),
+        link.told.as_ref().map(|t| t.at),
+    );
     if *seen != now_seen {
         *seen = now_seen;
         egui.ctx().request_repaint();
@@ -1289,19 +1368,44 @@ pub fn draw_link_button(
             p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::p().ink));
             toggle = resp.on_hover_text("Midas").clicked();
         });
-    if !link.card_open {
+    // The card and the bubble share the place left of the button; with both
+    // up, the bubble stands under the card.
+    let beside = -(left_of_column + size + theme::OSD_GAP);
+    let top = crate::systems::dock::reserved_top();
+    let bubble_top = if link.card_open {
+        draw_link_card(
+            ctx,
+            &mut link,
+            identity.as_deref(),
+            last.as_ref(),
+            age,
+            beside,
+            top,
+            toggle,
+        ) + theme::OSD_GAP
+    } else {
         link.card_open = toggle;
-        return;
-    }
-    let who = identity.as_ref().and_then(|i| i.username.clone());
+        top
+    };
+    draw_told(ctx, &mut link, beside, bubble_top, bubble_top == top, size);
+}
+
+/// The card a tap on the button opens: which session asked for what last,
+/// and as whom. Returns its bottom edge.
+#[allow(clippy::too_many_arguments)]
+fn draw_link_card(
+    ctx: &egui::Context,
+    link: &mut MidasLink,
+    identity: Option<&crate::resources::AuthIdentity>,
+    last: Option<&(String, String, web_time::Instant)>,
+    age: Option<f32>,
+    beside: f32,
+    top: f32,
+    toggle: bool,
+) -> f32 {
+    let who = identity.and_then(|i| i.username.clone());
     let card = egui::Area::new(egui::Id::new("midas_link_card"))
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(
-                -(left_of_column + size + theme::OSD_GAP),
-                crate::systems::dock::reserved_top(),
-            ),
-        )
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(beside, top))
         .show(ctx, |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 ui.set_width(CARD_WIDTH);
@@ -1312,7 +1416,7 @@ pub fn draw_link_button(
                         .color(theme::p().cream)
                         .strong(),
                 );
-                let call = match (&last, age) {
+                let call = match (last, age) {
                     (Some((tool, session, _)), Some(a)) => {
                         format!("{session} · {tool} · {}", ago(a))
                     }
@@ -1343,6 +1447,75 @@ pub fn draw_link_button(
     tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
     if toggle || tap.clicked() {
         link.card_open = false;
+    }
+    card.response.rect.bottom()
+}
+
+/// What a session said with `tell`, in a bubble beside the button — with a
+/// tail pointing at it when nothing stands between — so the person can follow
+/// a session driving the phone without leaving the app for the Midas page. A
+/// tap takes it down.
+fn draw_told(
+    ctx: &egui::Context,
+    link: &mut MidasLink,
+    beside: f32,
+    top: f32,
+    by_the_button: bool,
+    button: f32,
+) {
+    let Some(told) = &link.told else {
+        return;
+    };
+    if let Some(until) = told.until {
+        ctx.request_repaint_after(until.saturating_duration_since(web_time::Instant::now()));
+    }
+    let bubble = egui::Area::new(egui::Id::new("midas_link_told"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(beside, top))
+        .show(ctx, |ui| {
+            theme::overlay_frame()
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    theme::midas_gold().gamma_multiply(0.6),
+                ))
+                .show(ui, |ui| {
+                    ui.set_width(CARD_WIDTH);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.label(
+                        egui::RichText::new(&told.session)
+                            .size(theme::SIZE_CHIP)
+                            .color(theme::midas_gold())
+                            .strong(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&told.text)
+                                .size(theme::SIZE_BODY)
+                                .color(theme::p().cream),
+                        )
+                        .wrap(),
+                    );
+                });
+        });
+    let rect = bubble.response.rect;
+    if by_the_button {
+        // Level with the disc's centre, across the gap to it.
+        let y = rect.top() + button / 2.0;
+        let tail = vec![
+            egui::pos2(rect.right() - 1.0, y - 7.0),
+            egui::pos2(rect.right() + theme::OSD_GAP - 1.0, y),
+            egui::pos2(rect.right() - 1.0, y + 7.0),
+        ];
+        ctx.layer_painter(bubble.response.layer_id)
+            .add(egui::Shape::convex_polygon(
+                tail,
+                theme::p().overlay,
+                egui::Stroke::NONE,
+            ));
+    }
+    let tap = bubble.response.interact(egui::Sense::click());
+    tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss"));
+    if tap.clicked() {
+        link.told = None;
     }
 }
 
@@ -2048,6 +2221,28 @@ mod tests {
             assert!(t["name"].as_str().is_some_and(|n| !n.is_empty()));
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
+    }
+
+    #[test]
+    fn a_tell_is_signed_and_bounded_and_an_empty_one_clears() {
+        let call = |args: Value| Call {
+            id: 1,
+            session: "s669".into(),
+            tool: "tell".into(),
+            args,
+            rpc: json!(1),
+        };
+        let now = web_time::Instant::now();
+        let kept = Told::from_call(&call(json!({"text": "  Tap the camera.  "})), now).unwrap();
+        assert_eq!(kept.session, "s669");
+        assert_eq!(kept.text, "Tap the camera.");
+        assert!(kept.until.is_none(), "no seconds keeps it until tapped");
+        let timed = Told::from_call(&call(json!({"text": "hi", "seconds": 5})), now).unwrap();
+        assert_eq!(timed.until, Some(now + std::time::Duration::from_secs(5)));
+        let long = Told::from_call(&call(json!({"text": "x".repeat(1000)})), now).unwrap();
+        assert_eq!(long.text.chars().count(), TELL_MAX_CHARS);
+        assert!(Told::from_call(&call(json!({"text": ""})), now).is_none());
+        assert!(Told::from_call(&call(json!({})), now).is_none());
     }
 
     #[test]
