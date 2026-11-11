@@ -739,7 +739,9 @@ pub fn apply_network_snapshot(
     mut game_state: ResMut<GameState>,
     mut avatar_state: ResMut<AvatarState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
-    map_anchor: Res<crate::resources::MapAnchor>,
+    // `Option`: a test app without a map has no anchor, and a client before
+    // its map has anchored has no frame to place anyone in either.
+    map_anchor: Option<Res<crate::resources::MapAnchor>>,
     // Excludes avatars so the `&mut Transform` access is provably disjoint from
     // `avatar_tf` below (prims never carry Avatar/RemoteAvatar).
     mut prim_entities: Query<
@@ -868,7 +870,7 @@ pub fn apply_network_snapshot(
                 // Every avatar's place on Earth, in this client's frame (protocol
                 // 47). Before the map has anchored there is no frame to put anyone
                 // in; the next snapshot, a tick on, finds one.
-                let seen: Vec<Seen> = match map_anchor.geo {
+                let seen: Vec<Seen> = match map_anchor.as_ref().and_then(|m| m.geo) {
                     Some(anchor) => avatars.iter().map(|a| Seen::new(anchor, a)).collect(),
                     None => Vec::new(),
                 };
@@ -1259,8 +1261,7 @@ fn apply_local_avatar_pose(
     }
     avatar_state.position = a.position;
     avatar_state.snapshot_age = 0.0;
-    avatar_state.sim_facing_yaw =
-        snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
+    avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
 }
 
 fn apply_local_avatar_pose_full(
@@ -1278,8 +1279,7 @@ fn apply_local_avatar_pose_full(
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
     avatar_state.snapshot_age = 0.0;
-    avatar_state.sim_facing_yaw =
-        snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
+    avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
     if let Ok(mut tf) = avatar_tf.single_mut() {
         tf.translation = a.position;
         // Keep the locally-turned facing (`avatar::handle_avatar_movement` eases it
@@ -1697,10 +1697,9 @@ pub fn send_network_intent(
         if !*placed {
             if let Some(geo) = avatar_geo(&map_anchor, &avatar_state) {
                 *placed = true;
-                let _ = sess.intent_tx.unbounded_send(standing_intent(
-                    avatar_state.facing_yaw,
-                    geo,
-                ));
+                let _ = sess
+                    .intent_tx
+                    .unbounded_send(standing_intent(avatar_state.facing_yaw, geo));
             }
         }
         return;
