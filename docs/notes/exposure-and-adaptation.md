@@ -5,7 +5,8 @@ triggers:
   - changing the sun's illuminance, the ambient or the atmosphere's lighting
   - "the evening / the night looks too dark / too bright / unnatural"
   - considering auto exposure (`AutoExposure`) or local tone mapping
-updated: 2026-11-07
+  - sky_bake.rs, when the sky's light on the city lags a change of time
+updated: 2026-11-11
 ---
 
 # Exposure: a light meter with partial adaptation
@@ -43,8 +44,17 @@ its own 0.050, and waiting longer (`settle` 6 s) changed nothing. Read in
 sequence the dusk points came out up to 0.8 stop bright, so `METER` takes them
 from single launches. By day the lag is small, and a morning and an afternoon
 at one elevation lag in opposite directions, so the table takes their mean.
-Whether the app shows the same lag when the time is jumped (the time slider,
-`set_sky`) is not measured.
+
+The app showed the same lag, and it had a cause (2026-11-11): `sky_bake`
+re-baked the environment map on one frame per trigger, and bevy filters the
+map (`filtering_system`, before `RenderSystems::Render`) before it draws the
+sky into it (`atmosphere_environment`, in `Core3d`), so a lone bake frame
+filtered the sky of the bake before. The city kept the old sky's light until
+the 10 s heartbeat. On the OnePlus 15, Light to Dark under an overcast drew a
+pastel city under a black sky, right 15 s later. A trigger now bakes a run of
+frames (`BAKE_RUN_FRAMES`). The `METER` dusk points were taken with the lag
+and from single launches, which it does not touch; a re-measurement may
+read the dusk in sequence.
 
 What it found: from an October noon to the night floor the city loses 7.6
 stops. Twilight in the renderer is far gentler than outdoors, about 0.4 stop
