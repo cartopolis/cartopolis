@@ -160,15 +160,53 @@ Three things follow, and the third is the one to carry.
   already in this file applied: a flat annotation on the ground owes a
   `NotShadowCaster` in the same breath as its depth bias.
 
+**Taken (2026-11-11): the desktop rung draws three cascades on a 4096² map, and
+4× multisampling on Metal.** Both sides explicit (`CARTO_SHADOW_CASCADES`,
+`CARTO_SHADOW_MAP`, `CARTO_MSAA`), one launch per row, `street` / `city`
+steady, with the GPU wait in brackets:
+
+| | street | city |
+|---|---|---|
+| 4 cascades, 2048², 2× (as it was) | 42.7 ms (21.6) | 19.5 (7.7) |
+| 3 cascades, 4096², 2× | 41.6 (19.1) | 19.2 (7.1) |
+| 4 cascades, 2048², 4× | 44.1 (23.0) | 21.0 (8.2) |
+| 3 cascades, 4096², 4× | 41.4 (18.4) | 21.1 (8.2) |
+| the new defaults, nothing set | 34.5 (13.2) | 21.0 (7.8) |
+
+Read with the evening's other rows: the cascade step gave 4.5, 5.5, 1.1, 1.3
+and 8.2 ms across five launches, and a lower GPU wait in every one. The host
+drifts ±3 ms between launches of one configuration, so the claim is the
+direction and the GPU wait, not a number. The texels: ~3, 15 and 73 cm against
+~6, 17, 50 and 150 cm, for 192 MB of maps against 64. Captures of the two
+configurations at 120 m, 40 m and eye level differ in the moving traffic and
+in shadow edges only — and, in two of three pairs, in **the colour of the
+street itself**, which the change cannot have touched: the Rodeweeshuisstraat
+came up as pale asphalt in one settled capture and as red-brown paving in the
+next, in either order of the two configurations. A street has two steady states
+between identical launches, which reads as a race between the paving data and
+the road's tessellation in the cell build (`map_geometry`, `road_texture`). Not
+chased here; a capture-based A/B of anything on the ground has to allow for it.
+
 **Turning at street level is still the materials.** The `turn` window was 73 ms
 a frame against 46 standing, worst 174 ms: `prepare_material_bind_groups`
 29 ms/frame, `update_street_labels` 8 ms (main world), 6.5 materials modified a
 frame. With the names off the bind-group work was 12 ms; with the fix above and
-the names on, 20. What remains is the re-dealing of names to signs as the view
-turns — each a texture swap on one of 160 materials, each a bind group — and
-the materials the streaming of new cells brings. One atlas for the names (one
-material, UVs per sign) would end the first; the second is bevy's per-material
-preparation on Metal and has no owner yet.
+the names on, 20. What remained was the re-dealing of names to signs as the
+view turned — each a texture swap on one of 160 materials, each a bind group —
+and the materials the streaming of new cells brings.
+
+**Taken (2026-11-11): the names live in one atlas** (`systems::label_atlas`,
+`cartopolis_materials::label_sign`). One material and one two-channel texture
+for the whole pool, a slot per sign, written slot by slot from the render world
+with `Queue::write_texture`; a sign taking a new name is a `MeshTag` and a
+region write, and no material or mesh changes. `street` turn, three flights:
+`prepare_material_bind_groups` **22.2 → 12.5 ms** a frame (the names-off floor
+was 12.2), `material_modified_per_frame` 6.5 → 3.6, the turn's mean frame 53.4
+→ 48.6 ms. What is left in those 12 ms is the materials new cells bring while
+the view turns — bevy's per-material preparation on Metal, which has no owner
+yet — and `update_street_labels` itself still averages ~8 ms a frame of main
+world through a turn (the placement, every 20° of yaw), beside the render
+thread rather than on its path.
 
 **Negative, and measured here so nobody re-opens them first:** the globe cloud
 shell at `orbit` (`CARTO_NO_CLOUDS`: 18.1 against 17.9 ms — it was 71 % of the
