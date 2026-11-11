@@ -129,6 +129,9 @@ pub struct CameraScreen {
     /// Open turned round to the avatar: for a scripted capture
     /// (`--ui cameraselfie`), which has no flip to press.
     pub demo_selfie: bool,
+    /// Offer Mixed without a position fix: for a scripted capture
+    /// (`--ui cameramixed`), which has no GPS to turn on.
+    pub demo_mixed: bool,
     /// Whether the shutter records a clip: the choice used last, as `mode`.
     pub video: bool,
     /// What the face tracking says during the In world selfie, shown where
@@ -450,6 +453,10 @@ mod native {
     const SELFIE_DISTANCE_M: f32 = 2.4;
     const SELFIE_PITCH: f32 = 0.12;
 
+    /// Why Mixed is dimmed: it draws the world from where the phone stands,
+    /// which only the locate button in Follow puts the avatar on.
+    const MIXED_NEEDS: &str = "Mixed needs your location: turn it on, in Follow";
+
     /// The widest a finished clip is shown: a phone's screen, not the clip's.
     const CLIP_SHOWN_WIDTH: u32 = 960;
 
@@ -458,6 +465,13 @@ mod native {
         target: Target,
         mode: Mode,
         front: bool,
+        /// Whether Mixed is on offer: only with the locate button lit in
+        /// Follow, where the avatar stands on the phone's fix, so the world
+        /// half is drawn from where the photograph was taken. Anywhere else it
+        /// is a picture of two different places.
+        mixed_offered: bool,
+        /// The scripted capture's Mixed (`CameraScreen::demo_mixed`).
+        demo_mixed: bool,
         /// The shutter records a clip.
         video: bool,
         /// The phone's camera, in Mixed and Real.
@@ -735,6 +749,7 @@ mod native {
         mut shot: ResMut<ScreenshotState>,
         mut chat: ResMut<crate::systems::chat::ChatState>,
         held_phone: Res<crate::systems::held_phone::HeldPhone>,
+        locate: Res<crate::systems::locate::LocateTracking>,
     ) {
         let screen = &mut *screen;
         let grab_in = screen.frame_in.take();
@@ -744,6 +759,8 @@ mod native {
                     target,
                     mode: Mode::World,
                     front: false,
+                    mixed_offered: false,
+                    demo_mixed: std::mem::take(&mut screen.demo_mixed),
                     video: screen.video,
                     camera: None,
                     location: LocationWatch::start(),
@@ -782,6 +799,12 @@ mod native {
         }
         let Some(session) = screen.session.as_mut() else {
             screen.world_in = None;
+            // The camera closed on a selfie: the Follow camera may go behind
+            // again.
+            if cs.selfie {
+                cs.selfie = false;
+                cs.follow_rotate = false;
+            }
             // The world camera aimed into Mixed's hole goes back to the window.
             if let Ok((_, _, _, mut view)) = camera.single_mut() {
                 if view.sub_camera_view.is_some() {
@@ -817,7 +840,20 @@ mod native {
             screen.world_in = None;
             return;
         }
+        // Read outside Mixed only: in it the world camera is the phone's own,
+        // and no longer Follow's.
+        if session.mode != Mode::Mixed {
+            session.mixed_offered =
+                session.demo_mixed || (locate.active && cs.mode == CameraMode::Avatar);
+        }
         if let Some(next) = session.switch.take().filter(|_| !session.busy()) {
+            // A camera last used in Mixed opens In world when it is not on
+            // offer now.
+            let next = if next == Mode::Mixed && !session.mixed_offered {
+                Mode::World
+            } else {
+                next
+            };
             if session.mode == Mode::Mixed && next != Mode::Mixed {
                 leave_mixed(session, &mut nav, &mut cs);
             }
@@ -857,8 +893,13 @@ mod native {
                     crate::systems::free_camera::enter_mode(&mut cs, CameraMode::Avatar);
                     cs.mode = CameraMode::Avatar;
                 }
+                // In front it stays in front (`CameraState::selfie`): set once,
+                // the azimuth was left behind by every turn of the avatar, and
+                // the drift round behind its travel swung it back on a GPS
+                // fix's wander.
                 let face = body.rotation.to_euler(EulerRot::YXZ).0;
-                cs.follow_rotate = false;
+                cs.follow_rotate = session.front;
+                cs.selfie = session.front;
                 cs.first_person = false;
                 if session.front {
                     cs.azimuth = face;
@@ -868,6 +909,12 @@ mod native {
                     cs.azimuth = face + std::f32::consts::PI;
                 }
             }
+        }
+        // Out of the selfie by a mode switch: the Follow camera may go behind
+        // again.
+        if cs.selfie && !session.avatar_selfie() {
+            cs.selfie = false;
+            cs.follow_rotate = false;
         }
         session.fresh_frame = false;
         if let Some(cam) = session.camera.as_ref() {
@@ -2092,6 +2139,9 @@ mod native {
                         egui::Align2::CENTER_CENTER
                     };
                     let on = m == session.mode;
+                    // Mixed without the fix is shown dimmed, and says why when
+                    // pressed (`Session::mixed_offered`).
+                    let offered = m != Mode::Mixed || session.mixed_offered;
                     let rect = painter.text(
                         at,
                         align,
@@ -2099,8 +2149,10 @@ mod native {
                         egui::FontId::proportional(14.0),
                         if on {
                             theme::BRAND
-                        } else {
+                        } else if offered {
                             egui::Color32::WHITE
+                        } else {
+                            egui::Color32::WHITE.gamma_multiply(0.4)
                         },
                     );
                     let hit = rect.expand(8.0);
@@ -2109,13 +2161,17 @@ mod native {
                     resp.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::Button,
-                            ui.is_enabled(),
+                            ui.is_enabled() && offered,
                             on,
                             m.label(),
                         )
                     });
                     if resp.clicked() && !on && !session.busy() {
-                        session.switch = Some(m);
+                        if offered {
+                            session.switch = Some(m);
+                        } else {
+                            session.error = Some(MIXED_NEEDS.into());
+                        }
                     }
                 }
 

@@ -62,6 +62,16 @@ made the Mixed picture (plus an aerial panel) and nothing else
   of the arms, the hand and the held phone over the picture (s609's street
   pairs, 2026-11-05). Only the selfie keeps it in view
   (`free_camera::update_first_person_avatar`, on `phone_hold() == Some(false)`).
+- **Mixed is offered only with the locate button lit, in Follow** (the user,
+  2026-11-11): that is what puts the avatar, and so the world camera, on the
+  phone's fix. Elsewhere the world half is drawn from somewhere the photograph
+  was not taken, so the mode is dimmed and says why when pressed; a camera last
+  used in Mixed opens In world. `--ui cameramixed` offers it regardless.
+- **The In world selfie holds the Follow camera in front**
+  (`CameraState::selfie`): it chases the avatar's face, and the drift round
+  behind the avatar's travel is off. Set once, as it was until 2026-11-11, it
+  was left behind by every turn of the avatar, and a GPS fix wandering under a
+  standing avatar swung it round behind within seconds.
 - **The harness's yaw turns the other way from a compass**
   (`PhotoPose::harness_yaw_deg`): `--look`'s yaw is counter-clockwise seen from
   above; a compass heading is the negation.

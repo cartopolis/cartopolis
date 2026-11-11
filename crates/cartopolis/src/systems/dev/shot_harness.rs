@@ -3181,6 +3181,7 @@ pub fn open_scripted_ui(
         cards.chat.camera.video = video;
         if mixed {
             cards.chat.camera.mode = crate::systems::camera_screen::Mode::Mixed;
+            cards.chat.camera.demo_mixed = true;
         }
     }
 

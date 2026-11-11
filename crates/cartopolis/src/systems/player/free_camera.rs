@@ -2242,10 +2242,16 @@ fn follow_mode(ctx: ModeCtx) {
     // moves nothing (`systems::locate`), and from inside the head the device's
     // whole attitude is the view, which is why this is skipped while
     // `device_rotation` is set.
+    //
+    // The camera's selfie chases the face instead: in front at `azimuth ≡ face`.
     if camera_state.follow_rotate && device_rotation.is_none() {
         if let Some((_, avatar_tf)) = avatar {
             let face = avatar_tf.rotation.to_euler(EulerRot::YXZ).0;
-            let target = face + std::f32::consts::PI;
+            let target = if camera_state.selfie {
+                face
+            } else {
+                face + std::f32::consts::PI
+            };
             let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
             if d > std::f32::consts::PI {
                 d -= std::f32::consts::TAU;
@@ -2258,7 +2264,7 @@ fn follow_mode(ctx: ModeCtx) {
             camera_state.azimuth += turn;
             camera_state.auto_yaw += turn;
         }
-    } else if !locked && !first_person && device_rotation.is_none() {
+    } else if !locked && !first_person && device_rotation.is_none() && !camera_state.selfie {
         // Without follow-and-rotate the rig still drifts round behind the way
         // the avatar is travelling once nobody is turning it ([`recentre_turn`]).
         // Counted into `auto_yaw` like the chase above, so the keys go on

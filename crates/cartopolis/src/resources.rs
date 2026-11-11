@@ -1862,6 +1862,13 @@ pub struct CameraState {
     /// left-drags to orbit (matching OM, where touching the map drops the
     /// rotate-follow).
     pub follow_rotate: bool,
+    /// The camera's In world selfie: the Follow camera stands *in front of* the
+    /// avatar. With [`Self::follow_rotate`] it chases the avatar's face rather
+    /// than its back, and the drift round behind the way the avatar travels is
+    /// off, so a GPS fix wandering under a standing avatar cannot swing the
+    /// lens round behind it. Held by `camera_screen::drive_camera` for as long
+    /// as the selfie is up; a drag drops the chase but not this.
+    pub selfie: bool,
     /// Follow mode, zoomed all the way in: the camera sits *at* the avatar's eyes
     /// instead of on a boom behind them, and the avatar's own model is hidden.
     ///
@@ -2009,6 +2016,7 @@ impl Default for CameraState {
             flight: None,
             auto_yaw: 0.0,
             follow_rotate: false,
+            selfie: false,
             first_person: false,
             device_rotation: None,
             drive_locked: false,
