@@ -38,9 +38,9 @@ use bevy::ecs::component::Components;
 use bevy::light::GeneratedEnvironmentMapLight;
 use bevy::pbr::generate::RenderEnvironmentMap;
 use bevy::prelude::*;
-use bevy::render::RenderApp;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::sync_world::RenderEntity;
+use bevy::render::RenderApp;
 
 use crate::components::{FreeCamera, PlanetAtmosphere};
 use crate::systems::render_features::EnvMapComponent;
