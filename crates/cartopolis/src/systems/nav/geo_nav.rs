@@ -1524,10 +1524,10 @@ fn history_row(
 pub enum ViewAction {
     SetHome,
     CopyLink,
-    /// Send this view into a private chat, as a point.
-    SendToChat,
-    /// Write a community's public post about this view (`community_posts`).
-    PostToCommunity,
+    /// Share this view: the one Share sheet (`bridges`), to a chat, a
+    /// community or a link. It was two rows here, "Send this view to a chat"
+    /// and "Post this view to a community".
+    Share,
 }
 
 /// The foot of the panel: Set Home here, Copy link.
@@ -1578,31 +1578,17 @@ fn view_actions_ui(
             {
                 fired = Some(ViewAction::CopyLink);
             }
-            // Only with somebody to send it to: private chats need a session.
+            // Only with somebody to send it to: chats and posts need a session,
+            // and Copy link above is the rest of what the sheet does.
             if can_send
-                && theme::menu_entry_enabled(ui, enabled, icons::CHAT, "Send this view to a chat")
+                && theme::menu_entry_enabled(ui, enabled, icons::SHARE, "Share this view…")
                     .on_hover_text(
-                        "Send this place and this view into a private chat. Whoever opens it \
-                         sees it from exactly where you are looking.",
+                        "Send this place and this view to a chat or a community. Whoever \
+                         opens it sees it from exactly where you are looking.",
                     )
                     .clicked()
             {
-                fired = Some(ViewAction::SendToChat);
-            }
-            if can_send
-                && theme::menu_entry_enabled(
-                    ui,
-                    enabled,
-                    icons::SHARE,
-                    "Post this view to a community",
-                )
-                .on_hover_text(
-                    "Write a public post in one of your communities, pinned at this place \
-                         with this view. Anybody can read it, on the map and on the fediverse.",
-                )
-                .clicked()
-            {
-                fired = Some(ViewAction::PostToCommunity);
+                fired = Some(ViewAction::Share);
             }
         });
         // The panel's own bottom edge is the screen's on a phone, and a row
@@ -1843,6 +1829,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                     context: String::new(),
                     lat: e.lat,
                     lng: e.lng,
+                    from: None,
                 },
             )
         };
@@ -1885,6 +1872,7 @@ fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
         context: s.context.clone(),
         lat: s.lat,
         lng: s.lng,
+        from: None,
     }
 }
 
@@ -1919,11 +1907,9 @@ pub fn render_search_panel(
     // Which view action last fired, and when — the ✔ flash. A `Local`, like the
     // one the app menu kept for the same two entries.
     mut flash: Local<Option<(ViewAction, Instant)>>,
-    // "Send this view to a chat" hands a point to the chat panel to place.
-    mut chat: ResMut<crate::systems::chat::ChatState>,
     online: Option<Res<crate::resources::OnlineSession>>,
-    // "Post this view to a community" hands a place to the communities screen.
-    mut communities: ResMut<crate::systems::communities::Communities>,
+    // "Share this view…" opens the Share sheet (`bridges`).
+    mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
@@ -2006,10 +1992,9 @@ pub fn render_search_panel(
             ));
             *flash = Some((ViewAction::CopyLink, Instant::now()));
         }
-        (Some(ViewAction::SendToChat), Some(((lat, lng), alt))) => {
-            // The same view the link would carry, as a point; the chat panel asks
-            // which private chat it goes to. Named after where history says the
-            // camera is, when it arrived by a named jump.
+        (Some(ViewAction::Share), Some(((lat, lng), alt))) => {
+            // The same view the link would carry. Named after where history
+            // says the camera is, when it arrived by a named jump.
             let (pitch, yaw) = cam
                 .map(|(_, tf)| {
                     let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
@@ -2019,31 +2004,20 @@ pub fn render_search_panel(
             let name = nav
                 .history
                 .get(nav.history_pos)
-                .and_then(|e| e.label.clone());
-            chat.point_draft = Some(cartopolis_core::point::Point {
-                latitude: lat,
-                longitude: lng,
+                .and_then(|e| e.label.clone())
+                .unwrap_or_else(|| "this view".to_string());
+            bridges.share = Some(crate::systems::bridges::SharePlace {
                 name,
-                text: None,
+                lat,
+                lng,
                 view: Some(cartopolis_core::point::PointView {
                     altitude: alt,
                     pitch,
                     yaw,
                 }),
-                meetup: None,
             });
-            *right_panel = RightPanel::Chat;
-        }
-        (Some(ViewAction::PostToCommunity), Some(_)) => {
-            // The same view, as a public post's place; the Chats panel asks which
-            // community it goes to.
-            if let (Some((cell, tf)), Some(anchor)) = (cam, map_anchor.geo) {
-                communities.posts.from_view = Some(crate::systems::community_posts::view_place(
-                    &nav, &globe, anchor, cell, tf,
-                ));
-                communities.screen = Some(crate::systems::communities::Screen::PostTo);
-                *right_panel = RightPanel::Chat;
-            }
+            // The sheet is over the map: on a phone the panel would hide it.
+            *right_panel = RightPanel::None;
         }
         _ => {}
     }

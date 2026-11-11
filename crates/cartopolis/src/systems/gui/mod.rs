@@ -11,6 +11,7 @@ pub mod admin;
 pub mod app_update;
 pub mod avatar_designer;
 pub mod bookmarks;
+pub mod bridges;
 pub mod building_card;
 pub mod calendar;
 pub mod call_screen;

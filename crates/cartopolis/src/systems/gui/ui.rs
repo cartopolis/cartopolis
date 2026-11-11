@@ -1064,15 +1064,6 @@ pub fn render_context_menu(
             label: "Route here",
             hint: "Set this point as the destination",
         });
-        // A post is public and lives on a server: online only.
-        if online.is_some() {
-            actions.push(RingAction {
-                key: "post_here",
-                icon: icons::NOTE,
-                label: "Post here",
-                hint: "Write a public post about this spot, to a community",
-            });
-        }
         // What the municipality has published around here (`systems::plans`),
         // with or without the layer on — only where the feed has anything.
         if lat_lng.is_some_and(|(lat, lng)| crate::systems::plans::covers(lat, lng)) {
@@ -1091,11 +1082,13 @@ pub fn render_context_menu(
                 hint: "Add this point to Places, named by reverse lookup",
             });
         }
+        // One Share, to a chat, a community or a link (`bridges`): it was a
+        // link here and a separate "Post here" beside it.
         actions.push(RingAction {
             key: "share",
             icon: icons::SHARE,
             label: "Share",
-            hint: "Share a link that opens the map here",
+            hint: "Send this spot to a chat or a community, or copy a link",
         });
         // Gated on the *session*, which is what "can I build here?" means: a
         // prim is created by `CreatePrim` and lives in the simulator.
@@ -1155,7 +1148,6 @@ pub fn render_context_menu(
             route.set_endpoint_at(Endpoint::From, lat, lng);
             *right_panel = RightPanel::Route;
         }
-        ("post_here", Some(at), _) => context_menu.post_here = Some(at),
         ("plans_here", Some(at), _) => context_menu.plans_here = Some(at),
         ("go_there", Some((lat, lng)), _) => {
             if let Some(p) = &place {
@@ -1184,9 +1176,10 @@ pub fn render_context_menu(
             }
         }
         ("share", Some((lat, lng)), _) => {
-            let alt = camera_altitude.unwrap_or(300.0).max(50.0);
-            let link = crate::systems::place_link::web_link(lat, lng, alt, None);
-            crate::systems::contacts::share(&link);
+            let name = place
+                .as_ref()
+                .map_or_else(|| "this spot".to_string(), |p| p.name.clone());
+            context_menu.share_at = Some((lat, lng, name));
         }
         ("build", _, _) => {
             edit_dialog.prim_id = None;

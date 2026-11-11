@@ -158,11 +158,11 @@ pub fn render_place_pins(
     // The people in that chat, where their avatars are (`chat_people`): the
     // server's answer, and this client's own avatars to stand a marker on
     // when one of them is in view.
-    contacts: Res<crate::systems::contacts::Contacts>,
+    mut contacts: ResMut<crate::systems::contacts::Contacts>,
     remotes: Query<(&RemoteAvatar, &Transform), Without<FreeCamera>>,
     local: Query<(&GridCell, &Transform), (With<Avatar>, Without<FreeCamera>)>,
     // A community's public posts, when its page asked for them on the map.
-    mut communities: ResMut<crate::systems::communities::Communities>,
+    communities: Res<crate::systems::communities::Communities>,
     // Your own name, for the marker over your own avatar. The sixteenth
     // parameter, which is Bevy's cap: the next one needs a `SystemParam`.
     identity: Option<Res<crate::resources::AuthIdentity>>,
@@ -261,6 +261,8 @@ pub fn render_place_pins(
     // list reads `pending_label`, and a jump that arrives without one shows up
     // there as a bare coordinate pair rather than as the place you saved.
     let mut jump: Option<(Teleport, String)> = None;
+    let mut card: Option<crate::systems::place_card::CardPlace> = None;
+    let mut person_card: Option<String> = None;
     let mut drawn = 0usize;
     for b in &store.data.bookmarks {
         let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain)
@@ -327,7 +329,22 @@ pub fn render_place_pins(
         // `world_points` numbers each label "<n>  <name>", matching the card.
         let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
         if point_pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, number, name) {
-            jump = Some((Teleport::point(point), label.clone()));
+            // Bridge ①: the place's card, saying it is the chat's, with the
+            // way back into the chat (`bridges`).
+            if let Some(key) = chat.world.clone() {
+                let chat_name = chat.channels.iter().find(|c| c.key == key).map_or_else(
+                    || key.clone(),
+                    |c| crate::systems::chats::display_name(&key, &c.label),
+                );
+                card = Some(marker_card(
+                    point.name.clone().unwrap_or_else(|| name.to_string()),
+                    point.latitude,
+                    point.longitude,
+                    format!("{chat_name} · place"),
+                    crate::systems::bridges::OpenIn::Chat(key),
+                    None,
+                ));
+            }
         }
     }
     // A community's public posts, where they were written, in the colour
@@ -368,15 +385,23 @@ pub fn render_place_pins(
             lavender,
             label,
         ) {
-            // Fly to where it was written, from where it was seen, and have
-            // the post itself waiting on its community's page in Chats.
-            jump = Some((Teleport::point(point), label.clone()));
-            tapped_post = Some((*community, *post));
+            // Bridge ①: the post's card over the map, saying whose it is,
+            // with Open in Community to read it there (`bridges`).
+            tapped_post = Some((*community, *post, point.clone(), label.clone()));
         }
     }
-    if let Some((community, post)) = tapped_post {
-        communities.posts.focus(community, post);
-        communities.screen = Some(crate::systems::communities::Screen::Community(community));
+    if let Some((community, post, point, label)) = tapped_post {
+        let from = communities
+            .get(community)
+            .map_or_else(|| "Community".to_string(), |c| c.settings.name.clone());
+        card = Some(marker_card(
+            label,
+            point.latitude,
+            point.longitude,
+            format!("{from} · post"),
+            crate::systems::bridges::OpenIn::Post { community, post },
+            None,
+        ));
     }
     // People's real locations, shared with a private chat: a person's marker,
     // not a place's teardrop, in the blue that means nothing else
@@ -403,7 +428,16 @@ pub fn render_place_pins(
         drawn += 1;
         anchored.at(tip);
         if chat_people::marker(&ctx, map_rect, tip, &l.from, chat_people::MarkerKind::Phone) {
-            jump = Some((Teleport::geo(l.latitude, l.longitude, None), l.from.clone()));
+            // Bridge ①: "sanne · sharing location", Open chat, and a route
+            // that follows them.
+            card = Some(marker_card(
+                l.from.clone(),
+                l.latitude,
+                l.longitude,
+                format!("{} · sharing location", l.from),
+                crate::systems::bridges::OpenIn::Chat(l.channel.clone()),
+                Some((l.channel.clone(), l.from.clone())),
+            ));
         }
     }
     // The people in the chat whose World view is open, at their avatars, with
@@ -451,7 +485,10 @@ pub fn render_place_pins(
                 &w.username,
                 chat_people::MarkerKind::Avatar,
             ) {
-                jump = Some((Teleport::geo(lat, lng, None), w.username.clone()));
+                // Bridge ①, for a person: their card (`contacts`), whose
+                // Message is the way into the chat. Opened after the loop,
+                // which is reading the list the card's lookup writes beside.
+                person_card = Some(w.username.clone());
             }
             if let Some((text, alpha)) = chat_people::latest_said(&chat, &key, &w.username) {
                 let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
@@ -507,6 +544,31 @@ pub fn render_place_pins(
     if let Some((tp, label)) = jump {
         nav.pending_teleport = Some(tp);
         nav.pending_label = Some(label);
+    }
+    if card.is_some() {
+        nav.pending_card = card;
+    }
+    if let Some(name) = person_card {
+        contacts.open_card_for_name(&name, None);
+    }
+}
+
+/// A Community marker's place card (bridge ①, `bridges`).
+fn marker_card(
+    name: String,
+    lat: f64,
+    lng: f64,
+    line: String,
+    open: crate::systems::bridges::OpenIn,
+    person: Option<(String, String)>,
+) -> crate::systems::place_card::CardPlace {
+    crate::systems::place_card::CardPlace {
+        name,
+        kind: None,
+        context: String::new(),
+        lat,
+        lng,
+        from: Some(crate::systems::bridges::Origin { line, open, person }),
     }
 }
 

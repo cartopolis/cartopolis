@@ -1116,8 +1116,15 @@ fn post_card(
             match &p.place {
                 Some(place) => {
                     let label = place.name.clone().unwrap_or_else(|| "On the map".into());
-                    if theme::chip(ui, &format!("{}  {label}", icons::PIN), false)
-                        .on_hover_text("Open where it was written")
+                    ui.label(
+                        egui::RichText::new(format!("{}  {label}", icons::PIN))
+                            .size(theme::SIZE_SUB)
+                            .color(theme::p().text_dim),
+                    );
+                    // Show in world (`bridges`): the map, at where it was
+                    // written, and a way back to this post.
+                    if theme::chip(ui, &format!("{}  Show in world", icons::CAM_EARTH), false)
+                        .on_hover_text("Open where it was written, on the map")
                         .clicked()
                     {
                         out.go_to = Some(point_of(place, &p.text));
@@ -1978,36 +1985,6 @@ pub fn render_filter_chip(
     if open {
         cs.show(id);
         *right_panel = crate::resources::RightPanel::Chat;
-    }
-}
-
-/// The long-press ring's Post here (`ui::render_context_menu`): the composer,
-/// with that spot as the post's place, in the community on the map; else the
-/// community picker first.
-pub fn post_here(
-    mut menu: ResMut<crate::resources::ContextMenuState>,
-    mut cs: ResMut<Communities>,
-    mut right_panel: ResMut<crate::resources::RightPanel>,
-) {
-    let Some((lat, lng)) = menu.post_here.take() else {
-        return;
-    };
-    cs.posts.from_view = Some(PostPlace {
-        latitude: lat,
-        longitude: lng,
-        name: None,
-        view: None,
-    });
-    match cs.posts.community_to_post_in(&cs.list) {
-        Some(id) => {
-            cs.posts.compose(id);
-            cs.posts.over_map = true;
-            *right_panel = crate::resources::RightPanel::None;
-        }
-        None => {
-            cs.screen = Some(crate::systems::communities::Screen::PostTo);
-            *right_panel = crate::resources::RightPanel::Chat;
-        }
     }
 }
 

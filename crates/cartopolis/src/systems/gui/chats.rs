@@ -178,6 +178,9 @@ pub struct ChatsView {
     /// account that may run nothing, which then has no Admin row at all.
     /// Written by `admin::render_admin_panel`.
     pub admin: Option<usize>,
+    /// Show in world was pressed on this place (`bridges::drive_bridges`
+    /// takes it, with the screen it was pressed on).
+    pub show_in_world: Option<cartopolis_core::point::Point>,
     /// A meeting or a poll being written for a chat (`+ → Plan a meeting`,
     /// `+ → Ask a poll`), in that chat's composer: (chat key, the form).
     pub meeting_form: Option<(String, MeetingForm)>,
@@ -3111,7 +3114,7 @@ fn meetup_card(
                     }
                 } else if theme::primary_button_sized(
                     ui,
-                    &format!("{}  Open in world", icons::CAM_EARTH),
+                    &format!("{}  Show in world", icons::CAM_EARTH),
                     half,
                 )
                 .clicked()
@@ -3804,10 +3807,10 @@ fn point_card(
     if let Some(g) = sub_g {
         p.galley(egui::pos2(rect.left() + 12.0, y), g, theme::p().text_dim);
     }
-    // The first mockup's "Open in world" (`.card .go`) in brand orange, and
+    // The first mockup's "Show in world" (it was "Open in world") (`.card .go`) in brand orange, and
     // beside it Route, in chat-world v4's button row (`.btnrow`): a point is a
     // place to look at *and* a place to go. The whole card still answers a tap
-    // with Open in world; only the Route button routes.
+    // with Show in world (`bridges`); only the Route button routes.
     let row = egui::Rect::from_min_max(
         egui::pos2(rect.left() + 12.0, rect.bottom() - 12.0 - GO_H),
         egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0),
@@ -3834,7 +3837,7 @@ fn point_card(
         go,
         &[
             (icons::CAM_EARTH.to_string(), 15.0, egui::Color32::WHITE),
-            ("Open in world".to_string(), 13.5, egui::Color32::WHITE),
+            ("Show in world".to_string(), 13.5, egui::Color32::WHITE),
         ],
         6.0,
     );
@@ -3869,7 +3872,7 @@ fn point_card(
         .on_hover_text(if on_route {
             "Plan a route there"
         } else {
-            "Look from where it was sent"
+            "Show it in the world, from where it was sent"
         });
     resp.clicked().then(|| {
         if resp
@@ -3929,7 +3932,9 @@ fn composer(
                     ))
                     .color(theme::REAL_LOCATION),
                 );
-                if theme::action_button(ui, "Show").clicked() {
+                if theme::action_button(ui, format!("{}  Show in world", icons::CAM_EARTH))
+                    .clicked()
+                {
                     act.show_location = Some((l.latitude, l.longitude, l.from.clone()));
                 }
                 if theme::action_button(ui, format!("{}  Route", icons::ROUTE))
@@ -4568,13 +4573,9 @@ fn apply(
         );
     }
     if let Some(point) = act.go_to {
-        // A point opens where the sender stood, on the chat's World view.
-        nav.pending_label = point.name.clone();
-        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::point(&point));
-        if let Some(key) = view.open.clone() {
-            chat.world = Some(key);
-        }
-        *right_panel = RightPanel::None;
+        // Show in world (`bridges`): the map flies there, with the place's
+        // card and a way back to this screen.
+        view.show_in_world = Some(point);
     }
     if let Some(name) = act.start_private.or(act.message) {
         chat.private_start.push(name);
@@ -4602,9 +4603,14 @@ fn apply(
         chat.stop_sharing(&key);
     }
     if let Some((lat, lng, who)) = act.show_location {
-        nav.pending_label = Some(who);
-        nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(lat, lng, None));
-        *right_panel = RightPanel::None;
+        view.show_in_world = Some(cartopolis_core::point::Point {
+            latitude: lat,
+            longitude: lng,
+            name: Some(who),
+            text: None,
+            view: None,
+            meetup: None,
+        });
     }
     // Route: the planner opens on the destination (`geo_nav::RouteRequest`),
     // which replaces this panel in the right-hand slot.

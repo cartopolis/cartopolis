@@ -160,6 +160,7 @@ pub struct People<'w> {
     identity: Res<'w, crate::resources::AuthIdentity>,
     contacts: Res<'w, crate::systems::contacts::Contacts>,
     welcome: ResMut<'w, crate::systems::welcome::Welcome>,
+    bridges: ResMut<'w, crate::systems::bridges::Bridges>,
 }
 
 /// What owns the screen instead of the map's chrome, bundled for the same
@@ -281,6 +282,23 @@ pub fn render_dock(
                 ),
             )
             .show(&ctx, |ui| {
+                // After Show in world, the way back stands where the search
+                // field was, with your face still at its end (bridge ②, N7).
+                if let Some(back) = people.bridges.back.as_ref().map(|b| b.label.clone()) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let chip_w = if with_face { width - FACE - 8.0 } else { width };
+                        if crate::systems::bridges::back_chip(ui, chip_w, SEARCH_H, &back) {
+                            people.bridges.back_pressed = true;
+                        }
+                        if with_face {
+                            let resp = face_button(ui, SEARCH_H, me.as_deref(), waiting, menu.open);
+                            face_clicked = resp.clicked();
+                            menu.face = Some(resp.rect);
+                        }
+                    });
+                    return;
+                }
                 let out = search_bar(
                     ui,
                     width,

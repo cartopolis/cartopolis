@@ -280,3 +280,34 @@ look = [-15.0, 0.0]
 time = 12.0
 mode = "avatar"
 ui = []
+
+# The bridges between World and Community (`systems::bridges`): a person's
+# and a post's marker card, Show in world's ‹ Back chip over the place's
+# card, and the Share sheet.
+[[shot]]
+name = "markerperson"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["markerperson"]
+
+[[shot]]
+name = "markerpost"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["markerpost"]
+
+[[shot]]
+name = "showworld"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["showworld"]
+
+[[shot]]
+name = "share"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["share"]

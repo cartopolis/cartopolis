@@ -98,6 +98,7 @@ pub fn render_building_card(
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
     identity: Res<crate::resources::AuthIdentity>,
     mut last_shown: Local<Option<std::sync::Arc<str>>>,
+    mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     // The dock's suppression rules, and the place card's — each of these owns the
     // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
@@ -107,7 +108,9 @@ pub fn render_building_card(
         || menu.open
         || keyboard.is_open()
         || (egui.compact() && !right_panel.is(RightPanel::None))
-        || right_panel.is(RightPanel::Route);
+        || right_panel.is(RightPanel::Route)
+        // The Share sheet stands where the card does, and is about it.
+        || bridges.share.is_some();
     // The card rises from the dock and sinks back (`motion::linger`): the
     // building it was showing is still drawn, untouchable, for the last
     // `motion::LEAVE` after the selection is cleared.
@@ -152,6 +155,7 @@ pub fn render_building_card(
     let mut close = false;
     let mut open: Option<String> = None;
     let mut look: Option<bool> = None;
+    let mut share = false;
     // A building has an inside when the game can build one: an entrance to come
     // in by (the generated layout needs it), or a design its owner drew.
     let has_inside = !fact.doors.is_empty() || crate::systems::building_designs::get(&id).is_some();
@@ -205,7 +209,21 @@ pub fn render_building_card(
                 // The two ways into the building: look inside it here, or open its
                 // floor plan in the editor — where its owner changes it, and
                 // anybody else sees what they drew.
-                ui.horizontal(|ui| {
+                // Wrapped: Share, Look inside and Floor plan are wider than a
+                // phone's card in one line.
+                ui.horizontal_wrapped(|ui| {
+                    // Share (bridge ③, `bridges`): the building's place to a
+                    // chat or a community, with the brand's dot that says it
+                    // leaves the map (N2).
+                    let resp = ui.add(egui::Button::new(format!("{}  Share", icons::SHARE)));
+                    ui.painter().circle_filled(
+                        resp.rect.right_top() + egui::vec2(-3.0, 3.0),
+                        3.5,
+                        theme::BRAND,
+                    );
+                    share = resp
+                        .on_hover_text("Send this building to a chat or community")
+                        .clicked();
                     if has_inside {
                         let text = if looking {
                             "Stop looking inside"
@@ -284,6 +302,23 @@ pub fn render_building_card(
 
     if let Some(url) = open {
         open_url(&url);
+    }
+    if share && !fact.footprint.is_empty() {
+        let n = fact.footprint.len() as f64;
+        let (lat, lng) = fact
+            .footprint
+            .iter()
+            .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+        let name = addresses
+            .iter()
+            .find_map(AddressFact::label)
+            .unwrap_or_else(|| "this building".to_string());
+        bridges.share = Some(crate::systems::bridges::SharePlace {
+            name,
+            lat: lat / n,
+            lng: lng / n,
+            view: None,
+        });
     }
     match look {
         Some(true) => cutaway.look_inside(id.clone()),

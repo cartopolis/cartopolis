@@ -680,6 +680,13 @@ impl Calendar {
             .find(|i| i.pick() == *pick)
     }
 
+    /// A picked row's title, for the ‹ Back chip of its Show in world
+    /// (`bridges`).
+    #[must_use]
+    pub fn title_of(&self, pick: &Pick) -> Option<String> {
+        self.find(pick).map(|i| i.title().to_string())
+    }
+
     /// Open the calendar on today's list.
     pub fn show(&mut self, now_ms: u64) {
         self.open = true;
@@ -1760,7 +1767,7 @@ fn meetup_detail(
         if theme::secondary_button(ui, icons::CHAT, "Open chat", w).clicked() {
             out.open_chat = Some(item.channel.clone());
         }
-        if theme::secondary_button(ui, icons::PIN, "Show in World", w).clicked() {
+        if theme::secondary_button(ui, icons::PIN, "Show in world", w).clicked() {
             out.go_to = Some(point.clone());
         }
     });

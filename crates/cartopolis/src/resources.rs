@@ -1198,9 +1198,10 @@ pub struct ContextMenuState {
     /// clicked, and re-deriving it later would place the pin somewhere else.
     /// `None` when the map has no anchor yet (nothing streamed).
     pub lat_lng: Option<(f64, f64)>,
-    /// The ring's Post here was chosen at this spot: taken by
-    /// `community_posts::post_here`, which opens the composer there.
-    pub post_here: Option<(f64, f64)>,
+    /// The ring's Share was chosen at this spot, with its name: taken by
+    /// `bridges::drive_bridges`, which opens the Share sheet. (The ring's Post
+    /// here, which opened a community's composer, is a row of that sheet now.)
+    pub share_at: Option<(f64, f64, String)>,
     /// The ring's Plans here was chosen at this spot: taken by
     /// `plans::drive_plans`, which opens the list of notices around it.
     pub plans_here: Option<(f64, f64)>,

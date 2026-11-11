@@ -39,6 +39,7 @@ impl Plugin for GuiPlugin {
             // The dock's mark disc and the card it opens (`systems::ui`).
             .init_resource::<systems::ui::MainMenu>()
             .init_resource::<systems::dock::MapChrome>()
+            .init_resource::<systems::bridges::Bridges>()
             // The place card a picked search result opens (`systems::place_card`).
             .init_resource::<systems::place_card::PlaceCard>()
             .init_resource::<systems::welcome::Welcome>()
@@ -156,13 +157,17 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Present),
                 systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
                 systems::camera_screen::play_clip_sound.in_set(ClientPhase::Present),
-                // The ring's Post here, and the chip that says only one
-                // community's posts are on the map (`community_posts`): its own
-                // `Area` under the switch, drawn after the switch it sits under.
-                systems::community_posts::post_here.in_set(ClientPhase::Present),
+                // The Share sheet (`bridges`): its own `Foreground` area over the
+                // map, so not in the panel chain; after the switch it stands on.
+                // Its community rows open the floating composer below.
+                systems::bridges::render_share_sheet
+                    .after(systems::dock::render_dock)
+                    .in_set(ClientPhase::Present),
+                // The chip that says only one community's posts are on the map
+                // (`community_posts`): its own `Area` under the search bar.
                 // A text field: drawn before the on-screen keyboard reads it.
                 systems::community_posts::render_floating_composer
-                    .after(systems::community_posts::post_here)
+                    .after(systems::bridges::render_share_sheet)
                     .before(systems::onscreen_keyboard::render_onscreen_keyboard)
                     .in_set(ClientPhase::Present),
                 systems::community_posts::render_filter_chip
@@ -241,6 +246,13 @@ impl Plugin for GuiPlugin {
                 // panel, and doing it before the chain runs means the panel never
                 // draws a frame over the card it just opened.
                 systems::place_card::render_place_card.before(systems::ui::render_main_menu),
+                // The bridges between World and Community (`systems::bridges`):
+                // after the place card, whose Open chat / Open in Community it
+                // carries out in the same frame, and before every panel, which
+                // then draws the screen it switched to.
+                systems::bridges::drive_bridges
+                    .after(systems::place_card::render_place_card)
+                    .before(systems::ui::render_main_menu),
                 // The first-launch card (`systems::welcome`): floating above the
                 // dock on the place card's terms. After it, since it stands
                 // aside for an open card.

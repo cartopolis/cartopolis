@@ -47,6 +47,9 @@ pub struct CardPlace {
     pub context: String,
     pub lat: f64,
     pub lng: f64,
+    /// A Community marker opened it (bridge ①, `bridges`): where it comes
+    /// from, said on top, and Open chat / Open in Community as its main verb.
+    pub from: Option<crate::systems::bridges::Origin>,
 }
 
 /// The card's state: the place being shown, if any.
@@ -90,6 +93,7 @@ pub fn render_place_card(
     camera: AnchoredCamera,
     camera_state: Res<CameraState>,
     mut saved_at: Local<Option<Instant>>,
+    mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     // A pick made in the Search panel: take it, close the panel that made it.
     // The panel closing here rather than in `search_ui` is what keeps the rule
@@ -117,7 +121,9 @@ pub fn render_place_card(
         || keyboard.is_open()
         || menu.open
         || (egui.compact() && !right_panel.is(RightPanel::None))
-        || right_panel.is(RightPanel::Route);
+        || right_panel.is(RightPanel::Route)
+        // The Share sheet stands where the card does, and is about it.
+        || bridges.share.is_some();
     // The card rises from the dock and sinks back (`motion::linger`): the place
     // it was showing is still drawn, untouchable, for the last `motion::LEAVE`
     // after `card.place` is cleared.
@@ -160,6 +166,19 @@ pub fn render_place_card(
                     SheetMove::Stay => {}
                     SheetMove::To(rest) => card.rest = rest,
                     SheetMove::Close => close = true,
+                }
+                // Where a Community marker's place comes from, on top: the card
+                // says which space it belongs to before what it is (N3).
+                if let Some(from) = &place.from {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&from.line)
+                                .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
+                                .color(theme::p().accent_text),
+                        )
+                        .truncate()
+                        .selectable(false),
+                    );
                 }
                 // Header: the name leads, the close button takes the corner. The
                 // close button first — a truncating label asks for every point
@@ -226,30 +245,54 @@ pub fn render_place_card(
                 // Beam — with From first, though getting *to* a place is what a
                 // search for it is nearly always for (`docs/mockups/ux-review`).
                 let saved = saved_at.is_some_and(|at| at.elapsed().as_secs_f32() < 1.5);
-                ui.horizontal(|ui| {
-                    let side = theme::PRIMARY_BUTTON_HEIGHT;
-                    let gap = ui.spacing().item_spacing.x;
-                    let main = ui.available_width() - 2.0 * (side + gap);
+                // A Community marker: the way into Community is the main verb,
+                // and the way there the other (N3). No Save, no Share: it is
+                // somebody else's thing, not a place of the map's.
+                if let Some(from) = &place.from {
+                    let w = ui.available_width();
                     if theme::primary_button_sized(
                         ui,
-                        &format!("{}  Route here", icons::FINISH),
-                        main,
+                        &format!("{}  {}", from.open.icon(), from.open.verb()),
+                        w,
                     )
                     .clicked()
                     {
-                        nav.route_to(&place.name, place.lat, place.lng);
+                        bridges.open = Some(from.open.clone());
                     }
+                    ui.add_space(2.0);
+                    if theme::secondary_button(ui, icons::ROUTE, "Route here", w).clicked() {
+                        match &from.person {
+                            Some((key, who)) => nav.route_to_person(key, who, place.lat, place.lng),
+                            None => nav.route_to(&place.name, place.lat, place.lng),
+                        }
+                    }
+                    return;
+                }
+                // Route here across the card, and the place's own verbs as a row
+                // of named buttons under it (N2): with Share beside Save and ⋯,
+                // four in one row left "Route here" too narrow for its words on
+                // a phone, and the card grew past the screen.
+                let w = ui.available_width();
+                if theme::primary_button_sized(ui, &format!("{}  Route here", icons::FINISH), w)
+                    .clicked()
+                {
+                    nav.route_to(&place.name, place.lat, place.lng);
+                }
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let cell = theme::equal_width(ui, 3);
                     let save_icon = if saved {
                         icons::CHECK
                     } else {
                         icons::BOOKMARK_ADD
                     };
-                    let save = ui.add_sized(egui::vec2(side, side), egui::Button::new(save_icon));
-                    if theme::named(ui, save, "Save")
-                        .on_hover_text("Save this place")
-                        .clicked()
-                        && !saved
-                    {
+                    let save = theme::secondary_button(
+                        ui,
+                        save_icon,
+                        if saved { "Saved" } else { "Save" },
+                        cell,
+                    );
+                    if save.on_hover_text("Save this place").clicked() && !saved {
                         // The name the user just read, not a reverse lookup —
                         // the row's name is the better one. Altitude and pose
                         // come from the camera, as every saved place's do: a
@@ -263,8 +306,27 @@ pub fn render_place_card(
                         );
                         *saved_at = Some(Instant::now());
                     }
-                    let more = ui.add_sized(egui::vec2(side, side), egui::Button::new(icons::MORE));
-                    let more = theme::named(ui, more, "More");
+                    // Share (bridge ③): the one way a place goes to people,
+                    // with the brand's dot that says it leaves the map for
+                    // Community (N2).
+                    let share = theme::secondary_button(ui, icons::SHARE, "Share", cell);
+                    ui.painter().circle_filled(
+                        share.rect.right_top() + egui::vec2(-5.0, 5.0),
+                        4.0,
+                        theme::BRAND,
+                    );
+                    if share
+                        .on_hover_text("Send this place to a chat or community")
+                        .clicked()
+                    {
+                        bridges.share = Some(crate::systems::bridges::SharePlace {
+                            name: place.name.clone(),
+                            lat: place.lat,
+                            lng: place.lng,
+                            view: None,
+                        });
+                    }
+                    let more = theme::secondary_button(ui, icons::MORE, "More", cell);
                     egui::Popup::menu(&more).show(|ui| {
                         if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
                             nav.route_from(&place.name, place.lat, place.lng);

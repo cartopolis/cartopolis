@@ -76,7 +76,15 @@ pub struct Dismissable<'w> {
     pub place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
     pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     pub building: ResMut<'w, crate::systems::building_select::BuildingSelection>,
+    pub spaces: Spaces<'w>,
+}
+
+/// The two spaces' own rungs (`welcome`, `bridges`), nested to keep the
+/// ladder's parameter under Bevy's cap.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Spaces<'w> {
     pub welcome: ResMut<'w, crate::systems::welcome::Welcome>,
+    pub bridges: ResMut<'w, crate::systems::bridges::Bridges>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -131,6 +139,8 @@ pub enum Rung {
     SignIn,
     /// The main menu card.
     MainMenu,
+    /// The Share sheet (`bridges`): a sheet over the map, like the menu's.
+    ShareSheet,
     /// Driver mode. Below the menu because the menu draws over it, and a gesture
     /// should not step past something visibly on top.
     DriverMode,
@@ -148,6 +158,9 @@ pub enum Rung {
     PlaceCard,
     /// The building card a tap on a building opens.
     BuildingCard,
+    /// The ‹ Back chip of a Show in world (`bridges`): with nothing else up,
+    /// Back goes back to the Community screen it came from, as the chip does.
+    BackToCommunity,
     /// Community, signed out: the card that says what signing in is for
     /// (`welcome::Welcome::community`). Last, because it *is* a space, as the
     /// Community panel is: a press goes back to the map from it, and only
@@ -175,12 +188,14 @@ pub struct OpenSurfaces {
     /// close button, and Escape must not be a way around that.
     pub sign_in: bool,
     pub main_menu: bool,
+    pub share_sheet: bool,
     pub driver_mode: bool,
     pub right_panel: bool,
     pub panel_page: bool,
     pub person_card: bool,
     pub place_card: bool,
     pub building_card: bool,
+    pub back_to_community: bool,
     pub signed_out_community: bool,
 }
 
@@ -212,6 +227,8 @@ impl OpenSurfaces {
             Some(Rung::SignIn)
         } else if self.main_menu {
             Some(Rung::MainMenu)
+        } else if self.share_sheet {
+            Some(Rung::ShareSheet)
         } else if self.driver_mode {
             Some(Rung::DriverMode)
         } else if self.panel_page {
@@ -224,6 +241,8 @@ impl OpenSurfaces {
             Some(Rung::PlaceCard)
         } else if self.building_card {
             Some(Rung::BuildingCard)
+        } else if self.back_to_community {
+            Some(Rung::BackToCommunity)
         } else if self.signed_out_community {
             Some(Rung::SignedOutCommunity)
         } else {
@@ -250,13 +269,15 @@ impl Dismissable<'_> {
             chat_composer: self.composer.composing,
             sign_in: self.login.open && !self.login.is_busy(),
             main_menu: self.menu.open,
+            share_sheet: self.spaces.bridges.share.is_some(),
             driver_mode: self.driver.active,
             right_panel: *self.panel != RightPanel::None,
             panel_page: crate::systems::theme::page_back_shown(ctx),
             person_card: self.contacts.card.is_some(),
             place_card: self.place_card.place.is_some(),
             building_card: self.building.selected.is_some(),
-            signed_out_community: self.welcome.community,
+            back_to_community: self.spaces.bridges.back.is_some(),
+            signed_out_community: self.spaces.welcome.community,
         }
     }
 
@@ -280,6 +301,7 @@ impl Dismissable<'_> {
             Rung::ChatComposer => self.composer.close(),
             Rung::SignIn => self.login.open = false,
             Rung::MainMenu => self.menu.open = false,
+            Rung::ShareSheet => self.spaces.bridges.share = None,
             Rung::DriverMode => self.driver.exit(),
             Rung::PanelPage => crate::systems::theme::press_page_back(ctx),
             Rung::RightPanel => *self.panel = RightPanel::None,
@@ -289,7 +311,8 @@ impl Dismissable<'_> {
             }
             Rung::PlaceCard => self.place_card.place = None,
             Rung::BuildingCard => self.building.clear(),
-            Rung::SignedOutCommunity => self.welcome.community = false,
+            Rung::BackToCommunity => self.spaces.bridges.back_pressed = true,
+            Rung::SignedOutCommunity => self.spaces.welcome.community = false,
         }
         Some(rung)
     }
@@ -324,12 +347,14 @@ mod tests {
             chat_composer: true,
             sign_in: true,
             main_menu: true,
+            share_sheet: true,
             driver_mode: true,
             right_panel: true,
             panel_page: true,
             person_card: true,
             place_card: true,
             building_card: true,
+            back_to_community: true,
             signed_out_community: true,
         }
     }
@@ -348,12 +373,14 @@ mod tests {
             Rung::ChatComposer => s.chat_composer = false,
             Rung::SignIn => s.sign_in = false,
             Rung::MainMenu => s.main_menu = false,
+            Rung::ShareSheet => s.share_sheet = false,
             Rung::DriverMode => s.driver_mode = false,
             Rung::PanelPage => s.panel_page = false,
             Rung::RightPanel => s.right_panel = false,
             Rung::PersonCard => s.person_card = false,
             Rung::PlaceCard => s.place_card = false,
             Rung::BuildingCard => s.building_card = false,
+            Rung::BackToCommunity => s.back_to_community = false,
             Rung::SignedOutCommunity => s.signed_out_community = false,
         }
     }
@@ -387,12 +414,14 @@ mod tests {
                 Rung::ChatComposer,
                 Rung::SignIn,
                 Rung::MainMenu,
+                Rung::ShareSheet,
                 Rung::DriverMode,
                 Rung::PanelPage,
                 Rung::RightPanel,
                 Rung::PersonCard,
                 Rung::PlaceCard,
                 Rung::BuildingCard,
+                Rung::BackToCommunity,
                 Rung::SignedOutCommunity,
             ]
         );

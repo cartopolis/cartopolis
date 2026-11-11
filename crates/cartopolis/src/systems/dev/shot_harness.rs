@@ -2433,6 +2433,8 @@ pub struct ScriptedCards<'w, 's> {
     place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
     /// The app's update pill and too-old card (`--ui updateready` …).
     app_update: ResMut<'w, crate::systems::app_update::AppUpdate>,
+    /// The bridges between World and Community (`--ui share`, `showworld`).
+    bridges: ResMut<'w, crate::systems::bridges::Bridges>,
 }
 
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
@@ -2542,6 +2544,12 @@ const UI_ELEMENTS: &[&str] = &[
     // Community chosen signed out: the same card, with the switch on
     // Community (`welcome::Welcome::community`).
     "communityout",
+    // The bridges (`systems::bridges`): a person's and a post's marker card,
+    // Show in world's ‹ Back chip with the place's card, and the Share sheet.
+    "markerperson",
+    "markerpost",
+    "showworld",
+    "share",
     // The app's own updates (`systems::app_update`, `docs/mockups/app-updates`):
     // the pill, the too-old card, and that card downloading — as on a phone.
     "updateready",
@@ -2714,7 +2722,7 @@ pub fn open_scripted_ui(
             None
         };
     }
-    if !want("place") {
+    if !(want("place") || want("markerperson") || want("markerpost") || want("showworld")) {
         cards.place_card.place = None;
     }
     // `--ui ring` opens the map's ring of actions on the middle of the view, as a
@@ -2879,6 +2887,7 @@ pub fn open_scripted_ui(
         || want("adminreport")
         || want("adminaccount")
         || CALENDAR_PAGES.iter().any(|p| want(p))
+        || want("share")
     {
         Some("list")
     } else {
@@ -2926,6 +2935,69 @@ pub fn open_scripted_ui(
             } else {
                 cards.chat.contacts.whereabouts.clear();
             }
+        }
+    }
+    // The bridges (`systems::bridges`), seeded as a tap would leave them: a
+    // scripted run has nobody sharing and no post on the map to tap. The
+    // Share sheet goes over the demo chats, with their panel shut.
+    {
+        use crate::systems::bridges::{Back, OpenIn, Origin, Return, SharePlace};
+        let card =
+            |name: &str, line: &str, open: OpenIn, person| crate::systems::place_card::CardPlace {
+                name: name.into(),
+                kind: None,
+                context: String::new(),
+                lat: 53.2165,
+                lng: 6.5640,
+                from: Some(Origin {
+                    line: line.into(),
+                    open,
+                    person,
+                }),
+            };
+        if want("markerperson") {
+            nav.pending_card = Some(card(
+                "sanne",
+                "sanne · sharing location",
+                OpenIn::Chat("private:sanne".into()),
+                Some(("private:sanne".into(), "sanne".into())),
+            ));
+        } else if want("markerpost") {
+            nav.pending_card = Some(card(
+                "Bring a drill, we fix bikes",
+                "Garage 44 · post",
+                OpenIn::Post {
+                    community: uuid::Uuid::nil(),
+                    post: uuid::Uuid::nil(),
+                },
+                None,
+            ));
+        }
+        cards.bridges.back = want("showworld").then(|| Back {
+            label: "Vismarkt dinner".into(),
+            to: Return::default(),
+            lat: 53.2165,
+            lng: 6.5640,
+            arrived: false,
+        });
+        if want("showworld") {
+            nav.pending_card = Some(crate::systems::place_card::CardPlace {
+                name: "Vismarkt".into(),
+                kind: Some("square".into()),
+                context: "Groningen".into(),
+                lat: 53.2165,
+                lng: 6.5640,
+                from: None,
+            });
+        }
+        cards.bridges.share = want("share").then(|| SharePlace {
+            name: "Martinitoren".into(),
+            lat: 53.2194,
+            lng: 6.5681,
+            view: None,
+        });
+        if want("share") {
+            *right_panel = crate::resources::RightPanel::None;
         }
     }
     // The calendar's pages over the demo chats, its "Coming up" card on every
@@ -3078,6 +3150,7 @@ pub fn open_scripted_ui(
             context: "Martinikerkhof, Groningen".into(),
             lat: 53.2194,
             lng: 6.5681,
+            from: None,
         });
     }
     // `--ui chat` is the only way to photograph `systems::chat_overlay` at all:
