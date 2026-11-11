@@ -57,7 +57,9 @@ controls always had (`overlay`, `text`, `overlay_line`, `cream`; pinned by
 deep accent teal `#17696A` and a faint teal rim: the person's "the light
 buttons have no teal theme at all" was black glyphs on white discs, with teal
 left only on the one plate that was on
-(`the_map_buttons_wear_the_teal_in_both_themes`).
+(`the_map_buttons_wear_the_teal_in_both_themes`). The compass on the white
+disc has its north half in that teal ink with a white "N" on it (2026-11-11:
+the accent's teal "N" sat on a teal needle and vanished); dark is unchanged.
 Surfaces that are dark in both themes — the splash (it is `index.html`'s
 loader), the call and camera screens, the script editor's code box, anything
 on a `LABEL_CHIP` — draw inside `theme::dark_here` with

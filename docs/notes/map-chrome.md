@@ -124,15 +124,32 @@ other way round.)
 900 px at 1.5 — and the web phone 214 pt wide): the switch and the bar take the
 viewport less the margins, so both fit by construction
 (`dock::the_switch_and_the_bar_fit_a_phone`); the right column ends at 268 pt
-with Locate and Camera, and the right edge's touch stack grows up from the
-switch to 276 pt in Follow
-(`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`). To get
-there **the hand button moved beside the face disc** instead of above it (a
-fourth tier reached into the column), and **the locate caption moved to the
-left of its disc** instead of under it. Earth's zoom rail
-stands over the switch on a phone (top at 300 pt) and **hangs under the column
-on a desktop** (`MapChrome::right_bottom`, last frame's); centred on the edge,
-it met the column on a short window. The floor picker hangs there too.
+with Locate and Camera. **Follow's touch controls stop at 334 pt** — 66 pt of
+room — since 2026-11-11, when the face and hand discs moved *beside* the
+jump/flight pair instead of in tiers above it (they stood at 276, 8 pt off the
+column; `map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`
+now asks for a group gap). The locate caption sits to the left of its disc
+rather than under it. Earth's zoom rail stands over the switch on a phone (top
+at 300 pt) and **hangs under the column on a desktop** (`MapChrome::right_bottom`,
+last frame's); centred on the edge, it met the column on a short window. The
+floor picker hangs there too.
+
+**Overlays keep off the columns** (2026-11-11): a friend's marker drew over the
+right column in Earth mode, and a pin raised later wins egui's hit test. The
+dock writes both columns' rects into egui memory each frame
+(`place_pins::set_chrome_holes`), and the pins, the people's markers, place
+names, the Plans dots and the device arrow cull a tip that falls in one, grown
+by how far a pin hangs above its tip (`place_pins::clear_of_chrome`).
+
+**Your face's sheet stands on the switch** on a phone, a card with the screen's
+margins, not a bottom sheet over it (2026-11-11): the bottom sheet hid the switch
+and put Sign out under the fold. Its rows are 44 pt (`theme::list_row_sized`,
+66 dp) and Exit is a row of the app's group, so the fullest sheet — signed in,
+an admin — fits 600 pt with Sign out in sight (`ui::the_sheet_fits_above_the_switch`).
+
+**Community's + is in its title row**, between the name and your face, since
+2026-11-11: as a floating button at the bottom right it sat over the last
+conversations and beside the switch.
 
 Everything else that sat at the top edge moved under the bar
 (`dock::reserved_top`): the location-sharing chip, the update pill, the

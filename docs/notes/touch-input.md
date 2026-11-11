@@ -298,10 +298,12 @@ four states. The scale bar moved to the bottom-left and sits above whatever
 
 **Since 2026-11-10 the right edge has two owners**: the map's column of round
 buttons (Layers, the view mode, Locate, Camera) comes down from under the search
-bar, and these controls grow up from the World | Community switch. On a 600 pt
-phone Follow's stack reaches 276 pt from the top and the column ends at 268, so
-the hand button stands *beside* the face disc instead of above it, and the
-locate disc's caption sits to its left rather than under it
+bar to 268 pt, and these controls grow up from the World | Community switch. In
+Follow the face and hand discs stand beside the jump/flight pair, one column in
+(2026-11-11; in tiers above it they came within 8 pt of the column), so on a
+600 pt phone the stack stops at 334 pt. The gap between that inner column and the
+pair is a group gap, so their miss bands do not meet. The locate disc's caption
+sits to its left rather than under it
 (`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`).
 
 The stick's *magnitude* is kept, which is the whole difference from the gestures
