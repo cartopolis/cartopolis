@@ -409,8 +409,13 @@ pub fn update_street_labels(
         return;
     };
     let alt = globe.altitude_m(cam_cell, cam_tf) as f32;
-    let on =
-        layers.map_enabled && layers.street_labels && !store.is_empty() && alt <= MAX_LABEL_ALT;
+    // `CARTO_NO_STREET_LABELS=1` takes the names out of a scripted run, which has
+    // no Layers panel to untick them in: a bisecting switch for what a turn costs.
+    let on = layers.map_enabled
+        && layers.street_labels
+        && !store.is_empty()
+        && alt <= MAX_LABEL_ALT
+        && !crate::env_flag("CARTO_NO_STREET_LABELS");
     if !on {
         if signs.placed.take().is_some() {
             for (_, _, mut vis, _) in placed_query.iter_mut() {

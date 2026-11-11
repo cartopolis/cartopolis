@@ -1076,11 +1076,16 @@ fn run_client() {
         // keyed on the *bottom* rung says nothing about the middle; the ladder is
         // ordered precisely so that a threshold can be written against it.
         .insert_resource(DirectionalLightShadowMap {
-            size: if quality::budget().tier < quality::Tier::Desktop {
-                1024
-            } else {
-                2048
-            },
+            // `CARTO_SHADOW_MAP=<px>` overrides the side for one launch: the
+            // bisecting switch for whether a cascade's cost is the map's size.
+            size: env_value("CARTO_SHADOW_MAP")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|px| (256..=8192).contains(px))
+                .unwrap_or(if quality::budget().tier < quality::Tier::Desktop {
+                    1024
+                } else {
+                    2048
+                }),
         })
         .init_resource::<AuthIdentity>()
         .init_resource::<resources::RightPanel>();

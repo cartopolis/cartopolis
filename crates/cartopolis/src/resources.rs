@@ -747,7 +747,11 @@ impl AppPrefs {
         let Some(caps) = crate::quality::capabilities() else {
             return false;
         };
-        let possible = !caps.software_renderer && self.shadows_on();
+        // `CARTO_NO_LIGHT_SHAFTS=1` bisects the shafts from the shadows they hang
+        // on, which `CARTO_NO_SHADOWS` cannot (it takes both).
+        let possible = !caps.software_renderer
+            && self.shadows_on()
+            && !crate::env_flag("CARTO_NO_LIGHT_SHAFTS");
         let automatic = possible
             && crate::systems::light_shafts::affordable_at(
                 crate::systems::render_scale::main_pass_pixels(),

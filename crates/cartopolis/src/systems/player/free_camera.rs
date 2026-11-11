@@ -1296,6 +1296,15 @@ pub fn setup_camera(
         if crate::env_value("CARTO_DEPTH_PREPASS").map_or(budget.depth_prepass, |v| v != "0") {
             cam.insert(bevy::core_pipeline::prepass::DepthPrepass);
         }
+        // An experiment switch: bevy's two-phase GPU occlusion culling, which
+        // needs the depth prepass and splits it in two (an early pass of last
+        // frame's visible meshes, a depth pyramid, a late pass of the rest).
+        if crate::env_flag("CARTO_OCCLUSION_CULLING") {
+            cam.insert((
+                bevy::core_pipeline::prepass::DepthPrepass,
+                bevy::render::occlusion_culling::OcclusionCulling,
+            ));
+        }
         // Bloom, the atmosphere, its reflections, the edge filter and the light
         // shafts are **not** inserted here, and the tonemapping and shadow filter
         // above are only first answers (the sample count and `Hdr` are this
