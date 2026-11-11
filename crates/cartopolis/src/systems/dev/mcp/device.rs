@@ -21,7 +21,9 @@ use futures_channel::oneshot;
 use serde_json::{json, Value};
 
 use super::{DeviceRequest, McpBridge, Outcome, Reply};
-use crate::resources::{AppPrefs, CameraMode, CameraState, FrameStats, OsmTileUrlTemplate};
+use crate::resources::{
+    AppPrefs, CameraMode, CameraState, DebugSwitches, FrameStats, OsmTileUrlTemplate,
+};
 use crate::systems::data_layers::DataLayers;
 use crate::systems::geo_nav::{GeoNavState, Teleport};
 use crate::systems::navigation::DetachedSolve;
@@ -34,8 +36,13 @@ use cartopolis_mcp::device::{AppLogArgs, FlyToArgs, RouteArgs};
 /// **A list, not every field of `AppPrefs`.** What is left out is left out on
 /// purpose: the editor-access switch and allow-list (what the agent may read),
 /// holding the connection open in the background (a permanent notification and
-/// the battery), the debug switches (startup only), and the microphone's gain.
-/// Those are the person's to change.
+/// the battery), and the microphone's gain. Those are the person's to change.
+///
+/// The Developer switches (`DebugSwitches`) are reachable too, by their short
+/// names (`no_depth_prepass`, `gpu_timings`), since 2026-11-11: an A/B on the
+/// phone otherwise waited on the person finding Developer tools ▸ Switches,
+/// and they asked for the agent to set them. They are read once at startup,
+/// so the answer says a restart applies them.
 const SETTINGS: &[(&str, &str)] = &[
     ("quality", "the render budget: auto, low, medium or high"),
     (
@@ -695,10 +702,46 @@ fn settings(prefs: &AppPrefs) -> AgentReply {
         lines.push(format!("{name} = {value} — {what}"));
         data.insert((*name).to_string(), value);
     }
+    for (env, label, _) in DebugSwitches::SWITCHES {
+        let on = prefs.debug_switches.get(env).unwrap_or(false);
+        let name = switch_name(env);
+        lines.push(format!(
+            "{name} = {on} — Developer switch \"{label}\": true or false, applied when the app next starts"
+        ));
+        data.insert(name, Value::Bool(on));
+    }
     AgentReply::ok(lines.join("\n"), Value::Object(data))
 }
 
+/// `CARTO_NO_DEPTH_PREPASS` → `no_depth_prepass`: a Developer switch's name here.
+fn switch_name(env: &str) -> String {
+    env.strip_prefix("CARTO_")
+        .unwrap_or(env)
+        .to_ascii_lowercase()
+}
+
 fn set_setting(prefs: &mut AppPrefs, name: &str, value: Value) -> AgentReply {
+    if let Some((env, _, _)) = DebugSwitches::SWITCHES
+        .iter()
+        .find(|(env, _, _)| switch_name(env) == name)
+    {
+        let Value::Bool(on) = value else {
+            return AgentReply::refuse(format!("{name} is true or false, not {value}."));
+        };
+        let was = prefs.debug_switches.get(env).unwrap_or(false);
+        if was != on {
+            if let Some(slot) = prefs.debug_switches.get_mut(env) {
+                *slot = on;
+            }
+        }
+        return AgentReply::ok(
+            format!(
+                "{name} is {on} (it was {was}), and saved. It is read once, at startup: \
+                 it applies when the app is next started."
+            ),
+            json!({"name": name, "value": on, "was": was, "applies": "at the next start"}),
+        );
+    }
     match with_setting(prefs, name, value) {
         Ok(next) => {
             let was = serde_json::to_value(*prefs)
@@ -1001,6 +1044,16 @@ mod tests {
             with_setting(&prefs, "background_connection", json!(true)).is_err(),
             "the person's settings stay theirs"
         );
+    }
+
+    #[test]
+    fn a_developer_switch_is_set_by_its_short_name() {
+        let mut prefs = AppPrefs::default();
+        let reply = set_setting(&mut prefs, "no_depth_prepass", json!(true));
+        assert!(!reply.error, "{}", reply.text);
+        assert!(prefs.debug_switches.no_depth_prepass);
+        assert!(set_setting(&mut prefs, "gpu_timings", json!("yes")).error);
+        assert!(!prefs.debug_switches.gpu_timings);
     }
 
     #[test]

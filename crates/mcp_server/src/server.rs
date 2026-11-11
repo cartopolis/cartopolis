@@ -1488,8 +1488,9 @@ impl Tools {
 
     #[tool(
         description = "The app's settings an agent may read and change — quality, effects, \
-                       shadows, render scale, sound — each with its value and what it can \
-                       be. Privacy and account settings are not among them."
+                       shadows, render scale, sound, and the Developer switches (applied at \
+                       the next start) — each with its value and what it can be. Privacy and \
+                       account settings are not among them."
     )]
     async fn settings(&self) -> Result<CallToolResult, ErrorData> {
         self.device(DeviceRequest::Settings).await
