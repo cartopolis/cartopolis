@@ -225,6 +225,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "the avatar comes back where it was — ServerHelloAck.last_place, where the account's avatar stood when its last session ended, kept by the sim per account, which the client puts the avatar back at on every sign-in and on any device (docs/notes/session-modes.md)",
     },
+    ProtocolRevision {
+        version: 47,
+        adr: "",
+        summary: "an avatar stands on Earth, and a client is sent what is within its reach — AvatarStateDto.geo and alt_m replace the frame-metre position, Teleport places by geo and alt_m, WorldSnapshot carries avatars only and is assembled per connection from the avatars within reach, things arrive as PrimUpsert when they come within reach and leave with PrimOutOfReach (docs/notes/interest-by-reach.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -357,6 +362,7 @@ pub enum MessageKind {
     AvatarLookOf = 122,
     SetFaceFrame = 123,
     FaceFrameOf = 124,
+    PrimOutOfReach = 125,
 }
 
 impl MessageKind {
@@ -478,6 +484,7 @@ impl MessageKind {
             122 => Some(Self::AvatarLookOf),
             123 => Some(Self::SetFaceFrame),
             124 => Some(Self::FaceFrameOf),
+            125 => Some(Self::PrimOutOfReach),
             _ => None,
         }
     }
@@ -945,7 +952,18 @@ impl AvatarLook {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AvatarStateDto {
     pub id: u64,
-    pub position: Vec3,
+    /// Where the avatar stands on Earth (protocol 47). The sim holds every
+    /// avatar's place as a latitude and longitude and integrates its movement
+    /// there, so two clients anchored on different places see one avatar at one
+    /// spot; each client converts it into the frame its own map is anchored in,
+    /// as it does for a prim's `PrimDto::geo`. Until protocol 46 this was metres
+    /// in the avatar's *own* client's frame, which only two clients sharing an
+    /// anchor could agree on (docs/notes/interest-by-reach.md).
+    pub geo: GeoAnchor,
+    /// Height of the feet above the sim's flat ground (`motion::GROUND_Y`), in
+    /// metres: the altitude a jump, a fall or flight changes. The ground's own
+    /// relief is each viewer's business (`terrain_lift`), as it is for prims.
+    pub alt_m: f32,
     pub yaw: f32,
     /// An emote this avatar started recently, so a client that just came into
     /// range still sees a wave in progress rather than missing it. The sim clears
@@ -1200,29 +1218,44 @@ pub enum NetMessage {
         /// into range mid-sit is drawn sitting. The sim clears it the moment the
         /// same intent asks to move.
         seated: Option<[f32; 2]>,
-        /// Where this avatar is on Earth (protocol v20), as its own client
-        /// measures it.
+        /// Where this client believes its avatar stands on Earth (protocol v20).
         ///
-        /// **The sim cannot derive this and it is not a second copy of
-        /// `position`.** An avatar's sim-space position is metres in the frame
-        /// its own client's map is anchored in, and every client anchors
-        /// somewhere else and re-anchors when it teleports — so "is this avatar
-        /// near that prim?" is not a question sim space can answer, while a prim
-        /// has carried an absolute `GeoAnchor` since ADR-029. This is the other
-        /// half of that pair, and `sensor` is what it exists for.
+        /// Since protocol 47 the sim holds the avatar's place itself
+        /// ([`AvatarStateDto::geo`]) and moves it by the intent's velocity, so
+        /// this is read for one thing: **placing an avatar that has no place
+        /// yet.** A connection's avatar is nowhere until its client says where
+        /// it is — the first intent carrying a `geo`, or a `Teleport` — and until
+        /// then it is in nobody's snapshot and in earshot of nobody, which is how
+        /// a web UI that only chats stays out of the world. On a placed avatar
+        /// the field is ignored: the authority is the sim's, and a client wanting
+        /// to be elsewhere teleports.
         ///
         /// `None` from a client that does not know yet (before the map has
-        /// anchored) — a sensor simply does not see such an avatar, which is the
-        /// right answer rather than a guessed position.
+        /// anchored).
         geo: Option<GeoAnchor>,
     },
+    /// The avatars within this connection's reach, once a tick (protocol 47:
+    /// assembled per connection from the sim's spatial index, so what arrives
+    /// is what the receiving avatar could see or hear — not everyone on the
+    /// server). Things do not travel in it: a thing arrives as `PrimUpsert`
+    /// when it comes within reach and leaves as [`Self::PrimOutOfReach`].
+    ///
+    /// The first one a connection receives, at the handshake, is empty and says
+    /// the connection is live; an avatar absent from a later one has left reach
+    /// or the world, and the receiver forgets it.
     WorldSnapshot {
         tick: u64,
-        prims: Vec<PrimDto>,
         avatars: Vec<AvatarStateDto>,
     },
     /// ADR-011 delta v0: remove prim by stable id (server-assigned).
     PrimRemoved { id: i64 },
+    /// A thing left this connection's reach (protocol 47): forget it, as the
+    /// receiver forgets an avatar missing from a snapshot. Not a deletion — the
+    /// thing still exists and arrives again as `PrimUpsert` when it comes back
+    /// within reach — which is why it is not a `PrimRemoved`: a client that
+    /// treated the two alike would have no way to tell a thing it may build
+    /// against from one that is gone.
+    PrimOutOfReach { id: i64 },
     /// ADR-017 / ADR-018: client requests creation of a new prim with full initial state.
     CreatePrim {
         request_id: u32,
@@ -1453,10 +1486,15 @@ pub enum NetMessage {
     /// the motion state, and the next `WorldSnapshot` is the confirmation —
     /// there is no ack, exactly as with intents.
     ///
-    /// `position` is in the same frame `AvatarStateDto` already uses. Trusted like an intent is trusted (the sim has no map to
-    /// validate a destination against); non-finite components discard the whole
-    /// message, same rule as `apply_intent`.
-    Teleport { request_id: u32, position: Vec3 },
+    /// `geo` and `alt_m` are the place on Earth [`AvatarStateDto`] answers with
+    /// (protocol 47). Trusted like an intent is trusted (the sim has no map to
+    /// validate a destination against); a non-finite or off-globe coordinate
+    /// discards the whole message, same rule as `apply_intent`.
+    Teleport {
+        request_id: u32,
+        geo: GeoAnchor,
+        alt_m: f32,
+    },
     /// Client says whether it is being *looked at*.
     ///
     /// `active: false` means the app is off screen (Android's background
@@ -2800,6 +2838,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ClientIntent { .. } => MessageKind::ClientIntent,
         NetMessage::WorldSnapshot { .. } => MessageKind::WorldSnapshot,
         NetMessage::PrimRemoved { .. } => MessageKind::PrimRemoved,
+        NetMessage::PrimOutOfReach { .. } => MessageKind::PrimOutOfReach,
         NetMessage::CreatePrim { .. } => MessageKind::CreatePrim,
         NetMessage::UpdatePrim { .. } => MessageKind::UpdatePrim,
         NetMessage::DeletePrim { .. } => MessageKind::DeletePrim,
@@ -3010,6 +3049,53 @@ pub fn encode_app_frame(msg: &NetMessage) -> Result<Vec<u8>, postcard::Error> {
     postcard::to_extend(msg, out)
 }
 
+/// One avatar's state as the bytes it occupies inside a `WorldSnapshot`'s
+/// `avatars` list — for the sim, which encodes each avatar once a tick and then
+/// assembles a snapshot per connection from the states within its reach
+/// ([`snapshot_frame`]), instead of encoding a list per client.
+///
+/// Postcard frames nothing: a `Vec<T>` is its length as a varint followed by the
+/// elements back to back, and an element's bytes are the same whether it is
+/// encoded alone or in a list. `snapshot_frame_matches_encode_app_frame` pins
+/// that byte for byte, so this cannot drift from [`encode_app_frame`].
+#[must_use]
+pub fn encode_avatar_state(state: &AvatarStateDto) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(state)
+}
+
+/// A `WorldSnapshot` app frame assembled from states already encoded by
+/// [`encode_avatar_state`]: byte-identical to [`encode_app_frame`] of the same
+/// snapshot.
+#[must_use]
+pub fn snapshot_frame<'a>(
+    tick: u64,
+    states: impl ExactSizeIterator<Item = &'a [u8]>,
+) -> Result<Vec<u8>, postcard::Error> {
+    // The frame of an empty snapshot ends in its list's length — zero, one
+    // byte — which is swapped for the real count.
+    let mut out = encode_app_frame(&NetMessage::WorldSnapshot {
+        tick,
+        avatars: Vec::new(),
+    })?;
+    debug_assert_eq!(out.last(), Some(&0));
+    out.pop();
+    // Postcard's varint: LEB128, low seven bits first, the high bit a continuation.
+    let mut n = states.len();
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+    for s in states {
+        out.extend_from_slice(s);
+    }
+    Ok(out)
+}
+
 /// The kind in an encoded frame's header, without decoding its payload.
 ///
 /// For the one caller that has to *route* a frame it is not going to read:
@@ -3140,12 +3226,57 @@ mod tests {
     fn roundtrip_snapshot_app_frame() {
         let m = NetMessage::WorldSnapshot {
             tick: 42,
-            prims: vec![],
             avatars: vec![],
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
         assert_eq!(m, m2);
+    }
+
+    fn an_avatar(id: u64) -> AvatarStateDto {
+        AvatarStateDto {
+            id,
+            geo: GeoAnchor {
+                latitude: 53.2194 + id as f64 * 1e-4,
+                longitude: 6.5665 - id as f64 * 1e-4,
+            },
+            alt_m: id as f32 * 0.5,
+            yaw: 1.25,
+            emote: (id % 3 == 0).then_some(EmoteState {
+                emote: Emote::Wave,
+                sequence: id as u32,
+            }),
+            expression: None,
+            seated: (id % 5 == 0).then_some([0.4, -1.0]),
+            velocity: Vec3::new(1.8, 0.0, -0.5),
+        }
+    }
+
+    /// A snapshot assembled from states encoded one by one is the frame
+    /// `encode_app_frame` would have written for the same list — including the
+    /// counts whose varint takes two bytes, where a hand-rolled length would
+    /// first go wrong. This is what lets the sim encode each avatar once a tick
+    /// and still send every connection a snapshot of its own.
+    #[test]
+    fn snapshot_frame_matches_encode_app_frame() {
+        for count in [0usize, 1, 2, 127, 128, 300] {
+            let avatars: Vec<AvatarStateDto> = (0..count as u64).map(an_avatar).collect();
+            let parts: Vec<Vec<u8>> = avatars
+                .iter()
+                .map(|a| encode_avatar_state(a).unwrap())
+                .collect();
+            let assembled = snapshot_frame(9_001, parts.iter().map(Vec::as_slice)).unwrap();
+            let whole = NetMessage::WorldSnapshot {
+                tick: 9_001,
+                avatars,
+            };
+            assert_eq!(
+                assembled,
+                encode_app_frame(&whole).unwrap(),
+                "{count} avatars: the assembled frame differs from the encoded one"
+            );
+            assert_eq!(decode_app_frame(&assembled).unwrap(), whole);
+        }
     }
 
     /// The seat travels both ways (protocol 19), and it survives the encoding as
@@ -3174,10 +3305,13 @@ mod tests {
 
             let m = NetMessage::WorldSnapshot {
                 tick: 7,
-                prims: vec![],
                 avatars: vec![AvatarStateDto {
                     id: 3,
-                    position: Vec3::new(1.0, 0.05, 2.0),
+                    geo: GeoAnchor {
+                        latitude: 53.2194,
+                        longitude: 6.5665,
+                    },
+                    alt_m: 0.05,
                     yaw: 1.25,
                     emote: None,
                     expression: None,
@@ -3633,7 +3767,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 115] = [
+        const ALL: [MessageKind; 116] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3749,6 +3883,7 @@ mod tests {
             AvatarLookOf,
             SetFaceFrame,
             FaceFrameOf,
+            PrimOutOfReach,
         ];
         for k in ALL {
             assert_eq!(
@@ -3762,7 +3897,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(FaceFrameOf as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(PrimOutOfReach as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is
