@@ -79,7 +79,13 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             mirror.spawn_refresh();
             mirror
         },
-        geocoder: Arc::new(geocoder::Geocoder::new(&config.data_dir)),
+        geocoder: {
+            let g = Arc::new(geocoder::Geocoder::new(&config.data_dir));
+            // Read the index now, not on the first search: 200 MB takes seconds.
+            let warm = g.clone();
+            tokio::task::spawn_blocking(move || warm.searcher());
+            g
+        },
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, data_dir = %config.data_dir.display(), "atlas serving");

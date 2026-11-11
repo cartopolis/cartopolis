@@ -39,9 +39,9 @@ use crate::systems::navigation::{Endpoint, RouteState};
 use crate::systems::theme;
 use cartopolis_core::world::tile_to_meters;
 
-/// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
-/// the Netherlands extract — see `docs/guides/server.md`). Override with
-/// `CARTO_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
+/// Geocoder base URL, Nominatim-shaped: by default atlas's own on cartopolis.org
+/// (`crates/atlas/src/geocoder.rs`). Override with `CARTO_NOMINATIM_URL`, e.g. the
+/// public `https://nominatim.openstreetmap.org`.
 const DEFAULT_NOMINATIM_URL: &str = cartopolis_core::services::DEFAULT_GEOCODER_URL;
 
 /// A teleport this close to the map anchor moves the camera in the frame it is

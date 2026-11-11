@@ -52,13 +52,13 @@ pub(crate) const CACHE_ZOOM: u32 = cartopolis_geo::formats::CACHE_ZOOM;
 /// Polite pace against a PUBLIC Overpass instance (see [`overpass_pace`]).
 const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
 /// Concurrent live queries against our own Overpass (see [`overpass_pace`]).
-/// A throughput cap for the VPS (Overpass queries are server-CPU-heavy and the
-/// box also runs Nominatim and the tile mirror), not a rate limit.
+/// A throughput cap for a server's own Overpass (queries are CPU-heavy, and the
+/// box serves other things), not a rate limit.
 const OVERPASS_SELF_CONCURRENCY: usize = 4;
 
-/// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
-/// the Netherlands extract, so it doesn't rate-limit under the client's streaming
-/// load — see `docs/guides/server.md`). Override with `CARTO_OVERPASS_URL`.
+/// Overpass endpoint: none by default, since cartopolis.org's map data carries
+/// these answers per cell, and the public instance is asked for the rest.
+/// Override with `CARTO_OVERPASS_URL`, or the server names its own.
 const DEFAULT_OVERPASS_URL: &str = cartopolis_core::services::DEFAULT_OSM_QUERY_URL;
 
 /// Public Overpass instance, tried only after the primary endpoint has exhausted
@@ -82,22 +82,23 @@ fn overpass_url() -> String {
 /// Pace for live Overpass queries: `(max concurrent, min spacing between them)`.
 ///
 /// The 1-in-flight / 800 ms budget is citizenship toward a **public** Overpass
-/// instance — its rate limits and fairness rules. The default endpoint is our
-/// own (`overpass.cartopolis.org`), which has no such budget, and pacing it
-/// politely made the far building ring and the POI layers stream several times
-/// slower than the server requires. Localhost counts as ours too; any *other*
-/// override is assumed public and keeps the polite pace automatically. So is the
-/// one the connected server names: it is that server's own, and it said so.
+/// instance — its rate limits and fairness rules. An Overpass a server runs for
+/// itself has no such budget, and pacing it politely made the far building ring
+/// and the POI layers stream several times slower than it required: the one the
+/// connected server names is that, and so is localhost. Any *other* override is
+/// assumed public and keeps the polite pace, and so does no Overpass at all
+/// (empty, the default since 2026-11-11), where only the public one is asked.
 ///
 /// Worked out per call rather than once, since the server's answer arrives after
 /// startup; it is an env read and a lock read per dispatch.
 pub(crate) fn overpass_pace() -> (usize, Duration) {
     let url = overpass_url();
-    let ours = url == DEFAULT_OVERPASS_URL
-        || crate::services::osm_query()
-            .is_some_and(|s| s == url && s != FALLBACK_OVERPASS_URL && !s.is_empty())
-        || url.starts_with("http://localhost")
-        || url.starts_with("http://127.");
+    let ours = !url.is_empty()
+        && url != FALLBACK_OVERPASS_URL
+        && (url == DEFAULT_OVERPASS_URL
+            || crate::services::osm_query().is_some_and(|s| s == url)
+            || url.starts_with("http://localhost")
+            || url.starts_with("http://127."));
     if ours {
         (OVERPASS_SELF_CONCURRENCY, Duration::ZERO)
     } else {

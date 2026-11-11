@@ -1,5 +1,23 @@
 # Self-hosted geo services (Overpass + Nominatim + 3DBAG)
 
+> **Overpass and Nominatim are retired (2026-11-11).** Atlas answers both from a
+> Geofabrik OpenStreetMap extract it downloads itself: the per-cell layers
+> `tall`, `street`, `transit`, `shops`, `speeds` and `osmbuildings`, and place
+> search at `/geocode/search` and `/geocode/reverse` from its `geocoder` dataset.
+> On a new server, skip the `overpass` and `nominatim` services and their
+> imports below (sections 4–7) and run, after atlas is up:
+>
+> ```bash
+> atlas run --out /data/3dbag/site --name nederland --bbox 13000 306000 278000 620000 \
+>   --datasets tall,street,transit,shops,speeds,osmbuildings,geocoder
+> ```
+>
+> about five hours on 8 cores at low priority, 4.3 GB of memory at peak, a
+> 1.4 GB extract and 9.9 GB of cells (7.9 GB of it buildings) on 2026-11-11;
+> route `/geocode/*` to atlas in Caddy. The simulator tells
+> its clients where these are (`GET /api/services`, `docs/notes/the-server-stack.md`).
+> The rest of this guide is kept for the history until it is rewritten.
+
 Operational guide for the `example.com` server: a Docker Compose stack running a
 local [Overpass API](https://dev.overpass-api.de/) and
 [Nominatim](https://nominatim.org/) instance, each seeded with the **Netherlands**

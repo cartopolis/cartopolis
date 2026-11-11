@@ -21,10 +21,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The geocoder: Nominatim's `/search` and `/reverse`, `jsonv2`.
-pub const DEFAULT_GEOCODER_URL: &str = "https://nominatim.cartopolis.org";
-/// The OSM query endpoint: an Overpass interpreter, queried by POST `data=`.
-pub const DEFAULT_OSM_QUERY_URL: &str = "https://overpass.cartopolis.org/api/interpreter";
+/// The geocoder: Nominatim's `/search` and `/reverse`, `jsonv2` — on
+/// cartopolis.org, atlas's own (`crates/atlas/src/geocoder.rs`).
+pub const DEFAULT_GEOCODER_URL: &str = "https://cartopolis.org/geocode";
+/// The OSM query endpoint, an Overpass interpreter queried by POST `data=`, or
+/// empty for none: cartopolis.org runs none since 2026-11-11, its map data
+/// carrying those answers per cell (`docs/notes/the-server-stack.md`).
+pub const DEFAULT_OSM_QUERY_URL: &str = "";
 /// The cell tree atlas builds (`<dataset>/14/x/y.json`, `coverage.json`).
 pub const DEFAULT_MAP_DATA_URL: &str = "https://3dbag.cartopolis.org";
 /// Terrain tiles, a `{z}/{x}/{y}` template, served by atlas.

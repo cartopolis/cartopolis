@@ -145,6 +145,41 @@ pub struct Hit {
 }
 
 impl Hit {
+    /// Nominatim's `address` parts, which the web UI names a place from
+    /// (`crates/atlas/web/src/lib/calendar.ts`, `stats.ts`), read back from the
+    /// display this module wrote: `Name, Town` or `Street 1, 1234AB Town`.
+    fn address(&self) -> Value {
+        let (_, rest) = self.display.split_once(", ").unwrap_or((&self.display, ""));
+        let mut a = serde_json::Map::new();
+        let mut put = |k: &str, v: &str| {
+            if !v.is_empty() {
+                a.insert(k.into(), Value::String(v.into()));
+            }
+        };
+        let town = match rest.split_once(' ') {
+            Some((pc, town)) if pc.len() == 6 && pc[..4].bytes().all(|b| b.is_ascii_digit()) => {
+                put("postcode", pc);
+                town
+            }
+            _ => rest,
+        };
+        match self.kind.as_str() {
+            "city" | "town" | "village" => put(&self.kind, &self.name),
+            "house" => {
+                let (road, number) = self.name.rsplit_once(' ').unwrap_or((&self.name, ""));
+                put("road", road);
+                put("house_number", number);
+                put("city", town);
+            }
+            "road" | "postcode" => {
+                put("road", &self.name);
+                put("city", town);
+            }
+            _ => put("city", town),
+        }
+        Value::Object(a)
+    }
+
     fn json(&self) -> Value {
         json!({
             "display_name": self.display,
@@ -153,6 +188,7 @@ impl Hit {
             "lon": format!("{:.7}", self.lon),
             "addresstype": self.kind,
             "type": self.kind,
+            "address": self.address(),
         })
     }
 }
@@ -962,6 +998,19 @@ mod tests {
         assert!((lat - 53.2194).abs() < 1e-5, "{lat}");
         assert_eq!(v["addresstype"], "city");
         assert!(v["display_name"].is_string());
+        assert_eq!(v["address"]["city"], "Groningen");
+        let house = Hit {
+            name: "Grote Markt 2a".into(),
+            display: "Grote Markt 2a, 9712HN Groningen".into(),
+            kind: "house".into(),
+            lat: 0.0,
+            lon: 0.0,
+        }
+        .json();
+        assert_eq!(
+            house["address"],
+            json!({"road": "Grote Markt", "house_number": "2a", "postcode": "9712HN", "city": "Groningen"})
+        );
     }
 
     #[test]

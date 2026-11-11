@@ -69,13 +69,13 @@ export async function loadCommunityStats(id: string, days: number): Promise<Comm
 }
 
 /**
- * Our own address server (`nominatim.cartopolis.org`, on the same VPS), which
+ * Our own address search (atlas's `/geocode`, Nominatim-shaped, on this origin), which
  * names a square for the busiest-places lists: "Grote Markt" rather than two
  * coordinates. Operators' and moderators' pages ask it, and so does the
  * calendar's place search for a meet-up (`chat/calendar.tsx`); nothing about a
  * visitor goes with the question but what they typed.
  */
-export const NOMINATIM = 'https://nominatim.cartopolis.org'
+export const NOMINATIM = '/geocode'
 const names = new Map<string, string | null>()
 
 /** A place's name once known; its coordinates until then (asking once). */
