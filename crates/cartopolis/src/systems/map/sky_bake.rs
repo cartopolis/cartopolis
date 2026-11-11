@@ -15,7 +15,9 @@
 //!
 //! So [`decide_sky_bake`] watches those inputs and asks for a bake only when one
 //! has moved past a threshold below anything visible, plus a slow heartbeat for
-//! the inputs it does not watch; and [`hold_sky_bake`], in the render world, takes
+//! the inputs it does not watch — each one a short run of frames, since a single
+//! frame filters the sky drawn by the bake before it ([`BAKE_RUN_FRAMES`]);
+//! and [`hold_sky_bake`], in the render world, takes
 //! the two components that drive the bake off the camera's render entity on every
 //! other frame. Extraction puts both back the next frame, so holding is
 //! per-frame and nothing has to be restored. The maps the lighting samples are
@@ -36,9 +38,9 @@ use bevy::ecs::component::Components;
 use bevy::light::GeneratedEnvironmentMapLight;
 use bevy::pbr::generate::RenderEnvironmentMap;
 use bevy::prelude::*;
+use bevy::render::RenderApp;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::sync_world::RenderEntity;
-use bevy::render::RenderApp;
 
 use crate::components::{FreeCamera, PlanetAtmosphere};
 use crate::systems::render_features::EnvMapComponent;
@@ -67,6 +69,20 @@ const HEARTBEAT_S: f32 = 10.0;
 /// no pipeline does nothing; holding then would leave the maps black until the
 /// next trigger.
 const WARM_UP_S: f32 = 3.0;
+
+/// Frames in a row each trigger bakes, the one that saw the change included.
+///
+/// One frame was not a bake: the frame that bakes filters the sky into the
+/// maps the lighting reads *before* it draws the new sky, so a single frame
+/// filtered the sky of the bake before it. After a jump in the time of day the
+/// city went on being lit by the old sky until the heartbeat came round, up to
+/// [`HEARTBEAT_S`] later: on the OnePlus 15 (2026-11-11), Light to Dark under an
+/// overcast left the night at noon's light under the night's exposure, a pale
+/// pastel city under a black sky, which a second bake 15 s later put right. A
+/// run of frames lets the filter read the sky the run itself drew.
+const BAKE_RUN_FRAMES: u32 = 3;
+// One frame filters the previous bake's sky; a run must be at least two.
+const _: () = assert!(BAKE_RUN_FRAMES >= 2);
 
 /// The render world's instruction for this frame.
 #[derive(Resource, Clone, Default)]
@@ -104,6 +120,8 @@ pub struct SkyBake {
     last_bake_s: f32,
     render_entity: Option<Entity>,
     warm_until_s: f32,
+    /// Frames still to bake in the current run ([`BAKE_RUN_FRAMES`]).
+    run_left: u32,
     /// Frames baked and held, for the log line.
     baked: u32,
     held: u32,
@@ -124,6 +142,17 @@ pub(crate) fn sky_moved(last: &BakeInputs, now: &BakeInputs) -> bool {
         || last.moon.dot(now.moon) < turn
         || last.up.dot(now.up) < turn
         || (last.height_m - now.height_m).abs() > climb
+}
+
+/// Whether this frame is in a bake run: a trigger starts one of
+/// [`BAKE_RUN_FRAMES`], this frame included, and each frame uses one up.
+pub(crate) fn bake_run(run_left: &mut u32, trigger: bool) -> bool {
+    if trigger {
+        *run_left = BAKE_RUN_FRAMES;
+    }
+    let in_run = *run_left > 0;
+    *run_left = run_left.saturating_sub(1);
+    in_run
 }
 
 /// Decide whether this frame re-bakes the sky's reflections.
@@ -181,10 +210,10 @@ pub fn decide_sky_bake(
         height_m: from_centre.length() - atmosphere.inner_radius,
     };
 
-    let bake = every_frame()
-        || now_s < state.warm_until_s
-        || now_s - state.last_bake_s >= HEARTBEAT_S
+    let trigger = now_s - state.last_bake_s >= HEARTBEAT_S
         || state.last.as_ref().is_none_or(|last| sky_moved(last, &now));
+    let in_run = bake_run(&mut state.run_left, trigger);
+    let bake = every_frame() || now_s < state.warm_until_s || in_run;
     order.bake = bake;
     if bake {
         state.last = Some(now);
@@ -285,6 +314,22 @@ mod tests {
         let mut now = inputs();
         now.up = Quat::from_rotation_x(0.3_f32.to_radians()) * Vec3::Y;
         assert!(sky_moved(&inputs(), &now));
+    }
+
+    #[test]
+    fn a_trigger_bakes_a_run_of_frames_then_holds() {
+        let mut left = 0;
+        assert!(!bake_run(&mut left, false), "nothing moved");
+        let run: Vec<bool> = (0..BAKE_RUN_FRAMES + 2)
+            .map(|i| bake_run(&mut left, i == 0))
+            .collect();
+        let baked = run.iter().filter(|b| **b).count() as u32;
+        assert_eq!(baked, BAKE_RUN_FRAMES, "{run:?}");
+        assert!(
+            run[..BAKE_RUN_FRAMES as usize].iter().all(|b| *b),
+            "{run:?}"
+        );
+        assert!(!run[BAKE_RUN_FRAMES as usize], "{run:?}");
     }
 
     #[test]
