@@ -119,24 +119,34 @@ fn actions_bottom_offset() -> f32 {
     bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
 }
 
-/// Bottom offset of the face disc, a group gap above the jump/flight pair: the
-/// top tier of Follow's right edge. The hand button stands beside it.
+/// Bottom offset of the face disc: beside the jump disc, one column in from
+/// the jump/flight pair, with the hand button under it beside the flight
+/// disc. They stood in tiers above the pair until 2026-11-11, which took the
+/// right edge up to within 8 pt of the map's column of round buttons
+/// (`dock::right_column`) on a phone.
 fn face_bottom_offset() -> f32 {
-    actions_bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
+    actions_bottom_offset() + CONTROL_SIZE + theme::OSD_GAP
 }
 
-/// Right offset of the hand button: one disc and a gap in from the edge,
-/// beside the face disc.
+/// Bottom offset of the hand button: beside the flight disc.
+fn hand_bottom_offset() -> f32 {
+    actions_bottom_offset()
+}
+
+/// Right offset of the face and hand discs: one disc and a group gap in from
+/// the edge. The group gap, not the plain one, because the miss bands of two
+/// neighbours side by side must not meet (`reach`).
 fn hand_right_offset() -> f32 {
-    theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP
+    theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GROUP_GAP
 }
 
 /// How far up from the bottom the right edge's touch controls reach, at
-/// most: Follow's face disc. The map's column of round buttons comes down
-/// from the top to meet it (`dock::right_column`), and the two must not meet.
+/// most: the top of Follow's jump/flight pair. The map's column of round
+/// buttons comes down from the top to meet it (`dock::right_column`), and the
+/// two must not meet.
 #[cfg(test)]
 fn right_edge_reach() -> f32 {
-    face_bottom_offset() + CONTROL_SIZE
+    actions_bottom_offset() + pair_height()
 }
 
 /// How much of the bottom-**left** corner the thumbstick claims, in points, for
@@ -1321,13 +1331,13 @@ fn hand_button(
         Some(HandWord::CameraBusy) => theme::p().warn,
         _ => theme::p().accent_ring,
     };
-    // Beside the face disc rather than above it: the right edge's top half is
-    // the map's column of round buttons now (`dock::right_column`), and a
-    // fourth tier here reached into it on a phone.
+    // Beside the flight disc rather than in a tier above the pair: the right
+    // edge's top half is the map's column of round buttons now
+    // (`dock::right_column`).
     let area = egui::Area::new(egui::Id::new("osd_hand"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-hand_right_offset(), -face_bottom_offset()),
+            egui::vec2(-hand_right_offset(), -hand_bottom_offset()),
         )
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
@@ -1446,7 +1456,7 @@ fn face_picker(
     let area = egui::Area::new(egui::Id::new("osd_face"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-theme::OSD_MARGIN, -above),
+            egui::vec2(-hand_right_offset(), -above),
         )
         .show(ctx, |ui| {
             let resp = round_button(ui, Mark::Face, *open);
@@ -1965,18 +1975,22 @@ mod tests {
         let phone_h = 600.0;
         let column = crate::systems::dock::right_column(true, true).bottom;
         let follow_top = phone_h - right_edge_reach();
+        // Real room, not a hairline: the group gap (2026-11-11, it was 8 pt).
         assert!(
-            follow_top >= column + theme::OSD_GAP,
+            follow_top >= column + theme::OSD_GROUP_GAP,
             "Follow's stack reaches {follow_top}, the column ends at {column}"
         );
         let rail = 3.0 * RAIL_DISC + RAIL_TRACK_TOUCH + 3.0 * 6.0;
         let rail_top = phone_h - bottom_offset() - rail;
         assert!(
-            rail_top >= column + theme::OSD_GAP,
+            rail_top >= column + theme::OSD_GROUP_GAP,
             "the rail reaches {rail_top}, the column ends at {column}"
         );
-        // The hand button stands beside the face disc, a disc and a gap in.
-        assert!(hand_right_offset() >= theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GAP);
+        // The face and hand discs stand beside the pair, their miss bands
+        // apart from its own.
+        assert!(hand_right_offset() - theme::OSD_MARGIN - CONTROL_SIZE > 2.0 * MISS_MARGIN);
+        assert!(face_bottom_offset() + CONTROL_SIZE <= right_edge_reach());
+        assert!(hand_bottom_offset() >= actions_bottom_offset());
     }
 
     /// What the bottom-left corner reserves has to cover the stick actually

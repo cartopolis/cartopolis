@@ -271,7 +271,7 @@ pub fn render_place_pins(
             continue; // behind the camera
         };
         let tip = to_ui(screen);
-        if !map_rect.contains(tip) {
+        if !shown(&ctx, map_rect, tip) {
             continue;
         }
         drawn += 1;
@@ -319,7 +319,7 @@ pub fn render_place_pins(
             continue;
         };
         let tip = to_ui(screen);
-        if !map_rect.contains(tip) {
+        if !shown(&ctx, map_rect, tip) {
             continue;
         }
         drawn += 1;
@@ -355,7 +355,7 @@ pub fn render_place_pins(
             continue;
         };
         let tip = to_ui(screen);
-        if !map_rect.contains(tip) {
+        if !shown(&ctx, map_rect, tip) {
             continue;
         }
         drawn += 1;
@@ -397,7 +397,7 @@ pub fn render_place_pins(
             continue;
         };
         let tip = to_ui(screen);
-        if !map_rect.contains(tip) {
+        if !shown(&ctx, map_rect, tip) {
             continue;
         }
         drawn += 1;
@@ -439,7 +439,7 @@ pub fn render_place_pins(
                 continue;
             };
             let tip = to_ui(screen);
-            if !map_rect.contains(tip) {
+            if !shown(&ctx, map_rect, tip) {
                 continue;
             }
             drawn += 1;
@@ -477,7 +477,7 @@ pub fn render_place_pins(
                         .ok()
                 })
                 .map(to_ui)
-                .filter(|tip| map_rect.contains(*tip));
+                .filter(|tip| shown(&ctx, map_rect, *tip));
             if let Some(tip) = tip {
                 drawn += 1;
                 anchored.at(tip);
@@ -529,6 +529,46 @@ pub fn render_place_pins(
 ///
 /// Read off the shared root `Ui` *before* the caller borrows the context, so the
 /// two borrows of `egui` don't overlap (the context is a cheap `Arc` clone).
+/// The map's round buttons and their columns (`dock::render_dock`), as they
+/// were drawn this frame: a world-anchored overlay culls itself against
+/// them as against the edges in [`map_area`], or a marker paints over a
+/// button and takes its tap (2026-11-11, a friend's marker over the right
+/// column in Earth mode). Written by the dock, which runs earlier in the
+/// panel chain than every overlay that reads it.
+pub(crate) fn set_chrome_holes(ctx: &egui::Context, holes: Vec<egui::Rect>) {
+    ctx.data_mut(|d| d.insert_temp(chrome_holes_id(), holes));
+}
+
+fn chrome_holes_id() -> egui::Id {
+    egui::Id::new("map_chrome_holes")
+}
+
+/// Whether an overlay anchored at `tip` stays clear of the map's buttons. A
+/// pin or a marker hangs *above* its tip, by up to [`PIN_REACH`], so a tip
+/// that far under a column still draws on it.
+pub(crate) fn clear_of_chrome(ctx: &egui::Context, tip: egui::Pos2) -> bool {
+    let holes: Vec<egui::Rect> = ctx
+        .data(|d| d.get_temp(chrome_holes_id()))
+        .unwrap_or_default();
+    !holes.iter().any(|h| {
+        egui::Rect::from_min_max(
+            h.min - egui::vec2(PIN_SIDE, 0.0),
+            h.max + egui::vec2(PIN_SIDE, PIN_REACH),
+        )
+        .contains(tip)
+    })
+}
+
+/// How far above its tip a pin or a person's marker reaches, and how far to
+/// either side: a head and its stem.
+const PIN_REACH: f32 = 56.0;
+const PIN_SIDE: f32 = 22.0;
+
+/// Inside the map, and clear of its buttons.
+fn shown(ctx: &egui::Context, map_rect: egui::Rect, tip: egui::Pos2) -> bool {
+    map_rect.contains(tip) && clear_of_chrome(ctx, tip)
+}
+
 pub(crate) fn map_area(
     egui: &mut EguiManager,
     keyboard: &crate::systems::onscreen_keyboard::OnScreenKeyboard,

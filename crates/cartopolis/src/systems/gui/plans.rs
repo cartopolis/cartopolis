@@ -427,7 +427,7 @@ pub fn render_plans(
             let Some(tip) = project(n.lat, n.lng) else {
                 continue;
             };
-            if !map_rect.contains(tip) {
+            if !map_rect.contains(tip) || !crate::systems::place_pins::clear_of_chrome(&ctx, tip) {
                 continue;
             }
             let is_open = n.open_on(&today);
@@ -466,7 +466,9 @@ pub fn render_plans(
                     let Some(at) = project(p.lat, p.lng) else {
                         continue;
                     };
-                    if !map_rect.contains(at) {
+                    if !map_rect.contains(at)
+                        || !crate::systems::place_pins::clear_of_chrome(&ctx, at)
+                    {
                         continue;
                     }
                     anchored.at(at);

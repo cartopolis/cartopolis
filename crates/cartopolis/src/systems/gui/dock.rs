@@ -195,6 +195,7 @@ pub fn render_dock(
     chrome.right_bottom = right_column(has_avatar, has_camera).bottom;
     // Driving owns the screen, and so does the camera.
     if covers.driver.active || camera.is_open() {
+        crate::systems::place_pins::set_chrome_holes(egui.ctx(), Vec::new());
         menu.open = false;
         return;
     }
@@ -304,8 +305,23 @@ pub fn render_dock(
     let mut clicked: Option<RightPanel> = None;
     let mut camera_clicked = false;
     let mut say_clicked = false;
+    let mut holes = Vec::new();
     if !panel_open && !keyboard {
         let col = right_column(has_avatar, has_camera);
+        // What the map's overlays keep off (`place_pins::clear_of_chrome`):
+        // both columns, edge to edge of their discs and words.
+        let disc = theme::ROUND_BUTTON_SIZE;
+        holes.push(egui::Rect::from_min_max(
+            egui::pos2(viewport.x - theme::OSD_MARGIN - disc, col.layers),
+            egui::pos2(viewport.x - theme::OSD_MARGIN, col.bottom),
+        ));
+        holes.push(egui::Rect::from_min_max(
+            egui::pos2(theme::OSD_MARGIN, left_slot(0)),
+            egui::pos2(
+                theme::OSD_MARGIN + disc,
+                left_slot(if has_session { 3 } else { 2 }) + disc,
+            ),
+        ));
         let disc = |id: &str, top: f32| {
             egui::Area::new(egui::Id::new(id))
                 .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-theme::OSD_MARGIN, top))
@@ -378,6 +394,8 @@ pub fn render_dock(
             });
         }
     }
+
+    crate::systems::place_pins::set_chrome_holes(&ctx, holes);
 
     // ── Acting on it ─────────────────────────────────────────────────────
     match picked {

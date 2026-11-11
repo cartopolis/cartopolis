@@ -710,7 +710,7 @@ pub fn render_locate_arrow(
     let Some(here) = project(here_lat, here_lng) else {
         return; // over the horizon, behind the camera, or off the flat frame
     };
-    if !map_rect.contains(here) {
+    if !map_rect.contains(here) || !crate::systems::place_pins::clear_of_chrome(&ctx, here) {
         return;
     }
     anchored.at(here);

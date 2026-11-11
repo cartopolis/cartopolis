@@ -40,11 +40,17 @@ pub struct MainMenu {
 /// width, as a bottom sheet is.
 const MENU_WIDTH: f32 = 320.0;
 
+/// A row of the sheet: 44 pt, 66 dp on Android — over the 48 dp a finger
+/// needs, and short enough that the whole sheet, Sign out included, stands on
+/// a phone's World | Community switch without scrolling
+/// (`the_sheet_fits_above_the_switch`).
+const SHEET_ROW: f32 = 44.0;
+
 /// The sheet's width on a viewport this wide.
 #[must_use]
 fn sheet_width(viewport_w: f32, compact: bool) -> f32 {
     if compact {
-        viewport_w
+        viewport_w - 2.0 * theme::OSD_MARGIN
     } else {
         MENU_WIDTH.min(viewport_w - 2.0 * theme::OSD_MARGIN)
     }
@@ -136,11 +142,28 @@ pub fn render_main_menu(
     // size and the `ScrollArea` inside never reports more, so a sheet first
     // laid out against a smaller band (the window's first frame, a resize)
     // stayed that short — Settings and About fell off the bottom.
-    let sheet_id = egui::Id::new(("main_menu", compact, viewport.x as i32, viewport.y as i32));
+    // …and on what is in it: a sheet first laid out signed out (or before a
+    // capture's stand-in session arrived) kept the signed-out height when it
+    // grew rows, and Sign out fell under the fold again.
+    let sheet_id = egui::Id::new((
+        "main_menu",
+        compact,
+        viewport.x as i32,
+        viewport.y as i32,
+        signed_in,
+        admin.is_some(),
+        prefs.developer_menu,
+        sign_in.session.error.is_some(),
+    ));
     let (area, max_height) = if compact {
+        // A card standing on the World | Community switch, not over it: the
+        // switch is the way back, and the sheet has to fit above it with Sign
+        // out in sight (2026-11-11; it was a bottom sheet over the switch,
+        // and Sign out was under the fold).
+        let bottom = crate::systems::dock::reserved_bottom() + 8.0;
         (
-            egui::Area::new(sheet_id).anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, 0.0)),
-            (viewport.y - 72.0).max(160.0),
+            egui::Area::new(sheet_id).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom)),
+            (viewport.y - bottom - theme::OSD_MARGIN).max(160.0),
         )
     } else {
         let top = face.map_or(crate::systems::dock::reserved_top(), |f| f.bottom() + 8.0);
@@ -151,16 +174,7 @@ pub fn render_main_menu(
             (viewport.y - top - 24.0).max(160.0),
         )
     };
-    let corner = if compact {
-        egui::CornerRadius {
-            nw: 22,
-            ne: 22,
-            sw: 0,
-            se: 0,
-        }
-    } else {
-        egui::CornerRadius::same(theme::RADIUS_LG)
-    };
+    let corner = egui::CornerRadius::same(theme::RADIUS_LG);
     let area = area
         .order(egui::Order::Foreground)
         // **The sizing pass decides how tall this card may ever be.** An
@@ -181,7 +195,7 @@ pub fn render_main_menu(
                     left: 14,
                     right: 14,
                     top: 14,
-                    bottom: if compact { 18 } else { 12 },
+                    bottom: 12,
                 })
                 .show(ui, |ui| {
                     let inner = width - 28.0;
@@ -290,11 +304,11 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
     let accent = theme::p().accent;
     // Who you are, and the close.
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(46.0), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
         crate::systems::dock::paint_face(
             ui.painter(),
             rect.center(),
-            46.0,
+            42.0,
             s.me.filter(|_| s.signed_in),
             s.waiting,
             false,
@@ -348,7 +362,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             *close = true;
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(8.0);
 
     if s.signed_in {
         // Your profile, and your link: the two things about you that are not
@@ -377,11 +391,12 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
     if let Some(error) = s.error {
         theme::note(ui, error);
     }
-    ui.add_space(10.0);
+    ui.add_space(8.0);
 
     let row = |ui: &mut egui::Ui, panel: RightPanel, act: &mut Option<SheetAct>| {
-        if theme::list_row(
+        if theme::list_row_sized(
             ui,
+            Some(SHEET_ROW),
             panel.icon(),
             panel.label(),
             None,
@@ -411,8 +426,9 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
     theme::list_group(ui, |ui| {
         row(ui, RightPanel::Settings, act);
         if let Some(waiting) = s.admin {
-            if theme::list_row(
+            if theme::list_row_sized(
                 ui,
+                Some(SHEET_ROW),
                 RightPanel::Admin.icon(),
                 RightPanel::Admin.label(),
                 (waiting > 0)
@@ -427,13 +443,30 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             }
         }
         row(ui, RightPanel::About, act);
+        // Desktop only: an Android app does not quit (Back from the map sends
+        // it to the background), and a browser tab is closed by the browser.
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        if theme::list_row_sized(
+            ui,
+            Some(SHEET_ROW),
+            crate::systems::icons::CLEAR,
+            "Exit",
+            None,
+            RowEnd::Nothing,
+            accent,
+        )
+        .clicked()
+        {
+            *act = Some(SheetAct::Exit);
+        }
     });
     // Developer tools and Share diagnostics only with Settings ▸ General ▸
     // Developer on (`AppPrefs::developer_menu`).
     if s.dev {
         theme::list_group(ui, |ui| {
-            if theme::list_row(
+            if theme::list_row_sized(
                 ui,
+                Some(SHEET_ROW),
                 crate::systems::icons::TUNE,
                 "Developer tools",
                 None,
@@ -446,8 +479,9 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             }
             // The person who needs this is holding a phone and reporting a
             // bug (`systems::diagnostics`).
-            if theme::list_row(
+            if theme::list_row_sized(
                 ui,
+                Some(SHEET_ROW),
                 crate::systems::icons::COPY,
                 "Share diagnostics…",
                 s.diagnostics,
@@ -465,23 +499,6 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             }
         });
     }
-    // Desktop only: an Android app does not quit (Back from the map sends it
-    // to the background), and a browser tab is closed by the browser.
-    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-    theme::list_group(ui, |ui| {
-        if theme::list_row(
-            ui,
-            crate::systems::icons::CLEAR,
-            "Exit",
-            None,
-            RowEnd::Nothing,
-            accent,
-        )
-        .clicked()
-        {
-            *act = Some(SheetAct::Exit);
-        }
-    });
     if s.signed_in {
         ui.add_space(4.0);
         // Arms in place, as `theme::confirm_button` does: the first tap asks,
@@ -496,10 +513,8 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
         } else {
             "Sign out…"
         };
-        let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), theme::menu_row_height().max(44.0)),
-            egui::Sense::click(),
-        );
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
         let resp = theme::named(ui, resp, label);
         if resp.hovered() || armed {
             ui.painter().rect_filled(
@@ -2509,16 +2524,39 @@ mod tests {
     #[test]
     fn the_sheet_fits_a_phone_and_a_window() {
         for viewport in [274.0_f32, 214.0] {
-            assert_eq!(sheet_width(viewport, true), viewport);
+            let w = sheet_width(viewport, true);
+            assert_eq!(w + 2.0 * theme::OSD_MARGIN, viewport);
             // Its rows have room for a word between the icon and the chevron:
             // 14 pt margins each side, a 58 pt icon column, a 36 pt end.
-            assert!(sheet_width(viewport, true) - 28.0 - 58.0 - 36.0 >= 80.0);
+            assert!(w - 28.0 - 58.0 - 36.0 >= 60.0, "{w}");
         }
         for viewport in [640.0_f32, 1600.0] {
             let w = sheet_width(viewport, false);
             assert!(w + 2.0 * theme::OSD_MARGIN <= viewport, "{w} in {viewport}");
             assert_eq!(w, MENU_WIDTH);
         }
+    }
+
+    /// On a phone the sheet stands on the World | Community switch, and the
+    /// fullest one — signed in, an admin, with Exit — fits in the 600 pt the
+    /// phone shots have, so Sign out is in sight without scrolling (it was
+    /// under the fold, 2026-11-11).
+    #[test]
+    fn the_sheet_fits_above_the_switch() {
+        let rows = 3.0 + 4.0; // Avatar, Saved places, Models; Settings, Admin, About, Exit
+        let content = 42.0 // who you are
+            + 8.0
+            + theme::PRIMARY_BUTTON_HEIGHT.max(theme::TOUCH_ROW_PTS) // Your profile, Share link
+            + 8.0
+            + rows * SHEET_ROW
+            + 2.0 * 6.0 // under each group
+            + 4.0
+            + 40.0 // Sign out…
+            + 14.0
+            + 12.0; // the card's margins
+        let room = 600.0 - crate::systems::dock::reserved_bottom() - 8.0 - theme::OSD_MARGIN;
+        assert!(content <= room, "the sheet is {content} pt in {room}");
+        assert!(SHEET_ROW >= theme::MIN_TOUCH_TARGET_DP / 1.5);
     }
 
     /// The object editor asks for 320 pt, which is wider than a phone. A

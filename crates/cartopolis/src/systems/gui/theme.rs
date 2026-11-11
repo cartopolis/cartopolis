@@ -2674,7 +2674,22 @@ pub fn list_row(
     end: RowEnd<'_>,
     tone: Color32,
 ) -> egui::Response {
-    let h = if sub.is_some() { 58.0 } else { 50.0 };
+    list_row_sized(ui, None, icon, title, sub, end, tone)
+}
+
+/// [`list_row`] at a stated height, for a sheet that has to fit a phone
+/// above the World | Community switch (your face's sheet, 44 pt rows: still
+/// 66 dp, over [`MIN_TOUCH_TARGET_DP`]). `None` is the list's own 50 / 58.
+pub fn list_row_sized(
+    ui: &mut egui::Ui,
+    height: Option<f32>,
+    icon: &str,
+    title: &str,
+    sub: Option<&str>,
+    end: RowEnd<'_>,
+    tone: Color32,
+) -> egui::Response {
+    let h = height.unwrap_or(if sub.is_some() { 58.0 } else { 50.0 });
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     let resp = named(ui, resp, title);

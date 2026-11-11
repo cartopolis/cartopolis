@@ -638,6 +638,8 @@ pub(crate) struct TopBar {
     pub face: bool,
     /// Where your face is, for the sheet (`ui::MainMenu::face`).
     pub face_rect: egui::Rect,
+    /// The + was tapped: a new chat, group or community.
+    pub new: bool,
 }
 
 /// The top of the Community page: its name, and your face at the right
@@ -649,6 +651,7 @@ pub(crate) struct TopBar {
 pub(crate) fn top_bar(ui: &mut egui::Ui, me: &str, waiting: bool, open: bool) -> TopBar {
     ui.add_space(2.0);
     let face = 40.0;
+    let mut new = false;
     // Right to left, so the face is at the page's right edge and the name
     // takes what is left.
     let row = ui.allocate_ui_with_layout(
@@ -657,6 +660,14 @@ pub(crate) fn top_bar(ui: &mut egui::Ui, me: &str, waiting: bool, open: bool) ->
         |ui| {
             let name = (!me.is_empty()).then_some(me);
             let resp = crate::systems::dock::face_button(ui, face, name, waiting, open);
+            new = circle_button(
+                ui,
+                icons::ADD,
+                true,
+                true,
+                "New: a person, a group or a community",
+            )
+            .clicked();
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
@@ -674,6 +685,7 @@ pub(crate) fn top_bar(ui: &mut egui::Ui, me: &str, waiting: bool, open: bool) ->
     TopBar {
         face: row.inner.clicked(),
         face_rect: row.inner.rect,
+        new,
     }
 }
 
@@ -1352,6 +1364,7 @@ fn list_screen(
     );
     act.face_rect = Some(bar.face_rect);
     act.face |= bar.face;
+    let new_clicked = bar.new;
     if let Some(notice) = chat.notice.clone() {
         if notice.error {
             act.dismiss_notice = theme::inline_error(ui, &notice.text);
@@ -1525,6 +1538,7 @@ fn list_screen(
     rows.retain(|r| matches(&r.name, &r.preview));
     rows.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
 
+    // The page, for the New sheet's backdrop below.
     let panel = ui.max_rect();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1583,57 +1597,16 @@ fn list_screen(
                 ui.add_space(6.0);
                 theme::note(
                     ui,
-                    "Start a private chat with the + below. Only the people in it can read it.",
+                    "Start a private chat with the + above. Only the people in it can read it.",
                 );
             }
-            // Room under the last row for the + button to float over.
-            ui.add_space(80.0);
+            ui.add_space(8.0);
         });
 
-    // New: the design's floating button (`.fab`), bottom right, pale accent
-    // with a plus. Drawn after the list so it sits on top.
-    let fab = egui::Rect::from_min_size(
-        panel.right_bottom() - egui::vec2(56.0 + 6.0, 56.0 + 12.0),
-        egui::Vec2::splat(56.0),
-    );
-    let resp = ui.interact(
-        fab,
-        egui::Id::new("chats_new_chat_fab"),
-        egui::Sense::click(),
-    );
-    let resp = theme::named(ui, resp, "New").on_hover_text("New: a person, a group or a community");
-    let p = ui.painter();
-    p.add(
-        egui::epaint::Shadow {
-            offset: [0, 8],
-            blur: 20,
-            spread: 0,
-            color: egui::Color32::from_black_alpha(100),
-        }
-        .as_shape(fab, egui::CornerRadius::same(18)),
-    );
-    p.rect_filled(
-        fab,
-        egui::CornerRadius::same(18),
-        if resp.hovered() {
-            theme::p().cream
-        } else {
-            theme::p().accent
-        },
-    );
-    p.text(
-        fab.center(),
-        egui::Align2::CENTER_CENTER,
-        icons::ADD,
-        egui::FontId::proportional(26.0),
-        // On the hovered cream plate, the ink; on the accent, its own ink.
-        if resp.hovered() {
-            theme::p().ink
-        } else {
-            theme::p().on_accent
-        },
-    );
-    if resp.clicked() {
+    // New: the + in the title row (`top_bar`). It was a floating button at
+    // the bottom right, which on a phone sat over the last conversations and
+    // beside the World | Community switch (2026-11-11).
+    if new_clicked {
         view.new_chat = true;
         view.new_kind = NewKind::Choose;
     }

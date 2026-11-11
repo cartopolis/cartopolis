@@ -269,3 +269,14 @@ at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]
 time = 12.0
 ui = ["dev"]
+
+# Follow mode with the avatar. Its touch controls draw only on the phone
+# tier, so this one is worth running with CARTO_QUALITY=phone too: the right
+# edge's jump/flight pair must stand clear of the column of round buttons.
+[[shot]]
+name = "follow"
+at = [53.2190, 6.5680, 2.0]
+look = [-15.0, 0.0]
+time = 12.0
+mode = "avatar"
+ui = []

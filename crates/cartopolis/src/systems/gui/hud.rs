@@ -115,14 +115,24 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             // warm end is the closest thing we own" — the chrome has no warm end
             // any more, and what actually makes a needle readable is that its two
             // halves differ, which they still do by two full steps of the ramp.
+            //
+            // On the light theme's white disc the north half is the deep teal
+            // ink of every map glyph, with the "N" white on it: the accent's
+            // N in the same teal sat on the needle and vanished (2026-11-11).
+            let light = theme::is_light();
+            let (north_ink, south_ink, n_ink) = if light {
+                (theme::p().map_ink, theme::p().line, theme::p().on_accent)
+            } else {
+                (theme::p().accent, theme::p().text_dim, face.ink)
+            };
             p.add(egui::Shape::convex_polygon(
                 vec![c + north * (r * 0.86), c + w, c - w],
-                theme::p().accent,
+                north_ink,
                 egui::Stroke::NONE,
             ));
             p.add(egui::Shape::convex_polygon(
                 vec![c - north * (r * 0.64), c + w, c - w],
-                theme::p().text_dim,
+                south_ink,
                 egui::Stroke::NONE,
             ));
             // "N" over the north tip.
@@ -130,8 +140,12 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
                 c + north * (r * 0.47),
                 egui::Align2::CENTER_CENTER,
                 "N",
-                egui::FontId::proportional(theme::SIZE_TINY),
-                face.ink,
+                if light {
+                    egui::FontId::new(theme::SIZE_TINY, theme::brand_family())
+                } else {
+                    egui::FontId::proportional(theme::SIZE_TINY)
+                },
+                n_ink,
             );
             // Locked: a small padlock at the south edge, clear of the needle.
             // Drawn from primitives rather than an emoji — egui's bundled font

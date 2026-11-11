@@ -299,7 +299,9 @@ pub fn render_place_names(
                 continue;
             };
             let at = egui::pos2(screen.x / ui_scale, screen.y / ui_scale);
-            if map_rect.shrink(8.0).contains(at) {
+            if map_rect.shrink(8.0).contains(at)
+                && crate::systems::place_pins::clear_of_chrome(&ctx, at)
+            {
                 places.push((p, at));
             }
         }
