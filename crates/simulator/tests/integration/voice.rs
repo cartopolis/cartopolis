@@ -40,9 +40,10 @@ async fn start_sim() -> (SimHandle, String, tempfile::TempDir) {
     (handle, addr, dir)
 }
 
-/// The first intent, standing still: what gives a connection's avatar a body
-/// (`AvatarSim::embodied`). Until a client sends one it is in no snapshot and
-/// in earshot of nobody, which is how a chat-only web UI stays out of the world.
+/// The first intent, standing still on the Grote Markt: what gives a
+/// connection's avatar a place (`AvatarSim::place`). Until a client says where
+/// it stands it is in no snapshot and in earshot of nobody, which is how a
+/// chat-only web UI stays out of the world.
 fn stand_here() -> Bytes {
     Bytes::from(
         encode_app_frame(&NetMessage::ClientIntent {
@@ -57,7 +58,10 @@ fn stand_here() -> Bytes {
             emote: None,
             expression: None,
             seated: None,
-            geo: None,
+            geo: Some(cartopolis_core::GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            }),
         })
         .unwrap(),
     )

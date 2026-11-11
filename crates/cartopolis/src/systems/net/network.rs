@@ -739,6 +739,7 @@ pub fn apply_network_snapshot(
     mut game_state: ResMut<GameState>,
     mut avatar_state: ResMut<AvatarState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
+    map_anchor: Res<crate::resources::MapAnchor>,
     // Excludes avatars so the `&mut Transform` access is provably disjoint from
     // `avatar_tf` below (prims never carry Avatar/RemoteAvatar).
     mut prim_entities: Query<
@@ -861,25 +862,32 @@ pub fn apply_network_snapshot(
                     }
                 }
             }
-            NetMessage::WorldSnapshot {
-                prims,
-                avatars,
-                tick,
-            } => {
+            NetMessage::WorldSnapshot { avatars, tick } => {
                 tracing::debug!(tick, "world snapshot");
                 let repeat_tick = sync.as_ref().is_some_and(|s| s.received_initial_world);
+                // Every avatar's place on Earth, in this client's frame (protocol
+                // 47). Before the map has anchored there is no frame to put anyone
+                // in; the next snapshot, a tick on, finds one.
+                let seen: Vec<Seen> = match map_anchor.geo {
+                    Some(anchor) => avatars.iter().map(|a| Seen::new(anchor, a)).collect(),
+                    None => Vec::new(),
+                };
 
                 if repeat_tick {
-                    apply_local_avatar_pose(&avatars, local_sim_id.0, &mut avatar_state);
+                    apply_local_avatar_pose(&seen, local_sim_id.0, &mut avatar_state);
                     sync_remote_avatar_entities(
                         &mut commands,
-                        &avatars,
+                        &seen,
                         local_sim_id.0,
                         &mut remote_avatars,
                     );
                     continue;
                 }
 
+                // The first snapshot of a session. Whatever a lost session left
+                // behind goes; the world arrives thing by thing as it comes within
+                // reach (`PrimUpsert`), so there is nothing to spawn here.
+                //
                 // `try_*` throughout this loop, and not as hygiene: the mailbox
                 // can still hold a backlog when the link has already failed — a
                 // suspended app drains nothing for as long as it is off screen —
@@ -895,28 +903,34 @@ pub fn apply_network_snapshot(
                 for e in remote_es {
                     commands.entity(e).try_despawn();
                 }
-                game_state.prims_loaded = false;
-
-                for p in prims {
-                    spawn_prim_from_dto(&mut commands, p);
-                }
                 game_state.prims_loaded = true;
 
                 apply_local_avatar_pose_full(
-                    &avatars,
+                    &seen,
                     local_sim_id.0,
                     &mut avatar_state,
                     &mut avatar_tf,
                 );
                 sync_remote_avatar_entities(
                     &mut commands,
-                    &avatars,
+                    &seen,
                     local_sim_id.0,
                     &mut remote_avatars,
                 );
 
                 if let Some(s) = sync.as_mut() {
                     s.received_initial_world = true;
+                }
+            }
+            NetMessage::PrimOutOfReach { id } => {
+                // Out of reach, not deleted (protocol 47): the entity goes the
+                // same way a removed one does, and the thing comes back as a
+                // `PrimUpsert` when the avatar does.
+                for (e, p, _) in prim_entities.iter() {
+                    if p.id == id {
+                        commands.entity(e).try_despawn();
+                        break;
+                    }
                 }
             }
             NetMessage::PrimRemoved { id } => {
@@ -1207,8 +1221,33 @@ fn adopt_local_pose(avatar_state: &mut AvatarState, snapshot_pos: bevy::math::Ve
     true
 }
 
+/// An avatar's replicated state with its place in this client's frame: world
+/// metres east and south of the map anchor (`lat_lng_to_world`), and the
+/// altitude as height. Protocol 47 replicates a place on Earth, which each
+/// client converts for itself as it does a prim's `PrimDto::geo`; until then the
+/// wire carried metres in the *sender's* frame, right only while every client
+/// happened to share an anchor.
+struct Seen<'a> {
+    position: Vec3,
+    state: &'a AvatarStateDto,
+}
+
+impl<'a> Seen<'a> {
+    fn new(anchor: (f64, f64, u32), state: &'a AvatarStateDto) -> Self {
+        let (x, z) = crate::systems::geo_nav::lat_lng_to_world(
+            anchor,
+            state.geo.latitude,
+            state.geo.longitude,
+        );
+        Self {
+            position: Vec3::new(x as f32, state.alt_m, z as f32),
+            state,
+        }
+    }
+}
+
 fn apply_local_avatar_pose(
-    avatars: &[AvatarStateDto],
+    avatars: &[Seen],
     local_id: Option<u64>,
     avatar_state: &mut AvatarState,
 ) {
@@ -1220,11 +1259,12 @@ fn apply_local_avatar_pose(
     }
     avatar_state.position = a.position;
     avatar_state.snapshot_age = 0.0;
-    avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
+    avatar_state.sim_facing_yaw =
+        snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
 }
 
 fn apply_local_avatar_pose_full(
-    avatars: &[AvatarStateDto],
+    avatars: &[Seen],
     local_id: Option<u64>,
     avatar_state: &mut AvatarState,
     avatar_tf: &mut Query<&mut Transform, (With<Avatar>, Without<RemoteAvatar>)>,
@@ -1238,7 +1278,8 @@ fn apply_local_avatar_pose_full(
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
     avatar_state.snapshot_age = 0.0;
-    avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
+    avatar_state.sim_facing_yaw =
+        snap_yaw_continuation(avatar_state.sim_facing_yaw, a.state.yaw);
     if let Ok(mut tf) = avatar_tf.single_mut() {
         tf.translation = a.position;
         // Keep the locally-turned facing (`avatar::handle_avatar_movement` eases it
@@ -1248,27 +1289,27 @@ fn apply_local_avatar_pose_full(
     }
 }
 
-fn local_avatar_dto<'a>(
-    avatars: &'a [AvatarStateDto],
+fn local_avatar_dto<'a, 'b>(
+    avatars: &'a [Seen<'b>],
     local_id: Option<u64>,
-) -> Option<&'a AvatarStateDto> {
+) -> Option<&'a Seen<'b>> {
     // Until the handshake names our avatar, none of them is ours. This used to
     // fall back to the first one, which put somebody else's position on the
     // local avatar for any snapshot handled before the answer.
     let id = local_id?;
-    avatars.iter().find(|a| a.id == id)
+    avatars.iter().find(|a| a.state.id == id)
 }
 
 fn sync_remote_avatar_entities(
     commands: &mut Commands,
-    avatars: &[AvatarStateDto],
+    avatars: &[Seen],
     local_id: Option<u64>,
     remote_query: &mut Query<(Entity, &mut RemoteAvatar), Without<Avatar>>,
 ) {
     let expected: HashSet<u64> = avatars
         .iter()
-        .filter(|a| Some(a.id) != local_id)
-        .map(|a| a.id)
+        .filter(|a| Some(a.state.id) != local_id)
+        .map(|a| a.state.id)
         .collect();
 
     let stale: Vec<Entity> = remote_query
@@ -1285,30 +1326,30 @@ fn sync_remote_avatar_entities(
     let by_id: std::collections::HashMap<u64, Entity> =
         remote_query.iter().map(|(e, r)| (r.sim_id, e)).collect();
     for a in avatars {
-        if Some(a.id) == local_id {
+        if Some(a.state.id) == local_id {
             continue;
         }
         let mut found = false;
-        if let Some(&entity) = by_id.get(&a.id) {
+        if let Some(&entity) = by_id.get(&a.state.id) {
             if let Ok((_, mut r)) = remote_query.get_mut(entity) {
                 r.net_position = a.position;
-                r.net_velocity = a.velocity;
+                r.net_velocity = a.state.velocity;
                 r.net_age = 0.0;
-                r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
+                r.net_yaw = snap_yaw_continuation(r.net_yaw, a.state.yaw);
                 // A level, not an edge: the sim re-sends it in every snapshot for
                 // as long as the sit lasts, and the *blend* onto it is this
                 // client's own business (`avatar::update_avatar_model_pose`).
-                r.seated = a.seated.map(Vec2::from);
+                r.seated = a.state.seated.map(Vec2::from);
                 // Fire only on a sequence we haven't seen: the sim re-sends a live
                 // emote in every snapshot for a couple of seconds, so diffing on
                 // the emote itself would restart the clip 20 times a second.
-                if let Some(e) = a.emote {
+                if let Some(e) = a.state.emote {
                     if r.last_emote_sequence != Some(e.sequence) {
                         r.last_emote_sequence = Some(e.sequence);
                         r.pending_emote = Some(e.emote);
                     }
                 }
-                if let Some(e) = a.expression {
+                if let Some(e) = a.state.expression {
                     if r.last_expression_sequence != Some(e.sequence) {
                         r.last_expression_sequence = Some(e.sequence);
                         r.pending_expression = Some(e.expression);
@@ -1318,25 +1359,25 @@ fn sync_remote_avatar_entities(
             }
         }
         if !found {
-            let y = snap_yaw_continuation(0.0, a.yaw);
+            let y = snap_yaw_continuation(0.0, a.state.yaw);
             commands.spawn((
                 RemoteAvatar {
-                    sim_id: a.id,
+                    sim_id: a.state.id,
                     net_position: a.position,
                     net_yaw: y,
-                    net_velocity: a.velocity,
+                    net_velocity: a.state.velocity,
                     net_age: 0.0,
                     // An avatar that comes into view mid-emote plays it: that is
                     // the whole reason the sim holds it on the wire.
-                    pending_emote: a.emote.map(|e| e.emote),
-                    last_emote_sequence: a.emote.map(|e| e.sequence),
-                    pending_expression: a.expression.map(|e| e.expression),
-                    last_expression_sequence: a.expression.map(|e| e.sequence),
+                    pending_emote: a.state.emote.map(|e| e.emote),
+                    last_emote_sequence: a.state.emote.map(|e| e.sequence),
+                    pending_expression: a.state.expression.map(|e| e.expression),
+                    last_expression_sequence: a.state.expression.map(|e| e.sequence),
                     // An avatar already sitting when it comes into range is drawn
                     // sitting, and slides onto the seat from here like everyone
                     // else — a fraction of a second of one stranger arriving
                     // upright is cheaper than a special case.
-                    seated: a.seated.map(Vec2::from),
+                    seated: a.state.seated.map(Vec2::from),
                     seat_blend: 0.0,
                     // Stood on this viewer's ground by `avatar::smooth_remote_avatars`.
                     terrain_lift: 0.0,
@@ -1582,6 +1623,44 @@ fn intent_has_edge(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Where the avatar stands on Earth, from its frame position and the map's
+/// anchor; `None` before the map has anchored.
+fn avatar_geo(
+    map_anchor: &crate::resources::MapAnchor,
+    avatar_state: &AvatarState,
+) -> Option<cartopolis_core::GeoAnchor> {
+    map_anchor.geo.map(|anchor| {
+        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+            anchor,
+            f64::from(avatar_state.position.x),
+            f64::from(avatar_state.position.z),
+        );
+        cartopolis_core::GeoAnchor {
+            latitude: lat,
+            longitude: lng,
+        }
+    })
+}
+
+/// An intent that asks for nothing but says where the avatar stands: what
+/// places an avatar the sim has nowhere yet (`NetMessage::ClientIntent::geo`).
+fn standing_intent(yaw: f32, geo: cartopolis_core::GeoAnchor) -> NetMessage {
+    NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: yaw,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote: None,
+        expression: None,
+        seated: None,
+        geo: Some(geo),
+    }
+}
+
 pub fn send_network_intent(
     mut started: MessageReader<crate::systems::avatar_face::StartExpression>,
     online: Option<Res<OnlineSession>>,
@@ -1597,11 +1676,13 @@ pub fn send_network_intent(
     map_anchor: Res<crate::resources::MapAnchor>,
     mut last_sent: Local<Option<SentIntent>>,
     mut since_send: Local<f32>,
+    mut placed: Local<bool>,
 ) {
     // Read whatever the session's state: an expression is shown locally
     // either way (`avatar_face`), and only the latest is worth sending.
     let expression = started.read().last().map(|s| s.0);
     let Some(sess) = online else {
+        *placed = false;
         return;
     };
     if camera_state.mode != crate::resources::CameraMode::Avatar {
@@ -1609,6 +1690,19 @@ pub fn send_network_intent(
         avatar_state.predicted_velocity = Vec3::ZERO;
         // Force a send when the avatar camera comes back, whatever the state then.
         *last_sent = None;
+        // Not driving, but the sim still has to be told once where the avatar
+        // stands (protocol 47): an avatar is nowhere until its client says, and
+        // nothing is within reach of nowhere — no things, nobody — however the
+        // camera happens to be looking when the session opens.
+        if !*placed {
+            if let Some(geo) = avatar_geo(&map_anchor, &avatar_state) {
+                *placed = true;
+                let _ = sess.intent_tx.unbounded_send(standing_intent(
+                    avatar_state.facing_yaw,
+                    geo,
+                ));
+            }
+        }
         return;
     }
 
@@ -1843,17 +1937,8 @@ pub fn send_network_intent(
     // Sent with the intent rather than on a clock of its own because it is a
     // *property of the same movement*: an intent that reports where the avatar is
     // going and not where it is would be two facts arriving out of step.
-    let geo = map_anchor.geo.map(|anchor| {
-        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
-            anchor,
-            f64::from(avatar_state.position.x),
-            f64::from(avatar_state.position.z),
-        );
-        cartopolis_core::GeoAnchor {
-            latitude: lat,
-            longitude: lng,
-        }
-    });
+    let geo = avatar_geo(&map_anchor, &avatar_state);
+    *placed |= geo.is_some();
     let _ = sess.intent_tx.unbounded_send(NetMessage::ClientIntent {
         request_id: 0,
         move_x: v.x,
@@ -1877,7 +1962,6 @@ mod tests {
     fn snapshot(tick: u64) -> NetMessage {
         NetMessage::WorldSnapshot {
             tick,
-            prims: Vec::new(),
             avatars: Vec::new(),
         }
     }

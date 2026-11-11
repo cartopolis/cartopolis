@@ -1,7 +1,7 @@
 ---
 topic: simulator-tick-budget
 triggers: [tick_loop, WorldSnapshot, avatar_snapshot, broadcast, "tick timing", TickMeter, spawn_blocking, "blocking the executor", journal_mode, WAL, flush_dirty, "world write lock", RwLock, "sqlite is slow", "snapshot is large", tokio, "schedule latency", Bytes, "chat fan-out", crates/simulator/src/net, crates/simulator/src/db.rs, crates/simulator/src/state.rs, crates/simulator/src/prims.rs, crates/simulator/src/chat.rs, crates/simulator/src/library.rs]
-updated: 2026-09-15
+updated: 2026-11-11
 ---
 
 # What one simulator tick may spend, and on what
@@ -35,6 +35,13 @@ A large `total` with a small `locked` is a busy but healthy server. A large
 `locked` is the thing to go and fix.
 
 ## The repeating snapshot carries no prims, and never usefully did
+
+*Since protocol 47 (2026-11-11) there is no repeating broadcast snapshot at all:
+the tick leaves one table and each connection cuts its own snapshot from the
+avatars within its reach, and things arrive and leave by reach
+(`interest-by-reach.md`). The measurement below is why the world left the
+snapshot in the first place and what the per-connection path has to stay under;
+the `Bytes` rule after it still holds for every frame the tick fans out.*
 
 `WorldSnapshot` has a `prims` field and the tick loop used to fill it with the
 whole world — up to the 1,000-prim ceiling — twenty times a second, cloned out of

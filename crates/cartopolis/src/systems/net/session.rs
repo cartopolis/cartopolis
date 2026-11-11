@@ -701,6 +701,7 @@ pub fn keep_avatar_across_reconnect(
                     &mut tf,
                     &mut avatar_state,
                     Some(sess),
+                    anchor,
                     to_cell,
                     to_local,
                 );
@@ -725,6 +726,7 @@ pub fn keep_avatar_across_reconnect(
                 &mut tf,
                 &mut avatar_state,
                 Some(sess),
+                anchor,
                 to_cell,
                 to_local,
             );
@@ -1564,8 +1566,13 @@ mod tests {
         let drawn = app.world().get::<Transform>(avatar).unwrap().translation;
         assert!(drawn.distance(walked) < 0.01, "avatar drawn at {drawn}");
         match rx.try_recv() {
-            Ok(cartopolis_core::NetMessage::Teleport { position, .. }) => {
-                assert!(position.distance(walked) < 0.01, "sim told {position}");
+            Ok(cartopolis_core::NetMessage::Teleport { geo, alt_m, .. }) => {
+                // A place on Earth (protocol 47), which under the test's anchor
+                // is the frame position the avatar had walked to.
+                let (x, z) =
+                    geo_nav::lat_lng_to_world((53.2194, 6.5665, 14), geo.latitude, geo.longitude);
+                let told = Vec3::new(x as f32, alt_m, z as f32);
+                assert!(told.distance(walked) < 0.01, "sim told {told}");
             }
             _ => panic!("the sim was not told where the avatar is"),
         }

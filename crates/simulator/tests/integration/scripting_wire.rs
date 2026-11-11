@@ -59,7 +59,35 @@ async fn connect_auth(addr: &str) -> Client {
     c.send(Bytes::from(hello)).await.unwrap();
     let ack = decode_app_frame(&c.next().await.unwrap().unwrap()).unwrap();
     assert!(matches!(ack, NetMessage::ServerHelloAck { .. }));
+    // Standing where this suite builds its prims, so what a script does to them
+    // is within reach and arrives (protocol 47).
+    stand(&mut c, 0.0, 0.0).await;
     c
+}
+
+/// Say where the avatar stands: nothing is within reach of an avatar that is
+/// nowhere, so a connection that never does receives no snapshots and no
+/// things, whatever its presence says (protocol 47).
+async fn stand(c: &mut Client, lat: f64, lng: f64) {
+    let frame = encode_app_frame(&NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: 0.0,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote: None,
+        expression: None,
+        seated: None,
+        geo: Some(GeoAnchor {
+            latitude: lat,
+            longitude: lng,
+        }),
+    })
+    .unwrap();
+    c.send(Bytes::from(frame)).await.unwrap();
 }
 
 /// Read frames until one matches, discarding the snapshot traffic in between.

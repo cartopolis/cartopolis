@@ -51,7 +51,10 @@ fn stand_here() -> Bytes {
             emote: None,
             expression: None,
             seated: None,
-            geo: None,
+            geo: Some(cartopolis_core::GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            }),
         })
         .unwrap(),
     )

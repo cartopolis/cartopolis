@@ -30,11 +30,11 @@ use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use crate::reach::Place;
 use cartopolis_core::permissions::PermissionSet;
-use glam::Vec3;
 use tokio::sync::mpsc;
 
-/// Proximity radii in metres (sim-space ≈ metres). `say` is default; `shout`
+/// Proximity radii in metres over the ground. `say` is default; `shout`
 /// widens it.
 pub const SAY_RADIUS_M: f32 = 50.0;
 pub const SHOUT_RADIUS_M: f32 = 300.0;
@@ -45,12 +45,16 @@ pub const SHOUT_RADIUS_M: f32 = 300.0;
 /// recipient, differing only in what they put in the frame. `sender` is not
 /// filtered here — text echoes to the sender and voice must not, so that call
 /// belongs to the caller.
+///
+/// Places on Earth (`reach::Place`), since protocol 47: a distance between two
+/// avatars used to be measured in metres of their own clients' map frames,
+/// which agreed only while the two happened to share an anchor.
 #[must_use]
-pub fn within_radius(origin: Vec3, candidates: &[(u64, Vec3)], radius: f32) -> Vec<(u64, f32)> {
+pub fn within_radius(origin: Place, candidates: &[(u64, Place)], radius: f32) -> Vec<(u64, f32)> {
     candidates
         .iter()
         .filter_map(|(id, p)| {
-            let d = (*p - origin).length();
+            let d = origin.distance_m(*p);
             (d <= radius).then_some((*id, d))
         })
         .collect()
@@ -368,28 +372,37 @@ impl ChatHub {
 mod tests {
     use super::*;
 
-    fn at(x: f32) -> Vec3 {
-        Vec3::new(x, 0.0, 0.0)
+    const LAT: f64 = 53.2194;
+    const LNG: f64 = 6.5665;
+
+    /// `x` metres east of the origin, on the ground.
+    fn at(x: f32) -> Place {
+        let (_, per_lng) = cartopolis_core::degree_scale_m(LAT);
+        Place::new(LAT, LNG + f64::from(x) / per_lng, 0.0)
+    }
+
+    fn origin() -> Place {
+        Place::new(LAT, LNG, 0.0)
     }
 
     #[test]
     fn say_radius_excludes_beyond_and_keeps_distance() {
         let candidates = [(1, at(10.0)), (2, at(49.0)), (3, at(51.0))];
-        let got = within_radius(Vec3::ZERO, &candidates, SAY_RADIUS_M);
+        let got = within_radius(origin(), &candidates, SAY_RADIUS_M);
 
         let ids: Vec<u64> = got.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec![1, 2], "3 is beyond say radius");
         // Each recipient carries its own distance — what attenuation reads.
-        assert!((got[0].1 - 10.0).abs() < 0.001);
-        assert!((got[1].1 - 49.0).abs() < 0.001);
+        assert!((got[0].1 - 10.0).abs() < 0.05);
+        assert!((got[1].1 - 49.0).abs() < 0.05);
     }
 
     #[test]
     fn shout_reaches_what_say_cannot() {
         let candidates = [(1, at(200.0))];
-        assert!(within_radius(Vec3::ZERO, &candidates, SAY_RADIUS_M).is_empty());
+        assert!(within_radius(origin(), &candidates, SAY_RADIUS_M).is_empty());
         assert_eq!(
-            within_radius(Vec3::ZERO, &candidates, SHOUT_RADIUS_M).len(),
+            within_radius(origin(), &candidates, SHOUT_RADIUS_M).len(),
             1
         );
     }
@@ -484,11 +497,15 @@ mod tests {
     #[test]
     fn radius_is_a_sphere_not_an_axis() {
         // A listener directly above is as far as one to the side.
+        let (per_lat, per_lng) = cartopolis_core::degree_scale_m(LAT);
         let candidates = [
-            (1, Vec3::new(0.0, 60.0, 0.0)),
-            (2, Vec3::new(30.0, 0.0, 30.0)),
+            (1, Place::new(LAT, LNG, 60.0)),
+            (
+                2,
+                Place::new(LAT - 30.0 / per_lat, LNG + 30.0 / per_lng, 0.0),
+            ),
         ];
-        let ids: Vec<u64> = within_radius(Vec3::ZERO, &candidates, SAY_RADIUS_M)
+        let ids: Vec<u64> = within_radius(origin(), &candidates, SAY_RADIUS_M)
             .iter()
             .map(|(id, _)| *id)
             .collect();

@@ -142,8 +142,12 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
     let (_dir, _handle, addr) = boot().await;
     let mut dev = connect_auth(&addr, "dev").await;
     let mut other = connect_auth(&addr, "other").await;
-    // Fully in before the look is set, or it is told twice: once as a change and
-    // once with the world it is still being handed.
+    // Both standing on the Grote Markt: snapshots come only to a placed avatar,
+    // and list only the avatars within its reach (protocol 47). Fully in before
+    // the look is set, or it is told twice: once as a change and once with the
+    // world it is still being handed.
+    send(&mut dev, &standing_still()).await;
+    send(&mut other, &standing_still()).await;
     until_listed(&mut other, u64::MAX, false).await;
 
     send(&mut dev, &NetMessage::SetAvatarLook { look: a_look() }).await;
@@ -154,6 +158,7 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
 
     // Someone arriving later is handed it with the world.
     let mut late = connect_auth(&addr, "late").await;
+    send(&mut late, &standing_still()).await;
     let handed = looks_settled(&mut late, 1, Duration::from_secs(5)).await;
     assert!(
         handed
@@ -162,9 +167,8 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
         "a late arrival gets every online look: {handed:?}"
     );
 
-    // Signing in again wears the saved look without sending it. An intent puts
-    // the avatar in the snapshots, so the other client can see it leave.
-    send(&mut dev, &standing_still()).await;
+    // Signing in again wears the saved look without sending it. The avatar is
+    // in the snapshots, so the other client can see it leave.
     until_listed(&mut other, dev_avatar, true).await;
     drop(dev);
     until_listed(&mut other, dev_avatar, false).await;
@@ -189,7 +193,10 @@ fn standing_still() -> NetMessage {
         emote: None,
         expression: None,
         seated: None,
-        geo: None,
+        geo: Some(cartopolis_core::GeoAnchor {
+            latitude: 53.2194,
+            longitude: 6.5665,
+        }),
     }
 }
 

@@ -1,17 +1,40 @@
 use cartopolis_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, Expression, ExpressionState,
-    GeoAnchor, HandPose, NetMessage, PrimBody, PrimDto, PrimSound, ToneSpec, EMOTE_REPLICATE_SECS,
+    GeoAnchor, HandPose, PrimBody, PrimDto, PrimSound, ToneSpec, EMOTE_REPLICATE_SECS,
     EXPRESSION_REPLICATE_SECS, MAX_SEAT_OFFSET_M,
 };
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
 use crate::physics::{AvatarProbe, Kick, Physics, MAX_PHYSICAL_PRIMS};
+use crate::reach::{ground_m, Place};
 use crate::scripting::{PrimView, ScriptCommand};
 use cartopolis_core::motion;
 
 struct AvatarSim {
-    position: Vec3,
+    /// Where this avatar stands on Earth, once its client has said (protocol
+    /// 47): the first `ClientIntent` carrying a `geo`, or a `Teleport`. **This
+    /// is the authoritative position**, and [`SimWorld::step`] moves it by the
+    /// intent's velocity in metres turned into degrees at this latitude
+    /// (`cartopolis_core::degree_scale_m`); every client converts it into the
+    /// frame its own map is anchored in, as it does for a prim's anchor.
+    ///
+    /// Until protocol 46 the position was metres in the avatar's *own* client's
+    /// map frame, and `geo` was a second, client-reported place the sim kept
+    /// beside it for sensors and physics — so Here chat compared frames that
+    /// differed, and no two clients could be shown one avatar at one spot unless
+    /// they happened to share an anchor.
+    ///
+    /// `None` is an avatar that is nowhere: every connection gets one, and not
+    /// every connection is somebody standing in the world. The web UI signs in to
+    /// chat and never says where it is; such an avatar is in nobody's snapshot
+    /// and in earshot of nobody ([`SimWorld::placed_avatars`],
+    /// [`SimWorld::embodied_place`]). The app sends its first intent on its first
+    /// online frame, so for an app this lasts one frame.
+    place: Option<GeoAnchor>,
+    /// Height of the feet above the flat ground (`motion::GROUND_Y`), metres:
+    /// what a jump, a fall and flight change.
+    alt: f32,
     yaw: f32,
     velocity: Vec3,
     /// Flight mode (`ClientIntent::flying`): hovers at altitude, and only then do
@@ -66,16 +89,7 @@ struct AvatarSim {
     /// How this avatar looks (protocol 42), once its owner's client or the
     /// account has said; handed to clients as `AvatarLookOf`.
     look: Option<cartopolis_core::AvatarLook>,
-    /// Where this avatar is on Earth, as its own client last said (protocol 20).
-    ///
-    /// The sim cannot compute this and does not use it to move anything: it is
-    /// the only frame in which "is this avatar near that prim?" has an answer
-    /// (see [`cartopolis_core::NetMessage::ClientIntent`]'s `geo`), and
-    /// `sensor` is the one consumer. `None` until a client that knows says so —
-    /// an avatar with no fix is invisible to a sensor, which is the honest
-    /// answer.
-    geo: Option<GeoAnchor>,
-    /// Where this avatar's body is drawn relative to [`Self::position`], while it
+    /// Where this avatar's body is drawn relative to [`Self::place`], while it
     /// is sitting on something (`AvatarStateDto::seated`).
     ///
     /// The sim holds it without understanding it: it has no map, so it cannot
@@ -84,17 +98,16 @@ struct AvatarSim {
     /// it the moment the same avatar asks to move, so "sitting" cannot become a
     /// way to walk around displaced from your own position.
     seated: Option<[f32; 2]>,
-    /// Whether this avatar has a body yet: false from the handshake until its
-    /// client first sends an intent or a teleport.
-    ///
-    /// Every connection gets an avatar, and not every connection is somebody
-    /// standing in the world: the web UI signs in to chat, and never moves. An
-    /// avatar nobody is driving would stand at the frame origin in everybody's
-    /// snapshot and hear every nearby line said there, so until it is embodied
-    /// it is left out of both ([`SimWorld::avatar_dtos`],
-    /// [`SimWorld::embodied_position`]). The app sends its first intent on its
-    /// first online frame, so for an app this lasts one frame.
-    embodied: bool,
+}
+
+impl AvatarSim {
+    /// Where the avatar stands, if anywhere.
+    fn placed(&self) -> Option<Place> {
+        self.place.map(|geo| Place {
+            geo,
+            alt_m: self.alt,
+        })
+    }
 }
 
 pub struct SimWorld {
@@ -210,14 +223,7 @@ const SENSOR_MAX_RESULTS: usize = 16;
 /// there is no distance that means "unknown", so the answer has to be one no
 /// range test accepts.
 fn ground_distance_m(a: GeoAnchor, b: GeoAnchor) -> f32 {
-    if !a.latitude.is_finite()
-        || !a.longitude.is_finite()
-        || !b.latitude.is_finite()
-        || !b.longitude.is_finite()
-    {
-        return f32::INFINITY;
-    }
-    cartopolis_core::ground_distance_m(a.latitude, a.longitude, b.latitude, b.longitude) as f32
+    ground_m(a, b)
 }
 
 /// What the world may hold at once ([`SimWorld::caps`]).
@@ -273,17 +279,17 @@ impl SimWorld {
     pub fn spawn_avatar(&mut self) -> u64 {
         let id = self.next_avatar_id;
         self.next_avatar_id += 1;
-        // The origin of the sim's flat frame, which is where every client's map
-        // is anchored when it connects. There is nothing else to spawn relative
-        // to: the sim holds no map (see `AvatarSim::geo`).
-        let start = Vec3::ZERO;
         self.avatars.insert(
             id,
             AvatarSim {
+                // Nowhere until its client says where (`AvatarSim::place`): the
+                // sim holds no map and has nothing to spawn relative to.
+                place: None,
                 // Feet on the ground: the client avatar models are authored with
-                // their origin at the feet, so the standing height is y=0 (the sim
-                // clamps y>=0 below). The old +1.0 floated the humanoids a metre up.
-                position: start,
+                // their origin at the feet, so the standing height is 0 (the sim
+                // clamps it there below). The old +1.0 floated the humanoids a
+                // metre up.
+                alt: motion::GROUND_Y,
                 // Match client tank convention: yaw π ↔ tank 0 ↔ travel −Z when pressing W.
                 yaw: std::f32::consts::PI,
                 velocity: Vec3::ZERO,
@@ -301,18 +307,16 @@ impl SimWorld {
                 moved: Vec3::ZERO,
                 name: "Someone".to_string(),
                 look: None,
-                geo: None,
                 seated: None,
-                embodied: false,
             },
         );
         id
     }
 
-    /// Retire an avatar, handing back where on Earth it last stood (its
-    /// client's `geo`), for the account to come back to (`db::save_last_place`).
+    /// Retire an avatar, handing back where on Earth it last stood, for the
+    /// account to come back to (`db::save_last_place`).
     pub fn remove_avatar(&mut self, id: u64) -> Option<GeoAnchor> {
-        self.avatars.remove(&id).and_then(|a| a.geo)
+        self.avatars.remove(&id).and_then(|a| a.place)
     }
 
     /// Record who an avatar is, once the handshake knows.
@@ -363,7 +367,7 @@ impl SimWorld {
             self.avatars
                 .values()
                 .find(|av| av.name.eq_ignore_ascii_case(n))
-                .and_then(|av| av.geo)
+                .and_then(|av| av.place)
         };
         let d = ground_distance_m(geo_of(a)?, geo_of(b)?);
         d.is_finite().then_some(d)
@@ -380,7 +384,7 @@ impl SimWorld {
                 self.avatars
                     .iter()
                     .filter(|(_, av)| av.name.eq_ignore_ascii_case(n))
-                    .find_map(|(id, av)| Some((n.clone(), *id, av.geo?)))
+                    .find_map(|(id, av)| Some((n.clone(), *id, av.place?)))
             })
             .collect()
     }
@@ -392,9 +396,8 @@ impl SimWorld {
     pub fn stats_positions(&self) -> Vec<(String, f64, f64)> {
         self.avatars
             .values()
-            .filter(|av| av.embodied)
             .filter_map(|av| {
-                let g = av.geo?;
+                let g = av.place?;
                 Some((av.name.to_lowercase(), g.latitude, g.longitude))
             })
             .collect()
@@ -407,7 +410,7 @@ impl SimWorld {
             .avatars
             .values()
             .find(|av| av.name.eq_ignore_ascii_case(name))
-            .and_then(|av| av.geo)
+            .and_then(|av| av.place)
         else {
             return Vec::new();
         };
@@ -415,7 +418,7 @@ impl SimWorld {
             .avatars
             .values()
             .filter(|av| av.name != "Someone" && !av.name.eq_ignore_ascii_case(name))
-            .filter_map(|av| Some((av.name.clone(), ground_distance_m(me, av.geo?))))
+            .filter_map(|av| Some((av.name.clone(), ground_distance_m(me, av.place?))))
             .filter(|(_, d)| *d <= MEET_RADIUS_M)
             .collect();
         out.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -431,7 +434,7 @@ impl SimWorld {
             .avatars
             .values()
             .filter(|a| a.name != "Someone")
-            .filter_map(|a| Some((a.name.as_str(), a.geo?)))
+            .filter_map(|a| Some((a.name.as_str(), a.place?)))
             .collect();
         for (i, (a, ga)) in located.iter().enumerate() {
             for (b, gb) in &located[i + 1..] {
@@ -462,22 +465,23 @@ impl SimWorld {
     /// client's own teleport lands the camera at rest: velocity carried across a
     /// jump slides the avatar off the place it asked for, and a jump arc from
     /// the origin means landing mid-fall at the destination. Flight survives —
-    /// it is a mode, not motion — but the position's own `y` is clamped like
+    /// it is a mode, not motion — but the altitude is clamped like
     /// [`Self::step`] clamps it, so a malformed teleport cannot put an avatar
     /// underground.
-    pub fn teleport_avatar(&mut self, id: u64, position: Vec3) {
-        // Same rule as `apply_intent`, and the same reason: postcard decodes an
-        // `f32` from raw bytes, a NaN position poisons every later snapshot, and
-        // there is no honest partial application of a malformed placement.
-        if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
-            tracing::debug!(id, "discarded a teleport with a non-finite position");
+    pub fn teleport_avatar(&mut self, id: u64, geo: GeoAnchor, alt_m: f32) {
+        // Same rule as `apply_intent`, and the same reason: postcard decodes a
+        // float from raw bytes, a NaN place poisons every later snapshot and is
+        // at no distance from anyone, and there is no honest partial application
+        // of a malformed placement.
+        if !(Place { geo, alt_m }).is_valid() {
+            tracing::debug!(id, "discarded a teleport to a place that is not one");
             return;
         }
         let Some(av) = self.avatars.get_mut(&id) else {
             return;
         };
-        av.embodied = true;
-        av.position = Vec3::new(position.x, position.y.max(0.0), position.z);
+        av.place = Some(geo);
+        av.alt = alt_m.max(motion::GROUND_Y);
         av.velocity = Vec3::ZERO;
         av.vertical_velocity = 0.0;
         av.jump_requested = false;
@@ -488,22 +492,26 @@ impl SimWorld {
         // when device tracking started sending a placement per GNSS fix, i.e. at
         // ~1 Hz for as long as somebody is driving or has the locate button lit.
         // A line a second per tracked client is a log nobody can read the rest of.
-        tracing::debug!(id, x = position.x, z = position.z, "avatar teleported");
+        tracing::debug!(
+            id,
+            lat = geo.latitude,
+            lng = geo.longitude,
+            "avatar teleported"
+        );
     }
 
-    /// Current position of an avatar (proximity chat, ADR-028).
-    pub fn avatar_position(&self, id: u64) -> Option<Vec3> {
-        self.avatars.get(&id).map(|a| a.position)
+    /// Where an avatar stands, if its client has placed it ([`AvatarSim::place`]).
+    /// What anything that delivers by distance — nearby chat, voice, a prim's
+    /// speech — must ask, so a connection that only chats is never in earshot
+    /// of anyone.
+    pub fn embodied_place(&self, id: u64) -> Option<Place> {
+        self.avatars.get(&id).and_then(AvatarSim::placed)
     }
 
-    /// Where an avatar is, if it has a body ([`AvatarSim::embodied`]). What
-    /// anything that delivers by distance — nearby chat, voice, a prim's speech —
-    /// must ask, so a connection that only chats is never in earshot of anyone.
-    pub fn embodied_position(&self, id: u64) -> Option<Vec3> {
-        self.avatars
-            .get(&id)
-            .filter(|a| a.embodied)
-            .map(|a| a.position)
+    /// Whether an avatar exists at all, placed or not.
+    #[must_use]
+    pub fn has_avatar(&self, id: u64) -> bool {
+        self.avatars.contains_key(&id)
     }
 
     /// How many avatars are in the world — one per connected client, so this is
@@ -562,18 +570,22 @@ impl SimWorld {
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
-        av.embodied = true;
-        // The geographic fix, filtered rather than trusted: a non-finite or
-        // off-globe coordinate is dropped and the last good one kept, because a
-        // sensor reading a NaN latitude would compute a NaN distance and then see
-        // nobody at all, everywhere, for as long as that client stayed connected.
-        if let Some(g) = geo {
-            if g.latitude.is_finite()
-                && g.longitude.is_finite()
-                && g.latitude.abs() <= 90.0
-                && g.longitude.abs() <= 180.0
-            {
-                av.geo = Some(g);
+        // The client's word on where it stands is taken once, to put an avatar
+        // that is nowhere yet into the world; from then on the sim's own
+        // integration is the authority and the report is not needed
+        // (`NetMessage::ClientIntent::geo`). Filtered rather than trusted: a
+        // non-finite or off-globe coordinate is no place, and an avatar put
+        // there would be at a NaN distance from everyone — seen by nobody and
+        // heard by nobody, for as long as that client stayed connected.
+        if av.place.is_none() {
+            if let Some(g) = geo.filter(|g| {
+                Place {
+                    geo: *g,
+                    alt_m: 0.0,
+                }
+                .is_valid()
+            }) {
+                av.place = Some(g);
             }
         }
         // Horizontal speed is the intent *magnitude* scaled, capped
@@ -651,10 +663,10 @@ impl SimWorld {
             // The kick emote is also a kick: a physical prim at the avatar's feet
             // is sent the way it faces (`physics::Physics::kick`).
             if e == Emote::Kick {
-                if let Some(g) = av.geo {
+                if let Some(g) = av.place {
                     self.physics.kick(Kick {
                         geo: g,
-                        feet_y: av.position.y,
+                        feet_y: av.alt,
                         yaw: av.yaw,
                     });
                 }
@@ -669,19 +681,43 @@ impl SimWorld {
             self.note_meetings();
         }
         for av in self.avatars.values_mut() {
-            let before = av.position;
+            // An avatar that is nowhere has nothing to integrate; its intent's
+            // velocity waits for a place.
+            let Some(geo) = av.place else {
+                continue;
+            };
+            let alt_before = av.alt;
             // Flight rides altitude (`motion::fly_altitude_factor`), applied here
             // at integration rather than to the stored velocity: the factor moves
-            // with `y` between intents, and the wire's wish encoding saturates at
-            // `MAX_SPEED` so it could never carry the ramped speed anyway. The
-            // client predicts through the same function.
+            // with the altitude between intents, and the wire's wish encoding
+            // saturates at `MAX_SPEED` so it could never carry the ramped speed
+            // anyway. The client predicts through the same function.
             let lift = if av.flying {
-                motion::fly_altitude_factor(av.position.y)
+                motion::fly_altitude_factor(av.alt)
             } else {
                 1.0
             };
-            av.position.x += av.velocity.x * lift * dt;
-            av.position.z += av.velocity.z * lift * dt;
+            // Metres east and south this tick, turned into degrees at this
+            // latitude. Clients integrate in metres of their anchored Mercator
+            // frame, which agrees with the ellipsoid's own scale to a part in
+            // ten thousand over a reach, so prediction and authority differ by
+            // less than a millimetre a tick.
+            let dx = av.velocity.x * lift * dt;
+            let dz = av.velocity.z * lift * dt;
+            if dx != 0.0 || dz != 0.0 {
+                let (per_lat, per_lng) = cartopolis_core::degree_scale_m(geo.latitude);
+                let latitude = (geo.latitude - f64::from(dz) / per_lat).clamp(-90.0, 90.0);
+                let mut longitude = geo.longitude + f64::from(dx) / per_lng;
+                if longitude > 180.0 {
+                    longitude -= 360.0;
+                } else if longitude < -180.0 {
+                    longitude += 360.0;
+                }
+                av.place = Some(GeoAnchor {
+                    latitude,
+                    longitude,
+                });
+            }
             // Flight holds altitude; everything else is on the vertical arc, which
             // is `motion::step_fall` — the same function the client predicts with
             // and the `--offline` path integrates, so the three cannot disagree.
@@ -693,26 +729,25 @@ impl SimWorld {
                 // the client predicts the same curve.
                 av.fly_vertical =
                     motion::step_fly_vertical(av.fly_vertical, av.fly_vertical_target, dt);
-                av.position.y += av.fly_vertical * lift * dt;
+                av.alt += av.fly_vertical * lift * dt;
                 av.vertical_velocity = 0.0;
                 av.jump_requested = false;
-                if av.position.y < motion::GROUND_Y {
-                    av.position.y = motion::GROUND_Y;
+                if av.alt < motion::GROUND_Y {
+                    av.alt = motion::GROUND_Y;
                 }
             } else {
                 // A jump is only granted from the ground: the authority decides,
                 // so holding the key cannot climb.
-                if av.jump_requested && av.position.y <= motion::GROUND_Y + 1e-3 {
+                if av.jump_requested && av.alt <= motion::GROUND_Y + 1e-3 {
                     av.vertical_velocity = motion::JUMP_SPEED;
                 }
                 av.jump_requested = false;
-                let s =
-                    motion::step_fall(av.position.y, av.vertical_velocity, motion::GROUND_Y, dt);
-                av.position.y = s.y;
+                let s = motion::step_fall(av.alt, av.vertical_velocity, motion::GROUND_Y, dt);
+                av.alt = s.y;
                 av.vertical_velocity = s.vertical_velocity;
             }
             if dt > 0.0 {
-                av.moved = (av.position - before) / dt;
+                av.moved = Vec3::new(dx, av.alt - alt_before, dz) / dt;
             }
             // Age out the replicated emote so it stops being re-broadcast (and
             // re-played by anyone who arrives) long after it finished.
@@ -739,10 +774,10 @@ impl SimWorld {
             .avatars
             .iter()
             .filter_map(|(&id, a)| {
-                a.geo.map(|geo| AvatarProbe {
+                a.place.map(|geo| AvatarProbe {
                     id,
                     geo,
-                    feet_y: a.position.y,
+                    feet_y: a.alt,
                 })
             })
             .collect();
@@ -792,63 +827,59 @@ impl SimWorld {
         self.physics.velocity(prim_id)
     }
 
-    /// Every prim and every avatar, to every client.
+    /// Every placed avatar: its id, where it stands, and its state as a client
+    /// receives it. What the tick loop hands `reach::TickTable`, which encodes
+    /// each state once and lets every connection take the ones within its reach
+    /// (`docs/notes/interest-by-reach.md`).
     ///
-    /// **There is no area-of-interest filter here, and removing it was the
-    /// honest outcome of retiring regions rather than a regression.** ADR-012's
-    /// v0 filter excluded whole *regions* by the distance from `self.observer`
-    /// to a synthetic grid origin — and `observer` was one field on a world
-    /// shared by every connection, written by whichever client sent the last
-    /// `ObserverUpdate`, while one snapshot is broadcast to all. So what it did
-    /// in practice was blank every prim for *everybody* as soon as one client
-    /// walked 500 m from the origin of a grid that no longer corresponds to
-    /// anything. A real filter has to be computed per connection, which is a
-    /// different piece of work: the snapshot would have to stop being a
-    /// broadcast.
-    /// The full world: every prim and every avatar.
-    ///
-    /// Sent **once per connection**, at the handshake. See
-    /// [`Self::avatar_snapshot`] for why the repeating one carries no prims.
-    pub fn snapshot(&self, tick: u64) -> NetMessage {
-        NetMessage::WorldSnapshot {
-            tick,
-            prims: self.prims.clone(),
-            avatars: self.avatar_dtos(),
-        }
+    /// **There is no area-of-interest filter here, and none belongs here.** The
+    /// one ADR-012 had excluded whole *regions* by the distance from a single
+    /// `observer` field every connection overwrote, while one snapshot was
+    /// broadcast to all — so what it did was blank every prim for everybody as
+    /// soon as one client walked off. A filter has to be computed per connection,
+    /// which is what the connection does with this list; the world only says
+    /// where everyone is.
+    #[must_use]
+    pub fn placed_avatars(&self) -> Vec<(u64, Place, AvatarStateDto)> {
+        self.avatars
+            .iter()
+            .filter_map(|(&id, a)| {
+                let place = a.placed()?;
+                Some((
+                    id,
+                    place,
+                    AvatarStateDto {
+                        id,
+                        geo: place.geo,
+                        alt_m: place.alt_m,
+                        yaw: a.yaw,
+                        emote: a.emote,
+                        expression: a.expression,
+                        seated: a.seated,
+                        velocity: a.moved,
+                    },
+                ))
+            })
+            .collect()
     }
 
-    /// The repeating snapshot: avatars only, with an empty prim list.
-    ///
-    /// # Why the prims are not in here
-    ///
-    /// The client applies a snapshot's prim list on the *first* one it receives
-    /// and ignores it on every one after that (`network.rs`, the
-    /// `received_initial_world` branch) — prims change through `PrimUpsert` and
-    /// `PrimRemoved`, which is what the tick loop already sends. So the whole
-    /// list was being cloned out of the world, postcard-encoded, copied once per
-    /// connected client and then discarded on arrival, twenty times a second,
-    /// for as long as anyone was connected. At the default 1,000-prim ceiling
-    /// that is the largest single thing this server did per tick and none of it
-    /// reached a screen.
-    ///
-    /// This is deliberately **not** a wire change: `WorldSnapshot` still carries
-    /// a `prims` field and a connection still receives a full one. It moved from
-    /// the broadcast to the handshake, where the only client that needs it is.
-    /// An older client sees exactly what it saw before, because "the prim list in
-    /// a repeat snapshot" is a thing no client has ever read.
-    ///
-    /// One consequence to know, and it predates this: a client whose broadcast
-    /// receiver falls behind drops frames as `Lagged`, and a dropped `PrimUpsert`
-    /// is never resent. The repeating full prim list looked like it would repair
-    /// that and never did, since the client discards it. If prim resync becomes a
-    /// real problem, the fix is to notice the lag and resend, not to go back to
-    /// broadcasting the world.
-    pub fn avatar_snapshot(&self, tick: u64) -> NetMessage {
-        NetMessage::WorldSnapshot {
-            tick,
-            prims: Vec::new(),
-            avatars: self.avatar_dtos(),
-        }
+    /// Every thing's id and place, for the same table: a thing is in a
+    /// connection's world while it is within reach, and a `PrimUpsert` or a
+    /// `PrimOutOfReach` marks each crossing.
+    #[must_use]
+    pub fn thing_places(&self) -> Vec<(i64, Place)> {
+        self.prims
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    Place {
+                        geo: p.geo,
+                        alt_m: p.position.y,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// The face of `avatar_id` starts `expression`: a one-shot like an emote,
@@ -863,23 +894,6 @@ impl SimWorld {
             });
             av.expression_age = 0.0;
         }
-    }
-
-    /// v0 multiplayer: replicate every avatar to all clients.
-    fn avatar_dtos(&self) -> Vec<AvatarStateDto> {
-        self.avatars
-            .iter()
-            .filter(|(_, a)| a.embodied)
-            .map(|(&id, a)| AvatarStateDto {
-                id,
-                position: a.position,
-                yaw: a.yaw,
-                emote: a.emote,
-                expression: a.expression,
-                seated: a.seated,
-                velocity: a.moved,
-            })
-            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -1138,7 +1152,7 @@ impl SimWorld {
         let located: Vec<(u64, GeoAnchor, String)> = self
             .avatars
             .iter()
-            .filter_map(|(id, a)| a.geo.map(|g| (*id, g, a.name.clone())))
+            .filter_map(|(id, a)| a.place.map(|g| (*id, g, a.name.clone())))
             .collect();
         self.prims
             .iter()
@@ -1506,38 +1520,120 @@ mod tests {
         assert!(world.reserve_prim().is_err(), "the world is full");
     }
 
-    /// The repeating snapshot must not carry the prim list, and the handshake one
-    /// must.
-    ///
-    /// This is the property the whole split rests on: the client builds its prim
-    /// entities from the first `WorldSnapshot` and ignores the list in every one
-    /// after it, so putting the world in all of them was work that reached no
-    /// screen. If someone ever "fixes" `avatar_snapshot` by having it call
-    /// `snapshot`, this fails rather than quietly restoring twenty full world
-    /// serialisations a second.
+    // Groningen's Grote Markt, where the avatar tests stand.
+    const LAT: f64 = 53.2194;
+    const LNG: f64 = 6.5665;
+
+    fn here() -> GeoAnchor {
+        GeoAnchor {
+            latitude: LAT,
+            longitude: LNG,
+        }
+    }
+
+    /// The state a client is sent for `id`, if the avatar is placed.
+    fn dto(world: &SimWorld, id: u64) -> Option<AvatarStateDto> {
+        world
+            .placed_avatars()
+            .into_iter()
+            .find(|(i, _, _)| *i == id)
+            .map(|(_, _, d)| d)
+    }
+
+    /// Where `id` stands, in metres east and north of [`here`], and its height.
+    fn offset_m(world: &SimWorld, id: u64) -> Vec3 {
+        let p = world.embodied_place(id).expect("placed");
+        let (per_lat, per_lng) = cartopolis_core::degree_scale_m(LAT);
+        Vec3::new(
+            ((p.geo.longitude - LNG) * per_lng) as f32,
+            p.alt_m,
+            ((p.geo.latitude - LAT) * per_lat) as f32,
+        )
+    }
+
+    /// A connection that only chats (the web UI) never says where it stands, and
+    /// must be neither drawn nor in earshot: no snapshot shows it and nothing
+    /// delivered by distance finds it. Its first intent with a place gives it a
+    /// body; one without a place does not.
     #[test]
-    fn only_the_first_snapshot_carries_the_world() {
-        let (mut world, dir) = test_world();
-        let _ = stored_prim(&mut world, &dir);
+    fn an_avatar_is_nowhere_until_its_client_places_it() {
+        let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
-        world.teleport_avatar(id, Vec3::ZERO);
+        assert!(dto(&world, id).is_none(), "nobody has placed it yet");
+        assert_eq!(world.embodied_place(id), None);
+        assert!(world.has_avatar(id), "it still exists");
 
-        let NetMessage::WorldSnapshot { prims, avatars, .. } = world.snapshot(0) else {
-            panic!("snapshot")
-        };
-        assert_eq!(prims.len(), 1, "the handshake snapshot carries the world");
-        assert!(avatars.iter().any(|a| a.id == id));
-
-        let NetMessage::WorldSnapshot { prims, avatars, .. } = world.avatar_snapshot(1) else {
-            panic!("snapshot")
-        };
-        assert!(
-            prims.is_empty(),
-            "the repeating snapshot carries no prims; they travel as PrimUpsert"
+        world.apply_intent(
+            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
         );
+        world.step(0.05);
         assert!(
-            avatars.iter().any(|a| a.id == id),
-            "it does still carry avatars — that is the whole reason it repeats"
+            dto(&world, id).is_none(),
+            "an intent without a place puts nothing into the world"
+        );
+
+        world.apply_intent(
+            id,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            Some(here()),
+        );
+        let d = dto(&world, id).expect("placed now");
+        assert_eq!(d.geo, here());
+        assert_eq!(d.alt_m, motion::GROUND_Y);
+        assert_eq!(world.embodied_place(id), Some(Place::new(LAT, LNG, 0.0)));
+    }
+
+    /// Once placed, the avatar is moved by the sim and not by the client's
+    /// reports: a later intent claiming to stand elsewhere moves nothing, and a
+    /// tick of walking moves it the walk's distance over the ground — east for
+    /// +x and south for +z, as the client's frame has it.
+    #[test]
+    fn the_sim_moves_a_placed_avatar_and_ignores_later_reports() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        world.teleport_avatar(id, here(), 0.0);
+
+        let elsewhere = GeoAnchor {
+            latitude: LAT + 0.01,
+            longitude: LNG,
+        };
+        world.apply_intent(
+            id,
+            1.0,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            Some(elsewhere),
+        );
+        world.step(0.5);
+        let o = offset_m(&world, id);
+        let expect = motion::sim_speed_for_wish(1.0) * 0.5;
+        assert!(
+            (o.x - expect).abs() < 1e-2 && o.z.abs() < 1e-3,
+            "walking east for half a second put the avatar at {o:?}, not {expect} m east"
+        );
+
+        world.apply_intent(
+            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
+        );
+        world.step(0.5);
+        let o2 = offset_m(&world, id);
+        assert!(
+            (o2.x - o.x).abs() < 1e-3 && (-o2.z - expect).abs() < 1e-2,
+            "walking +z for half a second should go {expect} m south: {o2:?}"
         );
     }
 
@@ -1545,14 +1641,15 @@ mod tests {
     /// authoritative avatar state.
     ///
     /// Infinity is the case that got through: the wire is raw `f32` bytes, the
-    /// magnitude test only rejects NaN, and `v / inf` is NaN. Once the position is
-    /// NaN it stays NaN — every subsequent intent adds to it — and it is
-    /// replicated to every client for the life of the process.
+    /// magnitude test only rejects NaN, and `v / inf` is NaN. Once the place is
+    /// NaN it stays NaN — every subsequent intent adds to it — and it is at no
+    /// distance from anyone for the life of the process.
     #[test]
     fn a_non_finite_intent_cannot_poison_the_avatar() {
         let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
-        let start = world.avatar_position(id).expect("spawned");
+        world.teleport_avatar(id, here(), 0.0);
+        let start = world.embodied_place(id).expect("placed");
 
         for (x, z, yaw) in [
             (f32::INFINITY, 0.0, 0.0),
@@ -1563,17 +1660,56 @@ mod tests {
         ] {
             world.apply_intent(id, x, z, yaw, false, false, false, false, None, None, None);
             world.step(0.05);
-            let p = world.avatar_position(id).expect("still there");
+            let p = world.embodied_place(id).expect("still there");
             assert!(
-                p.is_finite(),
-                "intent ({x}, {z}, yaw {yaw}) put {p:?} into the authoritative position"
+                p.is_valid(),
+                "intent ({x}, {z}, yaw {yaw}) put {p:?} into the authoritative place"
             );
         }
         assert_eq!(
-            world.avatar_position(id),
+            world.embodied_place(id),
             Some(start),
             "a rejected intent should move nothing at all"
         );
+
+        // A place that is not one is refused too, and leaves the avatar where it
+        // is rather than nowhere.
+        let unplaced = world.spawn_avatar();
+        for bad in [
+            GeoAnchor {
+                latitude: f64::NAN,
+                longitude: LNG,
+            },
+            GeoAnchor {
+                latitude: LAT,
+                longitude: 181.0,
+            },
+            GeoAnchor {
+                latitude: -91.0,
+                longitude: LNG,
+            },
+        ] {
+            world.apply_intent(
+                unplaced,
+                0.0,
+                0.0,
+                0.0,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                Some(bad),
+            );
+            assert_eq!(world.embodied_place(unplaced), None, "{bad:?} is no place");
+            world.teleport_avatar(id, bad, 0.0);
+            assert_eq!(
+                world.embodied_place(id),
+                Some(start),
+                "{bad:?} moved the avatar"
+            );
+        }
 
         // And an ordinary intent still moves, so the guard is not simply refusing
         // everything.
@@ -1581,40 +1717,14 @@ mod tests {
             id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
         );
         world.step(0.05);
-        let p = world.avatar_position(id).expect("still there");
-        assert!(p.is_finite());
         assert!(
-            (p.z - start.z).abs() > 1e-4,
+            offset_m(&world, id).z.abs() > 1e-4,
             "a valid intent should have moved the avatar"
         );
     }
 
-    /// A connection that only chats (the web UI) never sends an intent, and
-    /// must be neither drawn nor in earshot: no snapshot shows it and nothing
-    /// delivered by distance finds it. Its first intent gives it a body.
-    #[test]
-    fn an_avatar_is_absent_until_its_client_drives_it() {
-        let (mut world, _dir) = test_world();
-        let id = world.spawn_avatar();
-        let shown = |w: &SimWorld| {
-            let NetMessage::WorldSnapshot { avatars, .. } = w.avatar_snapshot(1) else {
-                panic!("snapshot")
-            };
-            avatars.iter().any(|a| a.id == id)
-        };
-        assert!(!shown(&world), "nobody is driving it yet");
-        assert_eq!(world.embodied_position(id), None);
-        assert!(world.avatar_position(id).is_some(), "it still exists");
-
-        world.apply_intent(
-            id, 0.0, 0.0, 0.0, false, false, false, false, None, None, None,
-        );
-        assert!(shown(&world));
-        assert_eq!(world.embodied_position(id), world.avatar_position(id));
-    }
-
     /// The seat is the one thing a client may use to draw its body away from the
-    /// position this sim holds for it, so the sim polices it: it must be a real,
+    /// place this sim holds for it, so the sim polices it: it must be a real,
     /// short offset, and it does not survive the same client asking to move.
     ///
     /// Without the second rule "sitting" is a way to walk around a metre or two
@@ -1624,99 +1734,38 @@ mod tests {
     fn a_seat_is_bounded_and_does_not_survive_moving() {
         let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
-        let seated = |w: &SimWorld| {
-            let NetMessage::WorldSnapshot { avatars, .. } = w.snapshot(0) else {
-                panic!("snapshot")
-            };
-            avatars.iter().find(|a| a.id == id).expect("in view").seated
+        world.teleport_avatar(id, here(), 0.0);
+        let seated = |w: &SimWorld| dto(w, id).expect("in view").seated;
+        let sit = |w: &mut SimWorld, x: f32, z: f32, flying: bool, jump: bool, seat: [f32; 2]| {
+            w.apply_intent(
+                id,
+                x,
+                z,
+                0.0,
+                flying,
+                false,
+                false,
+                jump,
+                None,
+                Some(seat),
+                None,
+            );
         };
 
         // An ordinary seat: still, and within reach of a bench.
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
+        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
         assert_eq!(seated(&world), Some([0.4, -0.9]));
 
         // Asking to move ends it, in the same intent that asks.
-        world.apply_intent(
-            id,
-            0.0,
-            1.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
+        sit(&mut world, 0.0, 1.0, false, false, [0.4, -0.9]);
         assert_eq!(seated(&world), None, "walking away should end the sit");
 
         // So does taking off, and so does a jump.
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            true,
-            false,
-            false,
-            false,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
+        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
+        sit(&mut world, 0.0, 0.0, true, false, [0.4, -0.9]);
         assert_eq!(seated(&world), None, "flying should end the sit");
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            true,
-            None,
-            Some([0.4, -0.9]),
-            None,
-        );
+        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
+        sit(&mut world, 0.0, 0.0, false, true, [0.4, -0.9]);
         assert_eq!(seated(&world), None, "jumping should end the sit");
 
         // Nothing a client can put on the wire draws its body across the street,
@@ -1727,33 +1776,22 @@ mod tests {
             [f32::INFINITY, 0.0],
             [f32::NAN, f32::NAN],
         ] {
-            world.apply_intent(
-                id,
-                0.0,
-                0.0,
-                0.0,
-                false,
-                false,
-                false,
-                false,
-                None,
-                Some(bad),
-                None,
-            );
+            sit(&mut world, 0.0, 0.0, false, false, bad);
             assert_eq!(seated(&world), None, "{bad:?} should have been refused");
         }
 
-        // And the position itself never moved through any of it.
-        assert!(world.avatar_position(id).expect("spawned").is_finite());
+        // And the place itself never moved through any of it.
+        assert!(world.embodied_place(id).expect("placed").is_valid());
     }
 
-    /// A teleport (protocol 17) *places* the avatar: position set, motion
-    /// cleared, and the placement survives a tick — the whole point is that the
-    /// next snapshot confirms the jump instead of pulling the avatar back.
+    /// A teleport (protocol 17) *places* the avatar: place set, motion cleared,
+    /// and the placement survives a tick — the whole point is that the next
+    /// snapshot confirms the jump instead of pulling the avatar back.
     #[test]
     fn a_teleport_places_the_avatar_and_the_placement_survives_a_tick() {
         let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
+        world.teleport_avatar(id, here(), 0.0);
         // Walking when the jump lands: the carried velocity must not slide the
         // avatar off the destination.
         world.apply_intent(
@@ -1761,23 +1799,27 @@ mod tests {
         );
         world.step(0.05);
 
-        let dest = Vec3::new(1234.5, 0.05, -987.0);
-        world.teleport_avatar(id, dest);
-        assert_eq!(world.avatar_position(id), Some(dest));
+        let dest = GeoAnchor {
+            latitude: 52.3731,
+            longitude: 4.8926,
+        };
+        world.teleport_avatar(id, dest, 0.05);
+        assert_eq!(
+            world.embodied_place(id),
+            Some(Place::new(52.3731, 4.8926, 0.05))
+        );
         world.step(0.05);
-        let p = world.avatar_position(id).expect("still there");
+        let p = world.embodied_place(id).expect("still there");
         assert!(
-            (p.x - dest.x).abs() < 1e-3 && (p.z - dest.z).abs() < 1e-3,
-            "carried velocity slid the avatar to {p:?} after a teleport to {dest:?}"
+            ground_m(p.geo, dest) < 1e-3,
+            "carried velocity slid the avatar {} m after a teleport",
+            ground_m(p.geo, dest)
         );
 
-        // The same hostility rule as intents: a non-finite placement is
-        // discarded whole, and a below-ground one is clamped to the floor.
-        world.teleport_avatar(id, Vec3::new(f32::NAN, 0.0, 0.0));
-        assert_eq!(world.avatar_position(id), Some(p), "NaN must move nothing");
-        world.teleport_avatar(id, Vec3::new(0.0, -50.0, 0.0));
-        let sunk = world.avatar_position(id).expect("still there");
-        assert!(sunk.y >= 0.0, "teleported underground: {sunk:?}");
+        // A below-ground placement is clamped to the floor.
+        world.teleport_avatar(id, dest, -50.0);
+        let sunk = world.embodied_place(id).expect("still there");
+        assert!(sunk.alt_m >= 0.0, "teleported underground: {sunk:?}");
     }
 
     /// The replicated velocity is what the tick actually moved the avatar by —
@@ -1787,39 +1829,30 @@ mod tests {
     fn the_snapshot_carries_the_velocity_the_tick_moved_the_avatar_by() {
         let (mut world, _dir) = test_world();
         let id = world.spawn_avatar();
-        // Placed, so it has a body and is in the snapshot at all.
-        world.teleport_avatar(id, Vec3::ZERO);
-        let velocity = |world: &SimWorld| match world.avatar_snapshot(0) {
-            NetMessage::WorldSnapshot { avatars, .. } => {
-                avatars
-                    .iter()
-                    .find(|a| a.id == id)
-                    .expect("in the snapshot")
-                    .velocity
-            }
-            other => panic!("not a snapshot: {other:?}"),
-        };
+        world.teleport_avatar(id, here(), 0.0);
+        let velocity = |world: &SimWorld| dto(world, id).expect("in the snapshot").velocity;
         assert_eq!(velocity(&world), Vec3::ZERO, "a fresh avatar is at rest");
 
         world.apply_intent(
             id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
         );
-        let before = world.avatar_position(id).expect("spawned");
+        let before = offset_m(&world, id);
         world.step(0.05);
-        let after = world.avatar_position(id).expect("spawned");
+        let after = offset_m(&world, id);
         let v = velocity(&world);
         assert!(v.length() > 0.5, "walking but reported {v:?}");
+        // `offset_m` measures north; the wire's z runs south.
+        let moved = Vec3::new(after.x - before.x, after.y - before.y, before.z - after.z) / 0.05;
         assert!(
-            ((after - before) / 0.05 - v).length() < 1e-3,
-            "reported {v:?} for a move of {:?} in 50 ms",
-            after - before
+            (moved - v).length() < 1e-2,
+            "reported {v:?} for a move of {moved:?} in 50 ms"
         );
         assert!(
             v.y.abs() < 1e-6,
             "standing on the floor, yet vertical {v:?}"
         );
 
-        world.teleport_avatar(id, Vec3::new(500.0, 0.0, 500.0));
+        world.teleport_avatar(id, here(), 0.0);
         assert_eq!(velocity(&world), Vec3::ZERO, "a placement is not travel");
     }
 }

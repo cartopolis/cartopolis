@@ -100,12 +100,12 @@ pub(super) async fn on_send<T: FrameTransport>(
             // Sender + all candidate recipient positions in one read.
             let (sender_pos, positions) = {
                 let w = ctx.world.read().await;
-                let sp = w.embodied_position(avatar_id);
+                let sp = w.embodied_place(avatar_id);
                 let ps: Vec<(u64, _)> = ctx
                     .chat
                     .connected_ids()
                     .into_iter()
-                    .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
+                    .filter_map(|id| w.embodied_place(id).map(|p| (id, p)))
                     .collect();
                 (sp, ps)
             };

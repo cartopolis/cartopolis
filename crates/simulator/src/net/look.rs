@@ -37,9 +37,9 @@ pub(super) async fn on_face<T: FrameTransport>(
             .connected_ids()
             .into_iter()
             .filter(|id| *id != avatar_id)
-            .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
+            .filter_map(|id| w.embodied_place(id).map(|p| (id, p)))
             .collect();
-        (w.embodied_position(avatar_id), ps)
+        (w.embodied_place(avatar_id), ps)
     };
     let Some(sender) = sender else {
         return Ok(());
@@ -81,10 +81,13 @@ pub(super) async fn on_look<T: FrameTransport>(
         .write()
         .await
         .set_avatar_look(ctx.avatar_id, look.clone());
-    ctx.prims.broadcast(&NetMessage::AvatarLookOf {
-        avatar_id: ctx.avatar_id,
-        look,
-    });
+    ctx.prims.broadcast(
+        &NetMessage::AvatarLookOf {
+            avatar_id: ctx.avatar_id,
+            look,
+        },
+        None,
+    );
     Ok(())
 }
 
@@ -109,10 +112,13 @@ pub(super) async fn on_arrival<T: FrameTransport>(ctx: &mut ConnCtx<T>) -> anyho
             .write()
             .await
             .set_avatar_look(ctx.avatar_id, look.clone());
-        ctx.prims.broadcast(&NetMessage::AvatarLookOf {
-            avatar_id: ctx.avatar_id,
-            look,
-        });
+        ctx.prims.broadcast(
+            &NetMessage::AvatarLookOf {
+                avatar_id: ctx.avatar_id,
+                look,
+            },
+            None,
+        );
     }
     let everyone = ctx.world.read().await.avatar_looks();
     for (avatar_id, look) in everyone {

@@ -2,7 +2,6 @@
 
 use super::{ConnCtx, FrameTransport, MIN_INTENT_INTERVAL};
 use cartopolis_core::{Emote, Expression, GeoAnchor};
-use glam::Vec3;
 use std::time::Instant;
 
 /// A `ClientIntent`, as the sim reads it.
@@ -59,12 +58,13 @@ pub(super) async fn on_intent<T: FrameTransport>(
 /// not a stream, and dropping one is not corrected by the next frame.
 pub(super) async fn on_teleport<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
-    position: Vec3,
+    geo: GeoAnchor,
+    alt_m: f32,
 ) -> anyhow::Result<()> {
     ctx.world
         .write()
         .await
-        .teleport_avatar(ctx.avatar_id, position);
+        .teleport_avatar(ctx.avatar_id, geo, alt_m);
     Ok(())
 }
 

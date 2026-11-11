@@ -1099,6 +1099,7 @@ pub fn track_device_pose(
             let (glat, glng) = world_to_lat_lng(anchor, gx, gz);
             let previous_geo = tracking.display_geo.replace((glat, glng));
             crate::systems::driver::place_avatar(
+                anchor,
                 gx,
                 gz,
                 &mut avatar_state,

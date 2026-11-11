@@ -47,7 +47,8 @@ pub enum ClientRequest {
         geo: Option<GeoAnchor>,
     },
     Teleport {
-        position: Vec3,
+        geo: GeoAnchor,
+        alt_m: f32,
     },
     SetPresence {
         active: bool,
@@ -350,7 +351,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 seated,
                 geo,
             },
-            NetMessage::Teleport { position, .. } => Self::Teleport { position },
+            NetMessage::Teleport { geo, alt_m, .. } => Self::Teleport { geo, alt_m },
             NetMessage::SetPresence { active, .. } => Self::SetPresence { active },
             NetMessage::SetAvatarLook { look } => Self::SetAvatarLook { look },
             NetMessage::SetFaceFrame { weights } => Self::SetFaceFrame { weights },
@@ -711,7 +712,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::TopicLeft { .. }
             | NetMessage::E2eeRedacted { .. }
             | NetMessage::AvatarLookOf { .. }
-            | NetMessage::FaceFrameOf { .. } => return Err(msg),
+            | NetMessage::FaceFrameOf { .. }
+            | NetMessage::PrimOutOfReach { .. } => return Err(msg),
         })
     }
 }

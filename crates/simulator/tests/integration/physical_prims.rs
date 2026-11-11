@@ -115,6 +115,15 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
     let s = server(&db).await;
     let mut a = connect(&s, "alice").await;
     let mut b = connect(&s, "bob").await;
+    // Both on the pitch, so what happens to the ball is within their reach —
+    // and a few metres from where it lands, so neither heads it.
+    let (m_lat, m_lng) = cartopolis_core::degree_scale_m(PITCH.latitude);
+    let aside = GeoAnchor {
+        latitude: PITCH.latitude - 3.0 / m_lat,
+        longitude: PITCH.longitude,
+    };
+    send(&mut a, &stand(aside, 0.0, None)).await;
+    send(&mut b, &stand(aside, 0.0, None)).await;
 
     // Alice makes a football two metres up.
     send(
@@ -187,13 +196,23 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
         rest.altitude
     );
 
-    // Bob walks up beside it — half a metre west — facing east, and kicks.
-    let (_, m_lng) = cartopolis_core::degree_scale_m(PITCH.latitude);
+    // Bob jumps to beside it — half a metre west — faces east, and kicks. A
+    // teleport, because once an avatar is placed the sim moves it and an
+    // intent's own `geo` is no longer read (protocol 47).
     let beside = GeoAnchor {
         latitude: rest.geo.latitude,
         longitude: rest.geo.longitude - 0.5 / m_lng,
     };
     let east = std::f32::consts::FRAC_PI_2;
+    send(
+        &mut b,
+        &NetMessage::Teleport {
+            request_id: 0,
+            geo: beside,
+            alt_m: 0.0,
+        },
+    )
+    .await;
     send(&mut b, &stand(beside, east, None)).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     send(&mut b, &stand(beside, east, Some(Emote::Kick))).await;

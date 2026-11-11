@@ -2204,6 +2204,7 @@ pub fn recentre_anchor(
             &mut tf,
             &mut avatar_state,
             online.as_deref(),
+            next,
             avatar_cell,
             avatar_local,
         );
@@ -2436,6 +2437,7 @@ pub fn apply_teleport(
                     &mut tf,
                     &mut avatar_state,
                     online.as_deref(),
+                    frame,
                     to_cell,
                     to_local,
                 );
@@ -2464,6 +2466,7 @@ pub fn apply_teleport(
             &mut tf,
             &mut avatar_state,
             online.as_deref(),
+            frame,
             avatar_cell,
             avatar_local,
         );
@@ -2632,6 +2635,7 @@ pub fn place_avatar(
     tf: &mut Transform,
     avatar_state: &mut AvatarState,
     online: Option<&crate::resources::OnlineSession>,
+    anchor: (f64, f64, u32),
     avatar_cell: GridCell,
     avatar_local: Vec3,
 ) {
@@ -2652,12 +2656,22 @@ pub fn place_avatar(
     // in flight (still carrying the old position) from yanking the avatar
     // back while the sim's confirmation is on its way
     // (`network::adopt_local_pose`).
+    //
+    // The sim is told a place on Earth (protocol 47), which is what the frame
+    // position means under `anchor`; it holds the avatar there and every client
+    // converts it into its own frame.
     if let Some(sess) = online {
+        let p = anchored_position_f64(&avatar_cell, avatar_local);
+        let (latitude, longitude) = world_to_lat_lng(anchor, p.x, p.z);
         sess.send(
             "teleport",
             cartopolis_core::NetMessage::Teleport {
                 request_id: 0,
-                position: avatar_local,
+                geo: cartopolis_core::GeoAnchor {
+                    latitude,
+                    longitude,
+                },
+                alt_m: p.y as f32,
             },
         );
         avatar_state.teleport_hold = Some(web_time::Instant::now());

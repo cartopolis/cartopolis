@@ -47,8 +47,9 @@ was found: a signed-in player right-clicked the ground and the "Create object…
 entry was not there, because the client had been sent no region to put a prim in.
 
 A real AoI filter has to be computed per connection, which means the snapshot
-stops being a broadcast. That is a piece of work, not a line; until it is done
-the sim sends every prim to every client. `ObserverUpdate` (message kind 5) went
+stops being a broadcast. That piece of work landed with protocol 47
+(`interest-by-reach.md`): each connection assembles its own snapshot from the
+avatars and things within reach of its avatar. `ObserverUpdate` (message kind 5) went
 with it, and **5 stays unassigned** — a stale client sending one should be
 rejected, not misread as whatever took the slot.
 

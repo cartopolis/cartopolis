@@ -1300,6 +1300,7 @@ pub fn drive_driver_mode(
                 .glide
                 .advance((wx, wz), fix_is_new, now, time.delta_secs());
             place_avatar(
+                anchor,
                 gx,
                 gz,
                 &mut avatar_state,
@@ -1656,6 +1657,7 @@ impl DriverState {
 /// east-west than north-south by the cosine of the latitude. `lat_lng_to_world`
 /// is one line at each call site and there is nothing to gain by doing it twice.
 pub(crate) fn place_avatar(
+    anchor: (f64, f64, u32),
     wx: f64,
     wz: f64,
     avatar_state: &mut AvatarState,
@@ -1683,11 +1685,18 @@ pub(crate) fn place_avatar(
     avatar_state.position = local;
     avatar_state.display_position = display;
     if let Some(sess) = online.filter(|_| fix_is_new) {
+        // As a place on Earth (protocol 47): the fix's own latitude and
+        // longitude, through the glide and back.
+        let (latitude, longitude) = world_to_lat_lng(anchor, wx, wz);
         sess.send(
             "device fix",
             cartopolis_core::NetMessage::Teleport {
                 request_id: 0,
-                position: local,
+                geo: cartopolis_core::GeoAnchor {
+                    latitude,
+                    longitude,
+                },
+                alt_m: local.y,
             },
         );
         avatar_state.teleport_hold = Some(Instant::now());

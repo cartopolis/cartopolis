@@ -41,6 +41,7 @@
 //! ([`SimWorld::reserve_prim`]) rather than by the lock.
 
 use crate::db::{self, SharedConn};
+use crate::reach::{Outbound, Place};
 use crate::scripting::ScriptHandle;
 use crate::state::{DirtyBatch, SimWorld};
 use bytes::Bytes;
@@ -288,7 +289,7 @@ pub struct PrimSeed {
 pub struct PrimService {
     world: Arc<RwLock<SimWorld>>,
     conn: SharedConn,
-    tx_snap: broadcast::Sender<Bytes>,
+    tx_snap: broadcast::Sender<Outbound>,
     scripts: ScriptHandle,
     /// Serialises every write to an existing prim's row against every other —
     /// see the module note for why it has to span the whole operation.
@@ -300,7 +301,7 @@ impl PrimService {
     pub fn new(
         world: Arc<RwLock<SimWorld>>,
         conn: SharedConn,
-        tx_snap: broadcast::Sender<Bytes>,
+        tx_snap: broadcast::Sender<Outbound>,
         scripts: ScriptHandle,
     ) -> Self {
         Self {
@@ -365,7 +366,10 @@ impl PrimService {
             .write()
             .await
             .commit_prim(prim.clone(), actor.principal.as_deref());
-        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        self.broadcast(
+            &NetMessage::PrimUpsert { prim: prim.clone() },
+            actor.principal.as_deref(),
+        );
         self.broadcast_capacity().await;
         Ok(prim)
     }
@@ -416,7 +420,10 @@ impl PrimService {
             }
         };
         let prim = stored.ok_or(PrimError::NotFound(prim_id))?;
-        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        self.broadcast(
+            &NetMessage::PrimUpsert { prim: prim.clone() },
+            actor.principal.as_deref(),
+        );
         Ok(prim)
     }
 
@@ -477,7 +484,10 @@ impl PrimService {
             }
         };
         let prim = stored.ok_or(PrimError::NotFound(prim_id))?;
-        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        self.broadcast(
+            &NetMessage::PrimUpsert { prim: prim.clone() },
+            actor.principal.as_deref(),
+        );
         Ok(prim)
     }
 
@@ -528,7 +538,10 @@ impl PrimService {
                 .map_err(PrimError::Refused)?
                 .ok_or(PrimError::NotFound(prim_id))?
         };
-        self.broadcast(&NetMessage::PrimUpsert { prim: prim.clone() });
+        self.broadcast(
+            &NetMessage::PrimUpsert { prim: prim.clone() },
+            actor.principal.as_deref(),
+        );
         Ok(prim)
     }
 
@@ -558,7 +571,7 @@ impl PrimService {
         // the host keeps its own map keyed by prim id and would go on running a
         // script for a prim nobody can see.
         self.scripts.unload(prim_id);
-        self.broadcast(&NetMessage::PrimRemoved { id: prim_id });
+        self.broadcast(&NetMessage::PrimRemoved { id: prim_id }, None);
         self.broadcast_capacity().await;
         Ok(())
     }
@@ -696,13 +709,30 @@ impl PrimService {
         tokio::spawn(async move { this.flush().await })
     }
 
-    pub(crate) fn broadcast(&self, msg: &NetMessage) {
-        match encode_app_frame(msg) {
-            Ok(frame) => {
-                let _ = self.tx_snap.send(Bytes::from(frame));
+    /// Tell the connections: a changed thing goes to those whose reach holds
+    /// it and to `by`, the account that asked; a removal to all (`net::deliver`).
+    pub(crate) fn broadcast(&self, msg: &NetMessage, by: Option<&str>) {
+        let frame = match encode_app_frame(msg) {
+            Ok(frame) => Bytes::from(frame),
+            Err(e) => {
+                tracing::error!("prim broadcast encode: {e}");
+                return;
             }
-            Err(e) => tracing::error!("prim broadcast encode: {e}"),
-        }
+        };
+        let item = match msg {
+            NetMessage::PrimUpsert { prim } => Outbound::Thing {
+                id: prim.id,
+                place: Place {
+                    geo: prim.geo,
+                    alt_m: prim.position.y,
+                },
+                frame,
+                by: by.map(str::to_string),
+            },
+            NetMessage::PrimRemoved { id } => Outbound::Removed { id: *id, frame },
+            _ => Outbound::Frame(frame),
+        };
+        let _ = self.tx_snap.send(item);
     }
 
     async fn broadcast_capacity(&self) {

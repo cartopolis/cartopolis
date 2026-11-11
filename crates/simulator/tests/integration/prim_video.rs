@@ -64,7 +64,35 @@ async fn connect(handle: &SimHandle, username: &str) -> (Client, String) {
     let NetMessage::ServerHelloAck { session_token, .. } = ack else {
         panic!("{ack:?}")
     };
+    // Standing where this suite's screens are built, so what happens to them is
+    // within reach and arrives (protocol 47).
+    stand(&mut c, 0.0, 0.0).await;
     (c, session_token)
+}
+
+/// Say where the avatar stands: nothing is within reach of an avatar that is
+/// nowhere, so a connection that never does receives no snapshots and no
+/// things, whatever its presence says (protocol 47).
+async fn stand(c: &mut Client, lat: f64, lng: f64) {
+    let frame = encode_app_frame(&NetMessage::ClientIntent {
+        request_id: 0,
+        move_x: 0.0,
+        move_z: 0.0,
+        display_yaw: 0.0,
+        flying: false,
+        fly_up: false,
+        fly_down: false,
+        jump: false,
+        emote: None,
+        expression: None,
+        seated: None,
+        geo: Some(GeoAnchor {
+            latitude: lat,
+            longitude: lng,
+        }),
+    })
+    .unwrap();
+    c.send(Bytes::from(frame)).await.unwrap();
 }
 
 async fn send(c: &mut Client, msg: &NetMessage) {

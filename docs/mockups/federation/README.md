@@ -248,12 +248,17 @@ each a landing on its own, and both are owed whatever happens to federation.
 Neither cuts the world into anything: there are no regions, no cells and no
 squares in this design, on the wire or in the database.
 
-1. **The avatar's authoritative position becomes a place on Earth.** Today it
-   is metres in its own client's map frame, and Here chat compares frames
-   that differ (`research.md`, §4). The client already sends `geo` with every
-   intent; the server holds lat, lng, altitude and heading, and each client
-   converts into its own frame, as it does for prims.
-2. **Each person receives what is within reach.** The server keeps a spatial
+1. **The avatar's authoritative position becomes a place on Earth.** *Built*,
+   protocol 47 (`docs/notes/interest-by-reach.md`). It was metres in its own
+   client's map frame, and Here chat compared frames that differed
+   (`research.md`, §4). The server holds lat, lng and altitude, moves the
+   avatar there, and each client converts into its own frame, as it does for
+   prims; the intent's `geo` only places an avatar that has no place yet.
+2. **Each person receives what is within reach.** *Built*, protocol 47, for
+   one server: a latitude-sorted index, a reach of the shout radius plus a
+   margin widened by altitude, a snapshot per connection, things by
+   `PrimUpsert` and `PrimOutOfReach`. Not yet widened by the camera's height
+   (the orbit camera sends no intents), nor thinned. The server keeps a spatial
    index of avatars and things by their place on Earth (an R-tree or a
    sorted geohash: a server detail, never on the wire), and once peering
    exists the peers' avatars and things sit in the same index with their
@@ -292,7 +297,8 @@ not by squares decided now.
 Each lands alone and is useful alone; the order is by what each needs.
 
 1. **Absolute avatar positions and interest by reach** on one server. No
-   federation yet; fixes Here chat's frames and removes the broadcast.
+   federation yet; fixes Here chat's frames and removes the broadcast. *Built*
+   2026-11-11, protocol 47 (`docs/notes/interest-by-reach.md`).
 2. **Server identity and discovery**: the two well-known documents, the
    `servers` table, signed server-to-server calls on the fediverse's signing
    code, `/api/servers`, the chips on the map. Still nothing mixes.

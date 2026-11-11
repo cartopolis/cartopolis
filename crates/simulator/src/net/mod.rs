@@ -18,13 +18,13 @@
 
 use crate::config::SimConfig;
 use crate::db::{self, SharedConn};
+use crate::reach::{Outbound, Place, TickTable};
 use crate::state::SimWorld;
 use bytes::Bytes;
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, NetMessage, ProtocolError, PROTOCOL_VERSION,
 };
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use glam::Vec3;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
@@ -41,6 +41,7 @@ mod hand;
 mod look;
 mod moderation;
 mod prims;
+mod reach;
 pub mod request;
 mod textures;
 mod voice;
@@ -316,12 +317,12 @@ const SCRIPT_STORE_BURST: u32 = 5;
 /// that out from a refusal is finding out too late.
 pub(crate) async fn broadcast_capacity(
     world: &Arc<RwLock<SimWorld>>,
-    tx: &broadcast::Sender<Bytes>,
+    tx: &broadcast::Sender<Outbound>,
 ) {
     let usage = world.read().await.capacity();
     match encode_app_frame(&capacity_message(&usage)) {
         Ok(bytes) => {
-            let _ = tx.send(Bytes::from(bytes));
+            let _ = tx.send(Outbound::Frame(Bytes::from(bytes)));
         }
         Err(e) => tracing::error!("capacity encode: {e}"),
     }
@@ -601,10 +602,12 @@ struct ConnCtx<T> {
     ///
     /// Starts `true`: a client that never sends the message — every build older
     /// than protocol 18, and every desktop — behaves exactly as it always did.
-    /// Only the snapshot arm of the select loop reads this; chat, voice, prim
+    /// Only the tick's delivery reads this ([`deliver`]); chat, voice, prim
     /// updates and everything else are delivered to an idle client unchanged,
     /// which is the entire point of holding the connection open.
     presence_active: bool,
+    /// What this connection has within reach (`reach.rs`).
+    reach: reach::ReachState,
     /// This connection's private-chat device, once registered (protocol 25). Every
     /// other private-chat message is ignored until it is: the server keys
     /// invitations and cursors by device, and a connection with none has no keys
@@ -649,7 +652,7 @@ const SEND_BATCH: usize = 32;
 /// the connection is finished.
 async fn feed_ready<T: FrameTransport>(
     ctx: &mut ConnCtx<T>,
-    snap_rx: &mut broadcast::Receiver<Bytes>,
+    snap_rx: &mut broadcast::Receiver<Outbound>,
     chat_rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
     voice_rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
 ) -> anyhow::Result<bool> {
@@ -657,10 +660,8 @@ async fn feed_ready<T: FrameTransport>(
     for _ in 0..SEND_BATCH {
         let mut fed = false;
         match snap_rx.try_recv() {
-            Ok(bytes) => {
-                if !skips_snapshot(ctx, &bytes) {
-                    ctx.framed.feed(bytes).await?;
-                }
+            Ok(item) => {
+                deliver(ctx, item).await?;
                 fed = true;
             }
             Err(broadcast::error::TryRecvError::Lagged(_)) => fed = true,
@@ -691,12 +692,35 @@ async fn feed_ready<T: FrameTransport>(
     Ok(open)
 }
 
-/// An idle client (`SetPresence`) is not sent everyone's positions; it still
-/// gets every other broadcast, which says a prim changed.
-fn skips_snapshot<T: FrameTransport>(ctx: &ConnCtx<T>, bytes: &[u8]) -> bool {
-    !ctx.presence_active
-        && cartopolis_core::protocol::frame_kind(bytes)
-            == Some(cartopolis_core::protocol::MessageKind::WorldSnapshot)
+/// Queue one item from the world's channel for this client, as this client
+/// should see it.
+///
+/// The channel carries prim removals, capacity updates, motion and sounds for
+/// everybody, a thing's change for the connections whose reach holds it, and
+/// the tick for each connection to cut its own snapshot from (`reach.rs`). An
+/// idle client (`SetPresence`) is not sent a snapshot — nobody is looking at
+/// everyone's positions twenty times a second while the app is off screen — and
+/// still gets everything else, which says a prim changed.
+async fn deliver<T: FrameTransport>(ctx: &mut ConnCtx<T>, item: Outbound) -> anyhow::Result<()> {
+    match item {
+        Outbound::Frame(bytes) => ctx.framed.feed(bytes).await?,
+        Outbound::Removed { id, frame } => {
+            ctx.reach.forget(id);
+            ctx.framed.feed(frame).await?;
+        }
+        Outbound::Thing {
+            id,
+            place,
+            frame,
+            by,
+        } => reach::on_thing(ctx, id, place, frame, by.as_deref()).await?,
+        Outbound::Tick(table) => {
+            if ctx.presence_active {
+                reach::on_tick(ctx, &table).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -704,7 +728,7 @@ pub async fn handle_connection<T: FrameTransport>(
     mut framed: T,
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
-    mut snap_rx: broadcast::Receiver<Bytes>,
+    mut snap_rx: broadcast::Receiver<Outbound>,
     conn: SharedConn,
     sessions: Arc<crate::auth::Sessions>,
     chat: Arc<crate::chat::ChatHub>,
@@ -930,6 +954,7 @@ pub async fn handle_connection<T: FrameTransport>(
         e2ee_device: None,
         call_seat: None,
         push_endpoint: None,
+        reach: reach::ReachState::default(),
     };
 
     // Everything from here to the full snapshot is fed and flushed once, after
@@ -992,24 +1017,22 @@ pub async fn handle_connection<T: FrameTransport>(
     // client every online avatar's before the snapshot that brings them.
     look::on_arrival(&mut ctx).await?;
 
-    // The one full snapshot this connection gets. The client builds its prim
-    // entities from the first `WorldSnapshot` it sees and ignores the prim list
-    // in every later one, so this is where the world arrives; the broadcast that
-    // follows carries avatars only (`SimWorld::avatar_snapshot`).
+    // The first snapshot, empty: the client marks its world as live on the
+    // first `WorldSnapshot` it sees, and until this avatar is placed there is
+    // nothing within its reach to put in one. The things and the avatars arrive
+    // from the first tick after its client says where it stands (`reach.rs`);
+    // until protocol 46 the whole world was sent here instead.
     //
-    // Sent here rather than left to the next tick for a second reason: it is up
-    // to a whole tick period sooner, so a new arrival's world is drawn on join
-    // instead of up to 50 ms after it. Ordering is safe because this write goes
-    // out on `framed` before the select loop below reads its first broadcast
-    // frame, and a broadcast snapshot that was already queued cannot overtake it.
-    {
-        // Copied under the lock, encoded after it: the tick's write waits for
-        // the copy, not for postcard.
-        let snapshot = ctx.world.read().await.snapshot(0);
-        ctx.framed
-            .send(Bytes::from(encode_app_frame(&snapshot)?))
-            .await?;
-    }
+    // Sent here rather than left to the next tick so a new arrival is live on
+    // join instead of up to 50 ms after it. Ordering is safe because this write
+    // goes out on `framed` before the select loop below reads its first item,
+    // and a tick already queued cannot overtake it.
+    ctx.framed
+        .send(Bytes::from(encode_app_frame(&NetMessage::WorldSnapshot {
+            tick: 0,
+            avatars: Vec::new(),
+        })?))
+        .await?;
 
     // How often a connection checks that its credential still exists: the
     // access token it came with, or the session a sign-in was given. Revoking
@@ -1061,20 +1084,9 @@ pub async fn handle_connection<T: FrameTransport>(
             }
             snap = snap_rx.recv() => {
                 match snap {
-                    Ok(bytes) => {
-                        // This channel carries prim upserts, removals and capacity
-                        // updates as well as snapshots, so the filter is per-kind
-                        // and not per-channel: an idle client still needs to be
-                        // told a prim changed, it just does not need everyone's
-                        // position twenty times a second while it is off screen.
-                        // `frame_kind` reads the header rather than decoding the
-                        // payload — decoding a snapshot to discard it would cost
-                        // more than sending it.
-                        if skips_snapshot(&ctx, &bytes) {
-                            continue;
-                        }
-                        if let Err(e) = ctx.framed.feed(bytes).await {
-                            outcome = Err(e.into());
+                    Ok(item) => {
+                        if let Err(e) = deliver(&mut ctx, item).await {
+                            outcome = Err(e);
                             break;
                         }
                         match feed_ready(&mut ctx, &mut snap_rx, &mut chat_rx, &mut voice_rx).await {
@@ -1233,7 +1245,7 @@ async fn dispatch<T: FrameTransport>(
             )
             .await
         }
-        ClientRequest::Teleport { position } => avatar::on_teleport(ctx, position).await,
+        ClientRequest::Teleport { geo, alt_m } => avatar::on_teleport(ctx, geo, alt_m).await,
         ClientRequest::SetPresence { active } => {
             avatar::on_presence(ctx, active);
             Ok(())
@@ -1598,7 +1610,7 @@ impl TickMeter {
 pub async fn tick_loop(
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
-    tx: broadcast::Sender<Bytes>,
+    tx: broadcast::Sender<Outbound>,
     // Owned, not shared: the host's command receiver is `!Sync`, so an `Arc` of it
     // could not cross a `tokio::spawn`. This is the one place that drains it, which
     // is the same reason [`ScriptHost`] and [`ScriptHandle`] are separate types.
@@ -1646,7 +1658,7 @@ pub async fn tick_loop(
         // since the last tick lands in one batch, before the snapshot that
         // carries it, so a client never sees half a script's frame of work.
         let commands = scripts.drain();
-        let mut script_frames: Vec<Vec<u8>> = Vec::new();
+        let mut script_frames: Vec<Outbound> = Vec::new();
         let mut died: Vec<i64> = Vec::new();
         let mut changed: Vec<i64> = Vec::new();
         let mut toned: Vec<i64> = Vec::new();
@@ -1664,7 +1676,10 @@ pub async fn tick_loop(
                     died.push(*prim_id);
                     scripts.unload(*prim_id);
                     match encode_app_frame(&NetMessage::PrimRemoved { id: *prim_id }) {
-                        Ok(bytes) => script_frames.push(bytes),
+                        Ok(bytes) => script_frames.push(Outbound::Removed {
+                            id: *prim_id,
+                            frame: Bytes::from(bytes),
+                        }),
                         Err(e) => tracing::error!("script prim removed encode: {e}"),
                     }
                 }
@@ -1693,7 +1708,7 @@ pub async fn tick_loop(
                 prim_id,
                 tone: prim.tone,
             }) {
-                Ok(bytes) => script_frames.push(bytes),
+                Ok(bytes) => script_frames.push(Outbound::Frame(Bytes::from(bytes))),
                 Err(e) => tracing::error!("prim tone encode: {e}"),
             }
         }
@@ -1708,8 +1723,17 @@ pub async fn tick_loop(
             let Some(prim) = w.prim(prim_id).cloned() else {
                 continue;
             };
+            let place = Place {
+                geo: prim.geo,
+                alt_m: prim.position.y,
+            };
             match encode_app_frame(&NetMessage::PrimUpsert { prim }) {
-                Ok(bytes) => script_frames.push(bytes),
+                Ok(bytes) => script_frames.push(Outbound::Thing {
+                    id: prim_id,
+                    place,
+                    frame: Bytes::from(bytes),
+                    by: None,
+                }),
                 Err(e) => tracing::error!("script prim upsert encode: {e}"),
             }
         }
@@ -1719,33 +1743,44 @@ pub async fn tick_loop(
         let bodies = w.take_motion();
         if !bodies.is_empty() {
             match encode_app_frame(&NetMessage::PrimMotion { tick, bodies }) {
-                Ok(bytes) => script_frames.push(bytes),
+                Ok(bytes) => script_frames.push(Outbound::Frame(Bytes::from(bytes))),
                 Err(e) => tracing::error!("prim motion encode: {e}"),
             }
         }
-        let snap = w.avatar_snapshot(tick);
+        // Where everyone and everything stands, copied under the lock; encoded
+        // and indexed after it (`reach::TickTable`).
+        let placed = w.placed_avatars();
+        let things = w.thing_places();
         let views = w.script_views();
         // Chat and console output need the world only for lookups; take what they
         // need here and release the write lock before any encoding or delivery.
-        let speech: Vec<(String, Vec3, String, f32)> = commands
+        let speech: Vec<(String, Place, String, f32)> = commands
             .iter()
             .filter_map(|cmd| match cmd {
                 crate::scripting::ScriptCommand::Say {
                     prim_id,
                     text,
                     radius,
-                } => w
-                    .prim(*prim_id)
-                    .map(|p| (p.name.clone(), p.position, text.clone(), *radius)),
+                } => w.prim(*prim_id).map(|p| {
+                    (
+                        p.name.clone(),
+                        Place {
+                            geo: p.geo,
+                            alt_m: p.position.y,
+                        },
+                        text.clone(),
+                        *radius,
+                    )
+                }),
                 _ => None,
             })
             .collect();
-        let listeners: Vec<(u64, Vec3)> = if speech.is_empty() {
+        let listeners: Vec<(u64, Place)> = if speech.is_empty() {
             Vec::new()
         } else {
             chat.connected_ids()
                 .into_iter()
-                .filter_map(|id| w.embodied_position(id).map(|p| (id, p)))
+                .filter_map(|id| w.embodied_place(id).map(|p| (id, p)))
                 .collect()
         };
         let locked_for = lock_taken.elapsed();
@@ -1760,8 +1795,8 @@ pub async fn tick_loop(
             flushing = Some(prims.spawn_flush());
         }
 
-        for bytes in script_frames {
-            let _ = tx.send(Bytes::from(bytes));
+        for item in script_frames {
+            let _ = tx.send(item);
         }
         // A prim that deleted itself gives its budget back, and every client's
         // headroom display is stale until it is told.
@@ -1773,9 +1808,9 @@ pub async fn tick_loop(
         // id, and the client tags own-lines by that id, so a real one would make
         // whoever shares the number appear to be talking.
         let now_ms = now_millis();
-        for (name, pos, text, radius) in speech {
+        for (name, at, text, radius) in speech {
             for (id, listener) in &listeners {
-                let d = (*listener - pos).length();
+                let d = listener.distance_m(at);
                 if d > radius {
                     continue;
                 }
@@ -1812,7 +1847,7 @@ pub async fn tick_loop(
                     sound: *sound,
                 }) {
                     Ok(frame) => {
-                        let _ = tx.send(Bytes::from(frame));
+                        let _ = tx.send(Outbound::Frame(Bytes::from(frame)));
                     }
                     Err(e) => tracing::error!("script sound encode: {e}"),
                 }
@@ -1836,19 +1871,25 @@ pub async fn tick_loop(
                     at_ms: now_ms,
                 }) {
                     Ok(frame) => {
-                        let _ = tx.send(Bytes::from(frame));
+                        let _ = tx.send(Outbound::Frame(Bytes::from(frame)));
                     }
                     Err(e) => tracing::error!("script output encode: {e}"),
                 }
             }
         }
 
-        match encode_app_frame(&snap) {
-            Ok(bytes) => {
-                let _ = tx.send(Bytes::from(bytes));
+        // Each avatar's state encoded once; every connection assembles its own
+        // snapshot from the ones within its reach (`reach::on_tick`). The
+        // encoding used to be one `WorldSnapshot` for everybody, which is what
+        // made an area-of-interest filter impossible to compute per connection.
+        let mut rows = Vec::with_capacity(placed.len());
+        for (id, place, state) in &placed {
+            match cartopolis_core::encode_avatar_state(state) {
+                Ok(bytes) => rows.push((*id, *place, Bytes::from(bytes))),
+                Err(e) => tracing::error!("avatar state encode: {e}"),
             }
-            Err(e) => tracing::error!("snapshot encode: {e}"),
         }
+        let _ = tx.send(Outbound::Tick(Arc::new(TickTable::new(tick, rows, things))));
         // Publish this tick's authoritative prim state for the next slice, so a
         // handler reads the world as it stands after everything applied above.
         scripts.tick(dt, views);
@@ -1862,6 +1903,7 @@ mod tests {
     use super::*;
     use crate::prims::{Actor, ModelCheck, PrimError, PrimFields, PrimSeed, PrimService};
     use cartopolis_core::GeoAnchor;
+    use glam::Vec3;
 
     /// The bucket lets a burst through, then one per interval. A full bucket is
     /// `burst` banked intervals *plus* the one due now — the rule the three

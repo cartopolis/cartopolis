@@ -30,6 +30,7 @@ pub mod physics;
 pub mod pictures;
 pub mod prims;
 pub mod push;
+pub mod reach;
 pub mod registration;
 pub mod roles;
 pub mod scripting;
@@ -165,7 +166,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         None => None,
     };
 
-    let (tx_snap, _) = broadcast::channel::<bytes::Bytes>(256);
+    let (tx_snap, _) = broadcast::channel::<reach::Outbound>(256);
     let script_handle = scripts_host.handle();
     // The one way prims are made, changed and deleted, shared by the wire, the
     // authoring API and the tick loop's flush (`prims`'s module note).
@@ -394,7 +395,7 @@ async fn accept_loop(
     listener: TcpListener,
     world: Arc<RwLock<state::SimWorld>>,
     config: Arc<SimConfig>,
-    tx_snap: broadcast::Sender<bytes::Bytes>,
+    tx_snap: broadcast::Sender<reach::Outbound>,
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     sessions: Arc<auth::Sessions>,
     chat: Arc<chat::ChatHub>,
