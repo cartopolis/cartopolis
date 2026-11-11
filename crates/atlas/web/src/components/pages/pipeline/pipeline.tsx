@@ -13,6 +13,7 @@ import {
     loadJobs,
     loadPipelineConfig,
     pollFollowed,
+    refreshOsm,
     startRun,
 } from '@/lib/pipeline'
 import {bind, local} from '@/lib/reactive'
@@ -261,6 +262,33 @@ export class Pipeline extends MithrilComponent {
                     The map's Dutch layers are extracted from open registers and served as static
                     files from <code>{config.out}</code>. A run refreshes them in place.
                 </p>
+
+                {config.osm && (
+                    <Card title="OpenStreetMap">
+                        <p class="pipeline-meta">
+                            Search, street detail, stops, shops, speed limits, tall structures and the
+                            buildings outside 3DBAG are cut from one extract,{' '}
+                            <code>{config.osm.source}</code>.
+                        </p>
+                        <div class="pipeline-row">
+                            {config.osm.downloadedAt ? (
+                                <Badge tone="info">
+                                    downloaded {formatTimestamp(new Date(config.osm.downloadedAt).toISOString())}
+                                    {config.osm.bytes ? ` · ${Math.round(config.osm.bytes / 1e6)} MB` : ''}
+                                </Badge>
+                            ) : (
+                                <Badge>not downloaded yet</Badge>
+                            )}
+                            <Button onclick={() => void refreshOsm()} size="sm">
+                                Bring up to date, whole country
+                            </Button>
+                        </div>
+                        <p class="pipeline-meta">
+                            Runs {config.osm.datasets.join(', ')} over the Netherlands, about five hours;
+                            the extract is downloaded again once it is {config.osm.maxAgeDays} days old.
+                        </p>
+                    </Card>
+                )}
 
                 <Card title="What is being served">
                     <ul class="pipeline-coverage">

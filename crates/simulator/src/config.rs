@@ -69,6 +69,14 @@ pub struct SimConfig {
     /// such route, as on the hosted server where Caddy routes them itself.
     #[serde(default)]
     pub atlas_url: Option<String>,
+    /// The web UI's built files, served at the root of the HTTP listener with
+    /// its `index.html` for any path it has no file for (`static_files`). Unset
+    /// on the hosted server, where Caddy serves them.
+    #[serde(default)]
+    pub web_root: Option<String>,
+    /// Atlas's map-data tree (its `site_dir`), served under `/data/`.
+    #[serde(default)]
+    pub map_data_dir: Option<String>,
     /// Where this server's geo services are, told to clients at
     /// `GET /api/services` ([`cartopolis_core::services`]). Each defaults to
     /// cartopolis.org's, so a server that sets none sends its players where they
@@ -309,6 +317,8 @@ impl Default for SimConfig {
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
             atlas_url: None,
+            web_root: None,
+            map_data_dir: None,
             geocoder_url: default_geocoder_url(),
             osm_query_url: default_osm_query_url(),
             map_data_url: default_map_data_url(),

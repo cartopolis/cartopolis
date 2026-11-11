@@ -106,7 +106,7 @@ impl Default for RegistrationLimits {
 }
 
 pub fn router(state: HttpState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/ws", get(ws_handler))
         .route("/api/health", get(health))
         .route(cartopolis_core::services::SERVICES_PATH, get(services))
@@ -162,7 +162,9 @@ pub fn router(state: HttpState) -> Router {
         // Atlas's paths, when this listener stands in front of it too
         // (`atlas_proxy`, `cartopolis-server`).
         .merge(crate::atlas_proxy::routes(&state.config))
-        .with_state(state)
+        .with_state(state.clone());
+    // Files last: the web UI is the fallback after every route (`static_files`).
+    crate::static_files::mount(router, &state.config)
 }
 
 // ---------------------------------------------------------------------------

@@ -12,8 +12,10 @@
 //! to it (`cartopolis_simulator::atlas_proxy`), so a reverse proxy in front needs
 //! one upstream, not two.
 //!
-//! What is left to the operator: TLS in front of the HTTP listener, and the
-//! static files (the web UI, the map-data tree), for now (`docs/notes/the-server-stack.md`).
+//! It also serves the web UI (`web_root`) and atlas's map-data tree under
+//! `/data/` (`static_files`), and points every service the file leaves at
+//! cartopolis.org's address at its own `public_base_url` instead — tiles at the
+//! public VersaTiles server. What is left to the operator is TLS in front.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -79,11 +81,48 @@ fn sim_config(file: &Path) -> anyhow::Result<SimConfig> {
     if sim.http_listen.is_none() {
         sim.http_listen = Some(DEFAULT_HTTP_LISTEN.into());
     }
+    let atlas = AtlasConfig::load_table(file, "atlas")?;
     if sim.atlas_url.is_none() {
-        let atlas = AtlasConfig::load_table(file, "atlas")?;
         sim.atlas_url = Some(format!("http://{}", atlas.listen));
     }
+    if sim.map_data_dir.is_none() {
+        sim.map_data_dir = Some(atlas.site_dir.display().to_string());
+    }
+    own_services(&mut sim);
     Ok(sim)
+}
+
+/// The public tile server with the schema and URL shape the client reads
+/// (`cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE` is cartopolis.org's
+/// mirror of it), for an install that hosts no tiles of its own.
+const PUBLIC_TILES: &str = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}";
+
+/// Every service the file leaves at cartopolis.org's address, pointed at this
+/// server instead: it answers search, terrain and height through atlas and the
+/// map data from its own tree. Tiles go to the public server unless named.
+fn own_services(sim: &mut SimConfig) {
+    use cartopolis_core::services as d;
+    let base = sim.public_base_url.trim_end_matches('/').to_string();
+    let own = |value: &mut String, default: &str, path: &str| {
+        if value == default {
+            *value = format!("{base}{path}");
+        }
+    };
+    own(&mut sim.geocoder_url, d::DEFAULT_GEOCODER_URL, "/geocode");
+    own(
+        &mut sim.terrain_url,
+        d::DEFAULT_TERRAIN_URL,
+        "/terrain/{z}/{x}/{y}?grid=513&ahn=6",
+    );
+    own(&mut sim.height_url, d::DEFAULT_HEIGHT_URL, "/height");
+    own(
+        &mut sim.map_data_url,
+        d::DEFAULT_MAP_DATA_URL,
+        cartopolis_simulator::static_files::MAP_DATA_PATH,
+    );
+    if sim.osm_tile_url_template == cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE {
+        sim.osm_tile_url_template = PUBLIC_TILES.into();
+    }
 }
 
 /// Atlas's settings, asking the simulator beside it who is an operator unless
@@ -192,6 +231,10 @@ mod tests {
         let sim = sim_config(&file).unwrap();
         assert_eq!(sim.atlas_url.as_deref(), Some("http://127.0.0.1:5749"));
         assert_eq!(sim.public_base_url, "https://maps.example.org");
+        assert_eq!(sim.geocoder_url, "https://maps.example.org/geocode");
+        assert_eq!(sim.map_data_url, "https://maps.example.org/data");
+        assert_eq!(sim.osm_tile_url_template, PUBLIC_TILES);
+        assert_eq!(sim.map_data_dir.as_deref(), Some("data/atlas/site"));
         let atlas = atlas_config(&file).unwrap();
         assert_eq!(atlas.admin_api, "http://127.0.0.1:5748");
         assert_eq!(atlas.data_dir, PathBuf::from("/srv/atlas"));

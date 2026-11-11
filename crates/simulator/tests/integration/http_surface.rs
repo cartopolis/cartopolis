@@ -1153,3 +1153,60 @@ async fn atlas_paths_are_passed_through_to_atlas() {
     let (status, _) = api("GET", format!("{base}/height"), None, None).await;
     assert_eq!(status, 404, "atlas's answer, passed back as it was");
 }
+
+/// With `web_root` and `map_data_dir` set the listener is a whole site: the web
+/// UI at the root (its `index.html` for a path it has no file for), the map data
+/// under `/data/`, and every route still the simulator's.
+#[tokio::test]
+async fn the_listener_serves_the_web_ui_and_the_map_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let web = dir.path().join("web");
+    let data = dir.path().join("site/tall");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        web.join("index.html"),
+        "<!doctype html><title>atlas</title>",
+    )
+    .unwrap();
+    std::fs::write(web.join("app.js"), "console.log(1)").unwrap();
+    std::fs::write(data.join("coverage.json"), r#"{"zoom":11}"#).unwrap();
+    let config = SimConfig {
+        database_path: dir.path().join("files.db").to_str().unwrap().to_string(),
+        listen: "127.0.0.1:0".into(),
+        http_listen: Some("127.0.0.1:0".into()),
+        web_root: Some(web.to_str().unwrap().into()),
+        map_data_dir: Some(dir.path().join("site").to_str().unwrap().into()),
+        ..SimConfig::default()
+    };
+    let handle = serve(Arc::new(config)).await.unwrap();
+    let base = http_base(&handle);
+    let get = |path: &str| {
+        let url = format!("{base}{path}");
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let r = ureq::get(&url).call().unwrap();
+                (r.status(), r.into_string().unwrap())
+            })
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        get("/data/tall/coverage.json").await,
+        (200, r#"{"zoom":11}"#.into())
+    );
+    assert_eq!(get("/app.js").await.1, "console.log(1)");
+    assert!(get("/").await.1.contains("<title>atlas</title>"));
+    assert!(
+        get("/community/somewhere")
+            .await
+            .1
+            .contains("<title>atlas</title>"),
+        "a path the browser routes gets the page"
+    );
+    assert!(
+        get("/api/health").await.1.contains("\"status\""),
+        "routes come first"
+    );
+}

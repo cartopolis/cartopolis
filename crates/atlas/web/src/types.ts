@@ -283,9 +283,24 @@ export interface PipelineDataset {
     typicalMinutes: number
 }
 
+/** The OpenStreetMap extract atlas cuts its OSM layers from (`osm::extract_status`). */
+export interface PipelineOsm {
+    /** Bytes of the copy on disk; absent before the first run. */
+    bytes?: null | number
+    /** The datasets one "bring up to date" runs. */
+    datasets: string[]
+    /** When the copy on disk was downloaded, unix ms. */
+    downloadedAt?: null | number
+    /** Older than this many days, a run downloads it again. */
+    maxAgeDays: number
+    /** The URL it is downloaded from, or a path on the server. */
+    source: string
+}
+
 export interface PipelineConfig {
     areas: PipelineArea[]
     datasets: PipelineDataset[]
+    osm?: PipelineOsm
     /** The served directory a run writes into, shown so an operator can find it. */
     out: string
 }

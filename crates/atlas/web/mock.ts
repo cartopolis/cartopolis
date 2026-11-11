@@ -657,6 +657,13 @@ const pipelineConfig: PipelineConfig = {
         {description: 'Every agricultural field with the crop grown on it this year.', id: 'brp', label: 'Crop parcels (BRP)', typicalMinutes: 1},
         {description: 'Cuts every z14 height tile over the area into the terrain store.', id: 'terrain', label: 'Terrain tiles (AHN)', typicalMinutes: 1},
     ],
+    osm: {
+        bytes: 1_410_498_130,
+        datasets: ['tall', 'street', 'transit', 'shops', 'speeds', 'osmbuildings', 'geocoder'],
+        downloadedAt: Date.parse('2026-11-11T07:03:11Z'),
+        maxAgeDays: 7,
+        source: 'https://download.geofabrik.de/europe/netherlands-latest.osm.pbf',
+    },
     out: '/data/cartopolis/tiles',
 }
 
@@ -1521,6 +1528,27 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             liveLog(job)
         }
         return json({jobs})
+    }
+    if (p === '/api/pipeline/osm' && method === 'POST') {
+        const at = Date.now()
+        const job: PipelineJob = {
+            area: 'nederland',
+            bbox: [13_000, 306_000, 278_000, 620_000],
+            by: who,
+            createdAt: at,
+            id: `job-${at}`,
+            startedAt: at,
+            status: 'running',
+            steps: (pipelineConfig.osm?.datasets ?? []).map((dataset, i) => ({
+                dataset,
+                progress: i === 0 ? {done: 0, phase: 'cellen', total: 63} : {},
+                startedAt: i === 0 ? at : undefined,
+                status: i === 0 ? 'running' : 'queued',
+            })),
+        }
+        jobs.unshift(job)
+        logs.set(job.id, [{at, dataset: 'tall', text: `nederland, ${job.steps.length} datasets queued by ${who}`}])
+        return json({job})
     }
     if (p === '/api/pipeline/jobs' && method === 'POST') {
         const b = await body<{area: string; bbox: number[]; datasets: string[]; fresh: boolean}>(req)

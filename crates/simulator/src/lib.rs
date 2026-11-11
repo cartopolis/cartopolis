@@ -36,6 +36,7 @@ pub mod roles;
 pub mod scripting;
 pub mod signin;
 pub mod state;
+pub mod static_files;
 pub mod stats;
 pub mod textures;
 pub mod vapid;

@@ -162,3 +162,21 @@ export async function pollFollowed(): Promise<boolean> {
         return true
     }
 }
+
+/**
+ * Bring every layer cut from the OpenStreetMap extract up to date over the
+ * whole country: one run of all of them (`osm::DATASETS` in atlas), which
+ * downloads the extract again when it is older than a week.
+ */
+export async function refreshOsm(): Promise<null | PipelineJob> {
+    try {
+        const result = await api.post<{job: PipelineJob}>('/api/pipeline/osm', {})
+        $s.pipelineJobs = [result.job, ...$s.pipelineJobs]
+        follow(result.job.id)
+        notifier.success('Bringing OpenStreetMap up to date')
+        return result.job
+    } catch (e) {
+        report(e, 'Could not start that run')
+        return null
+    }
+}

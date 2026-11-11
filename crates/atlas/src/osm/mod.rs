@@ -909,3 +909,46 @@ mod chunk_tests {
         }
     }
 }
+
+/// The datasets cut from the extract, as one "bring OpenStreetMap up to date".
+pub const DATASETS: &[&str] = &[
+    "tall",
+    "street",
+    "transit",
+    "shops",
+    "speeds",
+    "osmbuildings",
+    "geocoder",
+];
+
+/// The country's RD bounds, the area those are kept up to date over.
+pub const NETHERLANDS_RD: [f64; 4] = [13_000.0, 306_000.0, 278_000.0, 620_000.0];
+
+/// The coverage name a country-wide run stamps.
+pub const NETHERLANDS: &str = "nederland";
+
+/// What the Data tab shows of the extract: where it comes from, and the copy
+/// on disk if there is one (bytes, and when it was downloaded, unix ms).
+#[must_use]
+pub fn extract_status(data_dir: Option<&Path>) -> Value {
+    let source = extract_source();
+    let local = if source.starts_with("http://") || source.starts_with("https://") {
+        let name = source.rsplit('/').next().unwrap_or("extract.osm.pbf");
+        data_dir.map(|d| d.join("osm").join(name))
+    } else {
+        Some(PathBuf::from(&source))
+    };
+    let meta = local.as_ref().and_then(|p| std::fs::metadata(p).ok());
+    let modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    json!({
+        "source": source,
+        "bytes": meta.map(|m| m.len()),
+        "downloadedAt": modified,
+        "maxAgeDays": MAX_AGE.as_secs() / 86_400,
+        "datasets": DATASETS,
+    })
+}

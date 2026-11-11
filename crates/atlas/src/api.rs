@@ -69,6 +69,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/coverage", get(get_coverage))
+        .route("/osm", post(refresh_osm))
         .route("/jobs", get(list_jobs).post(start_job))
         .route("/jobs/{id}/log", get(job_log))
         .route("/jobs/{id}/cancel", post(cancel_job))
@@ -157,7 +158,31 @@ async fn config(State(state): State<ApiState>, headers: HeaderMap) -> Response {
                    "typicalMinutes": d.typical_minutes})
         })
         .collect();
-    Json(json!({"areas": areas, "datasets": datasets, "out": state.out_root})).into_response()
+    let osm = crate::osm::extract_status(state.runner.data_dir());
+    Json(json!({"areas": areas, "datasets": datasets, "osm": osm, "out": state.out_root}))
+        .into_response()
+}
+
+/// `POST /api/pipeline/osm`: bring every layer cut from the OpenStreetMap
+/// extract up to date over the whole country (`osm::DATASETS`). A fixed area,
+/// which is why it is a route of its own: a typed bbox is held to 400 km².
+async fn refresh_osm(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    let who = match admin(&state, &headers).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let datasets: Vec<String> = crate::osm::DATASETS
+        .iter()
+        .map(|d| (*d).to_string())
+        .collect();
+    let job = state.runner.submit_with(
+        crate::osm::NETHERLANDS,
+        crate::osm::NETHERLANDS_RD,
+        &datasets,
+        &who.username,
+        false,
+    );
+    Json(json!({"job": job})).into_response()
 }
 
 async fn get_coverage(State(state): State<ApiState>, headers: HeaderMap) -> Response {

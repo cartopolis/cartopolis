@@ -1,6 +1,6 @@
 ---
 topic: the-server-stack
-triggers: [crates/server, atlas_proxy.rs, crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
+triggers: [crates/server, atlas_proxy.rs, static_files.rs, pipeline.tsx, crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
 updated: 2026-11-10
 ---
 
@@ -140,6 +140,13 @@ atlas out of the tick's runtime, and the numbers agree: the whole-country layer
 run peaked at 4.3 GB and the geocoder build at 3.5 GB. A crash there must not
 end the world.
 
-Still the operator's: TLS in front, and the static files (the web UI, the
-map-data tree). The hosted server still runs the two as separate systemd units
-behind Caddy; it does not use this binary yet.
+It serves the web UI (`web_root`) and atlas's map-data tree under `/data/`
+(`static_files`, with the `.br` copies atlas writes), and points every service
+the file leaves at cartopolis.org's address at its own `public_base_url` —
+tiles at the public `tiles.versatiles.org`, same schema as the mirror. Still the
+operator's: TLS in front. The hosted server still runs the two as separate
+systemd units behind Caddy; it does not use this binary yet.
+
+Admin › Data shows the extract (source, size, when downloaded) and runs every
+OSM layer over the country in one job (`POST /api/pipeline/osm`): a route of its
+own because a typed area is held to 400 km².
