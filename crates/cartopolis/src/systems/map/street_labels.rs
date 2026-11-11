@@ -542,6 +542,13 @@ pub fn update_street_labels(
                 GridCell::default(),
                 ChildOf(root),
                 StreetLabelSign,
+                // A name written on the road is an annotation, not a thing in
+                // the street, and it casts no shadow. Without this every sign
+                // went into every cascade as its own alpha-tested caster — 160
+                // materials, four maps — which was 4–6 ms of a street-level
+                // frame on an M5 Pro (`cargo perf --only street`, 2026-11-10),
+                // and a 0.55 m-high plate's shadow strip on the tarmac besides.
+                bevy::light::NotShadowCaster,
             ))
             .id();
         signs.pool.push(entity);
