@@ -16,6 +16,18 @@
 > 1.4 GB extract and 9.9 GB of cells (7.9 GB of it buildings) on 2026-11-11;
 > route `/geocode/*` to atlas in Caddy. The simulator tells
 > its clients where these are (`GET /api/services`, `docs/notes/the-server-stack.md`).
+>
+> **A new server is one program:** `cartopolis-server` (`crates/server`) runs the
+> simulator and atlas from one `cartopolis.toml` (atlas's keys under `[atlas]`;
+> set `public_base_url`, and `web_root` to the built web UI) and serves the whole
+> site on its HTTP listener, `127.0.0.1:4748` by default. HTTPS stays Caddy's —
+> one machine often serves more than one site on port 443:
+>
+> ```
+> maps.example.org {
+> 	reverse_proxy 127.0.0.1:4748
+> }
+> ```
 > The rest of this guide is kept for the history until it is rewritten.
 
 Operational guide for the `example.com` server: a Docker Compose stack running a
