@@ -611,7 +611,15 @@ impl Budget {
             // here.
             msaa: Msaa::Sample2,
             atmosphere_luts: AtmosphereLuts::bevy_defaults(),
-            shadow_cascades: 4,
+            // Three, not four, and the map is 4096² on this rung (`lib.rs`). On an
+            // M5 Pro each cascade cost 5–7 ms of a street-level frame as a *pass*,
+            // whatever was in it — halving the reach, hiding the ground's millions
+            // of triangles or shrinking the map to 1024² moved nothing, and 4096²
+            // cost the same as 2048² — so one cascade fewer at twice the side is
+            // cheaper and sharper at once: 4 cascades to 1.5 km at 2048² put a
+            // texel at ~6 cm, 17 cm, 50 cm and 1.5 m; 3 at 4096² put it at ~3 cm,
+            // 15 cm and 73 cm (`render-performance-survey.md`, 2026-11-10).
+            shadow_cascades: 3,
             // 1.5 km, not the 3 km this was. The reach has to cover the casters
             // and nothing else, and the casters are bounded by `lod22`'s
             // `SHADOW_RADIUS = 0` — only the camera's own z14 cell, which is
@@ -985,12 +993,29 @@ impl Budget {
     ///
     /// Resolved once, at launch (`setup_camera`): a live camera is not moved
     /// between sample counts — see `render_features::apply_render_features`.
+    ///
+    /// `tile_resolve` is the adapter's: `true` on Metal, where the GPU keeps the
+    /// multisampled attachment in tile memory and resolves it there, so the
+    /// desktop rung's 2× becomes 4× at no cost — measured on an M5 Pro at
+    /// 1600×900, `city` 16.2 ms at 4× against 19.7 at 2× and `street` 43.9
+    /// against 46.4, both inside the run-to-run drift
+    /// (`render-performance-survey.md`, 2026-11-10). A Vulkan desktop keeps the
+    /// rung's own count: wgpu stores the samples to memory there, and the Deck has
+    /// not been measured. The `CARTO_MSAA` override still wins (`with_msaa_override`
+    /// rewrites `self.msaa`, and 4× is 4× on every backend).
     #[must_use]
-    pub fn main_pass_msaa(&self, anti_aliasing: bool, restricted: bool) -> Msaa {
+    pub fn main_pass_msaa(
+        &self,
+        anti_aliasing: bool,
+        restricted: bool,
+        tile_resolve: bool,
+    ) -> Msaa {
         if !anti_aliasing {
             return Msaa::Off;
         }
         let asked = if self.msaa == Msaa::Off {
+            Msaa::Sample4
+        } else if tile_resolve && self.msaa == Msaa::Sample2 && !msaa_overridden() {
             Msaa::Sample4
         } else {
             self.msaa
@@ -1531,6 +1556,14 @@ fn on_this_machine(budget: Budget) -> Budget {
 /// on the scene, because wgpu stores the multisampled attachments to memory between
 /// passes rather than resolving them in tile memory, so its bandwidth scales with
 /// the screen. `1` is off. Anything else falls through to the rung.
+/// Whether `CARTO_MSAA` named a sample count for this launch, in which case the
+/// rung's count is that one on every backend and [`Budget::main_pass_msaa`]
+/// must not raise it again.
+#[must_use]
+pub fn msaa_overridden() -> bool {
+    crate::env_value("CARTO_MSAA").is_some()
+}
+
 fn with_msaa_override(budget: Budget) -> Budget {
     let msaa = match crate::env_value("CARTO_MSAA").as_deref().map(str::trim) {
         Some("1" | "0" | "off") => Msaa::Off,
@@ -2430,8 +2463,8 @@ mod tests {
     fn the_anti_aliasing_switch_resolves_to_a_portable_sample_count() {
         for budget in [Budget::phone(), Budget::balanced(), Budget::desktop()] {
             for restricted in [false, true] {
-                assert_eq!(budget.main_pass_msaa(false, restricted), Msaa::Off);
-                let on = budget.main_pass_msaa(true, restricted);
+                assert_eq!(budget.main_pass_msaa(false, restricted, false), Msaa::Off);
+                let on = budget.main_pass_msaa(true, restricted, false);
                 assert!(
                     matches!(on, Msaa::Off | Msaa::Sample2 | Msaa::Sample4),
                     "{:?}",
@@ -2445,10 +2478,27 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Budget::phone().main_pass_msaa(true, true), Msaa::Sample4);
         assert_eq!(
-            Budget::desktop().main_pass_msaa(true, false),
+            Budget::phone().main_pass_msaa(true, true, false),
+            Msaa::Sample4
+        );
+        assert_eq!(
+            Budget::desktop().main_pass_msaa(true, false, false),
             Budget::desktop().msaa
+        );
+        // Where the GPU resolves in tile memory the desktop's 2× is taken to 4×;
+        // a rung with no multisampling of its own was already there.
+        assert_eq!(
+            Budget::desktop().main_pass_msaa(true, false, true),
+            Msaa::Sample4
+        );
+        assert_eq!(
+            Budget::balanced().main_pass_msaa(true, false, true),
+            Msaa::Sample4
+        );
+        assert_eq!(
+            Budget::desktop().main_pass_msaa(false, false, true),
+            Msaa::Off
         );
     }
 }

@@ -3,9 +3,11 @@
 //! A kerb is a box 10 cm high and 15 cm wide (`cartopolis_geo::furniture`'s
 //! `LineKind::Kerb`), so its shadow is a hand's width — and a street-level cell
 //! has 40–66 thousand of them, more triangles than every other street object
-//! together. On the desktop rung a cascade texel is ~4 cm, ~12 cm, ~35 cm and ~1 m
-//! from the nearest cascade out, so only the first two can draw a kerb's shadow
-//! at all; in the other two it is a fraction of a texel, and rendering it there
+//! together. On the desktop rung a cascade texel was ~4 cm, ~12 cm, ~35 cm and
+//! ~1 m from the nearest cascade out (four cascades on a 2048² map; since
+//! 2026-11-11 three on 4096², ~3 cm, 15 cm and 73 cm, which leaves the rule
+//! below as it was), so only the first two can draw a kerb's shadow at all; in
+//! the others it is a fraction of a texel, and rendering it there
 //! cost most of a street-level frame's shadow work (`deck-1`, 2026-10-20: leaving
 //! the kerbs out of the scene altogether took the street frame from 49.8 to
 //! ~33 ms, and 24 ms of the 53 were shadows).

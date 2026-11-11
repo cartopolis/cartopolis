@@ -1081,10 +1081,15 @@ fn run_client() {
             size: env_value("CARTO_SHADOW_MAP")
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .filter(|px| (256..=8192).contains(px))
+                // 4096² on the desktop rung, with its three cascades: on an M5
+                // Pro the side made no difference to the frame between 1024² and
+                // 4096² (`render-performance-survey.md`, 2026-11-10), so the
+                // texels are bought for 64 MB a cascade, not for time. 1024² below
+                // it, where the memory is the scarce thing.
                 .unwrap_or(if quality::budget().tier < quality::Tier::Desktop {
                     1024
                 } else {
-                    2048
+                    4096
                 }),
         })
         .init_resource::<AuthIdentity>()

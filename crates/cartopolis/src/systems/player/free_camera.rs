@@ -1051,6 +1051,16 @@ pub fn setup_camera(
     // — see the `Msaa` comment at the camera spawn.
     let restricted_sample_counts = cfg!(target_arch = "wasm32") || software_renderer;
     let budget = crate::quality::budget();
+    let msaa = budget.main_pass_msaa(
+        prefs.anti_aliasing_on(),
+        restricted_sample_counts,
+        // Metal resolves the samples in tile memory, so 4× is free there (see
+        // the method). An adapter fact, like the two clamps above.
+        adapter.backend == egui_wgpu::wgpu::Backend::Metal,
+    );
+    // Said once, because the `render budget in force` line reports the rung's
+    // count and this is the camera's, after the adapter had its say.
+    tracing::info!(?msaa, backend = ?adapter.backend, "main pass multisampling");
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
     // density is rewritten by altitude in `globe::update_globe_visibility` (thin
@@ -1249,7 +1259,7 @@ pub fn setup_camera(
             // occlusion pass was removed on 2026-09-21. The Anti-aliasing setting
             // moves the count now, through `render_features`, and this is only
             // the first answer.
-            budget.main_pass_msaa(prefs.anti_aliasing_on(), restricted_sample_counts),
+            msaa,
             // How a shadow edge is filtered. Stated rather than left to bevy's
             // required-component default for the same reason `tonemapping` below
             // is: the default is the expensive one. `Gaussian` takes nine taps
