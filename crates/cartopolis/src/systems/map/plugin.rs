@@ -69,6 +69,8 @@ impl Plugin for MapPlugin {
         // extract commands have put the bake's components back.
         app.init_resource::<systems::sky_bake::SkyBake>()
             .init_resource::<systems::sky_bake::SkyBakeOrder>()
+            // The street names' atlas, written slot by slot from the render world.
+            .add_plugins(systems::label_atlas::LabelAtlasPlugin)
             .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
                 systems::sky_bake::SkyBakeOrder,
             >::default());

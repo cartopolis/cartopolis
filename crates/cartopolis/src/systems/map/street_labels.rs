@@ -49,14 +49,18 @@ use crate::components::FreeCamera;
 use crate::components::StreetLabelSign;
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::asset::RenderAssetUsages;
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::mesh::MeshTag;
 use big_space::prelude::{BigSpace, Grid, GridCell};
+use cartopolis_materials::label_sign::{sign_tag, LabelSignExtension, LabelSignMaterial};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::GlobeState;
 use crate::systems::ground_stack::GroundLayer;
+use crate::systems::label_atlas::{self, LabelAtlasWrites, SlotRaster};
 use crate::systems::theme;
 use crate::systems::vector_tiles::StreetLabelLine;
 
@@ -111,6 +115,10 @@ const MAX_LABEL_ALT: f32 = 1200.0;
 /// screen-space layer would need: these cover a disc around the view rather than
 /// the viewport, so the ones behind the camera are paid for too.
 const MAX_LABELS: usize = 160;
+const _: () = assert!(
+    MAX_LABELS == (label_atlas::SLOT_COLS * label_atlas::SLOT_ROWS) as usize,
+    "one atlas slot per pool sign"
+);
 
 /// A name may take at most this fraction of its street's length. Under 1.0 so a
 /// label never runs past the junction at either end.
@@ -201,7 +209,7 @@ type SignQuery<'w, 's> = Query<
         &'static mut Transform,
         &'static mut GridCell,
         &'static mut Visibility,
-        &'static MeshMaterial3d<StandardMaterial>,
+        &'static mut MeshTag,
     ),
     (With<StreetLabelSign>, Without<FreeCamera>),
 >;
@@ -338,7 +346,14 @@ impl StreetLabelStore {
 pub struct StreetLabelSigns {
     font: Option<fontdue::Font>,
     quad: Option<Handle<Mesh>>,
-    signs: HashMap<String, Handle<Image>>,
+    /// The atlas every sign reads its name from, and the one material they all
+    /// wear (`label_atlas`, `cartopolis_materials::label_sign`).
+    atlas: Option<Handle<Image>>,
+    material: Option<Handle<LabelSignMaterial>>,
+    /// A name's raster, ready to be written into whichever slot takes it.
+    rasters: HashMap<String, Arc<SlotRaster>>,
+    /// The name each pool sign's slot holds now.
+    shown: Vec<Option<String>>,
     /// [`text_extent`] per name. The fit test asks it of every street in reach on
     /// every placement, and a placement re-runs every frame until the chosen
     /// names' textures are all built, four a frame: measuring each name glyph by
@@ -400,8 +415,9 @@ pub fn update_street_labels(
     camera: AnchoredCamera,
     bigspace: Query<Entity, With<BigSpace>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<LabelSignMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut writes: ResMut<LabelAtlasWrites>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     mut placed_query: SignQuery,
 ) {
@@ -495,9 +511,9 @@ pub fn update_street_labels(
     // Crossing a city would otherwise accumulate every name it has ever shown.
     // Trimming to the live selection is exact and only costs a re-raster of
     // whatever comes back into view.
-    if signs.signs.len() > CACHE_MAX {
+    if signs.rasters.len() > CACHE_MAX {
         let live: std::collections::HashSet<&str> = chosen.iter().map(|p| p.name).collect();
-        signs.signs.retain(|name, _| live.contains(name.as_str()));
+        signs.rasters.retain(|name, _| live.contains(name.as_str()));
     }
 
     // Textures, under the per-frame cap. A name without one yet is dropped from
@@ -505,7 +521,7 @@ pub fn update_street_labels(
     let mut complete = true;
     let mut built = 0usize;
     chosen.retain(|p| {
-        if signs.signs.contains_key(p.name) {
+        if signs.rasters.contains_key(p.name) {
             return true;
         }
         if built >= MAX_TEXTURE_BUILDS_PER_FRAME {
@@ -513,35 +529,64 @@ pub fn update_street_labels(
             return false;
         }
         built += 1;
-        let (pixels, w, h) = render_name(&font, p.name);
-        signs
-            .signs
-            .insert(p.name.to_string(), images.add(label_image(pixels, w, h)));
+        let (ink, halo, w, h) = render_name(&font, p.name);
+        signs.rasters.insert(
+            p.name.to_string(),
+            Arc::new(SlotRaster::new(&ink, &halo, w, h)),
+        );
         true
     });
 
-    // The pool: one quad each, spawned once and re-aimed from then on.
+    // The pool: one quad each, spawned once and re-aimed from then on, all of
+    // them wearing the one material that reads the one atlas. A sign's slot of
+    // the atlas is its index in the pool, named by its `MeshTag`.
     if signs.quad.is_none() {
         signs.quad = Some(meshes.add(label_quad()));
     }
     let quad = signs.quad.clone().expect("just created");
+    if signs.atlas.is_none() {
+        let atlas = images.add(label_atlas::blank_atlas());
+        writes.atlas = Some(atlas.clone());
+        let linear = |c: [f32; 3]| {
+            let l = Color::srgb(c[0], c[1], c[2]).to_linear();
+            Vec4::new(l.red, l.green, l.blue, 1.0)
+        };
+        signs.material = Some(materials.add(LabelSignMaterial {
+            base: StandardMaterial {
+                base_color: Color::WHITE,
+                // A map annotation, not a surface: it must read at midnight as
+                // well as at noon, so the sun does not get a vote.
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                depth_bias: GroundLayer::StreetLabel.depth_bias(),
+                // Winding is not allowed to be the thing that hides it (the
+                // route ribbon learned this the expensive way).
+                cull_mode: None,
+                ..default()
+            },
+            extension: LabelSignExtension {
+                cell: Vec4::new(
+                    label_atlas::CELL_W as f32 / label_atlas::ATLAS_W as f32,
+                    label_atlas::CELL_H as f32 / label_atlas::ATLAS_H as f32,
+                    label_atlas::SLOT_COLS as f32,
+                    0.0,
+                ),
+                ink: linear(INK),
+                halo: linear(HALO).with_w(HALO_ALPHA),
+                atlas: atlas.clone(),
+            },
+        }));
+        signs.atlas = Some(atlas);
+        signs.shown = vec![None; MAX_LABELS];
+    }
+    let material = signs.material.clone().expect("just created");
     while signs.pool.len() < MAX_LABELS {
-        let material = materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            // A map annotation, not a surface: it must read at midnight as well
-            // as at noon, so the sun does not get a vote.
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            depth_bias: GroundLayer::StreetLabel.depth_bias(),
-            // Winding is not allowed to be the thing that hides it (the route
-            // ribbon learned this the expensive way).
-            cull_mode: None,
-            ..default()
-        });
+        let slot = signs.pool.len() as u32;
         let entity = commands
             .spawn((
                 Mesh3d(quad.clone()),
-                MeshMaterial3d(material),
+                MeshMaterial3d(material.clone()),
+                MeshTag::new(sign_tag(slot, 0.0, 0.0)),
                 Transform::default(),
                 Visibility::Hidden,
                 GridCell::default(),
@@ -549,11 +594,11 @@ pub fn update_street_labels(
                 StreetLabelSign,
                 // A name written on the road is an annotation, not a thing in
                 // the street, and it casts no shadow. Without this every sign
-                // went into every cascade as its own alpha-tested caster — 160
-                // materials, four maps — which was 4–6 ms of a street-level
-                // frame on an M5 Pro (`cargo perf --only street`, 2026-11-10),
-                // and a 0.55 m-high plate's shadow strip on the tarmac besides.
-                bevy::light::NotShadowCaster,
+                // went into every cascade as a caster of its own — 4–6 ms of a
+                // street-level frame on an M5 Pro (`cargo perf --only street`,
+                // 2026-11-10) — and a 0.55 m-high plate's shadow strip on the
+                // tarmac besides.
+                NotShadowCaster,
             ))
             .id();
         signs.pool.push(entity);
@@ -561,54 +606,47 @@ pub fn update_street_labels(
 
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
     let pool = signs.pool.clone();
-    let shown: Vec<Option<AssetId<Image>>> = pool
-        .iter()
-        .map(|entity| {
-            let (_, _, _, material) = placed_query.get(*entity).ok()?;
-            materials
-                .get(&material.0)?
-                .base_color_texture
-                .as_ref()
-                .map(Handle::id)
-        })
-        .collect();
+    let shown: Vec<Option<String>> = signs.shown.clone();
+    let shown_names: Vec<Option<&str>> = shown.iter().map(Option::as_deref).collect();
     let dealt = deal_slots(
-        &shown,
+        &shown_names,
         chosen
             .iter()
-            .map(|p| signs.signs.get(p.name).map(Handle::id)),
+            .map(|p| signs.rasters.contains_key(p.name).then_some(p.name)),
     );
     for (slot, entity) in pool.iter().enumerate() {
-        let Ok((mut tf, mut cell, mut vis, material)) = placed_query.get_mut(*entity) else {
+        let Ok((mut tf, mut cell, mut vis, mut tag)) = placed_query.get_mut(*entity) else {
             continue;
         };
         // **Every write below is compared first.** A placement re-runs whenever the
         // view turns past `YAW_REPLACE` or its ground focus slides past
         // `MOVE_REPLACE_M`, which at street level is every few frames of a turn,
-        // and a pool sign that keeps its name is the common case. Writing the
-        // texture through `get_mut` regardless marked every one of the 160 sign
-        // materials changed — each re-prepared on the render thread — on every
-        // placement: ~150 a frame through a turn (`cargo perf`'s `street`
-        // scenario, 2026-10-16). Which is also why the names are dealt to the signs
-        // by [`deal_slots`] rather than in order: dealt in order, a re-placement put
-        // most names on a different sign than last time, and the compare found
-        // nearly every texture changed.
+        // and a pool sign that keeps its name is the common case. Which is why
+        // the names are dealt to the signs by [`deal_slots`] rather than in order:
+        // dealt in order, a re-placement put most names on a different sign than
+        // last time. A sign that does take a new name costs a region of the atlas
+        // written from the render world and a `MeshTag`, and no material: when
+        // each sign was a material of its own, written through `get_mut`, the
+        // ~65 that changed per re-placement were each re-prepared on the render
+        // thread — 8 ms a frame of a street-level turn on an M5 Pro
+        // (`render-performance-survey.md`, 2026-11-10).
         let Some(p) = dealt[slot].and_then(|i| chosen.get(i)) else {
             vis.set_if_neq(Visibility::Hidden);
             continue;
         };
-        let Some(texture) = signs.signs.get(p.name) else {
+        let Some(raster) = signs.rasters.get(p.name).cloned() else {
             vis.set_if_neq(Visibility::Hidden);
             continue;
         };
-        if materials
-            .get(&material.0)
-            .is_some_and(|m| m.base_color_texture.as_ref() != Some(texture))
-        {
-            if let Some(mut m) = materials.get_mut(&material.0) {
-                m.base_color_texture = Some(texture.clone());
-            }
+        if signs.shown[slot].as_deref() != Some(p.name) {
+            writes.push(slot as u32, raster.clone());
+            signs.shown[slot] = Some(p.name.to_string());
         }
+        tag.set_if_neq(MeshTag::new(sign_tag(
+            slot as u32,
+            raster.u_frac,
+            raster.v_frac,
+        )));
         // Stand on the measured ground, which the road under the label is standing
         // on too. One height for the whole quad — a label is a flat plate, and the
         // rule the water, the bridge decks and the buildings follow — but taken as
@@ -643,7 +681,7 @@ pub fn update_street_labels(
         alt,
         height_m,
         chosen = chosen.len(),
-        cached = signs.signs.len(),
+        cached = signs.rasters.len(),
         complete,
         "street labels placed"
     );
@@ -867,67 +905,6 @@ fn load_font() -> Option<fontdue::Font> {
     None
 }
 
-/// Wrap a rasterised name in a texture **with a mip chain**.
-///
-/// Not optional. A label is 8–20 m of world laid at a shallow angle, so its
-/// texture is nearly always *minified* — level 0 alone samples one texel in four
-/// and drops half of every stroke, which reads as thin grey text that gets worse
-/// the further away it is. The chain is box-filtered on premultiplied alpha, or
-/// the transparent margin bleeds its colour into the letters as they shrink.
-fn label_image(level0: Vec<u8>, w: u32, h: u32) -> Image {
-    let mut data = level0.clone();
-    let (mut cur, mut cw, mut ch) = (level0, w, h);
-    let mut levels = 1u32;
-    while cw > 1 || ch > 1 {
-        let (nw, nh) = ((cw / 2).max(1), (ch / 2).max(1));
-        let mut next = vec![0u8; (nw * nh * 4) as usize];
-        for y in 0..nh {
-            for x in 0..nw {
-                let mut acc = [0f32; 4];
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let sx = (x * 2 + dx).min(cw - 1);
-                        let sy = (y * 2 + dy).min(ch - 1);
-                        let i = ((sy * cw + sx) * 4) as usize;
-                        let a = f32::from(cur[i + 3]) / 255.0;
-                        acc[0] += f32::from(cur[i]) * a;
-                        acc[1] += f32::from(cur[i + 1]) * a;
-                        acc[2] += f32::from(cur[i + 2]) * a;
-                        acc[3] += a;
-                    }
-                }
-                let j = ((y * nw + x) * 4) as usize;
-                if acc[3] > 0.0 {
-                    for k in 0..3 {
-                        next[j + k] = (acc[k] / acc[3]).clamp(0.0, 255.0) as u8;
-                    }
-                }
-                next[j + 3] = (acc[3] / 4.0 * 255.0).clamp(0.0, 255.0) as u8;
-            }
-        }
-        data.extend_from_slice(&next);
-        cur = next;
-        cw = nw;
-        ch = nh;
-        levels += 1;
-    }
-
-    let mut image = Image::new_uninit(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.texture_descriptor.mip_level_count = levels;
-    image.data = Some(data);
-    image.sampler = crate::systems::tile_loader::ground_sampler();
-    image
-}
-
 /// Texture size for a name, in pixels. Shared by the raster and by the fit test,
 /// which needs the aspect ratio *before* any texture exists.
 fn text_extent(font: &fontdue::Font, text: &str) -> (u32, u32) {
@@ -966,13 +943,15 @@ fn layout(font: &fontdue::Font, text: &str) -> (Vec<(char, f32)>, f32) {
     (pens, pen)
 }
 
-/// Rasterise a name: pale ink over a dark, feathered halo, on transparent.
+/// Rasterise a name as two coverage planes, `w × h` each: the ink's and the
+/// halo's, which `shaders/label_sign.wesl` composes — pale ink over a dark,
+/// feathered halo, on transparent — in the colours the signs' material carries.
 ///
 /// The halo is a dilation of the glyph coverage, not a second pass of offset
 /// text — an outline has to be even on every side of a letter, and four diagonal
 /// copies leave the horizontals thin. Past its solid core it is a blur of a wider
 /// dilation, so it fades out rather than ending on an edge of its own.
-fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
+fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, Vec<u8>, u32, u32) {
     let (w, h) = text_extent(font, text);
     let (wi, hi) = (w as i32, h as i32);
     let pad = text_pad();
@@ -1015,23 +994,7 @@ fn render_name(font: &fontdue::Font, text: &str) -> (Vec<u8>, u32, u32) {
     );
     let halo: Vec<u8> = core.iter().zip(&soft).map(|(c, s)| (*c).max(*s)).collect();
 
-    // 3. Ink over halo, source-over onto transparent.
-    let mut px = vec![0u8; cov.len() * 4];
-    for i in 0..cov.len() {
-        let ink_a = f32::from(cov[i]) / 255.0;
-        let halo_a = f32::from(halo[i]) / 255.0 * HALO_ALPHA;
-        let out_a = ink_a + halo_a * (1.0 - ink_a);
-        let j = i * 4;
-        if out_a <= 0.0 {
-            continue;
-        }
-        for k in 0..3 {
-            let c = (INK[k] * ink_a + HALO[k] * halo_a * (1.0 - ink_a)) / out_a;
-            px[j + k] = (c.clamp(0.0, 1.0) * 255.0) as u8;
-        }
-        px[j + 3] = (out_a * 255.0) as u8;
-    }
-    (px, w, h)
+    (cov, halo, w, h)
 }
 
 /// The mean over the `(2r + 1)²` square round each pixel, off-image counting as
@@ -1132,17 +1095,17 @@ fn dilate_disc(src: &[u8], w: i32, h: i32, r: i32) -> Vec<u8> {
 
 /// Which chosen label each pool slot shows: `Some(index into chosen)` per slot.
 ///
-/// `shown` is the texture each slot carries now and `wanted` the texture of each
-/// chosen label, in priority order (`None` where it has none yet). A label whose
-/// texture a slot is already showing keeps that slot; the rest take the free ones
+/// `shown` is the name each slot carries now and `wanted` the name of each
+/// chosen label, in priority order (`None` where it has no raster yet). A label
+/// whose name a slot is already showing keeps that slot; the rest take the free ones
 /// in order. Only as many labels as there are slots are dealt, the first ones —
 /// what dealing them in order did, minus the reshuffle that re-textured most of
 /// the pool on every placement.
-fn deal_slots(
-    shown: &[Option<AssetId<Image>>],
-    wanted: impl Iterator<Item = Option<AssetId<Image>>>,
+fn deal_slots<K: std::hash::Hash + Eq + Copy>(
+    shown: &[Option<K>],
+    wanted: impl Iterator<Item = Option<K>>,
 ) -> Vec<Option<usize>> {
-    let mut on: HashMap<AssetId<Image>, Vec<usize>> = HashMap::new();
+    let mut on: HashMap<K, Vec<usize>> = HashMap::new();
     for (slot, id) in shown.iter().enumerate().rev() {
         if let Some(id) = id {
             on.entry(*id).or_default().push(slot);
@@ -1414,37 +1377,32 @@ mod tests {
     }
 
     /// The raster has to be legible against anything: ink in the middle of a
-    /// stroke, halo around it, transparent away from the text.
+    /// stroke, halo around it, nothing away from the text.
     #[test]
     fn a_name_rasterises_to_ink_with_a_halo() {
         let font = font();
-        let (px, w, h) = render_name(&font, "Oosterstraat");
-        assert_eq!(px.len(), (w * h * 4) as usize);
-        let alphas: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
-        assert!(alphas.iter().any(|a| *a > 250), "no solid text at all");
+        let (ink, halo, w, h) = render_name(&font, "Oosterstraat");
+        assert_eq!(ink.len(), (w * h) as usize);
+        assert_eq!(halo.len(), ink.len());
+        assert!(ink.iter().any(|a| *a > 250), "no solid text at all");
+        assert!(ink.iter().any(|a| *a == 0), "the raster is a solid block");
+        // Somewhere there must be halo where there is no ink: the outline round a
+        // stroke, which is what keeps the name legible on a pale road.
         assert!(
-            alphas.iter().any(|a| *a == 0),
-            "the texture is a solid block"
+            ink.iter().zip(&halo).any(|(i, h)| *i == 0 && *h > 200),
+            "no halo round the strokes"
         );
-        // Somewhere there must be a dark halo pixel: mostly opaque, and far darker
-        // than the ink. Without it the names vanish over a pale square.
-        assert!(
-            px.chunks_exact(4).any(|p| p[3] > 180 && p[0] < 60),
-            "no halo — the ink has nothing to sit on"
-        );
-        assert!(
-            px.chunks_exact(4)
-                .any(|p| p[3] > 250 && p[0] > 200 && p[1] > 200),
-            "no ink — the name would read as a smear"
-        );
-        // And the halo fades rather than ending on an edge: a hard rim is the
+        // The halo fades rather than ending on an edge: a hard rim is the
         // outline-round-a-sticker look this replaced.
-        let fading = alphas.iter().filter(|a| (20..120).contains(*a)).count();
+        let fading = halo.iter().filter(|a| (20..120).contains(*a)).count();
         assert!(
-            fading > alphas.len() / 20,
+            fading > halo.len() / 20,
             "the halo has a hard edge ({fading} of {} pixels in its fade)",
-            alphas.len()
+            halo.len()
         );
+        // And the margin is clear in both planes, or the mips bleed a frame.
+        assert_eq!(ink[0], 0);
+        assert_eq!(halo[0], 0);
     }
 
     #[test]

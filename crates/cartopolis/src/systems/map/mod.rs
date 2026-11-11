@@ -89,6 +89,7 @@ pub mod stream_ledger;
 // How long each load took, for the log and the diagnostics report.
 pub mod load_timing;
 // Which streamers the settle test waits for, registered beside each one.
+pub mod label_atlas;
 pub mod stream_watch;
 pub mod street_detail;
 pub mod street_furniture;

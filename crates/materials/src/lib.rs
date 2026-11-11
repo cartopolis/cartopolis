@@ -15,6 +15,7 @@ pub mod data_layers;
 pub mod globe_ocean;
 pub mod grass;
 pub mod ground_detail;
+pub mod label_sign;
 pub mod particles;
 pub mod road_depth;
 pub mod satellites;
@@ -67,6 +68,9 @@ impl Plugin for MaterialsPlugin {
             // overlapping ribbons is on top rides in a vertex attribute, so the road
             // groups need a pipeline that declares it (`systems::road_depth`).
             .add_plugins(MaterialPlugin::<road_depth::RoadMaterial>::default())
+            // The street names on the road: one material and one atlas for the
+            // whole sign pool (`systems::street_labels`, `systems::label_atlas`).
+            .add_plugins(MaterialPlugin::<label_sign::LabelSignMaterial>::default())
             .add_plugins(MaterialPlugin::<globe_ocean::GlobeSurfaceMaterial>::default());
     }
 }
