@@ -63,6 +63,12 @@ pub struct SimConfig {
     /// No trailing slash; the client appends `/api/...`.
     #[serde(default)]
     pub api_base_url: String,
+    /// Atlas, when this server's HTTP listener also answers atlas's paths by
+    /// passing them on to it (`atlas_proxy`), e.g. `http://127.0.0.1:4749`.
+    /// `cartopolis-server` sets it to the atlas it runs; unset, there is no
+    /// such route, as on the hosted server where Caddy routes them itself.
+    #[serde(default)]
+    pub atlas_url: Option<String>,
     /// Where this server's geo services are, told to clients at
     /// `GET /api/services` ([`cartopolis_core::services`]). Each defaults to
     /// cartopolis.org's, so a server that sets none sends its players where they
@@ -302,6 +308,7 @@ impl Default for SimConfig {
             max_scripts: default_max_scripts(),
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
+            atlas_url: None,
             geocoder_url: default_geocoder_url(),
             osm_query_url: default_osm_query_url(),
             map_data_url: default_map_data_url(),
@@ -342,9 +349,16 @@ impl SimConfig {
 
     /// `cartopolis.toml` (optional) + env `CARTO_*` (e.g. `CARTO_listen`, `CARTO_database_path`).
     pub fn load() -> anyhow::Result<Self> {
+        Self::load_from(Path::new("cartopolis.toml"))
+    }
+
+    /// [`Self::load`] from a named file, which may hold other sections too
+    /// (`cartopolis-server` keeps `[atlas]` in it): keys this struct does not
+    /// have are ignored.
+    pub fn load_from(file: &Path) -> anyhow::Result<Self> {
         let mut figment = Figment::new().merge(Serialized::defaults(SimConfig::default()));
-        if Path::new("cartopolis.toml").exists() {
-            figment = figment.merge(Toml::file("cartopolis.toml"));
+        if file.exists() {
+            figment = figment.merge(Toml::file(file));
         }
         figment = figment.merge(Env::prefixed("CARTO_"));
         let mut config: Self = figment.extract()?;

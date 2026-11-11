@@ -15,6 +15,7 @@ members = [
     "crates/calls",
     "crates/simulator",
     "crates/atlas",
+    "crates/server",
     "crates/viewer",
     "crates/cartopolis",
     "crates/cartopolis_android",

@@ -98,7 +98,7 @@ placement and visibility and none at all for colour, lighting or frame time.**
 
 ## Architecture
 
-A Cargo workspace of seventeen crates. Each row's note has the history and numbers.
+A Cargo workspace of eighteen crates. Each row's note has the history and numbers.
 
 | Crate | Role |
 |---|---|
@@ -112,6 +112,7 @@ A Cargo workspace of seventeen crates. Each row's note has the history and numbe
 | `cartopolis_calls` (`crates/calls`) | E2EE calls: feature `client` for the app, `sfu` (a forwarder of bytes it cannot open) for the simulator — **which takes only `sfu` outside its tests** (`calls.md`) |
 | `cartopolis_simulator` (`crates/simulator`) | Headless Tokio server: SQLite authority, tick loop, the wire, the HTTP API. **No `bevy`** |
 | `cartopolis_atlas` (`crates/atlas`) | Map-data pipelines, terrain tiles, and the web UI in `crates/atlas/web` (`atlas.md`) |
+| `cartopolis_server` (`crates/server`, `cartopolis-server`) | The simulator and atlas as one program: one binary, one `cartopolis.toml` (`[atlas]` inside), one HTTP address; atlas runs as a supervised second process of it, never in the tick's runtime (`the-server-stack.md`) |
 | `cartopolis_viewer` (`crates/viewer`, `carto-view`) | Draws what `cartopolis_geo` builds, in seconds, with stock materials; must not depend on `cartopolis`, and is a second Bevy binary in every workspace build |
 | `cartopolis` | The Bevy 0.20 client: rendering, ECS systems, egui 0.36 UI |
 | `cartopolis_android` | The APK's `cdylib`; both dependencies target-gated, so empty off Android (`android-build.md`) |

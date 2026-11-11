@@ -1,6 +1,6 @@
 ---
 topic: the-server-stack
-triggers: [crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
+triggers: [crates/server, atlas_proxy.rs, crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
 updated: 2026-11-10
 ---
 
@@ -122,3 +122,24 @@ Measured 2026-11-11, whole Netherlands, mac-1, release build:
   40 km away.
 - **Not found:** anything mapped only as a relation — Schiphol's aerodrome is
   one, so "Schiphol" finds the station and the hamlet but not the airport.
+
+## One program, two processes (`crates/server`, since 2026-11-11)
+
+`cartopolis-server` is what a new server installs: one binary and one
+`cartopolis.toml`, the simulator's keys at the top and atlas's under `[atlas]`.
+It runs the simulator and starts itself again as `cartopolis-server atlas`, a
+second process it restarts when it ends (a doubling pause up to a minute, reset
+after a long run) and that ends when it does (it holds the child's stdin). The
+simulator's HTTP listener answers atlas's paths by passing them on
+(`atlas_proxy`, `SimConfig::atlas_url`), so a TLS proxy in front needs one
+upstream.
+
+**Rejected: one process.** Merging was easy — no path is claimed by both, atlas
+pulls in none of the simulator's encryption or call code — but `atlas.md` keeps
+atlas out of the tick's runtime, and the numbers agree: the whole-country layer
+run peaked at 4.3 GB and the geocoder build at 3.5 GB. A crash there must not
+end the world.
+
+Still the operator's: TLS in front, and the static files (the web UI, the
+map-data tree). The hosted server still runs the two as separate systemd units
+behind Caddy; it does not use this binary yet.

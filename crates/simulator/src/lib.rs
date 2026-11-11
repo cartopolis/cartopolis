@@ -7,6 +7,7 @@
 //! solo mode and `--connect` share one client path (see ADR-016 "Solo/dev mode").
 
 pub mod assets;
+pub mod atlas_proxy;
 pub mod auth;
 pub mod authoring;
 pub mod buildings;

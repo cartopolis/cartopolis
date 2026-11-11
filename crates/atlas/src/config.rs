@@ -64,6 +64,18 @@ impl AtlasConfig {
         )
     }
 
+    /// [`Self::load`] from one table of a file that holds other settings too:
+    /// `cartopolis-server` keeps the simulator's at the top of its
+    /// `cartopolis.toml` and atlas's under `[atlas]`. Unknown keys inside the
+    /// table are still refused.
+    pub fn load_table(file: &Path, table: &str) -> anyhow::Result<Self> {
+        Self::from_figment(
+            Figment::from(Serialized::defaults(Self::default()))
+                .merge(Figment::from(Toml::file(file)).focus(table))
+                .merge(Env::prefixed("CARTO_ATLAS_")),
+        )
+    }
+
     fn from_figment(figment: Figment) -> anyhow::Result<Self> {
         let config: Self = figment.extract()?;
         anyhow::ensure!(
@@ -103,5 +115,30 @@ mod tests {
     #[test]
     fn zero_upstream_slots_is_refused() {
         assert!(from_toml("upstream_concurrency = 0").is_err());
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    #[test]
+    fn a_table_of_a_shared_file_is_read_and_the_rest_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cartopolis.toml");
+        std::fs::write(
+            &file,
+            "listen = \"127.0.0.1:4747\"\n[atlas]\ndata_dir = \"/srv/atlas\"\n",
+        )
+        .unwrap();
+        let c = AtlasConfig::load_table(&file, "atlas").unwrap();
+        assert_eq!(c.data_dir, PathBuf::from("/srv/atlas"));
+        assert_eq!(
+            c.listen,
+            AtlasConfig::default().listen,
+            "the top level is not atlas's"
+        );
+        std::fs::write(&file, "[atlas]\nlisen = \"0.0.0.0:80\"\n").unwrap();
+        assert!(AtlasConfig::load_table(&file, "atlas").is_err());
     }
 }

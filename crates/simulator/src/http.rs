@@ -159,6 +159,9 @@ pub fn router(state: HttpState) -> Router {
         // Usage statistics: the page-view beacon, Admin › Stats and a
         // community's own numbers (`crate::stats`).
         .merge(crate::stats::api::routes())
+        // Atlas's paths, when this listener stands in front of it too
+        // (`atlas_proxy`, `cartopolis-server`).
+        .merge(crate::atlas_proxy::routes(&state.config))
         .with_state(state)
 }
 

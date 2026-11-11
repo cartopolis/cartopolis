@@ -1111,3 +1111,45 @@ async fn the_services_document_names_what_the_operator_configured() {
         "a server that configures nothing names cartopolis.org's services"
     );
 }
+
+/// With `atlas_url` set, atlas's paths are asked of atlas — query and all — and
+/// the simulator's own are still its own.
+#[tokio::test]
+async fn atlas_paths_are_passed_through_to_atlas() {
+    use axum::extract::RawQuery;
+    use axum::routing::get;
+    let atlas = axum::Router::new().route(
+        "/geocode/search",
+        get(|RawQuery(q): RawQuery| async move {
+            axum::Json(serde_json::json!([{ "display_name": "Grote Markt", "asked": q }]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let atlas_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, atlas).await.unwrap() });
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("proxy.db").to_str().unwrap().to_string();
+    let config = SimConfig {
+        database_path: db,
+        listen: "127.0.0.1:0".into(),
+        http_listen: Some("127.0.0.1:0".into()),
+        atlas_url: Some(format!("http://{atlas_addr}")),
+        ..SimConfig::default()
+    };
+    let handle = serve(Arc::new(config)).await.unwrap();
+    let base = http_base(&handle);
+    let (status, body) = api(
+        "GET",
+        format!("{base}/geocode/search?q=grote+markt"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body[0]["asked"], "q=grote+markt");
+    let (status, _) = api("GET", format!("{base}/api/health"), None, None).await;
+    assert_eq!(status, 200, "the simulator's own paths stay its own");
+    let (status, _) = api("GET", format!("{base}/height"), None, None).await;
+    assert_eq!(status, 404, "atlas's answer, passed back as it was");
+}

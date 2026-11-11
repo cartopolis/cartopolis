@@ -1,0 +1,26 @@
+# `cartopolis_server` — the simulator and atlas as one program to install: one
+# binary, one `cartopolis.toml`, one HTTP address. Atlas still runs as a process
+# of its own (this binary, started again as `cartopolis-server atlas`), never in
+# the simulator's runtime (`docs/notes/atlas.md`); the simulator's listener
+# passes atlas's paths on to it (`atlas_proxy`).
+[package]
+name = "cartopolis_server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cartopolis-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+cartopolis_simulator = { path = "../simulator" }
+cartopolis_atlas = { path = "../atlas" }
+
+[lints]
+workspace = true
