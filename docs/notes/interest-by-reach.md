@@ -58,8 +58,11 @@ states within `reach_m` of its avatar — `snapshot_frame` splices the encoded
 states into one frame, pinned byte for byte to `encode_app_frame` by a test —
 and keeps the set of things it has sent: a `PrimUpsert` for each that came
 within reach, a `PrimOutOfReach` for each that left. The handshake's snapshot
-is empty. **The world no longer travels in the snapshot, and no client is sent
-anyone it could not see or hear.**
+is empty, and so is every tick's for an avatar that is nowhere — the empty
+snapshot still goes, because it is also the heartbeat a resumed link is judged
+by (`session::check_link_after_resume`, `RESUME_SILENCE_S`). **The world no
+longer travels in the snapshot, and no client is sent anyone it could not see
+or hear.**
 
 `reach_m` is the shout radius plus a 200 m margin — 500 m on the ground — so
 somebody walking towards you is drawn before you can hear them, widened by
