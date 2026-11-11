@@ -239,7 +239,11 @@ pub fn render_dock(
     // chat, whose composer has the bottom edge, nor over the keys.
     let switch_shown = !keyboard && (!covered || (community_open && people.view.open.is_none()));
     let mut picked = None;
-    if switch_shown {
+    // It comes and goes with `motion` when a panel, the keyboard or a chat
+    // takes the bottom edge, as the cards there do.
+    let switch_pres =
+        crate::systems::motion::presence(&ctx, egui::Id::new("space_switch"), switch_shown);
+    if switch_pres.visible() {
         let (left, right) = if covered {
             (0.0, viewport.x)
         } else {
@@ -253,11 +257,13 @@ pub fn render_dock(
             0
         };
         egui::Area::new(egui::Id::new("space_switch"))
+            .interactable(switch_pres.open)
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 egui::vec2(centre - viewport.x / 2.0, -theme::OSD_MARGIN),
             )
             .show(&ctx, |ui| {
+                crate::systems::motion::enter(ui, switch_pres, crate::systems::motion::LIFT);
                 picked = space_switch(ui, width, space, unread);
             });
     }

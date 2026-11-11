@@ -209,66 +209,104 @@ pub fn render_building_card(
                 // The two ways into the building: look inside it here, or open its
                 // floor plan in the editor — where its owner changes it, and
                 // anybody else sees what they drew.
-                // Wrapped: Share, Look inside and Floor plan are wider than a
-                // phone's card in one line.
-                ui.horizontal_wrapped(|ui| {
-                    // Share (bridge ③, `bridges`): the building's place to a
-                    // chat or a community, with the brand's dot that says it
-                    // leaves the map (N2).
-                    let resp = ui.add(egui::Button::new(format!("{}  Share", icons::SHARE)));
-                    ui.painter().circle_filled(
-                        resp.rect.right_top() + egui::vec2(-3.0, 3.0),
-                        3.5,
-                        theme::BRAND,
-                    );
-                    share = resp
-                        .on_hover_text("Send this building to a chat or community")
-                        .clicked();
-                    if has_inside {
-                        let text = if looking {
-                            "Stop looking inside"
-                        } else {
-                            "Look inside"
-                        };
-                        if ui.add(egui::Button::selectable(looking, text)).clicked() {
-                            look = Some(!looking);
+                // One row of the place card's kind of button (N2): Share, Look
+                // inside, Floor plan, and Replace for an account allowed to —
+                // two to a row, equal widths, so nothing is bare text beside an
+                // outlined button and nothing runs off a phone's card.
+                let can_open = open_url_supported();
+                let may_replace =
+                    identity.may(cartopolis_core::permissions::Permission::BuildingOverride);
+                #[derive(Clone, Copy)]
+                enum Act {
+                    Share,
+                    Inside,
+                    Plan,
+                    Replace,
+                }
+                let mut acts = vec![Act::Share];
+                if has_inside {
+                    acts.push(Act::Inside);
+                }
+                acts.push(Act::Plan);
+                if may_replace {
+                    acts.push(Act::Replace);
+                }
+                for pair in acts.chunks(2) {
+                    ui.horizontal(|ui| {
+                        let w = theme::equal_width(ui, 2);
+                        for act in pair {
+                            match act {
+                                Act::Share => {
+                                    share = theme::secondary_button(ui, icons::SHARE, "Share", w)
+                                        .on_hover_text("Send this building to a chat or community")
+                                        .clicked();
+                                }
+                                Act::Inside => {
+                                    if theme::secondary_toggle(
+                                        ui,
+                                        icons::BUILDINGS,
+                                        "Look inside",
+                                        w,
+                                        looking,
+                                    )
+                                    .on_hover_text(if looking {
+                                        "Stop looking inside"
+                                    } else {
+                                        "See the floors inside"
+                                    })
+                                    .clicked()
+                                    {
+                                        look = Some(!looking);
+                                    }
+                                }
+                                Act::Plan => {
+                                    let resp = ui.add_enabled_ui(can_open, |ui| {
+                                        theme::secondary_button(
+                                            ui,
+                                            icons::OPEN_EXTERNAL,
+                                            "Floor plan",
+                                            w,
+                                        )
+                                    });
+                                    if resp
+                                        .inner
+                                        .on_hover_text(
+                                            "Open this building in the floor-plan editor",
+                                        )
+                                        .clicked()
+                                    {
+                                        open = Some(floor_plan_url(&id, &fact.footprint));
+                                    }
+                                }
+                                Act::Replace => {
+                                    let resp = ui.add_enabled_ui(can_open, |ui| {
+                                        theme::secondary_button(
+                                            ui,
+                                            icons::OPEN_EXTERNAL,
+                                            "Replace",
+                                            w,
+                                        )
+                                    });
+                                    if resp
+                                        .inner
+                                        .on_hover_text(
+                                            "Open this building in the Overrides tab, to put a \
+                                             model in its place",
+                                        )
+                                        .clicked()
+                                    {
+                                        open = Some(override_url(&id));
+                                    }
+                                }
+                            }
                         }
-                    }
-                    if ui
-                        .add_enabled(
-                            open_url_supported(),
-                            egui::Button::new(format!("Floor plan {}", icons::OPEN_EXTERNAL)),
-                        )
-                        .on_hover_text("Open this building in the floor-plan editor")
-                        .clicked()
-                    {
-                        open = Some(floor_plan_url(&id, &fact.footprint));
-                    }
-                    // Only for an account the server lets replace buildings; it
-                    // says so after sign-in and again when its roles change.
-                    if identity.may(cartopolis_core::permissions::Permission::BuildingOverride)
-                        && ui
-                            .add_enabled(
-                                open_url_supported(),
-                                egui::Button::new(format!(
-                                    "Replace with a model {}",
-                                    icons::OPEN_EXTERNAL
-                                )),
-                            )
-                            .on_hover_text(
-                                "Open this building in the Overrides tab, to put a model in its place",
-                            )
-                            .clicked()
-                    {
-                        open = Some(override_url(&id));
-                    }
-                });
+                    });
+                }
                 ui.add_space(4.0);
                 if rest == Rest::Peek {
                     return;
                 }
                 ui.horizontal(|ui| {
-                    let can_open = open_url_supported();
                     /// Shown on hover where the button is dead, so the greying is
                     /// explained rather than merely observed — `data_layers`'
                     /// POI popup states the same thing the same way.

@@ -353,7 +353,13 @@ pub fn render_share_sheet(
     mut s: Screens,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    let Some(place) = bridges.share.clone() else {
+    // It rises and fades as the cards do (`motion`), drawing the place it was
+    // about while it leaves, and taking no taps then.
+    let Some((place, pres)) = crate::systems::motion::linger(
+        egui.ctx(),
+        egui::Id::new("share_sheet"),
+        bridges.share.clone(),
+    ) else {
         return;
     };
     let signed_in = online.is_some() || s.view.demo;
@@ -417,7 +423,9 @@ pub fn render_share_sheet(
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .default_size(egui::vec2(width, max_h))
+        .interactable(pres.open)
         .show(ctx, |ui| {
+            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::NONE
                 .fill(theme::p().panel)
                 .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
@@ -538,12 +546,13 @@ pub fn render_share_sheet(
         close = true;
     }
     // A tap off the sheet puts it away, as off your face's sheet.
-    let clicked_out = ctx.input(|i| {
-        i.pointer.any_click()
-            && i.pointer
-                .interact_pos()
-                .is_some_and(|p| !area.response.rect.contains(p))
-    });
+    let clicked_out = pres.open
+        && ctx.input(|i| {
+            i.pointer.any_click()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !area.response.rect.contains(p))
+        });
     if close || (clicked_out && !area.response.rect.is_negative()) {
         bridges.share = None;
     }

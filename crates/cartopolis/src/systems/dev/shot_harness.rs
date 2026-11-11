@@ -2958,7 +2958,7 @@ pub fn open_scripted_ui(
         if want("markerperson") {
             nav.pending_card = Some(card(
                 "sanne",
-                "sanne · sharing location",
+                "Sharing location · 60 min left",
                 OpenIn::Chat("private:sanne".into()),
                 Some(("private:sanne".into(), "sanne".into())),
             ));

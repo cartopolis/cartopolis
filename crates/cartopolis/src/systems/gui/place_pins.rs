@@ -430,11 +430,14 @@ pub fn render_place_pins(
         if chat_people::marker(&ctx, map_rect, tip, &l.from, chat_people::MarkerKind::Phone) {
             // Bridge ①: "sanne · sharing location", Open chat, and a route
             // that follows them.
+            // The name is the title; the line over it says what kind of
+            // thing it is, and for how long (it said the name twice).
+            let mins = l.until_ms.saturating_sub(now_ms) / 60_000 + 1;
             card = Some(marker_card(
                 l.from.clone(),
                 l.latitude,
                 l.longitude,
-                format!("{} · sharing location", l.from),
+                format!("Sharing location · {mins} min left"),
                 crate::systems::bridges::OpenIn::Chat(l.channel.clone()),
                 Some((l.channel.clone(), l.from.clone())),
             ));

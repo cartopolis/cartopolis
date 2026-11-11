@@ -306,15 +306,10 @@ pub fn render_place_card(
                         );
                         *saved_at = Some(Instant::now());
                     }
-                    // Share (bridge ③): the one way a place goes to people,
-                    // with the brand's dot that says it leaves the map for
-                    // Community (N2).
+                    // Share (bridge ③): the one way a place goes to people.
+                    // No orange dot on it, as N2 drew one: the person asked
+                    // for little colour, and the word says it (2026-11-11).
                     let share = theme::secondary_button(ui, icons::SHARE, "Share", cell);
-                    ui.painter().circle_filled(
-                        share.rect.right_top() + egui::vec2(-5.0, 5.0),
-                        4.0,
-                        theme::BRAND,
-                    );
                     if share
                         .on_hover_text("Send this place to a chat or community")
                         .clicked()

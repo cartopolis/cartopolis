@@ -113,7 +113,10 @@ pub fn render_main_menu(
     prefs: Res<crate::resources::AppPrefs>,
 ) {
     let face = menu.face.take();
-    if !menu.open {
+    // It rises and fades in, and sinks out (`motion`), as the cards do; while
+    // it leaves it takes no taps.
+    let pres = crate::systems::motion::presence(egui.ctx(), egui::Id::new("face_sheet"), menu.open);
+    if !pres.visible() {
         return;
     }
 
@@ -185,7 +188,9 @@ pub fn render_main_menu(
         // the rows below the fold are simply not there. The sizing pass gets
         // the whole band instead (`a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass`).
         .default_size(egui::vec2(width, max_height))
+        .interactable(pres.open)
         .show(&ctx, |ui| {
+            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::NONE
                 .fill(theme::p().panel)
                 .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
@@ -276,12 +281,13 @@ pub fn render_main_menu(
     // Dismiss on a click that landed outside the sheet — but not on a face,
     // which toggles it itself (see `MainMenu::face`). Escape and Back are
     // `systems::dismiss`'s.
-    let clicked_out = ctx.input(|i| {
-        i.pointer.any_click()
-            && i.pointer.interact_pos().is_some_and(|p| {
-                !area.response.rect.contains(p) && !face.is_some_and(|f| f.contains(p))
-            })
-    });
+    let clicked_out = pres.open
+        && ctx.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| {
+                    !area.response.rect.contains(p) && !face.is_some_and(|f| f.contains(p))
+                })
+        });
     if close || clicked_out {
         menu.open = false;
     }

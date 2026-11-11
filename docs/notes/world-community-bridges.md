@@ -23,7 +23,7 @@ into Community as its main verb (`place_card::CardPlace::from`,
 
 | marker | line on top | main verb | Route here |
 |---|---|---|---|
-| a person sharing their location (`chat.locations`) | "sanne · sharing location" | Open chat | follows them (`route_to_person`) |
+| a person sharing their location (`chat.locations`) | "Sharing location · 60 min left", their name as the title | Open chat | follows them (`route_to_person`) |
 | a community's post with a place (`posts.map_posts`) | "Garage 44 · post" | Open in Community (its page, the post focused) | to the spot |
 | a chat's point, in that chat's World view | "<chat> · place" | Open chat | to the spot |
 | a contact's avatar (Friends layer, a chat's World view) | — the person card (`contacts`) | its Message | — |
@@ -81,5 +81,11 @@ What it folded in, and where those went:
   it arrive. A community row opens that community's composer over the map with
   the place on the post, where Post here used to.
 
-The Share button on the place card wears the brand's orange dot (N2): the one
-social verb on a World card, and the dot says it leaves the map.
+The Share button carries no orange dot, though N2 drew one: the person asked
+for little colour (2026-11-11), and the word says where it goes. On the
+building card it is one of a row of equal buttons — Share, Look inside, Floor
+plan, Replace — two to a line, as the place card's Save · Share · More.
+
+The face sheet, the Share sheet and the World | Community switch come and go
+with `motion` (`presence`/`linger` and `enter`), as the cards do, so they obey
+the Motion setting.
