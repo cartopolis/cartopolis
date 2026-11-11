@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: [grid.rs, patches.rs, kerb_shadows.rs, KerbPiece, "kerb", split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow"]
-updated: 2026-10-20
+triggers: [grid.rs, patches.rs, kerb_shadows.rs, KerbPiece, "kerb", split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow", CARTO_NO_LIGHT_SHAFTS, CARTO_NO_STREET_LABELS, CARTO_OCCLUSION_CULLING, CARTO_DBG_HIDE, StreetLabelSign, street_labels.rs, "mac-2", "M5 Pro", "cascades", "turn is slow", "shadow map size", CARTO_SHADOW_MAP]
+updated: 2026-11-10
 ---
 
 # Where the frames go, and where they do not
@@ -86,6 +86,103 @@ pass list**: bevy_pbr opens `lightprobe_*` spans, and they never reach
 "measured GPU passes" column cannot see the largest cost in the frame.
 `systems::sky_bake` re-bakes only when the sun, the moon or the camera's place
 in the atmosphere has moved.
+
+## On an M5 Pro the street frame is the shadow cascades, and the names on the road (2026-11-10)
+
+`mac-2` (Apple M5 Pro, a midas VM with a paravirtual GPU, shared with the other
+VM on the same mini), dev profile, `--features perf`, 1600×900, desktop rung,
+`CARTO_FPS_CAP=0`, a fresh `CARTO_DATA_DIR`, two flights per row unless stated,
+every `steady` window `quiet`. No per-pass GPU time exists on this backend
+(above); what the per-system table gives instead is `submit_pending_command_buffers`,
+which on Metal is the render thread **waiting for the GPU**, so it is read here as
+the GPU's share of the frame. Launch-to-launch drift was ±2–3 ms on the same
+configuration (`street` baselines of 46.4, 43.5, 46.5 ms across the evening), so a
+row is a finding only when its range clears the baseline's.
+
+| steady | frame | of which GPU wait | draws | entities |
+|---|---|---|---|---|
+| orbit | 17.9 ms | 7.0 | 297 | 2.3 k |
+| low-orbit | 18.5 | 7.6 | 315 | 2.3 k |
+| city (3 km) | 19.7 | 7.9 | 354 | 3.6 k |
+| earth | 24.7 | — | 2434 | 7.3 k |
+| **street (120 m)** | **46.4** | **25.6** | 4321 | 8.2 k |
+
+Away from the ground the frame is the render thread's CPU (`render_system` ~9 ms
+of which the GPU wait is 7, `write_binned_instance_buffers` 3.1 ms), as the Metal
+section below found. **At street level it is the GPU, and the GPU is drawing
+shadows.** Switches at `street`, same binary, one launch per row:
+
+| street, steady | frame | GPU wait | what it says |
+|---|---|---|---|
+| defaults (4 cascades to 1.5 km) | 46.4 ms | 25.6 | |
+| `CARTO_NO_SHADOWS` (shafts go too) | **21.3** | 9.4 | shadows are 25 of 46 ms |
+| 3 cascades | 39.0 | 17.2 | (against a 43.5 baseline that evening) |
+| 2 cascades | **32.1** | 10.7 | the two outer cascades are ~14 ms |
+| 2 cascades, shafts off | 32.0 | 10.1 | the shafts cost nothing once the cascades are two |
+| `CARTO_NO_LIGHT_SHAFTS` alone | 40.9 | 18.7 | ~3 ms; the march's cost is its shadow-map reads |
+| `CARTO_SHADOW_DISTANCE=600` | 40.8 | 20.6 | against 41.4: **the reach moves nothing** though casters fell 4304 → 2947 |
+| 3 cascades to 1 000 m (the balanced rung's shadow geometry) | 35.9 | 12.8 | against 41.4: the cascade count again, not the reach |
+| `CARTO_SHADOW_MAP=1024` | 47.8 | 24.6 | against 45.2: a quarter of the texels, no time back |
+| `CARTO_SHADOW_MAP=4096` | 45.3 | 22.1 | against 45.2: **four times the texels, free** — a quality lever on this GPU, at 256 MB of maps for four cascades |
+| `CARTO_NO_STREET_LABELS` | 39.3 | 16.6 | against 43.5: the 160 name quads were 4–6 ms |
+| `CARTO_DBG_HIDE=kerb,furniture` | 41.5 | 22.9 | against 46.5: the furniture ~5 ms, the kerbs none of it |
+| `CARTO_DBG_HIDE=kerb` | 47.0 | 26.8 | against 46.5 |
+| `CARTO_DBG_HIDE=canopy,trunk` | 45.8 | 25.5 | 2 500 fewer draws, no time back |
+| `CARTO_DBG_HIDE=paving,built` | 45.4 | 26.3 | ~11 M ground triangles, no time back |
+| `CARTO_MSAA=1` | 43.7 | 24.8 | within drift |
+| `CARTO_MSAA=4` | 43.9 | 26.8 | **within drift: 4× is free here** (city: 16.2 against 19.7) |
+| `CARTO_RENDER_SCALE=0.5` | 49.0 | 23.7 | not fill (or the scale does not reach an offscreen target — still open) |
+| `CARTO_DEPTH_PREPASS=1` | 55.5 | 23.3 | a second geometry pass, as predicted for a desktop GPU |
+| `CARTO_OCCLUSION_CULLING=1` (bevy's two-phase, needs the prepass) | 59.4 | 27.8 | worse again; a city seen from 120 m hides little behind itself |
+| `CARTO_QUALITY=balanced CARTO_HANDSET=1` (the phone's own rung) | 40.4 | 18.3 | and 37.1 with `CARTO_DEPTH_PREPASS=0`: the prepass costs 3 ms here too |
+
+Three things follow, and the third is the one to carry.
+
+- **The cost is per cascade, not per caster and not per triangle.** Halving the
+  reach dropped a third of the casters and no time; hiding the ground's millions
+  of triangles or the trees' 2 500 entities moved nothing; each cascade removed
+  gave 5–7 ms back. Whatever a cascade costs on this GPU, it is mostly the pass
+  itself, and not the map: 1024² and 4096² cost the same as 2048². That leaves
+  the casters' vertex work per pass — the LoD2.2 cell and the model trees, which
+  no switch hides — or the paravirtual device's per-pass overhead; a real
+  M-series Mac may differ, and the Deck (`CARTO_NO_SHADOWS` moved `city` not at
+  all there) does.
+- **Draw count is not the lever on this GPU either**: GPU preprocessing and
+  indirect draws make 2 500 tree entities free. The CPU-side batch-set cost is
+  the Metal staging-buffer round trips (`write_binned_instance_buffers`, Shadow
+  5.7 ms + Opaque 3.8 ms at street), which scale with *materials*, not meshes.
+- **The 160 street-name signs were shadow casters.** Each is its own
+  `StandardMaterial` (its own texture), `AlphaMode::Blend`, no `NotShadowCaster`,
+  so every sign went into every cascade as an alpha-tested caster of its own —
+  and a 0.55 m-high plate does throw a strip onto the tarmac. `NotShadowCaster`
+  on the sign took `street` from 46.5 to **41.4 ms** (three flights each,
+  40.3..45.4 against 45.8..47.2), the same as taking the names away. The rule
+  already in this file applied: a flat annotation on the ground owes a
+  `NotShadowCaster` in the same breath as its depth bias.
+
+**Turning at street level is still the materials.** The `turn` window was 73 ms
+a frame against 46 standing, worst 174 ms: `prepare_material_bind_groups`
+29 ms/frame, `update_street_labels` 8 ms (main world), 6.5 materials modified a
+frame. With the names off the bind-group work was 12 ms; with the fix above and
+the names on, 20. What remains is the re-dealing of names to signs as the view
+turns — each a texture swap on one of 160 materials, each a bind group — and
+the materials the streaming of new cells brings. One atlas for the names (one
+material, UVs per sign) would end the first; the second is bevy's per-material
+preparation on Metal and has no owner yet.
+
+**Negative, and measured here so nobody re-opens them first:** the globe cloud
+shell at `orbit` (`CARTO_NO_CLOUDS`: 18.1 against 17.9 ms — it was 71 % of the
+Deck's GPU frame, and is nothing here); a `VisibilityRange` of 300 m on the kerb
+pieces (43.5 against 42.5 ms off, three flights each — a kerb piece is a
+Hilbert patch hundreds of metres across, so only ~40 of ~4 300 pieces left the
+view, and the kerbs cost nothing here anyway); the depth prepass and occlusion
+culling on anything but a handset.
+
+**What this machine cannot say.** It is a VM: the GPU is paravirtualised and
+shared, there are no Metal counters, and the dev profile keeps debug assertions.
+The ratios between rows of one evening are sound; the milliseconds are the box's.
+The phone's question — whether the depth prepass pays on an Adreno 840 — is
+unanswered by any of this and needs `debug.carto.depth_prepass` on the device.
 
 ## At street level the ground is tens of millions of vertices (2026-10-20)
 
