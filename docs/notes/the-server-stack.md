@@ -147,15 +147,29 @@ tiles at the public `tiles.versatiles.org`, same schema as the mirror. Still the
 operator's: TLS in front. The hosted server still runs the two as separate
 systemd units behind Caddy; it does not use this binary yet.
 
-**The download** (`deploy/build/server-package.sh`, a release asset since
-2026-11-12) is the binary, the built web UI in `web/` beside it — found there
-when the file names no `web_root` — an example `cartopolis.toml`, a systemd unit
-and `install.sh`, which puts them in `/opt/cartopolis-server`, asks for the first
-admin (`cartopolis-server create-admin`, the only way to one without the
-separate simulator binary) and adds the address to Caddy when Caddy is
-installed. The binary is `server.sh`'s, linked against glibc 2.38. Not in it:
-calls, which need a public UDP address (`calls_listen`, `calls_public_addr`) the
-installer cannot know.
+**The download** (`deploy/build/server-package.sh` → `dist/server/`, published
+by `midas deploy server` at `https://cartopolis.org/server/` since 2026-11-12) is
+the binary, the built web UI in `web/` beside it — found there when the file
+names no `web_root` — an example `cartopolis.toml`, the systemd units and
+`install.sh`. That one script is both `curl … | sh` and the unpacked package's
+installer: it puts them in `/opt/cartopolis-server`, asks for the address and the
+first admin on `/dev/tty` (so a piped script can still ask; `cartopolis-server
+create-admin` is the only way to an admin without the separate simulator
+binary), and adds the address to Caddy when Caddy is installed. The binary is
+`server.sh`'s, linked against glibc ≤ 2.35. Not in it: calls, which need a
+public UDP address (`calls_listen`, `calls_public_addr`) the installer cannot
+know.
+
+**Self-update** is a daily timer running `install.sh --update`; the version is
+the tarball's sha256 (`installed.sha256`). The health check after an update is
+`GET /api/services`, not `systemctl is-active`: a server that crashes on start
+is restarted every 3 s and reads as active in between. A version rolled back is
+written to `failed.sha256` and skipped until a newer one is published. Forgejo
+releases were not used for this: the last one was a July 2026 prerelease, and
+Forgejo 1.22 here has no `latest/download` URL. Tested 2026-11-12 in a
+throwaway Ubuntu 24.04 with systemctl and caddy stubbed (install via sudo, idle
+update, update, broken update rolled back and skipped, bad checksum refused);
+not yet under real systemd.
 
 Admin › Data shows the extract (source, size, when downloaded) and runs every
 OSM layer over the country in one job (`POST /api/pipeline/osm`): a route of its

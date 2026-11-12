@@ -1,0 +1,12 @@
+# Fetch and install a newer cartopolis-server when there is one; started daily by
+# cartopolis-server-update.timer. install.sh --update does nothing when the
+# download is the one installed, and goes back to the old version when the new
+# one does not stay up.
+[Unit]
+Description=Update cartopolis-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cartopolis-server/install.sh --update

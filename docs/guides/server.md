@@ -1,10 +1,14 @@
 # Self-hosted geo services (Overpass + Nominatim + 3DBAG)
 
-> **Installing a server of your own** is the download in the
-> [releases](https://code.garage44.eu/jeroen/cartopolis/releases):
-> `cartopolis-server-linux-x86_64.tar.gz`, unpacked and run as
-> `sudo ./install.sh maps.example.org`. It installs to `/opt/cartopolis-server`
-> under systemd, asks for the first admin (later:
+> **Installing a server of your own** is
+> `curl -fsSL https://cartopolis.org/server/install.sh | sh` (or `| sh -s
+> maps.example.org`; the same `install.sh` sits in the unpacked download). It
+> installs to `/opt/cartopolis-server` under systemd, with a daily
+> `cartopolis-server-update.timer` that runs `install.sh --update`: a newer
+> download is fetched, checked against its `.sha256`, installed with the old
+> binary, web UI and database kept in `previous/`, and rolled back when the new
+> one does not answer `/api/services` within a minute (that version is then
+> skipped until the next). It asks for the first admin (later:
 > `sudo -u cartopolis ./cartopolis-server create-admin` in that directory), and
 > adds the address to Caddy when Caddy is installed. The settings are
 > `/opt/cartopolis-server/cartopolis.toml`; the keys are those of the simulator

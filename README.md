@@ -19,16 +19,15 @@ The app starts with the map. To meet people, choose **☰ ▸ Sign in…**: it s
 
 A server is one program, `cartopolis-server`: the shared world, accounts and chat, the website, and the map data and place search for its area. You need a Linux machine with systemd and a domain name pointed at it. Install [Caddy](https://caddyserver.com/docs/install) first for HTTPS; the installer then sets it up too.
 
-Download `cartopolis-server-linux-x86_64.tar.gz` from [releases](https://code.garage44.eu/jeroen/cartopolis/releases), then:
-
 ```bash
-tar -xzf cartopolis-server-linux-x86_64.tar.gz && cd cartopolis-server-linux-x86_64
-sudo ./install.sh maps.example.org
+curl -fsSL https://cartopolis.org/server/install.sh | sh
 ```
 
-It asks for an admin account, starts the server and adds the address to Caddy. Open `https://maps.example.org`, or sign in from the app with `maps.example.org` as the server. The map data for your area is made from the website: sign in as the admin and open **Admin ▸ Data**. Running the same command with a newer download upgrades the server and keeps its settings and data.
+It asks for the server's address and an admin account, starts the server and adds the address to Caddy. Open `https://maps.example.org`, or sign in from the app with `maps.example.org` as the server. The map data for your area is made from the website: sign in as the admin and open **Admin ▸ Data**.
 
-To make the download from source: `deploy/build/server-package.sh`. The [server guide](docs/guides/server.md) has the settings and how the hosted server is set up.
+The server updates itself once a day from cartopolis.org. It keeps the previous version and its database, and goes back to them when a new version does not start. To turn that off: `sudo systemctl disable --now cartopolis-server-update.timer`.
+
+The download is also at [cartopolis.org/server](https://cartopolis.org/server/cartopolis-server-linux-x86_64.tar.gz); unpacked, `./install.sh` does the same. To build it from source: `deploy/build/server-package.sh`. The [server guide](docs/guides/server.md) has the settings and how the hosted server is set up.
 
 ## Build it yourself
 
