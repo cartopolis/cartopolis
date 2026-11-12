@@ -72,6 +72,24 @@ removes the button.
 | It behaves differently than it reads | The release ran on cartopolis.org first (it deploys after every landing): crashes, restarts, and **which addresses it talked to**, against the list it is known to use | flags |
 | Lost phone | A recovery key, made once and kept offline, that can only name a new phone key, never sign a release | — |
 
+## What the signature does not cover
+
+The vps can always *publish*; what it cannot do is get anything *installed*:
+every server and phone checks the signature against the key built into it, and
+refuses an older version than the one it runs (the signed release names its
+version code), so a validly signed old release with a known hole cannot be
+served again. What stays as trustworthy as the vps, said plainly in the docs:
+
+1. **What the vps serves live** — the website and web app at cartopolis.org
+   (a browser fetches it on every visit and checks no signature), the hosted
+   server, atlas.
+2. **The first download** — the curl line and the APK page come from
+   cartopolis.org; the built-in key protects from the first update on. A copy
+   of the key's fingerprint and the installer's checksum somewhere off the vps
+   (a mirror) would let a careful newcomer check it; only a store closes it.
+3. **Withholding updates** — the vps can stop publishing; the Admin page says
+   how long ago it last saw a release, so silence is visible.
+
 ## What is new for each part
 
 - **App** (`Updater.java` beside a new `ReleaseKey.java`): the key, the review

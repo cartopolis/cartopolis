@@ -16,9 +16,10 @@ Restart=always
 RestartSec=3s
 Environment=RUST_LOG=info
 
-# The world, the accounts and the map data are under data/; nothing else on the
-# machine is written.
-ReadWritePaths=/opt/cartopolis-server/data
+# Its own directory: the world, the accounts and the map data under data/, and
+# the program itself, which an admin-approved update replaces. Nothing else on
+# the machine is written.
+ReadWritePaths=/opt/cartopolis-server
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true

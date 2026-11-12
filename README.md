@@ -25,7 +25,7 @@ curl -fsSL https://cartopolis.org/server/install.sh | sh
 
 It asks for the server's address and an admin account, starts the server and adds the address to Caddy. Open `https://maps.example.org`, or sign in from the app with `maps.example.org` as the server. The map data for your area is made from the website: sign in as the admin and open **Admin ▸ Data**.
 
-The server updates itself once a day from cartopolis.org. It keeps the previous version and its database, and goes back to them when a new version does not start. To turn that off: `sudo systemctl disable --now cartopolis-server-update.timer`.
+Updates are offered on the server's Admin page: it looks for a new release every six hours, and shows only one signed by the Cartopolis maintainer. An admin installs it with one click; the server tests it on a copy of its database, keeps the previous version and database, and goes back to them by itself when the new one does not start.
 
 The download is also at [cartopolis.org/server](https://cartopolis.org/server/cartopolis-server-linux-x86_64.tar.gz); unpacked, `./install.sh` does the same. To build it from source: `deploy/build/server-package.sh`. The [server guide](docs/guides/server.md) has the settings and how the hosted server is set up.
 

@@ -151,8 +151,9 @@ systemd units behind Caddy; it does not use this binary yet.
 by `midas deploy server` at `https://cartopolis.org/server/` since 2026-11-12) is
 the binary, the built web UI in `web/` beside it — found there when the file
 names no `web_root` — an example `cartopolis.toml`, the systemd units and
-`install.sh`. That one script is both `curl … | sh` and the unpacked package's
-installer: it puts them in `/opt/cartopolis-server`, asks for the address and the
+`install.sh`, and `release.json` beside it for the owner to sign. That one
+script is both `curl … | sh` and the unpacked package's installer: it puts them
+in `/opt/cartopolis-server` (owned by `cartopolis`), asks for the address and the
 first admin on `/dev/tty` (so a piped script can still ask; `cartopolis-server
 create-admin` is the only way to an admin without the separate simulator
 binary), and adds the address to Caddy when Caddy is installed. The binary is
@@ -160,16 +161,30 @@ binary), and adds the address to Caddy when Caddy is installed. The binary is
 public UDP address (`calls_listen`, `calls_public_addr`) the installer cannot
 know.
 
-**Self-update** is a daily timer running `install.sh --update`; the version is
-the tarball's sha256 (`installed.sha256`). The health check after an update is
-`GET /api/services`, not `systemctl is-active`: a server that crashes on start
-is restarted every 3 s and reads as active in between. A version rolled back is
-written to `failed.sha256` and skipped until a newer one is published. Forgejo
-releases were not used for this: the last one was a July 2026 prerelease, and
-Forgejo 1.22 here has no `latest/download` URL. Tested 2026-11-12 in a
-throwaway Ubuntu 24.04 with systemctl and caddy stubbed (install via sudo, idle
-update, update, broken update rolled back and skipped, bad checksum refused);
-not yet under real systemd.
+**Updates are the program's, approved twice** (`crates/server/src/update.rs`,
+`docs/mockups/release-approval`): the owner signs a release on their phone, and
+a server's admin installs it from the Admin page. The program reads
+`release.json` and `release.json.sig` every six hours, acts only on an ECDSA
+P-256 signature by a key compiled into it (`RELEASE_KEYS`, empty until the
+owner's phone key exists — so today nothing installs) and a version code higher
+than its own, and downloads the package into `data/update/`. **Install** asks
+the admin's password again (`prove_again`), runs the new program's `version`
+and `check-database` on a `VACUUM INTO` copy, keeps the old program, web UI and
+a database snapshot in `previous/`, renames the new ones into place and ends;
+systemd starts the new one. That one counts its starts in
+`data/update/pending.json` and, past three that did not stay up two minutes,
+restores `previous/` and ends so the old one starts; the release goes into
+`failed.json` and is skipped. The simulator only routes `/api/admin/update*` to
+it (`server_update.rs`, admins only; 404 on the hosted server).
+
+Rejected on the way, 2026-11-12: a daily timer that installed by itself
+(`install.sh --update`) — the owner wants admins told, not bypassed — and
+updating from shell scripts at all; Forgejo releases as the source (unused since
+July 2026, and Forgejo 1.22 here has no `latest/download` URL).
+
+**The cost of the program replacing itself:** its directory belongs to the user
+it runs as, so code that took the running server over could also replace the
+binary for the next start, which a root-owned binary prevented.
 
 Admin › Data shows the extract (source, size, when downloaded) and runs every
 OSM layer over the country in one job (`POST /api/pipeline/osm`): a route of its

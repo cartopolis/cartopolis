@@ -3,12 +3,11 @@
 > **Installing a server of your own** is
 > `curl -fsSL https://cartopolis.org/server/install.sh | sh` (or `| sh -s
 > maps.example.org`; the same `install.sh` sits in the unpacked download). It
-> installs to `/opt/cartopolis-server` under systemd, with a daily
-> `cartopolis-server-update.timer` that runs `install.sh --update`: a newer
-> download is fetched, checked against its `.sha256`, installed with the old
-> binary, web UI and database kept in `previous/`, and rolled back when the new
-> one does not answer `/api/services` within a minute (that version is then
-> skipped until the next). It asks for the first admin (later:
+> installs to `/opt/cartopolis-server` under systemd, owned by the user
+> `cartopolis`. Updates are the program's own (`crates/server/src/update.rs`):
+> a release signed by the maintainer's key appears on the Admin page, and an
+> admin installs it there; `[update] check = false` turns looking off, `[update]
+> url` names another source. It asks for the first admin (later:
 > `sudo -u cartopolis ./cartopolis-server create-admin` in that directory), and
 > adds the address to Caddy when Caddy is installed. The settings are
 > `/opt/cartopolis-server/cartopolis.toml`; the keys are those of the simulator

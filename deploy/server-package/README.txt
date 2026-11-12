@@ -17,11 +17,16 @@ address to Caddy when Caddy is installed. Then open https://maps.example.org in
 a browser, or sign in from the Cartopolis app with maps.example.org as the
 server.
 
-It updates itself once a day from cartopolis.org, keeping a copy of the previous
-version and its database in /opt/cartopolis-server/previous/, and goes back to
-it when a new version does not start. Turn that off with:
+Updates: every six hours the server looks at cartopolis.org/server for a new
+release, and offers it on its Admin page only when the Cartopolis maintainer
+signed it. An admin clicks Install (and gives their password again); the server
+tests the new version on a copy of its database, keeps the current version and
+database in /opt/cartopolis-server/previous/, switches over and restarts, and
+goes back by itself when the new version does not start. Nothing is installed
+without an admin. To stop looking, add to cartopolis.toml:
 
-    sudo systemctl disable --now cartopolis-server-update.timer
+    [update]
+    check = false
 
 Where things are:
     /opt/cartopolis-server/cartopolis.toml   the settings
