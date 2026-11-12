@@ -6,46 +6,48 @@ A shared, walkable 3D copy of the real world, built from open public data. Rust 
 
 [![Six screens of the app: a building card, local chat, a private chat's map, map layers, route planning, the globe](docs/img/readme.jpg)](docs/img/readme.jpg)
 
-## Quick start
+## Use it
 
-Install [Git LFS](https://git-lfs.com/) **before cloning**. Fonts, icons and test fixtures are compiled in, and without LFS the build embeds pointer files and fails at runtime.
+Nothing to install for the web: open **[cartopolis.org](https://cartopolis.org)** in a browser with WebGPU.
+
+- **Desktop:** download from [releases](https://code.garage44.eu/jeroen/cartopolis/releases). Linux: unpack `cartopolis-linux-x86_64.tar.gz` and run `./run.sh`. Windows: unpack the zip and run `cartopolis.exe`. Needs a GPU driver; x86_64 needs AVX2 + FMA.
+- **Android:** install the APK from [cartopolis.org/apk](https://cartopolis.org/apk/).
+
+The app starts with the map. To meet people, choose **☰ ▸ Sign in…**: it signs in to cartopolis.org, or to your own server if you type its address under **Server**.
+
+## Host your own server
+
+A server is one program, `cartopolis-server`: the shared world, accounts and chat, plus the map data and place search for its area. It needs a Linux machine with a domain name pointed at it. There is no ready-made download yet, so build it once:
 
 ```bash
-git lfs install
+git lfs install            # before cloning; see the development guide
 git clone https://code.garage44.eu/jeroen/cartopolis && cd cartopolis
-cargo run -p cartopolis                  # client; starts offline, sign in from ☰ ▸ Sign in…
+cargo build --release -p cartopolis_server   # → target/release/cartopolis-server
 ```
 
-Needs Rust, a C compiler and a GPU driver. Linux links with `clang` + `lld` (`.cargo/config.toml`).
+Put one setting in `cartopolis.toml` beside it, and start it:
+
+```toml
+public_base_url = "https://maps.example.org"
+```
 
 ```bash
-cargo run -p cartopolis_simulator        # sim server on 127.0.0.1:4747 (HTTP API on :4748)
-cargo run -p cartopolis -- --connect <host>   # client against a remote sim (TLS)
-cargo run -p cartopolis --features fast-dev   # dynamic linking for faster rebuilds; dev only
-
-cargo test --locked --workspace --exclude cartopolis_android   # what CI runs
-cargo shots                              # regenerate the image above (docs/shots.toml)
+./cartopolis-server        # world in data/world.db, map data in data/atlas, HTTP on 127.0.0.1:4748
 ```
 
-Web: `crates/cartopolis/serve-threads.sh`. Android: `crates/cartopolis_android/build-apk.sh`. The [development guide](docs/guides/development.md) covers both, plus conventions and CI.
+Put HTTPS in front with [Caddy](https://caddyserver.com/), which fetches the certificate itself:
 
-## Workspace
+```
+maps.example.org {
+	reverse_proxy 127.0.0.1:4748
+}
+```
 
-| Crate | Role |
-|---|---|
-| `cartopolis` | The Bevy client: rendering, ECS systems, egui UI |
-| `cartopolis_core` | Wire protocol (`NetMessage`), tile and coordinate math |
-| `cartopolis_geo` | Map geodata without Bevy: MVT decode, roads, routing graph, terrain grading, per-cell file formats |
-| `cartopolis_simulator` | The shared-world server (Tokio + SQLite): avatars, chat, voice, prims, accounts, admin HTTP API |
-| `cartopolis_atlas` | Data pipelines (BAG, 3DBAG, AHN, BGT, …), terrain tiles, and the web UI in `crates/atlas/web` |
-| `cartopolis_e2ee`, `_chat`, `_web_chat` | MLS end-to-end encrypted chats; the engine, and its wasm build for the web UI |
-| `cartopolis_calls` | Encrypted calls: codecs and SFrame for the client, a blind forwarder for the server |
-| `cartopolis_materials` | The client's custom render materials |
-| `cartopolis_mcp` | MCP server for driving a running client from an editor |
-| `cartopolis_vio`, `_gnss` | Visual-inertial odometry; external RTK GNSS receivers |
-| `cartopolis_viewer` | `carto-view`: draws a tile's geometry in seconds, without the client |
-| `cartopolis_android` | The Android app shell |
-| `big_space`, `web_task` | Vendored forks: floating origin on our Bevy version; the browser task executor |
+People now sign in with `maps.example.org` as the server. Its map data for your area still has to be made; the [server guide](docs/guides/server.md) has those runs and how the hosted server is set up.
+
+## Build it yourself
+
+Install [Git LFS](https://git-lfs.com/) **before cloning**: fonts, icons and test fixtures are compiled in, and without LFS the build embeds pointer files and fails at runtime. Then `cargo run -p cartopolis` runs the app. Rust, a C compiler and a GPU driver are needed; Linux links with `clang` + `lld`. The [development guide](docs/guides/development.md) covers the dev loop, tests, the web and Android builds, the code map and CI.
 
 ## Where it works
 
