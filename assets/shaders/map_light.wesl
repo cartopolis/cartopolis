@@ -52,6 +52,25 @@ fn grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
     return grey * mix(1.0, mix(NEAR_DIM, ORBIT_DIM, o), k) * warm;
 }
 
+// How much of a light reaches ground whose normal makes `ndl` with it, for a
+// camera `distance` metres away. Up close, all of it wherever the light is above
+// the horizon, with a narrow twilight band: the strategy map shows its own
+// colours. From orbit (`ORBIT`) that drew a flat lit disc with the night cut
+// out of it; Google Earth's globe and every photograph from space fall off
+// across the whole day side, light under the sun to dark at the terminator
+// (asked 2026-11-12, "dat verloop van donker naar licht is ook mooi"). So it
+// eases towards a fall over the whole day side, `(n·l)` to the `DAY_FALL`
+// power with a little light carried past the terminator: half way down the
+// sky (n·l 0.5) is 0.54 of the light, 0.07 of it at the terminator. At 0.7 the
+// fall was there (mac-2, 14,000 km: central Africa 114 → 85) but too faint to
+// see on a phone.
+const DAY_FALL: f32 = 1.0;
+fn daylight(ndl: f32, distance: f32) -> f32 {
+    let up = smoothstep(-0.05, 0.15, ndl);
+    let fall = pow(clamp((ndl + 0.08) / 1.08, 0.0, 1.0), DAY_FALL);
+    return mix(up, fall, smoothstep(ORBIT.x, ORBIT.y, distance));
+}
+
 // `lit` (as `apply_pbr_lighting` returned it) with the map light mixed in, for a
 // ground of colour `albedo` and normal `n`, `distance` metres from the camera.
 // `emissive` is the material's own light (the globe's cities at night), kept.
@@ -69,9 +88,7 @@ fn apply(
     var light = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < lights.n_directional_lights; i = i + 1u) {
         let l = lights.directional_lights[i];
-        // Above the horizon, with the twilight band the globe's night side uses.
-        let up = smoothstep(-0.05, 0.15, dot(n, l.direction_to_light.xyz));
-        light += l.color.rgb * up;
+        light += l.color.rgb * daylight(dot(n, l.direction_to_light.xyz), distance);
     }
     let flat = (pow(grade(albedo, distance), vec3<f32>(CURVE)) * light * GAIN / 3.14159265 + emissive) * view.exposure;
     return vec4<f32>(mix(lit.rgb, flat, k), lit.a);
@@ -194,8 +211,8 @@ fn sea_sheen(
     for (var i: u32 = 0u; i < lights.n_directional_lights; i = i + 1u) {
         let li = lights.directional_lights[i];
         let l = li.direction_to_light.xyz;
-        // The same twilight band `apply` puts the light behind.
-        let up = smoothstep(-0.05, 0.15, dot(n, l));
+        // The same light `apply` gives the land.
+        let up = daylight(dot(n, l), distance);
         if up <= 0.0 {
             continue;
         }

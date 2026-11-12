@@ -98,7 +98,13 @@ albedo (`GRADE_SAT`) and darkens it from the map light's own band on, a little
 (`NEAR_DIM`) for the strategy map and more (`ORBIT_DIM`) from 300 to 2,000 km,
 where it also takes blue out (not from snow and ice, which that turned cream).
 The deep-space air went from 0.15 to 0.08 (`SPACE_ATMOSPHERE_DENSITY`), whose
-in-scattered blue no albedo could take back, and `palette::painted::SAND` from
+in-scattered blue no albedo could take back — and until the rebuild threshold
+was made relative (`MEDIUM_REBUILD_STEP`) it never reached even that, which
+left the globe clear and over-sharp; the person then asked for Google Earth's
+light haze, thicker towards the limb, gone once zoomed in, which 0.08 gives.
+From orbit the map light also falls off over the whole day side
+(`map_light::daylight`, `DAY_FALL`), as on Google Earth's globe, instead of
+lighting the day side flat to the terminator; and `palette::painted::SAND` from
 cream to tan. Same frame after: Sahara ~218,179,124, Congo ~38,73,72. The land
 is still flat class colours with hard edges; real satellite texture would
 need imagery (`land-cover.md` on `satellite.versatiles`).

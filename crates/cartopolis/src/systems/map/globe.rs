@@ -1156,10 +1156,12 @@ const ATMOSPHERE_DENSITY_NEAR: f32 = 0.03;
 /// the 2.5× shell is long enough that it needs little density to read. 0.06 was
 /// tried too and flattens the disc into a map with no air over it.
 ///
-/// 0.08 since 2026-11-12, with `map_light.wesl`'s orbit grade: asked for a globe
-/// more like Google Earth, at 0.15 the Congo still drew teal (60,103,105) and
-/// the Sahara cream; at 0.08 with the grade, mac-1 at 12,000 km measures the
-/// Congo 38,73,72, the Sahara 218,179,124, and the limb still glows.
+/// 0.08 since 2026-11-12, with `map_light.wesl`'s orbit grade: at 0.15 the
+/// Congo drew teal (60,103,105) and the Sahara cream. For its first landing the
+/// medium was never rebuilt to it (`MEDIUM_REBUILD_STEP`), and the clear globe
+/// that left was too sharp: the person asked for Google Earth's haze, light in
+/// the middle and thicker to the limb. 0.12 and 0.16 were tried too (mac-1,
+/// 12,000 km) and greyed the forests blue; 0.08 keeps the land readable.
 const SPACE_ATMOSPHERE_DENSITY: f32 = 0.08;
 
 /// Below this altitude the atmosphere is held at full Earth density: this same
@@ -1169,8 +1171,15 @@ const SPACE_ATMOSPHERE_DENSITY: f32 = 0.08;
 /// below the globe view, where thinning nothing critical shows.
 const CITY_ATMOSPHERE_ALT: f32 = 15_000.0;
 
-/// Change in shell thickness that's worth rebuilding the scattering medium for.
-const MEDIUM_REBUILD_STEP: f32 = 0.05;
+/// Change in density worth rebuilding the scattering medium for, as a fraction
+/// of the density: ~25 rebuilds over the climb from the street (1.0) to the
+/// globe threshold, ~10 from there to deep space.
+///
+/// It was an absolute 0.05 until 2026-11-12, which the deep-space climb never
+/// crossed once that target was lowered to 0.08 — 0.03 + 0.05 is not *more* than
+/// 0.05 — so from orbit the air stayed at the threshold's 0.03 and the globe
+/// came out clear and over-bright, whatever the constant said.
+const MEDIUM_REBUILD_STEP: f32 = 0.12;
 
 /// The planet's scattering medium, whose density `update_globe_visibility`
 /// re-derives by altitude (see [`ATMOSPHERE_DENSITY_NEAR`]). Built once in
@@ -1477,7 +1486,8 @@ pub fn update_globe_visibility(
         // re-derive it only when the density has actually drifted (a handful of
         // times across a full zoom, not every frame). The haze fades over the
         // same climb as the density, so the density's drift covers it.
-        if (density - *applied_density).abs() > MEDIUM_REBUILD_STEP {
+        if (density - *applied_density).abs() > MEDIUM_REBUILD_STEP * density.max(*applied_density)
+        {
             if let Some(mut medium) = scattering_media.get_mut(&media.space) {
                 *medium = earth_air(density, 1.0 - city_fade);
                 *applied_density = density;
