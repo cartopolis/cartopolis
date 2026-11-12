@@ -19,6 +19,7 @@ clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rpassword = "7"
 cartopolis_core = { path = "../core" }
 cartopolis_simulator = { path = "../simulator" }
 cartopolis_atlas = { path = "../atlas" }

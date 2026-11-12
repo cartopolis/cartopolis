@@ -44,7 +44,21 @@ struct Cli {
 enum Cmd {
     /// Run atlas alone: what this program starts beside the simulator.
     Atlas,
+    /// Make an admin account, or reset its password, then exit. Asks for the
+    /// password unless `CARTO_ADMIN_PASSWORD` holds it.
+    CreateAdmin {
+        /// The account's name; asked for when left out.
+        username: Option<String>,
+    },
 }
+
+/// Environment variable that answers `create-admin`'s password question, for a
+/// script; the simulator's `--create-admin` reads the same one.
+const ADMIN_PASSWORD_ENV: &str = "CARTO_ADMIN_PASSWORD";
+
+/// The built web UI, looked for beside this program when the file names no
+/// `web_root`: where the server package puts it.
+const WEB_DIR: &str = "web";
 
 /// The simulator's HTTP listener when the file names none: loopback, so an
 /// install never publishes plain HTTP by accident; TLS goes in front of it.
@@ -55,13 +69,19 @@ const DEFAULT_HTTP_LISTEN: &str = "127.0.0.1:4748";
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    // `create-admin` is a question asked at a terminal: only what went wrong is
+    // said there, not every migration the database runs on its way.
+    let level = match cli.command {
+        Some(Cmd::CreateAdmin { .. }) => "warn",
+        _ => "info",
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
         )
         .init();
-    let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -70,8 +90,51 @@ fn main() -> anyhow::Result<()> {
             end_with_parent();
             runtime.block_on(cartopolis_atlas::run(atlas_config(&cli.config)?))
         }
+        Some(Cmd::CreateAdmin { username }) => create_admin(&cli.config, username),
         None => runtime.block_on(run_both(&cli.config)),
     }
+}
+
+/// Create or repair an admin account in the database the server uses, without
+/// starting it: a first install has no other way to an admin, and a forgotten
+/// password is mended by running it again.
+fn create_admin(file: &Path, username: Option<String>) -> anyhow::Result<()> {
+    use std::io::Write;
+    let sim = sim_config(file)?;
+    let username = match username {
+        Some(name) => name,
+        None => {
+            print!("Admin account name: ");
+            std::io::stdout().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            line.trim().to_string()
+        }
+    };
+    anyhow::ensure!(!username.is_empty(), "an admin account needs a name");
+    let password = match std::env::var(ADMIN_PASSWORD_ENV) {
+        Ok(password) => password,
+        Err(_) => {
+            let password = rpassword::prompt_password(format!("Password for {username}: "))?;
+            let again = rpassword::prompt_password("The same password again: ")?;
+            anyhow::ensure!(
+                password == again,
+                "the two passwords differ; nothing changed"
+            );
+            password
+        }
+    };
+    anyhow::ensure!(!password.is_empty(), "an admin account needs a password");
+    if let Some(dir) = Path::new(&sim.database_path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let conn = cartopolis_simulator::db::open_and_migrate(&sim.database_path)?;
+    cartopolis_simulator::ensure_admin_account(&conn, &username, &password)?;
+    println!(
+        "{username} is an admin of {}; sign in there with it.",
+        sim.public_base_url
+    );
+    Ok(())
 }
 
 /// The simulator's settings, with what one program implies filled in: an HTTP
@@ -88,8 +151,19 @@ fn sim_config(file: &Path) -> anyhow::Result<SimConfig> {
     if sim.map_data_dir.is_none() {
         sim.map_data_dir = Some(atlas.site_dir.display().to_string());
     }
+    if sim.web_root.is_none() {
+        sim.web_root = web_beside_program();
+    }
     own_services(&mut sim);
     Ok(sim)
+}
+
+/// The package's `web/`, when this program sits beside one.
+fn web_beside_program() -> Option<String> {
+    let dir = std::env::current_exe().ok()?.parent()?.join(WEB_DIR);
+    dir.join("index.html")
+        .is_file()
+        .then(|| dir.display().to_string())
 }
 
 /// The public tile server with the schema and URL shape the client reads
@@ -140,6 +214,19 @@ fn atlas_config(file: &Path) -> anyhow::Result<AtlasConfig> {
 
 async fn run_both(file: &Path) -> anyhow::Result<()> {
     let sim = sim_config(file)?;
+    if sim.public_base_url == SimConfig::default().public_base_url {
+        tracing::warn!(
+            "public_base_url is not set in {}: clients will be sent to {} for search and map data; \
+             set it to this server's https address",
+            file.display(),
+            sim.public_base_url
+        );
+    }
+    if sim.web_root.is_none() {
+        tracing::warn!(
+            "no web UI: set web_root, or put the built one in {WEB_DIR}/ beside this program"
+        );
+    }
     tracing::info!(
         listen = %sim.listen,
         http_listen = sim.http_listen.as_deref().unwrap_or_default(),
