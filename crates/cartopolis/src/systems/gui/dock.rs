@@ -50,7 +50,7 @@ use crate::systems::theme;
 /// Height of the World | Community switch: a 48 pt touch row.
 const SWITCH_H: f32 = 48.0;
 /// The switch's widest, on a desktop.
-const SWITCH_MAX_W: f32 = 264.0;
+pub(crate) const SWITCH_MAX_W: f32 = 264.0;
 /// Height of the search bar across the top.
 const SEARCH_H: f32 = 44.0;
 /// The search bar's widest, on a desktop. It is anchored at the map's top
@@ -78,32 +78,145 @@ pub fn reserved_top() -> f32 {
     theme::OSD_MARGIN + SEARCH_H + theme::OSD_MARGIN
 }
 
-/// The top of the `i`th disc of the left column: the compass (0), the lens
-/// (1), the light (2) and Say (3). One step is a disc and a gap, so the
-/// column is one strip of evenly spaced controls for the view.
+/// Whether the map's round buttons **lie down**: two rows in the search bar's
+/// band, beside the bar, instead of two columns under it.
+///
+/// A phone on its side is ~420 pt tall (the OnePlus 15, 2026-11-12), and the
+/// right column (down to 268 pt) and Follow's touch controls (266 pt up from
+/// the bottom) need 552 between them: the column stood on the jump and
+/// flight discs, the locate caption under the face disc, and Say under the
+/// scale bar. Lying down, the columns take no height under the bar at all,
+/// and the touch controls stand side by side in the bottom corners
+/// (`map_osd::Spots`), where the thumbs of a phone held in two hands are.
+/// Only when wider than tall: a short, narrow window has no room for the
+/// rows beside the bar either.
 #[must_use]
-pub fn left_slot(i: usize) -> f32 {
-    reserved_top() + i as f32 * (theme::ROUND_BUTTON_SIZE + theme::OSD_GAP)
+pub fn lying(view: egui::Vec2) -> bool {
+    view.x > view.y
+        && view.y
+            < column(true, true).bottom
+                + theme::OSD_GROUP_GAP
+                + crate::systems::map_osd::right_edge_reach(false)
 }
 
-/// Where each disc of the right column goes, top down.
+/// One disc's step along a row or a column.
+const STEP: f32 = theme::ROUND_BUTTON_SIZE + theme::OSD_GAP;
+
+/// The top of a disc in a lying row: centred on the search bar.
+const ROW_TOP: f32 = theme::OSD_MARGIN + (SEARCH_H - theme::ROUND_BUTTON_SIZE) / 2.0;
+
+/// The widest a lying row gets: four discs.
+const ROW_W: f32 = 4.0 * STEP - theme::OSD_GAP;
+
+/// The search bar's width over a map `map_w` wide. Lying, it keeps out of
+/// both rows — at their fullest, so the bar does not jump when a session
+/// brings Say or a fix brings Locate.
+#[must_use]
+pub fn search_width(view: egui::Vec2, map_w: f32) -> f32 {
+    let mut room = map_w - 2.0 * theme::OSD_MARGIN;
+    if lying(view) {
+        room -= 2.0 * (ROW_W + theme::OSD_GROUP_GAP);
+    }
+    room.min(SEARCH_MAX_W)
+}
+
+/// Where the `i`th disc of the left set goes, as a `LEFT_TOP` anchor offset:
+/// the compass (0), the lens (1), the light (2) and Say (3). Standing, one
+/// column under the bar; lying, one row from the corner in the bar's band.
+#[must_use]
+pub fn left_slot(view: egui::Vec2, i: usize) -> egui::Vec2 {
+    if lying(view) {
+        egui::vec2(theme::OSD_MARGIN + i as f32 * STEP, ROW_TOP)
+    } else {
+        egui::vec2(theme::OSD_MARGIN, reserved_top() + i as f32 * STEP)
+    }
+}
+
+/// The left set's rect, its first `n` discs, for the overlays to keep off.
+#[must_use]
+pub fn left_rect(view: egui::Vec2, n: usize) -> egui::Rect {
+    let first = left_slot(view, 0);
+    let last = left_slot(view, n.max(1) - 1);
+    egui::Rect::from_min_max(
+        first.to_pos2(),
+        (last + egui::Vec2::splat(theme::ROUND_BUTTON_SIZE)).to_pos2(),
+    )
+}
+
+/// Where each disc of the right set goes, as a `RIGHT_TOP` anchor offset:
+/// `x` is how far the disc's right edge stands in from the screen's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RightColumn {
-    pub layers: f32,
-    pub mode: f32,
+    pub layers: egui::Vec2,
+    pub mode: egui::Vec2,
     /// `hud`'s locate disc, where there is an avatar to locate.
-    pub locate: Option<f32>,
-    pub camera: Option<f32>,
+    pub locate: Option<egui::Vec2>,
+    pub camera: Option<egui::Vec2>,
     /// The bottom of the last disc (and its words): what anything else on the
     /// right edge — the zoom rail, the floor picker — starts under.
     pub bottom: f32,
+    /// A row in the bar's band rather than a column under it ([`lying`]):
+    /// Locate's caption goes under its disc, not beside it.
+    pub lying: bool,
 }
 
-/// The right column under the search bar: Layers, the view mode (its word
-/// under it), Locate (its caption beside it) and Camera — the mockup's four.
+impl RightColumn {
+    /// How far in from the right edge something left of the set stands
+    /// (the Midas disc): beside the column, or — lying — at the margin under
+    /// the bar, which the row leaves free.
+    #[must_use]
+    pub fn beside(&self) -> f32 {
+        if self.lying {
+            theme::OSD_MARGIN
+        } else {
+            theme::OSD_MARGIN + STEP
+        }
+    }
+
+    /// The set's rect in a `view`, edge to edge of its discs and words.
+    #[must_use]
+    pub fn rect(&self, view: egui::Vec2) -> egui::Rect {
+        let discs = [Some(self.layers), Some(self.mode), self.locate, self.camera];
+        let (mut l, mut r) = (f32::MAX, f32::MIN);
+        for d in discs.into_iter().flatten() {
+            l = l.min(view.x - d.x - theme::ROUND_BUTTON_SIZE);
+            r = r.max(view.x - d.x);
+        }
+        egui::Rect::from_min_max(egui::pos2(l, self.layers.y), egui::pos2(r, self.bottom))
+    }
+}
+
+/// The right set: Layers, the view mode (its word under it), Locate and
+/// Camera — the mockup's four. Standing, a column under the search bar;
+/// lying, a row left of it, Layers nearest the bar so that no disc moves
+/// when Locate or Camera comes or goes.
 #[must_use]
-pub fn right_column(has_locate: bool, has_camera: bool) -> RightColumn {
+pub fn right_column(view: egui::Vec2, has_locate: bool, has_camera: bool) -> RightColumn {
+    if !lying(view) {
+        return column(has_locate, has_camera);
+    }
+    let bar = search_width(view, view.x);
+    let at = |i: f32| {
+        egui::vec2(
+            theme::OSD_MARGIN + bar + theme::OSD_GROUP_GAP + i * STEP,
+            ROW_TOP,
+        )
+    };
+    RightColumn {
+        layers: at(0.0),
+        mode: at(1.0),
+        locate: has_locate.then(|| at(2.0)),
+        camera: has_camera.then(|| at(if has_locate { 3.0 } else { 2.0 })),
+        // The mode's word, and Locate's caption, under the row.
+        bottom: ROW_TOP + theme::ROUND_BUTTON_SIZE + MODE_WORD_H,
+        lying: true,
+    }
+}
+
+/// The right column standing: under the search bar, top down.
+fn column(has_locate: bool, has_camera: bool) -> RightColumn {
     let disc = theme::ROUND_BUTTON_SIZE;
+    let at = |top: f32| egui::vec2(theme::OSD_MARGIN, top);
     let layers = reserved_top();
     let mode = layers + disc + theme::OSD_GAP;
     let mut next = mode + disc + MODE_WORD_H + theme::OSD_GAP;
@@ -113,19 +226,20 @@ pub fn right_column(has_locate: bool, has_camera: bool) -> RightColumn {
         // (`hud`), not under it: the room under it is what lets Follow's
         // touch controls and this column share a phone's right edge.
         next += disc + theme::OSD_GAP;
-        top
+        at(top)
     });
     let camera = has_camera.then(|| {
         let top = next;
         next += disc + theme::OSD_GAP;
-        top
+        at(top)
     });
     RightColumn {
-        layers,
-        mode,
+        layers: at(layers),
+        mode: at(mode),
         locate,
         camera,
         bottom: next - theme::OSD_GAP,
+        lying: false,
     }
 }
 
@@ -139,7 +253,7 @@ pub struct MapChrome {
 impl Default for MapChrome {
     fn default() -> Self {
         Self {
-            right_bottom: right_column(true, true).bottom,
+            right_bottom: column(true, true).bottom,
         }
     }
 }
@@ -193,7 +307,8 @@ pub fn render_dock(
 ) {
     let has_camera = crate::systems::camera_screen::available();
     let has_avatar = !avatars.is_empty();
-    chrome.right_bottom = right_column(has_avatar, has_camera).bottom;
+    let viewport = egui.viewport_pts();
+    chrome.right_bottom = right_column(viewport, has_avatar, has_camera).bottom;
     // Driving owns the screen, and so does the camera.
     if covers.driver.active || camera.is_open() {
         crate::systems::place_pins::set_chrome_holes(egui.ctx(), Vec::new());
@@ -215,7 +330,6 @@ pub fn render_dock(
         Space::World
     };
     let compact = egui.compact();
-    let viewport = egui.viewport_pts();
     // The map: what the side panels left of the root `Ui`. On a phone with a
     // panel up that is nothing, and the switch centres on the screen.
     let map = egui.ui_mut().available_rect_before_wrap();
@@ -275,7 +389,7 @@ pub fn render_dock(
     let mut search_clicked = false;
     let mut face_clicked = false;
     if bar_shown {
-        let width = (map.width() - 2.0 * theme::OSD_MARGIN).min(SEARCH_MAX_W);
+        let width = search_width(viewport, map.width());
         // On a desktop with Community open the panel wears your face at its
         // own top right; one face, not two.
         let with_face = !community_open;
@@ -331,24 +445,14 @@ pub fn render_dock(
     let mut say_clicked = false;
     let mut holes = Vec::new();
     if !panel_open && !keyboard {
-        let col = right_column(has_avatar, has_camera);
+        let col = right_column(viewport, has_avatar, has_camera);
         // What the map's overlays keep off (`place_pins::clear_of_chrome`):
-        // both columns, edge to edge of their discs and words.
-        let disc = theme::ROUND_BUTTON_SIZE;
-        holes.push(egui::Rect::from_min_max(
-            egui::pos2(viewport.x - theme::OSD_MARGIN - disc, col.layers),
-            egui::pos2(viewport.x - theme::OSD_MARGIN, col.bottom),
-        ));
-        holes.push(egui::Rect::from_min_max(
-            egui::pos2(theme::OSD_MARGIN, left_slot(0)),
-            egui::pos2(
-                theme::OSD_MARGIN + disc,
-                left_slot(if has_session { 3 } else { 2 }) + disc,
-            ),
-        ));
-        let disc = |id: &str, top: f32| {
+        // both sets, edge to edge of their discs and words.
+        holes.push(col.rect(viewport));
+        holes.push(left_rect(viewport, if has_session { 4 } else { 3 }));
+        let disc = |id: &str, at: egui::Vec2| {
             egui::Area::new(egui::Id::new(id))
-                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-theme::OSD_MARGIN, top))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-at.x, at.y))
         };
         disc("layers_disc", col.layers).show(&ctx, |ui| {
             if theme::round_button(
@@ -365,8 +469,8 @@ pub fn render_dock(
         disc("mode_disc", col.mode).show(&ctx, |ui| {
             mode_disc(ui, &mut camera_state, &session, has_avatar);
         });
-        if let Some(top) = col.camera {
-            disc("camera_disc", top).show(&ctx, |ui| {
+        if let Some(at) = col.camera {
+            disc("camera_disc", at).show(&ctx, |ui| {
                 // The camera, dressed like every other disc: it wore the brand
                 // orange from 2026-10-18 and read as switched on when nothing
                 // was (2026-11-03).
@@ -385,10 +489,8 @@ pub fn render_dock(
         // of the view as it is.
         let has_lens = data_layers.scenario.is_some();
         let left = |id: &str, slot: usize| {
-            egui::Area::new(egui::Id::new(id)).anchor(
-                egui::Align2::LEFT_TOP,
-                egui::vec2(theme::OSD_MARGIN, left_slot(slot)),
-            )
+            egui::Area::new(egui::Id::new(id))
+                .anchor(egui::Align2::LEFT_TOP, left_slot(viewport, slot))
         };
         left("lens_disc", 1).show(&ctx, |ui| {
             let on = crate::systems::scenario::lens_disc_on(&lens, has_lens);
@@ -867,6 +969,9 @@ mod tests {
     /// height of the phone shots (412×900 px at 1.5).
     const PHONES: [f32; 2] = [274.0, 214.0];
     const PHONE_H: f32 = 600.0;
+    /// A phone on its side: the OnePlus 15's 2772×1272 px at 3 px a point
+    /// (2026-11-12).
+    const LYING: egui::Vec2 = egui::vec2(924.0, 424.0);
 
     /// The switch and the search bar are size-to-content `Area`s that nothing
     /// clamps; what they ask for is what they take, off the screen included.
@@ -902,45 +1007,82 @@ mod tests {
     fn the_reserved_edges_clear_the_bar_and_the_switch() {
         assert!(reserved_top() >= theme::OSD_MARGIN + SEARCH_H);
         assert!(reserved_bottom() >= theme::OSD_MARGIN + SWITCH_H);
-        assert_eq!(left_slot(0), reserved_top());
-        assert_eq!(right_column(true, true).layers, reserved_top());
+        let up = egui::vec2(PHONES[0], PHONE_H);
+        assert_eq!(left_slot(up, 0).y, reserved_top());
+        assert_eq!(right_column(up, true, true).layers.y, reserved_top());
     }
 
-    /// The right column is one column of discs that never touch: a word or a
-    /// caption under a disc gets its own room before the next disc.
+    /// The right set is discs that never touch, standing or lying: a word or
+    /// a caption under a disc gets its own room before the next disc.
     #[test]
     fn the_right_column_does_not_overlap_itself() {
-        for (locate, camera) in [(false, false), (true, false), (false, true), (true, true)] {
-            let c = right_column(locate, camera);
-            let mut tops = vec![c.layers, c.mode];
-            tops.extend(c.locate);
-            tops.extend(c.camera);
-            for pair in tops.windows(2) {
-                assert!(
-                    pair[1] - pair[0] >= theme::ROUND_BUTTON_SIZE + theme::OSD_GAP,
-                    "{tops:?}"
-                );
+        for view in [egui::vec2(PHONES[0], PHONE_H), LYING] {
+            for (locate, camera) in [(false, false), (true, false), (false, true), (true, true)] {
+                let c = right_column(view, locate, camera);
+                let mut discs = vec![c.layers, c.mode];
+                discs.extend(c.locate);
+                discs.extend(c.camera);
+                for pair in discs.windows(2) {
+                    // Down a column, or along a row away from the bar.
+                    let step = (pair[1] - pair[0]).abs().max_elem();
+                    assert!(
+                        step >= theme::ROUND_BUTTON_SIZE + theme::OSD_GAP,
+                        "{view:?} {discs:?}"
+                    );
+                }
+                for d in &discs {
+                    assert!(c.bottom >= d.y + theme::ROUND_BUTTON_SIZE);
+                }
             }
-            assert!(c.bottom >= tops.last().copied().unwrap() + theme::ROUND_BUTTON_SIZE);
+            // The mode disc's word sits in the gap under it.
+            let c = right_column(view, true, true);
+            assert!(c.bottom - c.mode.y >= theme::ROUND_BUTTON_SIZE + MODE_WORD_H);
+            if !c.lying {
+                assert!(c.locate.unwrap().y - c.mode.y >= theme::ROUND_BUTTON_SIZE + MODE_WORD_H);
+            }
         }
-        // The mode disc's word sits in the gap under it.
-        let c = right_column(true, true);
-        assert!(c.locate.unwrap() - c.mode >= theme::ROUND_BUTTON_SIZE + MODE_WORD_H);
     }
 
-    /// Both columns, top and bottom, fit a phone with the switch under them:
+    /// Both sets, top and bottom, fit a phone with the switch under them:
     /// the left one (compass, lens, light, Say) ends well above the
     /// thumbstick's corner, and the right one ends above the tallest thing
     /// the right edge grows from the bottom (`map_osd`).
     #[test]
     fn the_columns_fit_a_phone_above_the_switch() {
-        let left_bottom = left_slot(3) + theme::ROUND_BUTTON_SIZE;
-        let right_bottom = right_column(true, true).bottom;
-        for (bottom, what) in [(left_bottom, "left"), (right_bottom, "right")] {
-            assert!(
-                bottom + theme::OSD_GROUP_GAP < PHONE_H - reserved_bottom(),
-                "the {what} column reaches {bottom} of {PHONE_H}"
-            );
+        for view in [egui::vec2(PHONES[0], PHONE_H), LYING] {
+            let left_bottom = left_rect(view, 4).bottom();
+            let right_bottom = right_column(view, true, true).bottom;
+            for (bottom, what) in [(left_bottom, "left"), (right_bottom, "right")] {
+                assert!(
+                    bottom + theme::OSD_GROUP_GAP < view.y - reserved_bottom(),
+                    "the {what} set reaches {bottom} of {view:?}"
+                );
+            }
         }
+    }
+
+    /// Lying, the two rows and the search bar share the bar's band without
+    /// touching: left row, then the right row, then the bar.
+    #[test]
+    fn the_rows_and_the_bar_share_the_top_band() {
+        let view = LYING;
+        assert!(lying(view));
+        let left = left_rect(view, 4);
+        let right = right_column(view, true, true).rect(view);
+        let bar = search_width(view, view.x);
+        let bar_left = view.x - theme::OSD_MARGIN - bar;
+        assert!(
+            left.right() + theme::OSD_GROUP_GAP <= right.left(),
+            "{left:?} {right:?}"
+        );
+        assert!(
+            right.right() + theme::OSD_GROUP_GAP <= bar_left + 0.01,
+            "{right:?} {bar_left}"
+        );
+        // Room for the words beside the magnifier, as upright.
+        assert!(bar - FACE - 44.0 >= 90.0, "no room for the words in {bar}");
+        // The discs sit in the bar's own band.
+        assert!(right.top() >= theme::OSD_MARGIN && left.top() >= theme::OSD_MARGIN);
+        assert!(left.bottom() <= theme::OSD_MARGIN + SEARCH_H);
     }
 }

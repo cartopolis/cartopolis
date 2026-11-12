@@ -119,34 +119,49 @@ fn actions_bottom_offset() -> f32 {
     bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
 }
 
-/// Bottom offset of the face disc: beside the jump disc, one column in from
-/// the jump/flight pair, with the hand button under it beside the flight
-/// disc. They stood in tiers above the pair until 2026-11-11, which took the
-/// right edge up to within 8 pt of the map's column of round buttons
-/// (`dock::right_column`) on a phone.
-fn face_bottom_offset() -> f32 {
-    actions_bottom_offset() + CONTROL_SIZE + theme::OSD_GAP
+/// Where the right edge's controls past the zoom/climb pair stand, as
+/// `RIGHT_BOTTOM` anchor offsets: `x` in from the right edge, `y` up from the
+/// bottom.
+#[derive(Debug, Clone, Copy)]
+struct Spots {
+    /// The jump/flight pair.
+    actions: egui::Vec2,
+    /// The face disc, beside the jump disc.
+    face: egui::Vec2,
+    /// The hand button, under the face beside the flight disc.
+    hand: egui::Vec2,
 }
 
-/// Bottom offset of the hand button: beside the flight disc.
-fn hand_bottom_offset() -> f32 {
-    actions_bottom_offset()
-}
-
-/// Right offset of the face and hand discs: one disc and a group gap in from
-/// the edge. The group gap, not the plain one, because the miss bands of two
-/// neighbours side by side must not meet (`reach`).
-fn hand_right_offset() -> f32 {
-    theme::OSD_MARGIN + CONTROL_SIZE + theme::OSD_GROUP_GAP
+/// Standing, the jump/flight pair stands over the zoom/climb pair at the
+/// edge, and the face and hand discs beside it, one column in (they stood
+/// in tiers above the pair until 2026-11-11, which took the right edge up to
+/// within 8 pt of the map's column of round buttons on a phone). Lying
+/// (`dock::lying`, a phone on its side) the three pairs stand side by side
+/// along the bottom, under the thumb, since there is no height for a stack.
+/// One column is a disc and a group gap, not the plain one, because the miss
+/// bands of two neighbours side by side must not meet (`reach`).
+fn spots(lying: bool) -> Spots {
+    let column = CONTROL_SIZE + theme::OSD_GROUP_GAP;
+    let actions = if lying {
+        egui::vec2(theme::OSD_MARGIN + column, bottom_offset())
+    } else {
+        egui::vec2(theme::OSD_MARGIN, actions_bottom_offset())
+    };
+    let beside = actions.x + column;
+    Spots {
+        actions,
+        face: egui::vec2(beside, actions.y + CONTROL_SIZE + theme::OSD_GAP),
+        hand: egui::vec2(beside, actions.y),
+    }
 }
 
 /// How far up from the bottom the right edge's touch controls reach, at
 /// most: the top of Follow's jump/flight pair. The map's column of round
 /// buttons comes down from the top to meet it (`dock::right_column`), and the
-/// two must not meet.
-#[cfg(test)]
-fn right_edge_reach() -> f32 {
-    actions_bottom_offset() + pair_height()
+/// two must not meet — which is what decides `dock::lying`.
+#[must_use]
+pub fn right_edge_reach(lying: bool) -> f32 {
+    spots(lying).actions.y + pair_height()
 }
 
 /// How much of the bottom-**left** corner the thumbstick claims, in points, for
@@ -441,6 +456,7 @@ pub fn render_map_osd(
         let ui_scale = egui.ui_scale();
         let fingers = Fingers::new(&touch, ui_scale);
         let ctx = egui.ctx();
+        let at = spots(crate::systems::dock::lying(egui.viewport_pts()));
         match cluster {
             Cluster::Fly => {
                 next.climb =
@@ -467,14 +483,14 @@ pub fn render_map_osd(
                     );
                 }
                 next.walk = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
-                let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying);
+                let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying, at);
                 next.jump = jump;
                 next.fly_toggle = fly_toggle;
-                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open) {
+                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open, at) {
                     body.faces
                         .write(crate::systems::avatar_face::StartExpression(e));
                 }
-                hand_button(ctx, &fingers, &mut areas, &mut body);
+                hand_button(ctx, &fingers, &mut areas, &mut body, at);
             }
             // The zoom rail below is Earth mode's control, on every device.
             Cluster::Zoom => {}
@@ -1222,13 +1238,11 @@ fn action_pair(
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
     flying: bool,
+    at: Spots,
 ) -> (bool, bool) {
     let (mut jump, mut fly_toggle) = (false, false);
     let area = egui::Area::new(egui::Id::new("osd_actions"))
-        .anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-theme::OSD_MARGIN, -actions_bottom_offset()),
-        )
+        .anchor(egui::Align2::RIGHT_BOTTOM, -at.actions)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
@@ -1314,6 +1328,7 @@ fn hand_button(
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
     body: &mut BodyControls,
+    at: Spots,
 ) {
     use crate::systems::held_phone::Side;
     use crate::systems::high_precision::{HandWord, HighPrecision};
@@ -1335,10 +1350,7 @@ fn hand_button(
     // edge's top half is the map's column of round buttons now
     // (`dock::right_column`).
     let area = egui::Area::new(egui::Id::new("osd_hand"))
-        .anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-hand_right_offset(), -hand_bottom_offset()),
-        )
+        .anchor(egui::Align2::RIGHT_BOTTOM, -at.hand)
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
             let resp = theme::named(ui, resp, Mark::Hand.label());
@@ -1451,13 +1463,11 @@ fn face_picker(
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
     open: &mut bool,
+    at: Spots,
 ) -> Option<cartopolis_core::Expression> {
-    let above = face_bottom_offset();
+    let above = at.face.y;
     let area = egui::Area::new(egui::Id::new("osd_face"))
-        .anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-hand_right_offset(), -above),
-        )
+        .anchor(egui::Align2::RIGHT_BOTTOM, -at.face)
         .show(ctx, |ui| {
             let resp = round_button(ui, Mark::Face, *open);
             if resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false)) {
@@ -1472,10 +1482,7 @@ fn face_picker(
     let list = egui::Area::new(egui::Id::new("osd_faces"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(
-                -(hand_right_offset() + CONTROL_SIZE + theme::OSD_GAP),
-                -above,
-            ),
+            egui::vec2(-(at.face.x + CONTROL_SIZE + theme::OSD_GAP), -above),
         )
         .show(ctx, |ui| {
             theme::overlay_frame().show(ui, |ui| {
@@ -1966,31 +1973,51 @@ mod tests {
     /// The right edge has two owners since 2026-11-10: the map's column of
     /// round buttons comes down from under the search bar
     /// (`dock::right_column`), and the touch controls grow up from the
-    /// World | Community switch. On a phone (600 pt tall at 1.5, the shots'
-    /// 412×900 px) they must not meet — neither Follow's tallest stack (the
-    /// face and hand discs over the jump/flight pair over the zoom pair) nor
-    /// Earth's rail.
+    /// World | Community switch. They must not meet — neither Follow's
+    /// tallest stack nor Earth's rail — on a phone upright (274 × 600 pt, the
+    /// shots' 412×900 px at 1.5) or on its side (the OnePlus 15's 2772×1272
+    /// px at 3 px a point, where the column stood on the jump disc until
+    /// 2026-11-12).
     #[test]
     fn the_right_edge_controls_clear_the_column_of_round_buttons() {
-        let phone_h = 600.0;
-        let column = crate::systems::dock::right_column(true, true).bottom;
-        let follow_top = phone_h - right_edge_reach();
-        // Real room, not a hairline: the group gap (2026-11-11, it was 8 pt).
-        assert!(
-            follow_top >= column + theme::OSD_GROUP_GAP,
-            "Follow's stack reaches {follow_top}, the column ends at {column}"
-        );
-        let rail = 3.0 * RAIL_DISC + RAIL_TRACK_TOUCH + 3.0 * 6.0;
-        let rail_top = phone_h - bottom_offset() - rail;
-        assert!(
-            rail_top >= column + theme::OSD_GROUP_GAP,
-            "the rail reaches {rail_top}, the column ends at {column}"
-        );
-        // The face and hand discs stand beside the pair, their miss bands
-        // apart from its own.
-        assert!(hand_right_offset() - theme::OSD_MARGIN - CONTROL_SIZE > 2.0 * MISS_MARGIN);
-        assert!(face_bottom_offset() + CONTROL_SIZE <= right_edge_reach());
-        assert!(hand_bottom_offset() >= actions_bottom_offset());
+        for view in [egui::vec2(274.0, 600.0), egui::vec2(924.0, 424.0)] {
+            let lying = crate::systems::dock::lying(view);
+            let column = crate::systems::dock::right_column(view, true, true).bottom;
+            let follow_top = view.y - right_edge_reach(lying);
+            // Real room, not a hairline: the group gap (2026-11-11, it was 8 pt).
+            assert!(
+                follow_top >= column + theme::OSD_GROUP_GAP,
+                "{view:?}: Follow's stack reaches {follow_top}, the column ends at {column}"
+            );
+            let rail = 3.0 * RAIL_DISC + RAIL_TRACK_TOUCH + 3.0 * 6.0;
+            let rail_top = view.y - bottom_offset() - rail;
+            assert!(
+                rail_top >= column + theme::OSD_GROUP_GAP,
+                "{view:?}: the rail reaches {rail_top}, the column ends at {column}"
+            );
+            // The face and hand discs stand beside the pair, their miss bands
+            // apart from its own; lying, the pair stands beside the zoom pair
+            // the same way.
+            let at = spots(lying);
+            assert!(at.face.x - at.actions.x - CONTROL_SIZE > 2.0 * MISS_MARGIN);
+            assert!(at.face.y + CONTROL_SIZE <= right_edge_reach(lying));
+            assert!(at.hand.y >= at.actions.y);
+            if lying {
+                assert!(at.actions.x - theme::OSD_MARGIN - CONTROL_SIZE > 2.0 * MISS_MARGIN);
+                // …and all three pairs keep clear of the switch between them.
+                let switch_right = (view.x + crate::systems::dock::SWITCH_MAX_W) / 2.0;
+                let reach_in = at.face.x + CONTROL_SIZE + MISS_MARGIN;
+                assert!(view.x - reach_in > switch_right, "{view:?}");
+            }
+        }
+        // A phone upright keeps its column, and on its side lies down.
+        assert!(!crate::systems::dock::lying(egui::vec2(274.0, 600.0)));
+        assert!(crate::systems::dock::lying(egui::vec2(924.0, 424.0)));
+        // The shortest phone on its side (274 pt) still has room for Follow's
+        // pairs under the rows; Earth's rail does not fit there yet.
+        let short = egui::vec2(600.0, 274.0);
+        let rows = crate::systems::dock::right_column(short, true, true).bottom;
+        assert!(short.y - right_edge_reach(true) >= rows + theme::OSD_GROUP_GAP);
     }
 
     /// What the bottom-left corner reserves has to cover the stick actually

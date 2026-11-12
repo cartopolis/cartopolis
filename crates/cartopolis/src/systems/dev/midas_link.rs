@@ -1339,7 +1339,10 @@ pub fn draw_link_button(
     let mut toggle = false;
     // A second column, left of the map's round buttons under the search bar
     // (`dock::right_column`): the top right corner is your face now.
-    let left_of_column = theme::OSD_MARGIN + size + theme::OSD_GAP;
+    // On a phone on its side the column lies down as a row beside the bar,
+    // and this takes the margin under the bar.
+    let left_of_column =
+        crate::systems::dock::right_column(egui.viewport_pts(), false, false).beside();
     egui::Area::new(egui::Id::new("midas_link_button"))
         .anchor(
             egui::Align2::RIGHT_TOP,

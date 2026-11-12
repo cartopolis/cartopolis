@@ -134,6 +134,29 @@ at 300 pt) and **hangs under the column on a desktop** (`MapChrome::right_bottom
 last frame's); centred on the edge, it met the column on a short window. The
 floor picker hangs there too.
 
+**On its side the columns lie down** (2026-11-12). Every fit above was for a
+phone upright, and the person's OnePlus 15 on its side is 924 × 424 pt
+(2772 × 1272 px at 3 px a point): the right column (to 268 pt) and Follow's
+stack (266 pt up from the bottom) need 552, so the column stood on the jump
+disc, the locate caption sat under the face disc, and Say on the left stood
+under the scale bar over the stick. Now, when the screen is wider than tall
+and shorter than that (`dock::lying`), both sets are **rows in the search
+bar's own band**: compass, lens, light, Say from the left corner; Layers,
+the mode, Locate, Camera leftwards from the bar, Layers nearest it so no
+disc moves when Locate or Camera comes or goes. The bar narrows to keep out
+of both rows at their fullest (`dock::search_width`), Locate's caption and
+the light's choices go *under* their discs, and the Midas disc takes the
+margin under the bar. The right edge's touch pairs stand **side by side**
+along the bottom (`map_osd::spots`: zoom at the corner, jump/flight, then
+face/hand), 160 pt tall instead of 266 — under the thumbs of a phone held
+in two hands, with the middle of both edges free for the map. Everything
+anchored at `reserved_top` keeps it, so the chips and pills did not move.
+Slots are a function of the viewport now (`left_slot(view, i)`,
+`right_column(view, …)`): a caller that asks without one is how a disc
+stays in the column while its neighbours lie down. **Not yet:** Earth's
+zoom rail is 300 pt tall over the switch and fits the OnePlus on its side
+(424 pt) but not the 274-pt reference phone on its side.
+
 **Overlays keep off the columns** (2026-11-11): a friend's marker drew over the
 right column in Earth mode, and a pin raised later wins egui's hit test. The
 dock writes both columns' rects into egui memory each frame

@@ -50,6 +50,8 @@ struct Compass {
     /// Distance from the top of the screen. Driver mode stacks the rose *under*
     /// its manoeuvre card, which takes the corner the compass usually has.
     top: f32,
+    /// Distance from the left of the screen: the margin, or a lying row's slot.
+    left: f32,
     /// Caption under the rose (driver mode's orientation name). `None` leaves the
     /// bare compass.
     caption: Option<&'static str>,
@@ -73,10 +75,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Top-left: the status HUD moved into the top-right corner, so the compass
         // takes the opposite one to keep both clear of the docked panels.
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(theme::OSD_MARGIN, cfg.top),
-        )
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(cfg.left, cfg.top))
         .show(ctx, |ui| {
             let sense = if interactive {
                 egui::Sense::click()
@@ -200,9 +199,11 @@ const LOCATE_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 /// different reference widths, and the layers disc at the head of the column had
 /// no copy at all — it was anchored flush to the margin, which left it 3 pt off
 /// the axis of the three discs under it.
+/// `x` is the slot's own offset from its edge (`dock::left_slot`,
+/// `dock::right_column`).
 #[must_use]
-fn column_x(size: f32) -> f32 {
-    theme::OSD_MARGIN + (theme::ROUND_BUTTON_SIZE - size) * 0.5
+fn column_x(x: f32, size: f32) -> f32 {
+    x + (theme::ROUND_BUTTON_SIZE - size) * 0.5
 }
 
 /// Locate-button state. Two, not three: see the module note on
@@ -252,7 +253,8 @@ pub enum LocateState {
 /// that is the hand button's now (`map_osd`, `docs/mockups/hand-tracking/`).
 fn locate_overlay(
     ctx: &egui::Context,
-    top: f32,
+    at: egui::Vec2,
+    lying: bool,
     state: LocateState,
     gps: GpsQuality,
     hover: &str,
@@ -280,7 +282,7 @@ fn locate_overlay(
         // compass on the left).
         .anchor(
             egui::Align2::RIGHT_TOP,
-            egui::vec2(-column_x(LOCATE_SIZE), top),
+            egui::vec2(-column_x(at.x, LOCATE_SIZE), at.y),
         )
         .show(ctx, |ui| {
             // Tracking is an engaged state, so it takes the plate the dock's
@@ -326,15 +328,21 @@ fn locate_overlay(
             // other report this button can make is in `hover`, and a touch device
             // has no hover. To the left of the disc, over the map, since
             // 2026-11-10: the disc is at the screen's right margin in a column
-            // that has no room under it (`dock::right_column`).
+            // that has no room under it (`dock::right_column`). In a lying row
+            // it goes under, as the mode's word does: beside is a neighbour.
             if let Some(caption) = gps.caption().filter(|_| on) {
-                halo_text_aligned(
-                    p,
-                    egui::pos2(c.x - face.radius - 6.0, c.y),
-                    egui::Align2::RIGHT_CENTER,
-                    &caption,
-                    tone,
-                );
+                let (pos, align) = if lying {
+                    (
+                        egui::pos2(c.x, c.y + face.radius + 2.0),
+                        egui::Align2::CENTER_TOP,
+                    )
+                } else {
+                    (
+                        egui::pos2(c.x - face.radius - 6.0, c.y),
+                        egui::Align2::RIGHT_CENTER,
+                    )
+                };
+                halo_text_aligned(p, pos, align, &caption, tone);
             }
             let resp = resp.on_hover_text(hover);
             clicked = resp.clicked();
@@ -410,14 +418,17 @@ fn paint_light_icon(
 /// Returns the light chosen, if one was.
 fn light_overlay(
     ctx: &egui::Context,
-    top: f32,
+    at: egui::Vec2,
+    lying: bool,
     mode: crate::resources::SunMode,
     open: &mut bool,
 ) -> Option<crate::resources::SunMode> {
     let size = theme::ROUND_BUTTON_SIZE;
+    let x = column_x(at.x, size);
+    let top = at.y;
     let mut chosen = None;
     egui::Area::new(egui::Id::new("light_disc"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(column_x(size), top))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(x, top))
         .show(ctx, |ui| {
             let (resp, face) = theme::map_disc(
                 ui,
@@ -448,11 +459,15 @@ fn light_overlay(
         return None;
     }
     let pill_h = size - 8.0;
+    // Beside the disc in a column; under it in a lying row, where beside is
+    // Say's disc.
+    let choices = if lying {
+        egui::vec2(x, top + size + theme::OSD_GAP)
+    } else {
+        egui::vec2(x + size + theme::OSD_GAP, top + 1.0)
+    };
     egui::Area::new(egui::Id::new("light_choices"))
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(column_x(size) + size + theme::OSD_GAP, top + 1.0),
-        )
+        .anchor(egui::Align2::LEFT_TOP, choices)
         .show(ctx, |ui| {
             theme::overlay_frame()
                 .corner_radius(theme::RADIUS_PILL)
@@ -917,6 +932,7 @@ pub fn render_map_controls(
             interactive: true,
             locked: driver.orientation == crate::systems::driver::MapOrientation::NorthUp,
             top: CARD_MARGIN + CARD_HEIGHT + 8.0,
+            left: theme::OSD_MARGIN,
             caption: Some(driver.orientation.label()),
             hover: "Change the map orientation (heading up / north up / 3D)",
         };
@@ -930,12 +946,15 @@ pub fn render_map_controls(
     // free-form, so there the rose is a passive indicator.
     let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
     let locked = orbit && camera_state.orbit_north_lock;
+    let view = egui.viewport_pts();
+    let slot = crate::systems::dock::left_slot(view, 0);
     let cfg = Compass {
         interactive: orbit,
         locked,
-        // Under the search bar, at the head of the left column
-        // (`dock::left_slot`).
-        top: crate::systems::dock::left_slot(0),
+        // Under the search bar, at the head of the left column; lying, at the
+        // head of the left row beside it (`dock::left_slot`).
+        top: slot.y,
+        left: slot.x,
         caption: None,
         hover: if locked {
             "North-up locked — click to release"
@@ -959,17 +978,15 @@ pub fn render_map_controls(
     // whatever view you were already using. Not drawn while driving: the arrow is
     // already centred and the camera is held, so there is nothing left for it to
     // do.
-    if let Some(top) = (!avatars.is_empty())
-        .then(|| crate::systems::dock::right_column(true, false).locate)
-        .flatten()
-    {
+    let col = crate::systems::dock::right_column(view, true, false);
+    if let Some(at) = col.locate.filter(|_| !avatars.is_empty()) {
         let state = if tracking.active {
             LocateState::Tracking
         } else {
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        let toggled = locate_overlay(egui.ctx(), top, state, tracking.gps, &hover);
+        let toggled = locate_overlay(egui.ctx(), at, col.lying, state, tracking.gps, &hover);
         if toggled {
             match state {
                 // Recenter, in the view the user is already in. The button used to
@@ -1000,7 +1017,8 @@ pub fn render_map_controls(
     // a set time.
     if let Some(mode) = light_overlay(
         egui.ctx(),
-        crate::systems::dock::left_slot(2),
+        crate::systems::dock::left_slot(view, 2),
+        crate::systems::dock::lying(view),
         dev.sun_mode,
         &mut light_open,
     ) {
@@ -1178,7 +1196,7 @@ mod tests {
                 theme::ROUND_BUTTON_SIZE,
                 "the column is one diameter; {size} is not it"
             );
-            let centre = column_x(size) + size * 0.5;
+            let centre = column_x(theme::OSD_MARGIN, size) + size * 0.5;
             assert!(
                 (centre - axis).abs() < 1e-3,
                 "a {size} pt disc centres at {centre}, not {axis}"
@@ -1192,14 +1210,25 @@ mod tests {
     #[test]
     fn the_view_controls_take_their_slots() {
         let dock = crate::systems::dock::reserved_top();
-        let compass = crate::systems::dock::left_slot(0);
-        let light = crate::systems::dock::left_slot(2);
+        let view = egui::vec2(274.0, 600.0);
+        let compass = crate::systems::dock::left_slot(view, 0).y;
+        let light = crate::systems::dock::left_slot(view, 2).y;
         assert!(compass >= dock);
         assert!(light >= compass + 2.0 * (COMPASS_SIZE + theme::OSD_GAP));
-        let col = crate::systems::dock::right_column(true, true);
-        let locate = col.locate.expect("an avatar has a locate slot");
-        assert!(locate >= col.mode + theme::ROUND_BUTTON_SIZE);
-        assert!(col.camera.unwrap() >= locate + LOCATE_SIZE + theme::OSD_GAP);
+        let col = crate::systems::dock::right_column(view, true, true);
+        let locate = col.locate.expect("an avatar has a locate slot").y;
+        assert!(locate >= col.mode.y + theme::ROUND_BUTTON_SIZE);
+        assert!(col.camera.unwrap().y >= locate + LOCATE_SIZE + theme::OSD_GAP);
+        // Lying, the same slots along a row, Locate's beside the mode's with
+        // room for both their words under them.
+        let view = egui::vec2(924.0, 424.0);
+        let col = crate::systems::dock::right_column(view, true, true);
+        let locate = col.locate.unwrap();
+        assert!(col.lying && locate.y == col.mode.y);
+        assert!(locate.x >= col.mode.x + LOCATE_SIZE + theme::OSD_GAP);
+        let compass = crate::systems::dock::left_slot(view, 0);
+        let light = crate::systems::dock::left_slot(view, 2);
+        assert!(light.x >= compass.x + 2.0 * (COMPASS_SIZE + theme::OSD_GAP));
     }
 
     /// The locate button's caption must tell the four situations apart. They look
