@@ -88,11 +88,12 @@ pub fn reserved_top() -> f32 {
 /// scale bar. Lying down, the columns take no height under the bar at all,
 /// and the touch controls stand side by side in the bottom corners
 /// (`map_osd::Spots`), where the thumbs of a phone held in two hands are.
-/// Only when wider than tall: a short, narrow window has no room for the
-/// rows beside the bar either.
+/// Only when there is room beside the bar for both rows (`ROWS_MIN_W`): the
+/// gate's 640×360 px phone smoke at 1.5 is 427 pt wide, and lying there left
+/// the bar a negative width, which egui panics on.
 #[must_use]
 pub fn lying(view: egui::Vec2) -> bool {
-    view.x > view.y
+    view.x >= ROWS_MIN_W
         && view.y
             < column(true, true).bottom
                 + theme::OSD_GROUP_GAP
@@ -107,6 +108,15 @@ const ROW_TOP: f32 = theme::OSD_MARGIN + (SEARCH_H - theme::ROUND_BUTTON_SIZE) /
 
 /// The widest a lying row gets: four discs.
 const ROW_W: f32 = 4.0 * STEP - theme::OSD_GAP;
+
+/// The narrowest the search bar gets beside the rows: your face and the
+/// magnifier, and 90 pt of words between them.
+const SEARCH_MIN_W: f32 = FACE + 44.0 + 90.0;
+
+/// The narrowest screen the rows lie down on: both rows and the narrowest bar
+/// between the margins.
+const ROWS_MIN_W: f32 =
+    2.0 * theme::OSD_MARGIN + 2.0 * (ROW_W + theme::OSD_GROUP_GAP) + SEARCH_MIN_W;
 
 /// The search bar's width over a map `map_w` wide. Lying, it keeps out of
 /// both rows — at their fullest, so the bar does not jump when a session
@@ -165,6 +175,8 @@ impl RightColumn {
     /// (the Midas disc): beside the column, or — lying — at the margin under
     /// the bar, which the row leaves free.
     #[must_use]
+    // The Midas link is native only.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn beside(&self) -> f32 {
         if self.lying {
             theme::OSD_MARGIN
@@ -1084,5 +1096,11 @@ mod tests {
         // The discs sit in the bar's own band.
         assert!(right.top() >= theme::OSD_MARGIN && left.top() >= theme::OSD_MARGIN);
         assert!(left.bottom() <= theme::OSD_MARGIN + SEARCH_H);
+        // Too narrow for both rows beside a bar (the gate's phone smoke,
+        // 640×360 px at 1.5), the columns stand, and the bar keeps its words.
+        for view in [egui::vec2(427.0, 240.0), egui::vec2(597.0, 274.0)] {
+            assert!(!lying(view), "{view:?}");
+            assert!(search_width(view, view.x) >= SEARCH_MIN_W, "{view:?}");
+        }
     }
 }
