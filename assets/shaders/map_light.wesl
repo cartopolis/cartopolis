@@ -25,30 +25,31 @@ const FROM: vec2<f32> = vec2<f32>(20000.0, 60000.0);
 const CURVE: f32 = 1.5;
 const GAIN: f32 = 1.5;
 
-// From orbit the painted sheet read as a poster (asked 2026-11-11, "te vel",
-// wanted more like Google Earth): a cream Sahara, yellow steppe, bright green
-// woods and a pale royal-blue sea. Satellite true colour (Blue Marble, Google
-// Earth's globe) is darker and greyer: the forests nearly black-green, the
-// deserts a warm tan, the open sea a deep navy. So over `ORBIT` metres of
-// camera distance the albedo is greyed by `ORBIT_SAT` and darkened by
-// `ORBIT_DIM` before it goes through the curve. On distance, as the map light
-// itself is, so the two tiers grade alike where they meet.
+// The sheet through that curve is a poster (asked 2026-11-12, "te fel"):
+// wanted semi-realistic, keeping what makes it a strategy map — towns, roads,
+// land use told apart. So the albedo is greyed by `GRADE_SAT` and darkened, from
+// the map light's own band on: by `NEAR_DIM` there, deepening to `ORBIT_DIM`
+// over `ORBIT` metres of camera distance, where satellite true colour (Blue
+// Marble, Google Earth's globe) has the forests nearly black-green and the
+// deserts a warm tan. On distance, so the two tiers grade alike where they meet.
+const GRADE_SAT: f32 = 0.8;
+const NEAR_DIM: f32 = 0.9;
 const ORBIT: vec2<f32> = vec2<f32>(300000.0, 2000000.0);
-const ORBIT_SAT: f32 = 0.85;
 const ORBIT_DIM: f32 = 0.75;
 // The air between orbit and the ground adds blue (`globe::SPACE_ATMOSPHERE_DENSITY`)
-// that a grey cannot take back: the Congo came out teal. So the graded albedo
-// is warmed against it, by taking blue out — except snow and ice, which the
-// warming turned cream: it fades out over the brightest albedos.
+// that a grey cannot take back: the Congo came out teal. So from orbit the
+// albedo is warmed against it, by taking blue out — except snow and ice, which
+// the warming turned cream: it fades out over the brightest albedos.
 const ORBIT_WARM: vec3<f32> = vec3<f32>(1.0, 0.97, 0.8);
 
-// `albedo` as orbit sees it, `distance` metres from the camera.
-fn orbit_grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
+// `albedo` graded for a camera `distance` metres away.
+fn grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
+    let k = smoothstep(FROM.x, FROM.y, distance);
     let o = smoothstep(ORBIT.x, ORBIT.y, distance);
     let y = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let warm = mix(ORBIT_WARM, vec3<f32>(1.0), smoothstep(0.45, 0.75, y));
-    let graded = mix(vec3<f32>(y), albedo, ORBIT_SAT) * ORBIT_DIM * warm;
-    return mix(albedo, graded, o);
+    let warm = mix(vec3<f32>(1.0), mix(ORBIT_WARM, vec3<f32>(1.0), smoothstep(0.45, 0.75, y)), o);
+    let grey = mix(albedo, mix(vec3<f32>(y), albedo, GRADE_SAT), k);
+    return grey * mix(1.0, mix(NEAR_DIM, ORBIT_DIM, o), k) * warm;
 }
 
 // `lit` (as `apply_pbr_lighting` returned it) with the map light mixed in, for a
@@ -72,7 +73,7 @@ fn apply(
         let up = smoothstep(-0.05, 0.15, dot(n, l.direction_to_light.xyz));
         light += l.color.rgb * up;
     }
-    let flat = (pow(orbit_grade(albedo, distance), vec3<f32>(CURVE)) * light * GAIN / 3.14159265 + emissive) * view.exposure;
+    let flat = (pow(grade(albedo, distance), vec3<f32>(CURVE)) * light * GAIN / 3.14159265 + emissive) * view.exposure;
     return vec4<f32>(mix(lit.rgb, flat, k), lit.a);
 }
 

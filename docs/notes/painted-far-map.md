@@ -89,19 +89,19 @@ lit colour outright, so the globe's sun glint is gone from 60 km out. The
 atmosphere's density at the globe threshold went from 0.12 to 0.03
 (`ATMOSPHERE_DENSITY_NEAR`) for the rest of the blue.
 
-**From orbit the sheet is graded towards satellite colour** (asked 2026-11-12:
-too vivid, "more like Google Earth"). The mockup's colours through that curve
-drew a poster from space: a cream Sahara (246,227,178 at 12,000 km on mac-1),
-yellow steppe, a teal Congo (60,103,105). Between 300 and 2,000 km of camera
-distance `map_light::orbit_grade` greys the albedo a little, darkens it and
-takes blue out (not from snow and ice, which it turned cream), and the
-deep-space air went from 0.15 to 0.08 (`SPACE_ATMOSPHERE_DENSITY`), whose
-in-scattered blue no albedo could take back. Same frame after: Sahara
-218,179,124, Congo 38,73,72. `palette::painted::SAND` went from cream to a tan
-for the same reason. Below 300 km nothing changed, so the strategy map keeps
-the mockup's colours. The land is still flat class colours with hard edges;
-real satellite texture would need imagery (`land-cover.md` on
-`satellite.versatiles`).
+**The sheet is graded towards semi-realistic** (asked 2026-11-12: too vivid,
+first "more like Google Earth", then "semi-realistic, keeping the towns and
+roads" — the strategy map stays, only its colours calm down). The mockup's
+colours through that curve drew a poster: from 12,000 km on mac-1 a cream
+Sahara (246,227,178) and a teal Congo (60,103,105). `map_light::grade` greys the
+albedo (`GRADE_SAT`) and darkens it from the map light's own band on, a little
+(`NEAR_DIM`) for the strategy map and more (`ORBIT_DIM`) from 300 to 2,000 km,
+where it also takes blue out (not from snow and ice, which that turned cream).
+The deep-space air went from 0.15 to 0.08 (`SPACE_ATMOSPHERE_DENSITY`), whose
+in-scattered blue no albedo could take back, and `palette::painted::SAND` from
+cream to tan. Same frame after: Sahara ~218,179,124, Congo ~38,73,72. The land
+is still flat class colours with hard edges; real satellite texture would
+need imagery (`land-cover.md` on `satellite.versatiles`).
 
 ## Place names
 
