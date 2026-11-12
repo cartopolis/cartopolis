@@ -1155,7 +1155,12 @@ const ATMOSPHERE_DENSITY_NEAR: f32 = 0.03;
 /// the sea dark blue, and the limb still glows, because the limb's path through
 /// the 2.5× shell is long enough that it needs little density to read. 0.06 was
 /// tried too and flattens the disc into a map with no air over it.
-const SPACE_ATMOSPHERE_DENSITY: f32 = 0.15;
+///
+/// 0.08 since 2026-11-12, with `map_light.wesl`'s orbit grade: asked for a globe
+/// more like Google Earth, at 0.15 the Congo still drew teal (60,103,105) and
+/// the Sahara cream; at 0.08 with the grade, mac-1 at 12,000 km measures the
+/// Congo 38,73,72, the Sahara 218,179,124, and the limb still glows.
+const SPACE_ATMOSPHERE_DENSITY: f32 = 0.08;
 
 /// Below this altitude the atmosphere is held at full Earth density: this same
 /// planet `Atmosphere` is the city's sky dome and its dawn/dusk colour, tuned

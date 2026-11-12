@@ -161,7 +161,10 @@ pub mod painted {
     pub const SCRUB: u32 = 0x7B_85_59;
     pub const FARMLAND: u32 = 0x97_92_62;
     pub const MARSH: u32 = 0x5F_7C_6E;
-    pub const SAND: u32 = 0xCD_C2_9C;
+    /// Desert, dunes and beaches: a warm tan, as the Sahara is in satellite true
+    /// colour. The mockup's cream (`#CDC29C`) read as blank paper from orbit
+    /// (asked 2026-11-11).
+    pub const SAND: u32 = 0xC6_AC_7E;
     pub const ICE: u32 = 0xEE_F1_F4;
     /// Housing: a warm grey.
     pub const RESIDENTIAL: u32 = 0x95_8D_82;
