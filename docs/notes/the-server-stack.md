@@ -1,7 +1,7 @@
 ---
 topic: the-server-stack
-triggers: [crates/server, atlas_proxy.rs, static_files.rs, pipeline.tsx, crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
-updated: 2026-11-10
+triggers: [crates/server, deploy/server-package, server-package.sh, atlas_proxy.rs, static_files.rs, pipeline.tsx, crates/atlas/src/geocoder.rs, crates/core/src/services.rs, crates/cartopolis/src/services.rs, crates/atlas/src/osm, layers.rs, route_ahead.rs, street_detail.rs, "/api/services", ServiceDirectory, geo_nav.rs, docs/guides/server.md]
+updated: 2026-11-12
 ---
 
 # What a Cartopolis server is made of, and where its clients find it
@@ -146,6 +146,16 @@ the file leaves at cartopolis.org's address at its own `public_base_url` —
 tiles at the public `tiles.versatiles.org`, same schema as the mirror. Still the
 operator's: TLS in front. The hosted server still runs the two as separate
 systemd units behind Caddy; it does not use this binary yet.
+
+**The download** (`deploy/build/server-package.sh`, a release asset since
+2026-11-12) is the binary, the built web UI in `web/` beside it — found there
+when the file names no `web_root` — an example `cartopolis.toml`, a systemd unit
+and `install.sh`, which puts them in `/opt/cartopolis-server`, asks for the first
+admin (`cartopolis-server create-admin`, the only way to one without the
+separate simulator binary) and adds the address to Caddy when Caddy is
+installed. The binary is `server.sh`'s, linked against glibc 2.38. Not in it:
+calls, which need a public UDP address (`calls_listen`, `calls_public_addr`) the
+installer cannot know.
 
 Admin › Data shows the extract (source, size, when downloaded) and runs every
 OSM layer over the country in one job (`POST /api/pipeline/osm`): a route of its

@@ -1,5 +1,18 @@
 # Self-hosted geo services (Overpass + Nominatim + 3DBAG)
 
+> **Installing a server of your own** is the download in the
+> [releases](https://code.garage44.eu/jeroen/cartopolis/releases):
+> `cartopolis-server-linux-x86_64.tar.gz`, unpacked and run as
+> `sudo ./install.sh maps.example.org`. It installs to `/opt/cartopolis-server`
+> under systemd, asks for the first admin (later:
+> `sudo -u cartopolis ./cartopolis-server create-admin` in that directory), and
+> adds the address to Caddy when Caddy is installed. The settings are
+> `/opt/cartopolis-server/cartopolis.toml`; the keys are those of the simulator
+> (`crates/simulator/src/config.rs`) with atlas's under `[atlas]`
+> (`crates/atlas/src/config.rs`). The map data is made from the website's
+> Admin ▸ Data, or with the `atlas run` below. Build the download from source
+> with `deploy/build/server-package.sh`.
+
 > **Overpass and Nominatim are retired (2026-11-11).** Atlas answers both from a
 > Geofabrik OpenStreetMap extract it downloads itself: the per-cell layers
 > `tall`, `street`, `transit`, `shops`, `speeds` and `osmbuildings`, and place

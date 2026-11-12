@@ -17,33 +17,18 @@ The app starts with the map. To meet people, choose **☰ ▸ Sign in…**: it s
 
 ## Host your own server
 
-A server is one program, `cartopolis-server`: the shared world, accounts and chat, plus the map data and place search for its area. It needs a Linux machine with a domain name pointed at it. There is no ready-made download yet, so build it once:
+A server is one program, `cartopolis-server`: the shared world, accounts and chat, the website, and the map data and place search for its area. You need a Linux machine with systemd and a domain name pointed at it. Install [Caddy](https://caddyserver.com/docs/install) first for HTTPS; the installer then sets it up too.
+
+Download `cartopolis-server-linux-x86_64.tar.gz` from [releases](https://code.garage44.eu/jeroen/cartopolis/releases), then:
 
 ```bash
-git lfs install            # before cloning; see the development guide
-git clone https://code.garage44.eu/jeroen/cartopolis && cd cartopolis
-cargo build --release -p cartopolis_server   # → target/release/cartopolis-server
+tar -xzf cartopolis-server-linux-x86_64.tar.gz && cd cartopolis-server-linux-x86_64
+sudo ./install.sh maps.example.org
 ```
 
-Put one setting in `cartopolis.toml` beside it, and start it:
+It asks for an admin account, starts the server and adds the address to Caddy. Open `https://maps.example.org`, or sign in from the app with `maps.example.org` as the server. The map data for your area is made from the website: sign in as the admin and open **Admin ▸ Data**. Running the same command with a newer download upgrades the server and keeps its settings and data.
 
-```toml
-public_base_url = "https://maps.example.org"
-```
-
-```bash
-./cartopolis-server        # world in data/world.db, map data in data/atlas, HTTP on 127.0.0.1:4748
-```
-
-Put HTTPS in front with [Caddy](https://caddyserver.com/), which fetches the certificate itself:
-
-```
-maps.example.org {
-	reverse_proxy 127.0.0.1:4748
-}
-```
-
-People now sign in with `maps.example.org` as the server. Its map data for your area still has to be made; the [server guide](docs/guides/server.md) has those runs and how the hosted server is set up.
+To make the download from source: `deploy/build/server-package.sh`. The [server guide](docs/guides/server.md) has the settings and how the hosted server is set up.
 
 ## Build it yourself
 
