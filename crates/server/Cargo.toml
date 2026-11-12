@@ -23,6 +23,22 @@ rpassword = "7"
 cartopolis_core = { path = "../core" }
 cartopolis_simulator = { path = "../simulator" }
 cartopolis_atlas = { path = "../atlas" }
+# Its own updates (`src/update.rs`): the signature (ring, already in the tree
+# through rustls), the download (ureq), the package (flate2 + tar), the
+# database snapshot (rusqlite) and the `[update]` table (figment).
+base64 = "0.22"
+figment = { workspace = true, features = ["toml"] }
+flate2 = "1"
+ring = "0.17"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile = "3.0"
 
 [lints]
 workspace = true

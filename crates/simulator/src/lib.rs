@@ -34,6 +34,7 @@ pub mod reach;
 pub mod registration;
 pub mod roles;
 pub mod scripting;
+pub mod server_update;
 pub mod signin;
 pub mod state;
 pub mod static_files;
@@ -99,6 +100,15 @@ impl SimHandle {
 /// listener. Returns once the listener is bound — so `SimHandle::local_addr` is
 /// valid and the server is ready to accept connections.
 pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
+    serve_with(config, None).await
+}
+
+/// [`serve`], with the program's own updates on the admin API
+/// (`server_update`): what `cartopolis-server` runs.
+pub async fn serve_with(
+    config: Arc<SimConfig>,
+    updates: server_update::Updates,
+) -> anyhow::Result<SimHandle> {
     let conn = db::open_and_migrate(&config.database_path)?;
     let prims = db::load_world(&conn)?;
     let scripts = db::load_prim_scripts(&conn)?;
@@ -282,6 +292,7 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
                     .clone()
                     .filter(|_| config.fediverse_allow_private),
             )),
+            updates: updates.clone(),
         };
         // Public posts reach other servers through a queue, and the servers
         // nobody here talks to come from a shared list; both only once this

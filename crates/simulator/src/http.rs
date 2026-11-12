@@ -82,6 +82,9 @@ pub struct HttpState {
     /// their answers, the app's pairing codes and the key provider secrets are
     /// sealed with (`crate::signin`).
     pub signin: Arc<crate::signin::SignIn>,
+    /// The program's own updates, when it can replace itself
+    /// (`crate::server_update`); `None` on the hosted server.
+    pub updates: crate::server_update::Updates,
 }
 
 /// The two things a registration is counted against.
@@ -126,6 +129,12 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/admin/login", post(login))
         .route("/api/admin/logout", post(logout))
         .route("/api/admin/me", get(me))
+        .route("/api/admin/update", get(crate::server_update::status))
+        .route("/api/admin/update/check", post(crate::server_update::check))
+        .route(
+            "/api/admin/update/install",
+            post(crate::server_update::install),
+        )
         .route(
             "/api/admin/accounts",
             get(list_accounts).post(create_account),

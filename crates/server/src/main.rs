@@ -17,6 +17,8 @@
 //! cartopolis.org's address at its own `public_base_url` instead — tiles at the
 //! public VersaTiles server. What is left to the operator is TLS in front.
 
+mod update;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -50,6 +52,14 @@ enum Cmd {
         /// The account's name; asked for when left out.
         username: Option<String>,
     },
+    /// Print this program's version code and name.
+    Version,
+    /// Open a database and bring it up to this version's schema, then exit:
+    /// how an update tests itself on a copy before it is switched to.
+    CheckDatabase {
+        /// The database file (a copy: it is changed).
+        path: PathBuf,
+    },
 }
 
 /// Environment variable that answers `create-admin`'s password question, for a
@@ -73,7 +83,7 @@ fn main() -> anyhow::Result<()> {
     // `create-admin` is a question asked at a terminal: only what went wrong is
     // said there, not every migration the database runs on its way.
     let level = match cli.command {
-        Some(Cmd::CreateAdmin { .. }) => "warn",
+        Some(Cmd::CreateAdmin { .. } | Cmd::Version | Cmd::CheckDatabase { .. }) => "warn",
         _ => "info",
     };
     tracing_subscriber::fmt()
@@ -91,6 +101,15 @@ fn main() -> anyhow::Result<()> {
             runtime.block_on(cartopolis_atlas::run(atlas_config(&cli.config)?))
         }
         Some(Cmd::CreateAdmin { username }) => create_admin(&cli.config, username),
+        Some(Cmd::Version) => {
+            println!("{} {}", update::build_code(), update::build_name());
+            Ok(())
+        }
+        Some(Cmd::CheckDatabase { path }) => {
+            cartopolis_simulator::db::open_and_migrate(&path.display().to_string())?;
+            cartopolis_simulator::stats::Stats::open_beside(&path.display().to_string())?;
+            Ok(())
+        }
         None => runtime.block_on(run_both(&cli.config)),
     }
 }
@@ -234,16 +253,36 @@ async fn run_both(file: &Path) -> anyhow::Result<()> {
         db = %sim.database_path,
         "cartopolis-server"
     );
-    let file = file.to_path_buf();
+    // A new version on probation counts this start, or gives up and puts the
+    // previous one back before the world is opened (`update::on_start`).
+    let paths = update::Paths::new(&sim.database_path)?;
+    let on_probation = update::on_start(&paths)?;
+    let restart = Arc::new(tokio::sync::Notify::new());
+    let updater = update::Updater::start(
+        update::UpdateConfig::load(file)?,
+        paths.clone(),
+        restart.clone(),
+    );
+    let config = file.to_path_buf();
     std::thread::Builder::new()
         .name("atlas-supervisor".into())
-        .spawn(move || supervise_atlas(&file))?;
-    let mut handle = cartopolis_simulator::serve(Arc::new(sim)).await?;
+        .spawn(move || supervise_atlas(&config))?;
+    let mut handle =
+        cartopolis_simulator::serve_with(Arc::new(sim), Some(Arc::new(update::Handle(updater))))
+            .await?;
     tracing::info!(addr = %handle.local_addr, "simulator ready");
+    if on_probation {
+        update::confirm_later(paths);
+    }
     tokio::select! {
         r = tokio::signal::ctrl_c() => {
             r?;
             tracing::info!("shutting down");
+            Ok(())
+        }
+        () = restart.notified() => {
+            // systemd starts the program again, which is now the new version.
+            tracing::info!("the new version is in place; ending for it to start");
             Ok(())
         }
         e = handle.task_ended() => {
