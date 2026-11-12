@@ -1,0 +1,6 @@
+# Settings for cartopolis-server. install.sh fills in the address; the rest has
+# working defaults (docs/guides/server.md lists every key).
+
+# This server's https address, as people type it to sign in. The app is sent
+# here for place search, terrain and map data.
+public_base_url = "https://maps.example.org"

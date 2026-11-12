@@ -1,0 +1,28 @@
+# cartopolis-server under systemd, as install.sh puts it in place. It listens on
+# loopback only (127.0.0.1:4748); HTTPS is the web server's in front of it.
+[Unit]
+Description=Cartopolis server
+Documentation=https://code.garage44.eu/jeroen/cartopolis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cartopolis
+Group=cartopolis
+WorkingDirectory=/opt/cartopolis-server
+ExecStart=/opt/cartopolis-server/cartopolis-server
+Restart=always
+RestartSec=3s
+Environment=RUST_LOG=info
+
+# The world, the accounts and the map data are under data/; nothing else on the
+# machine is written.
+ReadWritePaths=/opt/cartopolis-server/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

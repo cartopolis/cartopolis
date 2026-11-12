@@ -362,6 +362,11 @@ jobs:
           ( cd dist && sha256sum "$PKG.zip" > "$PKG.zip.sha256" )
           ls -la dist
 
+      # The server download: cartopolis-server, the web UI it serves and its
+      # installer, packed by the same script a node runs, into the same dist/.
+      - name: Package the server (binary + web UI + installer)
+        run: deploy/build/server-package.sh
+
       - name: Publish to Forgejo release
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -405,6 +410,8 @@ jobs:
           - **Android:** https://cartopolis.org/apk/ (not an asset here — it is
             signed and served separately, with install instructions on that page)
           - **Browser:** https://cartopolis.org
+          - \`cartopolis-server-linux-x86_64.tar.gz\` — your own server: unpack and
+            run \`sudo ./install.sh your.domain\` (see its README.txt)
 
           Each archive has a \`.sha256\` beside it.
 
