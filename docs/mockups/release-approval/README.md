@@ -6,9 +6,26 @@ updated: 2026-11-12
 
 # Releases you approve with your fingerprint
 
+![v2](v2.png)
+
+**v2 (2026-11-12), proposed, nothing built.** The independent review is
+Claude, asked **by the app on the owner's phone** through the Claude API (frame
+4), so the only parties trusted for it are Anthropic and the phone: no server
+of ours, the vps or the mini is between the question and the answer, and no
+session that wrote the code. The app sends the release's code only after
+checking it against the commits' git fingerprints (Forgejo is on the vps and
+could serve something else), uses the review instructions built into the app
+itself (approved in an earlier release, so nothing on the way can weaken them),
+and the owner's own API key, kept in the phone's Keystore. Claude reports on
+authenticity and hack attempts in plain language, each finding with its lines;
+the fingerprint signature also covers that report, so the record says what was
+approved after what review. Rejected: a reviewer on the mini (one more machine
+to trust, and its report needs a key of its own to reach the phone unchanged),
+and a cloud routine (no key of the owner's to sign its report with).
+
 ![v1](v1.png)
 
-**v1 (2026-11-12), proposed, nothing built.** Asked for: every release of the
+**v1 (2026-11-12), proposed, superseded by v2.** Asked for: every release of the
 app (APK) and of the self-hosted server is approved by the owner personally,
 with a fingerprint on their phone; a server's admin is then told and installs
 it with one click; it must be simple, transparent and above all safe — and the
@@ -51,7 +68,7 @@ removes the button.
 | The build machine or the VPS swaps the files after review | **Two machines build the same files** (a Mac node and vps-1, reproducible builds) and the phone downloads and hashes them itself; the signature covers those hashes | blocks |
 | A dependency is poisoned | Every new or changed crate and npm package is listed with what it can do; known vulnerabilities (RustSec) | flags |
 | A session writes hidden behaviour (by mistake, or steered by text it read) | The diff is scanned for what such code needs — a new network address, a process started, `unsafe`, a `build.rs`, a new Android permission, a change to sign-in, encryption or this update code — and those hunks are shown in full | flags |
-| The same, subtler | A reviewer that wrote none of it reads every change, asked only to find hidden behaviour; it reports, it cannot approve | report |
+| The same, subtler | Claude, asked from the owner's phone through the Claude API, reads every change for authenticity and hack attempts; it reports, it cannot approve | report |
 | It behaves differently than it reads | The release ran on cartopolis.org first (it deploys after every landing): crashes, restarts, and **which addresses it talked to**, against the list it is known to use | flags |
 | Lost phone | A recovery key, made once and kept offline, that can only name a new phone key, never sign a release | — |
 
