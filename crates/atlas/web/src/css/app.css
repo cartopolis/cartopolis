@@ -5,6 +5,7 @@
 
 /* Each page's own rules, in a stylesheet beside the page or element it styles. */
 @import '../components/elements/account/account.css';
+@import '../components/elements/admin/update.css';
 @import '../components/elements/buildings/buildings.css';
 @import '../components/elements/providers/providers.css';
 @import '../components/pages/accounts/accounts.css';

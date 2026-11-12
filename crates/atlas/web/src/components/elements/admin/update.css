@@ -1,0 +1,32 @@
+/* The server's own update, above every Admin page (update.tsx). */
+.server-update {
+    margin-bottom: var(--m-space-4);
+
+    & .m-card-body,
+    & .m-card > div:last-child {
+        display: flex;
+        flex-direction: column;
+        gap: var(--m-space-3);
+    }
+}
+
+.server-update__seal {
+    color: var(--m-success, var(--m-text-dim));
+    margin: 0;
+}
+
+.server-update__changes,
+.server-update__steps {
+    margin: 0;
+    padding-left: 1.2em;
+}
+
+.server-update__steps .is-waiting {
+    color: var(--m-text-dim);
+}
+
+.server-update__hint {
+    color: var(--m-text-dim);
+    font-size: 0.85em;
+    margin: 0;
+}

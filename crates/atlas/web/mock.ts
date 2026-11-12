@@ -71,6 +71,51 @@ function json(body: unknown, status = 200): Response {
     return Response.json(body, {status})
 }
 
+/** When the mock's server update was started, or null while it is still on offer. */
+let updateStartedAt: number | null = null
+
+/** `/api/admin/update` as `crates/server/src/update.rs` answers it, moving through an install. */
+function mockServerUpdate() {
+    const available = {
+        changes: ['Install your own server with one line', 'Sign in with other accounts', 'Overcast is duller than a clear noon'],
+        code: 22140,
+        name: '22140 (3514e6a)',
+        published: '2026-11-12T14:02:00Z',
+    }
+    const base = {
+        available,
+        installed: {code: 22101, name: '22101 (83e84f7)'},
+        last_check: Math.floor(Date.now() / 1000) - 600,
+        last_result: null as unknown,
+        message: null,
+        previous: null as unknown,
+        signed_by: '8c41d2e07a19',
+        source: 'https://cartopolis.org/server',
+        steps: [] as string[],
+        trusted_keys: ['8c41d2e07a19'],
+    }
+    if (updateStartedAt === null) return {...base, phase: 'ready'}
+    const steps = [
+        'Package checked against the release signed with key 8c41d2e07a19',
+        'Unpacked',
+        'The new program runs and is version 22140',
+        'The new program opened and updated a copy of the database',
+        'Version 22101 (83e84f7) and its database kept in /opt/cartopolis-server/previous',
+        'Switched over; restarting',
+    ]
+    const shown = Math.min(steps.length, Math.floor((Date.now() - updateStartedAt) / 1000) + 1)
+    if (shown < steps.length) return {...base, phase: 'installing', steps: steps.slice(0, shown)}
+    if (Date.now() - updateStartedAt < 12000) return {...base, phase: 'restarting', steps}
+    return {
+        ...base,
+        available: null,
+        installed: {code: 22140, name: available.name},
+        last_result: {at: Math.floor(Date.now() / 1000), by: 'viberfox', code: 22140, from: 22101, result: 'installed'},
+        phase: 'idle',
+        previous: {code: 22101, name: '22101 (83e84f7)'},
+    }
+}
+
 /** The simulator's refusal shape: one sentence, for a person (`src/lib/api.ts`). */
 function refuse(status: number, error: string): Response {
     return json({error}, status)
@@ -1318,6 +1363,17 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
             principal: accountNamed(who)?.id ?? '',
             username: who,
         })
+    }
+    // A self-hosted server's own update (`server_update.rs`): a signed release
+    // ready, and an install that walks its steps over a few seconds.
+    if (p === '/api/admin/update' && method === 'GET') {
+        return json(mockServerUpdate())
+    }
+    if (p === '/api/admin/update/install' && method === 'POST') {
+        const b = await body<{password?: string}>(req)
+        if (!b.password) return refuse(403, 'that password is not right')
+        updateStartedAt = Date.now()
+        return json(mockServerUpdate())
     }
     if (p === '/api/admin/accounts' && method === 'GET') {
         return json({accounts, roles: Object.fromEntries(accountRoles)})

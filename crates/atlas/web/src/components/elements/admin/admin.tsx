@@ -18,6 +18,8 @@ import {closeContext, contextContent, layout} from '@/lib/layout'
 import {requestedPand} from '@/lib/overrides'
 import {AREAS, type AdminAreaId, areaOf, may, visibleAreas, visibleTabs} from '@/lib/roles'
 
+import {ServerUpdateBanner} from './update'
+
 /** The rail's glyphs: Material Symbols paths, as the chat's call screen draws its own. */
 const GLYPHS: Record<AdminAreaId, string> = {
     content: 'M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z',
@@ -169,7 +171,10 @@ export class AdminArea extends MithrilComponent {
                     ))}
                     header={[<ShellMenuButton model={layout.navOpen} />, <h1>{current.label}</h1>]}
                 >
-                    <div class="admin-page">{page(current.tab)}</div>
+                    <div class="admin-page">
+                        <ServerUpdateBanner />
+                        {page(current.tab)}
+                    </div>
                 </Shell>
             </div>
         )
