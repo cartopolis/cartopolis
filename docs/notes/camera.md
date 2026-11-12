@@ -62,6 +62,13 @@ made the Mixed picture (plus an aerial panel) and nothing else
   of the arms, the hand and the held phone over the picture (s609's street
   pairs, 2026-11-05). Only the selfie keeps it in view
   (`free_camera::update_first_person_avatar`, on `phone_hold() == Some(false)`).
+- **The Mixed world camera takes its height from the avatar's eyes**, with
+  either camera, when the avatar stands within 25 m of the fix. Until
+  2026-11-12 the back camera stood at eye height above the terrain under the
+  fix, which on a roof terrace (the Forum's, 45 m up) is the street, so it
+  looked out from inside the building; only the selfie, placed from the
+  avatar's eyes, was at the right level. The avatar is on the floor the
+  receiver's height chose (`locate`).
 - **Mixed is offered only with the locate button lit, in Follow** (the user,
   2026-11-11): that is what puts the avatar, and so the world camera, on the
   phone's fix. Elsewhere the world half is drawn from somewhere the photograph

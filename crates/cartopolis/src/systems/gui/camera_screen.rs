@@ -438,9 +438,10 @@ mod native {
     /// moved: the map's streaming follows a teleport, not a nudge.
     const JUMP_M: f64 = 200.0;
 
-    /// How near the fix the avatar must stand for a Mixed selfie to look back
-    /// at it: a GNSS fix's error and a little more.
-    const SELFIE_NEAR_M: f32 = 25.0;
+    /// How near the fix the avatar must stand for the Mixed world camera to
+    /// take its eye height, and a selfie to look back at it: a GNSS fix's
+    /// error and a little more.
+    const AVATAR_NEAR_M: f32 = 25.0;
 
     /// Frames to wait for the world capture before giving up on it.
     const CAPTURE_GIVE_UP_FRAMES: u16 = 300;
@@ -1240,16 +1241,22 @@ mod native {
                     let (wx, wz) = (wx as f32, wz as f32);
                     let here = crate::grid::anchored_position(cell, tf.translation);
                     let mut want = Vec3::new(wx, terrain.at(wx, wz) + pose.height_m as f32, wz);
-                    // A selfie's phone is in front of your face, not at your
-                    // eyes: at arm's length along its screen, looking back at
-                    // your avatar, which holds the phone there
-                    // (`held_phone`, `docs/mockups/hand-tracking/` v2). Only
-                    // with the avatar near the fix, so it is the one in view.
-                    if let (true, Some(attitude), Ok(body)) =
-                        (session.front, attitude, avatar.single())
-                    {
-                        let eyes = body.translation + Vec3::Y * held_phone.eyes_height;
-                        if eyes.xz().distance(want.xz()) < SELFIE_NEAR_M {
+                    // With the avatar near the fix, its eyes give the height:
+                    // it stands on the floor or roof the receiver's height put
+                    // it on (`locate`), where the ground underfoot is the
+                    // street below a roof terrace.
+                    let eyes = avatar
+                        .single()
+                        .ok()
+                        .map(|body| body.translation + Vec3::Y * held_phone.eyes_height)
+                        .filter(|eyes| eyes.xz().distance(want.xz()) < AVATAR_NEAR_M);
+                    if let Some(eyes) = eyes {
+                        want.y = eyes.y;
+                        // A selfie's phone is in front of your face, not at
+                        // your eyes: at arm's length along its screen, looking
+                        // back at your avatar, which holds the phone there
+                        // (`held_phone`, `docs/mockups/hand-tracking/` v2).
+                        if let (true, Some(attitude)) = (session.front, attitude) {
                             want = eyes
                                 - crate::systems::held_phone::screen_out(&attitude)
                                     * crate::systems::held_phone::SELFIE_REACH_M;
