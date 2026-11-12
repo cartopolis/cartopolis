@@ -16,6 +16,7 @@ pub mod geocoder;
 pub mod http;
 pub mod jobs;
 pub mod landmark;
+pub mod ocean_depth;
 pub mod official_areas;
 pub mod osm;
 pub mod overrides;

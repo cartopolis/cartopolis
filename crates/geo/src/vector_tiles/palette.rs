@@ -173,6 +173,18 @@ pub mod painted {
     /// Shops and offices: mauve-grey.
     pub const COMMERCIAL: u32 = 0x9A_8F_8E;
     pub const WATER: u32 = 0x36_60_7E;
+    /// The sea by depth, metres (`ocean_depth::tint_sea`): from [`WATER`] at the
+    /// coast, lighter and greener over the shelf as shallow water is from
+    /// orbit, then darkening to navy over the abyss. Asked 2026-11-12: one
+    /// flat blue read as a Christmas bauble.
+    pub const SEA_RAMP: [(f32, u32); 6] = [
+        (0.0, WATER),
+        (60.0, 0x3E_78_92),
+        (200.0, 0x33_66_88),
+        (1000.0, 0x26_4E_72),
+        (3500.0, 0x1C_3D_62),
+        (6000.0, 0x15_30_54),
+    ];
     /// The shadow a building casts, and the soft edge under a built-up area.
     pub const SHADOW: u32 = 0x1C_22_2C;
     pub const MOTORWAY: u32 = 0xE9_C9_7E;

@@ -1,9 +1,9 @@
 ---
 topic: globe-ocean
-triggers: [globe_ocean.rs, globe_ocean.wesl, systems::globe_ocean, tile_loader.rs,
+triggers: [globe_ocean.rs, ocean_depth.rs, ocean_depth, SEA_RAMP, tint_sea, globe_ocean.wesl, systems::globe_ocean, tile_loader.rs,
   ocean_mask, GlobeOcean, GlobeSurfaceMaterial, GlobeOceanGloss, has_mask,
   CARTO_NO_OCEAN, "ocean from orbit", "sun glint", "the sea from space", sea_sheen, map_light.wesl, sunglint]
-updated: 2026-11-03
+updated: 2026-11-12
 ---
 
 # The globe's ocean is a BRDF split, not water
@@ -87,3 +87,36 @@ lit as their body colour (`water::far_water`, near-black) while the globe tiles
 past the clipmap's edge used the painted sea, so from 25 km a straight line ran
 across the North Sea at ~80 km out. `ground_detail.wesl` now hands the map light
 the tile's own paint for water; below 20 km nothing changes.
+
+## The sea has depth, drift and sky (2026-11-12)
+
+One flat blue read as a Christmas bauble (asked: "de oceaan mag dynamischer",
+"een mooie shader voor de zee"). Three layers now, each from something real:
+
+- **Depth, in the tile's paint.** `cartopolis_geo::ocean_depth` embeds a 2048 px
+  Web-Mercator image of the sea floor (`assets/globe/ocean_depth.png`, ~1 MB,
+  `atlas ocean-depth` from the AWS Terrain Tiles, whose sea is ETOPO1 and
+  GEBCO). `tile_loader::tint_sea` paints a painted tile's water along
+  `palette::painted::SEA_RAMP` through the tile's own water mask, on the flat
+  tier, its twins and the globe alike, so they meet without a step. It starts
+  at `WATER`, so a coast closer than the image resolves (~20 km a pixel) and
+  every lake keep the old paint; polders below sea level read as a metre or
+  two of depth, which only tints water the mask already calls water. The
+  rendered-tile cache keys carry `RENDERED_FORMAT` 4 for it, since the tint is
+  on the client's side of the render revision.
+- **The sheen is a smooth, cool silver oval now.** Painted 85 % of the way to
+  MODIS's warm grey (136,130,113) it replaced the blue with a beige, grainy
+  patch that read as another material; the crop's warmth was the haze. It goes
+  55 % towards a blue-silver. Its streaks (one octave stretched 3:1 along a
+  wind) read as big stripes laid over the sea, and a round three-octave mottle
+  at ±30 % read as clouds; at ±10 % strength and ±6 % width (`MOTTLE_*`) the
+  glint is a soft oval with the sea's variation in it (all asked 2026-11-12).
+- **Drift.** The mottle moves downwind, its finest patches (~50 km) in ~90 s, and
+  a coarse field (`ROWS_SCALE`, ~400 km) moves the sea's tone ±9 %.
+- **Sky at the limb.** Towards grazing the sea goes towards a lit sky albedo
+  (Fresnel's `(1 − n·v)⁴`, 55 % at most), so the oceans lighten at the globe's
+  edge instead of staying one dark ball.
+
+Not done: real swell or wave normals from orbit (sub-pixel there, see above),
+and anything from the sea's real colour (chlorophyll, sediment), which would
+need imagery.

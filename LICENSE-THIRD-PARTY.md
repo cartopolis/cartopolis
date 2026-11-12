@@ -225,6 +225,13 @@ license: CC BY-SA 4.0
 url: https://github.com/astronexus/HYG-Database
 notice: Star positions and magnitudes from the HYG Database v4.1 by David Nash, CC BY-SA 4.0 — a compilation of the Hipparcos, Yale Bright Star and Gliese catalogs.
 
+## ETOPO1 and GEBCO, via the open terrain tiles
+
+role: The sea floor's depth that colours the painted sea (assets/globe/ocean_depth.png, written by `atlas ocean-depth`)
+license: ETOPO1 public domain (NOAA); GEBCO free to use with attribution
+url: https://registry.opendata.aws/terrain-tiles/
+notice: Sea-floor depth from ETOPO1 (NOAA NCEI) and the GEBCO grid, through the Terrain Tiles open dataset on AWS (Mapzen).
+
 ## Freesound and Kenney — city sounds
 
 role: The footsteps and the city's background loops (assets/sounds), cut from field recordings

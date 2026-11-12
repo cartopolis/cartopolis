@@ -58,6 +58,14 @@ enum Command {
         #[arg(long, default_value = "site/areas")]
         out: PathBuf,
     },
+    /// The sea floor's depth over the world, as the grey Web-Mercator image
+    /// the client embeds (`ocean_depth`); written once and committed.
+    OceanDepth {
+        #[arg(long, default_value = "assets/globe/ocean_depth.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = cartopolis_atlas::ocean_depth::DEFAULT_ZOOM)]
+        zoom: u32,
+    },
     /// Rebuild a landmark from measurements and photographs
     /// (`landmark`, `docs/notes/landmark-kit.md`).
     Landmark {
@@ -353,6 +361,13 @@ fn main() -> anyhow::Result<()> {
             } => cartopolis_atlas::landmark::photo::overlay_cmd(kit, pose, photo, out),
         };
         println!("{}", said.map_err(anyhow::Error::msg)?);
+        return Ok(());
+    }
+    if let Some(Command::OceanDepth { out, zoom }) = &cli.command {
+        eprintln!(
+            "{}",
+            cartopolis_atlas::ocean_depth::write(*zoom, out).map_err(anyhow::Error::msg)?
+        );
         return Ok(());
     }
     if let Some(Command::Areas { set, from, out }) = &cli.command {

@@ -221,7 +221,11 @@ impl TilePayload {
                 .map_err(|e| e.to_string())?;
                 let mut img = image::RgbaImage::from_raw(size, size, rgba)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
-                pack_land_alpha(&mut img, vector_tiles::ocean_mask_sized(&tile, sub, size));
+                let mask = vector_tiles::ocean_mask_sized(&tile, sub, size);
+                if far.painted || vector_tiles::painted_style(source_ground_m(source), sub.factor) {
+                    tint_sea(&mut img, mask.as_deref().ok(), source, sub);
+                }
+                pack_land_alpha(&mut img, mask);
                 Ok(img)
             }
         }
@@ -252,8 +256,11 @@ impl TilePayload {
                 &vector_tiles::NO_SURVEY,
                 &twin.far,
             )?;
-            image::RgbaImage::from_raw(size, size, rgba)
-                .ok_or_else(|| "rendered twin had the wrong buffer size".to_string())
+            let mut img = image::RgbaImage::from_raw(size, size, rgba)
+                .ok_or_else(|| "rendered twin had the wrong buffer size".to_string())?;
+            let mask = vector_tiles::ocean_mask_sized(&tile, *sub, size);
+            tint_sea(&mut img, mask.as_deref().ok(), *source, *sub);
+            Ok(img)
         })())
     }
 }
@@ -270,6 +277,23 @@ pub const PAINTED_TWIN_ZOOM: u32 = 13;
 pub struct PaintedTwin {
     pub underlay: Vec<vector_tiles::OverlayFill>,
     pub far: vector_tiles::FarDetail,
+}
+
+/// Colour a painted tile's sea by its depth (`cartopolis_geo::ocean_depth`),
+/// through `water` (255 = water). The flat tier, its painted twins and the globe
+/// all call it with the same tile, so they agree where they meet.
+fn tint_sea(
+    img: &mut image::RgbaImage,
+    water: Option<&[u8]>,
+    source: TileKey,
+    sub: vector_tiles::SubTile,
+) {
+    let (Some(water), Ok(x), Ok(y)) = (water, u32::try_from(source.x), u32::try_from(source.y))
+    else {
+        return;
+    };
+    let size = img.width();
+    cartopolis_geo::ocean_depth::tint_sea(img.as_mut(), size, water, (source.z, x, y), sub);
 }
 
 /// Pack a flat tile's water mask into its alpha as **land** coverage: 255 is
@@ -302,7 +326,9 @@ fn pack_land_alpha(img: &mut image::RgbaImage, mask: Result<Vec<u8>, String>) {
 ///
 /// 3: the surveyed ground is painted in (`surveyed::raster_survey`), built on this
 /// side of the seam.
-const RENDERED_FORMAT: u32 = 3;
+///
+/// 4: the painted sea is coloured by its depth (`tint_sea`), also on this side.
+const RENDERED_FORMAT: u32 = 4;
 
 /// Where a finished basemap tile is kept on disk, or `None` when it is not kept.
 ///
@@ -389,7 +415,7 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
     bytes.hash(&mut h);
     hash_fills(&mut h, underlay);
     Some(format!(
-        "rendered-globe/{:016x}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered-globe/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
         cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
@@ -420,7 +446,7 @@ pub fn twin_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option
     hash_fills(&mut h, &twin.underlay);
     hash_far(&mut h, &twin.far);
     Some(format!(
-        "rendered-painted/{:016x}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered-painted/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
         cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
@@ -996,6 +1022,7 @@ impl GlobeTilePayload {
                 crate::platform::heap::labels::set("globe: ocean mask");
                 match vector_tiles::ocean_mask_sized(&tile, sub, size) {
                     Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
+                        tint_sea(&mut rgba, Some(&mask), source, sub);
                         for (px, m) in rgba.pixels_mut().zip(mask) {
                             px.0[3] = m;
                         }

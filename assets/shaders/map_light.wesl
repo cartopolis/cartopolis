@@ -9,7 +9,7 @@
 // wherever it is above the horizon. The night side stays night, a red sunset stays
 // red, and only the angle is taken away.
 
-import bevy_pbr::render::mesh_view_bindings::{lights, view};
+import bevy_pbr::render::mesh_view_bindings::{globals, lights, view};
 
 // Camera distances, metres, over which the map light takes over: the band the
 // design starts the strategy map in (v2: the painted ground comes in from 15 km
@@ -83,25 +83,51 @@ fn apply(
 // smooth falloff and read as plastic or metal (asked 2026-11-03). In MODIS's
 // true colour (Terra, 2026-07-15, the western Mediterranean) the glint is a
 // broad warm-grey sheen about as bright as the land beside it, with no white in
-// it, broken into streaks where the wind is calmer or rougher. So the sea is
+// it, mottled where the wind is calmer or rougher. So the sea is
 // painted towards `SHEEN` through the same map light as the land, over the
 // shape of a GGX lobe, and the lobe's width wanders over the sea.
 
-// The sheen's colour, as a painted-map albedo: that crop's mean is sRGB
-// 136,130,113, and the map light turns an albedo into its own sheet colour.
-const SHEEN: vec3<f32> = vec3<f32>(0.243, 0.223, 0.171);
+// The sheen's colour, as a painted-map albedo. It was that crop's warm grey
+// (sRGB 136,130,113), painted over the sea at 0.85: on the globe it replaced
+// the blue with a beige patch and read as another material, sand or metal
+// (asked 2026-11-12, "alsof het een ander materiaal is"). The crop's warmth is
+// the haze over the Mediterranean, not the water. So the sheen is a cool
+// silver the sea goes part of the way towards, keeping its own blue in it.
+const SHEEN: vec3<f32> = vec3<f32>(0.26, 0.30, 0.35);
 // How far the sea goes towards it at the lobe's peak.
-const SHEEN_PEAK: f32 = 0.85;
-// The lobe's GGX width: Cox & Munk's `0.003 + 0.00512·U` at a 12 m/s wind is a
-// mean-square slope of 0.064, α ≈ 0.25. A sea state of its own, not either
-// surface's live one, so the globe and the flat tier paint the same sheen where
-// it crosses from one to the other (`docs/notes/globe-ocean-is-a-brdf-split.md`).
+const SHEEN_PEAK: f32 = 0.55;
 const SHEEN_ALPHA: f32 = 0.25;
-// The streaks: the width wanders ±`STREAK_SPREAD` of itself over patches
-// `STREAK_SCALE` Mercator cells across (the world is 1): 1/600 of the equator
-// is ~67 km, stretched three to one along a fixed wind.
-const STREAK_SPREAD: f32 = 0.35;
-const STREAK_SCALE: f32 = 600.0;
+// The mottle: the lobe's width wanders ±`MOTTLE_SPREAD` of itself and its
+// strength ±`MOTTLE_GLOW` over a round, three-octave field whose coarsest
+// patches are `MOTTLE_SCALE` Mercator cells across (the world is 1): 1/120 of
+// the equator is ~330 km. It was a single octave stretched three to one along a
+// wind, and from orbit that read as big stripes laid over the sea, not as a sea
+// (asked 2026-11-12); a real glint is a soft oval, mottled where the wind is
+// calmer or rougher.
+const MOTTLE_SPREAD: f32 = 0.06;
+const MOTTLE_GLOW: f32 = 0.1;
+const MOTTLE_SCALE: f32 = 120.0;
+
+// The rest of what keeps the sea from reading as a glass bauble (asked
+// 2026-11-12, "dynamischer"): its colour is by depth in the tile
+// (`cartopolis_geo::ocean_depth`), and here three things on top of it.
+//
+// The mottle drifts downwind, `DRIFT` Mercator units a second: its finest
+// patches (~50 km) in ~90 s, far faster than real weather and slow enough to
+// read as the sea moving rather than the map. `globals.time` wraps each hour,
+// which jumps the field once.
+const DRIFT: f32 = 1.0 / (MOTTLE_SCALE * 6.7 * 90.0);
+// Wind-rows over the open sea: its tone wanders ±`ROWS_TONE` over patches
+// `ROWS_SCALE` cells across (~400 km), as roughness and plankton do in any
+// true-colour mosaic, so no two stretches of open ocean are the same blue.
+const ROWS_SCALE: f32 = 100.0;
+const ROWS_TONE: f32 = 0.09;
+// The sky in the water: towards the limb a sea reflects more of the sky than it
+// lets out of its depths (Fresnel), so the globe's oceans lighten to a hazy
+// blue at the edge rather than staying one dark ball. An albedo through the map
+// light, as the sheen is; `SKY_PEAK` of the way at grazing.
+const SKY: vec3<f32> = vec3<f32>(0.20, 0.30, 0.42);
+const SKY_PEAK: f32 = 0.55;
 
 fn hash2(p: vec2<f32>) -> f32 {
     let q = fract(p * vec2<f32>(0.1031, 0.1030));
@@ -120,18 +146,18 @@ fn value_noise(p: vec2<f32>) -> f32 {
     );
 }
 
-// The streak field, -1..1, at Mercator `merc`; `px` is one pixel there, in
-// Mercator units, so an octave finer than ~3 pixels fades out instead of
+// The mottle field, about -1..1, at Mercator `merc`; `px` is one pixel there,
+// in Mercator units, so an octave finer than ~3 pixels fades out instead of
 // crawling as the globe turns.
-fn streaks(merc: vec2<f32>, px: f32) -> f32 {
-    // Stretched along a wind from the WSW: a rotation, then 4:1.
-    let r = vec2<f32>(0.94 * merc.x + 0.34 * merc.y, -0.34 * merc.x + 0.94 * merc.y);
-    let p = r * STREAK_SCALE * vec2<f32>(1.0, 3.0);
-    // At most ~6,000 across the world, where an f32 still holds 1/2000 of a cell.
-    let a = value_noise(p);
-    let b = value_noise(p * 2.7 + 17.0);
-    let fine = 1.0 - smoothstep(0.15, 0.4, px * STREAK_SCALE * 3.0 * 2.7);
-    return (a - 0.5) * 1.4 + (b - 0.5) * 0.4 * fine;
+fn mottle(merc: vec2<f32>, px: f32) -> f32 {
+    // At most ~800 cells across the world, where an f32 still holds 1/10000 of one.
+    let p = merc * MOTTLE_SCALE;
+    var sum = (value_noise(p) - 0.5) * 1.1;
+    let f1 = 1.0 - smoothstep(0.15, 0.4, px * MOTTLE_SCALE * 2.6);
+    sum += (value_noise(p * 2.6 + 17.0) - 0.5) * 0.6 * f1;
+    let f2 = 1.0 - smoothstep(0.15, 0.4, px * MOTTLE_SCALE * 6.7);
+    sum += (value_noise(p * 6.7 + 41.0) - 0.5) * 0.3 * f2;
+    return sum * 1.6;
 }
 
 // `lit` (as `apply` returned it) with the sea painted towards the sheen, for
@@ -139,7 +165,7 @@ fn streaks(merc: vec2<f32>, px: f32) -> f32 {
 // below `FROM` the material's own specular is the glint and past it this is,
 // with nothing doubled between. `merc` is the texel's place in Web Mercator's
 // unit square (`hex_grid`'s tile key and UV), (-1, -1) where the surface has
-// none, which draws the sheen without streaks; `px` is `length(fwidth(merc))`,
+// none, which draws the sheen unmottled; `px` is `length(fwidth(merc))`,
 // taken by the caller outside any branch, since it is a derivative.
 fn sea_sheen(
     lit: vec4<f32>,
@@ -150,14 +176,20 @@ fn sea_sheen(
     merc: vec2<f32>,
     px: f32,
 ) -> vec4<f32> {
-    let wander = select(streaks(merc, px), 0.0, merc.x < 0.0);
+    let has_merc = merc.x >= 0.0;
+    // Downwind, from the WSW.
+    let drifted = merc - vec2<f32>(0.94, -0.34) * (globals.time * DRIFT);
+    let wander = select(0.0, mottle(drifted, px), has_merc);
+    let rows = select(0.0, value_noise(drifted * ROWS_SCALE) * 2.0 - 1.0, has_merc);
     let k = smoothstep(FROM.x, FROM.y, distance) * water;
     if k <= 0.0 {
         return lit;
     }
-    let alpha = SHEEN_ALPHA * (1.0 + STREAK_SPREAD * wander);
+    var sea = lit.rgb * (1.0 + ROWS_TONE * rows * k);
+    let alpha = SHEEN_ALPHA * (1.0 + MOTTLE_SPREAD * wander);
     let a2 = alpha * alpha;
     var paint = vec3<f32>(0.0);
+    var sky = vec3<f32>(0.0);
     var cover = 0.0;
     for (var i: u32 = 0u; i < lights.n_directional_lights; i = i + 1u) {
         let li = lights.directional_lights[i];
@@ -167,6 +199,7 @@ fn sea_sheen(
         if up <= 0.0 {
             continue;
         }
+        sky += li.color.rgb * up;
         let h = normalize(l + v);
         let noh = max(dot(n, h), 0.0);
         // GGX's shape, 1 at its peak: a broad core and a long soft skirt.
@@ -175,11 +208,16 @@ fn sea_sheen(
         paint += li.color.rgb * lobe;
         cover = max(cover, lobe);
     }
+    // The sky in the water, lit as the land is, so the night side stays dark.
+    let grazing = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
+    let sky_lit = pow(SKY, vec3<f32>(CURVE)) * sky * GAIN / 3.14159265 * view.exposure;
+    sea = mix(sea, sky_lit, grazing * SKY_PEAK * k);
     if cover <= 0.0 {
-        return lit;
+        return vec4<f32>(sea, lit.a);
     }
     // The sheen lit as the map lights the land, in the lights' own colours, so
     // a low red sun lays a red sheen.
     let sheen = pow(SHEEN, vec3<f32>(CURVE)) * (paint / cover) * GAIN / 3.14159265 * view.exposure;
-    return vec4<f32>(mix(lit.rgb, sheen, cover * SHEEN_PEAK * k), lit.a);
+    let glow = clamp(cover * SHEEN_PEAK * (1.0 + MOTTLE_GLOW * wander), 0.0, 1.0);
+    return vec4<f32>(mix(sea, sheen, glow * k), lit.a);
 }
