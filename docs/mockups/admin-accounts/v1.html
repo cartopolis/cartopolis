@@ -1,0 +1,90 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body>
+<h1>Admin › Accounts on a phone — v1</h1>
+<p class="lead">Now each account is a tall card: five fit on a phone. Proposed: one 48 px line per account (about twelve on a screen), sorted and filtered by chips, and a tap opens the line in place with its numbers. <b>Purple, dashed</b> = the server does not record this yet; everything else is already in <code>world.db</code> and only needs counting.</p>
+<div class="row">
+
+<!-- NOW -->
+<div class="col"><h2>Now</h2><p class="cap">A card per account; the only facts are the date and the address. Everything else is behind Manage.</p>
+<div class="phone">
+ <div class="status"><span>16:28</span><span>▮▮▮ 28</span></div>
+ <div class="top"><div class="logo">●</div><span>Community</span><span>World</span><span class="on">Admin</span><div class="me"></div></div>
+ <div class="title"><span class="burger">☰</span>Accounts</div>
+ <div class="body">
+  <div class="card"><div class="ct"><b>anna</b><span class="btn">Manage</span></div><p>Created 20 Oct 2026 · anna@example.org</p></div>
+  <div class="card"><div class="ct"><b>badr</b><span class="btn">Manage</span></div><p>Created 21 Oct 2026 · badr@example.org</p></div>
+  <div class="card"><div class="ct"><b>devi</b><span class="btn">Manage</span></div><p>Created 22 Oct 2026 · devi@example.org</p></div>
+  <div class="card"><div class="ct"><b>jeroen</b><span class="btn">Manage</span></div><p>Created 24 Oct 2026 · jeroen@example.org</p></div>
+  <div class="card"><div class="ct"><b>mapper123</b><span class="btn">Manage</span></div><p>Created 10 Nov 2026 · mapper123@example.org</p></div>
+ </div>
+</div></div>
+
+<!-- COMPACT -->
+<div class="col"><h2>A — compact list</h2><p class="cap">Avatar, name, tags, and one line: last seen · created. The dot is “signed in now”. Chips sort and filter; the search stays.</p>
+<div class="phone">
+ <div class="status"><span>16:28</span><span>▮▮▮ 28</span></div>
+ <div class="top"><div class="logo">●</div><span>Community</span><span>World</span><span class="on">Admin</span><div class="me"></div></div>
+ <div class="title"><span class="burger">☰</span>Accounts</div>
+ <div class="body">
+  <div class="head"><span class="count">14 accounts · 3 online · 9 this week</span><span class="btn primary">+ New</span></div>
+  <div class="search">⌕ Filter by username or email</div>
+  <div class="chips"><span class="chip on">Last seen ▾</span><span class="chip">Newest</span><span class="chip">Name</span><span class="chip">Admins</span><span class="chip">Disabled</span><span class="chip">Unconfirmed</span></div>
+  <div class="list">
+   <div class="acc"><div class="line"><div class="av" style="background:#5cc6c0">J</div><div class="who"><div class="n">jeroen <span class="tag admin">admin</span></div><div class="m"><span class="dot"></span> online · since 24 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#9fb7d8">A</div><div class="who"><div class="n">anna</div><div class="m"><span class="dot"></span> online · since 20 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#a8dcd8">V</div><div class="who"><div class="n">viberfox <span class="tag ai">AI</span></div><div class="m"><span class="dot"></span> online · since 2 Sep</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#d8c07a">D</div><div class="who"><div class="n">devi</div><div class="m"><span class="dot off"></span> 2 h ago · since 22 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#e3a77f">M</div><div class="who"><div class="n">mapper123</div><div class="m"><span class="dot off"></span> yesterday · since 10 Nov</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#b9c98a">B</div><div class="who"><div class="n">badr</div><div class="m"><span class="dot off"></span> 4 days ago · since 21 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#c2a3d6">L</div><div class="who"><div class="n">library <span class="tag ai">AI</span></div><div class="m"><span class="dot off"></span> 6 days ago · since 30 Aug</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#8fb0a6">K</div><div class="who"><div class="n">kees</div><div class="m"><span class="dot off"></span> 3 weeks ago · since 1 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#6b7f86">S</div><div class="who"><div class="n">sam <span class="tag pend">unconfirmed</span></div><div class="m"><span class="dot off"></span> never · since 12 Nov</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#6b7f86">T</div><div class="who"><div class="n">tom <span class="tag dis">disabled</span></div><div class="m"><span class="dot off"></span> 5 Oct · since 28 Sep</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#9fb7d8">R</div><div class="who"><div class="n">rosa</div><div class="m"><span class="dot off"></span> 3 Oct · since 26 Sep</div></div><span class="chev">›</span></div></div>
+  </div>
+ </div>
+</div></div>
+
+<!-- EXPANDED -->
+<div class="col"><h2>A — one opened</h2><p class="cap">Tapping a line opens it in place (tap again to close). Numbers on top, facts below, then Manage for roles, password, disable and delete — that panel stays as it is.</p>
+<div class="phone">
+ <div class="status"><span>16:28</span><span>▮▮▮ 28</span></div>
+ <div class="top"><div class="logo">●</div><span>Community</span><span>World</span><span class="on">Admin</span><div class="me"></div></div>
+ <div class="title"><span class="burger">☰</span>Accounts</div>
+ <div class="body">
+  <div class="head"><span class="count">14 accounts · 3 online · 9 this week</span><span class="btn primary">+ New</span></div>
+  <div class="chips"><span class="chip on">Last seen ▾</span><span class="chip">Newest</span><span class="chip">Name</span><span class="chip">Admins</span><span class="chip">Disabled</span></div>
+  <div class="list">
+   <div class="acc"><div class="line"><div class="av" style="background:#5cc6c0">J</div><div class="who"><div class="n">jeroen <span class="tag admin">admin</span></div><div class="m"><span class="dot"></span> online · since 24 Oct</div></div><span class="chev">›</span></div></div>
+   <div class="acc open"><div class="line"><div class="av" style="background:#9fb7d8">A</div><div class="who"><div class="n">anna</div><div class="m"><span class="dot"></span> online · since 20 Oct</div></div><span class="chev">⌄</span></div>
+    <div class="more">
+     <div class="mail">anna@example.org · confirmed</div>
+     <div class="stats">
+      <div class="st"><b>3</b><i>communities</i></div>
+      <div class="st"><b>17</b><i>posts</i></div>
+      <div class="st"><b>42</b><i>objects built</i></div>
+      <div class="st"><b>1</b><i>building owned</i></div>
+      <div class="st"><b>8</b><i>contacts</i></div>
+      <div class="st new"><b>23</b><i>days active</i></div>
+     </div>
+     <div class="spark"><span style="height:20%"></span><span style="height:0"></span><span style="height:40%"></span><span style="height:30%"></span><span style="height:0"></span><span style="height:60%"></span><span style="height:80%"></span><span style="height:20%"></span><span style="height:50%"></span><span style="height:0"></span><span style="height:70%"></span><span style="height:90%"></span><span style="height:40%"></span><span style="height:30%"></span><span style="height:0"></span><span style="height:0"></span><span style="height:60%"></span><span style="height:100%"></span><span style="height:50%"></span><span style="height:70%"></span><span style="height:20%"></span><span style="height:40%"></span><span style="height:80%"></span><span style="height:60%"></span><span style="height:30%"></span><span style="height:50%"></span><span style="height:90%"></span><span style="height:70%"></span><span style="height:40%"></span><span class="hi" style="height:100%"></span></div>
+     <div class="sparkcap">time online per day, last 30 days</div>
+     <dl class="facts">
+      <dt>Last seen</dt><dd>now · last place near Vismarkt, Groningen</dd>
+      <dt>Devices</dt><dd>2 (phone, web)</dd>
+      <dt>Signs in with</dt><dd>password · Mastodon @anna@mastodon.nl</dd>
+      <dt>Roles</dt><dd>Player, Mapper</dd>
+      <dt>Created</dt><dd>20 Oct 2026, self-registered</dd>
+      <dt class="new">Sign-ins</dt><dd class="new">61, last from the app 1.0.0</dd>
+     </dl>
+     <div class="acts"><span class="btn">Manage…</span><span class="btn">Show on map</span></div>
+    </div>
+   </div>
+   <div class="acc"><div class="line"><div class="av" style="background:#a8dcd8">V</div><div class="who"><div class="n">viberfox <span class="tag ai">AI</span></div><div class="m"><span class="dot"></span> online · since 2 Sep</div></div><span class="chev">›</span></div></div>
+   <div class="acc"><div class="line"><div class="av" style="background:#d8c07a">D</div><div class="who"><div class="n">devi</div><div class="m"><span class="dot off"></span> 2 h ago · since 22 Oct</div></div><span class="chev">›</span></div></div>
+  </div>
+ </div>
+</div></div>
+
+</div>
+<p class="legend">Already stored, only to be counted: last seen (open sign-in sessions), last place (accounts.last_lat/lng), communities, posts, objects built (prims by owner), buildings owned, contacts, devices (chat devices), linked sign-ins, roles. <b>Not stored yet</b>: a history of sign-ins and of time online per day — that needs a small new table the server writes at each sign-in and sign-out, and starts empty.</p>
+</body></html>
