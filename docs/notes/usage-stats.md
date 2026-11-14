@@ -1,7 +1,7 @@
 ---
 topic: usage-stats
-triggers: [crates/simulator/src/stats, stats.db, migrations_stats, "/api/stats/hit", "/api/admin/stats", "/api/communities/{id}/stats", stats_view, stats_positions, WsQuery, docs/mockups/stats]
-updated: 2026-10-18
+triggers: [crates/simulator/src/stats, "/api/admin/accounts/activity", account-stats.ts, stats.db, migrations_stats, "/api/stats/hit", "/api/admin/stats", "/api/communities/{id}/stats", stats_view, stats_positions, WsQuery, docs/mockups/stats]
+updated: 2026-11-14
 ---
 
 # Usage statistics count what the server already sees, and keep counts
@@ -26,6 +26,21 @@ being cookie-free and consent-free:
   those numbers.
 - **Message content is never counted beyond "one was relayed".** Chats and
   topics are sealed; the server sees a send and a group id.
+
+## One account, by name: Admin › Accounts
+
+The one place these numbers are about a person rather than a count
+(`stats::accounts`, `docs/mockups/admin-accounts/`, decided 2026-11-14): each
+account's line shows whether it is online and when it was last seen, and an
+opened line its sign-ins, last app and build, and minutes online per day over
+30 days, beside counts from the world (communities, posts, prims, buildings,
+contacts, chat devices, linked sign-ins, last place). It is read with
+`accounts_manage`, not `stats_view`: the operator who already sees the
+account's address and can delete it. Nothing new is recorded for it — it reads
+the per-account sessions above, so it reaches back [`KEEP_DAYS`] and no further,
+and a session's minutes overlap-merge so two apps open at once count once.
+Who is online comes from memory, not the rows: a session is written a minute
+after it starts.
 
 ## Where it is
 

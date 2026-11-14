@@ -105,3 +105,206 @@
 .account-form-spacer {
     flex: 1;
 }
+
+/* ── The compact list (`docs/mockups/admin-accounts/`) ─────────────────── */
+
+/* One bordered list of lines rather than a card per account: about twelve on
+   a phone instead of five. */
+.account-list {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-lg);
+    gap: 0;
+    overflow: hidden;
+}
+
+.record.account-line {
+    background: none;
+    border: 0;
+    border-radius: 0;
+    border-top: 1px solid var(--m-border);
+    padding: 0;
+
+    &:first-child {
+        border-top: 0;
+    }
+
+    &.is-open {
+        background: var(--m-surface);
+    }
+}
+
+.account-head {
+    align-items: center;
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    gap: var(--m-space-3);
+    min-height: 48px;
+    padding: var(--m-space-2) var(--m-space-3);
+    text-align: left;
+    width: 100%;
+
+    &:hover {
+        background: var(--m-hover);
+    }
+
+    &:focus-visible {
+        outline: 2px solid var(--m-focus);
+        outline-offset: -2px;
+    }
+}
+
+.account-avatar {
+    align-items: center;
+    background: var(--m-accent-soft);
+    border-radius: var(--m-radius-full);
+    color: var(--m-accent-text);
+    display: flex;
+    flex: none;
+    font-size: var(--m-font-size-sm);
+    font-weight: 600;
+    height: 30px;
+    justify-content: center;
+    width: 30px;
+}
+
+.account-who {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.account-name {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}
+
+.account-seen {
+    align-items: center;
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: var(--m-font-size-sm);
+    gap: var(--m-space-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.account-dot {
+    background: var(--m-text-faint);
+    border-radius: var(--m-radius-full);
+    flex: none;
+    height: 7px;
+    width: 7px;
+
+    &.is-online {
+        background: var(--m-success);
+    }
+}
+
+.account-chevron {
+    color: var(--m-text-faint);
+    flex: none;
+
+    .is-open & {
+        color: var(--m-accent);
+    }
+}
+
+/* ── An opened line ────────────────────────────────────────────────────── */
+
+.account-more {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    /* Lined up under the name, past the avatar. */
+    padding: 0 var(--m-space-3) var(--m-space-3) calc(30px + 2 * var(--m-space-3));
+}
+
+.account-mail {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.account-stats {
+    display: grid;
+    gap: var(--m-space-2);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.account-stat {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-sm);
+    display: flex;
+    flex-direction: column;
+    padding: var(--m-space-1) var(--m-space-2);
+
+    & b {
+        color: var(--m-text-strong);
+        font-size: 1.05rem;
+    }
+
+    & span {
+        color: var(--m-text-dim);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.account-bars {
+    align-items: flex-end;
+    display: flex;
+    gap: 2px;
+    height: 28px;
+
+    & span {
+        background: var(--m-accent-soft);
+        border-radius: 1px;
+        flex: 1;
+    }
+
+    & span.is-today {
+        background: var(--m-accent);
+    }
+}
+
+.account-bars-cap {
+    color: var(--m-text-faint);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+.account-facts {
+    column-gap: var(--m-space-3);
+    display: grid;
+    font-size: var(--m-font-size-sm);
+    grid-template-columns: auto 1fr;
+    margin: 0;
+    row-gap: var(--m-space-1);
+
+    & dt {
+        color: var(--m-text-faint);
+    }
+
+    & dd {
+        color: var(--m-text-dim);
+        margin: 0;
+        overflow-wrap: anywhere;
+    }
+}
+
+/* Sort and filter above the list. */
+.accounts-order {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--m-space-2);
+}

@@ -21,6 +21,7 @@
 //! little low (the in-memory sets start over, and the stored count is the
 //! larger of the two).
 
+pub mod accounts;
 pub mod api;
 pub mod apk;
 pub mod countries;
@@ -340,6 +341,12 @@ impl Stats {
     #[must_use]
     pub fn online(&self) -> usize {
         self.live().open.values().collect::<HashSet<_>>().len()
+    }
+
+    /// The accounts signed in right now, for Admin › Accounts.
+    #[must_use]
+    pub fn online_accounts(&self) -> HashSet<Uuid> {
+        self.live().open.values().copied().collect()
     }
 
     /// Different accounts that were connected at some point since `since`

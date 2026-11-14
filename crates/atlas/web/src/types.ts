@@ -490,6 +490,42 @@ export type AdminTab =
  * 86400) and hours unix hours, for the page to draw in the reader's zone.
  */
 
+/** One line of Admin › Accounts: `stats::accounts::Seen`. */
+export interface AccountSeen {
+    /** Unix seconds; null when not connected in the days sessions are kept. */
+    last_seen: null | number
+    online: boolean
+}
+
+/** A sign-in an account has besides its password. */
+export interface AccountIdentity {
+    handle: string
+    provider: string
+}
+
+/** An opened line of Admin › Accounts: `stats::accounts::AccountStats`. */
+export interface AccountStats {
+    buildings: number
+    communities: number
+    contacts: number
+    /** Days of `minutes` with any time connected. */
+    days_active: number
+    devices: number
+    identities: AccountIdentity[]
+    /** How many days `sign_ins` covers. */
+    keep_days: number
+    last_app: null | string
+    last_build: null | string
+    last_place: null | {lat: number; lng: number}
+    last_seen: null | number
+    /** Minutes connected per UTC day, the last 30 days, oldest first. */
+    minutes: number[]
+    objects: number
+    online: boolean
+    posts: number
+    sign_ins: number
+}
+
 /** Different accounts in the world on one day, by the app they used. */
 export interface StatsDayApps {
     all: number

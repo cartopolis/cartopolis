@@ -5,11 +5,13 @@ import {minLength, validation} from '@garage44/mithril/validation'
 import type {Account as AccountRow} from '@/types'
 
 import {$s} from '@/app'
+import {activity, ago, duration, toggleOpen} from '@/lib/account-stats'
 import {activateAccount, deleteAccount, updateAccount} from '@/lib/accounts'
 import {closeContext, contextShows, openContext} from '@/lib/layout'
 import {bind, local} from '@/lib/reactive'
 import {loadRoles, may, rolesOf, setAccountRoles} from '@/lib/roles'
 import {formatTimestamp} from '@/lib/utils'
+import {placeName} from '@/lib/stats'
 
 /** The server's own minimum (`MIN_PASSWORD_LEN` in the simulator's `http.rs`). */
 export const MIN_PASSWORD = 8
@@ -289,15 +291,16 @@ function manage(id: string) {
 }
 
 /** What an account is, as badges: shared by the row and the form's head. */
-class AccountTags extends MithrilComponent<{account: AccountRow}> {
-    view(vnode: m.Vnode<{account: AccountRow}>) {
-        const {account} = vnode.attrs
+class AccountTags extends MithrilComponent<{account: AccountRow; compact?: boolean}> {
+    view(vnode: m.Vnode<{account: AccountRow; compact?: boolean}>) {
+        const {account, compact} = vnode.attrs
         const isSelf = account.id === $s.profile.principal
         return (
             <span class="account-tags">
                 {account.admin && <Badge tone="accent">admin</Badge>}
                 {account.agent && <Badge>agent</Badge>}
-                {rolesOf(account.id).map((r) => (
+                {!compact &&
+                    rolesOf(account.id).map((r) => (
                     <Badge key={r}>{$s.roles.find((x) => x.id === r)?.name ?? r}</Badge>
                 ))}
                 {account.disabled && <Badge>disabled</Badge>}
@@ -319,37 +322,145 @@ interface Props {
     account: AccountRow
 }
 
+/** A tile of the opened line: one number and what it counts. */
+const tile = (n: number, one: string, many = `${one}s`) => (
+    <div class="account-stat">
+        <b>{n}</b>
+        <span>{n === 1 ? one : many}</span>
+    </div>
+)
+
+/** What an opened line shows: the account's numbers, then Manage. */
+class AccountDetails extends MithrilComponent<Props> {
+    view(vnode: m.Vnode<Props>) {
+        const {account} = vnode.attrs
+        const stats = activity.stats[account.id]
+        const roles = rolesOf(account.id).map((r) => $s.roles.find((x) => x.id === r)?.name ?? r)
+        const manageButton = (
+            <Button
+                onclick={() =>
+                    contextShows(contextKey(account.id)) ? closeContext(contextKey(account.id)) : manage(account.id)
+                }
+                size="sm"
+            >
+                {contextShows(contextKey(account.id)) ? 'Close manage' : 'Manage…'}
+            </Button>
+        )
+        if (stats === undefined) {
+            return <div class="account-more"><p class="hint">Loading…</p>{manageButton}</div>
+        }
+        const busiest = Math.max(1, ...(stats?.minutes ?? []))
+        const total = (stats?.minutes ?? []).reduce((a, b) => a + b, 0)
+        return (
+            <div class="account-more">
+                {/* Personal data, and here because the operator is the person who
+                    has to answer a deletion request and needs to be able to find
+                    the account it names. */}
+                {account.email && (
+                    <p class="account-mail">
+                        {account.email} · {account.email_pending ? 'not confirmed' : 'confirmed'}
+                    </p>
+                )}
+                {stats && (
+                    <>
+                        <div class="account-stats">
+                            {tile(stats.communities, 'community', 'communities')}
+                            {tile(stats.posts, 'post')}
+                            {tile(stats.objects, 'object built', 'objects built')}
+                            {tile(stats.buildings, 'building owned', 'buildings owned')}
+                            {tile(stats.contacts, 'contact')}
+                            {tile(stats.days_active, 'day active', 'days active')}
+                        </div>
+                        <div
+                            class="account-bars"
+                            title={`${duration(total)} online in the last ${stats.minutes.length} days`}
+                        >
+                            {stats.minutes.map((n, i) => (
+                                <span
+                                    class={i === stats.minutes.length - 1 ? 'is-today' : ''}
+                                    key={i}
+                                    style={{height: `${n ? Math.max(8, (n / busiest) * 100) : 0}%`}}
+                                />
+                            ))}
+                        </div>
+                        <p class="account-bars-cap">
+                            Time online per day, last {stats.minutes.length} days: {duration(total)}
+                        </p>
+                        <dl class="account-facts">
+                            <dt>Last seen</dt>
+                            <dd>
+                                {stats.online ? 'online now' : ago(stats.last_seen)}
+                                {stats.last_place && ` · last place ${placeName(stats.last_place.lat, stats.last_place.lng)}`}
+                            </dd>
+                            <dt>Sign-ins</dt>
+                            <dd>
+                                {stats.sign_ins} in {stats.keep_days} days
+                                {stats.last_app && `, last from ${stats.last_app}`}
+                                {stats.last_build && ` (${stats.last_build})`}
+                            </dd>
+                            <dt>Devices</dt>
+                            <dd>{stats.devices ? `${stats.devices} with chat keys` : 'none with chat keys'}</dd>
+                            <dt>Signs in with</dt>
+                            <dd>
+                                {['password', ...stats.identities.map((i) => `${i.provider} ${i.handle}`)].join(' · ')}
+                            </dd>
+                            {roles.length > 0 && (
+                                <>
+                                    <dt>Roles</dt>
+                                    <dd>{roles.join(', ')}</dd>
+                                </>
+                            )}
+                            <dt>Created</dt>
+                            <dd>{formatTimestamp(account.created_at)}</dd>
+                        </dl>
+                    </>
+                )}
+                <div class="account-form-actions">{manageButton}</div>
+            </div>
+        )
+    }
+}
+
 /**
- * One row of the account list. "Manage" opens the account's form in the context
- * panel, so on a wide screen the list stays in view beside it, and the row shows
- * itself as the one being edited.
+ * One line of the account list: who, whether they are here, since when. A tap
+ * opens the line in place with the account's numbers; "Manage…" there opens its
+ * form in the context panel as before, so on a wide screen the list stays in
+ * view beside it.
  */
 export class Account extends MithrilComponent<Props> {
     view(vnode: m.Vnode<Props>) {
         const {account} = vnode.attrs
-        const open = contextShows(contextKey(account.id))
+        const opened = activity.open === account.id
+        const managed = contextShows(contextKey(account.id))
+        const seen = activity.seen[account.id]
 
         return (
-            <li class={`record ${account.disabled ? 'is-disabled' : ''} ${open ? 'is-selected' : ''}`}>
-                <div class="record-main">
-                    <span class="record-name">{account.username}</span>
-                    <AccountTags account={account} />
-                    <span class="record-spacer" />
-                    <Button
-                        onclick={() => (open ? closeContext(contextKey(account.id)) : manage(account.id))}
-                        size="sm"
-                        variant={open ? 'secondary' : 'ghost'}
-                    >
-                        {open ? 'Close' : 'Manage'}
-                    </Button>
-                </div>
-                <div class="record-meta">
-                    <span>Created {formatTimestamp(account.created_at)}</span>
-                    {/* Personal data, and here because the operator is the person
-                        who has to answer a deletion request and needs to be able
-                        to find the account it names. */}
-                    {account.email && <span>{account.email}</span>}
-                </div>
+            <li
+                class={`record account-line ${account.disabled ? 'is-disabled' : ''} ${
+                    managed ? 'is-selected' : ''
+                } ${opened ? 'is-open' : ''}`}
+            >
+                <button
+                    aria-expanded={opened ? 'true' : 'false'}
+                    class="account-head"
+                    onclick={() => toggleOpen(account.id)}
+                    type="button"
+                >
+                    <span class="account-avatar">{account.username.slice(0, 1).toUpperCase()}</span>
+                    <span class="account-who">
+                        <span class="account-name">
+                            <span class="record-name">{account.username}</span>
+                            <AccountTags account={account} compact />
+                        </span>
+                        <span class="account-seen">
+                            <span class={`account-dot ${seen?.online ? 'is-online' : ''}`} />
+                            {seen?.online ? 'online' : seen ? ago(seen.last_seen) : '…'} · since{' '}
+                            {formatTimestamp(account.created_at)}
+                        </span>
+                    </span>
+                    <span class="account-chevron">{opened ? '⌄' : '›'}</span>
+                </button>
+                {opened && <AccountDetails account={account} />}
             </li>
         )
     }

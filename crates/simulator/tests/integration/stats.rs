@@ -401,3 +401,94 @@ async fn only_accounts_allowed_to_read_them_see_the_numbers() {
     .await;
     assert_eq!(status, 403);
 }
+
+/// Admin › Accounts' numbers (`stats::accounts`): a signed-in app makes its
+/// account online and seen, the opened line counts it, the web UI's types
+/// match both answers, and a player is refused them.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accounts_numbers_come_from_its_sessions() {
+    const WEB_TYPES: &str = include_str!("../../../atlas/web/src/types.ts");
+    let fields = |name: &str| {
+        let mut f = cartopolis_core::ts_mirror::type_fields(WEB_TYPES, name)
+            .unwrap_or_else(|| panic!("`{name}` is not declared in types.ts"));
+        f.sort();
+        f
+    };
+    let keys = |v: &serde_json::Value| {
+        let mut k: Vec<String> = v.as_object().expect("an object").keys().cloned().collect();
+        k.sort();
+        k
+    };
+
+    let (handle, _dir) = server().await;
+    let player = token(&handle, "/api/login", "player", "playerpw").await;
+    let url = format!("ws://{}/ws?client=web&build=abc123", handle.http_addr.unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let hello = encode_app_frame(&NetMessage::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        auth: AuthCredential::Token(player.clone()),
+    })
+    .unwrap();
+    socket.send(Message::Binary(hello.into())).await.unwrap();
+    let id = loop {
+        if let Message::Binary(b) = socket.next().await.unwrap().unwrap() {
+            match decode_app_frame(&b).unwrap() {
+                NetMessage::ServerHelloAck { principal_id, .. } => break principal_id,
+                other => panic!("expected the ack, got {other:?}"),
+            }
+        }
+    };
+    handle.stats.flush().await.unwrap();
+
+    let admin = token(&handle, "/api/admin/login", "root", "adminpass").await;
+    let (status, all) = call(
+        "GET",
+        format!("{}/api/admin/accounts/activity", base(&handle)),
+        Some(admin.clone()),
+        "test",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{all}");
+    let seen = &all[id.to_string()];
+    assert_eq!(seen["online"], true, "{all}");
+    assert!(seen["last_seen"].is_i64(), "{all}");
+    assert_eq!(keys(seen), fields("AccountSeen"));
+
+    let (status, one) = call(
+        "GET",
+        format!("{}/api/admin/accounts/{id}/stats", base(&handle)),
+        Some(admin.clone()),
+        "test",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(keys(&one), fields("AccountStats"));
+    assert_eq!(one["online"], true, "{one}");
+    assert_eq!(one["sign_ins"], 1, "{one}");
+    assert_eq!(one["last_app"], "web", "{one}");
+    assert_eq!(one["last_build"], "abc123", "{one}");
+    assert_eq!(one["minutes"].as_array().unwrap().len(), 30, "{one}");
+
+    let (status, _) = call(
+        "GET",
+        format!("{}/api/admin/accounts/{}/stats", base(&handle), uuid::Uuid::new_v4()),
+        Some(admin),
+        "test",
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+    for path in ["activity".to_string(), format!("{id}/stats")] {
+        let (status, _) = call(
+            "GET",
+            format!("{}/api/admin/accounts/{path}", base(&handle)),
+            Some(player.clone()),
+            "test",
+            None,
+        )
+        .await;
+        assert_eq!(status, 403, "{path}");
+    }
+}

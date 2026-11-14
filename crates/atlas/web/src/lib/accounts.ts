@@ -1,6 +1,7 @@
 import type {Account, OwnedBuilding} from '@/types'
 
 import {$s, api, notifier, signupApi, store} from '@/app'
+import {activity, loadActivity} from '@/lib/account-stats'
 import {ApiError} from '@/lib/api'
 import {closeContext} from '@/lib/layout'
 import {applyMe} from '@/lib/roles'
@@ -79,6 +80,7 @@ export function dropOperator() {
 
 export async function loadAccounts() {
     $s.loading = true
+    void loadActivity()
     try {
         const result = await api.get<{accounts: Account[]; roles?: Record<string, string[]>}>(
             '/api/admin/accounts',
@@ -162,11 +164,26 @@ export async function activateAccount(account: Account): Promise<boolean> {
 /** The visible rows: the search filter applied to the fetched list. */
 export function visibleAccounts(): Account[] {
     const needle = $s.search.trim().toLowerCase()
-    if (!needle) {
-        return $s.accounts
-    }
-    return $s.accounts.filter((a) => a.username.toLowerCase().includes(needle))
+    const {filter, seen, sort} = activity
+    const rows = $s.accounts.filter(
+        (a) =>
+            (!needle || a.username.toLowerCase().includes(needle) || (a.email ?? '').toLowerCase().includes(needle)) &&
+            (filter === 'all' ||
+                (filter === 'admin' && a.admin) ||
+                (filter === 'disabled' && a.disabled) ||
+                (filter === 'unconfirmed' && a.email_pending)),
+    )
+    const created = (a: Account) => a.created_at
+    const last = (a: Account) => (seen[a.id]?.online ? Infinity : (seen[a.id]?.last_seen ?? -1))
+    return [...rows].sort((a, b) =>
+        sort === 'name'
+            ? a.username.localeCompare(b.username)
+            : sort === 'newest'
+              ? created(b).localeCompare(created(a))
+              : last(b) - last(a) || a.username.localeCompare(b.username),
+    )
 }
+
 
 /**
  * Every house somebody holds. Operator-only, and unpaginated for the same reason

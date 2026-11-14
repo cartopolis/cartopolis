@@ -27,6 +27,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/admin/stats/web", get(web_page))
         .route("/api/admin/stats/places", get(places))
         .route("/api/communities/{id}/stats", get(community))
+        .merge(super::accounts::routes())
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
@@ -107,7 +108,7 @@ fn period(p: &Period) -> (i64, i64, i64) {
     (today - days + 1, today, days)
 }
 
-fn stats_db<T>(
+pub(super) fn stats_db<T>(
     stats: &Arc<Stats>,
     f: impl FnOnce(&Connection) -> anyhow::Result<T>,
 ) -> ApiResult<T> {

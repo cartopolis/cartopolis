@@ -1375,6 +1375,42 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
         updateStartedAt = Date.now()
         return json(mockServerUpdate())
     }
+    // ── Admin › Accounts' numbers (`stats::accounts`), invented per account ──
+    if (p === '/api/admin/accounts/activity' && method === 'GET') {
+        const now = Math.floor(Date.now() / 1000)
+        const ago = [0, 0, 7_200, 90_000, 4 * 86_400, null, 21 * 86_400, 40 * 86_400, 0]
+        return json(
+            Object.fromEntries(
+                accounts.map((a, i) => {
+                    const back = ago[i % ago.length]
+                    return [a.id, {last_seen: back === null ? null : now - back, online: back === 0}]
+                }),
+            ),
+        )
+    }
+    if (parts[1] === 'admin' && parts[2] === 'accounts' && parts[4] === 'stats' && method === 'GET') {
+        const i = accounts.findIndex((a) => a.id === parts[3])
+        if (i < 0) return refuse(404, 'no such account')
+        const minutes = Array.from({length: 30}, (_, d) => ((d * 7 + i * 13) % 11 > 6 ? 0 : ((d * 37 + i * 11) % 140) + 5))
+        return json({
+            buildings: i % 3 === 0 ? 1 : 0,
+            communities: (i % 4) + 1,
+            contacts: i * 2 + 1,
+            days_active: minutes.filter((n) => n > 0).length,
+            devices: (i % 2) + 1,
+            identities: i === 2 ? [{handle: '@anneke@mastodon.nl', provider: 'Mastodon'}] : [],
+            keep_days: 90,
+            last_app: ['android', 'web', 'desktop'][i % 3],
+            last_build: '410d46f4',
+            last_place: {lat: 53.2194, lng: 6.5665},
+            last_seen: Math.floor(Date.now() / 1000) - i * 3_600,
+            minutes,
+            objects: i * 7,
+            online: i < 2,
+            posts: i * 3,
+            sign_ins: 12 + i * 5,
+        })
+    }
     if (p === '/api/admin/accounts' && method === 'GET') {
         return json({accounts, roles: Object.fromEntries(accountRoles)})
     }

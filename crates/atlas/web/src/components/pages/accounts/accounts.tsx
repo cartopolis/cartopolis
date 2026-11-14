@@ -1,9 +1,10 @@
 import m, {MithrilComponent} from '@garage44/mithril'
-import {Button, Card, FieldCheckbox, FieldText} from '@garage44/mithril/components'
+import {Button, Card, FieldCheckbox, FieldSegmented, FieldText} from '@garage44/mithril/components'
 import {minLength, required, validation, validations} from '@garage44/mithril/validation'
 
 import {$s} from '@/app'
 import {Account, MIN_PASSWORD} from '@/components/elements/account/account'
+import {activity} from '@/lib/account-stats'
 import {createAccount, visibleAccounts} from '@/lib/accounts'
 import {bind, local} from '@/lib/reactive'
 
@@ -107,34 +108,59 @@ export class Accounts extends MithrilComponent {
     view() {
         const rows = visibleAccounts()
         const total = $s.accounts.length
+        const seen = Object.values(activity.seen)
+        const online = seen.filter((s) => s.online).length
+        const weekAgo = Date.now() / 1000 - 7 * 86_400
+        const thisWeek = seen.filter((s) => s.online || (s.last_seen ?? 0) >= weekAgo).length
 
         return (
             <div class="accounts">
                 <div class="accounts-head">
                     <span class="accounts-count">
                         {rows.length === total ? `${total}` : `${rows.length} of ${total}`}{' '}
-                        {total === 1 ? 'account' : 'accounts'}
+                        {total === 1 ? 'account' : 'accounts'} · {online} online · {thisWeek} this week
                     </span>
                     <NewAccount />
                 </div>
 
                 {total > 0 && (
-                    <FieldText
-                        label="Search"
-                        model={bind($s, 'search')}
-                        placeholder="Filter by username"
-                        type="search"
-                    />
+                    <>
+                        <FieldText
+                            label="Search"
+                            model={bind($s, 'search')}
+                            placeholder="Filter by username or email"
+                            type="search"
+                        />
+                        <div class="accounts-order">
+                            <FieldSegmented
+                                model={bind(activity, 'sort')}
+                                options={[
+                                    {label: 'Last seen', value: 'seen'},
+                                    {label: 'Newest', value: 'newest'},
+                                    {label: 'Name', value: 'name'},
+                                ]}
+                            />
+                            <FieldSegmented
+                                model={bind(activity, 'filter')}
+                                options={[
+                                    {label: 'All', value: 'all'},
+                                    {label: 'Admins', value: 'admin'},
+                                    {label: 'Disabled', value: 'disabled'},
+                                    {label: 'Unconfirmed', value: 'unconfirmed'},
+                                ]}
+                            />
+                        </div>
+                    </>
                 )}
 
                 {$s.loading && !total ? (
                     <div class="empty">Loading…</div>
                 ) : rows.length === 0 ? (
                     <div class="empty">
-                        {total === 0 ? 'No accounts yet.' : `Nothing matches “${$s.search}”.`}
+                        {total === 0 ? 'No accounts yet.' : 'Nothing matches.'}
                     </div>
                 ) : (
-                    <ul class="record-list">
+                    <ul class="record-list account-list">
                         {rows.map((account) => (
                             <Account account={account} key={account.id} />
                         ))}
