@@ -61,7 +61,9 @@ pub mod screen;
 pub mod storage;
 pub mod stream;
 pub mod sync;
-// The owner's release key; it lives on an Android phone only.
+// The owner's release key; it lives on an Android phone only, and the web
+// build has no Midas link to be asked through.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod release_key;
 // The app's own updates; they install on Android only.
 pub mod update;

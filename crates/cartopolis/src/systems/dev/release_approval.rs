@@ -446,7 +446,11 @@ pub fn render_release_approval(egui: EguiRef) {
                             });
                         }
                         for c in &request.checks {
-                            let mark = if c.ok { "✓" } else { "!" };
+                            let mark = if c.ok {
+                                crate::systems::icons::CHECK
+                            } else {
+                                "!"
+                            };
                             let colour = if c.ok {
                                 theme::p().accent
                             } else {
