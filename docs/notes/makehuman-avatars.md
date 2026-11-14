@@ -1,6 +1,6 @@
 ---
 topic: makehuman-avatars
-triggers: [crates/human, crowd.rs, crowd_pose.wesl, CrowdMaterial, CrowdSwatch, starter_looks, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, DesignerTurn]
+triggers: [crates/human, crowd.rs, crowd_pose.wesl, CrowdMaterial, CrowdSwatch, starter_looks, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, aim_screen, DesignerTurn]
 updated: 2026-11-04
 ---
 
@@ -155,9 +155,13 @@ Three things it does so the avatar can be seen while it is shaped:
   the camera stay where they were.
 - **On a phone it is a sheet over the bottom half** (`egui_manager::bottom_sheet`),
   not the right panel, which on a compact screen is the whole screen.
-- **The camera aims near the feet while the sheet is up**
-  (`CameraState::aim_height`, -0.3 m), tilting the view so the whole body stands
-  above it. 0.25 m put the legs under the sheet. Not saved.
+- **The camera puts the avatar in the middle of the half the sheet leaves**:
+  it aims at the body's middle (`CameraState::aim_height`, 0.9 m) or the face
+  (1.62 m, Face tab), and while the sheet is up tilts down until that point
+  stands at NDC 0.5 (`CameraState::aim_screen`). Aiming lower instead (-0.3 m)
+  held the body only at the default distance, and the Face tab's close-up was
+  not lifted at all: the head sat on the sheet's edge, hidden but for the hair
+  (2026-11-14). Not saved.
 
 `CARTO_HUMAN_LOOK="body_shape=0,weight=90,age=70"` starts an undesigned avatar
 with those sliders, for a capture, which cannot drag one. It takes the wardrobe

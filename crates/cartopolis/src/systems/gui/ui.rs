@@ -557,6 +557,11 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
 // covers it — and the disc, cycling only the modes on offer, is also where
 // "Follow needs a signed-in session" is enforced for the UI.
 
+/// The share of the screen the Appearance sheet covers on a phone. It is also
+/// where the camera puts its aim, in NDC: a sheet covering `s` leaves NDC
+/// `2s - 1 ..= 1`, whose middle is `s`.
+const SHEET_SHARE: f32 = 0.5;
+
 /// The avatar designer (☰ ▸ Appearance): shapes the MakeHuman body with
 /// sliders (`avatar_designer`). The avatar wears the draft while the panel is
 /// open (`HumanDraft`); Apply commits it to the persisted store, which
@@ -613,6 +618,9 @@ pub fn render_avatar_chooser(
     let mut apply = false;
     // On a phone the designer is a sheet across the bottom half: a panel that
     // filled the screen would hide the avatar it is shaping.
+    if let Some(tab) = chooser.open_tab.take() {
+        designer.tab = tab;
+    }
     let sheet = egui.compact();
     let body = |ui: &mut egui::Ui| {
         // Outside the scroll area, so the header and the close button stay put
@@ -651,7 +659,7 @@ pub fn render_avatar_chooser(
             &mut right_panel,
             RightPanel::Appearance,
             "appearance_sheet",
-            0.5,
+            SHEET_SHARE,
             body,
         )
     } else {
@@ -677,22 +685,26 @@ pub fn render_avatar_chooser(
     let showing = (right_panel.is(RightPanel::Appearance) && chooser.seeded)
         .then(|| chooser.draft.human.clone())
         .flatten();
-    // On a phone, aim the camera near the feet while the sheet is up, so
-    // the whole body stands in the half of the screen the sheet leaves.
-    // (-0.3 m: at the default follow distance the head clears the top and the
-    // feet the sheet; 0.25 put the legs under it.)
-    // On the Face tab, come close and aim at the face instead: its controls
-    // move things millimetres across, unreadable from the follow distance.
-    // (1.0 m to the head at 1.62 m: the whole head and the shoulders, on a
-    // phone's top half too — the boom is above the sheet's edge.)
+    // Aim at the middle of the body while the designer is open; on the Face
+    // tab, come close and aim at the face instead: its controls move things
+    // millimetres across, unreadable from the follow distance. (1.0 m to the
+    // head at 1.62 m: the whole head and the shoulders.)
+    // On a phone the sheet covers the lower half, so the aim point is put in
+    // the middle of the half it leaves, not the middle of the screen: aiming
+    // at the face put it right on the sheet's edge, under it but for the hair.
+    // (0.9 m at the default 6 m: 2.5 m of the top half, the body with room.)
     let close = showing.is_some() && designer.close_up();
     let aim = if close {
         Some(1.62)
     } else {
-        (sheet && showing.is_some()).then_some(-0.3)
+        showing.is_some().then_some(0.9)
     };
     if camera.aim_height != aim {
         camera.aim_height = aim;
+    }
+    let lift = (sheet && showing.is_some()).then_some(SHEET_SHARE);
+    if camera.aim_screen != lift {
+        camera.aim_screen = lift;
     }
     let reach = close.then_some(1.0);
     if camera.aim_reach != reach {

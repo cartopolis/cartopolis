@@ -31,6 +31,9 @@ pub struct AvatarChooserState {
     pub draft: crate::systems::user_store::AvatarAppearance,
     /// Whether `draft` has been seeded from the saved appearance since opening.
     pub seeded: bool,
+    /// A tab for the designer to open on, taken once: `--ui appearance,designer-face`
+    /// photographs the Face tab, which a capture cannot tap to.
+    pub open_tab: Option<crate::systems::avatar_designer::DesignerTab>,
 }
 
 /// Which right-hand panel is open. Exactly one at a time (opening one replaces
@@ -1929,16 +1932,22 @@ pub struct CameraState {
     /// direction here instead (`systems::driver::steady_driver_camera`).
     pub drive_lookahead: Vec2,
     /// Where Follow aims, in metres above the avatar's feet, when something
-    /// needs it other than the chest. The avatar designer on a phone aims near
-    /// the feet, which tilts the view down and lifts the whole body into the top
-    /// half of the screen, clear of its sheet. Only the aim moves, never the
-    /// camera, and it is not saved: closing the designer puts it back.
+    /// needs it other than the chest: the avatar designer aims at the middle
+    /// of the body, or at the face on its Face tab. While it is set the
+    /// street framing's rise over the head is off. Only the aim moves, never
+    /// the camera, and it is not saved: closing the designer puts it back.
     pub aim_height: Option<f32>,
     /// The boom length Follow uses instead of `distance`, in metres, while
     /// something needs the avatar close: the designer's Face tab, so a nose
     /// slider's effect can be seen. Not saved, and the wheel's `distance`
     /// is untouched, so it springs back when the tab is left.
     pub aim_reach: Option<f32>,
+    /// Where on screen Follow puts its aim point, as a height in NDC (0 the
+    /// middle, 1 the top edge), when part of the screen is covered: the
+    /// designer's bottom sheet takes the lower half, so it asks for 0.5, the
+    /// middle of what is left. The camera tilts down to get there; it does
+    /// not move. Not saved.
+    pub aim_screen: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2035,6 +2044,7 @@ impl Default for CameraState {
             drive_lookahead: Vec2::ZERO,
             aim_height: None,
             aim_reach: None,
+            aim_screen: None,
         }
     }
 }

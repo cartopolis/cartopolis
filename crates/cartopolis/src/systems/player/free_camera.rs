@@ -2559,8 +2559,9 @@ fn follow_mode(ctx: ModeCtx) {
         // and driver mode never reaches the arm above, having cleared
         // `first_person` as it took the rig.
         let aim = camera_state.drive_lookahead;
-        // Driver mode frames its own arrow and keeps its aim as it was.
-        let rise = if locked {
+        // Driver mode frames its own arrow and keeps its aim as it was, and
+        // an explicit aim height (the designer) is framed as asked.
+        let rise = if locked || camera_state.aim_height.is_some() {
             0.0
         } else {
             FRAMING_RISE * reach * rig.smoothing.boom
@@ -2569,6 +2570,13 @@ fn follow_mode(ctx: ModeCtx) {
         let aim_height = camera_state.aim_height.unwrap_or(FOLLOW_EYE_HEIGHT);
         let look_world = avatar_origin + (avatar_pos + Vec3::Y * aim_height + ahead).as_dvec3();
         camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
+        // Tilt down until the aim point stands at `aim_screen` rather than
+        // dead centre: a point `a` above the optical axis lands at NDC
+        // tan(a) / tan(fov / 2), so this is exact for any fov or distance.
+        if let Some(lift) = camera_state.aim_screen {
+            let tilt = (lift * (rig.smoothing.fov * 0.5).tan()).atan();
+            camera_transform.rotate_local_x(-tilt);
+        }
     }
 
     // Widen the lens with speed. Driver mode is exempt: its rig is written

@@ -2510,6 +2510,8 @@ const UI_ELEMENTS: &[&str] = &[
     "face",
     "avatar",
     "appearance",
+    // The designer on its Face tab, with `appearance`.
+    "designer-face",
     "layers",
     // The Layers panel's categories, alongside `layers`.
     "city",
@@ -2766,6 +2768,9 @@ pub fn open_scripted_ui(
     // nobody reviews.
     cards.menu.open = want("menu") || want("face");
     avatar.open = want("avatar");
+    if want("designer-face") {
+        avatar.open_tab = Some(crate::systems::avatar_designer::DesignerTab::Face);
+    }
     layers.panel_open = want("layers");
     // Which category the Layers panel opens on: `--ui layers,orbit`.
     layers.category = if want("orbit") {
