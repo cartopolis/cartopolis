@@ -170,6 +170,11 @@ pub struct SimConfig {
     /// line. The operator's own blocks are kept apart and survive every import.
     #[serde(default = "default_fediverse_blocklists")]
     pub fediverse_blocklists: Vec<String>,
+    /// The languages content pages are written and served in
+    /// (`docs/mockups/cms`), the first the default: each is an address prefix
+    /// (`/nl/over`), so a code here is a path the web UI no longer routes.
+    #[serde(default = "default_page_languages")]
+    pub page_languages: Vec<String>,
     /// Whether an account may claim a building (`buildings`). The name is from
     /// when it was one house per account, kept so a deployment's setting holds.
     #[serde(default = "default_house_claims_open")]
@@ -242,6 +247,10 @@ fn default_fediverse() -> bool {
 
 fn default_fediverse_blocklists() -> Vec<String> {
     vec![crate::fediverse::blocklist::DEFAULT_LIST.to_string()]
+}
+
+fn default_page_languages() -> Vec<String> {
+    vec!["nl".into(), "en".into()]
 }
 
 fn default_listen() -> String {
@@ -337,6 +346,7 @@ impl Default for SimConfig {
             fediverse_allow_private: false,
             signin_test_base: None,
             fediverse_blocklists: default_fediverse_blocklists(),
+            page_languages: default_page_languages(),
             house_claims_open: default_house_claims_open(),
             claim_municipality: default_claim_municipality(),
             max_buildings_per_account: default_max_buildings_per_account(),

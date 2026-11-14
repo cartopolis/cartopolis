@@ -26,6 +26,7 @@ pub mod library;
 pub mod looks;
 pub mod mail;
 pub mod net;
+pub mod pages;
 pub mod physics;
 pub mod pictures;
 pub mod prims;
@@ -293,6 +294,7 @@ pub async fn serve_with(
                     .filter(|_| config.fediverse_allow_private),
             )),
             updates: updates.clone(),
+            pages: pages::PageService::new(conn.clone(), config.page_languages.clone())?,
         };
         // Public posts reach other servers through a queue, and the servers
         // nobody here talks to come from a shared list; both only once this

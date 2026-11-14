@@ -72,6 +72,10 @@ pub enum Permission {
     /// Set up signing in with Discord, Google and the rest (Admin › Sign-in):
     /// which are on, in what order, and the keys each provider issued.
     SigninManage,
+    /// Write content pages' drafts and their texts (`docs/mockups/cms`).
+    PagesEdit,
+    /// Put a content page live, take it down, or delete it.
+    PagesPublish,
 }
 
 /// How the web UI groups the list.
@@ -106,6 +110,8 @@ pub const ALL: &[Permission] = &[
     Permission::PipelineRun,
     Permission::StatsView,
     Permission::SigninManage,
+    Permission::PagesEdit,
+    Permission::PagesPublish,
 ];
 
 impl Permission {
@@ -133,6 +139,8 @@ impl Permission {
             Self::PipelineRun => "pipeline_run",
             Self::StatsView => "stats_view",
             Self::SigninManage => "signin_manage",
+            Self::PagesEdit => "pages_edit",
+            Self::PagesPublish => "pages_publish",
         }
     }
 
@@ -165,6 +173,8 @@ impl Permission {
             Self::PipelineRun => "Run the map data pipelines",
             Self::StatsView => "Read the usage statistics",
             Self::SigninManage => "Set up signing in with other accounts",
+            Self::PagesEdit => "Write content pages and their translations",
+            Self::PagesPublish => "Publish and take down content pages",
         }
     }
 
@@ -190,7 +200,9 @@ impl Permission {
             | Self::ReportsTriage
             | Self::PipelineRun
             | Self::StatsView
-            | Self::SigninManage => PermissionGroup::Server,
+            | Self::SigninManage
+            | Self::PagesEdit
+            | Self::PagesPublish => PermissionGroup::Server,
         }
     }
 

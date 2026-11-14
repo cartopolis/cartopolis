@@ -30,6 +30,7 @@ mod fediverse;
 mod http_surface;
 mod model_library;
 mod moderation;
+mod pages;
 mod physical_prims;
 mod presence;
 mod prim_video;

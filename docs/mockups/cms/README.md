@@ -49,8 +49,8 @@ The parser takes a small, fixed subset of JSX:
 **Bare text is refused.** `<Text>Welkom</Text>` fails to save with the line and
 column; it must be `<Text>{$t('welcome')}</Text>`. That rule is what makes every
 visible word translatable instead of most of them. Each prop is typed in the
-component's schema — `text` (must be a `$t`), `url`, `asset`, `enum`, `number`,
-`bool` — so a visible prop (`alt`, `heading`, a button label) cannot take a
+component's schema — `text` (must be a `$t`), `url`, `image`, `enum`, `number`,
+`bool`, `place` — so a visible prop (`alt`, `heading`, a button label) cannot take a
 literal string either, and a URL prop takes only `https:` or a site path.
 
 **One registry, read by both sides.** The components' schemas are one file,
@@ -83,9 +83,9 @@ their words with them.
   `**bold**`, `*italic*`, `[link](/path)` — drawn as elements, never as HTML,
   so a translator can put the emphasis where their language puts it instead of
   the page splitting a sentence over three keys.
-- **No variables in v1.** A page holds no data to put into a sentence; a
-  component that shows live data (a count of communities) owns its sentence as
-  a `site.` key with `{n}` in it.
+- **No variables in v1.** A page holds no data to put into a sentence, and
+  `$t` takes only the key. The site's own texts (`site.` keys: the frame, the
+  download buttons) have their defaults in `registry.json`.
 
 ## Where a page lives
 
@@ -135,13 +135,14 @@ A page has one **draft** (its JSX and all its texts, changed freely) and
 **revisions**: publishing copies the draft into a new, immutable revision and
 makes it live. Changing a text of a live page changes the draft, not what
 readers see, until it is published. Going back is restoring an older revision
-into the draft and publishing it. A draft is visible only at a preview address
-with a short-lived signed token.
+into the draft and publishing it. A draft is visible at `/{lang}/{slug}?draft`,
+which the page draws through the admin route with the session the web UI
+already keeps: an editor who may write pages sees it, anybody else a 404.
 
 ## MCP
 
 A Streamable-HTTP endpoint at **`https://cartopolis.org/mcp`** on the simulator
-(`rmcp`, already in the workspace for the client's server), signed in with an
+(`pages/mcp.rs`: one JSON answer per POST, no session or stream), signed in with an
 access token from `/tokens`. Any MCP client adds it with the URL and the token.
 
 **Midas makes and publishes.** The hub holds an access token for its own account
@@ -168,24 +169,26 @@ The usual flow: `components` → `put_page` (nl) → `preview` → `set_texts` (
 ## The first components
 
 `Page` (title, description, children), `Hero`, `Section`, `Columns`, `Feature`,
-`Text`, `Image` (an `asset:` hash from the simulator's content-addressed store),
-`ButtonLink`, `Quote`, `PlaceLink` (opens the viewer at a place, as `/go`
-does), `CommunityList` (live), `DownloadButtons` (APK, web, server). Each is a
-view under `crates/atlas/web/src/cms/components/` and an entry in
-`registry.json`. Header, footer and the language switch are the page frame, not
+`Text`, `Image` (a site path or `https:`; the simulator's pictures need a
+session), `ButtonLink`, `Quote`, `PlaceLink` (opens the world at a place, as
+`/go` does), `DownloadButtons` (APK, web, server). Each is a view in
+`crates/atlas/web/src/cms/components.tsx` and an entry in `registry.json`. A
+component with live data (a list of communities) waits for a public API to
+read it from. Header, footer and the language switch are the page frame, not
 components a page chooses.
 
 ## The operator's side
 
 Admin › Content › **Pages** (frame 4): the list with each language's state,
-Preview per language, Publish, Unpublish, and the revisions with Restore.
+Preview per language, Publish and Take down; the revisions and Restore are
+MCP's for now.
 Editing is MCP's in v1; a text editor for translations in the Admin is the
 obvious second step, and the data shape already allows it.
 
 ## Not in v1
 
 Server-side rendering of the body; a visual editor; uploading pictures from the
-CMS (pages use assets already in the store); a slug per language; scheduled
+CMS; components with live data; a slug per language; scheduled
 publishing; pages federated as ActivityPub articles; the client app showing
 these pages.
 

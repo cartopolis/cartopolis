@@ -85,6 +85,8 @@ pub struct HttpState {
     /// The program's own updates, when it can replace itself
     /// (`crate::server_update`); `None` on the hosted server.
     pub updates: crate::server_update::Updates,
+    /// Content pages (`crate::pages`).
+    pub pages: crate::pages::PageService,
 }
 
 /// The two things a registration is counted against.
@@ -168,12 +170,15 @@ pub fn router(state: HttpState) -> Router {
         // Usage statistics: the page-view beacon, Admin › Stats and a
         // community's own numbers (`crate::stats`).
         .merge(crate::stats::api::routes())
+        // Content pages: readers' JSON, the editors' routes and `/mcp`
+        // (`crate::pages`); their HTML is the files' fallback below.
+        .merge(crate::pages::http::routes())
         // Atlas's paths, when this listener stands in front of it too
         // (`atlas_proxy`, `cartopolis-server`).
         .merge(crate::atlas_proxy::routes(&state.config))
         .with_state(state.clone());
     // Files last: the web UI is the fallback after every route (`static_files`).
-    crate::static_files::mount(router, &state.config)
+    crate::static_files::mount(router, &state.config, &state.pages)
 }
 
 // ---------------------------------------------------------------------------
