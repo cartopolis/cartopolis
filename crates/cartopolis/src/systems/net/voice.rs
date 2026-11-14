@@ -568,6 +568,13 @@ impl Speaker {
         }
     }
 
+    /// Whether a frame from them arrived in the last moment: they are talking,
+    /// for the ring round their face in the chat sheet.
+    #[must_use]
+    pub fn talking(&self) -> bool {
+        self.silence < 0.4
+    }
+
     /// How much audio is queued, in seconds — the live latency for this speaker.
     #[must_use]
     pub fn buffered_secs(&self) -> f32 {

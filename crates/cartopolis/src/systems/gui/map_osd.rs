@@ -431,6 +431,7 @@ pub fn render_map_osd(
     mut body: BodyControls,
     mut rail: RailView,
     chrome: Res<crate::systems::dock::MapChrome>,
+    sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -449,7 +450,9 @@ pub fn render_map_osd(
         // The camera is the whole screen, exactly as a panel is. A chat's
         // World view is not: it keeps the touch controls.
         !right_panel.is(RightPanel::None) || camera.is_open(),
-        keyboard.is_open(),
+        // The chat sheet on a phone takes the bottom of the screen as the
+        // keys do, and the controls there would draw under it.
+        keyboard.is_open() || (sheet.composing && egui.compact()),
         theme::touch_layout() || touch.ever(),
     ) {
         let flying = avatar_state.is_flying;

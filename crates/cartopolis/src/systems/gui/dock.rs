@@ -363,7 +363,10 @@ pub fn render_dock(
     // ── The switch ───────────────────────────────────────────────────────
     // Over Community on a phone too — it is the way back — but not inside a
     // chat, whose composer has the bottom edge, nor over the keys.
-    let switch_shown = !keyboard && (!covered || (community_open && people.view.open.is_none()));
+    // Nor under the map's chat sheet on a phone, which has it too.
+    let switch_shown = !keyboard
+        && !(compact && say.composing)
+        && (!covered || (community_open && people.view.open.is_none()));
     let mut picked = None;
     // It comes and goes with `motion` when a panel, the keyboard or a chat
     // takes the bottom edge, as the cards there do.

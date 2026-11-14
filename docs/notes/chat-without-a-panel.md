@@ -1,7 +1,7 @@
 ---
 topic: chat
-triggers: [chat.rs, chat_overlay.rs, "speech bubble", "transcript", "composer", "nearby chat", dock.rs]
-updated: 2026-11-10
+triggers: [chat.rs, chat_overlay.rs, "speech bubble", "transcript", "composer", "nearby chat", dock.rs, "chat sheet", "chat chip", call_screen.rs]
+updated: 2026-11-14
 ---
 
 # Chat is not a panel
@@ -23,6 +23,35 @@ compass, the lens and the light (`dock::left_slot(3)`, in a session only): the
 dock it sat in became one World | Community switch, and Say is a world thing —
 it opens the composer over the map, above the transcript in the same
 bottom-left corner. It still writes to the open chat in a chat's World view.
+
+## Since 2026-11-14: a chip at rest, a sheet with one chat in it
+
+The transcript and the composer pill are gone (`docs/mockups/chat-overlay`, v3).
+On a phone the transcript had become a wall: every chat merged, each run headed
+"name · Everyone" at the thread's size, five short messages from the top bar to
+the keyboard, over the compass and the person pins; and the pill's hint said
+"Say something nearby…" under a conversation that was all Everyone.
+
+- **At rest, the chip** (`render_chat_chip`): one line over the switch, the
+  newest line from someone else with its chat's disc and the unread count, for
+  30 s. A tap opens the sheet on that chat. While talking nearby is on it stays
+  and carries mute and leave, so an open microphone is never out of reach.
+- **In the conversation, the sheet** (`render_chat_sheet`): tabs for Here,
+  Everyone and the private chats with a line in the last hour (decided
+  2026-11-14), one chat's lines at the messenger's size, the field. The tab is
+  the scope, so no line carries a chat name and the field no hint of one; Shout
+  is under **+**. On a phone it spans the width and sits on the keys, never
+  higher than 36 % from the top, so the world keeps its top third; with the keys
+  down it takes the lower half. Wider, it is a 400 pt card bottom-left. The
+  switch and the touch controls stand down under it on a phone.
+- **Talking nearby** (proximity voice, public) starts from the microphone in
+  Here's tab row as an open mic; mute is the voice's `PushToTalk` mode, so no
+  new state. **A private chat's call** starts from its tab row and rings full
+  screen as before; folded, it is a row of tiles over the top of the map
+  (`call_screen::folded_tiles`) and a strip in the sheet with the keys, and the
+  green bar stays only over a panel that fills a phone.
+
+The rules below still hold; where they say "transcript", read "chip".
 
 ## What was measured against the old panel, and lost
 

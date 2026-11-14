@@ -118,6 +118,8 @@ pub fn render_call_screen(
     chat: Res<ChatState>,
     online: Option<Res<OnlineSession>>,
     mut st: Local<CallScreenState>,
+    right_panel: Res<crate::resources::RightPanel>,
+    sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
 ) {
     calls.screen_shown = false;
     if online.is_none() && !calls.demo {
@@ -159,9 +161,14 @@ pub fn render_call_screen(
     }
 
     let ctx = egui.ctx_mut().clone();
-    // Folded to the bar, nothing shows a picture: leave the newest waiting
-    // (`fresh`) for when the screen comes back rather than upload it unseen.
-    if !calls.minimized {
+    // Folded over the map, the call is a row of tiles at the top of it
+    // (`docs/mockups/chat-overlay`, v3); over a panel that is the whole
+    // screen it is the green bar, and the bar shows no picture: leave the
+    // newest waiting (`fresh`) for when the screen comes back rather than
+    // upload it unseen.
+    let map_shown = !(egui.compact() && !right_panel.is(crate::resources::RightPanel::None));
+    let tiles_shown = calls.minimized && active.is_some() && map_shown;
+    if !calls.minimized || tiles_shown {
         let CallScreenState { tiles, screens, .. } = &mut *st;
         upload_pictures(&ctx, &mut calls, tiles, screens);
     }
@@ -273,14 +280,24 @@ pub fn render_call_screen(
                 ui.spacing_mut().item_spacing.y = 6.0;
                 if folded_call {
                     let group = active.clone().unwrap_or_default();
-                    if folded_bar(
-                        ui,
-                        bar_width,
-                        &mut calls,
-                        label_of(&group),
-                        &me,
-                        &mut request,
-                    ) {
+                    // The chat sheet open on this call's chat carries its
+                    // keys in a strip; the tiles then need only the way back.
+                    let key = channel_key(&group);
+                    let strip_open = sheet.composing
+                        && chat.channels.get(chat.active).is_some_and(|c| c.key == key);
+                    let unfold = if tiles_shown {
+                        folded_tiles(ui, bar_width, &mut calls, &st, !strip_open, &mut request)
+                    } else {
+                        folded_bar(
+                            ui,
+                            bar_width,
+                            &mut calls,
+                            label_of(&group),
+                            &me,
+                            &mut request,
+                        )
+                    };
+                    if unfold {
                         calls.minimized = false;
                         st.controls = true;
                         st.touched = Some(web_time::Instant::now());
@@ -2031,6 +2048,98 @@ fn folded_bar(
         pressed = true;
     }
     resp.clicked() && !pressed
+}
+
+/// The call folded over the map: a row of tiles across the top — up to three
+/// others and you, their pictures or their initials — with the way back to
+/// the full screen in the corner, and the microphone and hang-up under them
+/// unless the chat sheet's strip has them (`controls`). Answers whether the
+/// call was asked to unfold.
+///
+/// It replaced the green bar on the map so a call keeps its faces while the
+/// chat and the street stay usable (`docs/mockups/chat-overlay`, v3, E); over
+/// a panel that fills a phone the bar stays, as there is no map to float on.
+fn folded_tiles(
+    ui: &mut egui::Ui,
+    width: f32,
+    calls: &mut Calls,
+    st: &CallScreenState,
+    controls: bool,
+    request: &mut Option<CallRequest>,
+) -> bool {
+    let mut people: Vec<Person> = calls
+        .others()
+        .into_iter()
+        .take(3)
+        .map(|(id, name)| person_of(calls, &st.tiles, id, name))
+        .collect();
+    let mut me = person_of(calls, &st.tiles, SELF_TILE, "You".into());
+    me.muted = calls.muted;
+    me.speaking = calls.speaking(SELF_TILE);
+    people.push(me);
+    let n = people.len() as f32;
+    let gap = 8.0;
+    let w = (width - gap * (n - 1.0)) / n;
+    let h = (w * 1.2).clamp(90.0, 150.0);
+    // The tiles and the row of keys under them in one allocation: a key
+    // placed with `button_at` advances the cursor, so a row allocated after
+    // one lands inside the tiles.
+    let row_h = if controls {
+        CALL_BUTTON_SMALL + 10.0
+    } else {
+        0.0
+    };
+    let (all, _) = ui.allocate_exact_size(egui::vec2(width, h + row_h), egui::Sense::hover());
+    let rect = egui::Rect::from_min_size(all.min, egui::vec2(width, h));
+    let resp = ui.interact(rect, egui::Id::new("call_tiles"), egui::Sense::click());
+    let resp = theme::named(ui, resp, "Back to the call");
+    for (i, person) in people.iter().enumerate() {
+        let tile = egui::Rect::from_min_size(
+            rect.min + egui::vec2(i as f32 * (w + gap), 0.0),
+            egui::vec2(w, h),
+        );
+        ui.painter()
+            .add(theme::card_shadow().as_shape(tile, egui::CornerRadius::same(14)));
+        grid_tile(ui, tile, person);
+    }
+    let corner = egui::pos2(
+        rect.max.x - 6.0 - CALL_BUTTON_SMALL * 0.5,
+        rect.min.y + 6.0 + CALL_BUTTON_SMALL * 0.5,
+    );
+    let mut unfold = button_at(
+        ui,
+        corner,
+        icons::OPEN_EXTERNAL,
+        "Full screen",
+        CallTone::On,
+        CALL_BUTTON_SMALL,
+    );
+    if controls {
+        let row = egui::Rect::from_min_max(egui::pos2(all.min.x, rect.max.y + 6.0), all.max);
+        let y = row.center().y;
+        let hang = egui::pos2(row.max.x - CALL_BUTTON_SMALL * 0.5, y);
+        let mic = egui::pos2(hang.x - CALL_BUTTON_SMALL - 8.0, y);
+        let (icon, tip, tone) = if calls.muted {
+            (icons::MIC_OFF, "Unmute", CallTone::Off)
+        } else {
+            (icons::MIC, "Mute", CallTone::On)
+        };
+        if button_at(ui, mic, icon, tip, tone, CALL_BUTTON_SMALL) {
+            calls.muted = !calls.muted;
+        }
+        if button_at(
+            ui,
+            hang,
+            icons::CALL_END,
+            "Hang up",
+            CallTone::HangUp,
+            CALL_BUTTON_SMALL,
+        ) {
+            *request = Some(CallRequest::Leave);
+        }
+    }
+    unfold |= resp.clicked();
+    unfold
 }
 
 /// A call ringing as a banner: over a call you are in, or folded. Answers

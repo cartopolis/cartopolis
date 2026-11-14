@@ -472,8 +472,7 @@ impl Plugin for GuiPlugin {
                     // because the bubbles cull against the root `Ui`'s leftover
                     // space exactly as the pins do; near the end because that space
                     // is only the map once every panel has taken its width. The
-                    // composer draws last of the three so it is on top of the
-                    // transcript it expands, and — being ordered before the
+                    // sheet draws last of the three, and — being ordered before the
                     // on-screen keyboard — its field is registered in time for the
                     // keyboard to find it.
                     // And after the other people have been moved this frame: the
@@ -482,8 +481,8 @@ impl Plugin for GuiPlugin {
                     systems::chat_overlay::render_chat_bubbles
                         .after(systems::free_camera::camera_controls)
                         .after(systems::avatar::smooth_remote_avatars),
-                    systems::chat_overlay::render_chat_transcript,
-                    systems::chat_overlay::render_chat_composer,
+                    systems::chat_overlay::render_chat_chip,
+                    systems::chat_overlay::render_chat_sheet,
                     // A chat's World view has a text field, so it is ordered before
                     // the on-screen keyboard for the composer's reason.
                     systems::chats::render_chat_world,

@@ -2558,6 +2558,8 @@ const UI_ELEMENTS: &[&str] = &[
     "updatetooold",
     "updating",
     "chat",
+    // The same exchange with the sheet closed: the chip at rest.
+    "chatrest",
     "chats",
     "communities",
     "community",
@@ -3167,7 +3169,7 @@ pub fn open_scripted_ui(
     // `--offline` run does not already have — and stands one more speaker beside
     // it. Pair it with `--shot-mode avatar`, or the camera is somewhere the
     // avatar is not and the bubbles are off screen with it.
-    seed_scripted_chat(want("chat"), &mut cards.chat);
+    seed_scripted_chat(want("chat"), want("chatrest"), &mut cards.chat);
     // A chat's World view reads its lines from the map's transcript, which
     // draws only with a session or this.
     if want("chatworld") {
@@ -3200,8 +3202,8 @@ pub fn open_scripted_ui(
 }
 
 /// Seed or clear `--ui chat`. Written unconditionally, like every other element.
-fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
-    if !want {
+fn seed_scripted_chat(open: bool, rest: bool, chat: &mut ScriptedChat) {
+    if !open && !rest {
         for e in chat.seeded.iter() {
             chat.commands.entity(e).despawn();
         }
@@ -3209,7 +3211,7 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
         chat.overlay.close();
         return;
     }
-    crate::systems::chat_overlay::seed_demo_chat(&mut chat.state, &mut chat.overlay);
+    crate::systems::chat_overlay::seed_demo_chat(&mut chat.state, &mut chat.overlay, open);
     if !chat.seeded.is_empty() {
         return;
     }

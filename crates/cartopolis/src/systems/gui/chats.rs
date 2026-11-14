@@ -325,6 +325,22 @@ impl ChatsView {
         lines[seen..].iter().filter(|l| !is_mine(chat, l)).count()
     }
 
+    /// Unread lines in one chat, by its key.
+    pub(crate) fn unread_of(&self, chat: &ChatState, key: &str) -> usize {
+        chat.channels
+            .iter()
+            .find(|c| c.key == key)
+            .map_or(0, |c| self.unread(chat, key, &c.lines))
+    }
+
+    /// The first `n` lines of a chat have been read: it is on screen
+    /// somewhere other than the panel (the map's chat sheet).
+    pub(crate) fn mark_seen(&mut self, key: &str, n: usize) {
+        if self.seen.get(key) != Some(&n) {
+            self.seen.insert(key.to_string(), n);
+        }
+    }
+
     /// Unread lines over every chat but *Here*, whose lines are the map's
     /// own bubbles: the count the World | Community switch wears.
     pub(crate) fn unread_total(&self, chat: &ChatState) -> usize {
