@@ -255,13 +255,17 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
     let covered = sorted_cells(cells.keys().copied());
     let n_cells = cells.len();
     for (cell, elements) in cells {
-        ctx.write_doc(
-            &cell_path("buildings", cell),
-            &osm_buildings::Cell {
-                elements: Some(elements),
-                remark: None,
-            },
-        )?;
+        let doc = osm_buildings::Cell {
+            elements: Some(elements),
+            remark: None,
+        };
+        // The binary beside the JSON (`osm_buildings::encode_bin`): a client
+        // from 2026-11-14 on asks for it first, and every older one reads the
+        // JSON, so both stay.
+        let json = cell_path("buildings", cell);
+        let bin = format!("{}.bin", json.trim_end_matches(".json"));
+        ctx.write_bytes_gzipped(&bin, &osm_buildings::encode_bin(&doc))?;
+        ctx.write_doc(&json, &doc)?;
     }
     ctx.write_coverage(
         "coverage.json",

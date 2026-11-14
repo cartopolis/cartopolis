@@ -144,6 +144,10 @@ it silently (reported by the tunnel/bridge work, 2026-09-23):
 - **`lod22` writes each cell twice, and both must stay** (below): the JSON that
   every installed APK and cached web build reads, and `lod22/14/{x}/{y}.bin`
   (+ `.bin.gz`) that a client from 2026-09-26 on asks for first.
+- **`buildings` does the same since 2026-11-14**: `buildings/14/{x}/{y}.bin`
+  (`formats::osm_buildings::encode_bin`) beside the JSON, asked for first by a
+  client from then on, latched off on a host that has not re-run `buildings`
+  (`cold-start-bytes.md`).
 
 ## The LoD2.2 cells are binary as well as JSON
 

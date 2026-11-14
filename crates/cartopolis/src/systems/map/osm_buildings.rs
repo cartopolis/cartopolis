@@ -1502,14 +1502,14 @@ fn request_detail_patch(
         osm.lid_centre = Vec2::new(world_x, world_z);
         IoTaskPool::get()
             .spawn(async move {
-                let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
+                let bodies = fetch_patch_bodies(d_south, d_west, d_north, d_east).await;
                 crate::platform::workers::submit(
                     "osm_buildings",
                     Box::new(move || {
                         let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
                         let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
                         let result =
-                            Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east))
+                            Ok::<_, String>(parse_patch(&bodies, d_south, d_west, d_north, d_east))
                                 .map(|mut buildings| {
                                     // 3DBAG territory: the real meshes own covered cells, and the
                                     // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
@@ -1721,8 +1721,8 @@ fn stream_far_cells(
             // run on the frame loop.
             IoTaskPool::get()
                 .spawn(async move {
-                    match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
-                        Ok(text) => {
+                    match fetch_cell_body(cx, cy, CACHE_ZOOM).await {
+                        Ok(body) => {
                             // A register block is coloured from the register
                             // (`register_colours`); an Overpass one keeps its tags.
                             let roofs = if tdbag {
@@ -1733,8 +1733,8 @@ fn stream_far_cells(
                             crate::platform::workers::submit(
                                 "osm_buildings",
                                 Box::new(move || {
-                                    let built = build_far_from_text(
-                                        &text,
+                                    let built = build_far_from_body(
+                                        &body,
                                         cx,
                                         cy,
                                         ax,
@@ -2121,11 +2121,11 @@ type FarCellBuild = (GridCell, Mesh, [Option<Mesh>; 4]);
 /// (buildings + windows), anchored to the cell's own BigSpace grid cell for f32
 /// precision. Runs on the far-cell worker thread. Returns `None` for cells with
 /// no buildings.
-/// The CPU half of a far cell: response text in, meshes out. Pure and owned, so
+/// The CPU half of a far cell: response body in, meshes out. Pure and owned, so
 /// it is `Send` and runs on `platform::workers` rather than on the thread that
 /// renders — see `build_lod22_from_body` for the measurement that motivated it.
-fn build_far_from_text(
-    text: &str,
+fn build_far_from_body(
+    body: &CellBody,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -2137,7 +2137,7 @@ fn build_far_from_text(
     roofs: Option<&cartopolis_geo::formats::roofs::Cell>,
     skyline: bool,
 ) -> Result<Option<FarCellBuild>, String> {
-    let mut buildings = parse_buildings(text)?;
+    let mut buildings = body.buildings()?;
     if let Some(roofs) = roofs {
         for b in &mut buildings {
             register_colours(b, roofs);
@@ -3549,31 +3549,31 @@ fn cell_cache_key(cx: i64, cy: i64, zoom: u32) -> String {
 /// Assemble a patch's buildings from the fixed CACHE_ZOOM cells covering its bbox:
 /// each cell is served from disk cache or fetched once, then deduped by OSM way id
 /// (a building straddling a cell edge is returned by both cells).
-/// The network half: every covering cell's response text, nothing parsed.
-async fn fetch_patch_texts(south: f64, west: f64, north: f64, east: f64) -> Vec<String> {
+/// The network half: every covering cell's response body, nothing parsed.
+async fn fetch_patch_bodies(south: f64, west: f64, north: f64, east: f64) -> Vec<CellBody> {
     // NW corner → min tile (x,y); SE corner → max tile (y grows southward).
     let (cx0, cy0) = lat_lng_to_tile(north, west, CACHE_ZOOM);
     let (cx1, cy1) = lat_lng_to_tile(south, east, CACHE_ZOOM);
 
-    let mut texts = Vec::new();
+    let mut bodies = Vec::new();
     for cy in cy0..=cy1 {
         for cx in cx0..=cx1 {
-            match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
-                Ok(text) => texts.push(text),
+            match fetch_cell_body(cx, cy, CACHE_ZOOM).await {
+                Ok(body) => bodies.push(body),
                 Err(e) => tracing::warn!(cx, cy, error = %e, "building cell fetch failed"),
             }
         }
     }
-    texts
+    bodies
 }
 
 /// The CPU half: parse each cell, dedupe by OSM way id (a building straddling a
 /// cell edge is returned by both cells), and clip to the requested bbox.
-fn parse_patch(texts: &[String], south: f64, west: f64, north: f64, east: f64) -> Vec<Building> {
+fn parse_patch(bodies: &[CellBody], south: f64, west: f64, north: f64, east: f64) -> Vec<Building> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    for text in texts {
-        match parse_buildings(text) {
+    for body in bodies {
+        match body.buildings() {
             Ok(cell) => {
                 for b in cell {
                     if seen.insert(b.id) {
@@ -3596,17 +3596,70 @@ fn parse_patch(texts: &[String], south: f64, west: f64, north: f64, east: f64) -
 /// One fixed cell's buildings. Covered cells (ADR-027) come from the self-hosted
 /// 3DBAG host (real Dutch BAG heights); everything else — and any 3DBAG miss (a
 /// 404 or transport error) — falls back to Overpass/OSM. Both paths return the
-/// same `Building` shape via `parse_buildings`.
-async fn fetch_cell_text(cx: i64, cy: i64, zoom: u32) -> Result<String, String> {
+/// same `Building` shape via [`CellBody::buildings`].
+async fn fetch_cell_body(cx: i64, cy: i64, zoom: u32) -> Result<CellBody, String> {
     if zoom == CACHE_ZOOM && tdbag_covers(cx, cy) {
-        match fetch_cell_3dbag_text(cx, cy).await {
-            Ok(text) => return Ok(text),
+        match fetch_cell_3dbag_body(cx, cy).await {
+            Ok(body) => return Ok(body),
             Err(e) => {
                 tracing::debug!(cx, cy, error = %e, "3DBAG cell fetch failed; falling back to OSM");
             }
         }
     }
-    fetch_cell_overpass_text(cx, cy, zoom).await
+    fetch_cell_overpass_text(cx, cy, zoom)
+        .await
+        .map(CellBody::Json)
+}
+
+/// One cell's body as fetched: the JSON every source can answer, or the 3DBAG
+/// host's binary cell (`formats::osm_buildings::encode_bin`). Both parse into
+/// the same document, so everything downstream is the same whichever arrived.
+enum CellBody {
+    Json(String),
+    Bin(Vec<u8>),
+}
+
+impl CellBody {
+    fn buildings(&self) -> Result<Vec<Building>, String> {
+        match self {
+            CellBody::Json(text) => parse_buildings(text),
+            CellBody::Bin(bytes) => {
+                buildings_from_doc(cartopolis_geo::formats::osm_buildings::decode_bin(bytes)?)
+            }
+        }
+    }
+}
+
+/// Whether the 3DBAG host serves binary building cells: unknown, yes or no —
+/// the latch `lod22`'s binary cells keep, for the same reason. A host that has
+/// not re-run `buildings` since atlas learned to write them answers 404, and
+/// that must cost a handful of requests per session rather than one per cell.
+mod bin_support {
+    pub const UNKNOWN: u8 = 0;
+    pub const YES: u8 = 1;
+    pub const NO: u8 = 2;
+}
+
+static BIN_SUPPORT: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(bin_support::UNKNOWN);
+static BIN_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Failed `.bin` requests before the host is written off: one wave of the far
+/// lane's concurrency, so the requests already in flight do not decide it.
+const MAX_BIN_FAILURES: u32 = TDBAG_FAR_CONCURRENCY as u32;
+
+/// Count a failed binary fetch, and latch the binary off once enough have
+/// failed. A host that has served one is never written off: a later failure
+/// there is an outage or a missing cell, and the JSON covers both.
+fn note_bin_failure() {
+    use std::sync::atomic::Ordering;
+    if BIN_SUPPORT.load(Ordering::Relaxed) == bin_support::YES {
+        return;
+    }
+    if BIN_FAILURES.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_BIN_FAILURES {
+        BIN_SUPPORT.store(bin_support::NO, Ordering::Relaxed);
+        tracing::info!("this host serves no binary building cells; reading the JSON");
+    }
 }
 
 /// Overpass reports timeouts, rate limits and runtime errors as HTTP 200 with a
@@ -3654,10 +3707,38 @@ fn cell_cache_key_3dbag(cx: i64, cy: i64) -> String {
     format!("buildings/3dbag/{}/{}/{}.json", CACHE_ZOOM, cx, cy)
 }
 
-/// Fetch one cell from the 3DBAG static host (cached via the storage seam). The
-/// host serves Overpass-shaped JSON, so `parse_buildings` handles it unchanged. A
-/// 404 (cell not actually covered) or any transport error is returned as `Err`,
-/// letting the caller fall back to Overpass.
+/// The binary cell's own cache key: a body is only ever read back by the parser
+/// that wrote it, as `lod22::bin_cache_key` explains. `bin1` is the format.
+fn bin_cache_key_3dbag(cx: i64, cy: i64) -> String {
+    format!("buildings/3dbag/bin1/{}/{}/{}.bin", CACHE_ZOOM, cx, cy)
+}
+
+/// Fetch one cell from the 3DBAG static host (cached via the storage seam): the
+/// binary cell first, ~a third of the JSON's bytes after compression, and the
+/// Overpass-shaped JSON where the host has none. A 404 (cell not actually
+/// covered) or any transport error on the JSON is returned as `Err`, letting
+/// the caller fall back to Overpass.
+async fn fetch_cell_3dbag_body(cx: i64, cy: i64) -> Result<CellBody, String> {
+    use std::sync::atomic::Ordering;
+    let bin_key = bin_cache_key_3dbag(cx, cy);
+    if let Some(cached) = storage::get(storage::Namespace::Cache, &bin_key).await {
+        return Ok(CellBody::Bin(cached));
+    }
+    if BIN_SUPPORT.load(Ordering::Relaxed) != bin_support::NO {
+        let url = format!("{}/buildings/{CACHE_ZOOM}/{cx}/{cy}.bin", tdbag_url());
+        match http::fetch_optional(http::Request::get(url)).await {
+            Ok(Some(bytes)) if cartopolis_geo::formats::osm_buildings::looks_like_bin(&bytes) => {
+                BIN_SUPPORT.store(bin_support::YES, Ordering::Relaxed);
+                storage::put(storage::Namespace::Cache, &bin_key, &bytes).await;
+                return Ok(CellBody::Bin(bytes));
+            }
+            _ => note_bin_failure(),
+        }
+    }
+    fetch_cell_3dbag_text(cx, cy).await.map(CellBody::Json)
+}
+
+/// The JSON half of [`fetch_cell_3dbag_body`].
 async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key_3dbag(cx, cy);
     if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
@@ -3788,7 +3869,13 @@ pub(crate) async fn overpass_query(query: &str) -> Result<String, String> {
 /// `cartopolis_geo::formats::osm_buildings`, the type atlas writes them with.
 fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
     // Lenient per element: an unreadable point, id or tag set costs only itself.
-    let doc = cartopolis_geo::formats::osm_buildings::parse(text)?;
+    buildings_from_doc(cartopolis_geo::formats::osm_buildings::parse(text)?)
+}
+
+/// A parsed cell — from the JSON or the binary — into buildings.
+fn buildings_from_doc(
+    doc: cartopolis_geo::formats::osm_buildings::Cell,
+) -> Result<Vec<Building>, String> {
     // Overpass reports timeouts / runtime errors / rate limits as HTTP 200 with a
     // `remark` field (usually alongside empty `elements`). Treat it as an error so
     // it neither renders as "no buildings here" nor gets cached as a real result.
