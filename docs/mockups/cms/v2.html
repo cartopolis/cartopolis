@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Content pages — v2</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+<h1>Content pages <b>v2</b> — JSX blocks, every text a <code>$t</code>, made through MCP</h1>
+<p class="lede">Proposed 2026-11-14; nothing here exists yet <span class="new">NEW</span>. An agent writes a page through MCP as JSX made of the site's own components; the simulator parses it (never runs it), keeps its texts per language, and the browser draws it at <code>/{lang}/{slug}</code>.</p>
+
+<div class="sec">
+  <h2><span>1</span>A page, as an agent sends it to <code>put_page</code></h2>
+  <p class="cap">Only components from the registry, only <code>$t('…')</code> for anything a reader sees. The second panel is the same call with one sentence typed in directly: refused as a whole, with the line and the reason.</p>
+  <div class="row">
+    <div class="code">
+      <div class="hd"><b>put_page</b> slug <code>over</code> · source language <code>nl</code></div>
+<pre><span class="tag">&lt;Page</span> <span class="attr">title</span>={<span class="t">$t('title')</span>} <span class="attr">description</span>={<span class="t">$t('description')</span>}<span class="tag">&gt;</span>
+  <span class="tag">&lt;Hero</span> <span class="attr">image</span>=<span class="str">"asset:9f2c41e0"</span> <span class="attr">heading</span>={<span class="t">$t('hero.heading')</span>}<span class="tag">&gt;</span>
+    <span class="tag">&lt;Text&gt;</span>{<span class="t">$t('hero.lead')</span>}<span class="tag">&lt;/Text&gt;</span>
+    <span class="tag">&lt;ButtonLink</span> <span class="attr">href</span>=<span class="str">"/register"</span><span class="tag">&gt;</span>{<span class="t">$t('hero.cta')</span>}<span class="tag">&lt;/ButtonLink&gt;</span>
+  <span class="tag">&lt;/Hero&gt;</span>
+  <span class="tag">&lt;Section</span> <span class="attr">heading</span>={<span class="t">$t('why.heading')</span>}<span class="tag">&gt;</span>
+    <span class="tag">&lt;Columns&gt;</span>
+      <span class="tag">&lt;Feature</span> <span class="attr">icon</span>=<span class="str">"map"</span> <span class="attr">heading</span>={<span class="t">$t('why.map.heading')</span>}<span class="tag">&gt;</span>
+        {<span class="t">$t('why.map.body')</span>}
+      <span class="tag">&lt;/Feature&gt;</span>
+      <span class="tag">&lt;Feature</span> <span class="attr">icon</span>=<span class="str">"chat"</span> <span class="attr">heading</span>={<span class="t">$t('why.chat.heading')</span>}<span class="tag">&gt;</span>
+        {<span class="t">$t('why.chat.body')</span>}
+      <span class="tag">&lt;/Feature&gt;</span>
+    <span class="tag">&lt;/Columns&gt;</span>
+  <span class="tag">&lt;/Section&gt;</span>
+  <span class="tag">&lt;CommunityList</span> <span class="attr">limit</span>={<span class="str">6</span>} <span class="tag">/&gt;</span>
+<span class="tag">&lt;/Page&gt;</span></pre>
+      <div class="ok">Saved as draft · 9 keys · nl complete · en missing 9</div>
+    </div>
+    <div class="code" style="width:560px">
+      <div class="hd"><b>put_page</b> — the same page, one line changed</div>
+<pre>  <span class="tag">&lt;Hero</span> <span class="attr">image</span>=<span class="str">"asset:9f2c41e0"</span> <span class="attr">heading</span>={<span class="t">$t('hero.heading')</span>}<span class="tag">&gt;</span>
+    <span class="tag">&lt;Text&gt;</span>Jouw stad, gedeeld.<span class="tag">&lt;/Text&gt;</span>
+<span class="cm">    …</span>
+  <span class="tag">&lt;div</span> <span class="attr">onclick</span>=<span class="str">"…"</span><span class="tag">&gt;</span></pre>
+      <div class="err">Refused, nothing saved.<br>
+        3:11 bare text in <code>&lt;Text&gt;</code>: write <code>{$t('…')}</code> and give the text in <code>texts</code><br>
+        5:3 <code>div</code> is not a component (see <code>components</code>)</div>
+    </div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2><span>2</span>The page's texts, per language</h2>
+  <p class="cap">Stored beside the page, not in a file in the repository. Each translation remembers which source sentence it translated: when the Dutch changes, the English turns <i>stale</i> instead of quietly describing the old sentence. A missing text falls back to the source language.</p>
+  <table class="texts">
+    <tr><th style="width:190px">Key</th><th>nl <span class="pill src">source</span></th><th>en</th></tr>
+    <tr><td class="k">title</td><td>Over Cartopolis</td><td>About Cartopolis</td></tr>
+    <tr><td class="k">hero.heading</td><td>Jouw stad, gedeeld</td><td>Your city, shared</td></tr>
+    <tr><td class="k">hero.lead</td><td>Praat, plan en bouw samen met je buren — <b>op de kaart</b> van je eigen buurt.</td><td>Talk, plan and build with your neighbours — <b>on the map</b> of your own street.</td></tr>
+    <tr><td class="k">hero.cta</td><td>Maak een account</td><td>Create an account</td></tr>
+    <tr><td class="k">why.map.heading</td><td>De echte stad</td><td class="stale">The real city <span class="pill st">stale</span></td></tr>
+    <tr><td class="k">why.map.body</td><td>Gebouwd uit open data: elk huis staat waar het staat.</td><td>Built from open data: every house is where it is.</td></tr>
+    <tr><td class="k">why.chat.body</td><td>Versleutelde gesprekken, ook met je buurt.</td><td class="miss">missing — shows the Dutch</td></tr>
+  </table>
+</div>
+
+<div class="sec">
+  <h2><span>3</span>Served: one page, two addresses</h2>
+  <p class="cap">The server fills in only the title, description, link-preview tags and <code>hreflang</code>; a small bundle (not the chat app) fetches the page and its texts and draws it. The language switch links the two.</p>
+  <div class="row">
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org/<b>nl/over</b></div></div>
+      <div class="site"><span class="brand"><i></i>Cartopolis</span><span class="sp"></span>Community · Wereld<span class="lang"><span class="on">NL</span><span>EN</span></span></div>
+      <div class="hero"><h3>Jouw stad, gedeeld</h3><p>Praat, plan en bouw samen met je buren — <b>op de kaart</b> van je eigen buurt.</p><span class="cta">Maak een account</span></div>
+      <div class="secn"><h4>Waarom Cartopolis</h4><div class="cols">
+        <div class="feat"><b>De echte stad</b><span>Gebouwd uit open data: elk huis staat waar het staat.</span></div>
+        <div class="feat"><b>Samen praten</b><span>Versleutelde gesprekken, ook met je buurt.</span></div></div></div>
+    </div>
+    <div class="win">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="url">cartopolis.org/<b>en/over</b></div></div>
+      <div class="site"><span class="brand"><i></i>Cartopolis</span><span class="sp"></span>Community · World<span class="lang"><span>NL</span><span class="on">EN</span></span></div>
+      <div class="hero"><h3>Your city, shared</h3><p>Talk, plan and build with your neighbours — <b>on the map</b> of your own street.</p><span class="cta">Create an account</span></div>
+      <div class="secn"><h4>Why Cartopolis</h4><div class="cols">
+        <div class="feat"><b>The real city</b><span>Built from open data: every house is where it is.</span></div>
+        <div class="feat fb"><b>Talking together</b><span lang="nl">Versleutelde gesprekken, ook met je buurt.</span></div></div>
+        <div class="fbnote">Outlined only here: the missing English falls back to the Dutch, marked <code>lang="nl"</code>. Readers see no outline.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2><span>4</span>Admin › Content › Pages</h2>
+  <p class="cap">What is live, what is a draft, and where each language stands. Writing is MCP's in v1. The Midas hub holds both <code>pages_edit</code> and <code>pages_publish</code>, so a session can make a page and put it live; the buttons here are for a person doing the same.</p>
+  <div class="admin">
+    <div class="rail"><div class="g">People</div><div class="it">Accounts</div><div class="it">Roles</div><div class="g">Content</div><div class="it">Building overrides</div><div class="it">Model library</div><div class="it on">Pages <span class="new">NEW</span></div><div class="g">Data</div><div class="it">Pipelines</div></div>
+    <div class="main">
+      <h3>Pages</h3><div class="sub">Made through MCP at <code>cartopolis.org/mcp</code> with an access token.</div>
+      <table class="list">
+        <tr><th>Page</th><th>State</th><th>nl</th><th>en</th><th></th></tr>
+        <tr><td>Over Cartopolis<small>/over · by midas · 10 min ago</small></td><td><span class="pill draft">draft</span></td><td><span class="pill src">source</span></td><td><span class="pill ms">missing 1</span><span class="pill st">stale 1</span></td><td><div class="acts"><span class="b">Preview</span><span class="b p">Publish</span></div></td></tr>
+        <tr><td>Download<small>/download · revision 4</small></td><td><span class="pill live">live</span></td><td><span class="pill src">source</span></td><td><span class="pill live">complete</span></td><td><div class="acts"><span class="b">Preview</span><span class="b">Revisions</span><span class="b">Unpublish</span></div></td></tr>
+        <tr><td>Je eigen server<small>/server · revision 2 · draft changed</small></td><td><span class="pill live">live</span> <span class="pill draft">draft</span></td><td><span class="pill src">source</span></td><td><span class="pill live">complete</span></td><td><div class="acts"><span class="b">Preview</span><span class="b p">Publish</span><span class="b">Revisions</span></div></td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+</body></html>
