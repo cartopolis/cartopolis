@@ -105,9 +105,44 @@ async function build() {
 
     const bytes = (await Bun.file(path.join(dist, appJs)).arrayBuffer()).byteLength
     console.log(`built dist/ (${appJs.slice(1)} ${Math.round(bytes / 1024)} KB)`)
+    await buildPages()
 
     if (mock) await buildMockChat()
     if (!serve) precompress()
+}
+
+/**
+ * The content pages' own app (`src/cms/`, `docs/mockups/cms`): `pages.html` and
+ * a bundle of its own, so a page about Cartopolis does not load the chat. The
+ * simulator answers `/{lang}/{slug}` with `dist/pages.html`, its head filled in.
+ */
+async function buildPages() {
+    const result = await Bun.build({
+        entrypoints: [path.join(root, 'src/cms/pages.tsx')],
+        external: ['/fonts/*', '/img/*'],
+        minify: !serve,
+        naming: 'pages-[hash].[ext]',
+        outdir: dist,
+        sourcemap: serve ? 'inline' : 'none',
+        target: 'browser',
+    })
+    if (!result.success) {
+        for (const log of result.logs) console.error(log)
+        throw new Error('content pages build failed')
+    }
+    const named = (ext: string) => {
+        const out = result.outputs.find((o) => o.path.endsWith(ext))
+        if (!out) throw new Error(`the pages build made no ${ext}`)
+        return `/${path.basename(out.path)}`
+    }
+    const js = named('.js')
+    const html = (await Bun.file(path.join(root, 'src/cms/pages.html')).text())
+        .replace('href="/pages.css"', `href="${named('.css')}"`)
+        .replace('src="/pages.js"', `src="${js}"`)
+    if (!html.includes(js)) throw new Error('pages.html no longer names /pages.js; update build.ts')
+    await Bun.write(path.join(dist, 'pages.html'), html)
+    const bytes = (await Bun.file(path.join(dist, js)).arrayBuffer()).byteLength
+    console.log(`built dist/pages.html (${js.slice(1)} ${Math.round(bytes / 1024)} KB)`)
 }
 
 /**
@@ -342,6 +377,14 @@ if (serve) {
                         `<p>The app runs here on cartopolis.org${url.search ? ` (${url.search})` : ''}.</p></body>`,
                     {headers: {'Content-Type': 'text/html'}},
                 )
+            }
+
+            // A content page (`src/cms/`): the simulator fills the head in; here
+            // the shell is served as built, which only the tab title tells apart.
+            if (/^\/[a-z]{2}\/[a-z0-9][a-z0-9-]*\/?$/.test(url.pathname)) {
+                return new Response(Bun.file(path.join(dist, 'pages.html')), {
+                    headers: {'Content-Type': 'text/html'},
+                })
             }
 
             // Mounted as in production (`src/lib/base.ts`): at the site root.

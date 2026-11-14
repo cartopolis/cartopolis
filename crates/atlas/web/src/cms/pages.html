@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The content pages' shell (docs/mockups/cms). The simulator fills the
+         page's own head in where the marker below is: its title, description,
+         link-preview tags and the addresses of its other languages, and sets
+         <html lang>. Nothing else in this file is per page. -->
+    <!--cms-head-->
+    <title>Cartopolis</title>
+    <!--/cms-head-->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/icon-light.svg" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#f1f5f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1416" media="(prefers-color-scheme: dark)" />
+    <script>
+      try {
+        const theme = localStorage.getItem('m-theme')
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme
+      } catch {}
+    </script>
+    <style>
+      html { background: #f1f5f5; }
+      @media (prefers-color-scheme: dark) { html { background: #0f1416; } }
+      html[data-theme="light"] { background: #f1f5f5; }
+      html[data-theme="dark"] { background: #0f1416; }
+    </style>
+    <link rel="stylesheet" href="/pages.css" />
+    <script type="module" src="/pages.js"></script>
+  </head>
+  <body data-cms></body>
+</html>

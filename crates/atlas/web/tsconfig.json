@@ -30,6 +30,7 @@
     "build.ts",
     "mock.ts",
     "mock-chat.ts",
+    "mock-pages.ts",
     "build-chat-core.ts"
   ],
   "exclude": [

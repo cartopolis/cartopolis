@@ -1,0 +1,110 @@
+{
+  "$comment": "The content pages' components (docs/mockups/cms). One description read by both sides: the simulator embeds it to check a page (crates/simulator/src/pages), the web UI draws with it (components.tsx). A prop's type is text (must be {$t('key')}), url (https:, mailto: or a site path), image (https: or a site path), enum, number, bool or place. children is none, text (one {$t('key')}) or blocks (components, optionally only those in allow).",
+  "root": "Page",
+  "components": {
+    "Page": {
+      "doc": "The page itself; exactly once, at the root. Its title and description are the browser tab's and the link preview's.",
+      "props": {
+        "title": {"type": "text", "required": true},
+        "description": {"type": "text", "required": true}
+      },
+      "children": "blocks",
+      "example": "<Page title={$t('title')} description={$t('description')}>\n  <Hero heading={$t('hero.heading')}><Text>{$t('hero.lead')}</Text></Hero>\n</Page>"
+    },
+    "Hero": {
+      "doc": "The wide opening band: a big heading, a lead text and buttons, optionally over a picture.",
+      "props": {
+        "heading": {"type": "text", "required": true},
+        "image": {"type": "image"}
+      },
+      "children": "blocks",
+      "allow": ["Text", "ButtonLink", "DownloadButtons"],
+      "example": "<Hero heading={$t('hero.heading')}>\n  <Text lead>{$t('hero.lead')}</Text>\n  <ButtonLink href=\"/register\">{$t('hero.cta')}</ButtonLink>\n</Hero>"
+    },
+    "Section": {
+      "doc": "A titled part of the page.",
+      "props": {
+        "heading": {"type": "text"}
+      },
+      "children": "blocks",
+      "example": "<Section heading={$t('why.heading')}>\n  <Text>{$t('why.body')}</Text>\n</Section>"
+    },
+    "Columns": {
+      "doc": "Its children side by side on a wide screen, under each other on a phone.",
+      "props": {},
+      "children": "blocks",
+      "allow": ["Feature", "Image", "Quote", "Text"],
+      "example": "<Columns>\n  <Feature icon=\"location_on\" heading={$t('map.heading')}>{$t('map.body')}</Feature>\n  <Feature icon=\"chat\" heading={$t('chat.heading')}>{$t('chat.body')}</Feature>\n</Columns>"
+    },
+    "Feature": {
+      "doc": "A card with an icon, a heading and a short text.",
+      "props": {
+        "icon": {"type": "enum", "values": ["location_on", "chat", "public", "group", "lock", "calendar_month", "star", "image", "mic", "videocam", "edit", "description"]},
+        "heading": {"type": "text", "required": true}
+      },
+      "children": "text",
+      "example": "<Feature icon=\"lock\" heading={$t('private.heading')}>{$t('private.body')}</Feature>"
+    },
+    "Text": {
+      "doc": "Running text. A blank line starts a new paragraph; **bold**, *italic* and [a link](/path) are allowed inside the text itself. lead makes it the larger opening text.",
+      "props": {
+        "lead": {"type": "bool"}
+      },
+      "children": "text",
+      "example": "<Text>{$t('intro')}</Text>"
+    },
+    "Image": {
+      "doc": "A picture, with a description for people who cannot see it and an optional caption.",
+      "props": {
+        "src": {"type": "image", "required": true},
+        "alt": {"type": "text", "required": true},
+        "caption": {"type": "text"}
+      },
+      "children": "none",
+      "example": "<Image src=\"/img/groningen.svg\" alt={$t('map.alt')} />"
+    },
+    "ButtonLink": {
+      "doc": "A link drawn as a button.",
+      "props": {
+        "href": {"type": "url", "required": true},
+        "variant": {"type": "enum", "values": ["primary", "secondary"]}
+      },
+      "children": "text",
+      "example": "<ButtonLink href=\"/register\">{$t('cta')}</ButtonLink>"
+    },
+    "Quote": {
+      "doc": "A quotation, optionally with who said it.",
+      "props": {
+        "by": {"type": "text"}
+      },
+      "children": "text",
+      "example": "<Quote by={$t('quote.by')}>{$t('quote.text')}</Quote>"
+    },
+    "PlaceLink": {
+      "doc": "A link that opens the world at a place, as a place link in the chat does. place is what follows ?place= in a shared place link: lat,lon, optionally then the height, pitch and heading (53.2194,6.5665,120m,-12.5,45.0).",
+      "props": {
+        "place": {"type": "place", "required": true}
+      },
+      "children": "text",
+      "example": "<PlaceLink place=\"53.2194,6.5665\">{$t('grote-markt')}</PlaceLink>"
+    },
+    "DownloadButtons": {
+      "doc": "The ways to get Cartopolis: the Android app, the browser and a server of your own. Its labels are the site's own texts.",
+      "props": {},
+      "children": "none",
+      "example": "<DownloadButtons />"
+    }
+  },
+  "site_texts": {
+    "site.nav.community": {"nl": "Community", "en": "Community"},
+    "site.nav.world": {"nl": "Wereld", "en": "World"},
+    "site.language": {"nl": "Taal", "en": "Language"},
+    "site.loading": {"nl": "Even laden…", "en": "Loading…"},
+    "site.not_found": {"nl": "Deze pagina bestaat niet (meer).", "en": "This page does not exist (any more)."},
+    "site.failed": {"nl": "De pagina kon niet geladen worden. Probeer het zo nog eens.", "en": "The page could not be loaded. Try again in a moment."},
+    "site.draft": {"nl": "Concept — nog niet gepubliceerd", "en": "Draft — not published yet"},
+    "site.download.android": {"nl": "Android-app", "en": "Android app"},
+    "site.download.web": {"nl": "In je browser", "en": "In your browser"},
+    "site.download.server": {"nl": "Je eigen server", "en": "Your own server"}
+  }
+}

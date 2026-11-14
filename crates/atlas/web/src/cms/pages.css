@@ -1,0 +1,285 @@
+/* The content pages (docs/mockups/cms): the library's tokens and the client's
+   palette, as the rest of the site, and only the rules a page's components need. */
+@import '@garage44/mithril/components.css';
+@import '@garage44/mithril/components/base.css';
+@import '../css/theme.css';
+
+@font-face {
+    font-family: 'Plus Jakarta Sans';
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/PlusJakartaSans-Regular.ttf') format('truetype');
+}
+
+@font-face {
+    font-family: 'Plus Jakarta Sans';
+    font-weight: 600 700;
+    font-display: swap;
+    src: url('/fonts/PlusJakartaSans-SemiBold.ttf') format('truetype');
+}
+
+body {
+    margin: 0;
+    letter-spacing: -0.003em;
+    text-rendering: optimizeLegibility;
+}
+
+.cms-frame {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.cms-top {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 0.85rem clamp(1rem, 4vw, 2.5rem);
+    border-bottom: 1px solid var(--m-border);
+}
+
+.wordmark {
+    color: var(--m-text-strong);
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+
+    & b {
+        color: var(--c-brand);
+        font-weight: inherit;
+    }
+}
+
+.cms-nav {
+    display: flex;
+    gap: 1rem;
+    margin-left: auto;
+
+    & a {
+        color: var(--m-text-dim);
+        text-decoration: none;
+    }
+
+    & a:hover {
+        color: var(--m-text-strong);
+    }
+}
+
+.cms-langs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-sm);
+    background: var(--m-surface-sunken);
+
+    & a {
+        padding: 0.15rem 0.5rem;
+        border-radius: calc(var(--m-radius-sm) - 2px);
+        color: var(--m-text-dim);
+        font-size: 0.8rem;
+        text-decoration: none;
+    }
+
+    & a.on {
+        background: var(--m-surface-raised);
+        color: var(--m-text-strong);
+    }
+}
+
+.cms-draft {
+    padding: 0.5rem clamp(1rem, 4vw, 2.5rem);
+    background: var(--m-warning-soft);
+    color: var(--m-warning);
+    font-size: 0.875rem;
+}
+
+.cms-main {
+    flex: 1;
+}
+
+.cms-message {
+    max-width: 44rem;
+    margin: 4rem auto;
+    padding: 0 1rem;
+    color: var(--m-text-dim);
+}
+
+.cms-page {
+    padding-bottom: 4rem;
+
+    & h1,
+    & h2,
+    & h3 {
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        margin: 0;
+        color: var(--m-text-strong);
+    }
+
+    & a {
+        color: var(--m-accent-text);
+    }
+}
+
+.cms-hero {
+    position: relative;
+    overflow: hidden;
+    padding: clamp(2.5rem, 8vw, 5rem) 0;
+    background: linear-gradient(160deg, var(--m-accent-soft) 0%, var(--m-bg) 70%);
+
+    & h1 {
+        font-size: clamp(2rem, 5vw, 3.2rem);
+        line-height: 1.1;
+        max-width: 40rem;
+    }
+}
+
+.cms-hero-image {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.15;
+}
+
+.cms-hero-body {
+    position: relative;
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: 0 clamp(1rem, 4vw, 2.5rem);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+}
+
+.cms-section {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: 2.5rem clamp(1rem, 4vw, 2.5rem) 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+
+    & h2 {
+        font-size: 1.5rem;
+    }
+}
+
+.cms-columns {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+}
+
+.cms-feature {
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius);
+    background: var(--m-surface);
+
+    & h3 {
+        font-size: 1.05rem;
+        margin: 0.4rem 0 0.3rem;
+    }
+
+    & p {
+        margin: 0;
+        color: var(--m-text-dim);
+    }
+}
+
+.cms-feature-icon {
+    width: 1.5rem;
+    height: 1.5rem;
+    color: var(--m-accent);
+}
+
+.cms-text {
+    max-width: 44rem;
+
+    & p {
+        margin: 0 0 0.75rem;
+        line-height: 1.6;
+    }
+
+    &.lead p {
+        font-size: 1.15rem;
+        color: var(--m-text-dim);
+    }
+
+    & strong {
+        color: var(--m-text-strong);
+    }
+}
+
+.cms-image {
+    margin: 0;
+
+    & img {
+        max-width: 100%;
+        border-radius: var(--m-radius);
+        display: block;
+    }
+
+    & figcaption {
+        margin-top: 0.4rem;
+        color: var(--m-text-faint);
+        font-size: 0.875rem;
+    }
+}
+
+.cms-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.5rem;
+    padding: 0 1.1rem;
+    border-radius: var(--m-radius);
+    font-weight: 600;
+    text-decoration: none;
+
+    &.primary {
+        background: var(--m-accent);
+        color: var(--m-on-accent) !important;
+    }
+
+    &.secondary {
+        border: 1px solid var(--m-border-strong);
+        color: var(--m-text-strong) !important;
+    }
+}
+
+.cms-downloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+.cms-quote {
+    margin: 0;
+    padding: 0.5rem 0 0.5rem 1.1rem;
+    border-left: 3px solid var(--c-brand);
+
+    & p {
+        margin: 0 0 0.5rem;
+        font-size: 1.1rem;
+    }
+
+    & footer {
+        color: var(--m-text-dim);
+    }
+}
+
+.cms-place {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.cms-place-icon {
+    width: 1em;
+    height: 1em;
+}

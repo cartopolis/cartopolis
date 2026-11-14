@@ -57,6 +57,7 @@ import type {
 import type {BuildingDesign, BuildingFacts, BuildingResponse, P2, Storey, Wall} from '@/lib/design'
 
 import {toLatLng} from '@/lib/design'
+import {mockPages} from './mock-pages'
 import {mockPosts} from '@/mock-posts'
 
 /** The operator session `?mock-signin` seeds: `viberfox`, an admin. */
@@ -1032,6 +1033,8 @@ export async function mockApi(req: Request, url: URL): Promise<Response | null> 
 
     const posts = await mockPosts(req, p)
     if (posts) return posts
+    const page = mockPages(req, url)
+    if (page) return page
 
     // ── The page-view beacon (unauthenticated, answers nothing) ─────────────
     if (p === '/api/stats/hit' && method === 'POST') {
