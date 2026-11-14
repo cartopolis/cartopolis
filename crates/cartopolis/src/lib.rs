@@ -912,11 +912,18 @@ fn run_client() {
     // be stale, so it is a trend rather than a reading.
     #[cfg(feature = "perf")]
     app.add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin);
+
+    app.add_plugins(default_plugins);
+    // After `default_plugins`, never before: its `build` hands the render world
+    // its half of the shared recorder only if `RenderApp` already exists, while
+    // `finish` adds the render-world systems regardless. Added first, as it was
+    // until 2026-11-14, every frame failed `finish_diagnostics_frame` and no
+    // pass was ever timed — on the phone with Developer ▸ GPU timings on, too.
     if env_flag("CARTO_GPU_TIMINGS") {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
 
-    app.add_plugins(default_plugins)
+    app
         // `BigSpaceTimingStatsPlugin` is disabled rather than the group being
         // swapped for `BigSpaceMinimalPlugins`, and the difference matters: the
         // default group is Minimal + timing + *validation*, and the validator is
