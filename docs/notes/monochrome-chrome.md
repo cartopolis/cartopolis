@@ -47,7 +47,7 @@ ladder is monotonic and `theme::tests::the_state_ladder_rises` pins it:
 | rest | `SURFACE_RAISED` | `LINE` (solid, ≥3:1 — a *control* boundary) |
 | hover | `SURFACE_HOVER` | `ACCENT` |
 | pressed | `ACCENT_MUTED` | `ACCENT_RING` |
-| engaged (panel open, flying, locked) | `ACCENT` — a **light plate** | `ACCENT_RING`, or `ACCENT_BRIGHT` while *held* |
+| engaged (panel open, locked) | `ACCENT` — a **light plate** | `ACCENT_RING`, or `ACCENT_BRIGHT` while *held* |
 
 The engaged step **inverts** rather than tinting: a light plate with `INK` on it.
 That is not decoration, it is the only treatment that survives a monochrome

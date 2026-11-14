@@ -704,8 +704,8 @@ fn section(ui: &mut egui::Ui, title: &str) {
 
 /// Every binding the client has, grouped by the mode it works in.
 ///
-/// **There was no control legend anywhere in the application.** WASD, Space, F,
-/// E, Q/R, Shift, Alt, 1–6, Tab, Delete and three Ctrl chords existed only in
+/// **There was no control legend anywhere in the application.** WASD, Space,
+/// E, Q, Shift, Alt, 1–6, Tab, Delete and three Ctrl chords existed only in
 /// `CLAUDE.md` and in commit bodies; the sole in-UI hint was the assistant's
 /// "(Ctrl+Enter)" and the `[E]` on the interact prompt. So a desktop user who
 /// never guessed a key saw an avatar they could not move, and the keys that are
@@ -751,9 +751,7 @@ fn controls_section(ui: &mut egui::Ui) {
         "Walk — the avatar turns to face where it goes",
     );
     row(ui, "Shift / Alt", "Run / stroll");
-    row(ui, "Space", "Jump; hold to take off");
-    row(ui, "F", "Toggle flight");
-    row(ui, "R / Q", "Climb / descend, while flying");
+    row(ui, "Space", "Jump");
     row(ui, "E", "Interact with whatever is in front of you");
     row(
         ui,

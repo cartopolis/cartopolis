@@ -68,7 +68,7 @@ write, glided over the following frames (`FixGlide`). The gap is measured from t
 **avatar**, not from the previous fix, because what must not be left behind is the
 world the avatar stands in. 2 km is past anything a vehicle covers between two 1 Hz
 fixes (7,200 km/h) and well inside the flat frame's honest range; it is a genuine
-distance, not a duration in disguise ([flight-at-speed.md](flight-at-speed.md)).
+distance, not a duration in disguise ([avatar-prediction-smoothing.md](avatar-prediction-smoothing.md)).
 `locate` uses the same `fix_reach`, and both teleports are silent.
 
 **A far fix jumps only when it is sure of itself** (`driver::FixReach`): its

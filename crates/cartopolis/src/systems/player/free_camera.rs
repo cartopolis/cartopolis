@@ -423,17 +423,14 @@ const FOLLOW_RATE: f32 = 12.0;
 /// Cap on that lead (metres).
 ///
 /// Without a lead the rig trails the avatar by `speed / FOLLOW_RATE`: a hand's
-/// width at a walk, ~3 m at the flight cap, and — because flight rides altitude
-/// (`motion::fly_altitude_factor`) — over 50 m at the top of the ramp. The boom
-/// itself only reaches [`AVATAR_CAM_MAX`], so past a few hundred metres per
-/// second the avatar was not merely trailing, it was off the back of the frame,
-/// and every change of pace swept it across the screen. Feeding the velocity
-/// forward holds it exactly where the boom puts it at any speed.
+/// width at a walk, and — in the avatar flight there once was — over 50 m, off
+/// the back of a boom that only reaches [`AVATAR_CAM_MAX`]. Feeding the velocity
+/// forward holds the avatar exactly where the boom puts it at any speed.
 ///
 /// The cap is for the *discontinuities*: a teleport, a reconciliation snap or the
 /// frame a session ends can leave a velocity that never happened, and an
 /// uncapped lead would fling the rig a kilometre. Well past the lead any real
-/// flight asks for.
+/// motion asks for (a terminal-velocity fall leads by under 4 m).
 const FOLLOW_LEAD_MAX: f32 = 80.0;
 /// Default follow distance — a comfortable third-person framing of the avatar.
 pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
@@ -453,11 +450,8 @@ const FOLLOW_ROTATE_RATE: f32 = 8.0;
 /// has stopped turning it is the mistake the wait exists to prevent.
 const RECENTRE_WAIT_S: f32 = 1.0;
 const RECENTRE_RAMP_S: f32 = 0.6;
-/// How fast the swing closes the angle (1/s) on foot, and in flight — where the
-/// avatar covers ground fast enough that a lazy camera leaves it crossing the
-/// frame sideways.
+/// How fast the swing closes the angle (1/s).
 const RECENTRE_RATE: f32 = 1.2;
-const RECENTRE_FLIGHT_RATE: f32 = 2.5;
 /// Off-axis angles (radians) between which the swing fades out: full strength up
 /// to a sideways walk, nothing for a walk *toward* the camera, which would
 /// otherwise spin the view round every time somebody pressed S.
@@ -470,7 +464,7 @@ const RECENTRE_FADE_TO: f32 = 2.8; // ~160°
 /// since anybody turned the camera by hand. Zero when standing, while the hands
 /// are on the camera, and for travel toward the lens.
 #[must_use]
-fn recentre_turn(azimuth: f32, velocity: Vec2, flying: bool, idle_s: f32, dt: f32) -> f32 {
+fn recentre_turn(azimuth: f32, velocity: Vec2, idle_s: f32, dt: f32) -> f32 {
     let speed = velocity.length();
     if speed < 0.3 || idle_s < RECENTRE_WAIT_S {
         return 0.0;
@@ -481,12 +475,7 @@ fn recentre_turn(azimuth: f32, velocity: Vec2, flying: bool, idle_s: f32, dt: f3
     let toward_lens = crate::utils::sun::smoothstep(RECENTRE_FADE_FROM, RECENTRE_FADE_TO, d.abs());
     let ramp = ((idle_s - RECENTRE_WAIT_S) / RECENTRE_RAMP_S).clamp(0.0, 1.0);
     let pace = (speed / crate::systems::locomotion::WALK_SPEED).clamp(0.0, 1.0);
-    let rate = if flying {
-        RECENTRE_FLIGHT_RATE
-    } else {
-        RECENTRE_RATE
-    };
-    d * (1.0 - (-rate * ramp * pace * (1.0 - toward_lens) * dt).exp())
+    d * (1.0 - (-RECENTRE_RATE * ramp * pace * (1.0 - toward_lens) * dt).exp())
 }
 
 // ── Pivot height ─────────────────────────────────────────────────────────────
@@ -504,8 +493,8 @@ const PIVOT_SNAP_M: f32 = 6.0;
 
 /// The height the follow rig pivots about this frame.
 #[must_use]
-fn step_pivot(pivot: f32, avatar_y: f32, flying: bool, grounded: bool, dt: f32) -> f32 {
-    if flying || (avatar_y - pivot).abs() > PIVOT_SNAP_M {
+fn step_pivot(pivot: f32, avatar_y: f32, grounded: bool, dt: f32) -> f32 {
+    if (avatar_y - pivot).abs() > PIVOT_SNAP_M {
         return avatar_y;
     }
     if !grounded {
@@ -517,21 +506,6 @@ fn step_pivot(pivot: f32, avatar_y: f32, flying: bool, grounded: bool, dt: f32) 
     } else {
         eased
     }
-}
-
-// ── Pull-back with speed ─────────────────────────────────────────────────────
-/// How much longer the boom gets at speed, as a fraction of the chosen distance,
-/// and the speeds the stretch runs between. Nesky's rule: distance and field of
-/// view are one curve on one parameter — the FOV already widens to a sprint, and
-/// this carries on where it stops, so a flight is framed rather than tailgated.
-const PULLBACK_GAIN: f32 = 0.9;
-const PULLBACK_FROM: f32 = crate::systems::locomotion::RUN_SPEED;
-const PULLBACK_FULL: f32 = 80.0;
-const PULLBACK_RATE: f32 = 1.5;
-
-#[must_use]
-fn pullback_for_speed(speed: f32) -> f32 {
-    1.0 + PULLBACK_GAIN * crate::utils::sun::smoothstep(PULLBACK_FROM, PULLBACK_FULL, speed)
 }
 
 /// How far above the pivot the camera aims, as a fraction of the boom. Aiming
@@ -1604,8 +1578,6 @@ struct RigSmoothing {
     idle_s: f32,
     /// The height the rig pivots about ([`step_pivot`]); `None` until placed.
     pivot: Option<f32>,
-    /// Current boom stretch ([`pullback_for_speed`]).
-    pullback: f32,
     /// Earth mode's drag, replayed from the pointer's timed trail. Here rather
     /// than a `Local` of its own for the parameter ceiling above.
     drag: DragReplay,
@@ -1619,7 +1591,6 @@ impl Default for RigSmoothing {
             fov: FOLLOW_FOV_BASE,
             idle_s: 0.0,
             pivot: None,
-            pullback: 1.0,
             drag: DragReplay::default(),
         }
     }
@@ -1831,10 +1802,9 @@ pub fn camera_controls(
     // returning to Follow starts from rest instead of unwinding a stale one.
     if camera_state.mode != CameraMode::Avatar {
         rig.smoothing.fov = FOLLOW_FOV_BASE;
-        // Likewise the rest of what Follow eases: a pivot or a stretch left over
-        // from before would be unwound on return as a drift nobody caused.
+        // Likewise the rest of what Follow eases: a pivot left over from before
+        // would be unwound on return as a drift nobody caused.
         rig.smoothing.pivot = None;
-        rig.smoothing.pullback = 1.0;
         rig.smoothing.idle_s = 0.0;
         // …unless a scripted capture or the camera's Mixed mode names a lens.
         set_fov(
@@ -1953,7 +1923,7 @@ pub fn camera_controls(
     // far 200 km, above); once the camera climbs high enough that the globe (or
     // the far ground) sits beyond that 200 km far plane, everything gets clipped
     // and the screen goes black. This was previously only fixed inside the Orbit
-    // arm, so flying up in Free/Avatar mode (or any high view) clipped the whole
+    // arm, so flying up in Free mode (or any high view) clipped the whole
     // world. Push the far plane past the far limb and raise the near plane with
     // altitude so nothing relevant clips, keyed off the true geocentric altitude.
     if globe.ready {
@@ -2143,7 +2113,6 @@ fn follow_mode(ctx: ModeCtx) {
     let pivot = step_pivot(
         rig.smoothing.pivot.unwrap_or(avatar_pos.y),
         avatar_pos.y,
-        avatar_state.is_flying,
         avatar_state.grounded,
         delta_time,
     );
@@ -2279,7 +2248,6 @@ fn follow_mode(ctx: ModeCtx) {
         let turn = recentre_turn(
             camera_state.azimuth,
             travel,
-            avatar_state.is_flying,
             rig.smoothing.idle_s,
             delta_time,
         );
@@ -2311,21 +2279,7 @@ fn follow_mode(ctx: ModeCtx) {
     // the boom is what shortens when a wall gets between the camera and
     // the avatar, and scaling the eye offset with it would sink the view
     // into the pavement as it came in.
-    // The boom stretches with speed ([`pullback_for_speed`]); `distance` stays
-    // what the wheel chose, so the stretch unwinds onto it when the avatar slows.
-    let want_pullback = if locked || first_person {
-        1.0
-    } else {
-        pullback_for_speed(avatar_state.velocity.length())
-    };
-    rig.smoothing.pullback +=
-        (want_pullback - rig.smoothing.pullback) * (1.0 - (-PULLBACK_RATE * delta_time).exp());
-    if (want_pullback - rig.smoothing.pullback).abs() < 1e-4 {
-        rig.smoothing.pullback = want_pullback;
-    }
-    let reach = camera_state
-        .aim_reach
-        .unwrap_or(camera_state.distance * rig.smoothing.pullback);
+    let reach = camera_state.aim_reach.unwrap_or(camera_state.distance);
     let horizontal_distance = reach * camera_state.pitch.cos();
     let vertical_offset = reach * camera_state.pitch.sin();
     let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
@@ -2486,8 +2440,8 @@ fn follow_mode(ctx: ModeCtx) {
     // The last word on where the lens is: a sight line from the head to the
     // position the ease has actually arrived at, cut short at the first
     // wall. The boom test above only sees the *target*; the camera lags it
-    // (and leads the avatar by its velocity), so on a turn or at flight
-    // speed it cuts across corners and through facades the target never
+    // (and leads the avatar by its velocity), so on a turn or at speed it
+    // cuts across corners and through facades the target never
     // touched. Resolved against the eased position rather than folded into
     // the ease, so it cannot be smoothed back through the wall.
     let new_world =
@@ -3975,7 +3929,7 @@ mod follow_feel_tests {
         let (mut az, mut idle) = (0.0_f32, idle_from);
         for _ in 0..(secs / dt) as usize {
             idle += dt;
-            az += recentre_turn(az, Vec2::new(1.8, 0.0), false, idle, dt);
+            az += recentre_turn(az, Vec2::new(1.8, 0.0), idle, dt);
         }
         az
     }
@@ -3997,9 +3951,9 @@ mod follow_feel_tests {
     fn walking_toward_the_lens_does_not_spin_the_view() {
         // Camera at azimuth 0 sits on +Z looking toward -Z; walking +Z is
         // walking at it.
-        let turn = recentre_turn(0.0, Vec2::new(0.0, 1.8), false, 10.0, 1.0 / 60.0);
+        let turn = recentre_turn(0.0, Vec2::new(0.0, 1.8), 10.0, 1.0 / 60.0);
         assert_eq!(turn, 0.0);
-        assert_eq!(recentre_turn(PI, Vec2::ZERO, true, 10.0, 1.0 / 60.0), 0.0);
+        assert_eq!(recentre_turn(PI, Vec2::ZERO, 10.0, 1.0 / 60.0), 0.0);
     }
 
     #[test]
@@ -4010,27 +3964,17 @@ mod follow_feel_tests {
         while vy > 0.0 || y > 0.0 {
             vy -= motion::GRAVITY * dt;
             y = (y + vy * dt).max(0.0);
-            pivot = step_pivot(pivot, y, false, y <= 0.0, dt);
+            pivot = step_pivot(pivot, y, y <= 0.0, dt);
             worst = worst.max(pivot.abs());
         }
         assert!(worst < 1e-6, "the pivot rode the jump by {worst} m");
     }
 
     #[test]
-    fn a_fall_is_followed_and_flight_is_tracked() {
-        assert_eq!(step_pivot(3.0, 0.0, false, false, 0.016), FALL_LEAD_M);
-        assert_eq!(step_pivot(0.0, 3.0, true, false, 0.016), 3.0);
+    fn a_fall_is_followed() {
+        assert_eq!(step_pivot(3.0, 0.0, false, 0.016), FALL_LEAD_M);
         // A teleport is put right at once, not glided across.
-        assert_eq!(step_pivot(0.0, 500.0, false, true, 0.016), 500.0);
-    }
-
-    #[test]
-    fn the_boom_stretches_only_past_a_run() {
-        assert_eq!(
-            pullback_for_speed(crate::systems::locomotion::RUN_SPEED),
-            1.0
-        );
-        assert!((pullback_for_speed(500.0) - (1.0 + PULLBACK_GAIN)).abs() < 1e-6);
+        assert_eq!(step_pivot(0.0, 500.0, true, 0.016), 500.0);
     }
 }
 

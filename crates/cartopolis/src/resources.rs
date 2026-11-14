@@ -1477,7 +1477,7 @@ pub struct AvatarState {
     /// nothing is held.
     pub steer_latch: Option<(f32, Vec2)>,
     /// Online client-side prediction: the world-space velocity most recently sent
-    /// to the sim (after collision steering + fly scaling), replicating the sim's
+    /// to the sim (after collision steering), replicating the sim's
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
     /// at frame rate so movement is smooth between 20 Hz snapshots.
     pub predicted_velocity: Vec3,
@@ -1487,15 +1487,10 @@ pub struct AvatarState {
     ///
     /// It exists because the follow camera needs it. A first-order lerp trails a
     /// moving target by `speed / rate` metres, which at a walk is a hand's width
-    /// and in flight at altitude is tens of metres — past the 25 m the boom can
-    /// even reach, so the avatar left the frame and every change of pace slung it
-    /// about. `free_camera` leads the rig by exactly that much instead.
+    /// and in the avatar flight there once was (`docs/notes/retired/avatar-flight.md`)
+    /// was tens of metres — past the 25 m the boom can even reach, so the avatar
+    /// left the frame. `free_camera` leads the rig by exactly that much instead.
     pub velocity: Vec3,
-    /// Flight's vertical thrust (m/s, up positive), ramped toward what the climb
-    /// keys ask for by [`cartopolis_core::motion::step_fly_vertical`]. Predicted
-    /// online, authoritative offline — the same relationship
-    /// [`Self::vertical_velocity`] has to the gravity arc.
-    pub fly_vertical: f32,
     /// Online prediction: seconds since the last authoritative pose was applied.
     /// The reconcile target is extrapolated forward by this much, so the 20 Hz
     /// snapshot staircase doesn't drag the predicted display backwards on every
@@ -1514,7 +1509,6 @@ pub struct AvatarState {
     pub facing_yaw: f32,
     /// Online: replicated world yaw from snapshots (authoritative for reconciliation).
     pub sim_facing_yaw: f32,
-    pub is_flying: bool,
     pub is_walking: bool,
     /// Current horizontal speed (m/s), ramped toward the held gait's speed by
     /// `locomotion::advance_speed`. This is the single place the speed model
@@ -1635,11 +1629,9 @@ impl Default for AvatarState {
             steer_latch: None,
             predicted_velocity: Vec3::ZERO,
             velocity: Vec3::ZERO,
-            fly_vertical: 0.0,
             snapshot_age: 0.0,
             facing_yaw: 0.0,
             sim_facing_yaw: 0.0,
-            is_flying: false,
             is_walking: false,
             ground_speed: 0.0,
             carried_speed: 0.0,

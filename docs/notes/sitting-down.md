@@ -53,7 +53,7 @@ movement or choosing a pose.
 
 ## What ends a sit
 
-Any movement input, a jump, a take-off, leaving Follow mode, and a teleport. The
+Any movement input, a jump, leaving Follow mode, and a teleport. The
 teleport is the one that is not merely tidy: the offset points at a bench in the
 city being left, so it is cleared outright rather than eased.
 

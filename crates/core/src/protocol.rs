@@ -961,7 +961,7 @@ pub struct AvatarStateDto {
     /// anchor could agree on (docs/notes/interest-by-reach.md).
     pub geo: GeoAnchor,
     /// Height of the feet above the sim's flat ground (`motion::GROUND_Y`), in
-    /// metres: the altitude a jump, a fall or flight changes. The ground's own
+    /// metres: the altitude a jump or a fall changes. The ground's own
     /// relief is each viewer's business (`terrain_lift`), as it is for prims.
     pub alt_m: f32,
     pub yaw: f32,
@@ -988,8 +988,8 @@ pub struct AvatarStateDto {
     /// seat, and that is already [`Self::yaw`].
     pub seated: Option<[f32; 2]>,
     /// World velocity (m/s) the sim integrated this avatar with on the tick the
-    /// snapshot was taken: horizontal travel including the flight lift, plus
-    /// the vertical rate of a jump, a fall or a climb. Zero while seated.
+    /// snapshot was taken: horizontal travel, plus the vertical rate of a jump
+    /// or a fall. Zero while seated.
     ///
     /// Replicated rather than derived because a receiver cannot derive it
     /// well. Differencing two snapshots is a tick late and noisy at the tick
@@ -1194,11 +1194,16 @@ pub enum NetMessage {
         /// World yaw replicated to others (travel facing — the direction the avatar
         /// is turned toward). Server applies this instead of `atan2(velocity)`.
         display_yaw: f32,
-        /// Flight mode. The sim has no gravity of its own: it lets a flying avatar
-        /// hover at whatever altitude it reached, and falls one that isn't flying.
-        /// Without it, switching flight off in mid-air left the avatar hanging there.
+        /// Avatar flight, from protocol 12 until it was removed on 2026-11-14.
+        ///
+        /// **Ignored by the sim, and clients send `false`.** The avatar walks,
+        /// runs and jumps; an old client that still sets this is simply fallen
+        /// by the sim like everyone else, and its flight-speed wish clamps at
+        /// `motion::MAX_SPEED`. Kept on the wire because removing a field is a
+        /// protocol revision, and these three cost three bytes.
         flying: bool,
-        /// Vertical thrust while `flying`; ignored otherwise.
+        /// Climb and descend for `flying`; ignored by the sim, `false` from
+        /// clients, kept for the same reason.
         fly_up: bool,
         fly_down: bool,
         /// One-shot: the client asked to jump this frame. The sim grants it only

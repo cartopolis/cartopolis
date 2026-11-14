@@ -488,7 +488,9 @@ pub struct SavedLocation {
 pub struct SavedAvatar {
     pub lat: f64,
     pub lng: f64,
-    /// Height in the flat frame, so an avatar left flying comes back flying.
+    /// Height in the flat frame. The avatar has not flown since 2026-11-14, so
+    /// this is the ground but for a save taken mid-jump — and an avatar saved in
+    /// the air before then simply falls on its first frame back.
     #[serde(default)]
     pub y: f64,
 }

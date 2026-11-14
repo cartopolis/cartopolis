@@ -31,9 +31,8 @@
 //!   - **Fly** — a thumbstick bottom-left (forward/back + strafe, *proportional*
 //!     so a small push is a slow drift) and a climb/descend pair bottom-right.
 //!   - **Follow** — the same thumbstick, walking the *avatar* rather than the
-//!     camera; the same bottom-right pair, zooming the camera on foot and
-//!     climbing in flight; and a jump/flight pair stacked above it. Until this
-//!     existed the avatar was
+//!     camera; the bottom-right pair zooming the camera; and a jump disc
+//!     stacked above it. Until this existed the avatar was
 //!     the one thing on a phone that could not be moved at all: its whole
 //!     vocabulary was WASD, which is six keys a touchscreen does not have and
 //!     no gesture ever stood in for (`docs/notes/android-build.md` recorded it
@@ -112,7 +111,7 @@ fn pair_height() -> f32 {
     CONTROL_SIZE * 2.0 + theme::OSD_GAP
 }
 
-/// Bottom offset of the jump/flight pair: a group gap above the zoom/climb pair,
+/// Bottom offset of the jump disc: a group gap above the zoom/climb pair,
 /// which owns the corner. Named rather than inlined so the test below measures
 /// the same arithmetic the anchor uses.
 fn actions_bottom_offset() -> f32 {
@@ -124,16 +123,16 @@ fn actions_bottom_offset() -> f32 {
 /// bottom.
 #[derive(Debug, Clone, Copy)]
 struct Spots {
-    /// The jump/flight pair.
+    /// The jump disc.
     actions: egui::Vec2,
-    /// The face disc, beside the jump disc.
+    /// The face disc, one row above the jump disc and one column in.
     face: egui::Vec2,
-    /// The hand button, under the face beside the flight disc.
+    /// The hand button, under the face, beside the jump disc.
     hand: egui::Vec2,
 }
 
-/// Standing, the jump/flight pair stands over the zoom/climb pair at the
-/// edge, and the face and hand discs beside it, one column in (they stood
+/// Standing, the jump disc stands over the zoom/climb pair at the edge, and
+/// the face and hand discs beside it, one column in (they stood
 /// in tiers above the pair until 2026-11-11, which took the right edge up to
 /// within 8 pt of the map's column of round buttons on a phone). Lying
 /// (`dock::lying`, a phone on its side) the three pairs stand side by side
@@ -156,7 +155,8 @@ fn spots(lying: bool) -> Spots {
 }
 
 /// How far up from the bottom the right edge's touch controls reach, at
-/// most: the top of Follow's jump/flight pair. The map's column of round
+/// most: the top of Follow's face disc, a pair's height above the jump disc's
+/// foot. The map's column of round
 /// buttons comes down from the top to meet it (`dock::right_column`), and the
 /// two must not meet — which is what decides `dock::lying`.
 #[must_use]
@@ -209,8 +209,8 @@ const CLAIM_PAD: f32 = 12.0;
 
 /// A control's hit rect grown by [`MISS_MARGIN`] on its outer sides. The sides
 /// facing a sibling disc stay exact — pad both discs of a pair and the gap
-/// between them presses (or worse, *clicks*) both at once, which for the action
-/// pair would be a jump and a flight toggle from one lift.
+/// between them presses (or worse, *clicks*) both at once — two verbs from one
+/// lift.
 fn reach(rect: egui::Rect, grow_top: bool, grow_bottom: bool) -> egui::Rect {
     let top = if grow_top { MISS_MARGIN } else { 0.0 };
     let bottom = if grow_bottom { MISS_MARGIN } else { 0.0 };
@@ -237,15 +237,14 @@ pub struct OsdInput {
     pub fly: Vec2,
     /// Fly vertical wish: `+1` climbing, `-1` descending.
     pub climb: f32,
-    /// Follow-mode edges: a jump this frame, and a request to toggle flight.
+    /// Follow-mode edge: a jump this frame.
     ///
-    /// **Edges, not held states**, and the distinction is the same one the wire
-    /// makes (`ClientIntent::jump`, protocol 13): a dropped movement frame is
+    /// **An edge, not a held state**, and the distinction is the same one the
+    /// wire makes (`ClientIntent::jump`, protocol 13): a dropped movement frame is
     /// corrected by the next one, while a dropped jump simply did not happen. So
-    /// these are true for exactly the frame the button was released on, and the
-    /// consumer must act on them rather than sample them.
+    /// this is true for exactly the frame the button was released on, and the
+    /// consumer must act on it rather than sample it.
     pub jump: bool,
-    pub fly_toggle: bool,
     /// Follow-mode travel wish, in the same camera-horizontal frame as [`fly`]
     /// and read by `avatar::handle_avatar_movement` (which then owns it in every
     /// run mode — the online path consumes the same ramp through
@@ -426,7 +425,6 @@ pub fn render_map_osd(
     right_panel: Res<RightPanel>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
-    avatar_state: Res<crate::resources::AvatarState>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
     mut body: BodyControls,
     mut rail: RailView,
@@ -455,7 +453,6 @@ pub fn render_map_osd(
         keyboard.is_open() || (sheet.composing && egui.compact()),
         theme::touch_layout() || touch.ever(),
     ) {
-        let flying = avatar_state.is_flying;
         let ui_scale = egui.ui_scale();
         let fingers = Fingers::new(&touch, ui_scale);
         let ctx = egui.ctx();
@@ -467,28 +464,18 @@ pub fn render_map_osd(
                 next.fly = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
             }
             Cluster::Walk => {
-                // The right-edge pair carries whichever vertical the avatar
-                // actually has: on foot there is none, so it zooms the camera;
-                // in flight it climbs and descends, which is the same control in
-                // the same place as Fly mode's — a phone should not have to learn
-                // two positions for one verb.
-                if flying {
-                    next.climb =
-                        vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
-                } else {
-                    next.zoom = vertical_pair(
-                        ctx,
-                        &fingers,
-                        &mut areas,
-                        "osd_zoom",
-                        Mark::Plus,
-                        Mark::Minus,
-                    );
-                }
+                // The avatar has no vertical of its own (it walks), so the
+                // right-edge pair zooms the camera.
+                next.zoom = vertical_pair(
+                    ctx,
+                    &fingers,
+                    &mut areas,
+                    "osd_zoom",
+                    Mark::Plus,
+                    Mark::Minus,
+                );
                 next.walk = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
-                let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying, at);
-                next.jump = jump;
-                next.fly_toggle = fly_toggle;
+                next.jump = jump_button(ctx, &fingers, &mut areas, at);
                 if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open, at) {
                     body.faces
                         .write(crate::systems::avatar_face::StartExpression(e));
@@ -1217,60 +1204,40 @@ fn to_window(r: egui::Rect, ui_scale: f32) -> Rect {
     )
 }
 
-/// Jump and the flight toggle, bottom-right — the verbs a phone had no key for.
+/// The jump, bottom-right — the verb a phone had no key for.
 ///
-/// Returns `(jump, fly_toggle)`, each true on the frame its button was
-/// *released*. These are the one part of this module that is not a rate: a jump
-/// is an event, and `avatar::handle_avatar_movement` consumes them as edges.
-/// `clicked()` rather than `is_pointer_button_down_on` for exactly that reason —
-/// the held test that suits a rate would fire a jump every frame of a press.
+/// True on the frame its button was *released*. This is the one part of this
+/// module that is not a rate: a jump is an event, and
+/// `avatar::handle_avatar_movement` consumes it as an edge. `clicked()` rather
+/// than `is_pointer_button_down_on` for exactly that reason — the held test that
+/// suits a rate would fire a jump every frame of a press.
 ///
 /// Bottom-**right**, opposite the stick, because that is where the other thumb
 /// is: the same left-translates / right-acts split the module opens with. It
-/// stacks *above* the zoom/climb pair, which is the bottom-most thing on that
-/// edge in every mode — see [`vertical_pair`] for why the pair rather than this
-/// owns the corner.
-///
-/// Flight is a toggle rather than a hold: holding a button for the duration of a
-/// flight is not a control, it is a punishment, and the keyboard's own `F` is a
-/// toggle too. The jump button disappears in flight — it would mean nothing
-/// there, and a control that is visibly present and does nothing is worse than
-/// one that is absent (the same argument this module's suppression rules make).
-fn action_pair(
+/// stands *above* the zoom pair, which is the bottom-most thing on that edge in
+/// every mode — see [`vertical_pair`] for why the pair rather than this owns the
+/// corner. (A flight toggle stood under it until avatar flight was removed,
+/// 2026-11-14.)
+fn jump_button(
     ctx: &egui::Context,
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
-    flying: bool,
     at: Spots,
-) -> (bool, bool) {
-    let (mut jump, mut fly_toggle) = (false, false);
+) -> bool {
+    let mut jump = false;
     let area = egui::Area::new(egui::Id::new("osd_actions"))
         .anchor(egui::Align2::RIGHT_BOTTOM, -at.actions)
         .show(ctx, |ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
-                if !flying {
-                    // A claimed finger lifting inside the disc is the same event
-                    // `clicked()` reports, which is why the two are `or`-ed and
-                    // not chosen between: on a phone the first arm fires, on a
-                    // desktop (or when this finger also happens to hold egui's
-                    // pointer) the second does, and a jump is idempotent either
-                    // way.
-                    let resp = round_button(ui, Mark::Jump, false);
-                    jump = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false));
-                }
-                // The flight toggle is a *state*, not a rate or an edge that
-                // vanishes — so it wears the engaged plate while flying, the same
-                // light plate an open panel's dock disc wears. It was the one
-                // control on the map whose on and off looked identical.
-                // In flight the jump disc above is gone, so the top side is
-                // outer too and may carry the margin.
-                let resp = round_button(ui, Mark::Wings, flying);
-                fly_toggle = resp.clicked() || fingers.lifted_in(reach(resp.rect, flying, true));
-            });
+            // A claimed finger lifting inside the disc is the same event
+            // `clicked()` reports, which is why the two are `or`-ed and not
+            // chosen between: on a phone the first arm fires, on a desktop (or
+            // when this finger also happens to hold egui's pointer) the second
+            // does, and a jump is idempotent either way.
+            let resp = round_button(ui, Mark::Jump, false);
+            jump = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, true));
         });
     areas.push(area.response.rect);
-    (jump, fly_toggle)
+    jump
 }
 
 /// The glyphs, painted rather than typed. `✕` taught this lesson once already
@@ -1285,18 +1252,6 @@ enum Mark {
     Down,
     /// Jump: a chevron with a bar under it — an arrow leaving the ground.
     Jump,
-    /// Flight: a swept delta, filled.
-    ///
-    /// It was two strokes rising from a common point over a bar, and on the
-    /// screen that was an argument from the wrong premise — the marks around it
-    /// are strokes, so a stroke mark was said to be the vocabulary. But it sits
-    /// directly above the climb pair, whose marks are a `^` and a `v`, and two
-    /// strokes rising from a point *is* a `v`. Four discs in a column then read
-    /// as two up/down pairs, one of which silently did something else. A filled
-    /// dart is the one shape in this set that cannot be read as a chevron, and
-    /// being filled is also the honest signal: this is the only control here that
-    /// holds a state rather than expressing a rate.
-    Wings,
     /// A face: the expressions (`avatar_face`), a ring with two eyes and a
     /// smile.
     Face,
@@ -1349,7 +1304,7 @@ fn hand_button(
         Some(HandWord::CameraBusy) => theme::p().warn,
         _ => theme::p().accent_ring,
     };
-    // Beside the flight disc rather than in a tier above the pair: the right
+    // Beside the jump disc rather than in a tier above it: the right
     // edge's top half is the map's column of round buttons now
     // (`dock::right_column`).
     let area = egui::Area::new(egui::Id::new("osd_hand"))
@@ -1458,7 +1413,7 @@ fn hand_card(ctx: &egui::Context, body: &mut BodyControls) {
     }
 }
 
-/// A disc above the jump/flight pair that opens a column of expressions
+/// A disc above the hand button, beside the jump disc, that opens a column of expressions
 /// beside it; a tap on one pulls that face and closes it. Returns the face
 /// picked this frame.
 fn face_picker(
@@ -1527,15 +1482,14 @@ fn expression_label(e: cartopolis_core::Expression) -> &'static str {
 ///
 /// **The pair is the bottom-most thing on that edge in every mode**, and that is
 /// the whole of its position rule. It used to be anchored `RIGHT_CENTER`, i.e.
-/// halfway up the window, while the jump/flight pair sat in the corner below it:
+/// halfway up the window, while the jump pair sat in the corner below it:
 /// two clusters of identical discs on one edge at two unrelated heights, the
 /// busier of them out of a thumb's reach on a phone held in one hand, and — since
 /// the scale bar was also anchored to that corner — one of them overlapping a
 /// readout it painted over. Bottom-anchored, the right edge is a single column
 /// that grows upwards, mirroring the stick opposite it, and the pair keeps one
-/// position across Fly, Follow, Follow-in-flight and Earth. That last part is the
-/// same argument the module makes for swapping zoom for climb *inside* the pair:
-/// a phone should not have to learn two positions for one verb.
+/// position across Fly, Follow and Earth: a phone should not have to learn two
+/// positions for one verb.
 fn vertical_pair(
     ctx: &egui::Context,
     fingers: &Fingers,
@@ -1617,7 +1571,6 @@ impl Mark {
             Self::Up => "Climb",
             Self::Down => "Descend",
             Self::Jump => "Jump",
-            Self::Wings => "Fly",
             Self::Face => "Expressions",
             Self::Hand => "Hand",
         }
@@ -1647,11 +1600,6 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
             );
             p.line_segment([c + egui::vec2(-dx, dy), c + egui::vec2(dx, dy)], stroke);
         }
-        // A swept delta, drawn as its two halves: the dart has a notched tail,
-        // so it is not convex, and `convex_polygon` is the only filled primitive
-        // egui tessellates correctly. Each half is a triangle and each triangle
-        // is convex, and they share the nose and the notch, so the seam between
-        // them lands on the axis where a dart has a crease anyway.
         Mark::Face => {
             p.circle_stroke(c, s * 1.1, stroke);
             for side in [-1.0_f32, 1.0] {
@@ -1689,18 +1637,6 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
                 ],
                 stroke,
             );
-        }
-        Mark::Wings => {
-            let (nose, tip, notch) = (s * 1.15, s * 0.75, s * 0.3);
-            let apex = c + egui::vec2(0.0, -nose);
-            let tail = c + egui::vec2(0.0, notch);
-            for side in [-1.0_f32, 1.0] {
-                p.add(egui::Shape::convex_polygon(
-                    vec![apex, c + egui::vec2(side * s, tip), tail],
-                    ink,
-                    egui::Stroke::NONE,
-                ));
-            }
         }
         // Chevrons, not filled triangles: at 44 pt a solid arrowhead reads as a
         // blob, and the same two segments scale to any control size.
@@ -1908,19 +1844,6 @@ mod tests {
         assert_eq!(touch(CameraMode::Orbit), Some(Cluster::Zoom));
     }
 
-    /// Flight swaps the right-edge pair rather than adding a third column: on
-    /// foot the avatar has no vertical, so that space zooms; in the air it is the
-    /// same climb control Fly mode puts in the same place.
-    #[test]
-    fn follow_swaps_zoom_for_climb_in_flight() {
-        // The cluster is the same either way — the swap is inside it, which is
-        // what keeps the stick and the action pair from moving when you take off.
-        assert_eq!(
-            cluster_for(CameraMode::Avatar, false, false, false, true),
-            Some(Cluster::Walk)
-        );
-    }
-
     /// A mouse-driven run gets no on-screen controls at all: they would be
     /// chrome over the map for a device that has a wheel and a keyboard.
     #[test]
@@ -1960,11 +1883,11 @@ mod tests {
         let pair = (bottom_offset(), bottom_offset() + pair_height());
         let actions = (
             actions_bottom_offset(),
-            actions_bottom_offset() + pair_height(),
+            actions_bottom_offset() + CONTROL_SIZE,
         );
         assert!(
             actions.0 >= pair.1,
-            "the action pair starts at {} inside a zoom pair reaching {}",
+            "the jump disc starts at {} inside a zoom pair reaching {}",
             actions.0,
             pair.1
         );
@@ -1998,9 +1921,9 @@ mod tests {
                 rail_top >= column + theme::OSD_GROUP_GAP,
                 "{view:?}: the rail reaches {rail_top}, the column ends at {column}"
             );
-            // The face and hand discs stand beside the pair, their miss bands
-            // apart from its own; lying, the pair stands beside the zoom pair
-            // the same way.
+            // The face and hand discs stand beside the jump disc, their miss
+            // bands apart from its own; lying, the jump disc stands beside the
+            // zoom pair the same way.
             let at = spots(lying);
             assert!(at.face.x - at.actions.x - CONTROL_SIZE > 2.0 * MISS_MARGIN);
             assert!(at.face.y + CONTROL_SIZE <= right_edge_reach(lying));

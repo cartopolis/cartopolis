@@ -126,7 +126,7 @@ viewport less the margins, so both fit by construction
 (`dock::the_switch_and_the_bar_fit_a_phone`); the right column ends at 268 pt
 with Locate and Camera. **Follow's touch controls stop at 334 pt** — 66 pt of
 room — since 2026-11-11, when the face and hand discs moved *beside* the
-jump/flight pair instead of in tiers above it (they stood at 276, 8 pt off the
+jump disc (then a jump/flight pair) instead of in tiers above it (they stood at 276, 8 pt off the
 column; `map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`
 now asks for a group gap). The locate caption sits to the left of its disc
 rather than under it. Earth's zoom rail stands over the switch on a phone (top
@@ -147,7 +147,7 @@ disc moves when Locate or Camera comes or goes. The bar narrows to keep out
 of both rows at their fullest (`dock::search_width`), Locate's caption and
 the light's choices go *under* their discs, and the Midas disc takes the
 margin under the bar. The right edge's touch pairs stand **side by side**
-along the bottom (`map_osd::spots`: zoom at the corner, jump/flight, then
+along the bottom (`map_osd::spots`: zoom at the corner, jump, then
 face/hand), 160 pt tall instead of 266 — under the thumbs of a phone held
 in two hands, with the middle of both edges free for the map. Everything
 anchored at `reserved_top` keeps it, so the chips and pills did not move.

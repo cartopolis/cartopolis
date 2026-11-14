@@ -100,7 +100,7 @@ The keyboard gate is `EguiManager::ui_owns_keyboard`, and it tests
 `ctx.text_edit_focused()`, **never `egui_wants_keyboard_input()`**. The latter is
 `memory.focused().is_some()` — true whenever *any* widget holds focus — so a
 button or selectable in the avatar chooser kept focus after a click and silently
-swallowed WASD **and** the Space/Shift fly keys until somebody clicked empty
+swallowed WASD **and** Space/Shift until somebody clicked empty
 space. Only real text entry yields the keyboard (plus a modal, the prim edit
 dialog, or a held Ctrl/Super chord).
 

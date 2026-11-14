@@ -66,7 +66,9 @@ or hear.**
 
 `reach_m` is the shout radius plus a 200 m margin — 500 m on the ground — so
 somebody walking towards you is drawn before you can hear them, widened by
-twice the altitude for a flier and capped at 5 km. The camera's height does
+twice the avatar's altitude and capped at 5 km (since avatar flight was
+removed, 2026-11-14, that altitude is a jump's metre or a fall from a
+placement, so the widening rarely does anything). The camera's height does
 not widen it: the orbit camera sends no intents and the wire carries no view
 height, so the macro view shows the avatars within the avatar's reach, not
 everyone on the server as it used to. Widening by the camera is the next

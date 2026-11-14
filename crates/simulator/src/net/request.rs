@@ -37,9 +37,6 @@ pub enum ClientRequest {
         move_x: f32,
         move_z: f32,
         display_yaw: f32,
-        flying: bool,
-        fly_up: bool,
-        fly_down: bool,
         jump: bool,
         emote: Option<Emote>,
         expression: Option<cartopolis_core::Expression>,
@@ -329,22 +326,19 @@ impl TryFrom<NetMessage> for ClientRequest {
                 move_x,
                 move_z,
                 display_yaw,
-                flying,
-                fly_up,
-                fly_down,
                 jump,
                 emote,
                 expression,
                 seated,
                 geo,
+                // `flying`, `fly_up` and `fly_down` are dropped here: avatar
+                // flight was removed on 2026-11-14 and the sim ignores them
+                // (they stay on the wire so the protocol did not move).
                 ..
             } => Self::Intent {
                 move_x,
                 move_z,
                 display_yaw,
-                flying,
-                fly_up,
-                fly_down,
                 jump,
                 emote,
                 expression,

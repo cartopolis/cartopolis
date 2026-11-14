@@ -1604,9 +1604,6 @@ pub struct SentIntent {
     move_x: f32,
     move_z: f32,
     display_yaw: f32,
-    flying: bool,
-    fly_up: bool,
-    fly_down: bool,
     /// The seat, only so the change test can see it start and stop.
     seated: Option<[f32; 2]>,
 }
@@ -1672,7 +1669,6 @@ pub fn send_network_intent(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     time: Res<Time>,
-    osd: Res<crate::systems::map_osd::OsdInput>,
     map_anchor: Res<crate::resources::MapAnchor>,
     mut last_sent: Local<Option<SentIntent>>,
     mut since_send: Local<f32>,
@@ -1714,16 +1710,6 @@ pub fn send_network_intent(
     // velocity independently is exactly how the offline and online paths came to
     // behave differently.
     let blocked = egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard_input);
-    // R up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
-    // which must stay in step: it drives the same avatar in `--offline`). E moved
-    // to "interact" when the world gained things to interact with.
-    // …and the on-screen climb pair beside them, so a phone can fly a
-    // server-authoritative avatar the same way a keyboard does
-    // (`systems::map_osd`). `handle_avatar_movement` reads the identical pair for
-    // the offline path; the two must stay in step or flight behaves differently
-    // depending on how the client was launched.
-    let fly_up = !blocked && (keyboard_input.pressed(KeyCode::KeyR) || osd.climb > 0.0);
-    let fly_down = !blocked && (keyboard_input.pressed(KeyCode::KeyQ) || osd.climb < 0.0);
 
     // The edges. Both are set by other systems (`handle_avatar_movement` for the
     // jump, the interaction/emote UI for the emote) and consumed here, so they
@@ -1755,9 +1741,8 @@ pub fn send_network_intent(
     // that streams only on the client): steer the walk velocity so the avatar
     // slides along walls and can't enter a building, and auto-walk it out if it
     // ended up inside one (e.g. teleported in — no interiors yet). A building is in
-    // the way only at its own height (`collision::Body`), so a flight is steered
-    // by a facade and clears a roof, and a fall past a wall is not steered around
-    // a building the avatar is nowhere near the height of.
+    // the way only at its own height (`collision::Body`), so a fall past a wall is
+    // not steered around a building the avatar is nowhere near the height of.
     //
     // The height is measured on the sim's flat plane and lifted by the two things
     // only the client knows — `terrain_lift` (the measured ground, bridge decks
@@ -1776,15 +1761,7 @@ pub fn send_network_intent(
     let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
     if in_bore || (layers.buildings_enabled && !colliders.is_empty()) {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
-        // The wish is a saturated throttle; the sim multiplies a flier's by the
-        // altitude factor, and how far ahead the probe must look depends on the
-        // speed that actually results.
-        let lift = if avatar_state.is_flying {
-            motion::fly_altitude_factor(avatar_state.position.y)
-        } else {
-            1.0
-        };
-        let wish = Vec2::new(v.x, v.z) * lift;
+        let wish = Vec2::new(v.x, v.z);
         let body = crate::systems::collision::Body::new(
             avatar_state.position.y + avatar_state.terrain_lift + avatar_state.floor_lift,
             avatar_state.terrain_lift + avatar_state.floor_lift,
@@ -1793,7 +1770,7 @@ pub fn send_network_intent(
             colliders.steer_in_bore(pos, wish)
         } else {
             colliders.steer_velocity(pos, wish, body)
-        } / lift;
+        };
         v.x = steered.x;
         v.z = steered.y;
     }
@@ -1812,79 +1789,41 @@ pub fn send_network_intent(
     // is the measured ground, `floor_lift` the storey it is standing on). This is
     // the frame every number below is in.
     //
-    // **Predicted, not authoritative, and that is the point.** Both the altitude
-    // factor and the gravity arc used to read a height that only advances at the
-    // sim's 20 Hz tick — a staircase. Flight rides altitude, so a climb re-scaled
-    // the whole velocity twenty times a second in steps: at a kilometre up each
-    // snapshot moved the height by ~10 m, which is an 8 % jump in *horizontal*
-    // speed as well, and the follow camera leads by that same velocity
-    // (`free_camera::FOLLOW_LEAD_MAX`), so the view lurched with it. The
-    // authoritative height was chosen to stop a high flight rubber-banding, and
-    // it does not: reconciliation compares positions, and a factor derived from a
-    // height that is itself reconciled converges on the sim's answer anyway —
-    // continuously, instead of in twenty steps a second.
+    // **Predicted, not authoritative, and that is the point.** The gravity arc
+    // used to read a height that only advances at the sim's 20 Hz tick — a
+    // staircase — and reconciliation compares positions, so a height that is
+    // itself reconciled converges on the sim's answer anyway, continuously
+    // instead of in twenty steps a second.
     let flat_y =
         (avatar_state.display_position.y - avatar_state.terrain_lift - avatar_state.floor_lift)
             .max(motion::GROUND_Y);
-    // Flight rides altitude, exactly as `SimWorld::step` applies it at
-    // integration.
-    let lift = if avatar_state.is_flying {
-        motion::fly_altitude_factor(flat_y)
-    } else {
-        1.0
-    };
     let horizontal = if mag > 1e-4 {
-        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag) * lift
+        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag)
     } else {
         Vec2::ZERO
     };
-    // Vertical mirrors `SimWorld::step`: thrust while flying, otherwise the
-    // gravity arc. Predicting the arc as well is what keeps a jump smooth — with a
-    // flat fall prediction the whole airborne phase was reconciliation dragging
-    // the display back a snapshot at a time.
-    let vy = if avatar_state.is_flying {
-        avatar_state.vertical_velocity = 0.0;
-        avatar_state.grounded = false;
-        // The wire carries two booleans, so the *ramp* is the one part of the
-        // vertical model the client has to reproduce rather than receive. Same
-        // function the sim runs in `step` and the offline path integrates, which
-        // is what keeps a climb from rubber-banding.
-        let target = if fly_up {
-            motion::FLY_VERTICAL_SPEED
-        } else if fly_down {
-            -motion::FLY_VERTICAL_SPEED
-        } else {
-            0.0
-        };
-        avatar_state.fly_vertical = motion::step_fly_vertical(
-            avatar_state.fly_vertical,
-            target,
-            time.delta_secs().max(1e-4),
-        );
-        avatar_state.fly_vertical * lift
-    } else {
-        // Leaving flight drops the thrust outright, as `SimWorld::apply_intent`
-        // does: an avatar that isn't flying is on the gravity arc.
-        avatar_state.fly_vertical = 0.0;
-        // Mirror the sim's grant rule: only a grounded avatar jumps.
-        if jump {
-            avatar_state.vertical_velocity = motion::JUMP_SPEED;
-        }
-        // `flat_y`, so the storey comes off as well as the ground. It did not,
-        // and standing on an upper floor therefore predicted a fall from the
-        // height of that floor every frame — a correction the reconciler then
-        // had to undo, for as long as you stood indoors above the ground one.
-        let step = motion::step_fall(
-            flat_y,
-            avatar_state.vertical_velocity,
-            motion::GROUND_Y,
-            time.delta_secs().max(1e-4),
-        );
-        avatar_state.vertical_velocity = step.vertical_velocity;
-        avatar_state.grounded = step.grounded;
-        avatar_state.landing_impact = step.landing_speed.unwrap_or(0.0);
-        step.vertical_velocity
-    };
+    // Vertical mirrors `SimWorld::step`: the gravity arc. Predicting the arc is
+    // what keeps a jump smooth — with a flat fall prediction the whole airborne
+    // phase was reconciliation dragging the display back a snapshot at a time.
+    //
+    // Mirror the sim's grant rule: only a grounded avatar jumps.
+    if jump {
+        avatar_state.vertical_velocity = motion::JUMP_SPEED;
+    }
+    // `flat_y`, so the storey comes off as well as the ground. It did not, and
+    // standing on an upper floor therefore predicted a fall from the height of
+    // that floor every frame — a correction the reconciler then had to undo, for
+    // as long as you stood indoors above the ground one.
+    let step = motion::step_fall(
+        flat_y,
+        avatar_state.vertical_velocity,
+        motion::GROUND_Y,
+        time.delta_secs().max(1e-4),
+    );
+    avatar_state.vertical_velocity = step.vertical_velocity;
+    avatar_state.grounded = step.grounded;
+    avatar_state.landing_impact = step.landing_speed.unwrap_or(0.0);
+    let vy = step.vertical_velocity;
     avatar_state.predicted_velocity = Vec3::new(horizontal.x, vy, horizontal.y);
 
     // Send on change (so a key edge reaches the sim the frame it happens) or on
@@ -1902,18 +1841,12 @@ pub fn send_network_intent(
         move_x: v.x,
         move_z: v.z,
         display_yaw,
-        flying: avatar_state.is_flying,
-        fly_up,
-        fly_down,
         seated,
     };
     let changed = last_sent.map_or(true, |p| {
         (p.move_x - intent.move_x).abs() > INTENT_EPS_DIR
             || (p.move_z - intent.move_z).abs() > INTENT_EPS_DIR
             || wrap_angle_pi(p.display_yaw - intent.display_yaw).abs() > INTENT_EPS_YAW
-            || p.flying != intent.flying
-            || p.fly_up != intent.fly_up
-            || p.fly_down != intent.fly_down
             // Sitting down and standing up are changes, so they reach the sim on
             // the frame they happen rather than on the next keepalive.
             || p.seated.is_some() != intent.seated.is_some()
@@ -1943,9 +1876,11 @@ pub fn send_network_intent(
         move_x: v.x,
         move_z: v.z,
         display_yaw,
-        flying: avatar_state.is_flying,
-        fly_up,
-        fly_down,
+        // Avatar flight was removed (2026-11-14); the fields stay on the wire,
+        // ignored by the sim, so the protocol did not move.
+        flying: false,
+        fly_up: false,
+        fly_down: false,
         jump,
         emote,
         expression,

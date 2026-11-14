@@ -19,7 +19,7 @@ Now a footprint carries `bottom..top` in the same frame as the avatar's feet
 (metres above the anchor ground; `terrain.ground_at` includes bridge decks), and
 a `Body { feet, ground }` says where the avatar is. A footprint blocks when
 `feet < top - STEP && feet + HEIGHT > bottom` (1.8 m tall, 0.35 m step), so
-there is no airborne special case: a flier over a roof is clear, a flier at wall
+there is no airborne special case: a body over a roof is clear, a body at wall
 height is stopped, a bridge deck over a lower building is clear, and a kerb-sized
 solid is stepped over.
 

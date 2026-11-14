@@ -87,7 +87,7 @@ const LAND_MIN_IMPACT: f32 = 3.0;
 /// and below the landing thud, which is the loudest thing the avatar does.
 const TELEPORT_VOLUME: f32 = 0.3;
 
-/// Wind is silent at rest and reaches this at full flight speed.
+/// Wind is silent at a walk and reaches this at a run.
 const WIND_VOLUME_MAX: f32 = 0.18;
 
 /// How fast the wind volume follows the speed. Slow: wind has mass, and a gust
@@ -202,7 +202,7 @@ pub fn play_avatar_sounds(
 
     // Timed by the legs, which a GPS walk moves too (`AvatarState::stride_speed`).
     let speed = avatar_state.stride_speed();
-    if avatar_state.is_flying || !avatar_state.grounded || speed < locomotion::MOVING_EPS {
+    if !avatar_state.grounded || speed < locomotion::MOVING_EPS {
         // Keep the phase where it is: stopping mid-stride and starting again from
         // there is exactly what a person does.
         return;
@@ -380,7 +380,7 @@ pub fn update_wind_volume(
     mut current: Local<f32>,
 ) {
     let target = if camera_state.mode == CameraMode::Avatar {
-        wind_volume(avatar_state.ground_speed, avatar_state.is_flying)
+        wind_volume(avatar_state.ground_speed)
     } else {
         0.0
     };
@@ -398,14 +398,10 @@ pub fn update_wind_volume(
 }
 
 /// Wind volume for a speed. Silent at a walk (nobody hears the wind strolling),
-/// rising through a run, and loudest in flight.
+/// rising through a run.
 #[must_use]
-pub fn wind_volume(speed: f32, flying: bool) -> f32 {
-    let full = if flying {
-        locomotion::FLY_SPEED
-    } else {
-        locomotion::RUN_SPEED
-    };
+pub fn wind_volume(speed: f32) -> f32 {
+    let full = locomotion::RUN_SPEED;
     // The everyday gait is the onset, so the wind arrives exactly when the
     // avatar starts doing something faster than walking.
     let onset = locomotion::WALK_SPEED;
@@ -743,41 +739,32 @@ pub mod synth {
 mod tests {
     use super::*;
 
-    /// Nobody hears the wind while strolling, and flight is louder than a sprint
-    /// at the same nominal fraction — the two things that make it read as air
-    /// rather than as a volume slider tied to the speedometer.
+    /// Nobody hears the wind while strolling — the thing that makes it read as
+    /// air rather than as a volume slider tied to the speedometer.
     #[test]
-    fn wind_starts_at_a_run_and_peaks_in_flight() {
-        assert_eq!(wind_volume(0.0, false), 0.0, "silent at rest");
+    fn wind_starts_past_a_walk_and_peaks_at_a_run() {
+        assert_eq!(wind_volume(0.0), 0.0, "silent at rest");
         assert_eq!(
-            wind_volume(locomotion::STROLL_SPEED, false),
+            wind_volume(locomotion::STROLL_SPEED),
             0.0,
             "silent at a stroll"
         );
         assert_eq!(
-            wind_volume(locomotion::WALK_SPEED, false),
+            wind_volume(locomotion::WALK_SPEED),
             0.0,
             "and still silent at the walk it starts from"
         );
-        let run = wind_volume(locomotion::RUN_SPEED, false);
+        let run = wind_volume(locomotion::RUN_SPEED);
         assert!(run > 0.0, "audible at a run: {run}");
         assert!((run - WIND_VOLUME_MAX).abs() < 1e-5, "a run is full");
-
-        let flight = wind_volume(locomotion::FLY_SPEED, true);
-        assert!((flight - WIND_VOLUME_MAX).abs() < 1e-5);
-        // The same speed reached in flight is a smaller fraction of flight's
-        // range, so it must be quieter than it would be on foot.
-        assert!(wind_volume(locomotion::RUN_SPEED, true) < run);
     }
 
     /// Volume never leaves 0..=max, whatever it is handed.
     #[test]
     fn wind_volume_is_bounded() {
         for speed in [-5.0, 0.0, 1.0, 100.0, 1e6] {
-            for flying in [false, true] {
-                let v = wind_volume(speed, flying);
-                assert!((0.0..=WIND_VOLUME_MAX).contains(&v), "{speed} → {v}");
-            }
+            let v = wind_volume(speed);
+            assert!((0.0..=WIND_VOLUME_MAX).contains(&v), "{speed} → {v}");
         }
     }
 

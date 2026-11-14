@@ -1,10 +1,27 @@
 ---
 topic: avatar-locomotion
-triggers: [avatar animation, fly animation, flying, jump, rig, facing, strafe, turn, WASD, gait, walk clip, systems/player/avatar.rs, systems::locomotion, simulator/src/state.rs, facing_yaw, advance_facing, display_yaw, update_avatar_model_pose, protocol 12, ClientIntent.flying, ClipGait, CLIP_ORDER]
-updated: 2026-10-18
+triggers: [avatar animation, jump, rig, facing, strafe, turn, WASD, gait, walk clip, systems/player/avatar.rs, systems::locomotion, simulator/src/state.rs, facing_yaw, advance_facing, display_yaw, update_avatar_model_pose, ClientIntent.flying, ClipGait, CLIP_ORDER, "avatar flight", flying]
+updated: 2026-11-14
 ---
 
-# The avatar clip set has no flight
+# The avatar walks, runs and jumps — and does not fly
+
+The avatar is a person: it strolls, walks, runs and jumps (swimming is the next
+gait). **It does not fly.** Avatar flight existed from protocol 12 until the
+owner removed it on 2026-11-14 as unrealistic; what it was and what it taught
+are in [retired/avatar-flight.md](retired/avatar-flight.md). The camera still
+flies — the Fly (Free) camera, Earth, the zoom out to the globe — and none of
+that is about the avatar.
+
+check: `! grep -rqw is_flying crates/cartopolis/src crates/simulator/src`
+
+`ClientIntent::flying`, `fly_up` and `fly_down` are still on the wire, ignored
+by the sim and sent `false` by clients: removing them would be a protocol
+revision. The sim falls every avatar (`SimWorld::step` runs `motion::step_fall`
+for all of them), so an old client that still flies is simply brought down, and
+`motion::MAX_SPEED` (8 m/s since the removal) clamps its flight-speed wish.
+
+## The clip set has no jump
 
 Every avatar plays the clips the MakeHuman pack carries, cut from motion capture
 (`makehuman-avatars.md` has the takes and how they were cut). The list is
@@ -14,38 +31,19 @@ complete:
 idle, walk, run, wave, interact, roll, punch, kick, faint, sit
 ```
 
-No jump, no fall, no hover, no swim — nothing airborne at all. A new one is a
-cut in `human-pack` from a take that has it (CMU has jumps; neither database has
-flight or swimming), retargeted by the same code, so adding a gait is a pack
-rebuild, not new client code.
+No jump, no fall, no swim. A new one is a cut in `human-pack` from a take that
+has it (CMU has jumps; neither database has swimming), retargeted by the same
+code, so adding a gait is a pack rebuild, not new client code.
 
-So flight is posed, not animated: `avatar::update_avatar_model_pose` pitches the
-model holders forward about chest height while the avatar is flying *and* moving,
-and stands them up again to hover or land. It plays `Idle` throughout. This is
-also why hovering and gliding look different at all — the clip is the same one.
-The lean goes on the **holders**, never on the avatar entity: that transform is
-the authoritative position and yaw, and a pose written into it is a position the
-sim never agreed to.
-
-## Flight is explicit on the wire (protocol 12)
-
-`ClientIntent::flying` says whether the avatar is flying. The vertical keys (`R`
-up — it was `E` until `E` became interact — and `Q` down) do nothing unless it
-is, and `SimWorld::step` falls an avatar that is not. Before the flag the sim
-could not tell a flier from anyone else and applied no gravity at all, so
-switching flight off in mid-air left the avatar hanging where it was, forever.
-The fall and climb rates the sim, the prediction and the offline path integrate
-are one module now, `cartopolis_core::motion` (`avatar-game-feel.md` says why
-they must stay one).
-
-The teleport arrival added 2026-08-25 is posed by the same system for a related
-reason — see [flight-at-speed.md](flight-at-speed.md), which also has why fast
-flight juddered and why none of the causes were in the flight controls.
-
-**The jump added in 2026-08 is posed for the same reason**, at a much smaller
-angle (`JUMP_TUCK`, ~11°) and driven by the *signed* vertical velocity, so the
-rise and the fall do not look identical — which is the give-away that an
-"airborne" pose is really one frozen frame.
+So a jump is **posed**, not animated: `avatar::update_avatar_model_pose` pitches
+the model holders about chest height (`JUMP_TUCK`, ~11°) driven by the *signed*
+vertical velocity, so the rise and the fall do not look identical — the
+give-away that an "airborne" pose is one frozen frame. It plays `Idle`
+throughout. The tuck goes on the **holders**, never on the avatar entity: that
+transform is the authoritative position and yaw, and a pose written into it is
+a position the sim never agreed to. The teleport arrival (a scale out of a thin
+column, `avatar::body_pose`) is written by the same system for the same reason
+([avatar-prediction-smoothing.md](avatar-prediction-smoothing.md)).
 
 ## The clips are played at the speed the avatar is actually moving
 

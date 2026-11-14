@@ -13,8 +13,7 @@
 //! vector, so the client already owns the throttle without a protocol field.
 //! Stroll, walk and run are therefore three magnitudes, not three messages: the
 //! sim needs no gait concept, and prediction stays exact because both ends call
-//! `motion::sim_speed_for_wish`. (Flight has always worked this way; it sends a
-//! magnitude of 4.)
+//! `motion::sim_speed_for_wish`.
 //!
 //! # Why acceleration is in m/s², not a normalized ease
 //!
@@ -23,7 +22,7 @@
 //! second squared gives the fast gaits the longer run-up they should have:
 //! 1.1 m/s arrives in 0.06 s, 6 m/s takes 0.33 s.
 
-pub use cartopolis_core::motion::{wish_for_speed, MAX_SPEED};
+pub use cartopolis_core::motion::wish_for_speed;
 
 // ── Gaits ────────────────────────────────────────────────────────────────────
 
@@ -44,24 +43,11 @@ pub const WALK_SPEED: f32 = 1.8;
 /// the clip plays at 1.5× and stays inside the band.
 pub const RUN_SPEED: f32 = 6.0;
 
-/// Horizontal flight speed — the sim's cap, reached via the wish magnitude.
-pub const FLY_SPEED: f32 = MAX_SPEED;
-
 /// How hard the avatar picks up speed on the ground, and sheds it (m/s²).
 /// Deceleration is the brisker of the two; the other way round reads as walking
 /// on grease.
 pub const GROUND_ACCEL: f32 = 18.0;
 pub const GROUND_DECEL: f32 = 26.0;
-/// Flight trades the legs for thrust, so it ramps far harder than anything on
-/// foot: full speed in under half a second.
-///
-/// Raised from 45/55 on 2026-08-25. Flight is the travel mode — the thing you
-/// reach for to cross a city rather than a street — and two thirds of a second
-/// of winding up is paid on every course change, not once per trip. Nothing here
-/// touches the wire: the ramp produces a wish *magnitude*, and the sim
-/// reproduces whatever magnitude arrives.
-pub const FLY_ACCEL: f32 = 70.0;
-pub const FLY_DECEL: f32 = 80.0;
 
 /// Which gait the avatar is travelling in. Chosen by held modifiers, not by
 /// speed — the speed is the *consequence* (see [`Gait::speed`]).
@@ -217,7 +203,7 @@ pub fn clip_speed_for(ground_speed: f32, clip_reference_speed: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cartopolis_core::motion::sim_speed_for_wish;
+    use cartopolis_core::motion::{sim_speed_for_wish, MAX_SPEED};
 
     /// The throttle round-trips through the sim's own formula: what the client
     /// asks for is what the sim computes. This is the single property the whole
@@ -233,9 +219,6 @@ mod tests {
                 "{gait:?}: asked {asked} m/s, sim would move at {got} m/s"
             );
         }
-        // …and flight, which rides the same path at the sim's cap.
-        let flown = sim_speed_for_wish(wish_for_speed(FLY_SPEED));
-        assert!((flown - FLY_SPEED).abs() < 1e-4, "flight: {flown}");
     }
 
     /// Every gait is inside the range the sim can express, so none of them is

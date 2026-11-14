@@ -1,7 +1,7 @@
 ---
 topic: avatar-game-feel
-triggers: [avatar feels sluggish, camera feels awkward, recentre, auto-rotate camera, camera behind avatar, banking, framing, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle, systems/player/avatar.rs, systems::locomotion, core/src/motion.rs, cartopolis_core::motion, systems/player/free_camera.rs, systems/net/network.rs, simulator/src/net/avatar.rs, simulator/src/state.rs, systems::interact, systems::soundscape, systems::world_places, EmoteState, EMOTE_REPLICATE_SECS, MIN_INTENT_INTERVAL, keys, key bindings]
-updated: 2026-10-17
+triggers: [avatar feels sluggish, camera feels awkward, recentre, auto-rotate camera, camera behind avatar, framing, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle, systems/player/avatar.rs, systems::locomotion, core/src/motion.rs, cartopolis_core::motion, systems/player/free_camera.rs, systems/net/network.rs, simulator/src/net/avatar.rs, simulator/src/state.rs, systems::interact, systems::soundscape, systems::world_places, EmoteState, EMOTE_REPLICATE_SECS, MIN_INTENT_INTERVAL, keys, key bindings]
+updated: 2026-11-14
 ---
 
 # What made the avatar feel wrong, and what the fix rests on
@@ -30,8 +30,12 @@ its own cycle and speed — `avatar-locomotion.md`.)
 ## The throttle is a magnitude, which is why gaits needed no protocol change
 
 `SimWorld::apply_intent` derives speed from the **magnitude** of the wish vector,
-not from a speed field. So walk / jog / sprint / flight are four magnitudes the
-client picks, and the sim needs no concept of a gait. Both ends call
+not from a speed field. So stroll / walk / run are three magnitudes the client
+picks, and the sim needs no concept of a gait. The sim caps the result at
+`motion::MAX_SPEED` — 8 m/s, a magnitude of 1, since avatar flight (a magnitude
+of 4, 32 m/s) was removed on 2026-11-14 (`retired/avatar-flight.md`). Raising
+the cap, not `SPEED_SCALE`, is how something faster would get through: the
+scale is the encoding every deployed client's magnitudes are read in. Both ends call
 `cartopolis_core::motion::sim_speed_for_wish`, so prediction cannot drift from
 authority by transcription.
 
@@ -39,18 +43,14 @@ authority by transcription.
 avatar moves. It cost nothing on the wire. Jump and emotes did *not* fit through
 it (see below) and cost protocol 13.
 
-Altitude-scaled flight (2026-08-21) did not fit through it either, for the
-mirror reason: the magnitude encoding **saturates at `MAX_SPEED`**, so a wish
-can never ask for the 640 m/s a high flight is worth. It rides
-`motion::fly_altitude_factor` instead — a multiplier derived from the avatar's
-`y`, which is state both ends already share — applied at *integration* in all
-three motion sites. Nothing changed on the wire, but the sim's `step` changed,
-so **the deployed simulator must be rebuilt** or an online client predicts fast
-flight the authority refuses and rubber-bands above ~120 m.
+**A change to the sim's motion rules needs the deployed simulator rebuilt**
+even when nothing changes on the wire, or an online client predicts motion the
+authority refuses and rubber-bands (altitude-scaled flight, 2026-08-21, was the
+case that taught it).
 
 ## `cartopolis_core::motion` exists because three copies could not be kept in step
 
-The fall/climb/speed constants were duplicated in `cartopolis_simulator::state`,
+The fall/jump/speed constants were duplicated in `cartopolis_simulator::state`,
 `network::send_network_intent` (prediction) and `avatar::handle_avatar_movement`
 (offline), each with a comment asking the next person to update the others. They
 are one module now. **Do not re-inline them**: a mismatch between the first two
@@ -75,7 +75,7 @@ deliberate:
 
 ## Jump could not be client-side, and gravity was not an acceleration
 
-`SimWorld::step` clamps `y >= 0` and falls anything not flying, so a purely
+`SimWorld::step` clamps `y >= 0` and falls every avatar, so a purely
 predicted jump is reconciled straight into the floor — jump needs the sim, hence
 protocol 13 (`ClientIntent::jump`, granted only from the ground so holding the
 bit cannot climb). While there, the descent stopped being a **constant 12 m/s**
@@ -192,7 +192,7 @@ that runs the legs through a position they never occupy, for 180 ms, every time.
 cycle length and seeks the incoming clip to the same *fraction* of its cycle.
 This is only sound because both clips are exactly **two footfalls** long
 (`WALK_CLIP_SECS` 1.333, `RUN_CLIP_SECS` 0.8) — the normalized phase means the
-same thing in each, so left foot fades into left foot. Idle, flight and the
+same thing in each, so left foot fades into left foot. Idle, sitting and the
 emotes have no stride and are still started from zero, which is correct: idle
 *is* feet-together.
 
@@ -220,14 +220,15 @@ the smaller of them.
   18 ms at a quarter level. Two new tests: the clip must have energy under
   200 Hz, and must not stop dead in its last third.
 
-## Keys that moved
+## Keys
 
-`E` was the flight climb key and is now **interact** — it is the near-universal
-"use" binding and a climb key is the cheaper of the two to move. Climb is `R`.
-`Space` is **jump** on the press and **take off** if held past 0.25 s; a jump that
-waits to see whether a hold is coming is not a jump. `F` remains the unambiguous
-flight toggle. `Shift` runs and `Alt` strolls — both were free in Follow. Note
-neither is needed for the ordinary case: the unmodified gait is the walk.
+In Follow: `WASD` walks, `Shift` runs and `Alt` strolls — neither is needed
+for the ordinary case, the unmodified gait is the walk. `Space` **jumps**, on
+the press; `E` **interacts** (the near-universal "use" binding — it was the
+flight climb key once); `1`–`6` are the emotes. **`F`, `R`, `Q` and a held
+`Space` do nothing on foot** since avatar flight was removed on 2026-11-14
+(`retired/avatar-flight.md`: `F` toggled it, a held `Space` took off, `R`/`Q`
+climbed). The Fly camera keeps its own keys (`E`/`Q` up/down, `Shift` faster).
 
 ## The follow camera, against the published rules (2026-10-08)
 
@@ -241,7 +242,7 @@ fast and out slow, a speed-coupled FOV, a landing dip. Four things it did not:
   camera stayed wherever it was last dragged, so a turn left the avatar walking
   across the screen until somebody dragged it back. `free_camera::recentre_turn`
   swings it after **1 s** without a hand on it (Cinemachine's wait), ramped in
-  over 0.6 s, at 1.2/s on foot and 2.5/s in flight, scaled by pace, and faded to
+  over 0.6 s, at 1.2/s, scaled by pace, and faded to
   nothing for travel toward the lens — or pressing S spins the view round.
 - **Recentring alone would make A walk a circle** — the camera turns, the keys
   are read against the camera, the avatar turns to follow (Nesky #18–19). So
@@ -253,14 +254,10 @@ fast and out slow, a speed-coupled FOV, a landing dip. Four things it did not:
 - **It rode every jump** (Nesky #44). `step_pivot` holds the pivot height while
   on foot and off the ground, follows a fall once it drops 0.4 m below, and
   eases back on landing.
-- **The avatar was dead centre and the boom was the same at 640 m/s as at a
-  walk.** The aim rises 8 % of the boom above the chest, which puts the avatar
-  in the lower middle; the boom stretches up to 1.9× between a run and 80 m/s
-  (`pullback_for_speed`) — distance and FOV as one curve on speed (Nesky
-  #14–16). `distance` keeps the wheel's choice; the stretch is applied on top.
-
-Flight also **banks** now: roll ∝ the facing's turn rate, capped at ~35°
-(`avatar::FLIGHT_BANK_*`). Not replicated, like the lean.
+- **The avatar was dead centre.** The aim rises 8 % of the boom above the
+  chest, which puts the avatar in the lower middle. (A boom that stretched with
+  speed, between a run and 80 m/s, went with avatar flight on 2026-11-14:
+  nothing on foot reaches it. The speed-coupled FOV still widens to a run.)
 
 None of this has been felt on a device yet; every number above is a starting
 point taken from the sources, not a tuning.

@@ -631,7 +631,7 @@ consulted only for the lines that have it.
 
 ## What is not done
 
-- **Nothing collides with the roof**, so flying up through it works.
+- **Nothing collides with the roof**; a jump is a metre, so nothing reaches it.
 - **The routing graph is unchanged**: `RoadGraph` is built from the same
   `streets` features and never knew about the tunnel flag either way, so a route
   through one is drawn on the surface (`navigation.rs` says why a negative grade

@@ -33,32 +33,18 @@ struct AvatarSim {
     /// online frame, so for an app this lasts one frame.
     place: Option<GeoAnchor>,
     /// Height of the feet above the flat ground (`motion::GROUND_Y`), metres:
-    /// what a jump, a fall and flight change.
+    /// what a jump and a fall change.
     alt: f32,
     yaw: f32,
     velocity: Vec3,
-    /// Flight mode (`ClientIntent::flying`): hovers at altitude, and only then do
-    /// `fly_vertical` and the client's vertical keys mean anything. An avatar that isn't flying
-    /// falls — see [`SimWorld::step`].
-    flying: bool,
-    /// Climb/descent the client is *asking* for (m/s): ±[`motion::FLY_VERTICAL_SPEED`]
-    /// or zero, written straight from the intent's `fly_up`/`fly_down` bits.
-    fly_vertical_target: f32,
-    /// What the thrust has actually built to, ramped toward the target by
-    /// [`motion::step_fly_vertical`] in [`SimWorld::step`]. The wire carries two
-    /// booleans, so this ramp is the one part of the vertical model the authority
-    /// has to reproduce rather than receive — the client predicts it with the same
-    /// function.
-    fly_vertical: f32,
-    /// Vertical velocity (m/s, up positive) for the jump/fall arc. Flight ignores
-    /// it and holds altitude; everything else integrates it under
-    /// [`motion::GRAVITY`]. It replaced a constant descent rate, which meant a
+    /// Vertical velocity (m/s, up positive) for the jump/fall arc, integrated
+    /// under [`motion::GRAVITY`]. It replaced a constant descent rate, which meant a
     /// fall ran at full speed from its first frame and a jump was impossible to
     /// express at all.
     vertical_velocity: f32,
     /// Set for one tick by a `ClientIntent` whose `jump` bit is set. Consumed by
     /// [`SimWorld::step`], which only honours it when the avatar is on the ground —
-    /// the authority decides whether a jump happens, so a client cannot fly by
+    /// the authority decides whether a jump happens, so a client cannot climb by
     /// spamming the bit.
     jump_requested: bool,
     /// The emote this avatar is currently broadcasting, and how long it has been
@@ -76,9 +62,8 @@ struct AvatarSim {
     expression_sequence: u32,
     /// What [`SimWorld::step`] actually moved this avatar by, per second, on its
     /// last tick — replicated as `AvatarStateDto::velocity`. Measured from the
-    /// position change rather than assembled from `velocity`, `fly_vertical` and
-    /// `vertical_velocity`, so the flight lift and the ground clamp are already
-    /// in it: an avatar landing from a jump reports zero, not the fall rate it
+    /// position change rather than assembled from `velocity` and
+    /// `vertical_velocity`, so the ground clamp is already in it: an avatar landing from a jump reports zero, not the fall rate it
     /// had before the floor stopped it.
     moved: Vec3,
     /// The account this avatar is signed in as, for anything that has to *name*
@@ -293,9 +278,6 @@ impl SimWorld {
                 // Match client tank convention: yaw π ↔ tank 0 ↔ travel −Z when pressing W.
                 yaw: std::f32::consts::PI,
                 velocity: Vec3::ZERO,
-                flying: false,
-                fly_vertical_target: 0.0,
-                fly_vertical: 0.0,
                 vertical_velocity: 0.0,
                 jump_requested: false,
                 emote: None,
@@ -464,10 +446,9 @@ impl SimWorld {
     /// Motion state is cleared along with the position, for the same reason the
     /// client's own teleport lands the camera at rest: velocity carried across a
     /// jump slides the avatar off the place it asked for, and a jump arc from
-    /// the origin means landing mid-fall at the destination. Flight survives —
-    /// it is a mode, not motion — but the altitude is clamped like
-    /// [`Self::step`] clamps it, so a malformed teleport cannot put an avatar
-    /// underground.
+    /// the origin means landing mid-fall at the destination. The altitude is
+    /// clamped like [`Self::step`] clamps it, so a malformed teleport cannot put
+    /// an avatar underground.
     pub fn teleport_avatar(&mut self, id: u64, geo: GeoAnchor, alt_m: f32) {
         // Same rule as `apply_intent`, and the same reason: postcard decodes a
         // float from raw bytes, a NaN place poisons every later snapshot and is
@@ -537,9 +518,6 @@ impl SimWorld {
         move_x: f32,
         move_z: f32,
         display_yaw: f32,
-        flying: bool,
-        fly_up: bool,
-        fly_down: bool,
         jump: bool,
         emote: Option<Emote>,
         seated: Option<[f32; 2]>,
@@ -590,9 +568,11 @@ impl SimWorld {
         }
         // Horizontal speed is the intent *magnitude* scaled, capped
         // (`motion::sim_speed_for_wish` — the client predicts with the same
-        // function). The magnitude is the throttle: a walk, a jog, a sprint and
-        // flight are four magnitudes, which is why none of them needed a
-        // protocol field of its own.
+        // function). The magnitude is the throttle: a stroll, a walk and a run
+        // are three magnitudes, which is why none of them needed a protocol
+        // field of its own. The cap (`motion::MAX_SPEED`) is a run's worth: a
+        // client asking for more — the flight speed of a pre-2026-11-14 client —
+        // is clamped to it.
         let mut v = Vec3::new(move_x, 0.0, move_z);
         let mag = v.length();
         if mag > 1e-4 {
@@ -604,35 +584,11 @@ impl SimWorld {
         av.velocity.z = v.z;
         // Always apply facing so remotes see orbit-camera rotation while idle (not only when moving).
         av.yaw = snap_yaw_continuation(av.yaw, display_yaw);
-        // Vertical thrust only means something in flight: a walker holding the
-        // climb key used to levitate and — nothing pulling it back down — stay up.
-        av.flying = flying;
-        av.fly_vertical_target = if !flying {
-            0.0
-        } else if fly_up {
-            motion::FLY_VERTICAL_SPEED
-        } else if fly_down {
-            -motion::FLY_VERTICAL_SPEED
-        } else {
-            0.0
-        };
-        // Leaving flight drops the thrust outright rather than ramping it down:
-        // an avatar that isn't flying is on the gravity arc, and coasting upward
-        // out of it for half a second is the levitation this branch exists to
-        // prevent.
-        if !flying {
-            av.fly_vertical = 0.0;
-        }
         // Latch rather than assign: intents arrive faster than ticks and are rate
         // limited on top (`net::MIN_INTENT_INTERVAL`), so a jump that shared a tick
         // with a later "not jumping" intent would be silently dropped. `step`
         // clears it.
         av.jump_requested |= jump;
-        // Taking off cancels a pending jump — otherwise it fires on landing, long
-        // after the key that asked for it.
-        if flying {
-            av.jump_requested = false;
-        }
         // The seat. A *level*, unlike the jump and the emote beside it: it holds
         // until the client says otherwise, so an avatar that comes into range
         // mid-sit is drawn sitting.
@@ -641,14 +597,14 @@ impl SimWorld {
         // word for something. A non-finite or over-long offset is rejected outright
         // — the client is describing a body somewhere its position is not, and
         // there is a limit to how far that may be. Asking to move ends the sit, so
-        // sitting cannot become a way to walk around displaced. And flight ends it
-        // for the same reason gravity does: nothing is under you.
+        // sitting cannot become a way to walk around displaced. And a jump ends it
+        // for the same reason.
         av.seated = seated.filter(|o| {
             o[0].is_finite()
                 && o[1].is_finite()
                 && (o[0] * o[0] + o[1] * o[1]) <= MAX_SEAT_OFFSET_M * MAX_SEAT_OFFSET_M
         });
-        if mag > 1e-4 || flying || jump {
+        if mag > 1e-4 || jump {
             av.seated = None;
         }
         // An emote is a one-shot: stamp it with a fresh sequence so receivers can
@@ -687,23 +643,13 @@ impl SimWorld {
                 continue;
             };
             let alt_before = av.alt;
-            // Flight rides altitude (`motion::fly_altitude_factor`), applied here
-            // at integration rather than to the stored velocity: the factor moves
-            // with the altitude between intents, and the wire's wish encoding
-            // saturates at `MAX_SPEED` so it could never carry the ramped speed
-            // anyway. The client predicts through the same function.
-            let lift = if av.flying {
-                motion::fly_altitude_factor(av.alt)
-            } else {
-                1.0
-            };
             // Metres east and south this tick, turned into degrees at this
             // latitude. Clients integrate in metres of their anchored Mercator
             // frame, which agrees with the ellipsoid's own scale to a part in
             // ten thousand over a reach, so prediction and authority differ by
             // less than a millimetre a tick.
-            let dx = av.velocity.x * lift * dt;
-            let dz = av.velocity.z * lift * dt;
+            let dx = av.velocity.x * dt;
+            let dz = av.velocity.z * dt;
             if dx != 0.0 || dz != 0.0 {
                 let (per_lat, per_lng) = cartopolis_core::degree_scale_m(geo.latitude);
                 let latitude = (geo.latitude - f64::from(dz) / per_lat).clamp(-90.0, 90.0);
@@ -718,34 +664,21 @@ impl SimWorld {
                     longitude,
                 });
             }
-            // Flight holds altitude; everything else is on the vertical arc, which
-            // is `motion::step_fall` — the same function the client predicts with
-            // and the `--offline` path integrates, so the three cannot disagree.
-            if av.flying {
-                // Ramp the thrust rather than assigning it: a key press used to be
-                // a step in the world velocity, which at altitude (where `lift`
-                // multiplies it) is a discontinuity of hundreds of metres per
-                // second. `motion::step_fly_vertical` is the shared definition, so
-                // the client predicts the same curve.
-                av.fly_vertical =
-                    motion::step_fly_vertical(av.fly_vertical, av.fly_vertical_target, dt);
-                av.alt += av.fly_vertical * lift * dt;
-                av.vertical_velocity = 0.0;
-                av.jump_requested = false;
-                if av.alt < motion::GROUND_Y {
-                    av.alt = motion::GROUND_Y;
-                }
-            } else {
-                // A jump is only granted from the ground: the authority decides,
-                // so holding the key cannot climb.
-                if av.jump_requested && av.alt <= motion::GROUND_Y + 1e-3 {
-                    av.vertical_velocity = motion::JUMP_SPEED;
-                }
-                av.jump_requested = false;
-                let s = motion::step_fall(av.alt, av.vertical_velocity, motion::GROUND_Y, dt);
-                av.alt = s.y;
-                av.vertical_velocity = s.vertical_velocity;
+            // The vertical arc is `motion::step_fall` — the same function the
+            // client predicts with and the `--offline` path integrates, so the
+            // three cannot disagree. Every avatar is on it: there is no flight
+            // (removed 2026-11-14), and a client that still asks for it is fallen
+            // like anyone else.
+            //
+            // A jump is only granted from the ground: the authority decides, so
+            // holding the key cannot climb.
+            if av.jump_requested && av.alt <= motion::GROUND_Y + 1e-3 {
+                av.vertical_velocity = motion::JUMP_SPEED;
             }
+            av.jump_requested = false;
+            let s = motion::step_fall(av.alt, av.vertical_velocity, motion::GROUND_Y, dt);
+            av.alt = s.y;
+            av.vertical_velocity = s.vertical_velocity;
             if dt > 0.0 {
                 av.moved = Vec3::new(dx, av.alt - alt_before, dz) / dt;
             }
@@ -1563,28 +1496,14 @@ mod tests {
         assert_eq!(world.embodied_place(id), None);
         assert!(world.has_avatar(id), "it still exists");
 
-        world.apply_intent(
-            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
-        );
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, None, None, None);
         world.step(0.05);
         assert!(
             dto(&world, id).is_none(),
             "an intent without a place puts nothing into the world"
         );
 
-        world.apply_intent(
-            id,
-            0.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-            Some(here()),
-        );
+        world.apply_intent(id, 0.0, 0.0, 0.0, false, None, None, Some(here()));
         let d = dto(&world, id).expect("placed now");
         assert_eq!(d.geo, here());
         assert_eq!(d.alt_m, motion::GROUND_Y);
@@ -1605,19 +1524,7 @@ mod tests {
             latitude: LAT + 0.01,
             longitude: LNG,
         };
-        world.apply_intent(
-            id,
-            1.0,
-            0.0,
-            0.0,
-            false,
-            false,
-            false,
-            false,
-            None,
-            None,
-            Some(elsewhere),
-        );
+        world.apply_intent(id, 1.0, 0.0, 0.0, false, None, None, Some(elsewhere));
         world.step(0.5);
         let o = offset_m(&world, id);
         let expect = motion::sim_speed_for_wish(1.0) * 0.5;
@@ -1626,9 +1533,7 @@ mod tests {
             "walking east for half a second put the avatar at {o:?}, not {expect} m east"
         );
 
-        world.apply_intent(
-            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
-        );
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, None, None, None);
         world.step(0.5);
         let o2 = offset_m(&world, id);
         assert!(
@@ -1658,7 +1563,7 @@ mod tests {
             (f32::NAN, f32::NAN, 0.0),
             (1.0, 0.0, f32::NAN),
         ] {
-            world.apply_intent(id, x, z, yaw, false, false, false, false, None, None, None);
+            world.apply_intent(id, x, z, yaw, false, None, None, None);
             world.step(0.05);
             let p = world.embodied_place(id).expect("still there");
             assert!(
@@ -1689,19 +1594,7 @@ mod tests {
                 longitude: LNG,
             },
         ] {
-            world.apply_intent(
-                unplaced,
-                0.0,
-                0.0,
-                0.0,
-                false,
-                false,
-                false,
-                false,
-                None,
-                None,
-                Some(bad),
-            );
+            world.apply_intent(unplaced, 0.0, 0.0, 0.0, false, None, None, Some(bad));
             assert_eq!(world.embodied_place(unplaced), None, "{bad:?} is no place");
             world.teleport_avatar(id, bad, 0.0);
             assert_eq!(
@@ -1713,9 +1606,7 @@ mod tests {
 
         // And an ordinary intent still moves, so the guard is not simply refusing
         // everything.
-        world.apply_intent(
-            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
-        );
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, None, None, None);
         world.step(0.05);
         assert!(
             offset_m(&world, id).z.abs() > 1e-4,
@@ -1736,36 +1627,21 @@ mod tests {
         let id = world.spawn_avatar();
         world.teleport_avatar(id, here(), 0.0);
         let seated = |w: &SimWorld| dto(w, id).expect("in view").seated;
-        let sit = |w: &mut SimWorld, x: f32, z: f32, flying: bool, jump: bool, seat: [f32; 2]| {
-            w.apply_intent(
-                id,
-                x,
-                z,
-                0.0,
-                flying,
-                false,
-                false,
-                jump,
-                None,
-                Some(seat),
-                None,
-            );
+        let sit = |w: &mut SimWorld, x: f32, z: f32, jump: bool, seat: [f32; 2]| {
+            w.apply_intent(id, x, z, 0.0, jump, None, Some(seat), None);
         };
 
         // An ordinary seat: still, and within reach of a bench.
-        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
+        sit(&mut world, 0.0, 0.0, false, [0.4, -0.9]);
         assert_eq!(seated(&world), Some([0.4, -0.9]));
 
         // Asking to move ends it, in the same intent that asks.
-        sit(&mut world, 0.0, 1.0, false, false, [0.4, -0.9]);
+        sit(&mut world, 0.0, 1.0, false, [0.4, -0.9]);
         assert_eq!(seated(&world), None, "walking away should end the sit");
 
-        // So does taking off, and so does a jump.
-        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
-        sit(&mut world, 0.0, 0.0, true, false, [0.4, -0.9]);
-        assert_eq!(seated(&world), None, "flying should end the sit");
-        sit(&mut world, 0.0, 0.0, false, false, [0.4, -0.9]);
-        sit(&mut world, 0.0, 0.0, false, true, [0.4, -0.9]);
+        // So does a jump.
+        sit(&mut world, 0.0, 0.0, false, [0.4, -0.9]);
+        sit(&mut world, 0.0, 0.0, true, [0.4, -0.9]);
         assert_eq!(seated(&world), None, "jumping should end the sit");
 
         // Nothing a client can put on the wire draws its body across the street,
@@ -1776,7 +1652,7 @@ mod tests {
             [f32::INFINITY, 0.0],
             [f32::NAN, f32::NAN],
         ] {
-            sit(&mut world, 0.0, 0.0, false, false, bad);
+            sit(&mut world, 0.0, 0.0, false, bad);
             assert_eq!(seated(&world), None, "{bad:?} should have been refused");
         }
 
@@ -1794,9 +1670,7 @@ mod tests {
         world.teleport_avatar(id, here(), 0.0);
         // Walking when the jump lands: the carried velocity must not slide the
         // avatar off the destination.
-        world.apply_intent(
-            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
-        );
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, None, None, None);
         world.step(0.05);
 
         let dest = GeoAnchor {
@@ -1833,9 +1707,7 @@ mod tests {
         let velocity = |world: &SimWorld| dto(world, id).expect("in the snapshot").velocity;
         assert_eq!(velocity(&world), Vec3::ZERO, "a fresh avatar is at rest");
 
-        world.apply_intent(
-            id, 0.0, 1.0, 0.0, false, false, false, false, None, None, None,
-        );
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, None, None, None);
         let before = offset_m(&world, id);
         world.step(0.05);
         let after = offset_m(&world, id);

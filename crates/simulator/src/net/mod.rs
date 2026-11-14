@@ -1218,9 +1218,6 @@ async fn dispatch<T: FrameTransport>(
             move_x,
             move_z,
             display_yaw,
-            flying,
-            fly_up,
-            fly_down,
             jump,
             emote,
             expression,
@@ -1233,9 +1230,6 @@ async fn dispatch<T: FrameTransport>(
                     move_x,
                     move_z,
                     display_yaw,
-                    flying,
-                    fly_up,
-                    fly_down,
                     jump,
                     emote,
                     expression,
@@ -1645,8 +1639,8 @@ pub async fn tick_loop(
         // land late; advancing a fixed 50 ms per tick let simulated time fall
         // behind wall-clock time, and the client — predicting against a real
         // clock — then ran permanently ahead of the authority it was reconciling
-        // toward. The gap is proportional to speed, so it was invisible at an
-        // 8 m/s walk and obvious at the 32 m/s fly.
+        // toward. The gap is proportional to speed, so it was invisible at a
+        // walk and obvious in the 32 m/s avatar flight there once was.
         let now = Instant::now();
         let dt = (now - last_step).as_secs_f32().min(max_step);
         last_step = now;

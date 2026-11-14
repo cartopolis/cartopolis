@@ -14,7 +14,7 @@ this in one sitting".
 | Register and sign in | the login card (☰ ▸ Sign in…), a fresh account against the public sim |
 | Claim and own a house | a registered account claiming, re-claiming, and losing a claim |
 | Walk, run, stroll | WASD, Shift to run, Alt to stroll — speeds, animation, collision with buildings |
-| Jump and flight | Space to jump, held Space / F to fly, R/Q to climb and descend, landing again |
+| Jump | Space to jump (and nothing more when held: avatar flight was removed 2026-11-14), landing again |
 | Sit on a bench | E near surveyed street furniture, standing back up, being seen sitting by others |
 | Emotes | keys 1–6, visible to another connected client, joining mid-emote |
 | Chat | the chat panel, message delivery to a second client, history on arrival |

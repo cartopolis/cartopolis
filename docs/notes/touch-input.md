@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
-updated: 2026-11-10
+updated: 2026-11-14
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -282,8 +282,8 @@ camera mode:
   climb/descend pair bottom-right. Left thumb translates, right thumb changes
   height, which is where the thumbs already are on a two-handed phone.
 - **Follow** — the same stick, walking the *avatar*; the same bottom-right pair,
-  zooming on foot and climbing in flight; and a jump/flight pair stacked above
-  it.
+  zooming the camera; and a jump disc stacked above it (a jump/flight pair until
+  avatar flight was removed, 2026-11-14).
 - **Earth** — the same bottom-right pair, zooming. Redundant with the pinch by
   design: one-handed is how a phone is held most of the time.
 
@@ -292,17 +292,17 @@ camera mode:
 below it: two clusters of identical discs on one edge at two unrelated heights,
 the busier of them out of a one-handed thumb's reach, and overlapping the scale
 bar that was anchored to the same corner. Anchored to the bottom, the right edge
-is one column that grows upwards and the pair keeps a single position across all
-four states. The scale bar moved to the bottom-left and sits above whatever
+is one column that grows upwards and the pair keeps a single position across
+every mode. The scale bar moved to the bottom-left and sits above whatever
 `map_osd::bottom_left_reserved` says the stick claims.
 
 **Since 2026-11-10 the right edge has two owners**: the map's column of round
 buttons (Layers, the view mode, Locate, Camera) comes down from under the search
 bar to 268 pt, and these controls grow up from the World | Community switch. In
-Follow the face and hand discs stand beside the jump/flight pair, one column in
+Follow the face and hand discs stand beside the jump disc, one column in
 (2026-11-11; in tiers above it they came within 8 pt of the column), so on a
 600 pt phone the stack stops at 334 pt. The gap between that inner column and the
-pair is a group gap, so their miss bands do not meet. The locate disc's caption
+jump disc is a group gap, so their miss bands do not meet. The locate disc's caption
 sits to its left rather than under it
 (`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`).
 

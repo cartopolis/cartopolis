@@ -97,7 +97,9 @@ pub const MAX_REACH_M: f32 = 5_000.0;
 /// How far a person at a height can see: the ground reach, widened by twice the
 /// altitude — a view from a hundred metres up takes in a few hundred metres of
 /// ground — and capped at [`MAX_REACH_M`]. The map streams by altitude the same
-/// way, so what is drawn under a flying avatar is matched by who is drawn on it.
+/// way, so what is drawn under a raised avatar is matched by who is drawn on it.
+/// (Since avatar flight was removed, 2026-11-14, an avatar is that high only
+/// while falling from a placement the sim was given — a jump adds about a metre.)
 #[must_use]
 pub fn reach_m(alt_m: f32) -> f32 {
     (INTEREST_RADIUS_M + 2.0 * alt_m.max(0.0)).min(MAX_REACH_M)
