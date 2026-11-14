@@ -329,9 +329,20 @@ fn features(world: &[(Vec3, Quat)], root: usize) -> Vec<Vec3> {
     f
 }
 
-/// The yaw (about +Y) of a rotation's forward (+Z) axis.
+/// The yaw (about +Y) of a rotation's forward (+Z) axis — or, for a body lying
+/// face down or face up, of its spine (+Y), the way the head points.
+///
+/// The swim takes (CMU 125, 126) are captured lying on a stool, the hips turned
+/// ~80° forward: their forward axis points at the floor, and its yaw is noise
+/// that turned the swimmer a different way in every frame of the loop search.
+/// An upright body's forward is within 45° of level, so it never takes the
+/// second branch.
 fn heading_of(r: Quat) -> f32 {
     let f = r * Vec3::Z;
+    if f.y.abs() > std::f32::consts::FRAC_1_SQRT_2 {
+        let up = r * Vec3::Y;
+        return up.x.atan2(up.z);
+    }
     f.x.atan2(f.z)
 }
 
@@ -620,6 +631,27 @@ Frame Time: 0.5
 0 90 0 0 0 0 0 0 0
 1 90 2 0 90 0 0 0 0
 ";
+
+    /// A body lying face down (hips turned 80° forward, as the swim takes are)
+    /// heads where its head points, and keeps heading there through the small
+    /// rolls a stroke makes; an upright body still heads where it faces.
+    #[test]
+    fn a_body_lying_down_heads_where_its_head_points() {
+        let prone = Quat::from_rotation_x(80f32.to_radians());
+        assert!(heading_of(prone).abs() < 1e-4, "{}", heading_of(prone));
+        for roll in [-15f32, -5.0, 5.0, 15.0] {
+            let rolled = prone * Quat::from_rotation_y(roll.to_radians());
+            assert!(
+                heading_of(rolled).abs() < 0.3,
+                "roll {roll}: {}",
+                heading_of(rolled)
+            );
+        }
+        let turned = Quat::from_rotation_y(1.0) * prone;
+        assert!((heading_of(turned) - 1.0).abs() < 1e-4);
+        let upright = Quat::from_rotation_y(0.5);
+        assert!((heading_of(upright) - 0.5).abs() < 1e-5);
+    }
 
     #[test]
     fn a_bvh_reads_its_hierarchy_and_frames() {

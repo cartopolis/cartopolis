@@ -89,6 +89,7 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
             },
             ..once("sit", "13_04", 4083, 4533, None)
         },
+        swim_cut(cmu),
     ]
 }
 
@@ -463,6 +464,56 @@ fn replace_walk(pack_path: &Path, file: &Path, start: usize, end: Option<usize>)
     }
 }
 
+/// The swim, from CMU subject 125 (125_01 "Breast Stroke"): the subject lies
+/// face down on a stool and strokes, so the loop goes nowhere and the client
+/// gives it its pace (`locomotion::SWIM_SPEED`). Frames 900–4200 are the
+/// steady stretch after he has lain down; a breaststroke cycle is 1.2–2.4 s.
+fn swim_cut(cmu: &Path) -> Cut {
+    Cut {
+        name: "swim".into(),
+        file: cmu.join("125_01.bvh"),
+        start: Some(900),
+        end: Some(4200),
+        kind: CutKind::Loop {
+            min_s: 1.2,
+            max_s: 2.4,
+        },
+        fps: None,
+    }
+}
+
+/// `--add-swim PACK CMU_DIR`: cut the swim from its take ([`swim_cut`]) and put
+/// it in the pack, in place of one it already carries — so the swim needs only
+/// its own take, not every source the pack was built from.
+fn add_swim(pack_path: &Path, cmu: &Path) {
+    use cartopolis_human::mocap::{clip_from_motion, parse_bvh};
+    let cut = swim_cut(cmu);
+    let result = std::fs::read(pack_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| cartopolis_human::HumanPack::decode(&b))
+        .and_then(|mut pack| {
+            let text = std::fs::read_to_string(&cut.file).map_err(|e| e.to_string())?;
+            let clip = clip_from_motion(&parse_bvh(&text)?, &cut, &pack.bones, 30.0)?;
+            let secs = (clip.frames - 1) as f32 / clip.fps;
+            pack.clips.retain(|c| c.name != "swim");
+            pack.clips.push(clip);
+            let bytes = pack.encode()?;
+            std::fs::write(pack_path, &bytes).map_err(|e| e.to_string())?;
+            Ok((bytes.len(), secs))
+        });
+    match result {
+        Ok((n, secs)) => println!(
+            "{}: swim added, a {secs:.2} s stroke, {} KB",
+            pack_path.display(),
+            n / 1024
+        ),
+        Err(e) => {
+            eprintln!("human-pack: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `--add-face-units PACK DIR`: put the face's units from the `faceunits01`
 /// asset pack's `targets/faceunits` directory into a pack, leaving the rest
 /// of it as it is (a pack of this version only: `pack::decode_upgrading`).
@@ -498,6 +549,10 @@ fn main() {
     if let [_, flag, pack, dir] = all.as_slice() {
         if flag == "--add-face-units" {
             add_face_units(Path::new(pack), Path::new(dir));
+            return;
+        }
+        if flag == "--add-swim" {
+            add_swim(Path::new(pack), Path::new(dir));
             return;
         }
     }

@@ -1174,9 +1174,14 @@ mod tests {
                 .collect();
             for clip in &m.clips {
                 // A skirt spans both legs, so a stride stretches it (5.0 cm
-                // walking, 6.6 running) however it is weighted.
-                let skirt_striding =
-                    name == "female_elegantsuit01" && (clip.name == "walk" || clip.name == "run");
+                // walking, 6.6 running) however it is weighted, and so does
+                // the breaststroke's kick (8.0 cm, and 5.3 for the full-skirted
+                // dress) — under water, where little of it shows.
+                let skirt = name == "female_elegantsuit01"
+                    || name == "toigo_camisole_dress_with_full_skirt";
+                let skirt_striding = (skirt && clip.name == "swim")
+                    || (name == "female_elegantsuit01"
+                        && (clip.name == "walk" || clip.name == "run"));
                 if clip.name == "roll" || clip.name == "kick" || skirt_striding {
                     continue;
                 }
