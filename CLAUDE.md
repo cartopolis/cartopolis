@@ -18,8 +18,9 @@ Scope builds to the crate you changed — avoid `cargo build` without `-p` unles
 need an integration check.
 
 **Builds run on a midas build node in the agent container**, where `cargo` refuses
-to build locally; the midas session hook says which node you hold and how to take
-one (`midas take`, then `ssh <node> 'cargo …'`). On a workstation, build locally.
+to build locally: `midas run -- cargo …` takes a node for that one command (the
+midas session hook says more; `midas take` holds one for longer, as captures
+need). On a workstation, build locally.
 **Prefer the workspace-scoped commands on a node.** A node is warmed with
 `cargo check --workspace --exclude cartopolis_android --all-targets` and
 `cargo test --workspace --exclude cartopolis_android --no-run`, so those are already
