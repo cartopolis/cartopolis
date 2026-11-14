@@ -2259,17 +2259,11 @@ pub fn log_avatar_draw_counts(
         crate::resources::CameraMode::Free => "fly",
         crate::resources::CameraMode::Orbit => "earth",
     };
-    // Rounded to a decade of metres so a walking avatar doesn't re-log every frame
-    // while a camera stranded a kilometre away still shows up as one line.
     let distance = avatars
         .single()
         .map(|t| t.translation().length())
         .unwrap_or(f32::NAN);
-    let banded = if distance.is_finite() {
-        (distance as i64 / 10) * 10
-    } else {
-        -1
-    };
+    let banded = distance_band(distance);
     let key = (meshes, rendered, mode, banded);
     if *last == Some(key) {
         return;
@@ -2289,9 +2283,39 @@ pub fn log_avatar_draw_counts(
     );
 }
 
+/// The camera↔avatar distance as [`log_avatar_draw_counts`] compares it: a
+/// decade of metres up to a kilometre, so a walking avatar does not re-log
+/// every frame while a camera stranded a kilometre away still shows up as one
+/// line, and two significant figures beyond. A fixed 10 m band logged **every
+/// frame** of a climb to orbit — a line per frame into the phone's logcat for
+/// as long as the camera moved (seen on the OnePlus 15, 2026-11-14).
+fn distance_band(distance: f32) -> i64 {
+    if !distance.is_finite() {
+        return -1;
+    }
+    let d = distance as i64;
+    if d < 1000 {
+        return (d / 10) * 10;
+    }
+    let step = 10_i64.pow(d.ilog10() - 1);
+    (d / step) * step
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_climb_to_orbit_logs_a_handful_of_bands() {
+        assert_eq!(distance_band(1478.0), 1400);
+        assert_eq!(distance_band(37.0), 30);
+        assert_eq!(distance_band(f32::NAN), -1);
+        // From 1 km to 30,000 km in 16 km steps: a line per band, not per step.
+        let bands: std::collections::BTreeSet<i64> = (0..1875)
+            .map(|i| distance_band(1000.0 + i as f32 * 16_000.0))
+            .collect();
+        assert!(bands.len() < 200, "{} bands", bands.len());
+    }
 
     /// A canal two metres below the quay, thirty metres across.
     fn canal(x: f32) -> f32 {
