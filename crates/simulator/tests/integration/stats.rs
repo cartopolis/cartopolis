@@ -422,7 +422,10 @@ async fn an_accounts_numbers_come_from_its_sessions() {
 
     let (handle, _dir) = server().await;
     let player = token(&handle, "/api/login", "player", "playerpw").await;
-    let url = format!("ws://{}/ws?client=web&build=abc123", handle.http_addr.unwrap());
+    let url = format!(
+        "ws://{}/ws?client=web&build=abc123",
+        handle.http_addr.unwrap()
+    );
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
     let hello = encode_app_frame(&NetMessage::ClientHello {
         protocol_version: PROTOCOL_VERSION,
@@ -473,7 +476,11 @@ async fn an_accounts_numbers_come_from_its_sessions() {
 
     let (status, _) = call(
         "GET",
-        format!("{}/api/admin/accounts/{}/stats", base(&handle), uuid::Uuid::new_v4()),
+        format!(
+            "{}/api/admin/accounts/{}/stats",
+            base(&handle),
+            uuid::Uuid::new_v4()
+        ),
         Some(admin),
         "test",
         None,

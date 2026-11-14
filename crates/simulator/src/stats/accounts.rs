@@ -282,7 +282,11 @@ mod tests {
         let t = |d: i64, h: i64| (day + d) * 86_400 + h * 3_600;
         // An hour on the phone with the browser open inside it, then a session
         // from 23:00 to 01:00 across the second midnight.
-        let spans = vec![(t(0, 9), t(0, 10)), (t(0, 9) + 600, t(0, 9) + 1_200), (t(1, 23), t(2, 1))];
+        let spans = vec![
+            (t(0, 9), t(0, 10)),
+            (t(0, 9) + 600, t(0, 9) + 1_200),
+            (t(1, 23), t(2, 1)),
+        ];
         assert_eq!(minutes_per_day(spans, day, 3), vec![60, 60, 60]);
     }
 
