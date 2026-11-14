@@ -38,7 +38,7 @@ pub mod player;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use dev::light_compare;
 #[cfg(not(target_arch = "wasm32"))]
-pub use dev::{aerial_reference, midas_link, shot_replay};
+pub use dev::{aerial_reference, midas_link, release_approval, shot_replay};
 pub use dev::{
     anim_clock, camera_pacing, desktop_integration, dev_panel, diagnostics, frame_pacing,
     frame_split, perf, pipeline_health, render_census, shot_harness, shot_presets, upload_meter,

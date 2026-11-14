@@ -105,6 +105,15 @@ impl Plugin for GuiPlugin {
                 .after(systems::place_pins::render_place_pins)
                 .in_set(ClientPhase::Present),
         );
+        // A release in front of the owner (`systems::release_approval`): over
+        // everything, the update card included, like it outside the chain.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(
+            Update,
+            systems::release_approval::render_release_approval
+                .after(systems::app_update::render_app_update)
+                .in_set(ClientPhase::Present),
+        );
 
         // The calendar (`systems::calendar`): its book takes in what the chats
         // hold before the Community panel draws it, and its reminder is its own

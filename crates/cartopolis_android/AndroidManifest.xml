@@ -158,6 +158,11 @@
          the microphone above; a denial is `Camera::error`. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- The fingerprint that approves a release (`ReleaseKey.java`,
+         docs/mockups/release-approval). Normal, granted at install; the
+         Keystore key itself refuses to sign without a strong biometric. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
     <!-- The background connection (`ConnectionService`, `systems::background`).
          FOREGROUND_SERVICE is normal, granted at install. The typed permission
          is required from API 34 and must match the service's

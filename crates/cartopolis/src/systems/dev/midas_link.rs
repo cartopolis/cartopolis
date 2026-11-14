@@ -387,6 +387,11 @@ pub fn tools() -> Value {
              "text": {"type": "string", "description": format!("the message, a few short sentences at most ({TELL_MAX_CHARS} characters); empty to take the bubble down")},
              "seconds": {"type": "integer", "description": "take it down after this long; leave out to keep it until tapped or replaced"}
          }, "required": ["text"]}},
+        {"name": "release_key", "description": "The owner's release key on this phone: its public half (P-256, the 65-byte point in hex, what RELEASE_KEYS holds) and where it is kept. It signs only after the owner's fingerprint (docs/mockups/release-approval).", "inputSchema": none},
+        {"name": "approve_release", "description": "Ask the owner to approve a release with their fingerprint. This phone fetches release.json and every package it names from `source` itself, checks their sizes and sha256, and shows the owner what changes and what was checked. Returns at once; the owner's answer comes back to this session as a message later — on approval the base64 signature to publish as release.json.sig beside release.json. A session cannot approve: the fingerprint is the owner's.",
+         "inputSchema": {"type": "object", "properties": {
+             "source": {"type": "string", "description": "where the release is published, https only, e.g. https://cartopolis.org/server"}
+         }, "required": ["source"]}},
     ])
 }
 
@@ -685,6 +690,14 @@ pub fn serve_calls(
                     (Some(_), true) => "Kept, but not shown yet: a panel or driver mode covers the map, and the bubble appears beside the Midas button once the person is back on the map.",
                 }))
             }
+            "release_key" => Some(text(crate::systems::release_approval::key_report())),
+            "approve_release" => {
+                let source = call.args["source"].as_str().unwrap_or_default();
+                Some(match crate::systems::release_approval::request(&call.session, source) {
+                    Ok(()) => text("Shown to the owner on this phone. Their answer comes back to this session as a message: the signature on approval, or that they did not approve."),
+                    Err(why) => refusal(why),
+                })
+            }
             "precision_log" => Some(if log.is_empty() {
                 text("The log is empty: precision mode has not run since the app started (Developer tools ▸ Precision ▸ Start, or camera_frame / record).")
             } else {
@@ -741,6 +754,15 @@ pub fn serve_calls(
         };
         if let Some(a) = answer {
             answers.push((call, a));
+        }
+    }
+
+    // The owner's answer to `approve_release`, to the session that asked.
+    if let Some((session, words)) = crate::systems::release_approval::take_outcome() {
+        if let Some(token) = link.config.token.clone() {
+            let hub = link.config.hub.clone();
+            let body = json!({"session": session, "text": words, "files": []});
+            link.worker().push(&hub, &token, body);
         }
     }
 
@@ -1266,6 +1288,7 @@ pub fn midas_tab(
     if let Some(m) = message {
         theme::note(ui, &m);
     }
+    crate::systems::release_approval::key_section(ui);
     ui.separator();
     if ui.button("Unpair").clicked() {
         link.config = LinkConfig {

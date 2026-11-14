@@ -31,6 +31,10 @@ pub mod mcp;
 pub mod midas_link;
 pub mod perf;
 pub mod pipeline_health;
+/// A release approved on the owner's phone with their fingerprint, asked for
+/// through the Midas link.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod release_approval;
 pub mod render_census;
 pub mod shot_harness;
 pub mod shot_presets;

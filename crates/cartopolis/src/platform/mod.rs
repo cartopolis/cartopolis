@@ -61,6 +61,8 @@ pub mod screen;
 pub mod storage;
 pub mod stream;
 pub mod sync;
+// The owner's release key; it lives on an Android phone only.
+pub mod release_key;
 // The app's own updates; they install on Android only.
 pub mod update;
 pub mod warm;

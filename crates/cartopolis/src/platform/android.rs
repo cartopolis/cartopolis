@@ -3701,3 +3701,119 @@ pub fn updater_install_now() -> Result<(), String> {
         format!("Updater.installNow: {msg}")
     })
 }
+
+// ---------------------------------------------------------------------------
+// The owner's release key (`ReleaseKey.java`, `platform::release_key`)
+// ---------------------------------------------------------------------------
+
+const RELEASE_KEY_BINARY: &str = "eu.garage44.cartopolis.ReleaseKey";
+
+/// Call one of `ReleaseKey`'s static methods with the activity at hand, the
+/// way every bridge here does: attach, a local frame, our class loader.
+fn with_release_key<T>(
+    what: &str,
+    f: impl FnOnce(&mut JNIEnv, &JClass, &JObject) -> Result<T, Fail>,
+) -> Result<T, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread_permanently()
+        .map_err(|e| format!("attach_current_thread_permanently: {e}"))?;
+    let activity = activity();
+    let result = env.with_local_frame(16, |env| {
+        let class = load_app_class(env, &activity, RELEASE_KEY_BINARY)?;
+        f(env, &class, &activity)
+    });
+    result.map_err(|Fail(msg)| {
+        clear_pending(&env);
+        format!("ReleaseKey.{what}: {msg}")
+    })
+}
+
+/// A Java string result, `None` for null.
+fn opt_string(env: &mut JNIEnv, value: JObject) -> Result<Option<String>, Fail> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(env.get_string(&JString::from(value))?.into()))
+}
+
+/// `ReleaseKey.publicKey()`: the key in hex, or `None` when there is none.
+pub fn release_key_public() -> Result<Option<String>, String> {
+    with_release_key("publicKey", |env, class, _| {
+        let s = env
+            .call_static_method(class, "publicKey", "()Ljava/lang/String;", &[])?
+            .l()?;
+        opt_string(env, s)
+    })
+}
+
+/// `ReleaseKey.where()`: `strongbox`, `tee` or `software`.
+pub fn release_key_where() -> Result<Option<String>, String> {
+    with_release_key("where", |env, class, _| {
+        let s = env
+            .call_static_method(class, "where", "()Ljava/lang/String;", &[])?
+            .l()?;
+        opt_string(env, s)
+    })
+}
+
+/// `ReleaseKey.create(activity)`: the public key, made if need be.
+pub fn release_key_create() -> Result<String, String> {
+    let made = with_release_key("create", |env, class, activity| {
+        let s = env
+            .call_static_method(
+                class,
+                "create",
+                "(Landroid/app/Activity;)Ljava/lang/String;",
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        opt_string(env, s)
+    })?
+    .unwrap_or_default();
+    match made.strip_prefix("error ") {
+        Some(why) => Err(why.to_string()),
+        None => Ok(made),
+    }
+}
+
+/// `ReleaseKey.sign(activity, data, title, what)`: opens the fingerprint sheet
+/// and returns at once; [`release_key_status`] has the outcome.
+pub fn release_key_sign(data: &[u8], title: &str, what: &str) -> Result<(), String> {
+    with_release_key("sign", |env, class, activity| {
+        let bytes: JObject = env.byte_array_from_slice(data)?.into();
+        let title: JObject = env.new_string(title)?.into();
+        let what: JObject = env.new_string(what)?.into();
+        env.call_static_method(
+            class,
+            "sign",
+            "(Landroid/app/Activity;[BLjava/lang/String;Ljava/lang/String;)V",
+            &[
+                JValue::Object(activity),
+                JValue::Object(&bytes),
+                JValue::Object(&title),
+                JValue::Object(&what),
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+/// `ReleaseKey.status()`: `signing`, `signed <base64>`, `cancelled`,
+/// `failed <why>`, or `None`.
+pub fn release_key_status() -> Result<Option<String>, String> {
+    with_release_key("status", |env, class, _| {
+        let s = env
+            .call_static_method(class, "status", "()Ljava/lang/String;", &[])?
+            .l()?;
+        opt_string(env, s)
+    })
+}
+
+/// `ReleaseKey.clear()`, once the outcome is read.
+pub fn release_key_clear() -> Result<(), String> {
+    with_release_key("clear", |env, class, _| {
+        env.call_static_method(class, "clear", "()V", &[])?;
+        Ok(())
+    })
+}
