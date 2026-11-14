@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat over the map, v3: one chat at a time, and a call that joins it</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body style="width:2330px">
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+    <symbol id="micoff" viewBox="0 0 24 24"><path d="M9 9v2a3 3 0 0 0 5.1 2.1M15 9.3V6a3 3 0 0 0-5.7-1.3"/><path d="M5.5 11a6.5 6.5 0 0 0 10.6 5M18.5 11c0 .8-.1 1.5-.4 2.2M12 17.5V21M4 4l16 16"/></symbol>
+    <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="shout" viewBox="0 0 24 24"><path d="M3.5 10.5l16-5v13l-16-5z"/><path d="M11 15.8a3 3 0 1 1-5.6-1.7"/></symbol>
+    <symbol id="vol" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="voloff" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5.5h16v10.5H9.5L5 19.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/></symbol>
+    <symbol id="plane" viewBox="0 0 24 24"><path d="M10.5 4.5a1.5 1.5 0 0 1 3 0V10l7 4v2l-7-2v4l2 1.5V21L12 20l-3.5 1v-1.5l2-1.5v-4l-7 2v-2l7-4z"/></symbol>
+    <symbol id="bm" viewBox="0 0 24 24"><path d="M6.5 3.5h11v17L12 16.5l-5.5 4z"/></symbol>
+    <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 12.5l8.5 4.5 8.5-4.5"/></symbol>
+    <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></symbol>
+    <symbol id="nav" viewBox="0 0 24 24"><path d="M12 3l7 18-7-4.5L5 21z"/></symbol>
+    <symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4.5M5 4.5h11l-2 4 2 4H5"/></symbol>
+    <symbol id="block" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+    <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <!-- a standing avatar, roughly a Quaternius figure from behind; the shirt is currentColor -->
+    <symbol id="fig" viewBox="0 0 40 92">
+      <ellipse cx="20" cy="89" rx="13" ry="3" fill="rgba(0,0,0,.35)"/>
+      <rect x="10" y="50" width="9" height="38" rx="4" fill="#2b333a"/>
+      <rect x="21" y="50" width="9" height="38" rx="4" fill="#2b333a"/>
+      <rect x="6.5" y="21" width="27" height="35" rx="9" fill="currentColor"/>
+      <rect x="2.5" y="24" width="6.5" height="26" rx="3.2" fill="currentColor"/>
+      <rect x="31" y="24" width="6.5" height="26" rx="3.2" fill="currentColor"/>
+      <circle cx="20" cy="11.5" r="9.5" fill="#d9a983"/>
+      <path d="M10.5 10a9.5 9.5 0 0 1 19 0c-3-2.5-16-2.5-19 0z" fill="#3a2a22"/>
+    </symbol>
+    <symbol id="phone" viewBox="0 0 24 24"><path d="M5 4.5h3.5l1.8 4.3-2.3 1.4a11 11 0 0 0 5.8 5.8l1.4-2.3 4.3 1.8V19a1.5 1.5 0 0 1-1.6 1.5A16 16 0 0 1 3.5 6.1 1.5 1.5 0 0 1 5 4.5z"/></symbol>
+    <symbol id="video" viewBox="0 0 24 24"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></symbol>
+    <symbol id="videooff" viewBox="0 0 24 24"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3zM3 3l18 18"/></symbol>
+    <symbol id="headset" viewBox="0 0 24 24"><path d="M4.5 14v-2a7.5 7.5 0 0 1 15 0v2"/><rect x="3.5" y="13.5" width="4" height="6" rx="1.8"/><rect x="16.5" y="13.5" width="4" height="6" rx="1.8"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="expand" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M10 19.5H4.5V14M19.5 4.5l-6 6M4.5 19.5l6-6"/></symbol>
+    <symbol id="hangup" viewBox="0 0 24 24"><path d="M3 13.5c5-4.7 13-4.7 18 0l-2.2 2.6-3.3-1.4v-2.4a10 10 0 0 0-7 0v2.4l-3.3 1.4z"/></symbol>
+    <symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><circle cx="16.5" cy="9" r="2.6"/><path d="M15.5 13.6a5 5 0 0 1 5.5 5.4"/></symbol>
+  </defs>
+</svg>
+
+<h1>Chat over the map: <b>one chat at a time, and a call that joins it</b></h1>
+<p class="lede">
+  v3, 2026-11-14. The map's chat on a phone today is a wall of large bubbles over the whole screen, every
+  run headed by a name and a chat name, under and over the map's buttons, with a composer whose hint names a
+  different chat from the one on screen. This proposal replaces the transcript and the composer pill with
+  <b style="color:var(--cream);font-weight:600">one sheet</b>: a row of chats at its top, the open chat's lines
+  in a compact list, the field at its foot. Talking and video are a button in that row, and a call that is on
+  becomes a strip in the same sheet, so the conversation goes on under it. Marked <span class="new">NEW</span>
+  where it does not exist in the app today, <span class="has">HAS</span> where it does and only moves.
+</p>
+
+<div class="principles">
+  <div><h3>One chat on screen</h3><p>The sheet shows <i>one</i> chat, chosen in its row of tabs. No line carries a chat name, because the tab says it. Today Here and Everyone are merged, and each run says "· Everyone".</p></div>
+  <div><h3>The map keeps its half</h3><p>Open, the sheet takes the bottom of the screen and <i>nothing above it</i>. The map's buttons step aside while you write. Bubbles stay over heads, short, in the world that is still visible.</p></div>
+  <div><h3>Lines, not posters</h3><p>Body 14.5 pt, a 26 pt face and the name once per run, your own lines in a quiet accent on the right. About <i>three times</i> as many lines fit as today, on a solid sheet you can read over any building.</p></div>
+  <div><h3>A call is part of the chat</h3><p>Talk nearby in Here, an encrypted call in a private chat: one button in the tab row. In a call the faces or tiles go above the lines; the chat stays open. Full screen is one tap, not the default.</p></div>
+</div>
+
+<!-- ───────────────────────────── 0. today ───────────────────────────── -->
+<section class="sec">
+  <h2><span>0</span>Today</h2>
+  <p class="cap">The person's screenshot from 2026-11-14 (OnePlus 15), the composer open over a public conversation.</p>
+  <div class="row">
+    <div class="today" style="width:380px">
+      <img src="today-v3.png" alt="today" style="width:380px">
+      <div class="pin-n" style="left:250px;top:16px">1</div>
+      <div class="pin-n" style="left:330px;top:400px">2</div>
+      <div class="pin-n" style="left:30px;top:80px">3</div>
+      <div class="pin-n" style="left:350px;top:188px">3</div>
+      <div class="pin-n" style="left:141px;top:600px">4</div>
+      <div class="pin-n" style="left:128px;top:548px">5</div>
+    </div>
+    <div class="notes">
+      <ol class="problems">
+        <li><b>Every run has a header as loud as the message.</b> "viberfox · Everyone" and "· Everyone You" on every turn: eight lines of chrome for six lines of talk, and "You" placed after the chat name reads as a typo.</li>
+        <li><b>The bubbles are posters.</b> Text at roughly twice the messenger's size, so five short messages fill the screen from the top bar to the keyboard. The world, and the person you are talking to, are gone.</li>
+        <li><b>It lies over the map's buttons.</b> The compass, the light and the north arrow peek out between bubbles, and the person pin <i>jeroen</i> is half under one. Nothing tells you which is on top.</li>
+        <li><b>The field names another chat.</b> "Say something nearby…" with the pin, while every line above it is Everyone. "Shout" is a word in the field that looks like a placeholder.</li>
+        <li><b>No edge.</b> The column has no background: lines float over brick, sky and a car, and the newest one is cut off behind the composer.</li>
+        <li><b>Voice and calls live elsewhere.</b> Proximity voice is set in ☰ ▸ Chat, calls in a private chat's header. From here you can only type.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 1. phone ───────────────────────────── -->
+<section class="sec">
+  <h2><span>1</span>On a phone</h2>
+  <p class="cap">Five states of the same sheet. The world is the street the screenshot stood in; the people are drawn.</p>
+  <div class="phones">
+
+  <!-- A: at rest -->
+  <div>
+    <div class="ph">
+      <div class="w3"></div>
+      <div class="notch"></div><div class="stat"><span>14:02</span><span>5G ▮▮▮</span></div>
+      <div class="lcol">
+        <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+        <div class="disc"><svg class="i"><use href="#eye"/></svg></div>
+        <div class="disc"><svg class="i"><use href="#clock"/></svg></div>
+      </div>
+      <div class="me-face">J</div>
+      <div class="tag3" style="left:184px;top:452px">
+        <div class="bl">Rol, zwaai, trap — mijn beste dansje!</div>
+        <div class="nm">viberfox</div>
+      </div>
+      <div class="chip3">
+        <div class="ic"><svg class="i s" style="color:var(--public)"><use href="#globe"/></svg></div>
+        <div class="t"><b class="c2">viberfox</b>Oei! Ik ben ingelogd als viberfox en sta 17 m…</div>
+        <div class="cnt">3</div>
+        <div class="ic"><svg class="i s"><use href="#up"/></svg></div>
+      </div>
+      <div class="wsw"><div class="on">World</div><div>Community</div></div>
+      <div class="home"></div>
+    </div>
+    <div class="cap3"><b><span class="n">A</span>At rest <span class="new">NEW</span></b>
+      One line over the switch: the newest message, from which chat (the globe), and how many you have not read.
+      It fades to a small chat disc after 30 s, where the Say disc is now. Tap it, or swipe it up, to open the sheet.
+      The balloon over a head stays <span class="has">HAS</span>, one or two lines, and the name is under it, on the person.</div>
+  </div>
+
+  <!-- B: writing -->
+  <div>
+    <div class="ph">
+      <div class="w3" style="background-position:-800px -250px"></div>
+      <div class="notch"></div><div class="stat"><span>14:03</span><span>5G ▮▮▮</span></div>
+      <div class="tag3" style="left:184px;top:206px">
+        <div class="bl">Oei! Ik ben ingelogd als viberfox…</div>
+        <div class="nm">viberfox</div>
+      </div>
+      <div class="sh" style="top:246px;bottom:290px">
+        <div class="grab"></div>
+        <div class="tabs">
+          <div class="tb"><svg class="i s"><use href="#pin"/></svg>Here</div>
+          <div class="tb on pub"><svg class="i s"><use href="#globe"/></svg>Everyone</div>
+          <div class="tb"><svg class="i s"><use href="#lock"/></svg>Anna<span class="d"></span></div>
+          <div class="sp"></div>
+        </div>
+        <div class="msgs">
+          <div class="m"><div class="av bg2">V</div><div class="bd"><b class="c2">viberfox</b>Rol, zwaai, trap — mijn beste dansje!</div></div>
+          <div class="m mine"><div class="bd">je beweegt nu mijn account</div></div>
+          <div class="m"><div class="av bg2">V</div><div class="bd"><b class="c2">viberfox</b>Oei! Ik ben ingelogd als viberfox en sta 17 m van je. Zag jij de emotes op jouw avatar?</div></div>
+        </div>
+        <div class="cmp">
+          <div class="plus"><svg class="i"><use href="#plus"/></svg></div>
+          <div class="fld focus typed">loop hierheen<span class="cl"></span></div>
+          <div class="go"><svg class="i"><use href="#send"/></svg></div>
+        </div>
+      </div>
+      <div class="kb">
+        <div class="r"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="r"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="r"><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i></div>
+        <div class="r"><i class="w"></i><i></i><i class="sp"></i><i></i><i class="w"></i></div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <div class="cap3"><b><span class="n">B</span>Writing <span class="new">NEW</span></b>
+      The sheet sits on the keyboard and the world keeps the top third, with the person in it. The tab says where the
+      words go, so the field needs no hint and the lines no chat name. The map's buttons are away until you close.
+      Shout moves into <b style="display:inline;font-size:inherit">+</b>, with a picture and a point.
+      Everyone has no call button: a public chat of the whole world has no call.</div>
+  </div>
+
+  <!-- C: reading Here -->
+  <div>
+    <div class="ph">
+      <div class="w3"></div>
+      <div class="notch"></div><div class="stat"><span>14:05</span><span>5G ▮▮▮</span></div>
+      <div class="lcol">
+        <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+        <div class="disc"><svg class="i"><use href="#eye"/></svg></div>
+      </div>
+      <div class="me-face">J</div>
+      <div class="tag3" style="left:184px;top:452px">
+        <div class="bl">Kom je naar de markt?</div>
+        <div class="nm">Sanne</div>
+      </div>
+      <div class="sh" style="top:500px;bottom:0">
+        <div class="grab"></div>
+        <div class="tabs">
+          <div class="tb on"><svg class="i s"><use href="#pin"/></svg>Here</div>
+          <div class="tb pub"><svg class="i s"><use href="#globe"/></svg>Everyone<span class="d"></span></div>
+          <div class="tb"><svg class="i s"><use href="#lock"/></svg>Anna</div>
+          <div class="sp"></div>
+          <div class="callb"><svg class="i"><use href="#headset"/></svg></div>
+        </div>
+        <div class="scope"><span class="pub"><svg class="i xs"><use href="#users"/></svg>4 people near you</span><span>· public</span></div>
+        <div class="msgs">
+          <div class="m"><div class="av bg4">M</div><div class="bd"><b class="c4">Mehmet</b>goedemorgen buurt</div></div>
+          <div class="m mine"><div class="bd">ik loop net de Grote Markt over</div></div>
+          <div class="m"><div class="av bg5">S</div><div class="bd"><b class="c5">Sanne</b>Zit iemand al bij de vismarkt?</div></div>
+          <div class="m cont"><div class="av bg5 gap">S</div><div class="bd">Kom je naar de markt?</div></div>
+        </div>
+        <div class="cmp" style="padding-bottom:24px">
+          <div class="plus"><svg class="i"><use href="#plus"/></svg></div>
+          <div class="fld">Message</div>
+          <div class="go mic"><svg class="i"><use href="#mic"/></svg></div>
+        </div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <div class="cap3"><b><span class="n">C</span>Reading, half open <span class="new">NEW</span></b>
+      Without the keyboard the sheet drops to its lower half; drag it up for more history, down to close.
+      A dot on a tab is unread. Under the tabs, one quiet line says who reads this chat: here the people near you, in public.
+      The headset starts talking nearby <span class="has">HAS</span> (proximity voice, moved from ☰ ▸ Chat);
+      the mic in the empty field is push-to-talk.</div>
+  </div>
+
+  <!-- D: talking nearby -->
+  <div>
+    <div class="ph">
+      <div class="w3"></div>
+      <div class="notch"></div><div class="stat"><span>14:06</span><span>5G ▮▮▮</span></div>
+      <div class="lcol">
+        <div class="disc"><svg class="i"><use href="#compass"/></svg></div>
+        <div class="disc"><svg class="i"><use href="#eye"/></svg></div>
+      </div>
+      <div class="me-face">J</div>
+      <div class="tag3" style="left:184px;top:452px">
+        <div class="nm" style="background:rgba(20,60,40,.8)"><span class="bars"><i></i><i></i><i></i><i></i></span>Sanne</div>
+      </div>
+      <div class="sh" style="top:484px;bottom:0">
+        <div class="grab"></div>
+        <div class="tabs">
+          <div class="tb on"><svg class="i s"><use href="#pin"/></svg>Here</div>
+          <div class="tb pub"><svg class="i s"><use href="#globe"/></svg>Everyone</div>
+          <div class="tb"><svg class="i s"><use href="#lock"/></svg>Anna</div>
+          <div class="sp"></div>
+          <div class="callb live"><svg class="i"><use href="#headset"/></svg></div>
+        </div>
+        <div class="callstrip">
+          <div class="who">
+            <div class="av bg5 talk">S</div><div class="av bg4">M</div><div class="av bg3 mut">J</div>
+          </div>
+          <div class="lbl" style="margin-left:0"><b>Talking nearby</b>public · Sanne</div>
+          <div class="cb off"><svg class="i"><use href="#micoff"/></svg></div>
+          <div class="cb end"><svg class="i"><use href="#x"/></svg></div>
+        </div>
+        <div class="msgs">
+          <div class="m sys"><svg class="i xs"><use href="#headset"/></svg>Sanne and Mehmet are talking nearby</div>
+          <div class="m mine"><div class="bd">even mijn oortjes pakken</div></div>
+          <div class="m"><div class="av bg4">M</div><div class="bd"><b class="c4">Mehmet</b>ik hoor jullie, sta bij de A-kerk</div></div>
+        </div>
+        <div class="cmp" style="padding-bottom:24px">
+          <div class="plus"><svg class="i"><use href="#plus"/></svg></div>
+          <div class="fld">Message</div>
+          <div class="go mic"><svg class="i"><use href="#mic"/></svg></div>
+        </div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <div class="cap3"><b><span class="n">D</span>Talking nearby <span class="new">NEW</span> layout</b>
+      The strip is the voice: the faces of who you can hear, a green ring on who is talking, and you, muted.
+      It says <i>public</i>, because proximity voice is. Over the world the speaker's name gets the talking bars instead of a balloon.
+      Closing the sheet keeps the voice on: the chip at rest (A) turns green and shows the strip's mute and leave.</div>
+  </div>
+
+  <!-- E: video call in a group -->
+  <div>
+    <div class="ph">
+      <div class="w3"></div>
+      <div class="notch"></div><div class="stat"><span>14:20</span><span>5G ▮▮▮</span></div>
+      <div class="film" style="top:52px">
+        <div class="vt cam talk"><div class="head"></div><div class="body"></div><div class="nm"><span class="bars"><i></i><i></i><i></i><i></i></span>Anna</div></div>
+        <div class="vt"><div class="face"><div class="av bg4">M</div></div><div class="nm"><svg class="i xs"><use href="#micoff"/></svg>Mehmet</div></div>
+        <div class="vt cam b self"><div class="head" style="top:14px;width:36px;height:44px;margin-left:-18px"></div><div class="body" style="width:70px;margin-left:-35px;height:40px;bottom:-10px"></div></div>
+        <div class="more"><svg class="i s"><use href="#expand"/></svg></div>
+      </div>
+      <div class="sh" style="top:470px;bottom:0">
+        <div class="grab"></div>
+        <div class="tabs">
+          <div class="tb"><svg class="i s"><use href="#pin"/></svg>Here</div>
+          <div class="tb on"><svg class="i s"><use href="#lock"/></svg>Markt zaterdag</div>
+          <div class="tb"><svg class="i s"><use href="#lock"/></svg>Anna</div>
+          <div class="sp"></div>
+        </div>
+        <div class="callstrip">
+          <div class="lbl" style="margin-left:2px;flex:1"><b>Call · 3 · 12:41</b><span style="display:inline-flex;gap:4px;align-items:center"><svg class="i xs"><use href="#lock"/></svg>encrypted</span></div>
+          <div class="cb"><svg class="i"><use href="#mic"/></svg></div>
+          <div class="cb"><svg class="i"><use href="#video"/></svg></div>
+          <div class="cb end"><svg class="i"><use href="#hangup"/></svg></div>
+        </div>
+        <div class="msgs">
+          <div class="m sys"><svg class="i xs"><use href="#phone"/></svg>Anna started a call · 14:20</div>
+          <div class="m"><div class="av bg4">M</div><div class="bd"><b class="c4">Mehmet</b>mijn camera doet het niet, ik luister mee</div></div>
+          <div class="m mine"><div class="bd">📍 Point: kraam 14, Vismarkt</div></div>
+        </div>
+        <div class="cmp" style="padding-bottom:24px">
+          <div class="plus"><svg class="i"><use href="#plus"/></svg></div>
+          <div class="fld">Message</div>
+          <div class="go mic"><svg class="i"><use href="#mic"/></svg></div>
+        </div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <div class="cap3"><b><span class="n">E</span>A video call in a group <span class="new">NEW</span> layout</b>
+      The encrypted call <span class="has">HAS</span> today takes the whole screen. Here it starts as tiles over the top of the map,
+      with the chat open under them, so you can share a point, type to someone muted, and still see the street.
+      The corner arrow opens today's full call screen; Back folds it to this again. Tiles of people with their camera off are their face.</div>
+  </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────── 2. desktop ───────────────────────────── -->
+<section class="sec">
+  <h2><span>2</span>On a desktop</h2>
+  <p class="cap">The same sheet becomes a card in the bottom-left corner, 400 pt wide; the tiles of a call line up beside it, along the bottom. Panels still open on the right, and nothing of the chat is under them.</p>
+  <div class="dk">
+    <div class="bar"><i></i><i></i><i></i>Cartopolis</div>
+    <div class="w3"></div>
+    <div class="sh">
+      <div class="grab" style="visibility:hidden"></div>
+      <div class="tabs">
+        <div class="tb"><svg class="i s"><use href="#pin"/></svg>Here</div>
+        <div class="tb pub"><svg class="i s"><use href="#globe"/></svg>Everyone</div>
+        <div class="tb on"><svg class="i s"><use href="#lock"/></svg>Markt zaterdag</div>
+        <div class="sp"></div>
+        <div class="callb"><svg class="i"><use href="#down"/></svg></div>
+      </div>
+      <div class="callstrip">
+        <div class="lbl" style="margin-left:2px;flex:1"><b>Call · 3 · 12:41</b><span style="display:inline-flex;gap:4px;align-items:center"><svg class="i xs"><use href="#lock"/></svg>encrypted</span></div>
+        <div class="cb"><svg class="i"><use href="#mic"/></svg></div>
+        <div class="cb"><svg class="i"><use href="#video"/></svg></div>
+        <div class="cb end"><svg class="i"><use href="#hangup"/></svg></div>
+      </div>
+      <div class="msgs">
+        <div class="daysep">today</div>
+        <div class="m"><div class="av bg1">A</div><div class="bd"><b class="c1">Anna</b>Zullen we zaterdag om tien uur bij de kraam beginnen? <time>14:12</time></div></div>
+        <div class="m"><div class="av bg4">M</div><div class="bd"><b class="c4">Mehmet</b>mijn camera doet het niet, ik luister mee <time>14:19</time></div></div>
+        <div class="m mine"><div class="bd">📍 Point: kraam 14, Vismarkt</div></div>
+        <div class="m sys"><svg class="i xs"><use href="#phone"/></svg>Anna started a call · 14:20</div>
+      </div>
+      <div class="cmp">
+        <div class="plus"><svg class="i"><use href="#plus"/></svg></div>
+        <div class="fld focus">Message Markt zaterdag<span class="cl"></span></div>
+        <div class="go"><svg class="i"><use href="#send"/></svg></div>
+      </div>
+    </div>
+    <div class="film">
+      <div class="vt cam talk"><div class="head"></div><div class="body"></div><div class="nm"><span class="bars"><i></i><i></i><i></i><i></i></span>Anna</div><div class="more"><svg class="i s"><use href="#expand"/></svg></div></div>
+      <div class="vt"><div class="face"><div class="av bg4">M</div></div><div class="nm"><svg class="i xs"><use href="#micoff"/></svg>Mehmet</div></div>
+      <div class="vt cam b" style="width:140px"><div class="head"></div><div class="body"></div><div class="nm">You</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 3. what moves ───────────────────────────── -->
+<section class="sec">
+  <h2><span>3</span>What it changes, and what stays</h2>
+  <div class="verdict">
+    <div><h3>Goes</h3>
+      <ul class="notes" style="padding-left:16px">
+        <li>The merged transcript of every chat, and its "· Everyone" headers.</li>
+        <li>The composer pill and its scope chip that cycles; the tab is the scope.</li>
+        <li>"Shout" as a word in the field: it is an item under <b>+</b>.</li>
+        <li>The chat drawn over the left column and the switch.</li>
+      </ul></div>
+    <div><h3>Stays</h3>
+      <ul class="notes" style="padding-left:16px">
+        <li>Balloons over heads, painted and never tappable (<code>chat-without-a-panel.md</code>).</li>
+        <li>Clearing the keyboard before it exists (<code>onscreen_keyboard::expected_height</code>).</li>
+        <li>The messenger in Community, the chat's World view, its points.</li>
+        <li>Calls stay encrypted and forwarded by the simulator; proximity voice stays public. No wire change is needed.</li>
+      </ul></div>
+    <div><h3>Open</h3>
+      <ul class="notes" style="padding-left:16px">
+        <li>Which tabs: Here and Everyone always, plus private chats with something new in the last hour? Or only the ones you pin?</li>
+        <li>Does Everyone belong on the map at all, or only in Community?</li>
+        <li>A call from the map: start it in the strip (E), or ring as today and fold?</li>
+        <li>Talk nearby: open mic with mute (D), or push-to-talk only?</li>
+      </ul></div>
+  </div>
+</section>
+
+</body>
+</html>

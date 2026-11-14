@@ -1,7 +1,7 @@
 ---
 topic: chat-overlay
-triggers: [chat_overlay.rs, chat.rs, voice.rs, dock.rs, "speech bubble", transcript, composer, "push to talk", "voice badge", chat_messages, CHAT_REPLAY, "chat retention", "Here", "Everyone"]
-updated: 2026-10-17
+triggers: [chat_overlay.rs, call_screen.rs, "chat sheet", "call strip", chat.rs, voice.rs, dock.rs, "speech bubble", transcript, composer, "push to talk", "voice badge", chat_messages, CHAT_REPLAY, "chat retention", "Here", "Everyone"]
+updated: 2026-11-14
 ---
 
 # Chat over the map: volatile, quieter, with voice: mockup
@@ -20,6 +20,33 @@ talking.
 
 `today.png` is the screenshot the proposal answers (2026-10-17). It shows the
 composer open with yesterday's lines in it.
+
+## v3: one chat at a time, and a call that joins it
+
+![v3](v3.png)
+
+Drawn 2026-11-14, from `today-v3.png`: the person found the chat on a phone
+"rommelig en onoverzichtelijk" and asked for a better design with calls
+in it as an option. On the phone in that screenshot five short messages
+fill the screen, every run is headed "name · Everyone", the column lies over
+the compass, the light and a person pin, and the field says "Say something
+nearby…" under a conversation that is all Everyone.
+
+v3 replaces the merged transcript and the composer pill with one sheet: a
+row of chat tabs (Here, Everyone, the private chats with something new), the
+open chat's lines at the messenger's size, the field at its foot. At rest it
+is one line over the World | Community switch. Talking nearby (proximity
+voice, public) and an encrypted call in a private chat are a button in the
+tab row, and once on they are a strip in the sheet, with video tiles over
+the top of the map; the full call screen is one tap away. Nothing on the
+wire changes.
+
+Still open, as drawn in section 3:
+
+- Which tabs: Here and Everyone always, plus private chats with something new, or only pinned ones?
+- Does Everyone belong on the map at all, or only in Community?
+- A call started from the map: in the strip, or ringing full screen as today?
+- Talk nearby: open mic with mute, or push-to-talk only?
 
 ## v2: nothing on the right-hand edge
 
