@@ -331,7 +331,9 @@ impl PreCut {
 }
 
 const MAGIC: &[u8; 4] = b"CGS2";
-const VERSION: u32 = 2;
+/// 3 since the colours are written in [`COLOUR_STEP`]s rather than as `f32`
+/// bits. A client that reads 2 refuses a 3 and cuts the cell itself.
+const VERSION: u32 = 3;
 
 /// Positions are written in steps of `1 / QUANT` metres: a quarter of a
 /// millimetre. A street cell was 35 MB of raw `f32` (7.5 MB gzipped) on the
@@ -340,6 +342,22 @@ const VERSION: u32 = 2;
 /// place in both and the partition stays closed; a sliver that snaps to nothing
 /// draws nothing.
 const QUANT: f32 = 4000.0;
+
+/// Vertex colours are written in steps of `1 / COLOUR_STEP`, as zigzag varints.
+/// As `f32` bits they were a quarter of a dense street cell (1.4 of 5.5 MB,
+/// Groningen 8490/5319, 2026-11-14): the paving's palette held 49,137 entries
+/// that were 4,244 colours apart from their last bits, so neither the palette
+/// nor its runs repeated. A step is below what an 8-bit channel shows — the
+/// same step `measure` already hashed at, for the same last-bit reason — and
+/// the alpha channels the ground carries (`1 + pattern`) are whole numbers,
+/// which it keeps exactly. Rounded, that cell's file is 21 % smaller after
+/// Brotli (3.14 → 2.49 MB).
+const COLOUR_STEP: f32 = 1024.0;
+
+/// A colour as it is written, and so as it is compared for sharing.
+fn colour_steps(c: [f32; 4]) -> [i64; 4] {
+    c.map(|v| (v * COLOUR_STEP).round() as i64)
+}
 
 const HAS_UVS: u8 = 1;
 const HAS_NORMALS: u8 = 2;
@@ -354,8 +372,9 @@ const FLAT: u8 = 64;
 const SOUP: u8 = 128;
 
 /// One vertex with everything it carries, as compared for sharing: the
-/// quantised position and the bits of each attribute present.
-type VertexKey = ([i64; 3], Vec<u32>);
+/// quantised position, the quantised colour and the bits of each other
+/// attribute present.
+type VertexKey = ([i64; 3], Vec<i64>);
 
 /// Write a cell's sheets.
 ///
@@ -370,8 +389,8 @@ type VertexKey = ([i64; 3], Vec<u32>);
 /// Per mesh: its group's [`SurfaceGroup::code`], a flag byte, its vertex and
 /// index counts and its distinct-vertex count; the distinct positions,
 /// quantised to [`QUANT`], as zigzag varint deltas; their UVs and any non-up
-/// normals as raw `f32`; their colours and road rungs as a palette with runs
-/// over it; the references; and the indices as deltas, unless they are a soup's
+/// normals as raw `f32`; their colours (in [`COLOUR_STEP`]s) and road rungs as
+/// a palette with runs over it; the references; and the indices as deltas, unless they are a soup's
 /// `0, 1, 2, …` ([`SOUP`]).
 #[must_use]
 pub fn encode(revision: u64, fingerprint: u64, tile_m: f32, meshes: &[SurfaceMesh]) -> Vec<u8> {
@@ -411,16 +430,16 @@ pub fn encode(revision: u64, fingerprint: u64, tile_m: f32, meshes: &[SurfaceMes
             let p = m.positions[i].map(|c| (c * QUANT).round() as i64);
             let mut bits = Vec::new();
             if flags & HAS_UVS != 0 {
-                bits.extend(m.uvs[i].map(f32::to_bits));
+                bits.extend(m.uvs[i].map(|v| i64::from(v.to_bits())));
             }
             if flags & HAS_NORMALS != 0 && flags & UP_NORMALS == 0 {
-                bits.extend(m.normals[i].map(f32::to_bits));
+                bits.extend(m.normals[i].map(|v| i64::from(v.to_bits())));
             }
             if flags & HAS_COLORS != 0 {
-                bits.extend(m.colors[i].map(f32::to_bits));
+                bits.extend(colour_steps(m.colors[i]));
             }
             if flags & HAS_RUNGS != 0 {
-                bits.push(m.rungs[i].to_bits());
+                bits.push(m.rungs[i].to_bits().into());
             }
             (p, bits)
         };
@@ -463,13 +482,14 @@ pub fn encode(revision: u64, fingerprint: u64, tile_m: f32, meshes: &[SurfaceMes
         }
         if flags & HAS_COLORS != 0 {
             w.runs(
-                distinct
-                    .iter()
-                    .map(|&i| m.colors[i].map(f32::to_bits).to_vec()),
+                distinct.iter().map(|&i| colour_steps(m.colors[i])),
+                |w, c| c.iter().for_each(|&v| w.zigzag(v)),
             );
         }
         if flags & HAS_RUNGS != 0 {
-            w.runs(distinct.iter().map(|&i| vec![m.rungs[i].to_bits()]));
+            w.runs(distinct.iter().map(|&i| m.rungs[i].to_bits()), |w, b| {
+                w.0.extend_from_slice(&b.to_le_bytes());
+            });
         }
         let mut high = 0u32;
         for r in refs {
@@ -508,13 +528,17 @@ impl Writer {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
     /// A palette of the distinct values in first-seen order, then
-    /// `(palette index, run length)` pairs covering every vertex.
-    fn runs(&mut self, values: impl Iterator<Item = Vec<u32>>) {
-        let values: Vec<Vec<u32>> = values.collect();
-        let mut palette: Vec<&Vec<u32>> = Vec::new();
+    /// `(palette index, run length)` pairs covering every vertex; `entry`
+    /// writes one palette value.
+    fn runs<T: Copy + Eq + std::hash::Hash>(
+        &mut self,
+        values: impl Iterator<Item = T>,
+        entry: impl Fn(&mut Self, T),
+    ) {
+        let mut palette: Vec<T> = Vec::new();
         let mut index = std::collections::HashMap::new();
         let mut runs: Vec<(usize, u64)> = Vec::new();
-        for v in &values {
+        for v in values {
             let i = *index.entry(v).or_insert_with(|| {
                 palette.push(v);
                 palette.len() - 1
@@ -526,8 +550,7 @@ impl Writer {
         }
         self.varint(palette.len() as u64);
         for v in palette {
-            v.iter()
-                .for_each(|&b| self.0.extend_from_slice(&b.to_le_bytes()));
+            entry(self, v);
         }
         self.varint(runs.len() as u64);
         for (i, n) in runs {
@@ -594,18 +617,18 @@ pub fn decode(bytes: &[u8]) -> Result<PreCut, String> {
             }
         }
         let dcolors: Vec<[f32; 4]> = if flags & HAS_COLORS != 0 {
-            r.runs(d, 4)?
-                .into_iter()
-                .map(|v| [v[0], v[1], v[2], v[3]].map(f32::from_bits))
-                .collect()
+            r.runs(d, |r| {
+                let mut c = [0.0; 4];
+                for v in &mut c {
+                    *v = r.zigzag()? as f32 / COLOUR_STEP;
+                }
+                Ok(c)
+            })?
         } else {
             Vec::new()
         };
         let drungs: Vec<f32> = if flags & HAS_RUNGS != 0 {
-            r.runs(d, 1)?
-                .into_iter()
-                .map(|v| f32::from_bits(v[0]))
-                .collect()
+            r.runs(d, |r| r.f32())?
         } else {
             Vec::new()
         };
@@ -734,16 +757,17 @@ impl Reader<'_> {
         let v = self.varint()?;
         Ok(((v >> 1) as i64) ^ -((v & 1) as i64))
     }
-    /// [`Writer::runs`] back to one value of `width` words per vertex.
-    fn runs(&mut self, n: usize, width: usize) -> Result<Vec<Vec<u32>>, String> {
+    /// [`Writer::runs`] back to one value per vertex; `entry` reads one
+    /// palette value.
+    fn runs<T: Copy>(
+        &mut self,
+        n: usize,
+        entry: impl Fn(&mut Self) -> Result<T, String>,
+    ) -> Result<Vec<T>, String> {
         let pn = self.len()?;
         let mut palette = Vec::with_capacity(pn.min(1 << 16));
         for _ in 0..pn {
-            let mut v = Vec::with_capacity(width);
-            for _ in 0..width {
-                v.push(self.u32()?);
-            }
-            palette.push(v);
+            palette.push(entry(self)?);
         }
         let rn = self.len()?;
         let mut out = Vec::with_capacity(n.min(1 << 24));
@@ -773,27 +797,21 @@ impl Reader<'_> {
 /// file from before the change no longer matches, and the client builds those
 /// cells itself until atlas runs again. Pinned by
 /// `the_revision_names_what_build_sheets_builds`, which prints the new value.
-pub const GROUND_REVISION: u64 = 0x6871_dd92_058c_b0d5;
+pub const GROUND_REVISION: u64 = 0x399d_b50f_6836_757e;
 
 /// Build the fixture's sheets and hash them — positions, indices and every
-/// attribute, through [`encode`], with the vertex colours rounded to 1/1024
-/// first. Paving and crop colours go through `powf` (the sRGB curve), and
-/// macOS's libm and glibc's disagree in its last bit: the colours of groups
-/// 10 and 11 differed between an ARM Mac and an x86 node, every position and
-/// index matched (measured 2026-10-31), and so this failed on every x86 node
-/// while passing on the Mac that set the constant. A 1/1024 step is below what
-/// an 8-bit channel can show and far above a last-bit difference.
+/// attribute, through [`encode`], which writes the vertex colours in
+/// [`COLOUR_STEP`]s. That rounding is what lets this pass on every machine:
+/// paving and crop colours go through `powf` (the sRGB curve), and macOS's
+/// libm and glibc's disagree in its last bit — the colours of groups 10 and 11
+/// differed between an ARM Mac and an x86 node, every position and index
+/// matched (measured 2026-10-31), and the hash of their raw bits failed on
+/// every x86 node while passing on the Mac that set the constant.
 #[cfg(test)]
 fn measure() -> u64 {
     let (paved, parcels) = fixture_inputs();
     let tile = crate::testdata::groningen();
-    let mut meshes =
-        build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
-    for m in &mut meshes {
-        for c in &mut m.colors {
-            *c = c.map(|v| (v * 1024.0).round() / 1024.0);
-        }
-    }
+    let meshes = build_sheets(&tile, 1460.0, None, &paved, &parcels, None).expect("fixture builds");
     let mut h = Fnv::new();
     h.bytes(&encode(0, 0, 1460.0, &meshes));
     h.0
@@ -894,16 +912,21 @@ mod tests {
         assert!(meshes.iter().all(|m| m.group.is_flat_ground()));
         let bytes = encode(GROUND_REVISION, 42, 1460.0, &meshes);
         let back = decode(&bytes).unwrap();
-        // Everything but the positions exactly, and the positions to the step
-        // they are snapped to — and snapping what was snapped changes nothing.
+        // Everything but the positions and colours exactly, and those to the
+        // step they are snapped to — and snapping what was snapped changes
+        // nothing.
         assert_eq!(back.meshes.len(), meshes.len());
         for (b, m) in back.meshes.iter().zip(&meshes) {
             assert_eq!(
-                (b.group, &b.indices, &b.uvs, &b.normals, &b.colors, &b.rungs),
-                (m.group, &m.indices, &m.uvs, &m.normals, &m.colors, &m.rungs)
+                (b.group, &b.indices, &b.uvs, &b.normals, &b.rungs),
+                (m.group, &m.indices, &m.uvs, &m.normals, &m.rungs)
             );
             for (p, q) in b.positions.iter().zip(&m.positions) {
                 assert!((0..3).all(|k| (p[k] - q[k]).abs() <= 0.6 / QUANT + 1e-4));
+            }
+            assert_eq!(b.colors.len(), m.colors.len());
+            for (c, d) in b.colors.iter().zip(&m.colors) {
+                assert!((0..4).all(|k| (c[k] - d[k]).abs() <= 0.5 / COLOUR_STEP + 1e-6));
             }
         }
         assert_eq!(encode(GROUND_REVISION, 42, 1460.0, &back.meshes), bytes);

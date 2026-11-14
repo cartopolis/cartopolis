@@ -58,6 +58,14 @@ for a soup. Dense street cell: **5.8 MB raw, 3.8 MB gzipped**; Groningen's 25
 cells around the centre 55 MB gzipped. Snapping is deterministic, so a vertex two
 sheets share snaps to one place and the partition stays closed.
 
+**Format 3 (2026-11-14) rounds the colours to 1/1024** and writes them as
+varints: as `f32` bits they were a quarter of the file, a palette of last-bit
+variants of a few thousand colours. 3.14 → 2.49 MB Brotli on 8490/5319. A
+format-2 client refuses a format-3 file and cuts the cell itself, so **atlas's
+`ground` must run again** after the client that reads 3 is out — the same as
+any `GROUND_REVISION` move. What else was tried on this file, and why it was not
+taken, is in `cold-start-bytes.md`.
+
 Still a lot for a slow mobile link: the file is fetched in the cell's IO phase,
 so a link slower than the client's own cut makes that cell *later*. Not seen on
 anything measured yet; a timeout on `load_ground_sheets` is the lever if it is.
