@@ -20,7 +20,7 @@
 //! An exponential ease on the throttle reaches every gait in the same time, so a
 //! run start feels exactly as light as a stroll start. A fixed rate in metres per
 //! second squared gives the fast gaits the longer run-up they should have:
-//! 1.1 m/s arrives in 0.06 s, 6 m/s takes 0.33 s.
+//! 1.1 m/s arrives in 0.16 s, 6 m/s takes 0.86 s ([`GROUND_ACCEL`]).
 
 pub use cartopolis_core::motion::wish_for_speed;
 
@@ -88,8 +88,14 @@ pub fn swim_speed_for(land_speed: f32) -> f32 {
 /// How hard the avatar picks up speed on the ground, and sheds it (m/s²).
 /// Deceleration is the brisker of the two; the other way round reads as walking
 /// on grease.
-pub const GROUND_ACCEL: f32 = 18.0;
-pub const GROUND_DECEL: f32 = 26.0;
+///
+/// Lowered from 18/26 on 2026-11-14, when the owner found starting and stopping
+/// unrealistic: at 18 a walk was at pace in 0.1 s and a run in 0.33 s, a body
+/// with no mass. A person takes a step or two to reach a walk and several
+/// strides to reach a run: now 0.26 s to a walk, 0.86 s to a run, and 0.67 s to
+/// stop from one.
+pub const GROUND_ACCEL: f32 = 7.0;
+pub const GROUND_DECEL: f32 = 9.0;
 
 /// Which gait the avatar is travelling in. Chosen by held modifiers, not by
 /// speed — the speed is the *consequence* (see [`Gait::speed`]).
@@ -362,8 +368,8 @@ mod tests {
         }
         assert_eq!(v, RUN_SPEED, "settles exactly on the target");
         assert!(
-            (0.2..=0.6).contains(&(frames as f32 * dt)),
-            "a run takes a fraction of a second to wind up: {frames} frames"
+            (0.6..=1.2).contains(&(frames as f32 * dt)),
+            "a run takes several strides to wind up: {frames} frames"
         );
 
         // …and stopping is the brisker of the two.

@@ -480,6 +480,43 @@ pub(crate) fn advance_facing(current: f32, target: f32, dt: f32) -> f32 {
     wrap_angle_pi(current + ease.clamp(-cap, cap))
 }
 
+/// How fast the travel direction may turn (rad/s): sharp at a walk, where a
+/// person turns within a step, wide at a run, where they lean round a curve,
+/// and slow in the water.
+const TRAVEL_TURN_WALK: f32 = 9.0;
+const TRAVEL_TURN_RUN: f32 = 3.5;
+const TRAVEL_TURN_SWIM: f32 = 1.8;
+/// The least of the run speed a sharp turn brakes to.
+const TURN_BRAKE_FLOOR: f32 = 0.3;
+
+/// [`TRAVEL_TURN_WALK`] up to a walk, easing to [`TRAVEL_TURN_RUN`] at a run.
+#[must_use]
+fn travel_turn_rate(speed: f32, swimming: bool) -> f32 {
+    if swimming {
+        return TRAVEL_TURN_SWIM;
+    }
+    let t = ((speed - locomotion::WALK_SPEED) / (locomotion::RUN_SPEED - locomotion::WALK_SPEED))
+        .clamp(0.0, 1.0);
+    TRAVEL_TURN_WALK + (TRAVEL_TURN_RUN - TRAVEL_TURN_WALK) * t
+}
+
+/// Turn the unit travel direction `current` toward the unit `wish` on the XZ
+/// plane by at most `max_angle` radians, landing exactly on it once within
+/// reach. A wish dead behind turns the way the body is already turning
+/// (either is right; the same one every frame is what matters).
+#[must_use]
+fn turn_travel(current: Vec3, wish: Vec3, max_angle: f32) -> Vec3 {
+    let (Some(from), Some(to)) = (yaw_from_dir(current), yaw_from_dir(wish)) else {
+        return wish;
+    };
+    let delta = wrap_angle_pi(to - from);
+    if delta.abs() <= max_angle {
+        return wish;
+    }
+    let yaw = from + max_angle.copysign(delta);
+    Vec3::new(yaw.sin(), 0.0, yaw.cos())
+}
+
 /// Standing height on flat ground: the sim's floor (`motion::GROUND_Y`), where
 /// the ground sheets are drawn (within a centimetre of the plane,
 /// `GroundLayer::y_offset`). The avatar models are authored origin-at-feet, so
@@ -1961,10 +1998,24 @@ pub fn handle_avatar_movement(
     // This runs in *every* run mode, online included, because it is the one
     // movement system that always runs in Follow. `send_network_intent` consumes
     // the result rather than recomputing it, so there is exactly one ramp.
+    // The travel direction turns toward the wish in an arc, never in a step: the
+    // body turns first (`advance_facing`, above) and the path bends after it.
+    // Taken whole, as it was until 2026-11-14, a key press slid the avatar
+    // sideways at full speed while its body was still turning — the owner found
+    // the turning unrealistic. From a standstill there is no path to bend, so a
+    // start goes straight where it is asked.
+    // How sharply a running avatar is asked to turn, for the brake below.
+    let mut turn_cos = 1.0;
     if has_input {
-        // The wish is taken whole (movement is immediate — see above): a walk is
-        // footfalls, and turning just changes where the next one goes.
-        avatar_state.move_dir = wish;
+        let speed = avatar_state.ground_speed;
+        avatar_state.move_dir =
+            if speed < locomotion::MOVING_EPS || avatar_state.move_dir.length_squared() < 1e-6 {
+                wish
+            } else {
+                turn_cos = avatar_state.move_dir.dot(wish);
+                let rate = travel_turn_rate(speed, avatar_state.swimming);
+                turn_travel(avatar_state.move_dir, wish, rate * delta_time)
+            };
     }
     // In the water every gait is a stroke: the easy one, or the fast one for a
     // run, built and shed slowly because water is thick. A swimmer has nothing
@@ -1981,8 +2032,16 @@ pub fn handle_avatar_movement(
             locomotion::SWIM_DECEL,
         )
     } else {
+        // Faster than a walk, a sharp turn is braked into: the speed drops
+        // with how far the path still has to come round, so an about-face at a
+        // run is a stop and a start rather than a hairpin at full speed.
+        let brake = if avatar_state.ground_speed > locomotion::WALK_SPEED {
+            ((1.0 + turn_cos) / 2.0).max(TURN_BRAKE_FLOOR)
+        } else {
+            1.0
+        };
         (
-            if has_input { walk_speed } else { 0.0 },
+            if has_input { walk_speed * brake } else { 0.0 },
             locomotion::GROUND_ACCEL,
             locomotion::GROUND_DECEL,
         )
@@ -3030,6 +3089,36 @@ mod tests {
         );
         let feet = pose.transform_point(Vec3::ZERO);
         assert!(feet.z < 0.0, "feet trail behind: {feet:?}");
+    }
+
+    /// The path bends rather than steps: a quarter turn at a walk takes a few
+    /// frames and stays a unit direction throughout, lands exactly, and a run
+    /// comes round wider than a walk.
+    #[test]
+    fn the_path_bends_into_a_turn() {
+        let dt = 1.0 / 60.0;
+        let (north, east) = (Vec3::Z, Vec3::X);
+        let first = turn_travel(north, east, travel_turn_rate(1.8, false) * dt);
+        assert!((first.length() - 1.0).abs() < 1e-5);
+        assert!(
+            first.dot(east) > 0.0 && first.dot(east) < 0.5,
+            "bent, not stepped: {first}"
+        );
+        let frames_at = |speed: f32| {
+            let (mut d, mut n) = (north, 0);
+            while d != east && n < 600 {
+                d = turn_travel(d, east, travel_turn_rate(speed, false) * dt);
+                n += 1;
+            }
+            n
+        };
+        let (walk, run) = (frames_at(1.8), frames_at(6.0));
+        assert!(walk < run, "a run turns wider: {walk} vs {run} frames");
+        assert!(
+            walk as f32 * dt < 0.25,
+            "a walk turns within a step: {walk} frames"
+        );
+        assert!(travel_turn_rate(1.0, true) < travel_turn_rate(1.0, false));
     }
 
     /// Turning takes the short way round the circle: from just left of −π the

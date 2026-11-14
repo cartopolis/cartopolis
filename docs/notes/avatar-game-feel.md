@@ -65,13 +65,21 @@ online paths came to behave differently. Two properties of that ramp are
 deliberate:
 
 - **Speed ramps at a rate in m/s², not on a normalized ease** (`locomotion::advance_speed`,
-  `GROUND_ACCEL` 18 / `GROUND_DECEL` 26). An ease on the throttle reaches every
+  `GROUND_ACCEL` 7 / `GROUND_DECEL` 9). An ease on the throttle reaches every
   gait in the same time, so a run start feels exactly as light as a stroll start;
   a fixed rate gives the fast gaits the longer run-up they should have (1.1 m/s
-  arrives in 0.06 s, 6 m/s in 0.33 s).
+  arrives in 0.16 s, 6 m/s in 0.86 s). It was 18/26 (a walk in 0.1 s) until
+  2026-11-14, when the owner found starting and stopping unrealistic.
 - **The travel direction is held across a key release.** The wish vector is
   already zero on the frame the key comes up, so a direction taken from it each
   frame leaves nothing to coast along and the avatar stops dead.
+- **The travel direction bends; it does not step** (2026-11-14). It used to be
+  the wish, taken whole, so a key press slid the avatar sideways at full speed
+  while the body was still turning. It now turns toward the wish at
+  `TRAVEL_TURN_*` (9 rad/s at a walk, 3.5 at a run, 1.8 swimming), the body
+  leading at its own rate, and above a walk a sharp turn brakes the target
+  speed to `(1 + cos)/2` of itself, so an about-face at a run is a stop and a
+  start. From a standstill there is no path to bend and it goes straight.
 
 ## Jump could not be client-side, and gravity was not an acceleration
 
