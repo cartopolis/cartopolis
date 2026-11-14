@@ -41,12 +41,12 @@ tab row, and once on they are a strip in the sheet, with video tiles over
 the top of the map; the full call screen is one tap away. Nothing on the
 wire changes.
 
-Still open, as drawn in section 3:
+Decided 2026-11-14, on the questions in section 3:
 
-- Which tabs: Here and Everyone always, plus private chats with something new, or only pinned ones?
-- Does Everyone belong on the map at all, or only in Community?
-- A call started from the map: in the strip, or ringing full screen as today?
-- Talk nearby: open mic with mute, or push-to-talk only?
+- Tabs: Here and Everyone always, plus private chats with something new in the last hour.
+- Everyone stays on the map as a tab, with no call button.
+- A call rings full screen as today; once answered it folds to the tiles and the strip.
+- Talk nearby is an open mic with a mute button.
 
 ## v2: nothing on the right-hand edge
 
