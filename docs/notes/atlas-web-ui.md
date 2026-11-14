@@ -39,6 +39,14 @@ arrived: the chat worker opens `/ws`, and the pages call `/api/communities`,
 `/api/pictures`, `/api/push`, `/api/library`, `/api/inventory` and `/api/assets`
 (counted from `src/` on 2026-10-17).
 
+**A second, small app draws the content pages** (since 2026-11-14,
+`docs/mockups/cms`): `src/cms/` builds into `pages.html` and `pages-<hash>.js`
+(79 KB, against the chat's 442 KB), which the *simulator* serves at
+`/{lang}/{slug}` with the page's head filled in — so on the hosted server Caddy
+must send `/nl/*`, `/en/*`, `/p/*`, `/mcp` and `/api/pages*` to the simulator,
+and the simulator needs `web_root` to find `pages.html`. A language code there
+is a path the chat no longer routes.
+
 History: it was the *console*, at `/console/` (Caddy still redirects it to
 `/admin`), beside a front page atlas served from a string; before that it was
 `web.cartopolis.org`, a separate repository, retired with no redirect, until
