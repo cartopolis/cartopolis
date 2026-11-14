@@ -3817,3 +3817,68 @@ pub fn release_key_clear() -> Result<(), String> {
         Ok(())
     })
 }
+
+/// `ReleaseKey.apiKey(context)`: the owner's Claude API key, decrypted.
+pub fn release_api_key() -> Result<Option<String>, String> {
+    with_release_key("apiKey", |env, class, activity| {
+        let s = env
+            .call_static_method(
+                class,
+                "apiKey",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        opt_string(env, s)
+    })
+}
+
+/// `ReleaseKey.saveApiKey(context, key)`: keep it encrypted; empty forgets it.
+pub fn release_save_api_key(key: &str) -> Result<(), String> {
+    let answer = with_release_key("saveApiKey", |env, class, activity| {
+        let key: JObject = env.new_string(key)?.into();
+        let s = env
+            .call_static_method(
+                class,
+                "saveApiKey",
+                "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(activity), JValue::Object(&key)],
+            )?
+            .l()?;
+        opt_string(env, s)
+    })?
+    .unwrap_or_default();
+    match answer.strip_prefix("error ") {
+        Some(why) => Err(why.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// `ReleaseKey.lastApproved(context)`: the commit of the last approved release.
+pub fn release_last_approved() -> Result<Option<String>, String> {
+    with_release_key("lastApproved", |env, class, activity| {
+        let s = env
+            .call_static_method(
+                class,
+                "lastApproved",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(activity)],
+            )?
+            .l()?;
+        opt_string(env, s)
+    })
+}
+
+/// `ReleaseKey.saveLastApproved(context, commit)`.
+pub fn release_save_last_approved(commit: &str) -> Result<(), String> {
+    with_release_key("saveLastApproved", |env, class, activity| {
+        let commit: JObject = env.new_string(commit)?.into();
+        env.call_static_method(
+            class,
+            "saveLastApproved",
+            "(Landroid/content/Context;Ljava/lang/String;)V",
+            &[JValue::Object(activity), JValue::Object(&commit)],
+        )?;
+        Ok(())
+    })
+}

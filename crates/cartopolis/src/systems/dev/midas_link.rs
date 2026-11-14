@@ -388,9 +388,10 @@ pub fn tools() -> Value {
              "seconds": {"type": "integer", "description": "take it down after this long; leave out to keep it until tapped or replaced"}
          }, "required": ["text"]}},
         {"name": "release_key", "description": "The owner's release key on this phone: its public half (P-256, the 65-byte point in hex, what RELEASE_KEYS holds) and where it is kept. It signs only after the owner's fingerprint (docs/mockups/release-approval).", "inputSchema": none},
-        {"name": "approve_release", "description": "Ask the owner to approve a release with their fingerprint. This phone fetches release.json and every package it names from `source` itself, checks their sizes and sha256, and shows the owner what changes and what was checked. Returns at once; the owner's answer comes back to this session as a message later — on approval the base64 signature to publish as release.json.sig beside release.json. A session cannot approve: the fingerprint is the owner's.",
+        {"name": "approve_release", "description": "Ask the owner to approve a release with their fingerprint. This phone fetches release.json and every package it names from `source` itself, checks their sizes and sha256, and has Claude review the code changes from the last release this phone approved to release.json's `commit`, with the owner's own API key. The owner reads Claude's verdict, not the code; only a green verdict with every check passed lets them approve. Returns at once; the owner's answer comes back to this session as a message later — on approval the base64 signature to publish as release.json.sig beside release.json. A session cannot approve: the fingerprint is the owner's.",
          "inputSchema": {"type": "object", "properties": {
-             "source": {"type": "string", "description": "where the release is published, https only, e.g. https://cartopolis.org/server"}
+             "source": {"type": "string", "description": "where the release is published, https only, e.g. https://cartopolis.org/server"},
+             "since": {"type": "string", "description": "the commit the review starts from, used only the first time: after that the phone starts from the last release it approved"}
          }, "required": ["source"]}},
     ])
 }
@@ -693,7 +694,8 @@ pub fn serve_calls(
             "release_key" => Some(text(crate::systems::release_approval::key_report())),
             "approve_release" => {
                 let source = call.args["source"].as_str().unwrap_or_default();
-                Some(match crate::systems::release_approval::request(&call.session, source) {
+                let since = call.args["since"].as_str();
+                Some(match crate::systems::release_approval::request(&call.session, source, since) {
                     Ok(()) => text("Shown to the owner on this phone. Their answer comes back to this session as a message: the signature on approval, or that they did not approve."),
                     Err(why) => refusal(why),
                 })

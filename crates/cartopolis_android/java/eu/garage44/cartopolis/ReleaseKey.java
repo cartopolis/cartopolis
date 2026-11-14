@@ -210,6 +210,76 @@ public final class ReleaseKey {
         status = null;
     }
 
+    // ## Beside the key: the owner's Claude API key, and the last approved commit
+    //
+    // The API key is what the review of a release is asked with (Rust's
+    // `systems::release_approval`, straight to api.anthropic.com). It is kept
+    // encrypted with an AES key of its own in the Keystore — one that needs no
+    // fingerprint, since the review runs before the owner is asked for one.
+
+    private static final String PREFS = "cartopolis-release";
+    private static final String SECRET_ALIAS = "cartopolis-release-secrets";
+
+    private static javax.crypto.SecretKey secretKey() throws Exception {
+        KeyStore ks = KeyStore.getInstance(STORE);
+        ks.load(null);
+        java.security.Key existing = ks.getKey(SECRET_ALIAS, null);
+        if (existing != null) return (javax.crypto.SecretKey) existing;
+        javax.crypto.KeyGenerator g = javax.crypto.KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, STORE);
+        g.init(new KeyGenParameterSpec.Builder(SECRET_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build());
+        return g.generateKey();
+    }
+
+    /** Keep the Claude API key, encrypted; an empty one forgets it. "" or "error <why>". */
+    public static String saveApiKey(android.content.Context context, String apiKey) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
+            if (apiKey == null || apiKey.isEmpty()) {
+                prefs.edit().remove("api_key").apply();
+                return "";
+            }
+            javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(javax.crypto.Cipher.ENCRYPT_MODE, secretKey());
+            byte[] sealed = c.doFinal(apiKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String stored = Base64.encodeToString(c.getIV(), Base64.NO_WRAP) + ":"
+                    + Base64.encodeToString(sealed, Base64.NO_WRAP);
+            prefs.edit().putString("api_key", stored).apply();
+            return "";
+        } catch (Exception e) {
+            return "error " + e;
+        }
+    }
+
+    /** The Claude API key, or null when none is kept. */
+    public static String apiKey(android.content.Context context) {
+        try {
+            String stored = context.getSharedPreferences(PREFS, 0).getString("api_key", null);
+            if (stored == null) return null;
+            String[] parts = stored.split(":", 2);
+            javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey(),
+                    new javax.crypto.spec.GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+            return new String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            Log.w(TAG, "release: API key unreadable: " + e);
+            return null;
+        }
+    }
+
+    /** The commit of the last release this phone approved, or null. */
+    public static String lastApproved(android.content.Context context) {
+        return context.getSharedPreferences(PREFS, 0).getString("last_approved", null);
+    }
+
+    public static void saveLastApproved(android.content.Context context, String commit) {
+        context.getSharedPreferences(PREFS, 0).edit().putString("last_approved", commit).apply();
+    }
+
     private static String hexPoint(ECPublicKey key) {
         byte[] out = new byte[65];
         out[0] = 4;

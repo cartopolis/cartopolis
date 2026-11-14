@@ -111,6 +111,61 @@ pub fn status() -> Signing {
     }
 }
 
+/// The owner's Claude API key, kept encrypted beside the release key: what the
+/// review of a release is asked with.
+pub fn api_key() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        super::android::release_api_key()
+            .ok()
+            .flatten()
+            .filter(|k| !k.is_empty())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}
+
+/// Keep the Claude API key; an empty one forgets it.
+pub fn save_api_key(key: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        super::android::release_save_api_key(key.trim())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = key;
+        Err(ONLY_ON_A_PHONE.into())
+    }
+}
+
+/// The commit of the last release this phone approved: where the next review's
+/// changes start.
+pub fn last_approved() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        super::android::release_last_approved().ok().flatten()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}
+
+pub fn save_last_approved(commit: &str) {
+    #[cfg(target_os = "android")]
+    {
+        if let Err(e) = super::android::release_save_last_approved(commit) {
+            tracing::warn!("could not keep the approved commit: {e}");
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = commit;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

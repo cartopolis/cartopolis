@@ -35,6 +35,9 @@ pub mod pipeline_health;
 /// through the Midas link.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod release_approval;
+/// Claude's last check of a release, asked from the owner's phone.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod release_review;
 pub mod render_census;
 pub mod shot_harness;
 pub mod shot_presets;

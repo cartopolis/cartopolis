@@ -40,7 +40,10 @@ cp deploy/server-package/install.sh "$out/install.sh"
 # release.json.sig beside it is the owner's.
 size=$(wc -c < "$out/$PKG.tar.gz" | tr -d ' ')
 sum=$(cut -d' ' -f1 "$out/$PKG.tar.gz.sha256")
-printf '{"code":%s,"name":"%s","published":"%s","changes":[],"server":{"file":"%s.tar.gz","sha256":"%s","size":%s}}\n' \
-    "$CARTOPOLIS_BUILD_CODE" "$CARTOPOLIS_BUILD_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PKG" "$sum" "$size" \
+# `commit` is where the owner's phone has Claude's review end (the code from the
+# last release it approved up to this one).
+printf '{"code":%s,"name":"%s","published":"%s","commit":"%s","changes":[],"server":{"file":"%s.tar.gz","sha256":"%s","size":%s}}\n' \
+    "$CARTOPOLIS_BUILD_CODE" "$CARTOPOLIS_BUILD_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(git -C "$ROOT" rev-parse HEAD)" "$PKG" "$sum" "$size" \
     > "$out/release.json"
 echo "built $out/$PKG.tar.gz ($(du -h "$out/$PKG.tar.gz" | cut -f1))"

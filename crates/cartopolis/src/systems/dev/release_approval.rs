@@ -3,15 +3,19 @@
 //! A session asks through the Midas link (`approve_release`, with where the
 //! release is published). This phone then fetches `release.json` and every
 //! package it names **itself**, checks each against the size and sha256 the
-//! release states, and shows the owner what changes and what was checked. Only
-//! on their tap and their fingerprint does `platform::release_key` sign the
-//! exact bytes of `release.json`; the signature goes back to the session that
-//! asked, which publishes it as `release.json.sig`. A session can ask and can
-//! tap the button, but not give the fingerprint.
+//! release states, and has Claude review the changes since the last release
+//! it approved (`release_review`, straight to the Claude API with the owner's
+//! key). The owner reads nothing: Claude's verdict is at the top, and only a
+//! green one with every check passed offers **Approve with fingerprint**. Only
+//! then does `platform::release_key` sign the exact bytes of `release.json`;
+//! the signature goes back to the session that asked, which publishes it as
+//! `release.json.sig`. A session can ask and can tap the button, but not give
+//! the fingerprint.
 //!
-//! Developer tools ▸ Midas also makes the key ([`key_section`]), and the link's
-//! `release_key` tool tells a session its public half, which goes into the
-//! server's and the app's `RELEASE_KEYS`.
+//! Developer tools ▸ Midas also makes the key and keeps the Claude API key
+//! ([`key_section`]), and the link's `release_key` tool tells a session the
+//! key's public half, which goes into the server's and the app's
+//! `RELEASE_KEYS`.
 
 use std::io::Read;
 use std::sync::Mutex;
@@ -21,7 +25,12 @@ use sha2::{Digest, Sha256};
 
 use crate::platform::release_key::{self, Signing};
 use crate::systems::egui_manager::EguiRef;
+use crate::systems::release_review::{self, Verdict};
 use crate::systems::theme;
+
+/// Where the code of a release is read from, by commit id: a commit id names
+/// its content, so this host can refuse but not substitute.
+const REPOSITORY: &str = "https://code.garage44.eu/jeroen/cartopolis";
 
 /// Largest package this phone downloads to check: the APK is about 80 MB.
 const MAX_PACKAGE: u64 = 300 * 1024 * 1024;
@@ -36,6 +45,9 @@ struct Release {
     name: String,
     #[serde(default)]
     changes: Vec<String>,
+    /// The commit it was built from: where Claude's review ends.
+    #[serde(default)]
+    commit: Option<String>,
     server: Option<Package>,
     apk: Option<Package>,
 }
@@ -61,13 +73,26 @@ enum Phase {
     Signing,
 }
 
+/// Claude's last check.
+#[derive(Clone, Debug, PartialEq)]
+enum Review {
+    /// Not yet asked, or being asked; what it is at.
+    Pending(String),
+    Done(Verdict),
+    /// No verdict: why. Red, never green.
+    Failed(String),
+}
+
 #[derive(Clone, Debug)]
 struct Request {
     session: String,
     source: String,
+    /// The commit the review starts from: the last one this phone approved.
+    since: Option<String>,
     manifest: Vec<u8>,
     release: Option<Release>,
     checks: Vec<Check>,
+    review: Review,
     phase: Phase,
 }
 
@@ -85,6 +110,9 @@ struct KeyView {
     public: Option<String>,
     location: Option<String>,
     message: Option<String>,
+    /// Whether a Claude API key is kept, and the field to type a new one in.
+    has_api_key: bool,
+    api_key_draft: String,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -99,9 +127,11 @@ fn state() -> std::sync::MutexGuard<'static, State> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The link's `approve_release`: fetch and check the release at `source` and
-/// put it in front of the owner. Refused while another is open.
-pub fn request(session: &str, source: &str) -> Result<(), String> {
+/// The link's `approve_release`: fetch and check the release at `source`, have
+/// Claude review it, and put it in front of the owner. `since` is where the
+/// review starts the first time; after that, the last commit this phone
+/// approved. Refused while another is open.
+pub fn request(session: &str, source: &str, since: Option<&str>) -> Result<(), String> {
     if !release_key::available() {
         return Err("releases are approved on the owner's Android phone".into());
     }
@@ -114,6 +144,14 @@ pub fn request(session: &str, source: &str) -> Result<(), String> {
     if !source.starts_with("https://") {
         return Err("a release is fetched over https only".into());
     }
+    if release_key::api_key().is_none() {
+        return Err(
+            "no Claude API key on this phone yet: Developer tools ▸ Midas ▸ Release key".into(),
+        );
+    }
+    // The phone's own memory wins: a session cannot move where the review
+    // starts once there is one.
+    let since = release_key::last_approved().or_else(|| since.map(str::to_string));
     {
         let mut s = state();
         if s.request.is_some() {
@@ -122,9 +160,11 @@ pub fn request(session: &str, source: &str) -> Result<(), String> {
         s.request = Some(Request {
             session: session.to_string(),
             source: source.clone(),
+            since,
             manifest: Vec::new(),
             release: None,
             checks: Vec::new(),
+            review: Review::Pending("waiting for the files to be checked".into()),
             phase: Phase::Checking("Fetching release.json".into()),
         });
     }
@@ -218,11 +258,90 @@ fn check(source: &str) {
             },
         });
     }
+    let files_ok = !checks.is_empty() && checks.iter().all(|c| c.ok);
+    let since = state().request.as_ref().and_then(|r| r.since.clone());
+    let commit = release.commit.clone();
+    let name = release.name.clone();
     finish(manifest, Some(release), checks);
+    let review = if files_ok {
+        review(&name, since.as_deref(), commit.as_deref())
+    } else {
+        Review::Failed("not asked: a file check failed".into())
+    };
+    if let Some(r) = state().request.as_mut() {
+        r.review = review;
+    }
+}
+
+/// Have Claude read the changes from `since` to `commit`, as the repository
+/// holds them under those ids.
+fn review(name: &str, since: Option<&str>, commit: Option<&str>) -> Review {
+    let is_id =
+        |c: &str| c.len() >= 7 && c.len() <= 40 && c.chars().all(|ch| ch.is_ascii_hexdigit());
+    let Some(commit) = commit.filter(|c| is_id(c)) else {
+        return Review::Failed(
+            "release.json names no commit, so there is nothing to review".into(),
+        );
+    };
+    let Some(since) = since.filter(|c| is_id(c)) else {
+        return Review::Failed(
+            "no earlier approved release to start from: ask with `since`, the commit of the last release".into(),
+        );
+    };
+    let Some(api_key) = release_key::api_key() else {
+        return Review::Failed("no Claude API key on this phone".into());
+    };
+    set_review(Review::Pending(format!(
+        "Fetching the changes since {}",
+        &since[..7]
+    )));
+    let url = format!("{REPOSITORY}/compare/{since}...{commit}.diff");
+    let diff = match agent().get(&url).call() {
+        Ok(r) => {
+            let mut body = Vec::new();
+            match r
+                .into_reader()
+                .take(release_review::MAX_DIFF_BYTES as u64 + 1)
+                .read_to_end(&mut body)
+            {
+                Ok(_) if body.len() > release_review::MAX_DIFF_BYTES => {
+                    return Review::Failed(
+                        "the release changes too much to review in one pass".into(),
+                    )
+                }
+                Ok(_) => String::from_utf8_lossy(&body).into_owned(),
+                Err(e) => return Review::Failed(format!("could not read the changes: {e}")),
+            }
+        }
+        Err(e) => return Review::Failed(format!("could not fetch the changes: {e}")),
+    };
+    if diff.trim().is_empty() {
+        return Review::Failed("no changes between those commits".into());
+    }
+    set_review(Review::Pending(format!(
+        "Claude is reading {} KB of changes",
+        diff.len() / 1024
+    )));
+    match release_review::ask(
+        &api_key,
+        &release_review::request_body(name, since, commit, &diff),
+    ) {
+        Ok(v) => Review::Done(v),
+        Err(e) => Review::Failed(e),
+    }
+}
+
+fn set_review(review: Review) {
+    if let Some(r) = state().request.as_mut() {
+        r.review = review;
+    }
 }
 
 fn finish(manifest: Vec<u8>, release: Option<Release>, checks: Vec<Check>) {
     if let Some(r) = state().request.as_mut() {
+        if release.is_none() {
+            r.review = Review::Failed("not asked: release.json could not be read".into());
+        }
         r.manifest = manifest;
         r.release = release;
         r.checks = checks;
@@ -298,7 +417,8 @@ pub fn key_section(ui: &mut egui::Ui) {
             .get_or_insert_with(|| KeyView {
                 public: release_key::public_key().ok().flatten(),
                 location: release_key::location(),
-                message: None,
+                has_api_key: release_key::api_key().is_some(),
+                ..KeyView::default()
             })
             .clone()
     };
@@ -308,17 +428,15 @@ pub fn key_section(ui: &mut egui::Ui) {
             if theme::primary_button_sized(ui, "Make release key", 200.0).clicked() {
                 let made = release_key::create();
                 let mut s = state();
-                s.key = Some(match made {
-                    Ok(k) => KeyView {
-                        public: Some(k),
-                        location: release_key::location(),
-                        message: None,
-                    },
-                    Err(e) => KeyView {
-                        message: Some(format!("Could not make it: {e}")),
-                        ..KeyView::default()
-                    },
-                });
+                let k = s.key.get_or_insert_with(KeyView::default);
+                match made {
+                    Ok(public) => {
+                        k.public = Some(public);
+                        k.location = release_key::location();
+                        k.message = None;
+                    }
+                    Err(e) => k.message = Some(format!("Could not make it: {e}")),
+                }
             }
         }
         Some(key) => {
@@ -344,6 +462,39 @@ pub fn key_section(ui: &mut egui::Ui) {
             theme::note(ui, "A session reads it with the link's release_key tool and builds it into the server and the app as the key they trust.");
         }
     }
+    theme::note(
+        ui,
+        if view.has_api_key {
+            "Claude API key: kept on this phone, encrypted. Claude reviews every release before you are asked to approve it."
+        } else {
+            "Claude API key: none yet. Claude reviews every release with it, straight from this phone, before you are asked to approve it."
+        },
+    );
+    let mut draft = view.api_key_draft.clone();
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut draft)
+                .password(true)
+                .hint_text("sk-ant-…")
+                .desired_width(200.0),
+        );
+        if ui.button("Save key").clicked() {
+            let saved = release_key::save_api_key(&draft);
+            let mut s = state();
+            let k = s.key.get_or_insert_with(KeyView::default);
+            match saved {
+                Ok(()) => {
+                    k.has_api_key = !draft.trim().is_empty();
+                    k.message = None;
+                }
+                Err(e) => k.message = Some(format!("Could not keep it: {e}")),
+            }
+            draft.clear();
+        }
+    });
+    if let Some(k) = state().key.as_mut() {
+        k.api_key_draft = draft;
+    }
     if let Some(m) = &view.message {
         let _ = theme::inline_error(ui, m);
     }
@@ -364,6 +515,9 @@ pub fn render_release_approval(egui: EguiRef) {
                     .as_ref()
                     .map_or_else(String::new, |r| r.name.clone());
                 let key = release_key::public_key().ok().flatten().unwrap_or_default();
+                if let Some(commit) = request.release.as_ref().and_then(|r| r.commit.as_deref()) {
+                    release_key::save_last_approved(commit);
+                }
                 answer(
                     &request,
                     format!(
@@ -393,6 +547,10 @@ pub fn render_release_approval(egui: EguiRef) {
             .request_repaint_after(std::time::Duration::from_millis(300));
     }
     let ctx = egui.ctx();
+    // The checks and the review run on a thread: show their progress.
+    if matches!(request.phase, Phase::Checking(_)) || matches!(request.review, Review::Pending(_)) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+    }
     let screen = ctx.content_rect();
     let width = CARD_WIDTH.min(screen.width() - 2.0 * theme::OSD_MARGIN);
     egui::Area::new(egui::Id::new("release_approval_veil"))
@@ -425,48 +583,73 @@ pub fn render_release_approval(egui: EguiRef) {
                     ui,
                     &format!("Asked by {} · {}", request.session, request.source),
                 );
+                ui.add_space(6.0);
+                verdict_block(ui, &request.review);
                 egui::ScrollArea::vertical()
-                    .max_height(screen.height() * 0.55)
+                    .max_height(screen.height() * 0.45)
                     .show(ui, |ui| {
-                        if let Some(r) = &request.release {
-                            theme::section(ui, &format!("What changes · {}", r.changes.len()));
-                            if r.changes.is_empty() {
-                                line(ui, "The release lists no changes.");
+                        if let Review::Done(v) = &request.review {
+                            for f in &v.findings {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new("!").color(theme::p().error));
+                                    ui.label(
+                                        egui::RichText::new(format!("{} {}", f.file, f.lines))
+                                            .monospace(),
+                                    );
+                                });
+                                line(ui, &f.why);
                             }
-                            for c in &r.changes {
-                                ui.label(format!("• {c}"));
-                            }
-                            line(ui, &format!("Version code {}", r.code));
                         }
-                        theme::section(ui, "Checks");
-                        if let Phase::Checking(what) = &request.phase {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().color(theme::p().accent));
-                                line(ui, what);
+                        egui::CollapsingHeader::new("What changes, and what this phone checked")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                if let Some(r) = &request.release {
+                                    theme::section(
+                                        ui,
+                                        &format!("What changes · {}", r.changes.len()),
+                                    );
+                                    if r.changes.is_empty() {
+                                        line(ui, "The release lists no changes.");
+                                    }
+                                    for c in &r.changes {
+                                        ui.label(format!("• {c}"));
+                                    }
+                                    line(ui, &format!("Version code {}", r.code));
+                                }
+                                theme::section(ui, "Checks");
+                                if let Phase::Checking(what) = &request.phase {
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::Spinner::new().color(theme::p().accent));
+                                        line(ui, what);
+                                    });
+                                }
+                                for c in &request.checks {
+                                    let mark = if c.ok {
+                                        crate::systems::icons::CHECK
+                                    } else {
+                                        "!"
+                                    };
+                                    let colour = if c.ok {
+                                        theme::p().accent
+                                    } else {
+                                        theme::p().error
+                                    };
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(egui::RichText::new(mark).color(colour));
+                                        ui.label(&c.line);
+                                    });
+                                }
                             });
-                        }
-                        for c in &request.checks {
-                            let mark = if c.ok {
-                                crate::systems::icons::CHECK
-                            } else {
-                                "!"
-                            };
-                            let colour = if c.ok {
-                                theme::p().accent
-                            } else {
-                                theme::p().error
-                            };
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(egui::RichText::new(mark).color(colour));
-                                ui.label(&c.line);
-                            });
-                        }
                     });
                 ui.add_space(8.0);
+                // Green means: every file checked out on this phone, and
+                // Claude found nothing. Anything else has no button.
+                let green = matches!(&request.review, Review::Done(v) if v.green());
                 let ready = request.phase == Phase::Ready
                     && request.release.is_some()
                     && !request.checks.is_empty()
-                    && request.checks.iter().all(|c| c.ok);
+                    && request.checks.iter().all(|c| c.ok)
+                    && green;
                 let label = if request.phase == Phase::Signing {
                     "Waiting for your fingerprint…"
                 } else {
@@ -480,8 +663,12 @@ pub fn render_release_approval(egui: EguiRef) {
                 {
                     approve = true;
                 }
-                if request.phase == Phase::Ready && !ready && !request.checks.is_empty() {
-                    line(ui, "A check failed, so there is nothing to approve.");
+                let settled = !matches!(request.review, Review::Pending(_));
+                if request.phase == Phase::Ready && !ready && settled {
+                    line(
+                        ui,
+                        "Not green, so there is nothing to approve. Ask a session to look into it.",
+                    );
                 }
                 if ui.button("Not now").clicked() {
                     decline = true;
@@ -520,6 +707,41 @@ pub fn render_release_approval(egui: EguiRef) {
             format!("The owner did not approve release {name}."),
         );
     }
+}
+
+/// Claude's verdict, at the top of the card: what the owner decides on.
+fn verdict_block(ui: &mut egui::Ui, review: &Review) {
+    let (title, colour, body) = match review {
+        Review::Pending(what) => {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().color(theme::p().accent));
+                ui.label(
+                    egui::RichText::new("Claude is checking this release")
+                        .size(theme::SIZE_BODY)
+                        .color(theme::p().cream),
+                );
+            });
+            line(ui, what);
+            return;
+        }
+        Review::Done(v) if v.green() => (
+            "Claude found nothing to worry about",
+            theme::p().accent,
+            v.summary.as_str(),
+        ),
+        Review::Done(v) => (
+            "Claude found something",
+            theme::p().error,
+            v.summary.as_str(),
+        ),
+        Review::Failed(why) => ("Not checked by Claude", theme::p().error, why.as_str()),
+    };
+    ui.label(
+        egui::RichText::new(title)
+            .size(theme::SIZE_BODY)
+            .color(colour),
+    );
+    ui.label(body);
 }
 
 fn set_phase(phase: Phase) {
