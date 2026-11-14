@@ -435,13 +435,32 @@ pub fn follow(ui: &mut Ui, id: Id, pres: Presence, drag: &mut SheetDrag, lift: f
     );
 }
 
-/// A page turn in progress: which page is leaving, how deep it was, when it
-/// started.
+/// A page turn in progress: which page is leaving, how deep it was, and how
+/// far the turn has come (0‥1, linear).
+///
+/// Progress, not a start time: it advances by each pass's time, capped at
+/// [`TURN_MAX_STEP`], so the pass that lays the new page out for the first
+/// time — the slowest of the turn — draws it where it starts rather than
+/// letting the next pass jump a third of the way.
 #[derive(Clone, Debug)]
 struct Turn<K> {
     from: K,
     from_depth: u8,
-    started: f64,
+    progress: f32,
+}
+
+/// The most a page turn moves on in one pass, in seconds: a pass that took
+/// longer (a stall, the first layout of a page) slows the turn down rather
+/// than making it jump.
+const TURN_MAX_STEP: f32 = 1.0 / 30.0;
+
+/// The curve a page slides on: Material's standard `cubic-bezier(0.2, 0, 0,
+/// 1)`. It starts at rest and lands softly. [`ease_out`] leaves at four times
+/// the linear speed, which on a surface as wide as the screen moved it a sixth
+/// of the way in the first frame and read as a jump, not a slide.
+#[must_use]
+pub fn glide(t: f32) -> f32 {
+    bezier(0.2, 0.0, 0.0, 1.0, t)
 }
 
 /// How far the two pages of a turn stand from their places, as fractions of
@@ -479,7 +498,7 @@ pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
     mut draw: impl FnMut(&mut Ui, K),
 ) {
     let ctx = ui.ctx().clone();
-    let now = ctx.input(|i| i.time);
+    let dt = ctx.input(|i| i.unstable_dt).clamp(0.0, TURN_MAX_STEP);
     let id = id.with("page_turn");
     let last_id = id.with("last");
     let turn_id = id.with("turn");
@@ -490,47 +509,65 @@ pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
             turn = Some(Turn {
                 from,
                 from_depth,
-                started: now,
+                progress: 0.0,
             });
         }
-        _ => {}
+        // Not the pass the turn starts on: that one draws progress 0.
+        Some(_) => {
+            if let Some(t) = turn.as_mut() {
+                t.progress = (t.progress + dt / ENTER).min(1.0);
+            }
+        }
+        None => {}
     }
     ctx.data_mut(|d| d.insert_temp(last_id, (key.clone(), depth)));
 
-    let secs = enter_time();
-    let turning = turn.is_some();
-    let progress = turn.as_ref().map(|t| {
-        if secs <= 0.0 {
-            1.0
-        } else {
-            ((now - t.started) as f32 / secs).clamp(0.0, 1.0)
+    if reduced() {
+        if let Some(t) = turn.as_mut() {
+            t.progress = 1.0;
         }
-    });
+    }
+    let turning = turn.is_some();
+    let progress = turn.as_ref().map(|t| t.progress);
     let rect = ui.available_rect_before_wrap();
     let clip = ui.clip_rect();
-    let mut page = |ui: &mut Ui, k: K, salt: &str, dx: f32, live: bool, dim: f32| {
+    // `on_top`: the page that slides over the other is opaque, the panel's own
+    // page colour across the whole visible slot. A page paints only its rows,
+    // so without this the one underneath — and the edge of its dimming —
+    // showed through the new page until the turn ended.
+    let mut page = |ui: &mut Ui, k: K, salt: &str, dx: f32, live: bool, dim: f32, on_top: bool| {
         let shifted = rect.translate(egui::vec2(dx * rect.width(), 0.0));
-        let r = ui.scope_builder(
+        if on_top {
+            ui.painter()
+                .rect_filled(shifted.intersect(clip), 0, super::theme::p().panel);
+        }
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(shifted).id_salt(salt),
             |ui| {
                 ui.set_clip_rect(clip);
                 if !live {
+                    // Untouchable, but not faded: `disable` halves the
+                    // opacity, which washed both pages out for the turn and
+                    // let the one underneath show through. Put the alpha back
+                    // after, so a control the page itself disables still fades.
+                    let alpha = ui.visuals().disabled_alpha;
+                    ui.visuals_mut().disabled_alpha = 1.0;
                     ui.disable();
+                    ui.visuals_mut().disabled_alpha = alpha;
                 }
                 draw(ui, k);
             },
         );
         if dim > 0.0 {
             let ink = super::theme::p().ink.gamma_multiply(dim);
-            ui.painter()
-                .rect_filled(r.response.rect.intersect(clip), 0, ink);
+            ui.painter().rect_filled(shifted.intersect(clip), 0, ink);
         }
     };
     match (turn, progress) {
         (Some(t), Some(p)) if p < 1.0 => {
             ctx.data_mut(|d| d.insert_temp(turn_id, t.clone()));
             ctx.request_repaint();
-            let (old_dx, new_dx, dim) = turn_offsets(depth > t.from_depth, ease_out(p));
+            let (old_dx, new_dx, dim) = turn_offsets(depth > t.from_depth, glide(p));
             let (old_dim, new_dim) = if depth > t.from_depth {
                 (dim, 0.0)
             } else {
@@ -538,18 +575,18 @@ pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
             };
             // The one underneath first, so the one on top paints over it.
             if depth > t.from_depth {
-                page(ui, t.from, "page_leaving", old_dx, false, old_dim);
-                page(ui, key, "page", new_dx, false, new_dim);
+                page(ui, t.from, "page_leaving", old_dx, false, old_dim, false);
+                page(ui, key, "page", new_dx, false, new_dim, true);
             } else {
-                page(ui, key, "page", new_dx, false, new_dim);
-                page(ui, t.from, "page_leaving", old_dx, false, old_dim);
+                page(ui, key, "page", new_dx, false, new_dim, false);
+                page(ui, t.from, "page_leaving", old_dx, false, old_dim, true);
             }
         }
         _ => {
             if turning {
                 ctx.data_mut(|d| d.remove::<Turn<K>>(turn_id));
             }
-            page(ui, key, "page", 0.0, true, 0.0);
+            page(ui, key, "page", 0.0, true, 0.0, false);
         }
     }
 }
@@ -605,6 +642,47 @@ mod tests {
         assert!(old == 0.0 && (new + PARENT_GIVES).abs() < 1e-6 && (dim - PARENT_DIM).abs() < 1e-6);
         let (old, new, dim) = turn_offsets(false, 1.0);
         assert!((old - 1.0).abs() < 1e-6 && new == 0.0 && dim == 0.0);
+    }
+
+    #[test]
+    fn a_page_glides_off_from_rest() {
+        assert_eq!(glide(0.0), 0.0);
+        assert_eq!(glide(1.0), 1.0);
+        // One 60 Hz frame in: ease_out has gone a sixth of the width, glide a fortieth.
+        let first = 1.0 / 60.0 / ENTER;
+        assert!(glide(first) < 0.03, "{}", glide(first));
+        assert!(ease_out(first) > 0.15, "{}", ease_out(first));
+        let mut last = 0.0;
+        for i in 1..=100 {
+            let y = glide(i as f32 / 100.0);
+            assert!(y >= last - 1e-4, "glide dips at {i}");
+            last = y;
+        }
+    }
+
+    /// The pass that starts a turn draws it at its start, and a slow pass
+    /// moves it on by at most [`TURN_MAX_STEP`].
+    #[test]
+    fn a_slow_pass_slows_a_turn_rather_than_skipping_it() {
+        let ctx = Context::default();
+        let id = Id::new("pages");
+        let turn_id = id.with("page_turn").with("turn");
+        let pass = |time: f64, key: u8| {
+            let raw = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui_unpainted(raw, |ui| {
+                page_turn(ui, id, key, key, |_, _| {});
+            });
+            ctx.data(|d| d.get_temp::<Turn<u8>>(turn_id))
+                .map(|t| t.progress)
+        };
+        set_reduced(false);
+        assert_eq!(pass(0.0, 0), None);
+        assert_eq!(pass(0.016, 1), Some(0.0), "the turn starts where it starts");
+        let p = pass(0.516, 1).expect("still turning after a half-second stall");
+        assert!((p - TURN_MAX_STEP / ENTER).abs() < 1e-4, "{p}");
     }
 
     #[test]

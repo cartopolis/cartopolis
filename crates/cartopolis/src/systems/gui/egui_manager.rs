@@ -260,6 +260,11 @@ pub fn responsive_right_panel(
         egui::Panel::right(id)
             .frame(frame)
             .resizable(false)
+            // No separator line: it has no neighbour to separate from, and egui
+            // paints it at the panel's sliding edge on the root `Ui`, so while
+            // another panel slid shut behind this one its line kept crossing the
+            // open panel.
+            .show_separator_line(false)
             // Fill the whole viewport — any inset leaves a strip of map peeking
             // down the left edge of the docked panel.
             .exact_size(compact_panel_width(viewport_w))
