@@ -33,6 +33,7 @@ export const TABS: {tab: AdminTab; label: string; needs: string[]}[] = [
     {label: 'Sign-in', needs: ['signin_manage'], tab: 'signin'},
     {label: 'Overrides', needs: ['building_override'], tab: 'overrides'},
     {label: 'Models', needs: ['library_manage'], tab: 'library'},
+    {label: 'Pages', needs: ['pages_edit'], tab: 'pages'},
     {label: 'Data', needs: ['pipeline_run'], tab: 'pipeline'},
     {label: 'Overview', needs: ['stats_view'], tab: 'stats'},
     // Not "World" and "Web": the page's own switch already says World.
@@ -55,7 +56,7 @@ export type AdminAreaId = 'people' | 'content' | 'data' | 'stats'
  */
 export const AREAS: {id: AdminAreaId; label: string; hint: string; tabs: AdminTab[]}[] = [
     {hint: 'Accounts, what they may do, who holds which building, and how people sign in', id: 'people', label: 'People', tabs: ['accounts', 'roles', 'claims', 'reports', 'signin']},
-    {hint: 'Buildings drawn from a model, and the shared model library', id: 'content', label: 'Content', tabs: ['overrides', 'library']},
+    {hint: 'Buildings drawn from a model, the shared model library, and the site\'s pages', id: 'content', label: 'Content', tabs: ['overrides', 'library', 'pages']},
     {hint: 'The pipelines that build the map', id: 'data', label: 'Data', tabs: ['pipeline']},
     {hint: 'How the world is used, and who visits the sites', id: 'stats', label: 'Stats', tabs: ['stats', 'stats_world', 'stats_web', 'stats_places']},
 ]

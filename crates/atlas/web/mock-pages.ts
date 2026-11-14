@@ -116,7 +116,36 @@ function pageData(slug: string, lang: string): PageData | null {
     return {languages: LANGUAGES, lang, revision: 3, slug, source_lang: page.source_lang, texts, tree: page.tree}
 }
 
+/** Admin › Content › Pages: the list `pages::Summary` makes, from the fixtures. */
+function summaries() {
+    return Object.entries(PAGES).map(([slug, page]) => {
+        const keys = new Set<string>()
+        keysOf(page.tree, keys)
+        const languages: Record<string, {missing: string[]; stale: string[]}> = {}
+        for (const lang of LANGUAGES) {
+            const missing = [...keys].filter((k) => page.texts[lang]?.[k] === undefined)
+            languages[lang] = {missing, stale: lang === 'en' ? ['why.map.heading'] : []}
+        }
+        return {
+            draft_changed: true,
+            languages,
+            live_revision: 3,
+            slug,
+            source_lang: page.source_lang,
+            title: page.texts[page.source_lang].title,
+            updated_at: Math.floor(Date.now() / 1000) - 600,
+            updated_by: 'midas',
+        }
+    })
+}
+
 export function mockPages(req: Request, url: URL): Response | null {
+    if (url.pathname === '/api/admin/pages' && req.method === 'GET') {
+        return Response.json({languages: LANGUAGES, pages: summaries()})
+    }
+    if (/^\/api\/admin\/pages\/[a-z0-9-]+\/(publish|unpublish)$/.test(url.pathname) && req.method === 'POST') {
+        return Response.json({ok: true})
+    }
     const live = /^\/api\/pages\/([a-z0-9-]+)$/.exec(url.pathname)
     const draft = /^\/api\/admin\/pages\/([a-z0-9-]+)\/draft$/.exec(url.pathname)
     const match = live ?? draft

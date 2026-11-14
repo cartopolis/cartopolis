@@ -6,6 +6,7 @@ import type {AdminTab} from '@/types'
 import {$s} from '@/app'
 import {Accounts} from '@/components/pages/accounts/accounts'
 import {Claims} from '@/components/pages/claims/claims'
+import {ContentPages} from '@/components/pages/content-pages/content-pages'
 import {Library} from '@/components/pages/library/library'
 import {Overrides} from '@/components/pages/overrides/overrides'
 import {Pipeline} from '@/components/pages/pipeline/pipeline'
@@ -65,6 +66,8 @@ function page(tab: AdminTab) {
             return <Library />
         case 'overrides':
             return <Overrides />
+        case 'pages':
+            return <ContentPages />
         case 'pipeline':
             return <Pipeline />
         case 'reports':

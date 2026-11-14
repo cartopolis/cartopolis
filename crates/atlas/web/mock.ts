@@ -200,6 +200,8 @@ const permissions: PermissionInfo[] = [
     {group: 'server', label: 'Run the map data pipelines', player_default: false, slug: 'pipeline_run'},
     {group: 'server', label: 'Read the usage statistics', player_default: false, slug: 'stats_view'},
     {group: 'server', label: 'Manage sign-in providers', player_default: false, slug: 'signin_manage'},
+    {group: 'server', label: 'Write content pages and their translations', player_default: false, slug: 'pages_edit'},
+    {group: 'server', label: 'Publish and take down content pages', player_default: false, slug: 'pages_publish'},
 ]
 
 // ── Usage statistics (invented, the same shape as docs/mockups/stats/) ─────────

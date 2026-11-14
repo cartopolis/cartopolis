@@ -470,6 +470,25 @@ export interface Me {
     permissions: string[]
 }
 
+/** A language's state against a content page's source: `pages::LangStatus`. */
+export interface PageLangStatus {
+    missing: string[]
+    stale: string[]
+}
+
+/** One content page in Admin › Content › Pages: `pages::Summary` (`docs/mockups/cms`). */
+export interface PageSummary {
+    slug: string
+    title: string
+    source_lang: string
+    live_revision: number | null
+    draft_changed: boolean
+    languages: Record<string, PageLangStatus>
+    updated_by: string
+    /** Unix seconds. */
+    updated_at: number
+}
+
 export type AdminTab =
     | 'accounts'
     | 'roles'
@@ -478,6 +497,7 @@ export type AdminTab =
     | 'signin'
     | 'overrides'
     | 'library'
+    | 'pages'
     | 'pipeline'
     | 'stats'
     | 'stats_world'

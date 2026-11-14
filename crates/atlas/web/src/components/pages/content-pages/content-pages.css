@@ -1,0 +1,34 @@
+.content-pages {
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-3);
+}
+
+.content-pages-intro {
+    color: var(--m-text-dim);
+    font-size: var(--m-font-size-sm);
+    margin: 0;
+}
+
+.content-pages-title {
+    display: flex;
+    flex-direction: column;
+
+    & small {
+        color: var(--m-text-faint);
+        font-size: var(--m-font-size-sm);
+    }
+}
+
+.content-pages-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--m-space-1);
+}
+
+.content-pages-preview {
+    color: var(--m-accent-text);
+    font-size: var(--m-font-size-sm);
+    margin-right: var(--m-space-1);
+}
