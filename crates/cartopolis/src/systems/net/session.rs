@@ -1076,6 +1076,8 @@ mod tests {
             seated: None,
             seat_blend: 0.0,
             terrain_lift: 0.0,
+            swimming: false,
+            swim_blend: 0.0,
         });
     }
 

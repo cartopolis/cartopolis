@@ -1,13 +1,13 @@
 ---
 topic: avatar-locomotion
-triggers: [avatar animation, jump, rig, facing, strafe, turn, WASD, gait, walk clip, systems/player/avatar.rs, systems::locomotion, simulator/src/state.rs, facing_yaw, advance_facing, display_yaw, update_avatar_model_pose, ClientIntent.flying, ClipGait, CLIP_ORDER, "avatar flight", flying]
+triggers: [avatar animation, jump, rig, facing, strafe, turn, WASD, gait, walk clip, systems/player/avatar.rs, systems::locomotion, simulator/src/state.rs, facing_yaw, advance_facing, display_yaw, update_avatar_model_pose, ClientIntent.flying, ClipGait, CLIP_ORDER, "avatar flight", flying, swim, swimming, swim_surface_at, ground_or_water, TREAD_DEPTH, "--clip swim"]
 updated: 2026-11-14
 ---
 
 # The avatar walks, runs and jumps — and does not fly
 
-The avatar is a person: it strolls, walks, runs and jumps (swimming is the next
-gait). **It does not fly.** Avatar flight existed from protocol 12 until the
+The avatar is a person: it strolls, walks, runs, jumps and swims. **It does
+not fly.** Avatar flight existed from protocol 12 until the
 owner removed it on 2026-11-14 as unrealistic; what it was and what it taught
 are in [retired/avatar-flight.md](retired/avatar-flight.md). The camera still
 flies — the Fly (Free) camera, Earth, the zoom out to the globe — and none of
@@ -28,12 +28,12 @@ Every avatar plays the clips the MakeHuman pack carries, cut from motion capture
 complete:
 
 ```
-idle, walk, run, wave, interact, roll, punch, kick, faint, sit
+idle, walk, run, wave, interact, roll, punch, kick, faint, sit, swim
 ```
 
-No jump, no fall, no swim. A new one is a cut in `human-pack` from a take that
-has it (CMU has jumps; neither database has swimming), retargeted by the same
-code, so adding a gait is a pack rebuild, not new client code.
+No jump and no fall. A new one is a cut in `human-pack` from a take that has it
+(CMU has jumps), retargeted by the same code, so adding a gait is a pack
+rebuild, not new client code.
 
 So a jump is **posed**, not animated: `avatar::update_avatar_model_pose` pitches
 the model holders about chest height (`JUMP_TUCK`, ~11°) driven by the *signed*
@@ -44,6 +44,39 @@ transform is the authoritative position and yaw, and a pose written into it is
 a position the sim never agreed to. The teleport arrival (a scale out of a thin
 column, `avatar::body_pose`) is written by the same system for the same reason
 ([avatar-prediction-smoothing.md](avatar-prediction-smoothing.md)).
+
+## Swimming is a ground under the water and a pose on the holders (2026-11-14)
+
+Asked for by the owner: "an avatar in water must swim, not walk over it". It
+walked over it because `TerrainField::ground_at` over a canal is the *land* the
+quays are stood on (`quay-walls.md`), i.e. street height.
+
+- **Where.** `TerrainField::swim_surface_at`: strictly inside a registered water
+  body (`WaterLevelField::level_at`, not `water_surface_at`'s three-metre join
+  tolerance), and not on a bridge deck at or above the surface. A register's
+  ring can be a metre wider than the drawn water beside a lawn, so a swim can
+  start that much early there.
+- **How deep.** `avatar::ground_or_water` makes the ground in water the surface
+  less `TREAD_DEPTH` (1.5 m), the feet of someone treading water: the idle,
+  head out to the chin. Like the terrain it is a display lift on every viewer's
+  own map; the sim knows nothing of water and nothing went on the wire. The
+  lift moves at most `WATER_SINK_RATE`/`WATER_CLIMB_RATE` while in or entering
+  or leaving water, so off a quay is a drop and out is a climb (there is no
+  climb clip, and quay walls are not colliders).
+- **The stroke.** The `swim` clip is CMU 125_01's breaststroke, captured lying
+  on a stool, so it goes nowhere and its pace is chosen (`SWIM_CLIP_SPEED`).
+  `mocap::heading_of` takes the spine as a lying body's heading. Grounded by its
+  lowest ankle the head is 0.16 m over the feet, so `avatar::swim_lie` lifts the
+  holders by `SWIM_LIFT` to bring the head to the surface and tips them 0.3 rad
+  feet-down about the head: level, the kick drew the shins up through the water
+  at every stroke (the stool's air, not water). Eased over `SWIM_LIE_SECS`, with
+  the clip's `SWIM_FADE`.
+- **Pace.** Every gait swims `SWIM_SPEED` (0.9 m/s), a run `SWIM_FAST_SPEED`
+  (1.4), built and shed at `SWIM_ACCEL`/`SWIM_DECEL`, far softer than on foot.
+  No jump in water; no footsteps.
+
+`--clip swim` photographs the stroke; the Noorderhaven at 53.22005,6.5587 is in
+the water (the skill's canal-side point at 53.2194,6.5665 is not).
 
 ## The clips are played at the speed the avatar is actually moving
 

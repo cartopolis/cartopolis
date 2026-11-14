@@ -783,6 +783,25 @@ impl TerrainField {
         water_surface_near(&self.water, self.datum_m, wx, wz)
     }
 
+    /// The surface of the water a body at this point swims in, or `None` where it
+    /// stands — on land, or on a bridge deck over the water.
+    ///
+    /// Strictly inside a registered body, without [`water_surface_at`]'s join
+    /// tolerance, which reaches three metres onto every quay
+    /// (`MeasuredGround::in_water`). A register's ring can still be a metre or so
+    /// wider than the drawn water beside a lawn (`ground_at`'s doc), and there a
+    /// swim starts that much early; along a quay the ring is the wall.
+    ///
+    /// [`water_surface_at`]: Self::water_surface_at
+    #[must_use]
+    pub fn swim_surface_at(&self, wx: f32, wz: f32) -> Option<f32> {
+        let surface = self.water.level_at(wx, wz)? - self.datum_m;
+        match crate::systems::map_geometry::walk_deck_top(wx, wz) {
+            Some(deck) if deck >= surface => None,
+            _ => Some(surface),
+        }
+    }
+
     /// What a cell over this world box was built on — the heights under it (with a
     /// margin, for the drape's and the tunnels' reach) and the water over it — as
     /// one number. A new field that gives a cell the same number leaves it

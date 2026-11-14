@@ -1337,6 +1337,42 @@ mod tests {
     /// legs. The walk it replaced (100STYLE `Rushed`) leaned the trunk 20° and
     /// held the arms 15–47° behind the body; patching it in code still looked
     /// like a funny walk.
+    /// The swim lies face down with the head first (+z), the trunk level, and
+    /// the head at the height the client floats it by
+    /// (`locomotion::SWIM_HEAD_Y`). A capture lying on a stool faces the floor,
+    /// and before `mocap::heading_of` took the spine for a lying body's heading
+    /// the loop came out turned a different way in every frame.
+    #[test]
+    fn the_swim_lies_face_down_head_first() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let Some(swim) = m.clips.iter().position(|c| c.name == "swim") else {
+            return;
+        };
+        let frames = m.clips[swim].rotations[0].len();
+        let j = |n: &str| m.joint(n).unwrap();
+        let (mut ahead, mut level, mut head_y) = (0.0, 0.0, 0.0);
+        for f in 0..frames {
+            let p = m.joint_positions(Some((swim, f)));
+            let trunk = p[j("neck_01")] - p[j("pelvis")];
+            ahead += trunk.z / frames as f32;
+            level += trunk.y.atan2(trunk.z.hypot(trunk.x)).to_degrees() / frames as f32;
+            head_y += p[j("head")].y / frames as f32;
+        }
+        println!("swim: trunk {ahead:.2} m ahead, {level:.1}° from level, head at {head_y:.2} m");
+        assert!(
+            ahead > 0.3,
+            "the head leads: the trunk reaches {ahead:.2} m ahead"
+        );
+        assert!(level.abs() < 30.0, "the trunk lies {level:.1}° from level");
+        // 0.16 m on 2026-11-14: grounded by its lowest ankle, a body lying
+        // face down holds its head barely above its feet.
+        assert!(
+            (0.05..0.3).contains(&head_y),
+            "the head is {head_y:.2} m up"
+        );
+    }
+
     #[test]
     fn the_walk_is_an_ordinary_walk() {
         let Some(pack) = shipped_pack() else { return };

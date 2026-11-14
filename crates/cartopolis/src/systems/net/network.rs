@@ -1381,6 +1381,8 @@ fn sync_remote_avatar_entities(
                     seat_blend: 0.0,
                     // Stood on this viewer's ground by `avatar::smooth_remote_avatars`.
                     terrain_lift: 0.0,
+                    swimming: false,
+                    swim_blend: 0.0,
                 },
                 Transform::from_translation(a.position)
                     .with_rotation(Quat::from_rotation_y(wrap_angle_pi(y)))

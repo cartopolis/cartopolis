@@ -43,6 +43,48 @@ pub const WALK_SPEED: f32 = 1.8;
 /// the clip plays at 1.5× and stays inside the band.
 pub const RUN_SPEED: f32 = 6.0;
 
+// ── Swimming ─────────────────────────────────────────────────────────────────
+
+/// A swimmer's pace (m/s): an easy breaststroke, which is about what one is.
+/// Every gait swims at it but the run, which swims [`SWIM_FAST_SPEED`] — a
+/// walk's 1.8 m/s would be a racing swimmer's.
+pub const SWIM_SPEED: f32 = 0.9;
+/// Shift held in the water, or a full push of the stick.
+pub const SWIM_FAST_SPEED: f32 = 1.4;
+/// Water is thick: the pace builds and dies far slower than on foot (m/s²),
+/// so a stroke glides on after the key comes up.
+pub const SWIM_ACCEL: f32 = 2.0;
+pub const SWIM_DECEL: f32 = 1.2;
+/// How far under the surface a swimmer's feet are while treading water (m),
+/// upright, the head out to the chin. The ground a swimmer is drawn on.
+pub const TREAD_DEPTH: f32 = 1.5;
+/// The `swim` clip's head height over its feet (m), measured on the default
+/// man (`cartopolis_human`'s `the_swim_lies_face_down_head_first`): the body
+/// lies face down, grounded by its lowest ankle.
+pub const SWIM_HEAD_Y: f32 = 0.16;
+/// Where the head joint rides over the surface while stroking (m): the base of
+/// the skull just out, the face at the water.
+pub const SWIM_HEAD_ABOVE: f32 = 0.05;
+/// How much a swimmer lying in the stroke is lifted over one treading water
+/// (m): from feet [`TREAD_DEPTH`] down to the head at the surface.
+pub const SWIM_LIFT: f32 = TREAD_DEPTH - SWIM_HEAD_Y + SWIM_HEAD_ABOVE;
+/// The pace the `swim` clip is played at 1× (m/s). It was captured on a stool
+/// and goes nowhere, so this is chosen: one 1.76 s stroke carries an easy
+/// swimmer about 1.6 m.
+pub const SWIM_CLIP_SPEED: f32 = 0.9;
+/// The swimming target speed for the speed the gait or the stick asks for on
+/// land: a run is the fast stroke, anything else the easy one.
+#[must_use]
+pub fn swim_speed_for(land_speed: f32) -> f32 {
+    if land_speed <= 0.0 {
+        0.0
+    } else if land_speed > (WALK_SPEED + RUN_SPEED) / 2.0 {
+        SWIM_FAST_SPEED
+    } else {
+        SWIM_SPEED
+    }
+}
+
 /// How hard the avatar picks up speed on the ground, and sheds it (m/s²).
 /// Deceleration is the brisker of the two; the other way round reads as walking
 /// on grease.
@@ -237,6 +279,24 @@ mod tests {
     /// the walk clip was reachable only through Alt. Asserted rather than left to
     /// the constants, because it is a *relation* between two numbers that live in
     /// different sections of this file and either one can be tuned alone.
+    /// Every gait swims, and only the run swims fast; nobody swims at a walk's
+    /// pace. Lying in the stroke brings the head to the surface, not the body
+    /// out of the water.
+    #[test]
+    fn every_gait_swims_at_a_swimmers_pace() {
+        assert_eq!(swim_speed_for(0.0), 0.0);
+        for g in [Gait::Stroll, Gait::Walk] {
+            assert_eq!(swim_speed_for(g.speed()), SWIM_SPEED, "{g:?}");
+        }
+        assert_eq!(swim_speed_for(Gait::Run.speed()), SWIM_FAST_SPEED);
+        assert!(SWIM_FAST_SPEED < WALK_SPEED);
+        let head = -TREAD_DEPTH + SWIM_LIFT + SWIM_HEAD_Y;
+        assert!(
+            (head - SWIM_HEAD_ABOVE).abs() < 1e-5,
+            "the head rides at {head}"
+        );
+    }
+
     #[test]
     fn the_unmodified_gait_is_a_walk() {
         assert!(

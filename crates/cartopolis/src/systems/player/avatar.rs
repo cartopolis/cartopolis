@@ -170,6 +170,36 @@ fn airborne_lift(current: f32, ground: f32, height: f32, dt: f32) -> f32 {
     current + (ground - current) * (1.0 - (-rate * dt).exp())
 }
 
+/// The ground an avatar at this world-XZ point is drawn on, and whether that is
+/// water it swims in.
+///
+/// In water it is the surface less [`locomotion::TREAD_DEPTH`], the feet of
+/// someone treading water — not `ground_at`, which over a canal is the street
+/// beside it (the land the quays are stood on), and walked the avatar across
+/// the water at street height. The sim is flat and knows nothing of either, so
+/// this is a display lift like the terrain's, on every viewer's own map.
+#[must_use]
+fn ground_or_water(terrain: &crate::systems::terrain::TerrainField, x: f32, z: f32) -> (f32, bool) {
+    match terrain.swim_surface_at(x, z) {
+        Some(surface) => (surface - locomotion::TREAD_DEPTH, true),
+        None => (terrain.ground_at(x, z), false),
+    }
+}
+
+/// How fast the drawn ground may move as the avatar goes into the water and
+/// out of it (m/s): a quay is a metre or two over the water and the feet go
+/// another one and a half under it, which as a step would be a jump cut. In,
+/// it reads as a drop; out, as climbing up the side.
+const WATER_SINK_RATE: f32 = 4.0;
+const WATER_CLIMB_RATE: f32 = 2.0;
+
+/// One frame of the lift while in the water or just in or out of it, rate
+/// limited by [`WATER_SINK_RATE`] and [`WATER_CLIMB_RATE`].
+#[must_use]
+fn water_lift(prev: f32, target: f32, dt: f32) -> f32 {
+    prev + (target - prev).clamp(-WATER_SINK_RATE * dt, WATER_CLIMB_RATE * dt)
+}
+
 /// The error beyond which the display snaps to authority instead of easing.
 ///
 /// **A fixed distance is a speed-dependent time.** Reconciliation trails the
@@ -477,6 +507,8 @@ pub(crate) struct AvatarAnimations {
     emote_indices: Vec<AnimationNodeIndex>,
     /// The seated pose: a motion-capture loop of someone sitting still.
     sit_index: AnimationNodeIndex,
+    /// The breaststroke, lying face down (CMU 125_01); treading water is the idle.
+    swim_index: AnimationNodeIndex,
     /// Base playback speed for this model's clips. The locomotion clips are
     /// scaled on top of this to match ground speed.
     speed: f32,
@@ -512,6 +544,11 @@ const GAIT_FADE: Duration = Duration::from_millis(180);
 /// something, and at a gait's fade the avatar snaps into the seat. Paired with
 /// [`SEAT_SLIDE_SECS`], which moves it the last half-metre over the same time.
 const SIT_FADE: Duration = Duration::from_millis(450);
+/// Lying down into the stroke and coming upright to tread water: the whole body
+/// turns through a right angle, so slower still. Paired with [`SWIM_LIE_SECS`],
+/// which lifts the body to the surface over the same time.
+const SWIM_FADE: Duration = Duration::from_millis(600);
+const SWIM_LIE_SECS: f32 = 0.6;
 /// Emotes cut in faster: a wave that eases in over a fifth of a second reads as
 /// reluctance.
 const EMOTE_FADE: Duration = Duration::from_millis(90);
@@ -601,8 +638,9 @@ pub(crate) fn animate_holder(
         idle_index: indices[0],
         walk_index: indices[1],
         run_index: indices[2],
-        emote_indices: indices[3..indices.len() - 1].to_vec(),
-        sit_index: indices[indices.len() - 1],
+        emote_indices: indices[3..9].to_vec(),
+        sit_index: indices[9],
+        swim_index: indices[10],
         speed: 1.0,
         walk: spawned.walk,
         run: spawned.run,
@@ -662,6 +700,8 @@ enum PoseClip {
     Run,
     /// Seated (a motion-capture loop).
     Sit,
+    /// Swimming the breaststroke. Treading water still is [`PoseClip::Idle`].
+    Swim,
     Emote(usize),
 }
 
@@ -715,6 +755,22 @@ fn locomotion_pose(speed: f32, running: bool, gaits: (ClipGait, ClipGait)) -> Po
     }
 }
 
+/// The body in the water at `speed`: the stroke, played at the pace it carries,
+/// or treading water upright — the idle, with the body under the surface — when
+/// still.
+fn swim_pose(speed: f32) -> Pose {
+    if speed < locomotion::MOVING_EPS {
+        return Pose {
+            clip: PoseClip::Idle,
+            rate: 1.0,
+        };
+    }
+    Pose {
+        clip: PoseClip::Swim,
+        rate: (speed / locomotion::SWIM_CLIP_SPEED).clamp(0.6, 1.6),
+    }
+}
+
 impl AvatarAnimations {
     /// This model's walk and run.
     pub(crate) fn gaits(&self) -> (ClipGait, ClipGait) {
@@ -747,6 +803,7 @@ impl AvatarAnimations {
             PoseClip::Walk => self.walk_index,
             PoseClip::Run => self.run_index,
             PoseClip::Sit => self.sit_index,
+            PoseClip::Swim => self.swim_index,
             PoseClip::Emote(slot) => self
                 .emote_indices
                 .get(slot)
@@ -802,6 +859,10 @@ fn apply_pose(
         {
             // Both ways, so getting up takes as long as sitting down did.
             SIT_FADE
+        } else if pose.clip == PoseClip::Swim
+            || transitions.get_main_animation() == Some(anim.swim_index)
+        {
+            SWIM_FADE
         } else if repeat {
             GAIT_FADE
         } else {
@@ -830,13 +891,14 @@ pub enum ClipName {
     Walk,
     Run,
     Sit,
+    Swim,
     Emote(Emote),
 }
 
 impl ClipName {
     /// Every name [`ClipName::parse`] accepts, for the error that refuses one.
-    pub const NAMES: [&'static str; 10] = [
-        "idle", "walk", "run", "sit", "wave", "interact", "roll", "punch", "kick", "faint",
+    pub const NAMES: [&'static str; 11] = [
+        "idle", "walk", "run", "sit", "swim", "wave", "interact", "roll", "punch", "kick", "faint",
     ];
 
     #[must_use]
@@ -846,6 +908,7 @@ impl ClipName {
             "walk" => Self::Walk,
             "run" => Self::Run,
             "sit" => Self::Sit,
+            "swim" => Self::Swim,
             "wave" => Self::Emote(Emote::Wave),
             "interact" => Self::Emote(Emote::Interact),
             "roll" => Self::Emote(Emote::Roll),
@@ -862,6 +925,7 @@ impl ClipName {
             Self::Walk => PoseClip::Walk,
             Self::Run => PoseClip::Run,
             Self::Sit => PoseClip::Sit,
+            Self::Swim => PoseClip::Swim,
             Self::Emote(e) => PoseClip::Emote(emote_slot(e)),
         }
     }
@@ -988,6 +1052,7 @@ pub fn update_avatar_animation(
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
+            (false, None) if avatar_state.swimming => swim_pose(stride),
             (false, None) => locomotion_pose(
                 stride,
                 *running,
@@ -1076,6 +1141,9 @@ pub fn update_avatar_model_pose(
     // first frame of an arrival nobody asked for.
     mut arrive_left: Local<f32>,
     mut arrive_seq: Local<u32>,
+    // A capture holding the stroke (`--clip swim`) lies the body down too,
+    // though the avatar stands still for it.
+    pinned: Option<Res<PinnedAnimation>>,
 ) {
     // Advance the seat slide first, so the offset written below is this frame's.
     // A seat that has finished unwinding is dropped here rather than where the
@@ -1138,8 +1206,32 @@ pub fn update_avatar_model_pose(
         }
     }
 
+    // Lying into the stroke lifts the body from treading water, feet
+    // `TREAD_DEPTH` down, to the head at the surface; coming upright lowers it
+    // again. Eased over the clip's cross-fade, on everyone's own clock.
+    let lie_step = time.delta_secs() / SWIM_LIE_SECS;
+    let ease_lie = |blend: f32, lying: bool| {
+        if lying {
+            (blend + lie_step).min(1.0)
+        } else {
+            (blend - lie_step).max(0.0)
+        }
+    };
+    let stroking = pinned.is_some_and(|p| p.clip == ClipName::Swim)
+        || (avatar_state.swimming && avatar_state.stride_speed() >= locomotion::MOVING_EPS);
+    avatar_state.swim_blend = ease_lie(avatar_state.swim_blend, stroking);
+    for mut r in remotes.iter_mut() {
+        let stroking = r.swimming
+            && Vec2::new(r.net_velocity.x, r.net_velocity.z).length() >= locomotion::MOVING_EPS;
+        let blend = ease_lie(r.swim_blend, stroking);
+        if r.swim_blend != blend {
+            r.swim_blend = blend;
+        }
+    }
+
     let mut local = body_pose(*lean, arrived);
     local.translation += seat_shift;
+    let mut local = local * swim_lie(avatar_state.swim_blend);
     if designing.is_some_and(|d| d.0.is_some()) || held.is_some_and(|h| h.selfie) {
         // Where the camera is, in the avatar's own frame (the model faces +Z).
         if let (Ok(cam), Ok(me)) = (camera.single(), avatar_at.single()) {
@@ -1162,13 +1254,39 @@ pub fn update_avatar_model_pose(
                 let o = o * r.seat_blend;
                 Quat::from_rotation_y(-r.net_yaw) * Vec3::new(o.x, 0.0, o.y)
             });
-            Transform::from_translation(shift)
+            Transform::from_translation(shift) * swim_lie(r.swim_blend)
         } else {
             continue;
         };
         if *tf != want {
             *tf = want;
         }
+    }
+}
+
+/// How far forward of the feet the swim's head is (m), on the default man: the
+/// loop is stood with its hips over the origin, and the trunk reaches 0.54 m
+/// ahead of them to the neck (`the_swim_lies_face_down_head_first`).
+const SWIM_HEAD_Z: f32 = 0.75;
+/// How far the swimmer is tipped feet-down about the head (rad). The take was
+/// captured lying on a stool, where the kick draws the heels up into the air;
+/// in water the legs ride lower than the head, and level they broke the
+/// surface shins-first at every stroke (seen 2026-11-14).
+const SWIM_TILT: f32 = 0.3;
+
+/// The model's lift and tilt into the stroke at `blend` (0 treading water, 1
+/// lying in the stroke): up by [`locomotion::SWIM_LIFT`] so the head rides at
+/// the surface, and tipped feet-down about the head by [`SWIM_TILT`].
+fn swim_lie(blend: f32) -> Transform {
+    if blend <= 0.0 {
+        return Transform::IDENTITY;
+    }
+    let pivot = Vec3::new(0.0, locomotion::SWIM_HEAD_Y, SWIM_HEAD_Z);
+    let tilt = Quat::from_rotation_x(-SWIM_TILT * blend);
+    Transform {
+        translation: pivot - tilt * pivot + Vec3::Y * locomotion::SWIM_LIFT * blend,
+        rotation: tilt,
+        ..default()
     }
 }
 
@@ -1319,15 +1437,24 @@ pub fn smooth_remote_avatars(
     let a_rot = 1.0 - (-REMOTE_ROT_SMOOTHING * dt).exp();
     for (mut remote, mut tf) in q.iter_mut() {
         remote.net_age += dt;
-        let (shown, lift) = remote_display_on_ground(
+        let (mut shown, mut lift) = remote_display_on_ground(
             tf.translation,
             remote.terrain_lift,
             remote.net_position,
             remote.net_velocity,
             remote.net_age,
             dt,
-            |x, z| terrain.ground_at(x, z),
+            |x, z| ground_or_water(&terrain, x, z).0,
         );
+        let swimming = terrain.swim_surface_at(shown.x, shown.z).is_some();
+        if swimming || remote.swimming {
+            let eased = water_lift(remote.terrain_lift, lift, dt);
+            shown.y += eased - lift;
+            lift = eased;
+        }
+        if remote.swimming != swimming {
+            remote.swimming = swimming;
+        }
         tf.translation = shown;
         remote.terrain_lift = lift;
         // Replicated world yaw from each client’s camera-facing convention.
@@ -1423,6 +1550,7 @@ pub fn update_remote_avatar_animation(
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
+            (false, None) if remote.swimming => swim_pose(if moving { speed } else { 0.0 }),
             (false, None) => locomotion_pose(
                 if moving { speed } else { 0.0 },
                 was_running,
@@ -1562,12 +1690,14 @@ pub fn smooth_online_avatar_display(
             dt,
         );
         // `flat.y` is the height above the sim's ground; see `airborne_lift`.
-        avatar_state.terrain_lift = airborne_lift(
-            avatar_state.terrain_lift,
-            terrain.ground_at(flat.x, flat.z),
-            flat.y,
-            dt,
-        );
+        let (ground, swimming) = ground_or_water(&terrain, flat.x, flat.z);
+        let lift = airborne_lift(avatar_state.terrain_lift, ground, flat.y, dt);
+        avatar_state.terrain_lift = if swimming || avatar_state.swimming {
+            water_lift(avatar_state.terrain_lift, lift, dt)
+        } else {
+            lift
+        };
+        avatar_state.swimming = swimming;
         // The storey, on top of the ground. Sampled from `flat` — the reconciled
         // sim position, which is the frame `interiors` builds its rooms in and the
         // frame `send_network_intent` resolves collision in — so the floor the
@@ -1836,13 +1966,33 @@ pub fn handle_avatar_movement(
         // footfalls, and turning just changes where the next one goes.
         avatar_state.move_dir = wish;
     }
-    let target_speed = if has_input { walk_speed } else { 0.0 };
+    // In the water every gait is a stroke: the easy one, or the fast one for a
+    // run, built and shed slowly because water is thick. A swimmer has nothing
+    // to jump off.
+    let (target_speed, accel, decel) = if avatar_state.swimming {
+        avatar_state.wants_jump = false;
+        (
+            if has_input {
+                locomotion::swim_speed_for(walk_speed)
+            } else {
+                0.0
+            },
+            locomotion::SWIM_ACCEL,
+            locomotion::SWIM_DECEL,
+        )
+    } else {
+        (
+            if has_input { walk_speed } else { 0.0 },
+            locomotion::GROUND_ACCEL,
+            locomotion::GROUND_DECEL,
+        )
+    };
     avatar_state.ground_speed = locomotion::advance_speed(
         avatar_state.ground_speed,
         target_speed,
         delta_time,
-        locomotion::GROUND_ACCEL,
-        locomotion::GROUND_DECEL,
+        accel,
+        decel,
     );
     // Only on a real turn: writing the same rotation back would mark the avatar's
     // Transform changed every frame and re-propagate its whole model subtree.
@@ -1929,7 +2079,11 @@ pub fn handle_avatar_movement(
     // first-floor slab is as much "the ground" as a hillside is. Sampled in the
     // frame `interiors` built its rooms in, which is this transform's. A roof
     // is asked in the colliders' frame, absolute world XZ.
-    let ground = terrain.ground_at(transform.translation.x, transform.translation.z);
+    // In water the ground is where a swimmer's feet hang (`ground_or_water`),
+    // and gravity takes the avatar down to it off a quay.
+    let (ground, swimming) =
+        ground_or_water(&terrain, transform.translation.x, transform.translation.z);
+    avatar_state.swimming = swimming;
     let feet = crate::systems::interiors::Feet {
         world: Vec2::new(
             grid_cell.x as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.x,

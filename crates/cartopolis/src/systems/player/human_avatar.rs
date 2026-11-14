@@ -196,11 +196,11 @@ pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetSer
 }
 
 /// The pack's clips the avatar's table is built from, in its order: idle, walk,
-/// run, the six emotes in `EMOTE_CLIPS` order, and sitting. One the pack does
-/// not carry plays the idle instead — an empty clip would drop the body into
-/// its A-shaped rest pose.
-pub(crate) const CLIP_ORDER: [&str; 10] = [
-    "idle", "walk", "run", "wave", "interact", "roll", "punch", "kick", "faint", "sit",
+/// run, the six emotes in `EMOTE_CLIPS` order, sitting and swimming. One the
+/// pack does not carry plays the idle instead — an empty clip would drop the
+/// body into its A-shaped rest pose.
+pub(crate) const CLIP_ORDER: [&str; 11] = [
+    "idle", "walk", "run", "wave", "interact", "roll", "punch", "kick", "faint", "sit", "swim",
 ];
 
 /// What the spawn needs to build a person.

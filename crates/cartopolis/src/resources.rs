@@ -1542,6 +1542,14 @@ pub struct AvatarState {
     /// rather than a height test: on a slope the ground moves under the avatar,
     /// and "y == ground_y" is only true on the frames it happens to be exact.
     pub grounded: bool,
+    /// In water deep enough to swim (`TerrainField::swim_surface_at`): drawn
+    /// treading water or stroking instead of standing on the canal bed, slower,
+    /// and unable to jump. A display state, like the terrain lift — the sim has
+    /// no map and has never heard of water.
+    pub swimming: bool,
+    /// How far into the stroke's lying pose the body is, 0..1 (eased), so it
+    /// lies down as it starts swimming and comes upright as it stops.
+    pub swim_blend: f32,
     /// Set on the frame Space is pressed on the ground; consumed by whichever
     /// path owns movement (the offline integrator, or `send_network_intent`, which
     /// forwards it to the sim as `ClientIntent::jump`). Never banked: a jump asked
@@ -1639,6 +1647,8 @@ impl Default for AvatarState {
             gait: crate::systems::locomotion::Gait::Walk,
             vertical_velocity: 0.0,
             grounded: false,
+            swimming: false,
+            swim_blend: 0.0,
             wants_jump: false,
             pending_emote: None,
             landing_impact: 0.0,

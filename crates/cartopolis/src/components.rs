@@ -161,6 +161,11 @@ pub struct RemoteAvatar {
     /// (`AvatarState::terrain_lift`); `avatar::smooth_remote_avatars` takes it off
     /// before smoothing toward the flat snapshot and puts the new one back on.
     pub terrain_lift: f32,
+    /// In water, by this viewer's map — **not replicated**, for the reason the
+    /// lift is not: each viewer has the water under everyone.
+    pub swimming: bool,
+    /// How far into the stroke's lying pose the body is, 0..1 (eased).
+    pub swim_blend: f32,
 }
 
 /// The terrain height a prim is drawn raised by on this client
