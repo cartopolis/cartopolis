@@ -549,6 +549,10 @@ pub(crate) struct AvatarAnimations {
     sit_index: AnimationNodeIndex,
     /// The breaststroke, lying face down (CMU 125_01); treading water is the idle.
     swim_index: AnimationNodeIndex,
+    /// The step up onto a wall (CMU 15_02, `systems::climb`), played once.
+    climb_index: AnimationNodeIndex,
+    /// Sitting on a high edge with the legs hanging (CMU 14_29).
+    dangle_index: AnimationNodeIndex,
     /// Base playback speed for this model's clips. The locomotion clips are
     /// scaled on top of this to match ground speed.
     speed: f32,
@@ -684,6 +688,8 @@ pub(crate) fn animate_holder(
             .collect(),
         sit_index: indices[9],
         swim_index: indices[10],
+        climb_index: indices[14],
+        dangle_index: indices[15],
         speed: 1.0,
         walk: spawned.walk,
         run: spawned.run,
@@ -745,6 +751,10 @@ enum PoseClip {
     Sit,
     /// Swimming the breaststroke. Treading water still is [`PoseClip::Idle`].
     Swim,
+    /// Climbing onto a wall: played once, while the avatar is carried onto it.
+    Climb,
+    /// Seated on a high edge, the legs hanging.
+    Dangle,
     Emote(usize),
 }
 
@@ -847,6 +857,8 @@ impl AvatarAnimations {
             PoseClip::Run => self.run_index,
             PoseClip::Sit => self.sit_index,
             PoseClip::Swim => self.swim_index,
+            PoseClip::Climb => self.climb_index,
+            PoseClip::Dangle => self.dangle_index,
             PoseClip::Emote(slot) => self
                 .emote_indices
                 .get(slot)
@@ -885,7 +897,7 @@ fn apply_pose(
     pose: Pose,
 ) {
     let want = anim.node(pose.clip);
-    let repeat = !matches!(pose.clip, PoseClip::Emote(_));
+    let repeat = !matches!(pose.clip, PoseClip::Emote(_) | PoseClip::Climb);
     if transitions.get_main_animation() != Some(want) {
         // Where in its cycle the outgoing clip is, as a fraction — read before
         // `play` retires it. `None` whenever either side has no stride.
@@ -897,14 +909,20 @@ fn apply_pose(
                 let active = player.animation(previous)?;
                 Some((active.seek_time() / secs).fract())
             });
-        let fade = if pose.clip == PoseClip::Sit
-            || transitions.get_main_animation() == Some(anim.sit_index)
+        let main = transitions.get_main_animation();
+        let fade = if main == Some(anim.climb_index) {
+            // Out of the climb at once. It ends standing on the step it climbed,
+            // its hips the step's height up, and the idle after it stands on the
+            // top the floor has just been raised to: a cross-fade between the two
+            // would sink the body by the step and lift it back.
+            Duration::ZERO
+        } else if matches!(pose.clip, PoseClip::Sit | PoseClip::Dangle)
+            || main == Some(anim.sit_index)
+            || main == Some(anim.dangle_index)
         {
             // Both ways, so getting up takes as long as sitting down did.
             SIT_FADE
-        } else if pose.clip == PoseClip::Swim
-            || transitions.get_main_animation() == Some(anim.swim_index)
-        {
+        } else if pose.clip == PoseClip::Swim || main == Some(anim.swim_index) {
             SWIM_FADE
         } else if repeat {
             GAIT_FADE
@@ -935,17 +953,21 @@ pub enum ClipName {
     Run,
     Sit,
     Swim,
+    Climb,
+    Dangle,
     Emote(Emote),
 }
 
 impl ClipName {
     /// Every name [`ClipName::parse`] accepts, for the error that refuses one.
-    pub const NAMES: [&'static str; 14] = [
+    pub const NAMES: [&'static str; 16] = [
         "idle",
         "walk",
         "run",
         "sit",
         "swim",
+        "climb",
+        "dangle",
         "wave",
         "interact",
         "roll",
@@ -965,6 +987,8 @@ impl ClipName {
             "run" => Self::Run,
             "sit" => Self::Sit,
             "swim" => Self::Swim,
+            "climb" => Self::Climb,
+            "dangle" => Self::Dangle,
             "wave" => Self::Emote(Emote::Wave),
             "interact" => Self::Emote(Emote::Interact),
             "roll" => Self::Emote(Emote::Roll),
@@ -985,6 +1009,8 @@ impl ClipName {
             Self::Run => PoseClip::Run,
             Self::Sit => PoseClip::Sit,
             Self::Swim => PoseClip::Swim,
+            Self::Climb => PoseClip::Climb,
+            Self::Dangle => PoseClip::Dangle,
             Self::Emote(e) => PoseClip::Emote(emote_slot(e)),
         }
     }
@@ -1157,9 +1183,19 @@ pub fn update_avatar_animation(
         // Sitting outranks both: it is a state the player is in rather than a
         // motion they asked for, and it is left by walking away, which is what
         // clears it before this is ever reached.
+        // A climb outranks everything: the body is being carried up a wall.
+        let dangling = avatar_state.seated.is_some_and(|s| s.dangle);
         let pose = match (avatar_state.is_seated(), active_emote) {
+            _ if avatar_state.climb.is_some() => Pose {
+                clip: PoseClip::Climb,
+                rate: 1.0,
+            },
             (true, _) => Pose {
-                clip: PoseClip::Sit,
+                clip: if dangling {
+                    PoseClip::Dangle
+                } else {
+                    PoseClip::Sit
+                },
                 rate: 1.0,
             },
             (false, Some(e)) => Pose {
@@ -1345,6 +1381,11 @@ pub fn update_avatar_model_pose(
 
     let mut local = body_pose(*lean, arrived);
     local.translation += seat_shift;
+    // Up a wall: the rest of its height above the clip's own step
+    // (`climb::Climb::holder_lift`).
+    if let Some(c) = &avatar_state.climb {
+        local.translation.y += c.holder_lift();
+    }
     let mut local = local * swim_lie(avatar_state.swim_blend);
     if designing.is_some_and(|d| d.0.is_some()) || held.is_some_and(|h| h.selfie) {
         // Where the camera is, in the avatar's own frame (the model faces +Z).
@@ -1368,7 +1409,13 @@ pub fn update_avatar_model_pose(
                 let o = o * r.seat_blend;
                 Quat::from_rotation_y(-r.net_yaw) * Vec3::new(o.x, 0.0, o.y)
             });
-            Transform::from_translation(shift) * swim_lie(r.swim_blend)
+            // The edge's lift is measured by this viewer (`smooth_remote_avatars`),
+            // and eased with the seat; a climb is lifted as the local one is.
+            let climbing = r.climb.map_or(0.0, |(t, h)| {
+                crate::systems::climb::climb_lift(h, t / crate::systems::climb::CLIMB_SECS)
+            });
+            let lift = Vec3::Y * (r.seat_lift * r.seat_blend + climbing);
+            Transform::from_translation(shift + lift) * swim_lie(r.swim_blend)
         } else {
             continue;
         };
@@ -1542,6 +1589,7 @@ pub fn smooth_remote_avatars(
     online: Option<Res<crate::resources::OnlineSession>>,
     time: Res<Time>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    colliders: Res<crate::systems::collision::BuildingColliders>,
     mut q: Query<(&mut RemoteAvatar, &mut Transform), Without<Avatar>>,
 ) {
     if online.is_none() {
@@ -1549,10 +1597,19 @@ pub fn smooth_remote_avatars(
     }
     let dt = time.delta_secs();
     let a_rot = 1.0 - (-REMOTE_ROT_SMOOTHING * dt).exp();
+    let ground = |p: Vec2| terrain.ground_at(p.x, p.y);
+    let water = |p: Vec2| terrain.swim_surface_at(p.x, p.y);
+    let map = crate::systems::climb::Surroundings {
+        colliders: &colliders,
+        ground: &ground,
+        water: &water,
+    };
     for (mut remote, mut tf) in q.iter_mut() {
         remote.net_age += dt;
+        // Last frame's wall top comes off with the ground, for the reason the
+        // ground does (`remote_display_on_ground`).
         let (mut shown, mut lift) = remote_display_on_ground(
-            tf.translation,
+            tf.translation - Vec3::Y * remote.ledge_lift,
             remote.terrain_lift,
             remote.net_position,
             remote.net_velocity,
@@ -1569,11 +1626,98 @@ pub fn smooth_remote_avatars(
         if remote.swimming != swimming {
             remote.swimming = swimming;
         }
+        // On a wall top: nobody but a climber can be inside a wall, so one that
+        // is there climbed it (`systems::climb`). Its climb is played here,
+        // seen starting when it reaches the wall, and the top is its ground
+        // from the end of it; off the edge it falls.
+        let at = Vec2::new(shown.x, shown.z);
+        let near_ground = shown.y - lift < 0.3;
+        let top = colliders
+            .ledge_at(at)
+            .map(|t| t - lift)
+            .filter(|h| *h > 0.05 && near_ground)
+            .unwrap_or(0.0);
+        let speed = remote_ground_speed(&remote);
+        let (ledge, climb) = remote_ledge_step(remote.ledge_lift, remote.climb, top, speed, dt);
+        if remote.climb != climb {
+            remote.climb = climb;
+        }
+        remote.ledge_lift = ledge;
+        shown.y += ledge;
+        // Sitting on an edge: the lift and the clip, from the edge this viewer
+        // finds under the replicated seat.
+        let (seat_lift, seat_dangle) = remote
+            .seated
+            .and_then(|offset| {
+                let out = Vec2::new(remote.net_yaw.sin(), remote.net_yaw.cos());
+                crate::systems::climb::seat_on_edge(&map, at + offset, out)
+            })
+            .map_or((0.0, false), |e| (e.lift(shown.y), e.dangle()));
+        if remote.seated.is_some() || remote.seat_blend <= 0.0 {
+            remote.seat_lift = seat_lift;
+            remote.seat_dangle = seat_dangle;
+        }
         tf.translation = shown;
         remote.terrain_lift = lift;
         // Replicated world yaw from each client’s camera-facing convention.
         let target_rot = Quat::from_rotation_y(wrap_angle_pi(remote.net_yaw));
         tf.rotation = tf.rotation.slerp(target_rot, a_rot);
+    }
+}
+
+/// How fast a remote avatar that walked off a wall top comes down to the
+/// ground, m/s — a drop, as stepping off a quay into the water is
+/// ([`WATER_SINK_RATE`]); this viewer has no fall of its own to time it by.
+const REMOTE_LEDGE_DROP_RATE: f32 = 4.0;
+/// The fastest a remote avatar arriving inside a wall is taken to be climbing
+/// it, m/s: a climb carries its avatar onto the top at
+/// `(CLIMB_REACH_M + a footing) / CLIMB_SECS`, under 0.9 m/s.
+const REMOTE_CLIMB_MAX_SPEED: f32 = 1.0;
+
+/// One frame of a remote avatar's wall top: last frame's lift and climb, and
+/// the top under it now (metres over the ground, zero for none), to this
+/// frame's. Arriving at a top it can climb from the ground starts a climb,
+/// which holds the lift where it was for [`climb::CLIMB_SECS`] while the
+/// clip and the model's lift take it up (`update_avatar_model_pose`); then
+/// the top is its ground. A top it is already on is followed, up at once
+/// (a step) and down as a drop.
+///
+/// Only at a climber's pace (`speed`, the replicated ground speed, at most
+/// [`REMOTE_CLIMB_MAX_SPEED`]): a climb carries its avatar at under 1 m/s,
+/// and one walking into a wall at a walk is a player whose own client draws
+/// no walls (street detail off), passing through it, not climbing.
+///
+/// [`climb::CLIMB_SECS`]: crate::systems::climb::CLIMB_SECS
+#[must_use]
+fn remote_ledge_step(
+    lift: f32,
+    climb: Option<(f32, f32)>,
+    top: f32,
+    speed: f32,
+    dt: f32,
+) -> (f32, Option<(f32, f32)>) {
+    use crate::systems::climb;
+    if let Some((t, height)) = climb {
+        let t = t + dt;
+        if t >= climb::CLIMB_SECS {
+            return (if top > 0.0 { top } else { height }, None);
+        }
+        return (lift, Some((t, height)));
+    }
+    if lift < 0.05 {
+        return if climb::climbable(top) && speed <= REMOTE_CLIMB_MAX_SPEED {
+            (lift, Some((0.0, top)))
+        } else if top < crate::systems::collision::CLIMB_MIN_M {
+            // A step: a wall too low to stop anybody.
+            (top, None)
+        } else {
+            (0.0, None)
+        };
+    }
+    if top >= lift {
+        (top, None)
+    } else {
+        ((lift - REMOTE_LEDGE_DROP_RATE * dt).max(top), None)
     }
 }
 
@@ -1656,8 +1800,16 @@ pub fn update_remote_avatar_animation(
         // is a state this avatar is in, and the sim drops it the moment its owner
         // asks to move.
         let pose = match (remote.seated.is_some(), active_emote) {
+            _ if remote.climb.is_some() => Pose {
+                clip: PoseClip::Climb,
+                rate: 1.0,
+            },
             (true, _) => Pose {
-                clip: PoseClip::Sit,
+                clip: if remote.seat_dangle {
+                    PoseClip::Dangle
+                } else {
+                    PoseClip::Sit
+                },
                 rate: 1.0,
             },
             (false, Some(e)) => Pose {
@@ -2041,6 +2193,94 @@ pub fn handle_avatar_movement(
         avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, target, delta_time);
     }
 
+    // ── Climbing (`systems::climb`) ──────────────────────────────────────────
+    //
+    // Asked for by the prompt ("Climb up", E), or by Space while walking into
+    // a wall low enough to climb: then the climb, not a jump. Online the sim
+    // is not told — it is carried there by the wish, as any walk is, with the
+    // wall let through (`network::send_network_intent`); the top is the
+    // client's floor, as a roof is.
+    let online_now = online.is_some();
+    let here = if online_now {
+        avatar_state.position
+    } else {
+        transform.translation
+    };
+    let (at, _) = crate::systems::climb::avatar_frame(online_now, here, Some(grid_cell));
+    let soles = if online_now {
+        avatar_state.display_position.y
+    } else {
+        transform.translation.y - GROUND_HEIGHT
+    };
+    let can_start = avatar_state.climb.is_none()
+        && !avatar_state.is_seated()
+        && avatar_state.grounded
+        && !avatar_state.swimming
+        && avatar_state.holding.is_none();
+    let ask = if avatar_state.wants_climb {
+        let yaw = avatar_state.facing_yaw;
+        Some(Vec2::new(yaw.sin(), yaw.cos()))
+    } else if avatar_state.wants_jump && has_input {
+        Some(Vec2::new(wish.x, wish.z))
+    } else {
+        None
+    };
+    avatar_state.wants_climb = false;
+    if let (true, Some(dir)) = (can_start, ask) {
+        let ledge = colliders
+            .ledge_ahead(at, dir, soles, crate::systems::climb::CLIMB_REACH_M)
+            .filter(|l| crate::systems::climb::climbable(l.height));
+        if let Some(ledge) = ledge {
+            avatar_state.climb = Some(crate::systems::climb::Climb::onto(at, soles, &ledge));
+            avatar_state.wants_jump = false;
+            avatar_state.steer_latch = None;
+        }
+    }
+    if let Some(mut climb) = avatar_state.climb {
+        let done = climb.step(delta_time);
+        avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, climb.yaw(), delta_time);
+        let rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
+        if transform.rotation != rotation {
+            transform.rotation = rotation;
+        }
+        avatar_state.is_walking = false;
+        avatar_state.wants_jump = false;
+        avatar_state.move_dir = Vec3::new(climb.dir.x, 0.0, climb.dir.y);
+        avatar_state.ground_speed = if done { 0.0 } else { climb.speed };
+        let before = transform.translation;
+        if !online_now && !done {
+            let step = climb.dir * climb.speed * delta_time;
+            transform.translation.x += step.x;
+            transform.translation.z += step.y;
+        }
+        if done {
+            // On the top: it is the floor from here (`interiors::Footing`
+            // holds it through `BuildingColliders::ledge_under`).
+            avatar_state.climb = None;
+            let ground = if online_now {
+                avatar_state.terrain_lift
+            } else {
+                terrain.ground_at(transform.translation.x, transform.translation.z)
+            };
+            avatar_state.floor_lift = (climb.top - ground).max(0.0);
+            avatar_state.floor_drop_speed = 0.0;
+            avatar_state.move_dir = Vec3::ZERO;
+            if !online_now {
+                transform.translation.y = climb.top + GROUND_HEIGHT;
+                avatar_state.vertical_velocity = 0.0;
+                avatar_state.grounded = true;
+            }
+        } else {
+            avatar_state.climb = Some(climb);
+        }
+        if !online_now {
+            avatar_state.position = transform.translation;
+            avatar_state.display_position = transform.translation;
+            avatar_state.velocity = (transform.translation - before) / delta_time.max(1e-4);
+        }
+        return;
+    }
+
     // Sitting is left by doing anything else. Either — a step or a jump — stands
     // the avatar up, and `stand_up` takes effect this frame, so the input that
     // ended the sit is also acted on rather than swallowed.
@@ -2389,6 +2629,41 @@ fn distance_band(distance: f32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another player arriving slowly inside a wall it can climb climbed it:
+    /// the clip plays for the climb's length with the lift held, then the top
+    /// is its ground; walking off it, it drops. One walking through at a walk
+    /// is passing through a wall its own client does not draw, and stays on
+    /// the ground; a wall too low to stop anybody is a step.
+    #[test]
+    fn a_remote_inside_a_wall_climbed_it_unless_it_walked_through() {
+        use crate::systems::climb::CLIMB_SECS;
+        let dt = 0.05;
+        let (mut lift, mut climb) = remote_ledge_step(0.0, None, 0.8, 0.4, dt);
+        assert_eq!((lift, climb), (0.0, Some((0.0, 0.8))), "a climb starts");
+        let mut t = 0.0;
+        while climb.is_some() {
+            (lift, climb) = remote_ledge_step(lift, climb, 0.8, 0.0, dt);
+            t += dt;
+            if climb.is_some() {
+                assert_eq!(lift, 0.0, "held while the clip climbs");
+            }
+        }
+        assert!((t - CLIMB_SECS).abs() <= dt + 1e-4, "{t}");
+        assert_eq!(lift, 0.8, "on the top");
+        let (off, _) = remote_ledge_step(lift, None, 0.0, 1.8, dt);
+        assert!(off < 0.8 && off > 0.0, "drops off the edge: {off}");
+        assert_eq!(
+            remote_ledge_step(0.0, None, 0.8, 1.8, dt),
+            (0.0, None),
+            "walked through"
+        );
+        assert_eq!(
+            remote_ledge_step(0.0, None, 0.3, 1.8, dt),
+            (0.3, None),
+            "a step"
+        );
+    }
 
     /// Every emote has a slot of its own, and the slot is the pack clip that
     /// `--clip` calls by the emote's name — the greetings and the throw were

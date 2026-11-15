@@ -40,6 +40,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<systems::picking::PrimClick>()
             .init_resource::<systems::collision::BuildingColliders>()
             .init_resource::<systems::interact::InteractState>()
+            // The wall to climb and the edge to sit on in front of the avatar.
+            .init_resource::<systems::climb::Edges>()
             .init_resource::<systems::greet::Greetings>()
             .init_resource::<systems::greet::GreetInbox>()
             .init_resource::<crate::grid::StreamCentre>();
@@ -229,6 +231,9 @@ impl Plugin for PlayerPlugin {
                     // What the avatar is standing next to, and the nearest house number.
                     systems::interact::track_interaction_target
                         .after(avatar::handle_avatar_movement),
+                    // …and the wall or edge it faces (`systems::climb`), from
+                    // where the display put it.
+                    systems::climb::track_edges.after(avatar::smooth_online_avatar_display),
                     avatar::spawn_avatar,
                 )
                     .in_set(ClientPhase::Move),

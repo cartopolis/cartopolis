@@ -1,7 +1,7 @@
 ---
 topic: sitting-down
 triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, captured clip, sit clip, 13_04, street furniture, interact prompt, protocol 19, seated on the wire, systems/player/avatar.rs, systems::interact, simulator/src/state.rs, geo/src/furniture.rs, Seated, is_seated, MAX_SEAT_OFFSET_M, SEAT_SLIDE_SECS, "--ui sit"]
-updated: 2026-10-18
+updated: 2026-11-15
 ---
 
 # Sitting is a captured clip and a display offset
@@ -89,9 +89,13 @@ reasoning about proximity, since the position it reasons about stays honest.
 - **The seat is replicated; flight still is not.** A remote avatar takes the seat
   offset and the seated pose, but never the forward lean of flight — that has no
   wire field, and `update_avatar_model_pose` gives it only to the local avatar.
-- **Only benches and picnic tables.** `furniture::seat` answers for exactly the two
-  forms whose prompt already reads "Sit at …". A shelter has a slat in it and does
-  not offer one, because its prompt says "Use".
+- **Furniture: only benches and picnic tables.** `furniture::seat` answers for
+  exactly the two forms whose prompt already reads "Sit at …". A shelter has a
+  slat in it and does not offer one, because its prompt says "Use". Since
+  2026-11-15 a wall, a wall top's edge and a quay's edge are sat on too
+  (`climbing-and-edges.md`): the same seat, with a lift (`Seated::lift`) and,
+  where the feet do not reach the ground, the `dangle` clip — both measured by
+  every viewer from the seat it is sent, so the wire did not change.
 - **Every slat is one height, the pose another.** Every slat this client can sit
   on is 0.48 m (`a_seat_is_the_top_of_a_slat_that_is_really_meshed` keeps that
   true); the captured pose sits at its stool's height, whatever the body.

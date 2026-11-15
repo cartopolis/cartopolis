@@ -294,12 +294,16 @@ impl Plugin for ShotHarnessPlugin {
                         .in_set(ClientPhase::Input),
                     // After the teleport for the reason its doc gives — the teleport
                     // clears the seat — and before the camera, so the shift it
-                    // applies is framed on the same frame it is written.
+                    // applies is framed on the same frame it is written. In the
+                    // movement phase, before the movement: a wall the avatar is
+                    // stood on (`--ui ledge`) streams in, and the collision that
+                    // runs with the movement would push it out of the wall.
                     systems::shot_harness::seat_scripted_avatar
                         .after(systems::geo_nav::apply_teleport)
                         .after(systems::shot_harness::hold_scripted_camera_mode)
+                        .before(avatar::handle_avatar_movement)
                         .before(systems::free_camera::camera_controls)
-                        .in_set(ClientPhase::Anchor),
+                        .in_set(ClientPhase::Move),
                     // `--ui building`: select the building nearest the avatar, since
                     // a headless run has no cursor to click one with. After the
                     // teleport, which is what decides where "nearest" is measured

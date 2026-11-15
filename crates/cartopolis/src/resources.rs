@@ -1423,6 +1423,15 @@ pub struct Seated {
     /// avoid — so this says "on the way out": the body is already standing and
     /// walking, only the offset is still unwinding.
     pub rising: bool,
+    /// How far the model is raised (or lowered) onto the seat, metres — zero
+    /// on a bench, whose slat the clip already sits at. On an edge it is the
+    /// seat's height less the clip's own (`climb::EdgeSeat::lift`): up onto a
+    /// wall top from the ground, down onto the quay from where the avatar
+    /// stands. Measured once, like the offset.
+    pub lift: f32,
+    /// Sitting on a high edge with the legs hanging (the `dangle` clip) rather
+    /// than on a seat with the feet on the ground (`sit`).
+    pub dangle: bool,
 }
 
 #[derive(Resource)]
@@ -1586,6 +1595,14 @@ pub struct AvatarState {
     /// locomotion (any movement input stands it back up) and swaps the animation
     /// for the authored seated pose.
     pub seated: Option<Seated>,
+    /// Set while the avatar climbs onto a wall (`systems::climb`): it is
+    /// carried onto the top over the climb clip and stands there when it ends.
+    /// Input waits until it has.
+    pub climb: Option<crate::systems::climb::Climb>,
+    /// Asked for this frame by the interaction prompt ("Climb up", E or a
+    /// tap); taken by `avatar::handle_avatar_movement`, which knows where the
+    /// avatar is.
+    pub wants_climb: bool,
     /// The physical prim the sim says this avatar is carrying (protocol 48,
     /// `AvatarStateDto::holding`), from the latest snapshot. The sim alone
     /// decides it; the client only reads it to offer "Throw" and "Put down"
@@ -1624,7 +1641,7 @@ impl AvatarState {
     pub fn seat_shift(&self) -> Vec3 {
         self.seated.map_or(Vec3::ZERO, |s| {
             let o = s.offset * s.blend;
-            Vec3::new(o.x, 0.0, o.y)
+            Vec3::new(o.x, s.lift * s.blend, o.y)
         })
     }
 }
@@ -1660,6 +1677,8 @@ impl Default for AvatarState {
             teleport_hold: None,
             teleport_sequence: 0,
             seated: None,
+            climb: None,
+            wants_climb: false,
             holding: None,
         }
     }

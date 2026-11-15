@@ -184,6 +184,23 @@ impl TargetInfo {
 /// How long an acted-on line stays on screen.
 const LAST_LINE_SECS: f32 = 4.0;
 
+/// Whether the prompt offers the wall or edge the avatar faces
+/// (`systems::climb::Edges`) rather than the place `target` names: walking up
+/// to a wall and facing it is a narrower ask than standing within
+/// [`INTERACT_RADIUS`] of a café. Not over a thing to pick up or a scripted
+/// prim, which somebody put there to be used, nor while sitting or carrying,
+/// which have their own prompts.
+fn offers_edge(
+    target: Option<&TargetInfo>,
+    edges: &crate::systems::climb::Edges,
+    avatar_state: &AvatarState,
+) -> bool {
+    edges.any()
+        && !avatar_state.is_seated()
+        && avatar_state.holding.is_none()
+        && target.is_none_or(|t| t.prim_id.is_none())
+}
+
 /// Tell the server what was acted on, if anything was and if there is a server.
 ///
 /// One definition for the two ways to act (the keys and the prompt), on the same
@@ -274,6 +291,8 @@ impl InteractState {
                 yaw: seat.yaw,
                 blend: 0.0,
                 rising: false,
+                lift: 0.0,
+                dangle: false,
             });
             // No receipt: the body is the feedback, and it stays there. A line
             // reading "Sit at Bench" fading out under a seated avatar would be
@@ -770,6 +789,7 @@ pub fn handle_interaction_input(
     mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
     mut greetings: ResMut<crate::systems::greet::Greetings>,
     time: Res<Time>,
+    edges: Res<crate::systems::climb::Edges>,
 ) {
     // Carrying is the sim's, so with no sim there is nothing in the hands —
     // a session that ended mid-carry leaves no "Throw" behind it.
@@ -829,6 +849,9 @@ pub fn handle_interaction_input(
             Some(session) if accepts_greeting(&avatar_state, &greetings) => {
                 greetings.accept(session);
             }
+            _ if offers_edge(state.target.as_ref(), &edges, &avatar_state) => {
+                edges.act(&mut avatar_state);
+            }
             _ => send_act(online.as_ref(), state.act(&mut avatar_state)),
         }
     } else if keyboard.just_pressed(KeyCode::KeyG) {
@@ -865,6 +888,7 @@ pub fn render_interaction_prompt(
     driver: Res<crate::systems::driver::DriverState>,
     online: Option<Res<crate::resources::OnlineSession>>,
     mut greetings: ResMut<crate::systems::greet::Greetings>,
+    edges: Res<crate::systems::climb::Edges>,
 ) {
     // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
     // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
@@ -890,7 +914,16 @@ pub fn render_interaction_prompt(
     let offer = accepts_greeting(&avatar_state, &greetings)
         .then(|| greetings.prompt().cloned())
         .flatten();
-    if target.is_none() && receipt.is_none() && !seated && !carrying && offer.is_none() {
+    // The wall or edge in front of the avatar (`systems::climb`): "Climb up"
+    // and "Sit", in place of the place nearby.
+    let edge = offers_edge(target.as_ref(), &edges, &avatar_state).then_some(*edges);
+    if target.is_none()
+        && receipt.is_none()
+        && !seated
+        && !carrying
+        && offer.is_none()
+        && edge.is_none()
+    {
         return;
     }
 
@@ -905,10 +938,12 @@ pub fn render_interaction_prompt(
     let mut put_down = false;
     let mut greet = false;
     let mut ignore = false;
+    let mut climb_up = false;
+    let mut sit_down = false;
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
         // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some() || seated || carrying || offer.is_some())
+        .interactable(target.is_some() || seated || carrying || offer.is_some() || edge.is_some())
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(&egui_manager.ctx.clone(), |ui| {
@@ -997,6 +1032,43 @@ pub fn render_interaction_prompt(
                         }
                         return;
                     }
+                    if let Some(e) = &edge {
+                        // E takes the first: the climb where there is one. The
+                        // seat beside it is a button, on a keyboard as on a
+                        // phone.
+                        let hint = if compact { "" } else { "   [E]" };
+                        if e.climb.is_some()
+                            && ui
+                                .button(
+                                    egui::RichText::new(format!(
+                                        "{}  Climb up{hint}",
+                                        crate::systems::icons::LANDSCAPE
+                                    ))
+                                    .color(theme::p().text)
+                                    .strong(),
+                                )
+                                .clicked()
+                        {
+                            climb_up = true;
+                        }
+                        if e.sit.is_some() {
+                            let hint = if e.climb.is_some() { "" } else { hint };
+                            if ui
+                                .button(
+                                    egui::RichText::new(format!(
+                                        "{}  Sit{hint}",
+                                        crate::systems::icons::BENCH
+                                    ))
+                                    .color(theme::p().text)
+                                    .strong(),
+                                )
+                                .clicked()
+                            {
+                                sit_down = true;
+                            }
+                        }
+                        return;
+                    }
                     let Some(t) = &target else {
                         // Nothing in range: what is left is the line naming what
                         // was last acted on, which is a receipt and not a button.
@@ -1041,6 +1113,10 @@ pub fn render_interaction_prompt(
         send_act(online.as_ref(), state.act(&mut avatar_state));
     } else if put_down {
         send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
+    } else if climb_up {
+        avatar_state.wants_climb = true;
+    } else if sit_down {
+        edges.sit(&mut avatar_state);
     }
     if routed {
         // The store holds anchored world XZ; the planner speaks lat/lng. Without

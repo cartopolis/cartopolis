@@ -73,6 +73,37 @@ pub const TRUNK_RADIUS: f32 = 0.4;
 /// holds every circle that can reach a point.
 const PROP_BUCKET_M: f32 = 8.0;
 
+/// The lowest wall offered as a climb, metres over the soles: anything lower
+/// is stepped over without asking ([`Body::STEP`]).
+pub const CLIMB_MIN_M: f32 = Body::STEP;
+/// The highest: a wall up to the chest of the default man (1.73 m). A
+/// retaining wall the map draws at its form's 1.2 m is climbable; an untagged
+/// garden wall, drawn at 1.5 m, is not.
+pub const CLIMB_MAX_M: f32 = 1.3;
+/// How far past a ledge's outline the body's centre may be and still stand on
+/// it, metres: half a foot. A wall top is 0.3 m across, and without it a step
+/// a hand's width off the middle was a fall.
+pub const LEDGE_FOOTING_M: f32 = 0.12;
+/// How finely [`BuildingColliders::ledge_ahead`] walks a line, metres.
+const LEDGE_PROBE_STEP_M: f32 = 0.05;
+/// How far onto a broad top a climb lands, metres.
+const LEDGE_STAND_IN_M: f32 = 0.35;
+
+/// A wall an avatar can climb onto ([`BuildingColliders::ledge_ahead`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ledge {
+    /// Its top, in the footprints' frame.
+    pub top: f32,
+    /// How far that is above the soles of whoever is asking.
+    pub height: f32,
+    /// Where the line from the avatar first meets it.
+    pub entry: Vec2,
+    /// Where on the top the avatar stands after climbing.
+    pub landing: Vec2,
+    /// From the avatar to `entry`, metres.
+    pub distance: f32,
+}
+
 /// Who may go inside a building with doors.
 ///
 /// Houses are private: only public buildings (shops, schools, halls — the
@@ -131,6 +162,11 @@ pub struct Footprint {
     /// off it. With surfaces the building at a point is as high as it is there
     /// ([`Self::holds`]).
     surfaces: std::sync::Arc<[Surface]>,
+    /// Whether the top is something to stand on: a masonry wall, a retaining
+    /// wall (`street_detail`'s barriers). Only the avatar who climbed onto it
+    /// stands there ([`BuildingColliders::ledge_under`]); to everyone else it
+    /// is a wall as before. `docs/notes/climbing-and-edges.md` has which.
+    ledge: bool,
 }
 
 /// The volume an avatar takes up, for the vertical half of every collision query.
@@ -219,7 +255,30 @@ impl Footprint {
             bottom: f32::NEG_INFINITY,
             top: f32::INFINITY,
             surfaces: std::sync::Arc::new([]),
+            ledge: false,
         })
+    }
+
+    /// Make the top something to stand on ([`Self::ledge`]). Only meaningful
+    /// with a finite extent.
+    #[must_use]
+    pub fn as_ledge(mut self) -> Self {
+        self.ledge = self.top.is_finite();
+        self
+    }
+
+    /// Whether `p` is on this footprint, or within `margin` of its outline —
+    /// a foot still on the edge of a wall top while the body's centre is just
+    /// past it.
+    fn near(&self, p: Vec2, margin: f32) -> bool {
+        if p.x < self.min.x - margin
+            || p.x > self.max.x + margin
+            || p.y < self.min.y - margin
+            || p.y > self.max.y + margin
+        {
+            return false;
+        }
+        self.contains(p, false) || self.nearest_boundary(p).distance_squared(p) <= margin * margin
     }
 
     /// Give this footprint its surfaces ([`surfaces_of`]).
@@ -694,6 +753,100 @@ impl BuildingColliders {
             .reduce(f32::max)
     }
 
+    /// The street-detail footprints whose tops can be stood on
+    /// ([`Footprint::as_ledge`]).
+    fn ledges(&self) -> impl Iterator<Item = &Footprint> {
+        self.features.values().flatten().filter(|f| f.ledge)
+    }
+
+    /// The top of the highest ledge under `p` (or within
+    /// [`LEDGE_FOOTING_M`] of it) no higher than `reach`, in the footprints'
+    /// frame — what an avatar that climbed onto a wall stands on, beside
+    /// [`Self::roof_under`]. A wall is never stood on from below: `reach` is a
+    /// step over the soles, so only an avatar already up there finds it.
+    #[must_use]
+    pub fn ledge_under(&self, p: Vec2, reach: f32) -> Option<f32> {
+        self.ledges()
+            .filter(|f| f.top <= reach && f.near(p, LEDGE_FOOTING_M))
+            .map(|f| f.top)
+            .reduce(f32::max)
+    }
+
+    /// The top of the highest ledge at `p`, however high — for another
+    /// player's avatar, which nobody but a climber can be standing inside
+    /// (the wall stops everyone else), so one that is there is on top.
+    #[must_use]
+    pub fn ledge_at(&self, p: Vec2) -> Option<f32> {
+        self.ledges()
+            .filter(|f| f.contains(p, false))
+            .map(|f| f.top)
+            .reduce(f32::max)
+    }
+
+    /// The ledge an avatar at `pos` with its soles at `feet` would climb
+    /// walking along `dir` (unit): the first ledge the line crosses within
+    /// `reach`, whose top is [`CLIMB_MIN_M`]..=[`CLIMB_MAX_M`] over the soles.
+    /// `None` when the first wall in the way is too high or too low, or not a
+    /// ledge at all — a hedge, a fence, a building.
+    #[must_use]
+    pub fn ledge_ahead(&self, pos: Vec2, dir: Vec2, feet: f32, reach: f32) -> Option<Ledge> {
+        let dir = dir.normalize_or_zero();
+        if dir == Vec2::ZERO {
+            return None;
+        }
+        let steps = (reach / LEDGE_PROBE_STEP_M).ceil() as usize;
+        for i in 1..=steps {
+            let p = pos + dir * (i as f32 * LEDGE_PROBE_STEP_M).min(reach);
+            // What is solid here at the avatar's height; the first of them
+            // decides, so a hedge in front of a wall hides the wall.
+            let body = Body::new(feet, feet);
+            let hit = self
+                .iter_at(body)
+                .filter(|f| f.contains(p, self.open(f)))
+                .min_by(|a, b| a.top.total_cmp(&b.top));
+            let Some(f) = hit else { continue };
+            let height = f.top - feet;
+            if !f.ledge || !(CLIMB_MIN_M..=CLIMB_MAX_M).contains(&height) {
+                return None;
+            }
+            // Where to stand: across the top along `dir`, its middle for a
+            // wall thinner than two footings, else a footing in.
+            let entry = p;
+            let mut across = 0.0;
+            while across < 3.0 && f.contains(entry + dir * (across + LEDGE_PROBE_STEP_M), false) {
+                across += LEDGE_PROBE_STEP_M;
+            }
+            let into = (across * 0.5).min(LEDGE_STAND_IN_M);
+            return Some(Ledge {
+                top: f.top,
+                height,
+                entry,
+                landing: entry + dir * into,
+                distance: (entry - pos).length(),
+            });
+        }
+        None
+    }
+
+    /// Where the ledge under `p` ends walking from `p` along `dir` (unit),
+    /// within `reach`: the last point on its top. `None` off a ledge, or
+    /// when its edge is further than `reach`.
+    #[must_use]
+    pub fn ledge_edge(&self, p: Vec2, dir: Vec2, reach: f32) -> Option<Vec2> {
+        let f = self.ledges().find(|f| f.near(p, LEDGE_FOOTING_M))?;
+        let mut along = 0.0;
+        let mut last = p;
+        while along <= reach {
+            let q = p + dir * along;
+            if !f.contains(q, false) && along > 0.0 {
+                return Some(last);
+            }
+            last = q;
+            along += LEDGE_PROBE_STEP_M;
+        }
+        None
+    }
+
     /// The footprints an avatar with this `body` can actually run into.
     fn iter_at(&self, body: Body) -> impl Iterator<Item = &Footprint> {
         self.iter().filter(move |f| f.blocks(body))
@@ -1158,6 +1311,11 @@ pub fn eject_avatar_from_buildings(
     // roof below the building's ridge — the collider's top — this would push
     // them off the roof every frame and the next fix would put them back.
     if avatar_state.measured_level.is_some() {
+        return;
+    }
+    // Climbing, the avatar is on its way over a wall (`systems::climb`): its
+    // soles are still at the foot of it while it is carried onto the top.
+    if avatar_state.climb.is_some() {
         return;
     }
     let Ok((cell, mut tf)) = avatars.single_mut() else {

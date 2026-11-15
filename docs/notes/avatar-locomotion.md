@@ -1,7 +1,7 @@
 ---
 topic: avatar-locomotion
 triggers: [avatar animation, jump, rig, facing, strafe, turn, WASD, gait, walk clip, systems/player/avatar.rs, systems::locomotion, simulator/src/state.rs, facing_yaw, advance_facing, display_yaw, update_avatar_model_pose, ClientIntent.flying, ClipGait, CLIP_ORDER, "avatar flight", flying, swim, swimming, swim_surface_at, ground_or_water, TREAD_DEPTH, "--clip swim"]
-updated: 2026-11-14
+updated: 2026-11-15
 ---
 
 # The avatar walks, runs and jumps — and does not fly
@@ -29,13 +29,16 @@ complete:
 
 ```
 idle, walk, run, wave, interact, roll, punch, kick, faint, sit, swim,
-handshake, highfive, throw
+handshake, highfive, throw, climb, dangle
 ```
 
-The last three were appended (2026-11-15) so no earlier index in
+The greetings and the throw were appended (2026-11-15) so no earlier index in
 `human_avatar::CLIP_ORDER` moved; the emotes are therefore not one run of
 it, and `human_avatar::EMOTE_CLIPS` says where each sits. The greetings are
-made with somebody (`paired-gestures.md`).
+made with somebody (`paired-gestures.md`). `climb` and `dangle` came after
+them the same day: climbing onto low walls and sitting on edges with the legs
+hanging, a display floor and a holder lift like swimming
+(`climbing-and-edges.md`).
 
 No jump and no fall. A new one is a cut in `human-pack` from a take that has it
 (CMU has jumps), retargeted by the same code, so adding a gait is a pack
@@ -67,8 +70,8 @@ quays are stood on (`quay-walls.md`), i.e. street height.
   head out to the chin. Like the terrain it is a display lift on every viewer's
   own map; the sim knows nothing of water and nothing went on the wire. The
   lift moves at most `WATER_SINK_RATE`/`WATER_CLIMB_RATE` while in or entering
-  or leaving water, so off a quay is a drop and out is a climb (there is no
-  climb clip, and quay walls are not colliders).
+  or leaving water, so off a quay is a drop and out is a climb (the `climb`
+  clip is for walls, and quay walls are not colliders).
 - **The stroke.** The `swim` clip is CMU 125_01's breaststroke, captured lying
   on a stool, so it goes nowhere and its pace is chosen (`SWIM_CLIP_SPEED`).
   `mocap::heading_of` takes the spine as a lying body's heading. Grounded by its

@@ -2649,6 +2649,8 @@ pub fn place_avatar(
     // (`resources::Seated` holds an offset, and after this the offset points at
     // a place in the new city).
     avatar_state.seated = None;
+    // And a climb: the wall it was climbing is in the city being left.
+    avatar_state.climb = None;
     // So does carrying: the sim lets go of the thing at the old place on the
     // same teleport, and the next snapshot would say so a tick later.
     avatar_state.holding = None;

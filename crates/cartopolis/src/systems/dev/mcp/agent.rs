@@ -4915,6 +4915,8 @@ fn sit_on(thing: &Interactable, w: &mut AgentWorld) -> String {
         yaw: seat.yaw,
         blend: 0.0,
         rising: false,
+        lift: 0.0,
+        dangle: false,
     });
     format!(
         "sat down on the {}; `stand` gets up, and so does walking anywhere",

@@ -1402,6 +1402,11 @@ fn sync_remote_avatar_entities(
                     terrain_lift: 0.0,
                     swimming: false,
                     swim_blend: 0.0,
+                    // A wall top and an edge seat, likewise (`systems::climb`).
+                    ledge_lift: 0.0,
+                    climb: None,
+                    seat_lift: 0.0,
+                    seat_dangle: false,
                 },
                 Transform::from_translation(a.position)
                     .with_rotation(Quat::from_rotation_y(wrap_angle_pi(y)))
@@ -1783,10 +1788,16 @@ pub fn send_network_intent(
     if in_bore || (layers.buildings_enabled && !colliders.is_empty()) {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
         let wish = Vec2::new(v.x, v.z);
-        let body = crate::systems::collision::Body::new(
+        let mut body = crate::systems::collision::Body::new(
             avatar_state.position.y + avatar_state.terrain_lift + avatar_state.floor_lift,
             avatar_state.terrain_lift + avatar_state.floor_lift,
         );
+        // Climbing, the body is going over the wall, not into it
+        // (`systems::climb`): the soles count as on its top already, so the
+        // wall lets it through onto the top.
+        if let Some(climb) = &avatar_state.climb {
+            body.feet = body.feet.max(climb.top);
+        }
         let steered = if in_bore {
             colliders.steer_in_bore(pos, wish)
         } else {

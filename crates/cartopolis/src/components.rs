@@ -166,6 +166,19 @@ pub struct RemoteAvatar {
     pub swimming: bool,
     /// How far into the stroke's lying pose the body is, 0..1 (eased).
     pub swim_blend: f32,
+    /// The wall top this avatar is drawn standing on, metres over the ground
+    /// under it — **not replicated**: only a climber can be inside a wall the
+    /// collision keeps everyone else out of, so one that is there is on top
+    /// of it, by this viewer's map (`systems::climb`).
+    pub ledge_lift: f32,
+    /// A climb this viewer saw it start: seconds into it, and the wall's
+    /// height. Played on everyone's own clock, like the seat's slide.
+    pub climb: Option<(f32, f32)>,
+    /// The lift onto the edge it sits on, as this viewer measures the edge
+    /// under the replicated seat (`climb::seat_on_edge`); zero on a bench.
+    pub seat_lift: f32,
+    /// Sitting with the legs hanging (`dangle`), by the same measure.
+    pub seat_dangle: bool,
 }
 
 /// The terrain height a prim is drawn raised by on this client

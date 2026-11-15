@@ -198,9 +198,11 @@ pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetSer
 /// The pack's clips the avatar's table is built from, in its order: idle, walk,
 /// run, six emotes, sitting and swimming, then the emotes added since — the
 /// two greetings and the throw (2026-11-15), appended so no earlier index
-/// moved. One the pack does not carry plays the idle instead — an empty clip
-/// would drop the body into its A-shaped rest pose.
-pub(crate) const CLIP_ORDER: [&str; 14] = [
+/// moved — and the climb onto a wall and the sit with the legs hanging over an
+/// edge (`systems::climb`, 2026-11-15) after them. One the pack does not carry
+/// plays the idle instead — an empty clip would drop the body into its
+/// A-shaped rest pose.
+pub(crate) const CLIP_ORDER: [&str; 16] = [
     "idle",
     "walk",
     "run",
@@ -215,6 +217,8 @@ pub(crate) const CLIP_ORDER: [&str; 14] = [
     "handshake",
     "highfive",
     "throw",
+    "climb",
+    "dangle",
 ];
 
 /// Where each emote's clip sits in [`CLIP_ORDER`], in `avatar::EMOTE_ORDER`'s

@@ -1078,6 +1078,10 @@ mod tests {
             terrain_lift: 0.0,
             swimming: false,
             swim_blend: 0.0,
+            ledge_lift: 0.0,
+            climb: None,
+            seat_lift: 0.0,
+            seat_dangle: false,
         });
     }
 

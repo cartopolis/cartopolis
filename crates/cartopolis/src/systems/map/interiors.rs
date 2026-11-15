@@ -790,9 +790,17 @@ impl Footing<'_> {
     /// them (`Feet::carried`), so it rises as the sim's height falls, and the
     /// avatar is on the roof when the sim lands. It never sinks below `lift`
     /// for a jump from it, and never rises above the roof.
+    ///
+    /// The top of a wall the avatar climbed is a roof here too
+    /// (`BuildingColliders::ledge_under`): standing on it holds the floor
+    /// there, and walking off its edge is the fall off a roof.
     fn roof_floor(&self, lift: f32, feet: Feet) -> Option<f32> {
         roof_floor(
-            |reach| self.colliders.roof_under(feet.world, reach),
+            |reach| {
+                let roof = self.colliders.roof_under(feet.world, reach);
+                let ledge = self.colliders.ledge_under(feet.world, reach);
+                roof.into_iter().chain(ledge).reduce(f32::max)
+            },
             lift,
             feet,
         )

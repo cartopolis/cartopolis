@@ -66,7 +66,9 @@ Standing facts, several of which a diff will not explain:
   thin rectangle footprints per segment into `BuildingColliders`' feature
   channel, dropped with their cell. Building parts raised ≥ 2.2 m (archways,
   skybridges) are likewise excluded from colliders — the mapper deliberately
-  opened that passage.
+  opened that passage. Walls, city walls and retaining walls are **ledges**
+  (`BarrierKind::standable`, `Footprint::as_ledge`): a climber can stand on
+  their tops (`climbing-and-edges.md`); hedges and fences are not.
 - **Turbine yaw is the prevailing south-westerly and never re-aims.** The live
   wind drives only rotor *speed* (`spin_rotors`); re-posing every nacelle when
   the observation veers would rotate the world for a number nobody checks.

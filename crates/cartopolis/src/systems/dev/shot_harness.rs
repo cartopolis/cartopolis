@@ -2018,6 +2018,8 @@ impl ShotHarness {
                             | "avatar"
                             | "appearance"
                             | "sit"
+                            | "ledge"
+                            | "edgesit"
                             | "driver"
                             | "overview"
                             | "walk"
@@ -2618,6 +2620,9 @@ const UI_ELEMENTS: &[&str] = &[
     "personcard",
     "friends",
     "sit",
+    // Standing on a wall top, and sitting on an edge (`systems::climb`).
+    "ledge",
+    "edgesit",
     "building",
     "inside",
     "locate",
@@ -3241,6 +3246,10 @@ fn seed_scripted_chat(open: bool, rest: bool, chat: &mut ScriptedChat) {
             terrain_lift: 0.0,
             swimming: false,
             swim_blend: 0.0,
+            ledge_lift: 0.0,
+            climb: None,
+            seat_lift: 0.0,
+            seat_dangle: false,
         },
         crate::systems::chat_overlay::ScriptedSpeaker,
         Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
@@ -4010,20 +4019,71 @@ pub fn zoom_scripted_first_person(
 /// would therefore seed it and lose it in the same frame. It also needs
 /// [`hold_scripted_camera_mode`], for the same reason and one more: leaving
 /// Follow stands a seated avatar up.
+///
+/// **`--ui ledge` and `--ui edgesit`** (`systems::climb`) stand the avatar on
+/// the wall top it was put on (`--at` on the wall's line, from its OSM way),
+/// as a finished climb would, and `edgesit` then sits it on the nearest edge
+/// the prompt would offer — the wall top's, a wall's in front of it, or a
+/// quay's — trying the way it faces, then either side, then behind. Real
+/// walls here, not invented ones: the edge is what is being looked at. In
+/// the movement phase, before the movement, so a wall that streamed in this
+/// frame holds the avatar up before collision would push it out of the wall.
+#[allow(clippy::too_many_arguments)]
 pub fn seat_scripted_avatar(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
     mut avatar_state: ResMut<crate::resources::AvatarState>,
+    colliders: Res<crate::systems::collision::BuildingColliders>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
 ) {
+    use crate::systems::climb;
     let panels = harness.ui_for(progress.index);
     let all = panels.iter().any(|u| u == "all");
     let want = |k: &str| all || panels.iter().any(|u| u == k);
+    let exactly = |k: &str| panels.iter().any(|u| u == k);
+    if exactly("ledge") || exactly("edgesit") {
+        let (pos, base) =
+            climb::avatar_frame(false, avatar_state.display_position, avatars.single().ok());
+        let ground = |p: Vec2| terrain.ground_at(p.x - base.x, p.y - base.y);
+        let water = |p: Vec2| terrain.swim_surface_at(p.x - base.x, p.y - base.y);
+        let mut soles = avatar_state.display_position.y;
+        if let Some(top) = colliders.ledge_under(pos, f32::INFINITY) {
+            let floor = top - ground(pos);
+            if (avatar_state.floor_lift - floor).abs() > 1e-3 {
+                avatar_state.floor_lift = floor;
+            }
+            soles = top;
+        }
+        if exactly("edgesit") && avatar_state.seated.is_none() {
+            let map = climb::Surroundings {
+                colliders: &colliders,
+                ground: &ground,
+                water: &water,
+            };
+            let yaw = avatar_state.facing_yaw;
+            let seat = (0..4).find_map(|k| {
+                let a = yaw + k as f32 * std::f32::consts::FRAC_PI_2;
+                climb::find_edge_seat(&map, pos, Vec2::new(a.sin(), a.cos()), soles)
+            });
+            if let Some(seat) = seat {
+                climb::sit_on_edge(&mut avatar_state, pos, soles, &seat);
+                if let Some(s) = &mut avatar_state.seated {
+                    s.blend = 1.0;
+                }
+                avatar_state.facing_yaw = seat.yaw();
+            }
+        }
+        return;
+    }
     let facing = avatar_state.facing_yaw;
     avatar_state.seated = want("sit").then(|| crate::resources::Seated {
         offset: Vec2::new(facing.sin(), facing.cos()) * 0.5,
         yaw: facing,
         blend: 1.0,
         rising: false,
+        lift: 0.0,
+        dangle: false,
     });
 }
 

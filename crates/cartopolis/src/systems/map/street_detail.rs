@@ -151,6 +151,15 @@ impl BarrierKind {
     fn solid(self) -> bool {
         !matches!(self, Self::GuardRail)
     }
+
+    /// Whether its top can be stood on by someone who climbed it
+    /// (`collision::Footprint::as_ledge`): masonry, a wall's coping. Not a
+    /// hedge (it gives), a fence (a rail on posts, 6 cm across) or a guard
+    /// rail. Whether a given wall is low enough to climb is its height's
+    /// business (`collision::CLIMB_MAX_M`).
+    fn standable(self) -> bool {
+        matches!(self, Self::Wall | Self::CityWall | Self::Retaining)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1168,13 +1177,22 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                     continue;
                 }
                 if kind.solid() {
-                    colliders.extend(segment_collider(
-                        pa + Vec2::new(ox, oz),
-                        pb + Vec2::new(ox, oz),
-                        half_t.max(0.15),
-                        ground_at(pa).max(ground_at(pb)),
-                        top,
-                    ));
+                    colliders.extend(
+                        segment_collider(
+                            pa + Vec2::new(ox, oz),
+                            pb + Vec2::new(ox, oz),
+                            half_t.max(0.15),
+                            ground_at(pa).max(ground_at(pb)),
+                            top,
+                        )
+                        .map(|f| {
+                            if kind.standable() {
+                                f.as_ledge()
+                            } else {
+                                f
+                            }
+                        }),
+                    );
                 }
                 push_wall_segment(
                     &mut lin,
