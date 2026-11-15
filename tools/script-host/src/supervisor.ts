@@ -74,12 +74,15 @@ export class Supervisor {
         return this.child.pid
     }
 
-    /** Resident memory of the script process, from /proc. */
+    /** Resident memory of the script process: /proc on Linux, `ps` elsewhere. */
     rss(): number {
         try {
-            const status = readFileSync(`/proc/${this.child.pid}/status`, 'utf8')
-            const kb = /VmRSS:\s+(\d+) kB/.exec(status)
-            return kb ? Number(kb[1]) * 1024 : 0
+            if (process.platform === 'linux') {
+                const kb = /VmRSS:\s+(\d+) kB/.exec(readFileSync(`/proc/${this.child.pid}/status`, 'utf8'))
+                return kb ? Number(kb[1]) * 1024 : 0
+            }
+            const ps = Bun.spawnSync(['ps', '-o', 'rss=', '-p', String(this.child.pid)])
+            return Number(ps.stdout.toString().trim()) * 1024 || 0
         } catch {
             return 0
         }

@@ -26,10 +26,13 @@ const stats = (ms: number[]) => {
 const round = (v: number) => Math.round(v * 1000) / 1000
 const errors = (out: ScriptCommand[]) => out.filter((c: any) => c.Output?.level === 'Error')
 
+// One group per process (`bun bench/bench.ts memory 200`): measured in one process, the
+// realms the memory runs leave behind slowed the CPU runs after them tenfold.
 const only = process.argv[2]
+const sizes = process.argv[3] ? [Number(process.argv[3])] : [200, 2000]
 
 if (!only || only === 'memory') {
-    for (const n of [200, 2000]) {
+    for (const n of sizes) {
         for (const [label, sources] of [
             ['idle', [scenarios.idle.js]],
             ['content', content],
@@ -97,8 +100,8 @@ if (!only || only === 'cpu') {
 if (!only || only === 'process') {
     // The same content world, but across the process boundary the simulator
     // would use: what the JSON round trip and the separate process add.
-    for (const n of [200, 2000]) {
-        const sup = new Supervisor({tickTimeoutMs: 5000, hardLimitBytes: 4 << 30, auditAboveBytes: 2 ** 40, bun: process.execPath})
+    for (const n of sizes) {
+        const sup = new Supervisor({tickTimeoutMs: 5000, hardLimitBytes: 4 * 2 ** 30, auditAboveBytes: 2 ** 40, bun: process.execPath})
         for (let i = 1; i <= n; i++) sup.load(i, content[i % content.length])
         const views = new Map(Array.from({length: n}, (_, i) => [i + 1, view(i + 1)] as [number, object]))
         await sup.tick(0.05, views)
