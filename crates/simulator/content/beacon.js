@@ -1,4 +1,4 @@
-// crates/simulator/content/beacon.lua, line for line in JavaScript. The
+// beacon.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
 // comments explaining the design stay in the Lua original.
 const CHANNEL = 4747
 let status = '?'

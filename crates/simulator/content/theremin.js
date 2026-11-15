@@ -1,4 +1,4 @@
-// crates/simulator/content/theremin.lua, line for line in JavaScript. The
+// theremin.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
 // comments explaining the design stay in the Lua original.
 const ROD = [0.35, 0.45, 0]
 const LOOP = [-0.4, 0.05, 0]

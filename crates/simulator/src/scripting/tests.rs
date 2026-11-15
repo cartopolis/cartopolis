@@ -7,6 +7,7 @@
 //! for.
 
 use super::*;
+use cartopolis_core::tone::Voice;
 
 /// Compile a slot and run it to completion (or until it stops making progress),
 /// returning everything it emitted. Bounded so a test can never hang.

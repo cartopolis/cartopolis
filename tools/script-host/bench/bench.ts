@@ -12,7 +12,7 @@ import {Supervisor} from '../src/supervisor'
 
 const here = import.meta.dir
 const scenarios = JSON.parse(readFileSync(path.join(here, 'scenarios.json'), 'utf8'))
-const content = ['beacon', 'firebird', 'football', 'theremin'].map((n) => readFileSync(path.join(here, '../content', `${n}.js`), 'utf8'))
+const content = ['beacon', 'firebird', 'football', 'theremin'].map((n) => readFileSync(path.join(here, '../../../crates/simulator/content', `${n}.js`), 'utf8'))
 
 const rss = () => {
     Bun.gc(true)

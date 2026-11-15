@@ -1,4 +1,4 @@
-// crates/simulator/content/football.lua, line for line in JavaScript. The
+// football.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
 // comments explaining the design stay in the Lua original.
 const NORTH = {lat: 53.20661975, lng: 6.5916658}
 const SOUTH = {lat: 53.20566315, lng: 6.5916427}

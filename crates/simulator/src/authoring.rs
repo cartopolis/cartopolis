@@ -814,6 +814,12 @@ async fn install_content(
             format!("no content called `{name}`; GET /api/admin/content lists what there is"),
         )
     })?;
+    // In the language the world's scripts run in.
+    let pack = if state.config.script_engine == "bun" {
+        crate::content::in_javascript(pack)
+    } else {
+        pack
+    };
 
     // Out with the old — by *provenance*, not by name.
     //

@@ -1,4 +1,4 @@
-// crates/simulator/content/firebird.lua, line for line in JavaScript. The
+// firebird.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
 // comments explaining the design stay in the Lua original.
 const CENTRE_LAT = 53.2194, CENTRE_LNG = 6.5665
 const RADIUS_M = 180.0

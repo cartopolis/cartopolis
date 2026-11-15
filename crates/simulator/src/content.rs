@@ -64,6 +64,41 @@ pub fn pack(name: &str) -> Option<Pack> {
     packs().into_iter().find(|p| p.name == name)
 }
 
+/// Each pack script in Luau and in JavaScript, for a world whose
+/// `script_engine` is `"bun"` (`scripting::bun`). The packs are built with the
+/// Luau text; [`in_javascript`] swaps it for its translation.
+const TRANSLATIONS: &[(&str, &str)] = &[
+    (
+        include_str!("../content/beacon.lua"),
+        include_str!("../content/beacon.js"),
+    ),
+    (
+        include_str!("../content/firebird.lua"),
+        include_str!("../content/firebird.js"),
+    ),
+    (
+        include_str!("../content/football.lua"),
+        include_str!("../content/football.js"),
+    ),
+    (
+        include_str!("../content/theremin.lua"),
+        include_str!("../content/theremin.js"),
+    ),
+];
+
+/// `pack` with every script in JavaScript.
+#[must_use]
+pub fn in_javascript(mut pack: Pack) -> Pack {
+    for prim in &mut pack.prims {
+        if let Some(lua) = prim.script.as_deref() {
+            if let Some((_, js)) = TRANSLATIONS.iter().find(|(l, _)| *l == lua) {
+                prim.script = Some((*js).into());
+            }
+        }
+    }
+    pack
+}
+
 /// The firebird and the beacon that calls it.
 ///
 /// Two prims and two scripts, because the pair is the demonstration: a button
@@ -457,6 +492,24 @@ mod tests {
                     "a prim in {} has no name",
                     p.name
                 );
+            }
+        }
+    }
+
+    /// A pack script added without its JavaScript would install as Luau into a
+    /// world running Bun, and fail to compile there.
+    #[test]
+    fn every_pack_script_has_a_javascript_translation() {
+        for p in packs() {
+            let js = in_javascript(pack(&p.name).expect("the pack by its own name"));
+            for (lua, prim) in p.prims.iter().zip(&js.prims) {
+                if lua.script.is_some() {
+                    assert_ne!(
+                        lua.script, prim.script,
+                        "{}'s {:?} has no .js beside its .lua",
+                        p.name, prim.name
+                    );
+                }
             }
         }
     }

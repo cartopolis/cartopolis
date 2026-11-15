@@ -48,6 +48,28 @@ pub struct SimConfig {
     /// fuel bank, where a plain prim costs a row.
     #[serde(default = "default_max_scripts")]
     pub max_scripts: u32,
+    /// Which engine runs prim scripts: `"luau"` (the default) or `"bun"`, which
+    /// runs them as JavaScript in a Bun process the simulator supervises
+    /// (`scripting::bun`, `docs/notes/prim-scripting.md`). A world's stored
+    /// scripts are in one language, so switching engines stops every script
+    /// written for the other with a compile error.
+    #[serde(default = "default_script_engine")]
+    pub script_engine: String,
+    /// The `bun` executable (1.4 or later), for `script_engine = "bun"`.
+    #[serde(default = "default_script_bun")]
+    pub script_bun: String,
+    /// `tools/script-host` (its `src/child.ts` and `node_modules`), for
+    /// `script_engine = "bun"`. Defaults to this checkout's, which is right
+    /// for a development build and wrong for an installed one.
+    #[serde(default)]
+    pub script_host_dir: Option<String>,
+    /// A tick the script process has not answered by then is a hung script:
+    /// the process is killed and the running prim blamed.
+    #[serde(default = "default_script_tick_timeout_ms")]
+    pub script_tick_timeout_ms: u64,
+    /// Resident memory, in MiB, past which the script process is killed.
+    #[serde(default = "default_script_memory_limit_mib")]
+    pub script_memory_limit_mib: u64,
     /// Placeholders `{z}`, `{x}`, `{y}` for client tile fetch (ADR-004 / ADR-014).
     #[serde(default = "default_osm_tile_url_template")]
     pub osm_tile_url_template: String,
@@ -273,6 +295,22 @@ fn default_max_scripts() -> u32 {
     200
 }
 
+fn default_script_engine() -> String {
+    "luau".into()
+}
+
+fn default_script_bun() -> String {
+    "bun".into()
+}
+
+fn default_script_tick_timeout_ms() -> u64 {
+    1000
+}
+
+fn default_script_memory_limit_mib() -> u64 {
+    1024
+}
+
 fn default_osm_tile_url_template() -> String {
     cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
 }
@@ -323,6 +361,11 @@ impl Default for SimConfig {
             tick_hz: default_tick_hz(),
             max_prims: default_max_prims(),
             max_scripts: default_max_scripts(),
+            script_engine: default_script_engine(),
+            script_bun: default_script_bun(),
+            script_host_dir: None,
+            script_tick_timeout_ms: default_script_tick_timeout_ms(),
+            script_memory_limit_mib: default_script_memory_limit_mib(),
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
             atlas_url: None,
@@ -360,6 +403,27 @@ impl Default for SimConfig {
 impl SimConfig {
     /// The two ceilings `SimWorld` enforces, in the shape it holds them.
     #[must_use]
+    /// The engine `script_engine` names. An unknown name is an error rather
+    /// than Luau, so a typo does not quietly run the other language.
+    pub fn script_engine(&self) -> anyhow::Result<crate::scripting::Engine> {
+        match self.script_engine.as_str() {
+            "luau" => Ok(crate::scripting::Engine::Luau),
+            "bun" => Ok(crate::scripting::Engine::Bun(crate::scripting::BunEngine {
+                bun: self.script_bun.clone().into(),
+                host_dir: self.script_host_dir.clone().map_or_else(
+                    || {
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../tools/script-host")
+                    },
+                    Into::into,
+                ),
+                tick_timeout: std::time::Duration::from_millis(self.script_tick_timeout_ms),
+                memory_limit_bytes: self.script_memory_limit_mib << 20,
+            })),
+            other => anyhow::bail!("script_engine = \"{other}\" is not one of: luau, bun"),
+        }
+    }
+
     pub fn world_caps(&self) -> crate::state::WorldCaps {
         crate::state::WorldCaps {
             max_prims: self.max_prims,

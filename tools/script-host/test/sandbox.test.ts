@@ -212,7 +212,7 @@ describe('the API', () => {
     test('the four content scripts load', () => {
         const host = new ScriptHost()
         for (const [i, name] of ['beacon', 'firebird', 'football', 'theremin'].entries()) {
-            host.load(i + 1, readFileSync(path.join(import.meta.dir, '../content', `${name}.js`), 'utf8'))
+            host.load(i + 1, readFileSync(path.join(import.meta.dir, '../../../crates/simulator/content', `${name}.js`), 'utf8'))
         }
         expect(errors(host.tick(0.05, new Map()))).toEqual([])
     })

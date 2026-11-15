@@ -41,10 +41,7 @@
 //! space. Without that, `sandbox(true)` would make the global table read-only and
 //! every script would fail on its first `function` statement.
 
-use cartopolis_core::tone::{note_hz, Voice};
-use cartopolis_core::{
-    GeoAnchor, ParticleEffect, PrimSound, ScriptLevel, SoundName, ToneSpec, DEFAULT_SOUND_RANGE_M,
-};
+use cartopolis_core::{GeoAnchor, ParticleEffect, PrimSound, ScriptLevel, ToneSpec};
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, StdLib, Thread, VmState};
@@ -456,13 +453,22 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
-    /// Start the host thread.
+    /// Start the host thread with the Luau engine.
     pub fn spawn() -> Self {
+        Self::spawn_with(Engine::Luau)
+    }
+
+    /// Start the host thread with either engine. Everything past this — the
+    /// handle, `tick`, `drain`, the commands — is the same for both.
+    pub fn spawn_with(engine: Engine) -> Self {
         let (host_tx, host_rx) = mpsc::channel::<HostMsg>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<ScriptCommand>();
         let thread = std::thread::Builder::new()
             .name("cartopolis-scripts".into())
-            .spawn(move || run(host_rx, cmd_tx))
+            .spawn(move || match engine {
+                Engine::Luau => run(host_rx, cmd_tx),
+                Engine::Bun(bun) => bun::run(host_rx, cmd_tx, bun),
+            })
             .expect("spawn script host thread");
         Self {
             handle: ScriptHandle {
@@ -1252,7 +1258,10 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
                     // because "no rules" already means "no emitter", and a second
                     // name for it is a second thing to document.
                     None => None,
-                    Some(t) => Some(effect_from_table(&t, burst, s.next_sequence())?),
+                    Some(t) => Some(
+                        rules::effect(&t, burst, s.next_sequence())
+                            .map_err(mlua::Error::RuntimeError)?,
+                    ),
                 };
                 s.push(ScriptCommand::SetParticles {
                     prim_id: s.prim_id,
@@ -1271,7 +1280,8 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         "play_sound",
         lua.create_function(
             move |_, (name, volume, range): (String, Option<f32>, Option<f32>)| {
-                let sound = prim_sound("play_sound", &name, volume, range)?;
+                let sound = rules::sound("play_sound", &name, volume, range)
+                    .map_err(mlua::Error::RuntimeError)?;
                 if s.sounds.get() >= MAX_SOUNDS_PER_TICK {
                     s.dropped.set(s.dropped.get() + 1);
                     return Ok(());
@@ -1291,7 +1301,8 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
         "loop_sound",
         lua.create_function(
             move |_, (name, volume, range): (String, Option<f32>, Option<f32>)| {
-                let sound = prim_sound("loop_sound", &name, volume, range)?;
+                let sound = rules::sound("loop_sound", &name, volume, range)
+                    .map_err(mlua::Error::RuntimeError)?;
                 s.push(ScriptCommand::SetSoundLoop {
                     prim_id: s.prim_id,
                     sound: Some(sound),
@@ -1317,7 +1328,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     env.set(
         "set_tone",
         lua.create_function(move |_, rules: mlua::Table| {
-            let tone = tone_from_table(&rules)?;
+            let tone = rules::tone(&rules).map_err(mlua::Error::RuntimeError)?;
             s.push(ScriptCommand::SetTone {
                 prim_id: s.prim_id,
                 tone: Some(tone),
@@ -1502,112 +1513,6 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     Ok(())
 }
 
-/// Read a `particles` rules table into an effect.
-///
-/// Unspecified fields keep the preset's value, which is what makes
-/// `particles{ color_start = {0,0.4,1} }` a blue flame rather than an error
-/// message about the eleven fields it did not mention. An **unknown** key is an
-/// error, though, and deliberately so: `particles{ lifetime = 3 }` silently
-/// emitting the default 1.4 s is the kind of bug an author cannot see, and this
-/// is the same rule the shot manifest applies to its own keys.
-///
-/// The names are **exactly** `authoring::ParticleSpec`'s, and
-/// `the_two_authoring_surfaces_use_one_vocabulary` is the test that keeps them
-/// so. They were shorter here once — `spread`, `radius`, `size`, `color` — which
-/// meant the same emitter was spelled two ways depending on whether a script or
-/// an HTTP body set it, and a person moving between them had to translate. The
-/// longer names won because they are symmetric (`size_start` beside `size_end`,
-/// where `size` beside `end_size` is not) and because `spread_deg` carries its
-/// unit, which this codebase has reason to care about.
-fn effect_from_table(t: &mlua::Table, burst: bool, sequence: u32) -> mlua::Result<ParticleEffect> {
-    const KEYS: &[&str] = &[
-        "count",
-        "life",
-        "speed",
-        "spread_deg",
-        "gravity",
-        "source_radius",
-        "size_start",
-        "size_end",
-        "color_start",
-        "color_end",
-        "alpha",
-        "turbulence",
-    ];
-    for pair in t.clone().pairs::<mlua::Value, mlua::Value>() {
-        let (k, _) = pair?;
-        let name = k
-            .as_string()
-            .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
-            .unwrap_or_default();
-        if !KEYS.contains(&name.as_str()) {
-            // An old spelling gets its replacement by name rather than the whole
-            // list. These six were the script API's own names until the two
-            // authoring surfaces were reconciled, so a script written against
-            // them is somebody's real work and deserves better than "not one of:
-            // twelve things".
-            let hint = match name.as_str() {
-                "spread" => Some("spread_deg"),
-                "radius" => Some("source_radius"),
-                "size" => Some("size_start"),
-                "end_size" => Some("size_end"),
-                "color" => Some("color_start"),
-                "end_color" => Some("color_end"),
-                _ => None,
-            };
-            return Err(mlua::Error::RuntimeError(match hint {
-                Some(now) => format!("particle rule `{name}` is called `{now}` now"),
-                None => format!("particle rule `{name}` is not one of: {}", KEYS.join(", ")),
-            }));
-        }
-    }
-
-    let base = if burst {
-        ParticleEffect::blast()
-    } else {
-        ParticleEffect::fire()
-    };
-    let num = |key: &str, fallback: f32| -> mlua::Result<f32> {
-        match t.get::<Option<f32>>(key)? {
-            Some(v) => finite(v),
-            None => Ok(fallback),
-        }
-    };
-    let rgb = |key: &str, fallback: [f32; 3]| -> mlua::Result<[f32; 3]> {
-        let Some(c) = t.get::<Option<mlua::Table>>(key)? else {
-            return Ok(fallback);
-        };
-        // Positional, `{1.0, 0.5, 0.1}`, because that is how a colour is written
-        // everywhere else in this API (`set_color(r, g, b)`).
-        Ok([
-            finite(c.get::<Option<f32>>(1)?.unwrap_or(fallback[0]))?,
-            finite(c.get::<Option<f32>>(2)?.unwrap_or(fallback[1]))?,
-            finite(c.get::<Option<f32>>(3)?.unwrap_or(fallback[2]))?,
-        ])
-    };
-
-    Ok(ParticleEffect {
-        count: num("count", f32::from(base.count))?.clamp(0.0, 65_535.0) as u16,
-        life: num("life", base.life)?,
-        speed: num("speed", base.speed)?,
-        spread_deg: num("spread_deg", base.spread_deg)?,
-        gravity: num("gravity", base.gravity)?,
-        source_radius: num("source_radius", base.source_radius)?,
-        size_start: num("size_start", base.size_start)?,
-        size_end: num("size_end", base.size_end)?,
-        color_start: rgb("color_start", base.color_start)?,
-        color_end: rgb("color_end", base.color_end)?,
-        alpha: num("alpha", base.alpha)?,
-        turbulence: num("turbulence", base.turbulence)?,
-        burst,
-        sequence,
-    }
-    // Clamped here, at the boundary, exactly as `set_scale` clamps rather than
-    // refuses: a script that asks for a thousand particles gets the ceiling and
-    // keeps running.
-    .sanitized())
-}
-
 /// Reject NaN/infinity at the boundary. A script can produce one with `0/0`, and
 /// letting it reach a `Transform` puts a prim at an undefined position that no
 /// later write can recover.
@@ -1628,103 +1533,6 @@ fn finite(v: f32) -> mlua::Result<f32> {
         ));
     }
     Ok(v)
-}
-
-/// Read `play_sound` / `loop_sound`'s arguments into a [`PrimSound`].
-///
-/// An unknown name is an **error** naming the library, never a silent no-op: a
-/// typo that plays nothing looks exactly like a speaker that is off, and the
-/// author has no way to tell the two apart.
-fn prim_sound(
-    call: &str,
-    name: &str,
-    volume: Option<f32>,
-    range: Option<f32>,
-) -> mlua::Result<PrimSound> {
-    let sound = SoundName::from_slug(name).ok_or_else(|| {
-        mlua::Error::RuntimeError(format!(
-            "{call}: no sound called \"{name}\" — the sounds are {}",
-            SoundName::catalogue()
-        ))
-    })?;
-    Ok(PrimSound {
-        sound,
-        volume: finite(volume.unwrap_or(1.0))?,
-        range_m: finite(range.unwrap_or(DEFAULT_SOUND_RANGE_M))?,
-    }
-    .sanitized())
-}
-
-/// Refuse a key not in `keys`. A tone whose `vibratto = 0.5` quietly did
-/// nothing would be found by ear, which is the slowest way to find a typo.
-fn only_keys(t: &mlua::Table, what: &str, keys: &[&str]) -> mlua::Result<()> {
-    for pair in t.clone().pairs::<mlua::Value, mlua::Value>() {
-        let (k, _) = pair?;
-        let name = k
-            .as_string()
-            .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
-            .unwrap_or_default();
-        if !keys.contains(&name.as_str()) {
-            return Err(mlua::Error::RuntimeError(format!(
-                "{what} `{name}` is not one of: {}",
-                keys.join(", ")
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// A pitch written as a note (`"C3"`) or as hertz.
-fn pitch_value(v: mlua::Value) -> mlua::Result<f32> {
-    match v {
-        mlua::Value::Integer(i) => Ok(i as f32),
-        mlua::Value::Number(n) => finite(n as f32),
-        mlua::Value::String(s) => {
-            let text = s.to_str()?.to_string();
-            note_hz(&text).ok_or_else(|| {
-                mlua::Error::RuntimeError(format!(
-                    "set_tone: pitch = \"{text}\" is not a note — write it as \"A4\", \"C#3\" or \"Eb5\", or give hertz"
-                ))
-            })
-        }
-        mlua::Value::Nil => Err(mlua::Error::RuntimeError(
-            "set_tone: needs a pitch, in hertz or as a note like \"A4\"".to_string(),
-        )),
-        _ => Err(mlua::Error::RuntimeError(
-            "set_tone: pitch must be a note like \"A4\" or a number of hertz".to_string(),
-        )),
-    }
-}
-
-/// Read `set_tone{}`'s fields. Only the pitch is required.
-fn tone_from_table(t: &mlua::Table) -> mlua::Result<ToneSpec> {
-    only_keys(
-        t,
-        "set_tone field",
-        &["pitch", "gain", "voice", "glide", "vibrato", "range"],
-    )?;
-    let d = ToneSpec::default();
-    let voice = match t.get::<Option<String>>("voice")? {
-        None => d.voice,
-        Some(v) => Voice::from_slug(&v).ok_or_else(|| {
-            mlua::Error::RuntimeError(format!(
-                "set_tone: no voice called \"{v}\" — the voices are {}",
-                Voice::catalogue()
-            ))
-        })?,
-    };
-    let num = |key: &str, fallback: f32| -> mlua::Result<f32> {
-        t.get::<Option<f32>>(key)?.map_or(Ok(fallback), finite)
-    };
-    Ok(ToneSpec {
-        voice,
-        pitch_hz: pitch_value(t.get("pitch")?)?,
-        gain: num("gain", d.gain)?,
-        glide_s: num("glide", d.glide_s)?,
-        vibrato: num("vibrato", d.vibrato)?,
-        range_m: num("range", d.range_m)?,
-    }
-    .sanitized())
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -1922,5 +1730,21 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
     }
 }
 
+mod bun;
+mod rules;
+
+pub use bun::BunEngine;
+
+/// Which engine runs the scripts (`docs/notes/prim-scripting.md`).
+#[derive(Debug, Clone)]
+pub enum Engine {
+    /// Luau through mlua, one VM per scripted prim, on this thread.
+    Luau,
+    /// JavaScript in a Bun process this thread supervises (`tools/script-host`).
+    Bun(BunEngine),
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod bun_tests;
