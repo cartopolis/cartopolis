@@ -626,14 +626,77 @@ pub fn lowest_sole(m: &HumanModel, clip: Option<(usize, usize)>) -> Option<f32> 
 /// pelvis.
 #[must_use]
 pub fn seat_height(m: &HumanModel, clip: Option<(usize, usize)>) -> Option<f32> {
-    let pelvis = m.joint_positions(clip)[m.joint("pelvis")?];
-    m.posed(clip, false)
+    let pelvis = m.joint("pelvis")?;
+    let hips = m.joint_positions(clip)[pelvis];
+    seat_under(&m.posed(clip, false), hips, seat_depth(m, pelvis))
+}
+
+/// How far under the hip joint the seat can be: a third of the hips' height
+/// at rest (0.29 m on the default man). The buttocks are a hand under the
+/// joint; without the bound, legs swinging back under a stool (the dangle)
+/// were taken for the seat on a short body.
+fn seat_depth(m: &HumanModel, pelvis: usize) -> f32 {
+    m.joint_positions(None)[pelvis].y * 0.3
+}
+
+/// The lowest of `posed` under `hips`, within `depth` of it.
+fn seat_under(posed: &[Vec3], hips: Vec3, depth: f32) -> Option<f32> {
+    posed
         .iter()
         .filter(|p| {
-            (p.x - pelvis.x).abs() < 0.15 && (p.z - pelvis.z).abs() < 0.08 && p.y < pelvis.y
+            (p.x - hips.x).abs() < 0.15
+                && (p.z - hips.z).abs() < 0.08
+                && p.y < hips.y
+                && p.y > hips.y - depth
         })
         .map(|p| p.y)
         .reduce(f32::min)
+}
+
+/// How one body sits, measured on its own legs: for the `sit` clip (feet on
+/// the ground) and the `dangle` clip (legs hanging), the seat's height over
+/// the clip's ground and the lowest its soles go relative to that ground
+/// across the clip. What a client needs to put a seat on an edge without a
+/// foot going into the ground under it (`systems::climb`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeatFit {
+    pub sit_seat: f32,
+    pub sit_sole: f32,
+    pub dangle_seat: f32,
+    pub dangle_sole: f32,
+}
+
+/// [`SeatFit`] for a built body, skinned on the CPU at every third frame of
+/// each clip; `None` when the body lacks either clip.
+#[must_use]
+pub fn seat_fit(m: &HumanModel) -> Option<SeatFit> {
+    let pelvis = m.joint("pelvis")?;
+    let depth = seat_depth(m, pelvis);
+    let measure = |name: &str| -> Option<(f32, f32)> {
+        let c = m.clips.iter().position(|c| c.name == name)?;
+        let frames = m.clips[c].rotations.first().map_or(0, Vec::len);
+        let (mut seats, mut sole) = (Vec::new(), f32::INFINITY);
+        for f in (0..frames).step_by(3) {
+            let hips = m.joint_positions(Some((c, f)))[pelvis];
+            let posed = m.posed(Some((c, f)), false);
+            for p in &posed {
+                sole = sole.min(p.y);
+            }
+            if let Some(s) = seat_under(&posed, hips, depth) {
+                seats.push(s);
+            }
+        }
+        (!seats.is_empty() && sole.is_finite())
+            .then(|| (seats.iter().sum::<f32>() / seats.len() as f32, sole))
+    };
+    let (sit_seat, sit_sole) = measure("sit")?;
+    let (dangle_seat, dangle_sole) = measure("dangle")?;
+    Some(SeatFit {
+        sit_seat,
+        sit_sole,
+        dangle_seat,
+        dangle_sole,
+    })
 }
 
 fn corners(f: &Face) -> impl Iterator<Item = u32> + '_ {
@@ -1638,7 +1701,7 @@ mod tests {
     }
 
     /// The two seats, measured on the default man as `seat_height` does:
-    /// the stool sit's seat is 0.30 m over its ground and the dangle's 0.45 m,
+    /// the stool sit's seat is 0.30 m over its ground and the dangle's 0.62 m,
     /// the numbers `systems::climb` stands a sitter on an edge by
     /// (`SIT_SEAT_M`, `DANGLE_SEAT_M`; change them together). The dangle's legs
     /// hang free: the soles swing within a few centimetres of its ground and
@@ -1647,9 +1710,11 @@ mod tests {
     fn the_seats_are_where_an_edge_takes_them() {
         let Some(pack) = shipped_pack() else { return };
         let m = man(&pack);
-        // Bare, 0.297 and 0.463 (`human-pack --add-clip`); dressed, as here,
-        // 0.303 and 0.436: trousers between the skin and the seat.
-        for (name, seat) in [("sit", 0.30), ("dangle", 0.45)] {
+        // Dressed, as here, 0.303 and 0.621. The dangle's 0.44 measured before
+        // the seat was bounded to a hand under the hips (`seat_depth`) was its
+        // calves, swung back under the stool: a seat 0.18 m too low, which put
+        // the hanging legs into the ground under a 0.7 m wall (2026-11-15).
+        for (name, seat) in [("sit", 0.30), ("dangle", 0.62)] {
             let Some(c) = m.clips.iter().position(|c| c.name == name) else {
                 continue;
             };

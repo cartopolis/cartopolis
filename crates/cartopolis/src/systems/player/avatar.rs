@@ -562,6 +562,9 @@ pub(crate) struct AvatarAnimations {
     /// How long each emote holds the body, in [`EMOTE_ORDER`]: the clip's own
     /// length, or [`EMOTE_DURATION`] for one the pack lacks.
     emote_secs: Vec<f32>,
+    /// How this body sits on its own legs, for a seat on an edge
+    /// (`systems::climb::SeatFit`).
+    seat_fit: crate::systems::climb::SeatFit,
 }
 
 /// A one-shot emote currently playing on an avatar. Present only while it runs;
@@ -694,6 +697,9 @@ pub(crate) fn animate_holder(
         walk: spawned.walk,
         run: spawned.run,
         emote_secs: spawned.emote_secs,
+        seat_fit: spawned
+            .seat_fit
+            .map_or_else(crate::systems::climb::SeatFit::default, Into::into),
     };
     let mut player = AnimationPlayer::default();
     let mut transitions = AnimationTransitions::new();
@@ -825,6 +831,11 @@ fn swim_pose(speed: f32) -> Pose {
 }
 
 impl AvatarAnimations {
+    /// How this body sits on its own legs.
+    pub(crate) fn seat_fit(&self) -> crate::systems::climb::SeatFit {
+        self.seat_fit
+    }
+
     /// This model's walk and run.
     pub(crate) fn gaits(&self) -> (ClipGait, ClipGait) {
         (self.walk, self.run)
@@ -1590,7 +1601,7 @@ pub fn smooth_remote_avatars(
     time: Res<Time>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
-    mut q: Query<(&mut RemoteAvatar, &mut Transform), Without<Avatar>>,
+    mut q: Query<(&mut RemoteAvatar, &mut Transform, Option<&AvatarAnimations>), Without<Avatar>>,
 ) {
     if online.is_none() {
         return;
@@ -1604,7 +1615,7 @@ pub fn smooth_remote_avatars(
         ground: &ground,
         water: &water,
     };
-    for (mut remote, mut tf) in q.iter_mut() {
+    for (mut remote, mut tf, body) in q.iter_mut() {
         remote.net_age += dt;
         // Last frame's wall top comes off with the ground, for the reason the
         // ground does (`remote_display_on_ground`).
@@ -1652,7 +1663,12 @@ pub fn smooth_remote_avatars(
                 let out = Vec2::new(remote.net_yaw.sin(), remote.net_yaw.cos());
                 crate::systems::climb::seat_on_edge(&map, at + offset, out)
             })
-            .map_or((0.0, false), |e| (e.lift(shown.y), e.dangle()));
+            .map_or((0.0, false), |e| {
+                // On this remote's own legs, as its owner draws it.
+                let fit = body.map_or_else(Default::default, AvatarAnimations::seat_fit);
+                let pose = e.pose(shown.y, fit);
+                (pose.lift, pose.dangle)
+            });
         if remote.seated.is_some() || remote.seat_blend <= 0.0 {
             remote.seat_lift = seat_lift;
             remote.seat_dangle = seat_dangle;

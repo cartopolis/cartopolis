@@ -26,7 +26,7 @@
 
 use bevy::prelude::*;
 
-use crate::systems::collision::{BuildingColliders, Ledge, CLIMB_MAX_M, CLIMB_MIN_M};
+use crate::systems::collision::{BuildingColliders, Ledge, QuayEdge, CLIMB_MAX_M, CLIMB_MIN_M};
 
 /// The climb clip's length, seconds (`cartopolis_human`'s
 /// `the_climb_steps_up_onto_the_top`; change them together).
@@ -37,7 +37,7 @@ pub const CLIMB_RISE_M: f32 = 0.365;
 /// How high the `sit` clip's seat is over its ground, metres, and the
 /// `dangle` clip's (`the_seats_are_where_an_edge_takes_them`).
 pub const SIT_SEAT_M: f32 = 0.30;
-pub const DANGLE_SEAT_M: f32 = 0.45;
+pub const DANGLE_SEAT_M: f32 = 0.62;
 /// How far ahead a wall is offered, metres: where walking into one stops
 /// (`collision::COLLIDE_PROBE_M`, 0.6 m) and a little more.
 pub const CLIMB_REACH_M: f32 = 1.0;
@@ -50,11 +50,80 @@ pub const SIT_ON_MAX_M: f32 = 0.9;
 pub const EDGE_DROP_M: f32 = 0.35;
 /// How far behind an edge the hips sit, metres.
 const SEAT_BACK_M: f32 = 0.1;
-/// Where the feet hang, out from the seat, metres.
-const FEET_OUT_M: f32 = 0.4;
-/// A seat hangs the legs (`dangle`) once the drop below it is within this of
-/// the clip's own seat: from there down the feet are off the ground.
-const DANGLE_SLACK_M: f32 = 0.03;
+/// Where under an edge the feet can come down, out from the seat, metres: the
+/// highest ground across them is the ground they must stay above.
+const FEET_SPAN_M: [f32; 4] = [0.2, 0.35, 0.5, 0.65];
+/// How far above the ground the hanging feet must stay at their lowest,
+/// metres: under that they are planted instead.
+const FEET_CLEAR_M: f32 = 0.02;
+
+/// How one body sits on its own legs (`cartopolis_human::build::SeatFit`,
+/// measured on each body as it is built): each seated clip's seat height over
+/// its ground, and the lowest its soles go relative to that ground. The
+/// default is the default man's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeatFit {
+    pub sit_seat: f32,
+    pub sit_sole: f32,
+    pub dangle_seat: f32,
+    pub dangle_sole: f32,
+}
+
+impl Default for SeatFit {
+    fn default() -> Self {
+        Self {
+            sit_seat: SIT_SEAT_M,
+            sit_sole: -0.005,
+            dangle_seat: DANGLE_SEAT_M,
+            dangle_sole: -0.006,
+        }
+    }
+}
+
+impl From<cartopolis_human::build::SeatFit> for SeatFit {
+    fn from(f: cartopolis_human::build::SeatFit) -> Self {
+        Self {
+            sit_seat: f.sit_seat,
+            sit_sole: f.sit_sole,
+            dangle_seat: f.dangle_seat,
+            dangle_sole: f.dangle_sole,
+        }
+    }
+}
+
+/// How a seated body is drawn on an edge: its lift over the root, and
+/// whether the legs hang.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeatPose {
+    pub lift: f32,
+    pub dangle: bool,
+}
+
+/// The pose for a seat at `surface` over ground at `feet_ground` (the
+/// highest under where the feet come down), for a body drawn standing at
+/// `root` that sits as `fit` says. **No foot goes under the ground:**
+///
+/// - the legs hang (`dangle`, the seat on the edge) only where the hanging
+///   soles at their lowest stay [`FEET_CLEAR_M`] above the ground;
+/// - otherwise the feet are planted (`sit`): the seat on the edge, unless
+///   that would put the soles into the ground, when the hips are raised
+///   until the feet stand on it. Between the two — an edge too high for the
+///   planted feet and too low for the hanging ones — the feet are planted
+///   and stand a little off the ground.
+#[must_use]
+pub fn pose_for(surface: f32, feet_ground: f32, root: f32, fit: SeatFit) -> SeatPose {
+    let hang = surface - fit.dangle_seat;
+    if hang + fit.dangle_sole >= feet_ground + FEET_CLEAR_M {
+        return SeatPose {
+            lift: hang - root,
+            dangle: true,
+        };
+    }
+    SeatPose {
+        lift: (surface - fit.sit_seat).max(feet_ground - fit.sit_sole) - root,
+        dangle: false,
+    }
+}
 
 /// A climb under way: the avatar carried from where it stood to its landing
 /// on the top, over [`CLIMB_SECS`].
@@ -149,28 +218,11 @@ pub struct EdgeSeat {
 }
 
 impl EdgeSeat {
-    /// Whether the legs hang free (the `dangle` clip) rather than reach the
-    /// ground (`sit`).
+    /// How a body that sits as `fit` says sits here, drawn standing at
+    /// `root` ([`pose_for`]).
     #[must_use]
-    pub fn dangle(&self) -> bool {
-        self.drop >= DANGLE_SEAT_M - DANGLE_SLACK_M
-    }
-
-    /// The seat height of the clip it plays.
-    #[must_use]
-    pub fn clip_seat(&self) -> f32 {
-        if self.dangle() {
-            DANGLE_SEAT_M
-        } else {
-            SIT_SEAT_M
-        }
-    }
-
-    /// How far the model is raised to put the clip's seat on this one, for
-    /// an avatar drawn standing at height `root`.
-    #[must_use]
-    pub fn lift(&self, root: f32) -> f32 {
-        self.surface - self.clip_seat() - root
+    pub fn pose(&self, root: f32, fit: SeatFit) -> SeatPose {
+        pose_for(self.surface, self.surface - self.drop, root, fit)
     }
 
     /// The world yaw a sitter turns to.
@@ -194,6 +246,50 @@ impl Surroundings<'_> {
     fn below(&self, p: Vec2) -> f32 {
         (self.water)(p).unwrap_or_else(|| (self.ground)(p))
     }
+
+    /// The highest ground under where a sitter's feet come down, out from
+    /// `seat` along `out` ([`FEET_SPAN_M`]): a planter's bed or a slope
+    /// rising in front is what a foot would go into.
+    ///
+    /// **A drawn quay wall crossed on the way is ground too**, at its top:
+    /// the register's water (`below`) reaches under the strips of quay the
+    /// map draws between its water polygons, and the hanging shins went into
+    /// one 0.1–0.4 m out from the wall sat on, on the Noorderhaven's north
+    /// quay (2026-11-15).
+    fn feet_ground(&self, seat: Vec2, out: Vec2) -> f32 {
+        let reach = FEET_SPAN_M[FEET_SPAN_M.len() - 1];
+        let crossed = self
+            .colliders
+            .quays_within(seat, reach + 0.5)
+            .into_iter()
+            .filter_map(|(e, _, _)| {
+                let (d, t) = crossing(seat, out * reach, e.a, e.b - e.a)?;
+                (d * reach > CROSSED_FROM_M).then(|| e.top_a + (e.top_b - e.top_a) * t)
+            })
+            .fold(f32::MIN, f32::max);
+        FEET_SPAN_M
+            .iter()
+            .map(|d| self.below(seat + out * *d))
+            .fold(crossed, f32::max)
+    }
+}
+
+/// How far out from where the feet span starts a drawn quay wall counts as
+/// crossed, metres: past the wall sat on, which the span starts at or just
+/// behind.
+const CROSSED_FROM_M: f32 = 0.07;
+
+/// Where the segment `p + r·s` (s in 0..1) crosses `q + d·t` (t in 0..1):
+/// `(s, t)`, or `None` when it does not.
+fn crossing(p: Vec2, r: Vec2, q: Vec2, d: Vec2) -> Option<(f32, f32)> {
+    let denom = r.perp_dot(d);
+    if denom.abs() < 1e-9 {
+        return None;
+    }
+    let qp = q - p;
+    let s = qp.perp_dot(d) / denom;
+    let t = qp.perp_dot(r) / denom;
+    ((0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t)).then_some((s, t))
 }
 
 /// The edge seat at `seat`, facing `out`, as any viewer measures it — the
@@ -210,7 +306,7 @@ pub fn seat_on_edge(map: &Surroundings, seat: Vec2, out: Vec2) -> Option<EdgeSea
         return None;
     }
     if let Some(surface) = map.colliders.ledge_under(seat, f32::INFINITY) {
-        let drop = surface - map.below(seat + out * FEET_OUT_M);
+        let drop = surface - map.feet_ground(seat, out);
         return Some(EdgeSeat {
             seat,
             out,
@@ -222,7 +318,7 @@ pub fn seat_on_edge(map: &Surroundings, seat: Vec2, out: Vec2) -> Option<EdgeSea
     // register's water ends, which can be a metre inside the drawn wall and put
     // the legs through it (2026-11-15).
     let (edge, at, top) = map.colliders.quay_near(seat, QUAY_SEAT_REACH_M)?;
-    let drop = top - map.below(at + edge.water * FEET_OUT_M);
+    let drop = top - map.feet_ground(at, edge.water);
     (drop >= EDGE_DROP_M && out.dot(edge.water) > 0.5).then_some(EdgeSeat {
         seat,
         out,
@@ -282,11 +378,36 @@ pub fn find_edge_seat(map: &Surroundings, pos: Vec2, facing: Vec2, soles: f32) -
         }
         return None;
     }
-    let (edge, at, _) = map.colliders.quay_near(pos, QUAY_REACH_M)?;
+    let (mut edge, mut at, _) = map.colliders.quay_near(pos, QUAY_REACH_M)?;
     if f.dot(edge.water) <= 0.0 {
         return None;
     }
+    // Out to the last drawn wall: where the map draws a strip of quay between
+    // two water polygons, the wall nearest the avatar is an inner one, and the
+    // water the legs can hang over is past the outer.
+    for _ in 0..3 {
+        let Some((next, cross)) = outer_quay(map, at, edge.water) else {
+            break;
+        };
+        edge = next;
+        at = cross;
+    }
     seat_on_edge(map, at - edge.water * QUAY_SEAT_BACK_M, edge.water)
+}
+
+/// The next drawn quay wall facing the same water, crossed going out from
+/// `at` along `water` within a metre, and where.
+fn outer_quay(map: &Surroundings, at: Vec2, water: Vec2) -> Option<(QuayEdge, Vec2)> {
+    map.colliders
+        .quays_within(at, 1.5)
+        .into_iter()
+        .filter(|(e, ..)| e.water.dot(water) > 0.7)
+        .filter_map(|(e, ..)| {
+            let (s, _) = crossing(at, water, e.a, e.b - e.a)?;
+            (s > CROSSED_FROM_M).then_some((s, e))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(s, e)| (e, at + water * s))
 }
 
 /// What the prompt can offer at the wall or edge in front of the avatar,
@@ -302,6 +423,8 @@ pub struct Edges {
     /// from.
     pub at: Vec2,
     pub soles: f32,
+    /// How the avatar's body sits, for the seat's pose.
+    pub fit: SeatFit,
 }
 
 impl Edges {
@@ -323,7 +446,7 @@ impl Edges {
     /// Sit on the edge offered, if one is.
     pub fn sit(&self, avatar: &mut crate::resources::AvatarState) {
         if let Some(seat) = &self.sit {
-            sit_on_edge(avatar, self.at, self.soles, seat);
+            sit_on_edge(avatar, self.at, self.soles, seat, self.fit);
         }
     }
 }
@@ -358,8 +481,12 @@ pub fn track_edges(
     colliders: Res<BuildingColliders>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
+    bodies: Query<&crate::systems::avatar::AvatarAnimations, With<crate::components::Avatar>>,
     mut edges: ResMut<Edges>,
 ) {
+    let fit = bodies
+        .single()
+        .map_or_else(|_| SeatFit::default(), |b| b.seat_fit());
     // An edge seat's lift, against where the avatar is drawn now.
     if let Some(seated) = avatar_state.seated.filter(|s| s.edge) {
         let (pos, base) = avatar_frame(
@@ -376,8 +503,8 @@ pub fn track_edges(
         };
         let root = avatar_state.display_position.y;
         if let Some(e) = remeasure(&map, pos, &seated) {
-            let lift = e.lift(root);
-            if (lift - seated.lift).abs() > 0.01 || e.dangle() != seated.dangle {
+            let pose = e.pose(root, fit);
+            if (pose.lift - seated.lift).abs() > 0.01 || pose.dangle != seated.dangle {
                 let at = pos + seated.offset;
                 tracing::info!(
                     target: "climb",
@@ -386,13 +513,16 @@ pub fn track_edges(
                     drop = e.drop,
                     ground_under_seat = ground(at),
                     ledge_at_seat = ?colliders.ledge_at(at),
-                    was = drawn_seat(root, seated.lift, seated.dangle),
-                    now = drawn_seat(root, lift, e.dangle()),
+                    dangle = pose.dangle,
+                    lowest_sole = lowest_sole(root, pose, fit),
+                    feet_ground = e.surface - e.drop,
+                    was = drawn_seat(root, seated.lift, seated.dangle, fit),
+                    now = drawn_seat(root, pose.lift, pose.dangle, fit),
                     "edge seat re-measured: drawn seat height was / is"
                 );
                 if let Some(s) = &mut avatar_state.seated {
-                    s.lift = lift;
-                    s.dangle = e.dangle();
+                    s.lift = pose.lift;
+                    s.dangle = pose.dangle;
                 }
             }
         }
@@ -433,6 +563,7 @@ pub fn track_edges(
                 sit,
                 at: pos,
                 soles,
+                fit,
             }
         }
     };
@@ -448,14 +579,16 @@ pub fn sit_on_edge(
     pos: Vec2,
     root: f32,
     seat: &EdgeSeat,
+    fit: SeatFit,
 ) {
+    let pose = seat.pose(root, fit);
     avatar.seated = Some(crate::resources::Seated {
         offset: seat.seat - pos,
         yaw: seat.yaw(),
         blend: 0.0,
         rising: false,
-        lift: seat.lift(root),
-        dangle: seat.dangle(),
+        lift: pose.lift,
+        dangle: pose.dangle,
         edge: true,
     });
 }
@@ -482,8 +615,24 @@ pub fn remeasure(
 /// Where a seated clip's seat is drawn: the root, the lift and the clip's
 /// own seat height.
 #[must_use]
-pub fn drawn_seat(root: f32, lift: f32, dangle: bool) -> f32 {
-    root + lift + if dangle { DANGLE_SEAT_M } else { SIT_SEAT_M }
+pub fn drawn_seat(root: f32, lift: f32, dangle: bool, fit: SeatFit) -> f32 {
+    root + lift
+        + if dangle {
+            fit.dangle_seat
+        } else {
+            fit.sit_seat
+        }
+}
+
+/// The lowest a seated body's soles go, as it is drawn.
+#[must_use]
+pub fn lowest_sole(root: f32, pose: SeatPose, fit: SeatFit) -> f32 {
+    root + pose.lift
+        + if pose.dangle {
+            fit.dangle_sole
+        } else {
+            fit.sit_sole
+        }
 }
 
 #[cfg(test)]
@@ -652,11 +801,12 @@ mod tests {
         let s = find_edge_seat(&map, Vec2::new(0.0, 1.2), SOUTH, 0.0).expect("a seat");
         assert!((1.85..=2.15).contains(&s.seat.y), "on the wall: {s:?}");
         assert!((s.out - -SOUTH).length() < 1e-5, "facing back out");
-        assert!(!s.dangle(), "0.4 m: the feet reach the ground");
-        assert!((s.lift(0.0) - (0.4 - SIT_SEAT_M)).abs() < 1e-5);
+        let pose = s.pose(0.0, SeatFit::default());
+        assert!(!pose.dangle, "0.4 m: the feet reach the ground");
+        assert!((pose.lift - (0.4 - SIT_SEAT_M)).abs() < 1e-5);
         // A remote viewer measures the same seat from the offset alone.
         assert_eq!(seat_on_edge(&map, s.seat, s.out), Some(s));
-        // A little higher and the legs hang, the feet just off the ground.
+        // A little higher and the legs hang, the feet off the ground.
         let c = wall(0.7);
         let map = Surroundings {
             colliders: &c,
@@ -664,8 +814,9 @@ mod tests {
             water: &water,
         };
         let s = find_edge_seat(&map, Vec2::new(0.0, 1.2), SOUTH, 0.0).expect("a seat");
-        assert!(s.dangle(), "0.7 m: the legs hang");
-        assert!((s.lift(0.0) - (0.7 - DANGLE_SEAT_M)).abs() < 1e-5);
+        let pose = s.pose(0.0, SeatFit::default());
+        assert!(pose.dangle, "0.7 m: the legs hang");
+        assert!((pose.lift - (0.7 - DANGLE_SEAT_M)).abs() < 1e-5);
         // Too high to sit on from the ground.
         let c = wall(1.2);
         let map = Surroundings {
@@ -688,9 +839,10 @@ mod tests {
         // Standing on the top facing along it (east): the seat is on a long side.
         let s = find_edge_seat(&map, Vec2::new(0.0, 2.0), Vec2::X, 1.2).expect("a seat");
         assert!(s.out.x.abs() < 1e-5, "out over a long side: {s:?}");
-        assert!(s.dangle(), "1.2 m: the legs hang");
+        let pose = s.pose(1.2, SeatFit::default());
+        assert!(pose.dangle, "1.2 m: the legs hang");
         assert!(
-            (s.lift(1.2) + DANGLE_SEAT_M).abs() < 1e-5,
+            (pose.lift + DANGLE_SEAT_M).abs() < 1e-5,
             "the clip sinks to put its seat on the top"
         );
     }
@@ -723,12 +875,14 @@ mod tests {
             );
             let mut avatar = crate::resources::AvatarState::default();
             // Sat while it still stood 1.2 m off its ground.
-            sit_on_edge(&mut avatar, from, soles + 1.2, &seat);
+            let fit = SeatFit::default();
+            sit_on_edge(&mut avatar, from, soles + 1.2, &seat, fit);
             let seated = avatar.seated.unwrap();
-            let stale = drawn_seat(soles, seated.lift, seated.dangle);
+            let stale = drawn_seat(soles, seated.lift, seated.dangle, fit);
             assert!((stale - h).abs() > 1.0, "measured once it floats: {stale}");
             let e = remeasure(&map, from, &seated).expect("still an edge");
-            let drawn = drawn_seat(soles, e.lift(soles), e.dangle());
+            let pose = e.pose(soles, fit);
+            let drawn = drawn_seat(soles, pose.lift, pose.dangle, fit);
             assert!(
                 (drawn - h).abs() < 0.03,
                 "a {h} m wall: the seat drawn at {drawn}"
@@ -777,9 +931,46 @@ mod tests {
         );
         assert!((s.surface - 0.0).abs() < 0.01, "on its top: {s:?}");
         assert!((s.out - SOUTH).length() < 1e-5, "facing out over the water");
-        assert!(s.dangle() && (s.drop - 1.4).abs() < 1e-5);
+        assert!(s.pose(0.0, SeatFit::default()).dangle && (s.drop - 1.4).abs() < 1e-5);
         // A remote measures the same seat from the offset.
         assert_eq!(seat_on_edge(&map, s.seat, s.out), Some(s));
+        // A strip of quay drawn 0.3 m out, at the street's height (two water
+        // polygons with land between): the shins would go into it, so there
+        // is no seat at the wall behind it.
+        let mut stripped = BuildingColliders::default();
+        let strip = crate::systems::collision::quay_edges_of(
+            &positions,
+            &normals,
+            &[0, 1, 2, 0, 2, 3],
+            Vec2::new(-10.0, 1.3),
+        );
+        let near = crate::systems::collision::quay_edges_of(
+            &positions,
+            &normals,
+            &[0, 1, 2, 0, 2, 3],
+            Vec2::new(-10.0, 1.0),
+        );
+        stripped.set_quay_cell((0, 0), near.into_iter().chain(strip).collect());
+        let map = Surroundings {
+            colliders: &stripped,
+            ground: &ground,
+            water: &water,
+        };
+        assert!(
+            seat_on_edge(&map, s.seat, s.out).is_none(),
+            "the feet would go into the strip"
+        );
+        // The seat offered is on the strip's outer wall, over the water.
+        let outer = find_edge_seat(&map, Vec2::ZERO, SOUTH, 0.0).expect("the outer wall");
+        assert!(
+            (1.7 - outer.seat.y - QUAY_SEAT_BACK_M).abs() < 0.01,
+            "on the outer wall's line: {outer:?}"
+        );
+        let map = Surroundings {
+            colliders: &c,
+            ground: &ground,
+            water: &water,
+        };
         // Facing away from the water there is no edge, nor without a drawn wall.
         assert!(find_edge_seat(&map, Vec2::ZERO, -SOUTH, 0.0).is_none());
         let bare = BuildingColliders::default();
@@ -798,5 +989,78 @@ mod tests {
             water: &dry,
         };
         assert_eq!(seat_on_edge(&square, Vec2::ZERO, SOUTH), None);
+    }
+
+    /// No seat puts a foot under the ground it sits above. Each body's own
+    /// `SeatFit` (measured as the client measures it when it builds the
+    /// body), each clip it chooses posed and skinned at every frame at the
+    /// lift it chooses: the lowest sole or toe stays within 2 cm of the
+    /// ground or above it, for edges 0.3 to 2 m over the ground in front and
+    /// a short, a default and a tall body. Before, the legs hung from any
+    /// edge 0.42 m up and swung into the ground (the owner, 2026-11-15:
+    /// "de avatar zit met zijn benen in de grond").
+    #[test]
+    fn no_seat_puts_a_foot_under_the_ground() {
+        use cartopolis_human::build::{build, seat_fit, Look};
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/models/avatar/human/default.humanpack"
+        );
+        let Some(pack) = std::fs::read(path)
+            .ok()
+            .filter(|b| b.len() > 4096)
+            .map(|b| cartopolis_human::HumanPack::decode(&b).expect("the pack decodes"))
+        else {
+            return;
+        };
+        for height in [0.0, 20.0, 50.0, 80.0, 100.0] {
+            let mut phenotype = cartopolis_human::Phenotype::male();
+            phenotype.height = height / 100.0;
+            let m = build(
+                &pack,
+                &Look {
+                    phenotype,
+                    skin: String::new(),
+                    proxies: vec!["shoes06".into(), "male_casualsuit01".into()],
+                    eyes: None,
+                    modifiers: vec![],
+                },
+            );
+            let fit: SeatFit = seat_fit(&m).expect("both seated clips").into();
+            let (mut hung, mut planted) = (0, 0);
+            for step in 0..=34 {
+                let drop = 0.3 + step as f32 * 0.05;
+                // The avatar stands on the top (a quay, a wall top), the ground in
+                // front `drop` below it.
+                let (surface, ground, root) = (drop, 0.0, drop);
+                let pose = pose_for(surface, ground, root, fit);
+                let name = if pose.dangle { "dangle" } else { "sit" };
+                if pose.dangle {
+                    hung += 1;
+                } else {
+                    planted += 1;
+                }
+                let c = m.clips.iter().position(|c| c.name == name).unwrap();
+                let frames = m.clips[c].rotations[0].len();
+                for f in 0..frames {
+                    let sole = cartopolis_human::build::lowest_sole(&m, Some((c, f))).unwrap();
+                    let y = root + pose.lift + sole;
+                    assert!(
+                        y >= ground - 0.02,
+                        "height {height}, an edge {drop:.2} m up, {name} frame {f}: a sole at {y:.3}"
+                    );
+                }
+                // And the seat is on the edge where the feet allow it.
+                let seat = drawn_seat(root, pose.lift, pose.dangle, fit);
+                assert!(
+                    seat >= surface - 0.01,
+                    "the hips not under the edge: {seat} {surface}"
+                );
+            }
+            assert!(
+                hung > 0 && planted > 0,
+                "both poses chosen: {hung} {planted}"
+            );
+        }
     }
 }

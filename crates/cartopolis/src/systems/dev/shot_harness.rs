@@ -4036,6 +4036,7 @@ pub fn seat_scripted_avatar(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
+    bodies: Query<&crate::systems::avatar::AvatarAnimations, With<crate::components::Avatar>>,
 ) {
     use crate::systems::climb;
     let panels = harness.ui_for(progress.index);
@@ -4089,7 +4090,7 @@ pub fn seat_scripted_avatar(
                     root = soles,
                     surface = seat.surface,
                     drop = seat.drop,
-                    dangle = seat.dangle(),
+                    feet_ground = seat.surface - seat.drop,
                     offset = ?(seat.seat - pos),
                     ground_under_seat = ground(seat.seat),
                     ledge_at_seat = ?colliders.ledge_at(seat.seat),
@@ -4099,7 +4100,20 @@ pub fn seat_scripted_avatar(
                         .map(|(_, at, top)| (at.distance(seat.seat), top)),
                     "shot harness: sat on an edge"
                 );
-                climb::sit_on_edge(&mut avatar_state, pos, soles, &seat);
+                for (e, at, top) in colliders.quays_within(seat.seat, 3.0) {
+                    info!(
+                        dist = at.distance(seat.seat),
+                        top,
+                        water = ?e.water,
+                        feet_ground = ground(at + e.water * 0.4),
+                        water_level = ?water(at + e.water * 0.4),
+                        "shot harness: a drawn quay wall near the seat"
+                    );
+                }
+                let fit = bodies
+                    .single()
+                    .map_or_else(|_| climb::SeatFit::default(), |b| b.seat_fit());
+                climb::sit_on_edge(&mut avatar_state, pos, soles, &seat, fit);
                 if let Some(s) = &mut avatar_state.seated {
                     s.blend = 1.0;
                 }

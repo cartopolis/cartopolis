@@ -464,6 +464,8 @@ pub(crate) struct SpawnedHuman {
     pub run: ClipGait,
     /// Each emote's length, in `CLIP_ORDER`'s emote order.
     pub emote_secs: Vec<f32>,
+    /// How this body sits on its own legs (`systems::climb::pose_for`).
+    pub seat_fit: Option<cartopolis_human::build::SeatFit>,
 }
 
 /// A person built and turned into engine data — meshes, clips, the joints'
@@ -479,6 +481,7 @@ pub(crate) struct PreparedHuman {
     walk: ClipGait,
     run: ClipGait,
     emote_secs: Vec<f32>,
+    seat_fit: Option<cartopolis_human::build::SeatFit>,
     /// Each hand round a phone, and every joint at rest in the holder's
     /// frame: what `held_phone` poses an arm from.
     phone_grip: [Option<cartopolis_human::hands::PhoneGrip>; 2],
@@ -655,6 +658,9 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
         walk: gait("walk", ClipGait::CHARACTER_WALK),
         run: gait("run", ClipGait::CHARACTER_RUN),
         emote_secs,
+        // Measured on this body's legs, so an edge seat never puts its feet
+        // under the ground (`systems::climb`).
+        seat_fit: cartopolis_human::build::seat_fit(&model),
         phone_grip: model.phone_grip.clone(),
         rest: model.joint_positions(None),
         height: model.height,
@@ -802,6 +808,7 @@ pub(crate) fn spawn_human(
         walk: prepared.walk,
         run: prepared.run,
         emote_secs: prepared.emote_secs,
+        seat_fit: prepared.seat_fit,
     }
 }
 

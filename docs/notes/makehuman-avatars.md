@@ -464,10 +464,14 @@ the client lifts by (`measure_climb_and_seat`), and `build::lowest_sole` /
 - **`dangle`**: 14_29 "sit on stepstool, stand up, swing legs", a 0.9–2.2 s
   loop out of frames 2180–2523: sitting on a 0.78 m stool, the hands on the
   thighs, both legs hanging and swinging together (ankles 0.19–0.40 m off
-  the floor). The loop found is one swing, 1.08 s. Its seat is 0.463 m over
-  its ground bare and 0.436 m dressed, the `sit` clip's 0.297 m and 0.303 m
+  the floor). The loop found is one swing, 1.08 s. Its seat is 0.62 m over
+  its ground dressed, the `sit` clip's 0.30 m
   (`the_seats_are_where_an_edge_takes_them`, which also holds the soles
-  within 4 cm of its ground and the knees in front of the seat). 01_06–08
+  within 4 cm of its ground and the knees in front of the seat). It was
+  first measured at 0.44 m: the lowest skin under the hips was the calves
+  swung back under the stool, until the measure was bounded to a third of
+  the hips' height under the joint (`build::seat_depth`). Each body's own
+  seats are measured as it is built (`build::seat_fit`). 01_06–08
   ("climb, sit, dangle legs") hold an overhead bar throughout.
 
 Excuses, measured: the female elegant suit's skirt stretches 5.1 cm in the

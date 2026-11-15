@@ -870,6 +870,21 @@ impl BuildingColliders {
             .min_by(|x, y| x.1.distance_squared(p).total_cmp(&y.1.distance_squared(p)))
     }
 
+    /// Every drawn quay wall top within `reach` of `p`, as
+    /// [`Self::quay_near`] answers one: for the log a capture writes.
+    #[must_use]
+    pub fn quays_within(&self, p: Vec2, reach: f32) -> Vec<(QuayEdge, Vec2, f32)> {
+        self.quays
+            .values()
+            .flatten()
+            .map(|e| {
+                let (at, top) = e.nearest(p);
+                (*e, at, top)
+            })
+            .filter(|(_, at, _)| at.distance_squared(p) <= reach * reach)
+            .collect()
+    }
+
     /// The street-detail footprints whose tops can be stood on
     /// ([`Footprint::as_ledge`]).
     fn ledges(&self) -> impl Iterator<Item = &Footprint> {

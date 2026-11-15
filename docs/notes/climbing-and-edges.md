@@ -1,6 +1,6 @@
 ---
 topic: climbing-and-edges
-triggers: [climb, QuayEdge, quay_edges_of, quay_near, set_quay_cell, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
+triggers: [climb, pose_for, SeatFit, seat_fit, feet_ground, QuayEdge, quay_edges_of, quay_near, set_quay_cell, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
 updated: 2026-11-15
 ---
 
@@ -96,14 +96,33 @@ slower than that is still drawn climbing it.
    `EDGE_DROP_M` or more below its top: on the wall's top edge, facing out.
 
 It is the bench's seat (`sitting-down.md`): an XZ offset the wire already
-carries (protocol 19), with a **lift** (`Seated::lift`) and a clip chosen by
-the drop below the seat: `sit` (the stool, seat 0.30 m over its ground on the
-default man) where the feet reach the ground, **`dangle`** (CMU 14_29, a
-0.78 m stool with the legs swinging, seat 0.45 m) once the drop is within 3 cm
-of that. The lift puts the clip's seat on the edge: a wall top from the
-ground lifts by its height less the seat; a quay edge, where the avatar
-stands at the seat's height, lowers the body by the seat so the legs hang
-over the side.
+carries (protocol 19), with a **lift** (`Seated::lift`) and a clip chosen so
+that **no foot ever goes below the ground it sits above** (the owner,
+2026-11-15: "de avatar zit met zijn benen in de grond. dat kan niet").
+`climb::pose_for` decides it from the seat's height and the *highest*
+ground under where the feet come down (0.2–0.65 m out from the seat, a
+drawn quay wall crossed on the way counting at its top), on the sitter's
+own legs (`SeatFit`, measured on every body as it is built:
+`cartopolis_human::build::seat_fit`):
+
+- the legs hang (`dangle`, CMU 14_29, the seat on the edge) only where the
+  hanging soles at their lowest stay 2 cm above that ground — on the default
+  man a drop of about 0.64 m or more;
+- otherwise the feet are planted (`sit`): the seat on the edge, or, where
+  that would put the soles into the ground, the hips raised until the feet
+  stand on it. Between the two (an edge too high for planted feet and too low
+  for hanging ones) the feet are planted and stand a little off the ground.
+
+`no_seat_puts_a_foot_under_the_ground` poses and skins each chosen clip, every
+frame, at the chosen lift for edges 0.3–2 m high and five body heights, and
+holds the lowest sole within 2 cm of the ground or above it.
+
+**What put the feet in the ground:** the dangle's seat was measured at 0.45
+m over its ground when it is 0.62 m. The measure took the lowest skin under
+the hips, and the swinging calves pass back under the stool; bounded to a
+third of the hips' height under the joint (`build::seat_depth`) it is the
+seat. With 0.45 the clip was lowered 0.17 m too far, and legs chosen to hang
+from any edge 0.42 m up.
 
 **Every viewer measures the edge itself** (`climb::seat_on_edge`) from the
 seat point (position + offset) and the facing (the sitter's replicated yaw):
@@ -132,7 +151,9 @@ surface streamer reads each cell's quay walls' top edges off the meshes
 (`set_quay_cell`, dropped with the cell); "Sit" at a quay is the nearest
 drawn top edge within `QUAY_REACH_M` (1.5 m) of an avatar facing the water,
 the hips 5 cm behind it, facing out over the water. No drawn wall, no quay
-seat. It was found from the register's water (`swim_surface_at`) until
+seat. Where the map draws a strip of quay between two water polygons the
+seat goes out to the last wall (`outer_quay`), and a wall crossed under the
+feet refuses the seat (`Surroundings::feet_ground`). It was found from the register's water (`swim_surface_at`) until
 2026-11-15, and on the Noorderhaven's north quay that ring reaches a metre
 under the street: the seat sat behind the drawn wall and the legs went
 through it. Logged after the change: both Noorderhaven seats 5.0 cm from the
