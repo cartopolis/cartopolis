@@ -163,11 +163,13 @@ const PAVEMENT_SAMPLE_M: f32 = 6.0;
 /// would otherwise strip the pavements off half the streets in a town.
 const PAVEMENT_GRASS_SHARE: f32 = 0.3;
 
-/// Take the walkers off the grass.
+/// Take the walkers off the grass and out of the water.
 ///
 /// For every street people share with cars, sample where its pavements would be
-/// on each side; a side that is mostly `green` (the grass layer's own
-/// `GrassArea::plantable`, in the same tile-local frame) has no pavement, and a
+/// on each side; a side that is mostly `green` (the client passes the grass
+/// layer's own `GrassArea::plantable`, or `GrassArea::wet` — a quay street's
+/// canal side, where walkers were seen strolling along the water's edge, in the
+/// same tile-local frame) has no pavement, and a
 /// street with neither loses its walkers outright — a verge-lined arterial is a
 /// road nobody strolls along. A path, a footway or a pedestrian street is not
 /// sampled: people walk *on* those, and a path across a park is meant to be

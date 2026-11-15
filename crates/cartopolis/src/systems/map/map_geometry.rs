@@ -2647,7 +2647,10 @@ fn spawn_geometry_task(
                                 }
                                 cartopolis_geo::traffic::keep_walkers_off(
                                     &mut cell_places.drive_lines,
-                                    &|x, z| area.plantable(x, z),
+                                    // Grass or water: a quay street's canal side
+                                    // has no pavement either, and walkers were
+                                    // seen strolling along the water's edge.
+                                    &|x, z| area.plantable(x, z) || area.wet(x, z),
                                 );
                                 if wants.grass && !area.is_empty() {
                                     grass = Some(area);

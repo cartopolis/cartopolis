@@ -69,6 +69,11 @@ pub const BLADE_TRIS: u32 = 3;
 /// few tens of centimetres in places.
 const BLADE_CLEARANCE_M: f32 = 0.15;
 
+/// How near the water a point still counts as wet for [`GrassArea::wet`]: a
+/// walker half a metre from a quay's edge is walking along the edge of the
+/// water, not on a pavement.
+const WET_EDGE_M: f32 = 0.5;
+
 /// One streamed cell's answer to "may a blade stand here?".
 ///
 /// Built on the tile worker with the rest of the cell (`map_geometry`), and held
@@ -303,6 +308,15 @@ impl GrassArea {
     #[must_use]
     pub fn triangles(&self) -> usize {
         self.tris.len()
+    }
+
+    /// Is `(x, z)` on the tile's water or within [`WET_EDGE_M`] of it, in this
+    /// cell's tile-local metre frame? What keeps the ambient walkers off a quay's
+    /// water side (`traffic::keep_walkers_off`). Never true for a tile without a
+    /// `land` layer, which builds no water mask.
+    #[must_use]
+    pub fn wet(&self, x: f32, z: f32) -> bool {
+        self.water.blocks(x, z, WET_EDGE_M)
     }
 
     /// May a blade stand at `(x, z)`, in this cell's tile-local metre frame?
@@ -788,6 +802,9 @@ mod tests {
                     if area.plantable(x, z) {
                         on_water += 1;
                     }
+                    // …and the same points are what keeps a walker off a
+                    // quay's water side (`traffic::keep_walkers_off`).
+                    assert!(area.wet(x, z), "({x}, {z}) is in the water and not wet");
                 }
             }
             if sampled > 400 {
