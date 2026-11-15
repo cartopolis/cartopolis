@@ -129,6 +129,9 @@ fn main() {
                 vec![scenarios["idle"]["lua"].as_str().unwrap().to_string()],
             ),
             ("content", content.clone()),
+            // One pack each, as `../bench.ts` does: timers, no message storm.
+            ("firebird", vec![content[1].clone()]),
+            ("football", vec![content[2].clone()]),
         ] {
             let host = ScriptHost::spawn();
             let before = rss();

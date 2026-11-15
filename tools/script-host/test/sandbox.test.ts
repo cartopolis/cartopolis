@@ -104,6 +104,67 @@ describe('the sandbox', () => {
     })
 })
 
+// All scripts share one realm (realm-runtime.js says why), so what keeps them
+// apart is that every intrinsic is frozen and each script's state is a closure.
+// Each test here is one way a script could leave something for another to find.
+describe('one realm, scripts apart', () => {
+    test.each([
+        ['Object.prototype.x = 1', 'TypeError'],
+        ['Array.prototype.push = () => 0', 'TypeError'],
+        ['Math.random = () => 4', 'TypeError'],
+        ['JSON.parse = () => 1', 'TypeError'],
+        ['String.prototype.trim = () => "x"', 'TypeError'],
+        ['Object.defineProperty(Object.prototype, "x", {value: 1})', 'TypeError'],
+        ['Object.getPrototypeOf(function* () {}).prototype.next = 1', 'reserved for the host'],
+        ['Object.getPrototypeOf([][Symbol.iterator]()).next = () => ({done: true})', 'TypeError'],
+        ['Object.setPrototypeOf(Object.prototype, {})', 'TypeError'],
+        ['Error.prototype.message = "x"', 'TypeError'],
+    ])('%s is refused', (code, kind) => {
+        const host = new ScriptHost()
+        host.load(1, code)
+        const err = errors(host.tick(0.05, new Map()))[0] ?? ''
+        expect(kind === 'TypeError' ? err.split(':')[0] : err).toContain(kind)
+    })
+
+    test('the last regular-expression match is not left for the next script', () => {
+        const host = new ScriptHost()
+        host.load(1, 'function on_start() { /(secret)/.test("a secret") }')
+        host.load(2, 'function on_start() { say(String(RegExp.$1) + " " + String(RegExp.lastMatch)) }')
+        expect(said(host.tick(0.05, new Map()))).toEqual(['undefined undefined'])
+    })
+
+    test('the global symbol registry is gone', () => {
+        expect(probe('typeof Symbol.for')).toBe('undefined')
+    })
+
+    test('two prims with the same source keep their own state', () => {
+        const host = new ScriptHost()
+        const src = 'let n = 0; function on_touch() { n++; say(String(n)) }'
+        host.load(1, src)
+        host.load(2, src)
+        host.tick(0.05, new Map())
+        for (let i = 0; i < 3; i++) host.event(1, {kind: 'Touch', avatar_id: 1, avatar_name: 'A'})
+        host.event(2, {kind: 'Touch', avatar_id: 1, avatar_name: 'A'})
+        const out = [...host.tick(0.05, new Map()), ...host.tick(0.05, new Map()), ...host.tick(0.05, new Map())]
+        expect(out.filter((c: any) => c.Say && c.prim_id === 1).map((c: any) => c.Say.text)).toEqual(['1', '2', '3'])
+        expect(out.filter((c: any) => c.Say && c.prim_id === 2).map((c: any) => c.Say.text)).toEqual(['1'])
+    })
+
+    test('replacing an API call breaks only the script that did it', () => {
+        const host = new ScriptHost()
+        host.load(1, 'say = null')
+        host.load(2, 'function on_start() { say("still here") }')
+        expect(said(host.tick(0.05, new Map()))).toEqual(['still here'])
+    })
+
+    test('a script cannot add a global for another to read', () => {
+        const host = new ScriptHost()
+        host.load(1, 'try { leaked = 1 } catch (e) {} ; var also = 2')
+        host.load(2, 'function on_start() { say(typeof leaked + " " + typeof also) }')
+        expect(said(host.tick(0.05, new Map()))).toEqual(['undefined undefined'])
+    })
+})
+
 describe('memory', () => {
     test('a slice that allocates without end is stopped', () => {
         const host = new ScriptHost()

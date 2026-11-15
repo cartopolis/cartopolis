@@ -36,6 +36,11 @@ if (!only || only === 'memory') {
         for (const [label, sources] of [
             ['idle', [scenarios.idle.js]],
             ['content', content],
+            // One pack each: timers every tick or every 0.1 s, and no messages. The
+            // mix above is a message storm at this size — the packs are written for
+            // one firebird, and 500 read each other's replies as a toggle.
+            ['firebird', [content[1]]],
+            ['football', [content[2]]],
         ] as const) {
             const host = new ScriptHost()
             const before = rss()

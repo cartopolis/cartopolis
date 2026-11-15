@@ -17,7 +17,7 @@
  * The rewrite is also the first gate of the sandbox. It refuses what it cannot
  * meter (classes, getters, async functions, the author's own generators) and what
  * reaches outside the script (`import()`), and it reserves every `__` name for the
- * runtime, since an author who could assign `__f` would have unlimited fuel.
+ * runtime, since an author who could reach `__s` would have unlimited fuel.
  */
 import * as acorn from 'acorn'
 import {generate} from 'astring'
@@ -37,14 +37,17 @@ type Node = {type: string; loc?: {start: {line: number}}; [key: string]: any}
 const ident = (name: string): Node => ({type: 'Identifier', name})
 const lit = (value: unknown): Node => ({type: 'Literal', value})
 
-/** `if (--__f < 0 || ((__f & 1023) === 0 && __mem())) yield;` — the fuel check. */
+/** `__s.f`: one counter for the realm, a property of the runtime's shared state. */
+const fuelCounter = (): Node => ({type: 'MemberExpression', object: ident('__s'), property: ident('f'), computed: false, optional: false})
+
+/** `if (--__s.f < 0 || ((__s.f & 1023) === 0 && __mem())) yield;` — the fuel check. */
 function fuelCheck(): Node {
-    const dec = {type: 'UpdateExpression', operator: '--', prefix: true, argument: ident('__f')}
+    const dec = {type: 'UpdateExpression', operator: '--', prefix: true, argument: fuelCounter()}
     const out = {type: 'BinaryExpression', operator: '<', left: dec, right: lit(0)}
     const every = {
         type: 'BinaryExpression',
         operator: '===',
-        left: {type: 'BinaryExpression', operator: '&', left: ident('__f'), right: lit(1023)},
+        left: {type: 'BinaryExpression', operator: '&', left: fuelCounter(), right: lit(1023)},
         right: lit(0),
     }
     const mem = {type: 'CallExpression', callee: ident('__mem'), arguments: [], optional: false}
