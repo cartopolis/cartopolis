@@ -306,6 +306,16 @@ jump disc is a group gap, so their miss bands do not meet. The locate disc's cap
 sits to its left rather than under it
 (`map_osd::the_right_edge_controls_clear_the_column_of_round_buttons`).
 
+**The stick floats** (2026-11-14, after the owner found the phone's controls
+awkward). A thumb landing anywhere in a band `STICK_FLOAT_WELLS` (2.2) wells
+wide — at most 45 % of the screen — takes the stick, and the well stands under
+it (`map_osd::stick_origin`), as phone games do it. The fixed 108-pt well had to
+be hit without looking, and a miss was a map finger: the thumb meant to walk
+turned the camera. The band has the well's height, so nothing above the stick
+(the scale bar, the chat transcript) moved; the cost is that a tap in the band
+is the stick's and not the map's. At rest, and for a mouse, the well stands at
+the band's left end.
+
 The stick's *magnitude* is kept, which is the whole difference from the gestures
 it replaced: `camera_controls` derives a throttle from `move_direction.length()`
 (saturating at 1, so a key is exactly as fast as it always was) and a half-push

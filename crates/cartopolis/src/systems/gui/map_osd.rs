@@ -419,7 +419,7 @@ pub fn render_map_osd(
     egui: EguiRef,
     mut osd: ResMut<OsdInput>,
     mut regions: ResMut<crate::systems::touch::UiClaimRegions>,
-    mut stick_finger: Local<Option<u64>>,
+    mut stick: Local<(Option<u64>, Option<egui::Pos2>)>,
     camera_state: Res<CameraState>,
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<RightPanel>,
@@ -461,7 +461,10 @@ pub fn render_map_osd(
             Cluster::Fly => {
                 next.climb =
                     vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
-                next.fly = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
+                next.fly = {
+                    let s = &mut *stick;
+                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas)
+                };
             }
             Cluster::Walk => {
                 // The avatar has no vertical of its own (it walks), so the
@@ -474,7 +477,10 @@ pub fn render_map_osd(
                     Mark::Plus,
                     Mark::Minus,
                 );
-                next.walk = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
+                next.walk = {
+                    let s = &mut *stick;
+                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas)
+                };
                 next.jump = jump_button(ctx, &fingers, &mut areas, at);
                 if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open, at) {
                     body.faces
@@ -486,7 +492,7 @@ pub fn render_map_osd(
             Cluster::Zoom => {}
         }
     } else {
-        *stick_finger = None;
+        *stick = (None, None);
     }
 
     // The zoom rail (`systems::zoom_rail`): Earth mode, wherever nothing covers
@@ -1673,33 +1679,70 @@ fn stick_owner(current: Option<u64>, fingers: &Fingers, area: egui::Rect) -> Opt
         .or_else(|| fingers.inside(area))
 }
 
+/// How wide the band the stick floats in is, in wells (2 × [`STICK_RADIUS`]),
+/// and the most of the screen's width it may take.
+const STICK_FLOAT_WELLS: f32 = 2.2;
+const STICK_FLOAT_MAX_FRACTION: f32 = 0.45;
+
+/// Where the well stands for a thumb landing at `at` in the band `zone`: under
+/// the thumb, kept whole inside the band.
+#[must_use]
+fn stick_origin(zone: egui::Rect, at: egui::Pos2) -> egui::Pos2 {
+    let x_lo = zone.left() + STICK_RADIUS;
+    let x_hi = (zone.right() - STICK_RADIUS).max(x_lo);
+    egui::pos2(at.x.clamp(x_lo, x_hi), zone.center().y)
+}
+
 /// The translation stick, bottom-left. Returns its reading in the unit disc.
 ///
 /// Bottom-*left* because the dock (the panel toggles) is bottom-centre and the
 /// climb pair is right-of-centre: the three do not overlap at any window size,
 /// which a corner anchor cannot promise on its own.
+///
+/// **It floats** (2026-11-14): a thumb landing anywhere along a band
+/// [`STICK_FLOAT_WELLS`] wells wide takes the stick, and the well moves under
+/// it, as in phone games. The fixed well had to be hit within its 108 points
+/// without looking, and a thumb that missed it turned the camera instead of
+/// walking — the owner found the phone's controls awkward. At rest, and for a
+/// mouse, the well stands at the band's left end as it always did.
 fn thumbstick(
     ctx: &egui::Context,
     fingers: &Fingers,
     owner: &mut Option<u64>,
+    origin: &mut Option<egui::Pos2>,
     areas: &mut Vec<egui::Rect>,
 ) -> Vec2 {
     let mut wish = Vec2::ZERO;
     let size = STICK_RADIUS * 2.0;
+    let width = (size * STICK_FLOAT_WELLS)
+        .min(ctx.content_rect().width() * STICK_FLOAT_MAX_FRACTION)
+        .max(size);
     let area = egui::Area::new(egui::Id::new("osd_stick"))
         .anchor(
             egui::Align2::LEFT_BOTTOM,
             egui::vec2(theme::OSD_MARGIN, -bottom_offset()),
         )
         .show(ctx, |ui| {
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::click_and_drag());
+            let (zone, _) = ui.allocate_exact_size(egui::vec2(width, size), egui::Sense::hover());
+            let rest = egui::Rect::from_min_size(zone.min, egui::Vec2::splat(size));
+            // The mouse works the well where it rests; only a finger floats it.
+            let resp = ui.interact(
+                rest,
+                egui::Id::new("osd_stick_well"),
+                egui::Sense::click_and_drag(),
+            );
             let resp = theme::named(ui, resp, "Move");
-            let centre = rect.center();
-            // The miss band: a grab that lands just past the well still takes
+            // The miss band: a grab that lands just past the band still takes
             // the stick (nothing borders it but map), and `stick_wish` clamps
             // the reading back onto the rim.
-            *owner = stick_owner(*owner, fingers, rect.expand(MISS_MARGIN));
+            let had = *owner;
+            *owner = stick_owner(*owner, fingers, zone.expand(MISS_MARGIN));
+            if *owner != had {
+                *origin = owner
+                    .and_then(|id| fingers.at(id))
+                    .map(|at| stick_origin(zone, at));
+            }
+            let centre = origin.filter(|_| owner.is_some()).unwrap_or(rest.center());
             // The mouse is the `or` arm, and on a desktop it is the only one.
             // `interact_pointer_pos` is the position of the pointer that owns
             // *this* widget's drag, so it cannot be stolen by a finger elsewhere
@@ -1949,6 +1992,31 @@ mod tests {
     /// What the bottom-left corner reserves has to cover the stick actually
     /// drawn there, or the scale bar that reads this lands on it — which is the
     /// collision that moved the bar off the opposite corner in the first place.
+    /// The well stands under the thumb that took it, along the band, and never
+    /// past either end of it — the band's height is the well's, so it does not
+    /// move up or down.
+    #[test]
+    fn the_stick_floats_to_the_thumb_inside_its_band() {
+        let size = STICK_RADIUS * 2.0;
+        let zone = egui::Rect::from_min_size(egui::pos2(12.0, 500.0), egui::vec2(size * 2.2, size));
+        let mid = stick_origin(zone, egui::pos2(130.0, 520.0));
+        assert_eq!(mid, egui::pos2(130.0, zone.center().y));
+        assert_eq!(
+            stick_origin(zone, egui::pos2(0.0, 560.0)).x,
+            zone.left() + STICK_RADIUS
+        );
+        assert_eq!(
+            stick_origin(zone, egui::pos2(900.0, 560.0)).x,
+            zone.right() - STICK_RADIUS
+        );
+        // A band no wider than the well keeps it where it rests.
+        let narrow = egui::Rect::from_min_size(zone.min, egui::Vec2::splat(size));
+        assert_eq!(
+            stick_origin(narrow, egui::pos2(300.0, 0.0)),
+            narrow.center()
+        );
+    }
+
     #[test]
     fn the_bottom_left_reservation_covers_the_stick() {
         let stick_top = bottom_offset() + STICK_RADIUS * 2.0;
