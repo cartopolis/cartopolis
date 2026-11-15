@@ -71,7 +71,8 @@ pub fn grip_for(clip: &str) -> Grip {
         "punch" => Grip::held(1.0, 0.0),
         "kick" | "roll" => Grip::held(0.55, 0.05),
         "faint" => Grip::held(0.1, 0.0),
-        "sit" => Grip::held(0.3, 0.03),
+        "sit" | "dangle" => Grip::held(0.3, 0.03),
+        "climb" => Grip::held(0.3, 0.05),
         // Half closed, round the other person's hand, from the reach to the
         // let-go; a fist would read as a punch, an open hand as a wave.
         "handshake" => Grip::held(0.45, 0.0),

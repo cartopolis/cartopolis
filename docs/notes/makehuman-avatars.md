@@ -440,6 +440,42 @@ and the throw in the shoulders test: a hand raised over the head lifts its
 shoulder by design, as the wave's does (the throw's averages 2 mm above rest,
 where the test wants 5–50 mm below).
 
+## The climb and the dangle (pack 2026-11-15)
+
+Two more CMU cuts by `--add-clip`, for climbing onto walls and sitting on
+edges (`climbing-and-edges.md`). `--add-clip` prints, for these, the numbers
+the client lifts by (`measure_climb_and_seat`), and `build::lowest_sole` /
+`build::seat_height` are the measures.
+
+- **`climb`**: 15_02 "climb, step over, sit on, stand on stepstool", frames
+  4150–4330 (1.49 s): the left knee up onto the top of a two-step stool,
+  the body onto it, the right foot after. On the default man the soles rise
+  0.365 m and the hips travel 0.60 m. It starts with the right foot already
+  on the stool's 0.19 m step. Cut as **`CutKind::Travel`**: its travel taken
+  out evenly and kept as its speed (0.40 m/s), however slow, because the
+  client carries the avatar onto the wall over the clip — a `Once` cut keeps
+  any travel under a metre a second. It rises and so is grounded on its
+  **first** frame, not the quartile `plant_feet` stands the others on (a
+  fifth of it is on the ground, so the quartile would sink it by the step).
+  Searched: the stairs (13_35–38, 14_21–23, three 0.2 m steps in about
+  three seconds), the playground (01_02–08, one foot already on a 0.28 m
+  step and the hands up on a bar), every single-step rise in 15_02 (all
+  step-overs, hips level). None hoists onto a waist-high wall.
+- **`dangle`**: 14_29 "sit on stepstool, stand up, swing legs", a 0.9–2.2 s
+  loop out of frames 2180–2523: sitting on a 0.78 m stool, the hands on the
+  thighs, both legs hanging and swinging together (ankles 0.19–0.40 m off
+  the floor). The loop found is one swing, 1.08 s. Its seat is 0.463 m over
+  its ground bare and 0.436 m dressed, the `sit` clip's 0.297 m and 0.303 m
+  (`the_seats_are_where_an_edge_takes_them`, which also holds the soles
+  within 4 cm of its ground and the knees in front of the seat). 01_06–08
+  ("climb, sit, dangle legs") hold an overhead bar throughout.
+
+Excuses, measured: the female elegant suit's skirt stretches 5.1 cm in the
+climb's raised knee (`clothes_do_not_spike`, beside its stride's); the
+dangle props the shoulders up 2 mm above rest, as sitting with the hands on
+an edge does (`upright_clips_keep_the_shoulders_down`). The pack grew from
+12 099 KB to 12 123 KB.
+
 Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in
 CMU (a slip-and-fall stands in), the waving hand is the only one that opens on
 purpose (both hands share the clip's grip), and the `--clip` sheet's first tile

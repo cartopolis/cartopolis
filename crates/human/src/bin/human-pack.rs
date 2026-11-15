@@ -132,6 +132,36 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
         // found by the right hand's speed (4.4 m/s at release, the fastest in
         // the take). It replaced the punch, which stood in for a throw.
         once("throw", "15_12", 3160, 3420, None),
+        // Climbing onto a wall and sitting on its edge (2026-11-15).
+        //
+        // 15_02 "climb, step over, sit on, stand on stepstool": a two-step
+        // stool, 0.19 m and 0.39 m. The right foot already rests on the low
+        // step; from frame ~4160 the left knee comes up and the foot lands on
+        // the top (~4200), the body rises onto it and the right foot joins at
+        // ~4320. 0.39 m up and 0.64 m forward in 1.5 s, both feet on the top
+        // at the end. CMU has no hoist onto a waist-high wall; its other
+        // climbs are stairs (13_35–38, 14_21–23: three 0.2 m steps in about
+        // three seconds) and playground frames (01_xx, one foot already on a
+        // 0.28 m step and the hands on an overhead bar). The client lifts the
+        // body the rest of the way to the wall's top over the clip.
+        Cut {
+            kind: CutKind::Travel,
+            ..once("climb", "15_02", 4150, 4330, None)
+        },
+        // 14_29 "sit on stepstool, stand up, swing legs": seated on a stool
+        // 0.78 m high with the hands on the thighs, both legs hanging and
+        // swinging gently (ankles 0.19–0.40 m off the floor, a swing about
+        // every 1.2 s) from frame ~2180 to the end of the take. The sit on a
+        // wall top or a quay edge, where the feet do not reach the ground.
+        // 01_06–08 ("climb, sit, dangle legs") hold an overhead bar
+        // throughout.
+        Cut {
+            kind: CutKind::Loop {
+                min_s: 0.9,
+                max_s: 2.2,
+            },
+            ..once("dangle", "14_29", 2180, 2523, None)
+        },
     ]
 }
 
@@ -543,6 +573,7 @@ fn add_clips(pack_path: &Path, cmu: &Path, names: &[String]) {
             for (cut, secs) in added {
                 println!("{}: {} added, {secs:.2} s", pack_path.display(), cut.name);
                 measure_greeting(&pack, &cut);
+                measure_climb_and_seat(&pack, &cut.name);
             }
             println!("{}: {} KB", pack_path.display(), n / 1024);
         }
@@ -616,6 +647,60 @@ fn measure_greeting(pack: &cartopolis_human::HumanPack, cut: &Cut) {
         "  {name}: the palms apart every 4th frame: {}",
         gaps.join(" ")
     );
+}
+
+/// For the climb, how far up and along the default man goes and how long it
+/// takes; for a seat (`sit`, `dangle`), how high the seat is above the
+/// clip's ground and where the feet hang. `systems::climb` carries these
+/// numbers for the client and `build`'s tests hold the pack to them; they
+/// are printed here to be copied there.
+fn measure_climb_and_seat(pack: &cartopolis_human::HumanPack, name: &str) {
+    use cartopolis_human::{build, Look, Phenotype};
+    if !matches!(name, "climb" | "sit" | "dangle") {
+        return;
+    }
+    let look = Look {
+        phenotype: Phenotype::male(),
+        skin: String::new(),
+        proxies: vec![],
+        eyes: None,
+        modifiers: vec![],
+    };
+    let m = build(pack, &look);
+    let Some(c) = m.clips.iter().position(|c| c.name == name) else {
+        return;
+    };
+    let clip = &m.clips[c];
+    let frames = clip.rotations.first().map_or(0, Vec::len);
+    let secs = (frames.max(1) - 1) as f32 / clip.fps;
+    let feet = |f: usize| cartopolis_human::build::lowest_sole(&m, Some((c, f)));
+    let seat = |f: usize| cartopolis_human::build::seat_height(&m, Some((c, f)));
+    if name == "climb" {
+        let (Some(start), Some(end)) = (feet(0), feet(frames - 1)) else {
+            return;
+        };
+        println!(
+            "  climb: {secs:.2} s, the soles from {start:.3} m to {end:.3} m (a rise of \
+             {:.3} m), carried at {:.3} m/s ({:.2} m)",
+            end - start,
+            clip.speed,
+            clip.speed * secs
+        );
+    } else {
+        let seats: Vec<f32> = (0..frames).filter_map(seat).collect();
+        let soles: Vec<f32> = (0..frames).filter_map(feet).collect();
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+        let range = |v: &[f32]| {
+            v.iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)))
+        };
+        let (lo, hi) = range(&soles);
+        println!(
+            "  {name}: {secs:.2} s, the seat {:.3} m over the clip's ground, the soles \
+             {lo:.3}..{hi:.3} m",
+            mean(&seats)
+        );
+    }
 }
 
 /// `--add-face-units PACK DIR`: put the face's units from the `faceunits01`

@@ -321,6 +321,13 @@ pub struct Cut {
 pub enum CutKind {
     /// Played once (an emote): the frames as they are, faced forward.
     Once,
+    /// Played once while the client moves the avatar: its travel over the
+    /// ground is taken out evenly, however slow, and kept as the clip's
+    /// speed, so the body goes where the avatar is carried rather than ahead
+    /// of it. Its rise is kept. The climb (a step up onto a stool, CMU 15_02)
+    /// goes 0.6 m forward in 1.5 s — too slow for [`CutKind::Once`] to take
+    /// out, and an avatar that has to end up on the wall it climbed.
+    Travel,
     /// A cycle between `min_s` and `max_s` seconds long, found in the take.
     Loop { min_s: f32, max_s: f32 },
 }
@@ -520,7 +527,7 @@ pub fn clip_from_motion(m: &Motion, cut: &Cut, bones: &[Bone], fps_out: f32) -> 
 
     // The stretch to keep.
     let (a, len) = match cut.kind {
-        CutKind::Once => (0, take.len() - 1),
+        CutKind::Once | CutKind::Travel => (0, take.len() - 1),
         CutKind::Loop { min_s, max_s } => {
             let worlds: Vec<_> = take.iter().map(|f| m.world(f)).collect();
             let min = (min_s * fps).round() as usize;
@@ -552,7 +559,12 @@ pub fn clip_from_motion(m: &Motion, cut: &Cut, bones: &[Bone], fps_out: f32) -> 
     // (the dive roll's four metres) before its travel is taken out, or the
     // drift of a wave would turn the body to face it.
     let pace = travel.length() / secs / hip_height;
-    let moving = if looped { pace > 0.2 } else { pace > 1.0 };
+    let carried = cut.kind == CutKind::Travel;
+    let moving = if looped {
+        pace > 0.2
+    } else {
+        carried || pace > 1.0
+    };
     let heading = if moving {
         travel.x.atan2(travel.z)
     } else {
@@ -658,7 +670,11 @@ pub fn clip_from_motion(m: &Motion, cut: &Cut, bones: &[Bone], fps_out: f32) -> 
         frames: out_frames as u32,
         rotations,
         hips,
-        speed: if moving && looped { pace } else { 0.0 },
+        speed: if moving && (looped || carried) {
+            pace
+        } else {
+            0.0
+        },
         looped,
         rest_dirs,
     })

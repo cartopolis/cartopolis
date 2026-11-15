@@ -427,6 +427,10 @@ pub fn build(pack: &HumanPack, look: &Look) -> HumanModel {
 /// heels and toes, what stands on the ground.
 const FOOT_HEIGHT: f32 = 0.12;
 
+/// The clip that climbs: stood on its first frame, not its quartile
+/// ([`plant_feet`]).
+const CLIMB: &str = "climb";
+
 /// Stand every clip on its soles: lift or lower it, once for the whole clip,
 /// so that in a quarter of its frames the lowest point of the feet is at or
 /// below the ground and in the rest above it — for a walk, the stance; for a
@@ -507,8 +511,17 @@ fn plant_feet(clips: &mut [RetargetedClip], joints: &[Joint], parts: &[Part]) {
                 .fold(f32::INFINITY, f32::min);
             lowest.push(low);
         }
+        // A climb starts on the ground and ends on top of what it climbed: its
+        // feet are on three levels, the ground for a fifth of it, and the
+        // quartile would sink it by a step. It stands on its first frame.
+        let first = lowest.first().copied();
         lowest.sort_by(f32::total_cmp);
-        let Some(&quartile) = lowest.get(frames / 4) else {
+        let quartile = if clip.name == CLIMB {
+            first
+        } else {
+            lowest.get(frames / 4).copied()
+        };
+        let Some(quartile) = quartile else {
             continue;
         };
         if !quartile.is_finite() {
@@ -562,6 +575,65 @@ impl HumanModel {
         }
         world
     }
+}
+
+impl HumanModel {
+    /// Every vertex of the drawn parts — the body's only, when `body_only` —
+    /// skinned on the CPU at one frame of a clip (`None`: the rest pose). For
+    /// measuring a clip, not for drawing it.
+    #[must_use]
+    pub fn posed(&self, clip: Option<(usize, usize)>, body_only: bool) -> Vec<Vec3> {
+        let skin: Vec<Mat4> = self
+            .joint_poses(clip)
+            .iter()
+            .zip(&self.joints)
+            .map(|((t, r), j)| {
+                Mat4::from_rotation_translation(*r, *t) * Mat4::from_cols_array(&j.inverse_bind)
+            })
+            .collect();
+        self.parts
+            .iter()
+            .filter(|p| !body_only || p.kind == PartKind::Body)
+            .flat_map(|p| {
+                p.positions
+                    .iter()
+                    .zip(&p.joints)
+                    .zip(&p.weights)
+                    .map(|((at, j), w)| {
+                        (0..4)
+                            .map(|k| {
+                                skin[j[k] as usize].transform_point3(Vec3::from_array(*at)) * w[k]
+                            })
+                            .sum::<Vec3>()
+                    })
+            })
+            .collect()
+    }
+}
+
+/// The lowest point of the feet (or the shoes) at one frame of a clip,
+/// metres above the clip's ground.
+#[must_use]
+pub fn lowest_sole(m: &HumanModel, clip: Option<(usize, usize)>) -> Option<f32> {
+    m.posed(clip, false).iter().map(|p| p.y).reduce(f32::min)
+}
+
+/// How high a seated clip's seat is at one frame, metres above the clip's
+/// ground: the lowest point under the hips, the body's or the clothes on it
+/// (a pair of trousers hides the skin there) — within 15 cm of the pelvis
+/// across and 8 cm along, so the thighs reaching forward over the seat and
+/// the calves hanging below it are not counted. `None` for a body with no
+/// pelvis.
+#[must_use]
+pub fn seat_height(m: &HumanModel, clip: Option<(usize, usize)>) -> Option<f32> {
+    let pelvis = m.joint_positions(clip)[m.joint("pelvis")?];
+    m.posed(clip, false)
+        .iter()
+        .filter(|p| {
+            (p.x - pelvis.x).abs() < 0.15 && (p.z - pelvis.z).abs() < 0.08 && p.y < pelvis.y
+        })
+        .map(|p| p.y)
+        .reduce(f32::min)
 }
 
 fn corners(f: &Face) -> impl Iterator<Item = u32> + '_ {
@@ -1176,12 +1248,13 @@ mod tests {
                 // A skirt spans both legs, so a stride stretches it (5.0 cm
                 // walking, 6.6 running) however it is weighted, and so does
                 // the breaststroke's kick (8.0 cm, and 5.3 for the full-skirted
-                // dress) — under water, where little of it shows.
+                // dress) — under water, where little of it shows — and the
+                // climb's knee raised onto the step (5.1 cm, 2026-11-15).
                 let skirt = name == "female_elegantsuit01"
                     || name == "toigo_camisole_dress_with_full_skirt";
                 let skirt_striding = (skirt && clip.name == "swim")
                     || (name == "female_elegantsuit01"
-                        && (clip.name == "walk" || clip.name == "run"));
+                        && (clip.name == "walk" || clip.name == "run" || clip.name == "climb"));
                 if clip.name == "roll" || clip.name == "kick" || skirt_striding {
                     continue;
                 }
@@ -1253,7 +1326,9 @@ mod tests {
     /// Left out: the wave, the high five and the throw, whose hand goes over
     /// the head and lifts its shoulder on purpose — the throw's right
     /// shoulder averages 2 mm above rest (0.102 m under the neck against
-    /// 0.104, 2026-11-15).
+    /// 0.104, 2026-11-15) — and the dangle, sitting on an edge with the hands
+    /// on it, which props the shoulders up as sitting on one's hands does
+    /// (0.106 m under the neck, 2 mm above rest, 2026-11-15).
     #[test]
     fn upright_clips_keep_the_shoulders_down() {
         let Some(pack) = shipped_pack() else { return };
@@ -1272,6 +1347,7 @@ mod tests {
             "punch",
             "sit",
             "handshake",
+            "climb",
         ] {
             let c = m.clips.iter().position(|c| c.name == name).unwrap();
             let frames = m.clips[c].rotations[0].len();
@@ -1520,6 +1596,91 @@ mod tests {
         assert!(back < -0.15 && ahead > 0.35, "{back:.2}..{ahead:.2}");
         assert!(raised, "the hand comes up by the head");
         assert!(fastest > 3.0, "{fastest:.1} m/s");
+    }
+
+    /// The climb (CMU 15_02, `human-pack`) starts with the soles on the
+    /// ground, ends with both feet on a top 0.365 m up, and is carried 0.6 m
+    /// along in 1.5 s — the numbers `systems::climb` lifts and moves the
+    /// avatar by (`CLIMB_RISE_M`, `CLIMB_SPEED`, `CLIMB_SECS`; change them
+    /// together).
+    #[test]
+    fn the_climb_steps_up_onto_the_top() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let Some(c) = m.clips.iter().position(|c| c.name == "climb") else {
+            return;
+        };
+        let clip = &m.clips[c];
+        let frames = clip.rotations[0].len();
+        let secs = (frames - 1) as f32 / clip.fps;
+        let start = lowest_sole(&m, Some((c, 0))).unwrap();
+        let end = lowest_sole(&m, Some((c, frames - 1))).unwrap();
+        let p = m.joint_positions(Some((c, frames - 1)));
+        let (l, r) = (p[m.joint("foot_l").unwrap()], p[m.joint("foot_r").unwrap()]);
+        println!(
+            "climb: {secs:.2} s, soles {start:.3} -> {end:.3} m, ankles {:.3} {:.3}, {:.3} m/s",
+            l.y, r.y, clip.speed
+        );
+        assert!(start.abs() < 0.02, "it starts on the ground: {start:.3}");
+        assert!(
+            (end - start - 0.365).abs() < 0.03,
+            "it rises 0.365 m: {:.3}",
+            end - start
+        );
+        assert!(
+            (l.y - r.y).abs() < 0.06,
+            "both feet are on the top at the end: {:.3} {:.3}",
+            l.y,
+            r.y
+        );
+        assert!((secs - 1.49).abs() < 0.05, "{secs:.2} s");
+        assert!((clip.speed - 0.403).abs() < 0.03, "{:.3} m/s", clip.speed);
+    }
+
+    /// The two seats, measured on the default man as `seat_height` does:
+    /// the stool sit's seat is 0.30 m over its ground and the dangle's 0.45 m,
+    /// the numbers `systems::climb` stands a sitter on an edge by
+    /// (`SIT_SEAT_M`, `DANGLE_SEAT_M`; change them together). The dangle's legs
+    /// hang free: the soles swing within a few centimetres of its ground and
+    /// the knees reach out over the edge, in front of the seat.
+    #[test]
+    fn the_seats_are_where_an_edge_takes_them() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        // Bare, 0.297 and 0.463 (`human-pack --add-clip`); dressed, as here,
+        // 0.303 and 0.436: trousers between the skin and the seat.
+        for (name, seat) in [("sit", 0.30), ("dangle", 0.45)] {
+            let Some(c) = m.clips.iter().position(|c| c.name == name) else {
+                continue;
+            };
+            let frames = m.clips[c].rotations[0].len();
+            let seats: Vec<f32> = (0..frames)
+                .filter_map(|f| seat_height(&m, Some((c, f))))
+                .collect();
+            let mean = seats.iter().sum::<f32>() / seats.len() as f32;
+            println!("{name}: the seat {mean:.3} m up");
+            assert!(
+                (mean - seat).abs() < 0.03,
+                "{name}: the seat is {mean:.3} m up"
+            );
+            if name == "dangle" {
+                for f in 0..frames {
+                    let sole = lowest_sole(&m, Some((c, f))).unwrap();
+                    assert!(
+                        (-0.04..0.1).contains(&sole),
+                        "frame {f}: the soles at {sole:.3}"
+                    );
+                    let p = m.joint_positions(Some((c, f)));
+                    let knee = p[m.joint("calf_l").unwrap()];
+                    let hips = p[m.joint("pelvis").unwrap()];
+                    assert!(
+                        knee.z > hips.z + 0.25,
+                        "frame {f}: the knee {:.2} m ahead",
+                        knee.z - hips.z
+                    );
+                }
+            }
+        }
     }
 
     /// Standing clips look ahead, not at the pavement (`rig::level_gaze`).
