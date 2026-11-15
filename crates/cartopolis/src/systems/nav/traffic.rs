@@ -41,8 +41,11 @@
 //!
 //! ## What this deliberately is not
 //!
-//! No collision beyond following the car ahead, no give-way, no avatar
-//! interaction, and people walk through each other and ignore the lights. Every
+//! No collision beyond following the car ahead, no give-way, no car that
+//! notices an avatar, and people walk through each other and ignore the
+//! lights. (Walkers do notice avatars — they make way, look and wave back,
+//! `systems::crowd_react` — because a walker passing through *you* is the one
+//! overlap that is never invisible.) Every
 //! one of those is a simulation problem whose cost lands on the frame, and none
 //! of them is what the layer is for: the question it answers is "is this street
 //! alive", settled at a glance from a distance where two figures overlapping for
@@ -915,6 +918,12 @@ pub struct Car {
     /// A car's tail-lamp child (whose material braking swaps); a walker's
     /// body is on the agent itself (`crowd::CrowdFigure`).
     parts: AgentParts,
+    /// A walker's answer to the avatars near it: the step aside, the look,
+    /// the wave back (`systems::crowd_react`). Untouched for a car.
+    react: crate::systems::crowd_react::Reaction,
+    /// An offset right of its travel that `CARTO_CROWD_HERE` set to aim it
+    /// at the avatar, until its next line.
+    pinned: Option<f32>,
 }
 
 /// The child entities an agent drives besides its own transform.
@@ -952,6 +961,9 @@ impl Car {
     /// path the way it stands beside a street, which put every walker in a
     /// park on the lawn either side of the path.
     fn offset(&self, kind: AgentKind, line: &WorldDriveLine) -> f32 {
+        if let Some(pinned) = self.pinned {
+            return pinned;
+        }
         if kind == AgentKind::Walker && !line.uses.drive {
             let keep = (self.lateral + WALK_SPREAD_M) / (2.0 * WALK_SPREAD_M);
             return self.side * line.half_width * 0.5 * keep.clamp(0.0, 1.0);
@@ -974,7 +986,7 @@ impl Car {
 
 /// Deterministic unit random from three integers. The same shape as the geo
 /// crate's, kept local so this file does not reach across for four lines.
-fn rand01(seed: u64, a: u64, b: u64) -> f32 {
+pub(crate) fn rand01(seed: u64, a: u64, b: u64) -> f32 {
     let mut h =
         seed ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     h ^= h >> 33;
@@ -1089,6 +1101,8 @@ pub fn setup_traffic(
             signal_grace: 0.0,
             braking: false,
             parts,
+            react: Default::default(),
+            pinned: None,
         }
     };
 
@@ -1273,6 +1287,74 @@ const BIKE_PAINTS: &[u32] = &[
     0x1F_1F_21, 0x1F_1F_21, 0x1F_1F_21, 0x26_2E_3F, 0x5A_5E_63, 0x2F_45_3A, 0xD2_C9_B2, 0x6E_2E_2A,
 ];
 
+/// What the walkers react to (`systems::crowd_react`), and the state of the
+/// `CARTO_CROWD_HERE` capture hook. One parameter, because `drive_traffic`
+/// sits near Bevy's sixteen.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct CrowdReact<'w, 's> {
+    people: Res<'w, crate::systems::crowd_react::CrowdPeople>,
+    here: Local<'s, CrowdHere>,
+}
+
+/// `CARTO_CROWD_HERE=1`: walkers sent at the avatar, so a capture can show
+/// them making way. Every [`CROWD_HERE_EVERY_S`] of the moving world's clock
+/// the first eight dressed walkers are put on the walking line nearest the
+/// avatar, four coming from each side 5–14 m off, on courses through it
+/// (±0.25 m), held until each reaches its next line. It is a
+/// capture's hook, not something a session runs.
+#[derive(Default)]
+pub struct CrowdHere {
+    on: Option<bool>,
+    next: f32,
+    /// This round's placements, walker by walker; empty between rounds.
+    plan: Vec<(LineKey, f32, f32, f32)>,
+    /// What it reports once a second: the nearest any walker came to the
+    /// avatar, the widest step aside, the most heads turned and walkers
+    /// waving.
+    closest: f32,
+    widest: f32,
+    looking: usize,
+    waving: usize,
+    reported: f32,
+}
+
+const CROWD_HERE_EVERY_S: f32 = 30.0;
+
+/// Placements for [`CrowdHere`] round `avatar`, or none if no walking line
+/// is within 25 m: (line, direction, distance along, offset right of travel).
+fn crowd_here_plan(net: &DriveNetwork, avatar: Vec2) -> Vec<(LineKey, f32, f32, f32)> {
+    let best = net
+        .near(avatar, 25.0, AgentKind::Walker)
+        .into_iter()
+        .filter_map(|k| {
+            let l = net.get(k)?;
+            let along = l.nearest_along(avatar);
+            let (c, _) = l.at(along);
+            Some((k, along, c.distance(avatar)))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    let Some((key, along, _)) = best else {
+        return Vec::new();
+    };
+    let l = net.get(key).expect("near only offers lines it holds");
+    let (centre, heading) = l.at(along);
+    // Where the avatar is across the line, metres right of its own order.
+    let q = (avatar - centre).dot(right_of(heading));
+    (0..8)
+        .filter_map(|k| {
+            let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let start = along - dir * (5.0 + 3.0 * (k / 2) as f32);
+            if !(0.0..=l.length()).contains(&start) {
+                return None;
+            }
+            let s = if dir > 0.0 { start } else { l.length() - start };
+            let jitter = ((k * 7) % 5) as f32 * 0.125 - 0.25;
+            // Right of its own travel, which runs `dir` along the line.
+            Some((key, dir, s, (q + jitter) * dir))
+        })
+        .collect()
+}
+
 /// Most vans are white; see [`CarBody::fleet_white`](cartopolis_geo::agent_models::CarBody::fleet_white).
 const VAN_WHITE: u32 = 0xEC_EC_EA;
 
@@ -1318,6 +1400,7 @@ pub fn drive_traffic(
     crowd: Res<crate::systems::crowd::Crowd>,
     // A bike's frame, cranks and wheels (`AgentParts::Cyclist`).
     mut bike_parts: Query<&mut Transform, (With<BikePart>, Without<Car>, Without<FreeCamera>)>,
+    react: CrowdReact,
     mut frame: Local<u64>,
 ) {
     // One toggle per pool (Layers ▸ Life ▸ Traffic / People / Cyclists). A pool
@@ -1417,6 +1500,80 @@ pub fn drive_traffic(
 
     let dt = time.delta_secs();
     let elapsed = time.elapsed_secs();
+
+    // ── Who the walkers notice ───────────────────────────────────────────────
+    //
+    // Every avatar about, as one short list (`crowd_react::gather_people`),
+    // and the walkers that answer a wave begun this frame — chosen here, in a
+    // read-only pass that only runs on a frame somebody starts waving.
+    use crate::systems::crowd_react as react_to;
+    let CrowdReact { people, mut here } = react;
+    let people_at: &[Vec2] = if show_people { &people.at } else { &[] };
+    let mut answering: [Option<(usize, f32, Vec2)>; 4] = [None; 4];
+    if show_people {
+        let first_wave = people.waves_seen.wrapping_sub(people.waves.len() as u32);
+        for (w, &at) in people.waves.iter().enumerate().take(2) {
+            let candidates = cars.iter().enumerate().filter_map(|(i, (car, &kind, ..))| {
+                if kind != AgentKind::Walker || car.react.wave.is_some() {
+                    return None;
+                }
+                let l = car.line.and_then(|k| net.get(k))?;
+                let (p, travel, _) = pose_of(car, Some(l), kind)?;
+                let facing = if car.heading == Vec2::ZERO {
+                    travel
+                } else {
+                    car.heading
+                };
+                let p = p + right_of(travel) * car.react.shift;
+                react_to::wave_candidate(p, facing, at).map(|s| (i, s))
+            });
+            let picked =
+                react_to::pick_wave_backs(candidates, first_wave.wrapping_add(w as u32 + 1));
+            for (k, pick) in picked.into_iter().enumerate() {
+                if let Some((i, delay)) = pick {
+                    answering[w * react_to::MAX_WAVE_BACKS + k] = Some((i, delay, at));
+                }
+            }
+            info!(
+                "a wave at ({:.1}, {:.1}): {} walker(s) answer",
+                at.x,
+                at.y,
+                picked.iter().flatten().count()
+            );
+        }
+    }
+
+    // `CARTO_CROWD_HERE`: a round of walkers sent at the avatar, once the
+    // crowd's bodies are all made.
+    if *here
+        .on
+        .get_or_insert_with(|| crate::debug_switches::env_flag("CARTO_CROWD_HERE"))
+        && show_people
+        && here.plan.is_empty()
+        && elapsed >= here.next
+        && !crowd.is_empty()
+        && crowd.bodies.iter().all(Option::is_some)
+    {
+        if let Some(&avatar) = people.at.first() {
+            here.plan = crowd_here_plan(&net, avatar);
+            if !here.plan.is_empty() {
+                info!(
+                    "CARTO_CROWD_HERE: {} walkers sent at the avatar at {elapsed:.1} s",
+                    here.plan.len()
+                );
+                here.next = elapsed + CROWD_HERE_EVERY_S;
+                here.closest = f32::MAX;
+                here.reported = elapsed;
+            }
+        }
+    }
+    let mut here_plan = std::mem::take(&mut here.plan).into_iter();
+    let here_avatar = here
+        .on
+        .unwrap_or(false)
+        .then(|| people.at.first().copied())
+        .flatten();
+    let (mut here_looking, mut here_waving) = (0, 0);
     // The drawn signals a car could reach before it is recycled. Empty with the
     // street-detail layer off, which is right: a car stops only at a light that
     // is on the screen to be red.
@@ -1443,6 +1600,39 @@ pub fn drive_traffic(
             *vis = Visibility::Hidden;
             continue;
         }
+        let walker = kind == AgentKind::Walker;
+        // How long this walker's body waves for; 0 for one that cannot.
+        let wave_secs = dressed
+            .as_ref()
+            .and_then(|(figure, ..)| crowd.body(figure.body(&crowd)))
+            .map_or(0.0, |b| b.wave_secs);
+        if walker && dressed.is_some() {
+            if let Some((k, dir, s, offset)) = here_plan.next() {
+                car.line = Some(k);
+                car.dir = dir;
+                car.s = s;
+                car.pinned = Some(offset);
+                car.turn = None;
+                car.heading = Vec2::ZERO;
+                car.speed = WALK_SPEED * car.speed_scale;
+                car.react.reset();
+            }
+        }
+        if walker && wave_secs > 0.0 {
+            for (j, at) in answering
+                .iter()
+                .flatten()
+                .filter(|a| a.0 == i)
+                .map(|a| (a.1, a.2))
+            {
+                car.react.wave = Some(react_to::WaveBack {
+                    at,
+                    t: 0.0,
+                    delay: j,
+                    waving: None,
+                });
+            }
+        }
         let mut key = car.line;
         // A line closed since the agent joined it (`close_car_free_lines`) is
         // left at once: the closure is what the street is, not news to it.
@@ -1454,6 +1644,10 @@ pub fn drive_traffic(
         let mut accel_now = 0.0;
         let mut held = false;
         let mut stepped = 0.0;
+        // Where a walker means to step to, metres right of its path.
+        let mut shift_to = 0.0;
+        // What answering a wave has it doing.
+        let wave_step = car.react.wave.map(|w| w.step(wave_secs));
 
         // ── Advance ──────────────────────────────────────────────────────────
         //
@@ -1486,6 +1680,20 @@ pub fn drive_traffic(
                         &signals, elapsed, p, travel, car.speed, reach, &mut grace,
                     ));
                     car.signal_grace = grace;
+                }
+            } else if walker {
+                // Make way for whoever is on its line, slowing if it must; and
+                // stop to answer a wave.
+                if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
+                    let (to, keep) = react_to::make_way(p, travel, car.react.shift, people_at);
+                    shift_to = to;
+                    want *= keep;
+                }
+                if matches!(
+                    wave_step,
+                    Some(react_to::WaveStep::Stopping | react_to::WaveStep::Waving { .. })
+                ) {
+                    want = 0.0;
                 }
             }
             let (accel, brake) = kind.accel();
@@ -1536,6 +1744,7 @@ pub fn drive_traffic(
                             let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
                             let (centre, heading, to_y) = nl.at_with_deck(entry);
                             let to_dir = heading * next_dir;
+                            car.pinned = None;
                             car.keep_to_pavement(kind, nl, next_dir);
                             let to = centre + right_of(to_dir) * car.offset(kind, nl);
                             // The corner is not in the data: two centre lines
@@ -1578,6 +1787,7 @@ pub fn drive_traffic(
             ) {
                 Some((k, dir, s)) => {
                     let l = net.get(k).expect("place_agent only offers lines it read");
+                    car.pinned = None;
                     car.keep_to_pavement(kind, l, dir);
                     car.line = Some(k);
                     car.dir = dir;
@@ -1593,6 +1803,8 @@ pub fn drive_traffic(
                     car.speed = kind.speed(l) * car.speed_scale * 0.7;
                     car.tilt = Vec2::ZERO;
                     car.signal_grace = 0.0;
+                    car.react.reset();
+                    shift_to = 0.0;
                     accel_now = 0.0;
                     held = false;
                     // Record it, so the next agent recycled on this same frame
@@ -1609,11 +1821,39 @@ pub fn drive_traffic(
             pose = pose_of(&car, line, kind);
         }
 
-        let (Some(_), Some((pos, travel, deck))) = (key, pose) else {
+        let (Some(_), Some((mut pos, travel, deck))) = (key, pose) else {
             *vis = Visibility::Hidden;
             continue;
         };
         let on_deck = line.is_some_and(|l| l.on_deck);
+
+        // ── A walker's reactions ─────────────────────────────────────────────
+        //
+        // Stepped aside of its path by `Reaction::shift`, eased toward what
+        // `make_way` asked for, and never inside an avatar (`keep_clear`). It
+        // faces the way it is going — sideways too, so the step reads as a
+        // step — or, answering a wave, the waver.
+        let mut aim = travel;
+        let mut facing_rate = None;
+        if walker {
+            let (eased, sideways) = react_to::ease_shift(car.react.shift, shift_to, dt);
+            let shift = react_to::keep_clear(pos, travel, eased, people_at);
+            car.react.shift = shift;
+            car.react.shift_speed = sideways;
+            pos += right_of(travel) * shift;
+            let ahead = travel * car.speed.max(0.6) + right_of(travel) * sideways;
+            aim = ahead.try_normalize().unwrap_or(travel);
+            if let (
+                Some(w),
+                Some(react_to::WaveStep::Stopping | react_to::WaveStep::Waving { .. }),
+            ) = (car.react.wave, wave_step)
+            {
+                if let Some(to) = (w.at - pos).try_normalize() {
+                    aim = to;
+                    facing_rate = Some(3.0);
+                }
+            }
+        }
 
         // ── Draw ─────────────────────────────────────────────────────────────
         //
@@ -1622,12 +1862,41 @@ pub fn drive_traffic(
         // vehicle cannot. See `TURN_RATE_PER_MS`.
         let was = car.heading;
         car.heading = if car.heading == Vec2::ZERO {
-            travel
+            aim
         } else {
-            let rate = (TURN_RATE_PER_MS * car.speed).max(TURN_RATE_FLOOR);
-            rotate_toward(car.heading, travel, rate * dt)
+            let rate =
+                facing_rate.unwrap_or_else(|| (TURN_RATE_PER_MS * car.speed).max(TURN_RATE_FLOOR));
+            rotate_toward(car.heading, aim, rate * dt)
         };
         let facing = car.heading;
+        if walker {
+            // Answering a wave: once stood and facing the waver, it waves;
+            // when it is done (or gives up, or the waver is gone) it walks on.
+            if let Some(mut w) = car.react.wave {
+                w.t += dt;
+                match w.waving.as_mut() {
+                    Some(t) => *t += dt,
+                    None => {
+                        let facing_them = (w.at - pos)
+                            .try_normalize()
+                            .is_some_and(|to| facing.dot(to) > 0.94);
+                        if w.t >= w.delay && car.speed < 0.12 && facing_them {
+                            w.waving = Some(0.0);
+                        }
+                    }
+                }
+                let gone = w.at.distance(pos) > react_to::WAVE_REACH_M * 1.6;
+                car.react.wave =
+                    (!gone && w.step(wave_secs) != react_to::WaveStep::Done).then_some(w);
+            }
+            car.react.look(i as u64, pos, facing, people_at, dt);
+            if let Some(avatar) = here_avatar {
+                here.closest = here.closest.min(pos.distance(avatar));
+                here.widest = here.widest.max(car.react.shift.abs());
+                here_looking += usize::from(car.react.head.abs() > 0.1);
+                here_waving += usize::from(car.react.wave.is_some_and(|w| w.waving.is_some()));
+            }
+        }
         // Signed yaw rate, rad/s, positive toward `right_of`.
         let yaw_rate = if was == Vec2::ZERO || dt <= 0.0 {
             0.0
@@ -1720,7 +1989,16 @@ pub fn drive_traffic(
                 }
                 // Slowing to a stop eases from the stride into standing.
                 let standing = 1.0 - (car.speed / (WALK_SPEED * 0.5)).clamp(0.0, 1.0);
-                let t = crowd::tag(car.phase, standing, &figure);
+                let pose = match car.react.wave.map(|w| w.step(wave_secs)) {
+                    Some(react_to::WaveStep::Waving { progress, blend }) => {
+                        crowd::BodyPose::Wave { progress, blend }
+                    }
+                    _ => crowd::BodyPose::Walk {
+                        phase: car.phase,
+                        standing,
+                    },
+                };
+                let t = crowd::tag(pose, car.react.head, &figure);
                 if tag.value != t {
                     tag.value = t;
                 }
@@ -1776,13 +2054,39 @@ pub fn drive_traffic(
                     figure.near = near;
                     (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
                 }
-                let t = crowd::tag(car.phase, 0.0, &figure);
+                let t = crowd::tag(
+                    crowd::BodyPose::Walk {
+                        phase: car.phase,
+                        standing: 0.0,
+                    },
+                    0.0,
+                    &figure,
+                );
                 if tag.value != t {
                     tag.value = t;
                 }
             }
         }
         *vis = Visibility::Inherited;
+    }
+
+    // `CARTO_CROWD_HERE`'s report, once a second of the moving world's clock:
+    // what a capture can only show, measured.
+    if let Some(avatar) = here_avatar {
+        here.looking = here.looking.max(here_looking);
+        here.waving = here.waving.max(here_waving);
+        if elapsed >= here.reported + 1.0 {
+            info!(
+                "CARTO_CROWD_HERE: t {elapsed:.1} s, avatar at ({:.1}, {:.1}): nearest walker \
+                 {:.2} m, widest step aside {:.2} m, up to {} looking, {} waving",
+                avatar.x, avatar.y, here.closest, here.widest, here.looking, here.waving
+            );
+            here.reported = elapsed;
+            here.closest = f32::MAX;
+            here.widest = 0.0;
+            here.looking = 0;
+            here.waving = 0;
+        }
     }
 }
 
@@ -2889,6 +3193,8 @@ mod tests {
             signal_grace: 0.0,
             braking: false,
             parts: AgentParts::Walker,
+            react: Default::default(),
+            pinned: None,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -2913,6 +3219,8 @@ mod tests {
             signal_grace: 0.0,
             braking: false,
             parts: AgentParts::Walker,
+            react: Default::default(),
+            pinned: None,
         }
     }
 

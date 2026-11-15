@@ -21,6 +21,8 @@ pub mod route_ahead;
 pub mod traffic;
 // The walkers drawn as MakeHuman people, cut down for a crowd.
 pub mod crowd;
+// The walkers make way for avatars, look at them and wave back.
+pub mod crowd_react;
 // Crows over the camera and on its lawns, on the traffic's fixed-pool terms.
 pub mod crows;
 pub mod transit_live;

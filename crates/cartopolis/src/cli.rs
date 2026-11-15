@@ -476,6 +476,9 @@ pub(crate) fn build_shot_harness(cli: &Cli) -> Result<ScriptedRun, String> {
     .map(|mut h| {
         h.aerial_reference = cli.aerial_reference;
         h.video_fps = cli.video_fps;
+        if h.video_fps.is_some() {
+            systems::shot_harness::hold_repeated_poses(&mut h.shots);
+        }
         if day_of_year.is_some() {
             for s in &mut h.shots {
                 s.day_of_year = day_of_year;

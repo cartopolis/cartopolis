@@ -4,7 +4,8 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
   "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
   agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle",
-  cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled]
+  cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled,
+  crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back"]
 updated: 2026-11-15
 ---
 
@@ -151,9 +152,10 @@ from the cause. The visibility queries are one `SystemParam` bundle now.
 
 ## What this deliberately is not
 
-No car-to-car collision, no give-way, no avatar interaction, and people walk
+No car-to-car collision, no give-way, no car that notices an avatar, and people walk
 through each other and through the cars and ignore the lights. (Queueing came with
-headway on 2026-09-10, and stopping at signals on 2026-10-19 — see below.)
+headway on 2026-09-10, stopping at signals on 2026-10-19, and walkers that notice
+avatars on 2026-11-15 — see below.)
 Every one is a simulation cost landing on every frame, and none is what the layer
 is for: the question it answers is "is this street alive", settled at a glance
 from a range where two cars overlapping for a moment is invisible. Recorded here
@@ -486,3 +488,105 @@ or smaller. **Not verified by watching**, as before; the pure parts are tested
 (`a_shipped_person_rides_with_her_feet_on_the_pedals`, `cyclists_ride_their_own_network`,
 `a_rider_leans_into_the_turn`, `cyclists_keep_to_where_bikes_ride`,
 `a_bike_is_bike_sized_and_meets_its_rider_where_the_fit_says`).
+
+## The crowd notices you (2026-11-15)
+
+Asked for by the owner as the first step of "the city reacts to the player":
+walkers that walked straight through the avatar and never acknowledged it.
+`systems::crowd_react` holds the decisions as pure functions; `drive_traffic`
+calls them while it moves each walker, so there is no second pass over the
+pool. **Per viewer, nothing on the wire** — the crowd is invented on each
+client. What they react to is every avatar drawn: the local one and the other
+people's (`CrowdPeople`, filled by `gather_people` once a frame, one short
+list as the crows' threats are).
+
+- **Making way.** A walker whose line would pass within a 1 m berth of an
+  avatar 6 m ahead (to 2.5 m past) steps to whichever side of it is nearer
+  where the walker already is — so it keeps going the way it started when the
+  person moves — at most 1.4 m off its line, eased in with distance and out
+  behind (`make_way`, `ease_shift`, 0.8 m/s sideways at most). It faces along
+  its sideways step too, so the move reads as a step. If it is still on a
+  collision course close in, it slows, to a stop at touching distance.
+  `keep_clear` is the last word: a walker's centre is never within 0.65 m of
+  an avatar's (both radii), however the avatar moves — that is for somebody
+  walking *into* a walker; the plan alone never needs it for a standing one
+  (`a_walker_steps_round_a_standing_avatar_and_back` checks the shove is under
+  1 cm for every offset from −1 to +1 m).
+- **Looking.** On each new meeting within 4.5 m, 40 % of passers-by (seeded by
+  walker and meeting, so a capture repeats) look at you for 1–2.5 s, if they
+  saw you coming; the head turns at 2.6 rad/s and lets go past 65°.
+- **Waving back.** When an avatar starts the `wave` emote, the walker within
+  10 m that can see it (within 100° of its facing) and is nearest and most in
+  front answers — and a third of the time the next one too — after a 0.45–1.15 s
+  pause (the second a little later). It slows to a stop, turns to face the
+  waver (3 rad/s), blends into the captured wave over 0.35 s, plays it (1.6 s),
+  blends out over 0.45 s, and walks on. A walker that cannot stop and face the
+  waver within 3.5 s, or ends up 16 m away, gives up.
+
+### How the body does it
+
+The crowd's poses are baked (`makehuman-avatars.md`, "The crowd"), so:
+
+- **The head turn is a rotation in the vertex shader**, not a pose: each
+  vertex's share of it (1 on the head and everything skinned to it — hair,
+  hat; ½ on `neck_01`; summed over its four skin weights, so the throat
+  blends) rides in the `w` of its position texel, which was unused, and it
+  turns about the head joint as it is in that pose (`Crowd::pivots`, one per
+  pose, so a walking head bobs and still turns about itself). The angle is
+  five signed bits of the `MeshTag` (27–31, steps of 4.5°). Cost: a branch and
+  a few multiplies per vertex for a walker whose head is turned; nothing for
+  one whose is not; 640 B of uniforms per material.
+- **The wave is ten more baked poses**, on the finer level only (a walker
+  near enough to wave back wears it): first frame to last of the captured
+  `wave`, which is one-shot, after the riders' turn of the cranks (walk 16,
+  standing, ride 8, wave 10: `CrowdExtension::cycle.z` is where it starts,
+  and only the walking material plays it). Tag bit 26 says "waving"; bits 0–11 are then
+  the progress through it and 12–17 the blend from standing. Ten poses keep
+  the waving hand within 4.7 cm of the capture at every frame (eight: 6.3 cm,
+  twelve: 3.6 cm, sixteen: 2.1 cm — `the_wave_is_baked_finely_enough`).
+- **Memory**, measured on the shipped pack: the finer level is ~2 080
+  vertices, so its pose texture went from 25 to 35 poses (with the ride), +10
+  poses × 2 080 × 16 B = +320 kB a body and ~+4.5 MB over the fourteen
+  (measured before the riders landed: 16.8 MB uploaded at startup, from ~12 MB). The
+  coarser level is unchanged. Nothing is uploaded after.
+- **Per frame** it is a few dozen flops per walker per avatar near, and no
+  allocation: `CrowdPeople` keeps its lists, the walkers answering a wave are
+  a fixed array, and choosing them (a read-only pass over the pool) runs only
+  on a frame somebody starts waving.
+
+### What lost
+
+- **Turning the whole body toward you instead of the head.** Cheaper (no
+  shader change), but a walker walking on while its body points at you reads
+  as crabbing, and it was not needed: the head joint's skin weights were
+  already in the baked mesh.
+- **A head turn baked as poses** (look-left, look-right): doubles the walk
+  for one degree of freedom, and could not follow a moving avatar.
+- **Baking the wave on both levels**: +~80 kB a body for walkers at 30 m and
+  more, which never wave back.
+- **Steering round the avatar on the walker's path data** (a detour line):
+  the lateral offset already existed (`Car::offset`) and a shift on top of it
+  needs no new geometry and returns to the pavement by itself.
+
+### Seeing it
+
+Two capture hooks, both on the moving world's clock (`anim_clock`):
+`CARTO_CROWD_HERE=1` sends eight walkers at the avatar every 30 s (the
+nearest walking line, four from each side 5–14 m off, aimed through it) and
+logs once a second the nearest any walker came, the widest step aside, and how
+many are looking and waving; `CARTO_AVATAR_WAVE=<s>` makes the avatar wave
+every that many seconds. Verified 2026-11-15 on mac-1 (`--shot-mode avatar
+--video-fps 5`, Herestraat 53.2157, 6.5682): walkers held exactly the 1.00 m
+berth, stepped aside up to 1.00 m, one or two looked, and one stopped, faced
+the avatar and waved back for ~2.4 s; again after the cyclists landed (same
+shader, riders pedalling on the Gedempte Zuiderdiep, no shader error in the
+log). Making those movies is also how
+`--video-fps` stopped re-teleporting a repeated pose every frame
+(`shot_harness::hold_repeated_poses`): the avatar was drawn metres from where
+it stood in a third of the frames.
+
+**Limits.** Walkers still pass through each other (two stepping aside the
+same way can meet). No line of sight through buildings for a wave (10 m on a
+street rarely crosses one). No nod. Cars do not notice avatars. Frame time on
+the phone not measured; the CPU and GPU costs above are counts. Cyclists do
+not react: they ride their own network, and none of this reads them.

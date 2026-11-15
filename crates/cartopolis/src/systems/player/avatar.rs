@@ -576,6 +576,14 @@ pub(crate) struct EmotePlayback {
     remaining: f32,
 }
 
+impl EmotePlayback {
+    /// The emote playing — what the street crowd answers a wave by
+    /// (`systems::crowd_react`).
+    pub(crate) fn emote(&self) -> Emote {
+        self.emote
+    }
+}
+
 /// How long an emote holds the body before locomotion takes over again. The clips
 /// run 1.27–1.67 s; a single duration for all of them is enough because the
 /// transition back cross-fades anyway, and it saves reading every clip's length

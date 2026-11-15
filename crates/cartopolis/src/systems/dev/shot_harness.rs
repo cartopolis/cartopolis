@@ -1534,6 +1534,28 @@ pub const DEFAULT_CLIP_FRAMES: u32 = 12;
 const CLIP_STEP_SETTLE: f32 = 0.75;
 const CLIP_STEP_WAIT: f32 = 5.0;
 
+/// In a movie, a frame that repeats the one before it is taken **in place**:
+/// "repeat the last `--at` to hold a pose" meant a fresh teleport every frame,
+/// and a teleport re-places the avatar in `--shot-mode avatar` — in a
+/// 2026-11-15 movie of the street crowd the avatar was drawn metres from
+/// where it stood in a third of the frames.
+pub fn hold_repeated_poses(shots: &mut [ShotSpec]) {
+    for k in 1..shots.len() {
+        let (before, after) = shots.split_at_mut(k);
+        let (a, b) = (&before[k - 1], &mut after[0]);
+        let same = a.lat == b.lat
+            && a.lng == b.lng
+            && a.alt == b.alt
+            && a.pitch_deg == b.pitch_deg
+            && a.yaw_deg == b.yaw_deg
+            && a.look_at == b.look_at
+            && a.mode == b.mode;
+        if same {
+            b.in_place = true;
+        }
+    }
+}
+
 /// Expand every viewpoint into `frames` captures of one clip cycle, at phases
 /// `0, 1/frames, …` — the loop's end is its start, so it is not photographed
 /// twice. Only the first of each viewpoint is flown to.

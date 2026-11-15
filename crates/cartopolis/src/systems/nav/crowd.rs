@@ -28,7 +28,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use cartopolis_human::crowd::{CrowdBody, PartPaint, Region, Swatch};
 use cartopolis_human::{HumanModel, PartKind, ProxyKind};
 pub use cartopolis_materials::crowd::CrowdMaterial;
-use cartopolis_materials::crowd::{CrowdExtension, CROWD_PALETTE};
+use cartopolis_materials::crowd::{CrowdExtension, CROWD_MAX_POSES, CROWD_PALETTE};
 use futures_channel::oneshot;
 
 use crate::systems::human_avatar::{
@@ -42,6 +42,17 @@ pub const LEVELS: [usize; 2] = [3000, 600];
 
 /// Poses baked through one walk cycle; the shader blends between neighbours.
 pub const WALK_POSES: usize = 16;
+
+/// Poses baked through the wave, finer level only — what a walker waving
+/// back plays (`systems::crowd_react`). Ten keep the waving hand within
+/// 4.7 cm of the capture at every frame (twelve 3.6, eight 6.3;
+/// `the_wave_is_baked_finely_enough`), and add 10 × 16 B a vertex to the
+/// finer level's pose texture.
+pub const WAVE_POSES: usize = 10;
+
+/// One step of a walker's head turn in its `MeshTag`, radians; the tag holds
+/// −16 … 15 of them. Keep in step with `HEAD_STEP` in `crowd_pose.wesl`.
+pub const HEAD_STEP: f32 = 0.078_539_8;
 
 /// A walker nearer the camera than this wears the finer level.
 pub const NEAR_M: f32 = 30.0;
@@ -142,6 +153,8 @@ pub struct CrowdBodyGpu {
     pub bike_scale: f32,
     /// Metres walked in one walk cycle at scale 1.
     pub stride: f32,
+    /// Seconds the baked wave lasts; 0 when the body has none.
+    pub wave_secs: f32,
     /// What every pose of every level fits in, for culling.
     pub bounds: Aabb,
 }
@@ -377,6 +390,7 @@ pub(crate) fn build_crowd(
                                 &LEVELS,
                                 WALK_POSES,
                                 Some(&ride()),
+                                WAVE_POSES,
                             ));
                         }),
                     );
@@ -401,10 +415,14 @@ pub(crate) fn build_crowd(
                     uploaded = true;
                     bodies[i] = Some(upload(body, &mut meshes, &mut images, &mut materials));
                     info!(
-                        "crowd body {i}: {:?} triangles, {} kB uploaded",
+                        "crowd body {i}: {:?} triangles, {:?} poses, {} kB uploaded",
                         body.levels
                             .iter()
                             .map(|l| l.triangles())
+                            .collect::<Vec<_>>(),
+                        body.levels
+                            .iter()
+                            .map(|l| l.positions.len())
                             .collect::<Vec<_>>(),
                         bytes / 1024
                     );
@@ -456,6 +474,11 @@ fn upload(
     materials: &mut Assets<CrowdMaterial>,
 ) -> CrowdBodyGpu {
     let standing = body.walk_poses;
+    let pivots: [Vec4; CROWD_MAX_POSES] = std::array::from_fn(|i| {
+        body.pivots
+            .get(i)
+            .map_or(Vec4::ZERO, |p| Vec3::from_array(*p).extend(1.0))
+    });
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     let levels = body
@@ -483,9 +506,10 @@ fn upload(
             let height = texels.div_ceil(POSE_TEXTURE_WIDTH as usize) as u32;
             let mut data = Vec::with_capacity(POSE_TEXTURE_WIDTH as usize * height as usize * 8);
             for (positions, normals) in level.positions.iter().zip(&level.normals) {
-                for (p, n) in positions.iter().zip(normals) {
-                    for v in [p, n] {
-                        for c in [v[0], v[1], v[2], 0.0] {
+                for ((p, n), head) in positions.iter().zip(normals).zip(&level.head) {
+                    // The position's `w` is the vertex's share of a head turn.
+                    for (v, w) in [(p, *head), (n, 0.0)] {
+                        for c in [v[0], v[1], v[2], w] {
                             data.extend_from_slice(&f16_bits(c).to_le_bytes());
                         }
                     }
@@ -504,8 +528,11 @@ fn upload(
                 RenderAssetUsages::RENDER_WORLD,
             ));
             // One material walks the body and one rides it: the same poses,
-            // played from a different first one.
-            let mut playing = |cycle_poses: usize, first: usize| {
+            // played from a different first one. Only the walking one waves
+            // (a rider never does); its wave follows the ride.
+            let waves = level.wave_poses as u32;
+            let wave_first = (standing + 1 + body.ride_poses) as u32;
+            let mut playing = |cycle_poses: usize, first: usize, waves: u32| {
                 materials.add(CrowdMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
@@ -518,18 +545,19 @@ fn upload(
                             level.vertices() as u32,
                             cycle_poses as u32,
                             POSE_TEXTURE_WIDTH,
-                            0,
+                            waves,
                         ),
-                        cycle: UVec4::new(first as u32, standing as u32, 0, 0),
+                        cycle: UVec4::new(first as u32, standing as u32, wave_first, 0),
                         tops: palette(COAT_COLOURS),
                         bottoms: palette(TROUSER_COLOURS),
+                        pivots,
                         poses: poses.clone(),
                     },
                 })
             };
-            let walking = playing(body.walk_poses, 0);
+            let walking = playing(body.walk_poses, 0, waves);
             let riding = if body.ride_poses > 0 {
-                playing(body.ride_poses, standing + 1)
+                playing(body.ride_poses, standing + 1, 0)
             } else {
                 walking.clone()
             };
@@ -542,6 +570,11 @@ fn upload(
         riders,
         bike_scale: body.bike_scale,
         stride: body.stride,
+        wave_secs: if body.levels.first().is_some_and(|l| l.wave_poses > 1) {
+            body.wave_secs
+        } else {
+            0.0
+        },
         bounds: Aabb::from_min_max(lo, hi),
     }
 }
@@ -565,25 +598,53 @@ pub fn dress_walkers(
         commands.entity(entity).try_insert((
             Mesh3d(mesh),
             MeshMaterial3d(material),
-            MeshTag::new(tag(0.0, 1.0, figure)),
+            MeshTag::new(tag(
+                BodyPose::Walk {
+                    phase: 0.0,
+                    standing: 1.0,
+                },
+                0.0,
+                figure,
+            )),
             body.bounds,
             NoAutoAabb,
         ));
     }
 }
 
-/// A walker's `MeshTag`, as `crowd_pose.wesl` reads it: `phase` through the
-/// cycle (radians), how far it has slowed to a stand (0 walking … 1 still),
-/// and its colours.
+/// What a walker's body is doing, as its `MeshTag` says it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BodyPose {
+    /// `phase` through the walk cycle (radians), and how far it has slowed
+    /// to a stand (0 walking … 1 still).
+    Walk { phase: f32, standing: f32 },
+    /// `progress` through the wave (0 … 1), and how far from standing into
+    /// it (0 standing … 1 waving).
+    Wave { progress: f32, blend: f32 },
+}
+
+/// A walker's `MeshTag`, as `crowd_pose.wesl` reads it: its pose, its head
+/// turned `head_yaw` radians toward its +x (rounded to [`HEAD_STEP`]s, at most
+/// 15 left or 16 right of them), and its colours.
 #[must_use]
-pub fn tag(phase: f32, standing: f32, figure: &CrowdFigure) -> u32 {
-    let cycle = (phase / std::f32::consts::TAU).rem_euclid(1.0);
-    let phase = ((cycle * 4096.0) as u32).min(4095);
-    let standing = (standing.clamp(0.0, 1.0) * 63.0).round() as u32;
-    phase
-        | standing << 12
+pub fn tag(pose: BodyPose, head_yaw: f32, figure: &CrowdFigure) -> u32 {
+    let (along, amount, waving) = match pose {
+        BodyPose::Walk { phase, standing } => {
+            let cycle = (phase / std::f32::consts::TAU).rem_euclid(1.0);
+            (((cycle * 4096.0) as u32).min(4095), standing, 0)
+        }
+        BodyPose::Wave { progress, blend } => {
+            ((progress.clamp(0.0, 1.0) * 4095.0).round() as u32, blend, 1)
+        }
+    };
+    let amount = (amount.clamp(0.0, 1.0) * 63.0).round() as u32;
+    let steps = (head_yaw / HEAD_STEP).round().clamp(-16.0, 15.0) as i32;
+    along
+        | amount << 12
         | (u32::from(figure.top) & 15) << 18
         | (u32::from(figure.bottom) & 15) << 22
+        | waving << 26
+        | (steps as u32 & 31) << 27
 }
 
 /// The level of detail a walker at `distance` should wear.
@@ -651,17 +712,68 @@ mod tests {
             near: false,
             riding: false,
         };
-        let t = tag(std::f32::consts::PI, 1.0, &figure);
+        let walk = |phase: f32, standing: f32| BodyPose::Walk { phase, standing };
+        let t = tag(walk(std::f32::consts::PI, 1.0), 0.0, &figure);
         assert_eq!(t & 0xFFF, 2048, "half way through the cycle");
         assert_eq!((t >> 12) & 0x3F, 63, "stood still");
         assert_eq!((t >> 18) & 15, 9);
         assert_eq!((t >> 22) & 15, 5);
+        assert_eq!(t >> 26, 0, "walking, head ahead");
         assert_eq!(
-            tag(-0.001, 0.0, &figure) & 0xFFF,
+            tag(walk(-0.001, 0.0), 0.0, &figure) & 0xFFF,
             4095,
             "a phase just under zero wraps"
         );
-        assert_eq!(tag(std::f32::consts::TAU, 0.0, &figure) & 0xFFF, 0);
+        assert_eq!(
+            tag(walk(std::f32::consts::TAU, 0.0), 0.0, &figure) & 0xFFF,
+            0
+        );
+
+        let w = tag(
+            BodyPose::Wave {
+                progress: 1.0,
+                blend: 0.5,
+            },
+            0.0,
+            &figure,
+        );
+        assert_eq!(w & 0xFFF, 4095, "the wave's last pose");
+        assert_eq!((w >> 12) & 0x3F, 32);
+        assert_eq!((w >> 26) & 1, 1, "waving");
+        assert_eq!((w >> 18) & 15, 9, "the colours survive a wave");
+    }
+
+    /// The head's turn is five signed bits, which the shader sign-extends
+    /// with an arithmetic shift: what goes in comes out, clamped.
+    #[test]
+    fn a_head_turn_survives_the_tag() {
+        let figure = CrowdFigure {
+            seed: 0,
+            top: 15,
+            bottom: 15,
+            near: true,
+            riding: false,
+        };
+        let pose = BodyPose::Walk {
+            phase: 1.0,
+            standing: 0.0,
+        };
+        let back = |yaw: f32| (tag(pose, yaw, &figure) as i32 >> 27) as f32 * HEAD_STEP;
+        for deg in [-60.0_f32, -20.0, -4.0, 0.0, 9.0, 45.0, 60.0] {
+            let yaw = deg.to_radians();
+            assert!(
+                (back(yaw) - yaw).abs() <= HEAD_STEP * 0.5 + 1e-4,
+                "{deg}° came back {}°",
+                back(yaw).to_degrees()
+            );
+        }
+        assert!(back(3.0) <= 15.0 * HEAD_STEP + 1e-4, "clamped to the right");
+        assert!(
+            back(-3.0) >= -16.0 * HEAD_STEP - 1e-4,
+            "clamped to the left"
+        );
+        // And the head never reaches into the colours.
+        assert_eq!((tag(pose, -1.0, &figure) >> 22) & 15, 15);
     }
 
     #[test]

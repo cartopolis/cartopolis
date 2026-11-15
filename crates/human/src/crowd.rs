@@ -121,9 +121,16 @@ pub struct CrowdMesh {
     /// Per vertex: linear RGB, and the [`Region`] in alpha.
     pub colours: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
-    /// Per pose, every vertex: the walk cycle's poses in order, then standing.
+    /// Per pose, every vertex: the walk cycle's poses in order, then standing,
+    /// then this level's [`Self::wave_poses`].
     pub positions: Vec<Vec<[f32; 3]>>,
     pub normals: Vec<Vec<[f32; 3]>>,
+    /// Per vertex, how much of a head turn it takes: 1 on the head and all
+    /// that hangs on it (hair, hat), ½ on the neck, 0 elsewhere — summed over
+    /// its skin weights, so the throat blends.
+    pub head: Vec<f32>,
+    /// Poses of the wave baked after standing; 0 where the level has none.
+    pub wave_poses: usize,
 }
 
 impl CrowdMesh {
@@ -175,6 +182,11 @@ pub struct CrowdBody {
     pub stride: f32,
     /// Top of the head above the soles, metres.
     pub height: f32,
+    /// Per pose (walk, standing, then the finest level's wave): where the
+    /// head joint is, the point a head turn pivots about.
+    pub pivots: Vec<[f32; 3]>,
+    /// Seconds the captured wave lasts; 0 when the pack has none.
+    pub wave_secs: f32,
 }
 
 /// The stride when the pack has no walk: the old box walker's, near enough.
@@ -182,8 +194,12 @@ const FALLBACK_STRIDE_M: f32 = 1.4;
 
 /// Cut `model` down to each of `budgets` triangles (finest first) and bake
 /// `walk_poses` poses of its walk and one of it standing — and, given a
-/// [`Ride`], its poses pedalling a bike. `paint` has one entry per
-/// `model.parts`.
+/// [`Ride`], its poses pedalling a bike — then, on the finest level only,
+/// `wave_poses` through its wave. `paint` has one entry per `model.parts`.
+///
+/// The wave is only on the finest level because only a walker within a few
+/// metres waves back, and that walker is wearing it; it costs the coarser
+/// level nothing.
 #[must_use]
 pub fn crowd_body(
     model: &HumanModel,
@@ -191,6 +207,7 @@ pub fn crowd_body(
     budgets: &[usize],
     walk_poses: usize,
     ride: Option<&Ride>,
+    wave_poses: usize,
 ) -> CrowdBody {
     let welded = weld(model, paint);
     let mut simplifier = Simplifier::new(&welded);
@@ -211,13 +228,44 @@ pub fn crowd_body(
         }
         None => (0, 1.0),
     };
-    let skins: Vec<Vec<Mat4>> = poses.iter().map(|p| skin_matrices(model, p)).collect();
+    let wave = model.clips.iter().find(|c| c.name == "wave");
+    let wave_poses = if wave.is_some() { wave_poses } else { 0 };
+    poses.extend(self::wave_poses(model, wave_poses));
+    let worlds: Vec<Vec<Mat4>> = poses.iter().map(|p| joint_worlds(model, p)).collect();
+    let skins: Vec<Vec<Mat4>> = worlds.iter().map(|w| skin_matrices(model, w)).collect();
+    let head_joint = model.joint("head");
+    let pivots = worlds
+        .iter()
+        .map(|w| {
+            head_joint
+                .map_or(Vec3::new(0.0, model.height * 0.93, 0.0), |h| {
+                    w[h].w_axis.truncate()
+                })
+                .to_array()
+        })
+        .collect();
+    let turns = head_shares(model);
+    // Every level walks, stands and rides; the wave follows on the finest.
+    let shared = walk_poses + 1 + ride_poses;
     let levels = levels
         .into_iter()
-        .map(|(kept, colours, indices)| {
+        .enumerate()
+        .map(|(level, (kept, colours, indices))| {
+            let waves = if level == 0 { wave_poses } else { 0 };
+            let skins = &skins[..shared + waves];
+            let head = kept
+                .iter()
+                .map(|&v| {
+                    let (j, w) = (&welded.joints[v], &welded.weights[v]);
+                    (0..4)
+                        .map(|k| w[k] * turns.get(j[k] as usize).copied().unwrap_or(0.0))
+                        .sum::<f32>()
+                        .clamp(0.0, 1.0)
+                })
+                .collect();
             let mut positions = Vec::with_capacity(skins.len());
             let mut normals = Vec::with_capacity(skins.len());
-            for skin in &skins {
+            for skin in skins {
                 let at: Vec<Vec3> = kept
                     .iter()
                     .map(|&v| {
@@ -237,6 +285,8 @@ pub fn crowd_body(
                 indices,
                 positions,
                 normals,
+                head,
+                wave_poses: waves,
             }
         })
         .collect();
@@ -253,6 +303,8 @@ pub fn crowd_body(
         bike_scale,
         stride,
         height: model.height,
+        pivots,
+        wave_secs: wave.map_or(0.0, |w| w.duration()),
     }
 }
 
@@ -495,6 +547,30 @@ fn turn_world(model: &HumanModel, pose: &mut Pose, joint: usize, turn: Quat) {
     pose.rotations[joint] = (parent.inverse() * turn * w[joint].1).normalize();
 }
 
+/// Per joint, how much of a head turn it carries: the head and every joint
+/// under it (eyes, jaw), all of it; the neck, half.
+fn head_shares(model: &HumanModel) -> Vec<f32> {
+    let head = model.joint("head");
+    let neck = model.joint("neck_01");
+    let mut out: Vec<f32> = Vec::with_capacity(model.joints.len());
+    for (i, j) in model.joints.iter().enumerate() {
+        let share = if Some(i) == head {
+            1.0
+        } else if Some(i) == neck {
+            0.5
+        } else {
+            // Joints come parent first, so the parent's share is known; only
+            // a whole share is inherited (the neck's half is the neck's own).
+            j.parent
+                .and_then(|p| out.get(p).copied())
+                .filter(|&s| s >= 1.0)
+                .unwrap_or(0.0)
+        };
+        out.push(share);
+    }
+    out
+}
+
 /// Every joint's local rotation, and the pelvis's translation, for one pose.
 #[derive(Clone)]
 struct Pose {
@@ -505,55 +581,74 @@ struct Pose {
 /// `walk_poses` evenly over the walk cycle, then the idle's first frame (the
 /// rest pose when the pack has neither).
 fn poses(model: &HumanModel, walk_poses: usize) -> Vec<Pose> {
-    let rest = || Pose {
+    let find = |name: &str| model.clips.iter().find(|c| c.name == name);
+    let mut out: Vec<Pose> = match find("walk") {
+        // A loop's last frame is its first again, so the cycle is sampled
+        // over `[0, duration)`.
+        Some(walk) => (0..walk_poses)
+            .map(|i| clip_pose(model, walk, walk.duration() * i as f32 / walk_poses as f32))
+            .collect(),
+        None => (0..walk_poses).map(|_| rest_pose(model)).collect(),
+    };
+    out.push(find("idle").map_or_else(|| rest_pose(model), |idle| clip_pose(model, idle, 0.0)));
+    out
+}
+
+/// `count` poses through the wave, first frame to last: it is played once,
+/// not looped, so both ends are poses of their own. None without a wave.
+fn wave_poses(model: &HumanModel, count: usize) -> Vec<Pose> {
+    let Some(wave) = model.clips.iter().find(|c| c.name == "wave") else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|i| {
+            let t = wave.duration() * i as f32 / (count.max(2) - 1) as f32;
+            clip_pose(model, wave, t)
+        })
+        .collect()
+}
+
+fn rest_pose(model: &HumanModel) -> Pose {
+    Pose {
         rotations: model
             .joints
             .iter()
             .map(|j| Quat::from_array(j.rotation))
             .collect(),
         pelvis: None,
-    };
-    let at = |clip: &crate::RetargetedClip, t: f32| {
-        let frames = clip.rotations.first().map_or(0, Vec::len);
-        if frames == 0 {
-            return rest();
-        }
-        let f = (t * clip.fps).clamp(0.0, (frames - 1) as f32);
-        let (a, k) = (f.floor() as usize, f.fract());
-        let b = (a + 1).min(frames - 1);
-        Pose {
-            rotations: model
-                .joints
-                .iter()
-                .enumerate()
-                .map(|(i, j)| match clip.rotations.get(i) {
-                    Some(r) if r.len() == frames => {
-                        Quat::from_array(r[a]).slerp(Quat::from_array(r[b]), k)
-                    }
-                    _ => Quat::from_array(j.rotation),
-                })
-                .collect(),
-            pelvis: clip
-                .pelvis
-                .as_ref()
-                .map(|(p, at)| (*p, Vec3::from_array(at[a]).lerp(Vec3::from_array(at[b]), k))),
-        }
-    };
-    let find = |name: &str| model.clips.iter().find(|c| c.name == name);
-    let mut out: Vec<Pose> = match find("walk") {
-        // A loop's last frame is its first again, so the cycle is sampled
-        // over `[0, duration)`.
-        Some(walk) => (0..walk_poses)
-            .map(|i| at(walk, walk.duration() * i as f32 / walk_poses as f32))
-            .collect(),
-        None => (0..walk_poses).map(|_| rest()).collect(),
-    };
-    out.push(find("idle").map_or_else(rest, |idle| at(idle, 0.0)));
-    out
+    }
 }
 
-/// Per joint, the matrix taking a rest-pose vertex to `pose`.
-fn skin_matrices(model: &HumanModel, pose: &Pose) -> Vec<Mat4> {
+/// `clip` at `t` seconds, between its two nearest frames.
+fn clip_pose(model: &HumanModel, clip: &crate::RetargetedClip, t: f32) -> Pose {
+    let frames = clip.rotations.first().map_or(0, Vec::len);
+    if frames == 0 {
+        return rest_pose(model);
+    }
+    let f = (t * clip.fps).clamp(0.0, (frames - 1) as f32);
+    let (a, k) = (f.floor() as usize, f.fract());
+    let b = (a + 1).min(frames - 1);
+    Pose {
+        rotations: model
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(i, j)| match clip.rotations.get(i) {
+                Some(r) if r.len() == frames => {
+                    Quat::from_array(r[a]).slerp(Quat::from_array(r[b]), k)
+                }
+                _ => Quat::from_array(j.rotation),
+            })
+            .collect(),
+        pelvis: clip
+            .pelvis
+            .as_ref()
+            .map(|(p, at)| (*p, Vec3::from_array(at[a]).lerp(Vec3::from_array(at[b]), k))),
+    }
+}
+
+/// Per joint, its matrix in the model's frame for `pose`.
+fn joint_worlds(model: &HumanModel, pose: &Pose) -> Vec<Mat4> {
     let mut world: Vec<Mat4> = Vec::with_capacity(model.joints.len());
     for (i, j) in model.joints.iter().enumerate() {
         let t = match pose.pelvis {
@@ -563,6 +658,11 @@ fn skin_matrices(model: &HumanModel, pose: &Pose) -> Vec<Mat4> {
         let local = Mat4::from_rotation_translation(pose.rotations[i], t);
         world.push(j.parent.map_or(local, |p| world[p] * local));
     }
+    world
+}
+
+/// Per joint, the matrix taking a rest-pose vertex to the pose `world` is of.
+fn skin_matrices(model: &HumanModel, world: &[Mat4]) -> Vec<Mat4> {
     world
         .iter()
         .zip(&model.joints)
@@ -1259,7 +1359,7 @@ mod tests {
             })
             .collect();
         let started = std::time::Instant::now();
-        let body = crowd_body(&m, &paint, &[3000, 600], 16, None);
+        let body = crowd_body(&m, &paint, &[3000, 600], 16, None, 10);
         let took = started.elapsed();
         let full: usize = m
             .parts
@@ -1289,8 +1389,10 @@ mod tests {
                 "{} of {budget}",
                 level.triangles()
             );
-            assert_eq!(level.positions.len(), 17);
-            for (p, pose) in level.positions.iter().enumerate() {
+            assert_eq!(level.positions.len(), 17 + level.wave_poses);
+            // The wave raises a hand over the head, so only the walk and the
+            // stand are held to her height.
+            for (p, pose) in level.positions.iter().take(17).enumerate() {
                 let low = pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
                 let high = pose.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
                 assert!(low.abs() < 0.08, "pose {p}: lowest point {low:.3} m");
@@ -1315,6 +1417,105 @@ mod tests {
                 "stride {striding:.2} m, standing {standing:.2} m"
             );
         }
+        assert_eq!(body.levels[0].wave_poses, 10, "the finest level waves");
+        assert_eq!(body.levels[1].wave_poses, 0, "the coarser does not");
+        assert_eq!(body.pivots.len(), 17 + 10);
+        assert!((1.0..2.5).contains(&body.wave_secs), "{}", body.wave_secs);
+    }
+
+    /// The head turn's weights: the top of the head turns whole, the feet
+    /// and hips not at all, and the pivot sits at the top of the neck.
+    #[test]
+    fn only_the_head_turns() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = woman(&pack);
+        let paint: Vec<PartPaint> = m
+            .parts
+            .iter()
+            .map(|_| PartPaint {
+                swatch: None,
+                tint: [0.5; 3],
+                region: Region::Own,
+            })
+            .collect();
+        let body = crowd_body(&m, &paint, &[3000], 16, None, 0);
+        let level = &body.levels[0];
+        let standing = &level.positions[16];
+        let h = body.height;
+        // The crown: hair hangs partly on the neck, so a strand may turn a
+        // little less than the skull.
+        let crown: Vec<f32> = standing
+            .iter()
+            .zip(&level.head)
+            .filter(|(p, _)| p[1] > h - 0.08)
+            .map(|(_, w)| *w)
+            .collect();
+        let mean = crown.iter().sum::<f32>() / crown.len().max(1) as f32;
+        let least = crown.iter().copied().fold(1.0, f32::min);
+        eprintln!(
+            "crown: {} vertices, turn share {mean:.3} on average, {least:.2} at least",
+            crown.len()
+        );
+        assert!(
+            !crown.is_empty() && mean > 0.95 && least > 0.75,
+            "{mean} {least}"
+        );
+        for (v, p) in standing.iter().enumerate() {
+            let w = level.head[v];
+            if p[1] < h * 0.7 {
+                assert!(w < 1.0e-3, "a vertex at {:.2} m turns {w:.2}", p[1]);
+            }
+        }
+        let pivot = body.pivots[16];
+        assert!(
+            (h * 0.8..h * 0.95).contains(&pivot[1]),
+            "pivot at {:.2} m of {h:.2}",
+            pivot[1]
+        );
+    }
+
+    /// How many poses the wave needs: the right hand, blended linearly
+    /// between `n` poses as the shader does, against the clip at every
+    /// captured frame. Prints the error for each count; the crowd's count
+    /// must keep the hand within 5 cm (10 poses: 4.7 cm, measured 2026-11-15).
+    #[test]
+    fn the_wave_is_baked_finely_enough() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = woman(&pack);
+        let Some(wave) = m.clips.iter().find(|c| c.name == "wave") else {
+            return;
+        };
+        let hand = m.joint("hand_r").expect("a right hand");
+        let at = |t: f32| {
+            joint_worlds(&m, &clip_pose(&m, wave, t))[hand]
+                .w_axis
+                .truncate()
+        };
+        let frames = wave.rotations.first().map_or(0, Vec::len);
+        let error = |n: usize| {
+            let baked: Vec<Vec3> = (0..n)
+                .map(|i| at(wave.duration() * i as f32 / (n - 1) as f32))
+                .collect();
+            (0..frames)
+                .map(|f| {
+                    let t = f as f32 / wave.fps;
+                    let x = t / wave.duration() * (n - 1) as f32;
+                    let a = (x.floor() as usize).min(n - 2);
+                    let blended = baked[a].lerp(baked[a + 1], x - a as f32);
+                    blended.distance(at(t))
+                })
+                .fold(0.0, f32::max)
+        };
+        for n in [6, 8, 10, 12, 16, 24] {
+            eprintln!(
+                "wave over {:.2} s ({frames} frames at {} fps), {n} poses: hand off by {:.1} cm at worst",
+                wave.duration(),
+                wave.fps,
+                error(n) * 100.0
+            );
+        }
+        let n = 10;
+        assert!(error(n) < 0.05, "{n} poses: {:.3} m", error(n));
     }
 
     /// The bike the client gives the riders (`cartopolis_geo::agent_models::BIKE_FIT`).
@@ -1407,7 +1608,7 @@ mod tests {
                 region: Region::Own,
             })
             .collect();
-        let body = crowd_body(&m, &paint, &[600], 16, Some(&bike));
+        let body = crowd_body(&m, &paint, &[600], 16, Some(&bike), 0);
         assert_eq!(body.ride_poses, 8);
         assert!((body.bike_scale - s).abs() < 1e-4);
         let level = &body.levels[0];
@@ -1416,5 +1617,18 @@ mod tests {
             let low = pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
             assert!(low > 0.02, "riding pose {p}: lowest point {low:.3} m");
         }
+
+        // Riding and waving together: every level walks, stands and rides,
+        // the finest then waves, and every pose has its head pivot — the
+        // layout the client's materials index (`cycle`).
+        let both = crowd_body(&m, &paint, &[3000, 600], 16, Some(&bike), 10);
+        assert_eq!(both.levels[0].positions.len(), 16 + 1 + 8 + 10);
+        assert_eq!(both.levels[1].positions.len(), 16 + 1 + 8);
+        assert_eq!(both.pivots.len(), 16 + 1 + 8 + 10);
+        // The wave's first pose stands where the stand does, near enough:
+        // it is what the shader blends out of standing into.
+        let (stand, wave0) = (&both.levels[0].positions[16], &both.levels[0].positions[25]);
+        let feet = |pose: &Vec<[f32; 3]>| pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
+        assert!(feet(wave0).abs() < 0.08 && feet(stand).abs() < 0.08);
     }
 }

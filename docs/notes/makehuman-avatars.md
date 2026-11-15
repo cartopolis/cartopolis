@@ -318,6 +318,11 @@ each, so 220 of them is ~7 M triangles before shadows. A crowd body is:
   the prepass both pose the body, so its shadow steps with it. The vertex's
   own index is `vertex_index - mesh[i].first_vertex_index`: the mesh allocator
   shares vertex buffers between meshes.
+- **Reacting** (2026-11-15): the finer level also bakes ten poses of the
+  `wave`, after the riders' poses, and every vertex carries its share of a head turn
+  in its position texel's `w`, with the head joint per pose as a uniform —
+  so a walker can wave back and look at you (`ambient-traffic.md`, "The crowd
+  notices you"; +320 kB a body).
 
 Measured 2026-11-04 on vps-1 (debug build): the fourteen bodies took 2.6 s of
 worker time to shape, 11.1 s to cut and bake, and 2.0 s to decode swatches,

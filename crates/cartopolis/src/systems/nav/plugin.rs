@@ -34,6 +34,7 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::route_ahead::RouteAhead>()
             .init_resource::<systems::traffic::DriveNetwork>()
             .init_resource::<systems::crowd::Crowd>()
+            .init_resource::<systems::crowd_react::CrowdPeople>()
             .init_asset::<systems::crowd::CrowdSwatch>()
             .init_asset_loader::<systems::crowd::CrowdSwatchLoader>();
 
@@ -246,7 +247,13 @@ impl Plugin for NavPlugin {
                 systems::crowd::build_crowd,
                 systems::crowd::dress_walkers.after(systems::crowd::build_crowd),
                 systems::traffic::close_car_free_lines,
-                systems::traffic::drive_traffic.after(systems::traffic::close_car_free_lines),
+                // Who the walkers notice this frame, and whose wave they may
+                // answer (`systems::crowd_react`).
+                systems::crowd_react::gather_people,
+                systems::crowd_react::scripted_wave,
+                systems::traffic::drive_traffic
+                    .after(systems::traffic::close_car_free_lines)
+                    .after(systems::crowd_react::gather_people),
                 // After it, because a passing walker can flush a feeding crow.
                 systems::crows::drive_crows.after(systems::traffic::drive_traffic),
             )
