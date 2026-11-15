@@ -62,6 +62,7 @@ use cartopolis_geo::traffic::{DriveLine, Flow, Pavements, Uses, PAVEMENT_CLEARAN
 
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, AnchoredCamera};
+use crate::systems::give_way;
 
 /// How many cars exist. Fixed for the life of the process.
 ///
@@ -1294,6 +1295,110 @@ const BIKE_PAINTS: &[u32] = &[
 pub struct CrowdReact<'w, 's> {
     people: Res<'w, crate::systems::crowd_react::CrowdPeople>,
     here: Local<'s, CrowdHere>,
+    /// The signal buttons pressed (`systems::give_way`), and the
+    /// `CARTO_TRAFFIC_HERE` hook's state.
+    buttons: Res<'w, crate::systems::give_way::SignalButtons>,
+    traffic_here: Local<'s, TrafficHere>,
+}
+
+/// `CARTO_TRAFFIC_HERE=1`: cars sent at the avatar, so a capture can show
+/// them giving way. Every [`TRAFFIC_HERE_EVERY_S`] of the moving world's
+/// clock the first three cars of the pool are put on the drivable line
+/// nearest the avatar (within 25 m), 45, 60 and 75 m before it in a
+/// direction the line may be driven, and once a second the nearest of them
+/// is logged: its distance to the avatar and its speed. A capture's hook,
+/// not something a session runs.
+#[derive(Default)]
+pub struct TrafficHere {
+    on: Option<bool>,
+    next: f32,
+    plan: Vec<(LineKey, f32, f32)>,
+    /// The pool indices sent this round.
+    sent: Vec<usize>,
+    reported: f32,
+}
+
+const TRAFFIC_HERE_EVERY_S: f32 = 25.0;
+
+/// Placements for [`TrafficHere`] round `avatar`: (line, direction, distance
+/// run along it), or none if no car line is within 25 m.
+fn traffic_here_plan(net: &DriveNetwork, avatar: Vec2) -> Vec<(LineKey, f32, f32)> {
+    let best = net
+        .near(avatar, 25.0, AgentKind::Car)
+        .into_iter()
+        .filter_map(|k| {
+            let l = net.get(k)?;
+            let along = l.nearest_along(avatar);
+            Some((k, along, l.at(along).0.distance(avatar)))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    let Some((key, along, _)) = best else {
+        return Vec::new();
+    };
+    let l = net.get(key).expect("near only offers lines it holds");
+    let dirs: &[f32] = match l.flow {
+        Flow::Forward => &[1.0],
+        Flow::Backward => &[-1.0],
+        Flow::Both => &[1.0, -1.0],
+    };
+    // The direction with the most road before the avatar.
+    let dir = dirs
+        .iter()
+        .copied()
+        .max_by(|a, b| {
+            let room = |d: f32| if d > 0.0 { along } else { l.length() - along };
+            room(*a).total_cmp(&room(*b))
+        })
+        .unwrap_or(1.0);
+    [45.0, 60.0, 75.0]
+        .iter()
+        .filter_map(|back| {
+            let start = along - dir * back;
+            let start = start.clamp(0.0, l.length());
+            if (start - along).abs() < 15.0 {
+                return None;
+            }
+            let s = if dir > 0.0 { start } else { l.length() - start };
+            Some((key, dir, s))
+        })
+        .collect()
+}
+
+/// Where `person` is relative to an agent's path: metres ahead of it along
+/// the path and metres off the middle of its lane. Along the line it is on
+/// where the person projects onto that line, so a bend does not put the
+/// pavement in its way; straight ahead in a junction or past the line's end.
+fn on_path(
+    car: &Car,
+    kind: AgentKind,
+    l: &WorldDriveLine,
+    p: Vec2,
+    travel: Vec2,
+    person: Vec2,
+) -> (f32, f32) {
+    let straight = || {
+        let rel = person - p;
+        (rel.dot(travel), rel.dot(right_of(travel)))
+    };
+    if car.turn.is_some() {
+        return straight();
+    }
+    let at = l.nearest_along(person);
+    if at <= 0.01 || at >= l.length() - 0.01 {
+        return straight();
+    }
+    let along = if car.dir > 0.0 {
+        car.s
+    } else {
+        l.length() - car.s
+    };
+    let (centre, heading) = l.at(at);
+    let lane_dir = heading * car.dir;
+    let lane = centre + right_of(lane_dir) * car.offset(kind, l);
+    (
+        (at - along) * car.dir,
+        (person - lane).dot(right_of(lane_dir)),
+    )
 }
 
 /// `CARTO_CROWD_HERE=1`: walkers sent at the avatar, so a capture can show
@@ -1507,7 +1612,12 @@ pub fn drive_traffic(
     // and the walkers that answer a wave begun this frame — chosen here, in a
     // read-only pass that only runs on a frame somebody starts waving.
     use crate::systems::crowd_react as react_to;
-    let CrowdReact { people, mut here } = react;
+    let CrowdReact {
+        people,
+        mut here,
+        buttons,
+        mut traffic_here,
+    } = react;
     let people_at: &[Vec2] = if show_people { &people.at } else { &[] };
     let mut answering: [Option<(usize, f32, Vec2)>; 4] = [None; 4];
     if show_people {
@@ -1577,13 +1687,64 @@ pub fn drive_traffic(
     // The drawn signals a car could reach before it is recycled. Empty with the
     // street-detail layer off, which is right: a car stops only at a light that
     // is on the screen to be red.
-    let signals: Vec<(Vec2, u8)> = if show_cars || show_cyclists {
+    //
+    // Each with whether a pressed button holds it red (`give_way`).
+    let signals: Vec<(Vec2, u8, bool)> = if show_cars || show_cyclists {
         detail
             .signals_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
+            .map(|s| (s.at, s.group, buttons.holds(s.at, s.group, elapsed)))
             .collect()
     } else {
         Vec::new()
     };
+    // The zebras, and the avatars with the way each faces, for the cars and
+    // cyclists that give way (`give_way`) — every avatar, whether or not the
+    // people layer is on.
+    let zebras: Vec<crate::systems::street_detail::ZebraPoint> = if show_cars || show_cyclists {
+        detail
+            .zebras_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let avatars: &[Vec2] = &people.at;
+    let avatars_facing: Vec<(Vec2, Vec2)> = if zebras.is_empty() {
+        Vec::new()
+    } else {
+        people
+            .at
+            .iter()
+            .copied()
+            .zip(people.facing.iter().copied())
+            .collect()
+    };
+
+    // `CARTO_TRAFFIC_HERE`: a round of cars sent at the avatar.
+    if *traffic_here
+        .on
+        .get_or_insert_with(|| crate::debug_switches::env_flag("CARTO_TRAFFIC_HERE"))
+        && show_cars
+        && traffic_here.plan.is_empty()
+        && elapsed >= traffic_here.next
+    {
+        if let Some(&avatar) = people.at.first() {
+            traffic_here.plan = traffic_here_plan(&net, avatar);
+            traffic_here.sent.clear();
+            if !traffic_here.plan.is_empty() {
+                info!(
+                    "CARTO_TRAFFIC_HERE: {} cars sent at the avatar at {elapsed:.1} s",
+                    traffic_here.plan.len()
+                );
+                traffic_here.next = elapsed + TRAFFIC_HERE_EVERY_S;
+            }
+        }
+    }
+    let mut traffic_plan = std::mem::take(&mut traffic_here.plan).into_iter();
+    let report_traffic = traffic_here.on == Some(true)
+        && !traffic_here.sent.is_empty()
+        && elapsed - traffic_here.reported >= 1.0;
+    // (distance to the avatar, speed) of the nearest car sent, this frame.
+    let mut nearest_sent: Option<(f32, f32)> = None;
 
     for (i, (mut car, &kind, mut tf, mut cell, dressed, mut vis)) in cars.iter_mut().enumerate() {
         if !showing(kind) {
@@ -1618,6 +1779,20 @@ pub fn drive_traffic(
                 car.react.reset();
             }
         }
+        if kind == AgentKind::Car {
+            if let Some((k, dir, s)) = traffic_plan.next() {
+                if let Some(l) = net.get(k) {
+                    car.line = Some(k);
+                    car.dir = dir;
+                    car.s = s;
+                    car.turn = None;
+                    car.heading = Vec2::ZERO;
+                    car.speed = kind.speed(l) * car.speed_scale;
+                    car.signal_grace = 0.0;
+                    traffic_here.sent.push(i);
+                }
+            }
+        }
         if walker && wave_secs > 0.0 {
             for (j, at) in answering
                 .iter()
@@ -1646,6 +1821,10 @@ pub fn drive_traffic(
         let mut stepped = 0.0;
         // Where a walker means to step to, metres right of its path.
         let mut shift_to = 0.0;
+        // A vehicle giving way to somebody close in front: brake hard, and
+        // the most its centre may move this frame (`give_way::Yield`).
+        let mut hard_brake = false;
+        let mut room = f32::MAX;
         // What answering a wave has it doing.
         let wave_step = car.react.wave.map(|w| w.step(wave_secs));
 
@@ -1680,6 +1859,36 @@ pub fn drive_traffic(
                         &signals, elapsed, p, travel, car.speed, reach, &mut grace,
                     ));
                     car.signal_grace = grace;
+                    // Give way to the avatars: on its path, and at a zebra
+                    // (`give_way`).
+                    let body = if kind == AgentKind::Car {
+                        give_way::CAR_BODY
+                    } else {
+                        give_way::BIKE_BODY
+                    };
+                    let near = give_way::YIELD_LOOKAHEAD_M + body.nose + 2.0;
+                    let y = give_way::yield_to(
+                        avatars
+                            .iter()
+                            .filter(|a| a.distance_squared(p) < near * near)
+                            .map(|&a| on_path(&car, kind, l, p, travel, a)),
+                        car.speed,
+                        body,
+                    );
+                    want = want.min(y.limit);
+                    hard_brake = y.hard;
+                    room = y.room;
+                    if !zebras.is_empty() {
+                        want = want.min(give_way::zebra_speed(
+                            &zebras,
+                            &avatars_facing,
+                            p,
+                            travel,
+                            car.speed,
+                            reach,
+                            body,
+                        ));
+                    }
                 }
             } else if walker {
                 // Make way for whoever is on its line, slowing if it must; and
@@ -1697,9 +1906,19 @@ pub fn drive_traffic(
                 }
             }
             let (accel, brake) = kind.accel();
-            let rate = if want > car.speed { accel } else { brake };
+            let rate = if want > car.speed {
+                accel
+            } else if hard_brake {
+                brake.max(give_way::EMERGENCY_BRAKE)
+            } else {
+                brake
+            };
             let before = car.speed;
             car.speed = (car.speed + (want - car.speed).clamp(-rate * dt, rate * dt)).max(0.0);
+            // Never into somebody, whatever the brakes managed.
+            if dt > 0.0 && car.speed * dt > room {
+                car.speed = room / dt;
+            }
             if dt > 0.0 {
                 accel_now = (car.speed - before) / dt;
             }
@@ -1826,6 +2045,14 @@ pub fn drive_traffic(
             continue;
         };
         let on_deck = line.is_some_and(|l| l.on_deck);
+        if report_traffic && traffic_here.sent.contains(&i) {
+            if let Some(&a) = people.at.first() {
+                let d = pos.distance(a);
+                if nearest_sent.is_none_or(|(n, _)| d < n) {
+                    nearest_sent = Some((d, car.speed));
+                }
+            }
+        }
 
         // ── A walker's reactions ─────────────────────────────────────────────
         //
@@ -2088,6 +2315,18 @@ pub fn drive_traffic(
             here.waving = 0;
         }
     }
+    // `CARTO_TRAFFIC_HERE`'s report: how near the sent cars came, and how fast
+    // the nearest was going.
+    if report_traffic {
+        traffic_here.reported = elapsed;
+        match nearest_sent {
+            Some((d, v)) => info!(
+                "CARTO_TRAFFIC_HERE: t {elapsed:.1} s: nearest sent car {d:.2} m from the \
+                 avatar, at {v:.2} m/s"
+            ),
+            None => info!("CARTO_TRAFFIC_HERE: t {elapsed:.1} s: no sent car on the road"),
+        }
+    }
 }
 
 /// How far ahead a car looks for a signal, metres.
@@ -2119,9 +2358,10 @@ const SIGNAL_GRACE_M: f32 = 30.0;
 /// its heading) and within `reach` of its line count — that is what keeps a
 /// cross street's lights, ten metres to the side at the same junction, from
 /// stopping it. `grace` is [`Car::signal_grace`]: set here when the car is
-/// found just past a signal.
+/// found just past a signal. Each signal is (stop line, phase group, held
+/// red by a pressed button — `give_way::SignalButtons`).
 fn signal_speed(
-    signals: &[(Vec2, u8)],
+    signals: &[(Vec2, u8, bool)],
     elapsed: f32,
     pos: Vec2,
     travel: Vec2,
@@ -2132,7 +2372,7 @@ fn signal_speed(
     use crate::systems::street_detail::{signal_group, signal_says_stop};
     let group = signal_group(travel);
     let mut limit = f32::MAX;
-    for &(at, g) in signals {
+    for &(at, g, pressed) in signals {
         if g != group {
             continue;
         }
@@ -2148,7 +2388,7 @@ fn signal_speed(
             }
             continue;
         }
-        if ahead < *grace || !signal_says_stop(elapsed, g) {
+        if ahead < *grace || !(pressed || signal_says_stop(elapsed, g)) {
             continue;
         }
         let gap = ahead - STOP_SHORT_M;
@@ -3068,7 +3308,7 @@ mod tests {
     #[test]
     fn a_car_stops_at_red_and_drives_on_green() {
         let (red, green) = red_and_green();
-        let light = [(Vec2::new(0.0, -30.0), 0u8)];
+        let light = [(Vec2::new(0.0, -30.0), 0u8, false)];
         let mut grace = 0.0;
         let at_red = signal_speed(&light, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace);
         // A braking curve ending at the stop line, not an instant stop.
@@ -3091,18 +3331,37 @@ mod tests {
         );
     }
 
+    /// A light a pressed button holds stops the car on its green too, and
+    /// lets it go once the press is over.
+    #[test]
+    fn a_pressed_button_holds_a_car_at_its_green() {
+        let (_, green) = red_and_green();
+        let held = [(Vec2::new(0.0, -30.0), 0u8, true)];
+        let mut grace = 0.0;
+        let line = Vec2::new(0.0, -30.0 + STOP_SHORT_M);
+        assert_eq!(
+            signal_speed(&held, green, line, NORTH, 0.0, 4.0, &mut grace),
+            0.0
+        );
+        let released = [(Vec2::new(0.0, -30.0), 0u8, false)];
+        assert_eq!(
+            signal_speed(&released, green, line, NORTH, 0.0, 4.0, &mut grace),
+            f32::MAX
+        );
+    }
+
     /// The cross street's lights stand at the same junction, beside this road
     /// and in the other phase group; neither may stop a car.
     #[test]
     fn a_cross_streets_light_does_not_stop_a_car() {
         let (red, _) = red_and_green();
         let mut grace = 0.0;
-        let beside = [(Vec2::new(10.0, -30.0), 0u8)];
+        let beside = [(Vec2::new(10.0, -30.0), 0u8, false)];
         assert_eq!(
             signal_speed(&beside, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace),
             f32::MAX
         );
-        let other_group = [(Vec2::new(0.0, -30.0), 1u8)];
+        let other_group = [(Vec2::new(0.0, -30.0), 1u8, false)];
         assert_eq!(
             signal_speed(&other_group, red, Vec2::ZERO, NORTH, 8.0, 4.0, &mut grace),
             f32::MAX
@@ -3114,7 +3373,7 @@ mod tests {
     #[test]
     fn a_car_too_close_to_stop_drives_through() {
         let (red, _) = red_and_green();
-        let light = [(Vec2::new(0.0, -10.0), 0u8)];
+        let light = [(Vec2::new(0.0, -10.0), 0u8, false)];
         let mut grace = 0.0;
         assert_eq!(
             signal_speed(&light, red, Vec2::ZERO, NORTH, 14.0, 4.0, &mut grace),
@@ -3127,7 +3386,10 @@ mod tests {
     #[test]
     fn a_car_through_a_junction_ignores_the_far_stop_line() {
         let (red, _) = red_and_green();
-        let near_and_far = [(Vec2::new(0.0, 1.0), 0u8), (Vec2::new(0.0, -15.0), 0u8)];
+        let near_and_far = [
+            (Vec2::new(0.0, 1.0), 0u8, false),
+            (Vec2::new(0.0, -15.0), 0u8, false),
+        ];
         let mut grace = 0.0;
         let v = signal_speed(&near_and_far, red, Vec2::ZERO, NORTH, 6.0, 4.0, &mut grace);
         assert_eq!(v, f32::MAX);

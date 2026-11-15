@@ -75,6 +75,9 @@ pub struct InteractState {
     /// A throw under way: seconds until the arm lets go, when the throw is
     /// sent ([`THROW_RELEASE_SECS`]).
     pub throw_in: Option<f32>,
+    /// A signal button pressed at the prompt (its pole, world XZ), for
+    /// `give_way::press_buttons` to take.
+    pub pressed_button: Option<Vec2>,
 }
 
 /// How far into the `throw` clip the hand lets go, seconds: CMU 15_12's
@@ -112,6 +115,10 @@ pub struct TargetInfo {
     /// The prim is a loose physical one to pick up (`GrabPrim`), not a
     /// scripted one to press.
     pub pickup: bool,
+    /// The pole of a signal's pedestrian push button, world XZ, when that is
+    /// what the prompt is for (`systems::give_way`). Pressing it is this
+    /// client's alone: the traffic it stops is invented per viewer.
+    pub button: Option<Vec2>,
 }
 
 /// The name a prim goes by in a prompt: its own, or "object" when it has none.
@@ -134,6 +141,24 @@ impl TargetInfo {
             seat: i.seat_spot(from),
             prim_id: None,
             pickup: false,
+            button: None,
+        }
+    }
+
+    /// The prompt at a signal pole with a pedestrian push button
+    /// (`systems::give_way`): "Press the button", and while a press runs,
+    /// what the walking man says.
+    fn of_button(pole: Vec2, phase: Option<crate::systems::give_way::ButtonPhase>) -> Self {
+        Self {
+            name: "the button".to_string(),
+            glyph: crate::systems::icons::HAND,
+            verb: "Press",
+            detail: phase.map(crate::systems::give_way::ButtonPhase::detail),
+            pos: pole,
+            seat: None,
+            prim_id: None,
+            pickup: false,
+            button: Some(pole),
         }
     }
 
@@ -148,6 +173,7 @@ impl TargetInfo {
             seat: None,
             prim_id: Some(id),
             pickup: true,
+            button: None,
         }
     }
 
@@ -168,6 +194,7 @@ impl TargetInfo {
             seat: None,
             prim_id: Some(id),
             pickup: false,
+            button: None,
         }
     }
 
@@ -278,6 +305,15 @@ impl InteractState {
             self.last = None;
             self.last_ttl = 0.0;
             return Some(WorldAct::Grab(id));
+        }
+        if let Some(pole) = target.button {
+            // The reach is the press; the crossing's lamps and the prompt's
+            // "wait for green" are the receipt.
+            avatar_state.pending_emote = Some(Emote::Interact);
+            self.pressed_button = Some(pole);
+            self.last = None;
+            self.last_ttl = 0.0;
+            return None;
         }
         if let Some(seat) = target.seat {
             // The offset, not the destination: the sim owns the avatar's position
@@ -414,6 +450,9 @@ pub fn track_interaction_target(
         &Transform,
     )>,
     mut state: ResMut<InteractState>,
+    detail: Res<crate::systems::street_detail::StreetDetail>,
+    buttons: Res<crate::systems::give_way::SignalButtons>,
+    clock: Res<crate::systems::anim_clock::AnimClock>,
 ) {
     if state.last_ttl > 0.0 {
         state.last_ttl -= time.delta_secs();
@@ -501,6 +540,26 @@ pub fn track_interaction_target(
             state.target = Some(TargetInfo::of_prim(hit.0, &hit.1, hit.2));
         }
         state.address = nearest_address(&facts, &places, &anchor, &avatar_state, pos);
+        return;
+    }
+
+    // A signal pole with a push button (`systems::give_way`): before the
+    // places, because it is the thing the avatar walked up to at a kerb, and
+    // a café across the pavement is not.
+    if let Some(s) = crate::systems::give_way::button_near(&detail, pos) {
+        let phase = buttons.phase(s.at, s.group, clock.elapsed_secs());
+        let detail_now = phase.map(crate::systems::give_way::ButtonPhase::detail);
+        let same = state
+            .target
+            .as_ref()
+            .is_some_and(|t| t.button == Some(s.pole) && t.detail == detail_now);
+        if !same {
+            state.target = Some(TargetInfo::of_button(s.pole, phase));
+        }
+        let address = nearest_address(&facts, &places, &anchor, &avatar_state, pos);
+        if state.address != address {
+            state.address = address;
+        }
         return;
     }
 

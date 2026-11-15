@@ -46,7 +46,13 @@ Standing facts, several of which a diff will not explain:
   is meshed into one of six per-cell meshes — (phase group A|B) × (red, amber,
   green) — and `update_signal_cycle` writes six emissives on phase
   transitions. Group = quantised approach bearing, so opposing arms alternate
-  like a real junction. Cost is constant in the number of signals.
+  like a real junction. Cost is constant in the number of signals. A signal
+  tagged `button_operated=yes` also gets a pedestrian head (its red walking
+  man a seventh shared material, always lit) and a button box; one crossing
+  pressed by the player is drawn over these by `systems::give_way`, not by
+  changing them (`ambient-traffic.md`, "Traffic gives way to you"). Only
+  zebras by `zebra_priority` (not every painted crossing) are kept for the
+  traffic that stops at them.
 - **The lamp point lights are a fixed pool, not per-lamp entities.** They are
   the first clustered lights in the scene; `ForceCpuClusteringPlugin` notes
   CPU clustering is cheap only "for a handful of clustered lights", and on the

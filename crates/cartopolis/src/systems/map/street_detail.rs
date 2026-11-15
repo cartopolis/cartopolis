@@ -176,10 +176,10 @@ struct DetailData {
     tree_rows: Vec<Vec<(f64, f64)>>,
     /// (lat, lng, height tag).
     lamps: Vec<(f64, f64, Option<f32>)>,
-    /// (node id, lat, lng).
-    signals: Vec<(i64, f64, f64)>,
-    /// (node id, lat, lng).
-    crossings: Vec<(i64, f64, f64)>,
+    /// (node id, lat, lng, `button_operated=yes`).
+    signals: Vec<(i64, f64, f64, bool)>,
+    /// (node id, lat, lng, a zebra traffic must stop for — [`zebra_priority`]).
+    crossings: Vec<(i64, f64, f64, bool)>,
     barriers: Vec<(BarrierKind, Option<f32>, Vec<(f64, f64)>)>,
     piers: Vec<Vec<(f64, f64)>>,
     waterway: Vec<(WaterKind, Vec<(f64, f64)>)>,
@@ -398,7 +398,8 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                 } else if tag_str(tags, "highway") == Some("street_lamp") {
                     out.lamps.push((lat, lng, tag_num(tags, "height")));
                 } else if tag_str(tags, "highway") == Some("traffic_signals") {
-                    out.signals.push((id, lat, lng));
+                    let button = tag_str(tags, "button_operated") == Some("yes");
+                    out.signals.push((id, lat, lng, button));
                 } else if tag_str(tags, "highway") == Some("crossing") {
                     // `uncontrolled` counts only when the ref says zebra; the
                     // query pre-filters the rest.
@@ -407,7 +408,8 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                         || c == "marked"
                         || (c == "uncontrolled" && tag_str(tags, "crossing_ref") == Some("zebra"))
                     {
-                        out.crossings.push((id, lat, lng));
+                        out.crossings
+                            .push((id, lat, lng, zebra_priority(|k| tag_str(tags, k))));
                     }
                 } else if tag_str(tags, "amenity") == Some("bicycle_parking") {
                     out.racks.push((lat, lng));
@@ -471,11 +473,30 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
     // Applied after the loop because the carriageway that condemns a node can
     // appear anywhere in the response, including after the node itself.
     if !buried_nodes.is_empty() {
-        out.signals.retain(|(id, _, _)| !buried_nodes.contains(id));
-        out.crossings
-            .retain(|(id, _, _)| !buried_nodes.contains(id));
+        out.signals.retain(|(id, ..)| !buried_nodes.contains(id));
+        out.crossings.retain(|(id, ..)| !buried_nodes.contains(id));
     }
     Ok(out)
+}
+
+/// Whether a painted crossing is a **zebra** — a *zebrapad*, where Dutch law
+/// has drivers and cyclists stop for somebody waiting to cross — rather than
+/// any marked crossing. `crossing=marked` is the new scheme's word for every
+/// painted one, the zebra among them, so the markings decide: `zebra` is one,
+/// `dashes`, `dots`, `surface` and a bare `yes` are not (they give the walker
+/// no priority). A zebra under signals (`crossing:signals=yes`) is the
+/// signals' business, not a give-way.
+///
+/// Measured over the nine z14 cells round Groningen's centre (2026-11-15):
+/// of 250 marked crossings, 152 are zebras by this rule (97 `crossing=zebra`,
+/// 55 `marked` + `crossing:markings=zebra`), 11 zebras sit under signals.
+pub(crate) fn zebra_priority<'a>(tag: impl Fn(&str) -> Option<&'a str>) -> bool {
+    if tag("crossing:signals") == Some("yes") || tag("crossing") == Some("traffic_signals") {
+        return false;
+    }
+    tag("crossing") == Some("zebra")
+        || tag("crossing_ref") == Some("zebra")
+        || tag("crossing:markings") == Some("zebra")
 }
 
 // ─── Worker build ────────────────────────────────────────────────────────────
@@ -496,6 +517,8 @@ pub(crate) enum PropClass {
     /// Lamp heads — emissive rides the night factor.
     LampHead,
     Signal(u8),
+    /// A button pole's red walking-man lamp, lit day and night.
+    PedRed,
 }
 
 /// A finished cell: meshes tagged by material class, colliders in world XZ,
@@ -505,12 +528,55 @@ pub(crate) struct DetailCellBuild {
     meshes: Vec<(PropClass, Mesh)>,
     colliders: Vec<Footprint>,
     lamp_points: Vec<Vec3>,
-    /// Each signal's stop line — the node on the carriageway, world XZ — and
-    /// its phase group, for the cars that stop at it (`systems::traffic`).
-    signal_points: Vec<(Vec2, u8)>,
+    /// Each signal's stop line, phase group and pole, for the cars that stop
+    /// at it (`systems::traffic`) and the button on it (`systems::give_way`).
+    signal_points: Vec<SignalPoint>,
+    /// The zebras traffic stops for (`systems::give_way`).
+    zebra_points: Vec<ZebraPoint>,
     /// The ways closed to cars, world XZ (`systems::traffic`).
     car_free: Vec<Vec<[f32; 2]>>,
 }
+
+/// A drawn traffic signal, world frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignalPoint {
+    /// The stop line: the node on the way, world XZ.
+    pub at: Vec2,
+    /// Its phase group ([`signal_group`]).
+    pub group: u8,
+    /// Tagged `button_operated=yes`: a pedestrian push button on the pole,
+    /// and a pedestrian head drawn on it.
+    pub button: bool,
+    /// Where the drawn pole stands, world XZ, the ground under it, and the
+    /// yaw its head was drawn at (`push_yawed_box`'s).
+    pub pole: Vec2,
+    pub ground: f32,
+    pub yaw: f32,
+}
+
+/// A zebra crossing traffic stops for ([`zebra_priority`]), world XZ.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZebraPoint {
+    /// The crossing node, on the carriageway's centre line.
+    pub at: Vec2,
+    /// The road's direction there (unit); the walk is across it.
+    pub road: Vec2,
+    /// Half the carriageway's estimated width, metres.
+    pub half_width: f32,
+}
+
+/// The height a button pole's pedestrian head is drawn at, its two lamps'
+/// offsets from it (red over green) and their half size, metres — shared by
+/// the cell mesh and `give_way`'s overlay of a pressed one.
+/// The lamps stand proud of the housing on all four sides, so the light reads
+/// from either kerb and from along the road.
+pub(crate) const PED_HEAD_Y: f32 = 2.35;
+pub(crate) const PED_LAMP_DY: f32 = 0.13;
+pub(crate) const PED_LAMP_HALF: [f32; 3] = [0.1, 0.075, 0.08];
+/// A car signal head's lamps: centre height, and the three offsets (red,
+/// amber, green), as the cell mesh draws them.
+pub(crate) const CAR_HEAD_Y: f32 = 3.25;
+pub(crate) const CAR_LAMP_DY: [f32; 3] = [0.26, 0.0, -0.26];
 
 type CellResult = Result<Option<DetailCellBuild>, String>;
 
@@ -741,7 +807,8 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     let mut meshes: Vec<(PropClass, Mesh)> = Vec::new();
     let mut colliders: Vec<Footprint> = Vec::new();
     let mut lamp_points: Vec<Vec3> = Vec::new();
-    let mut signal_points: Vec<(Vec2, u8)> = Vec::new();
+    let mut signal_points: Vec<SignalPoint> = Vec::new();
+    let mut zebra_points: Vec<ZebraPoint> = Vec::new();
 
     // ── Trees ────────────────────────────────────────────────────────────
     if ctx.wants_trees {
@@ -889,6 +956,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     let mut paint = MeshData::default();
     let mut heads = MeshData::default();
     let mut signals: [MeshData; 6] = std::array::from_fn(|_| MeshData::default());
+    let mut ped_red = MeshData::default();
     let mut props = 0usize;
     let white = [1.0, 1.0, 1.0, 1.0];
 
@@ -934,7 +1002,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         lamp_points.push(Vec3::new(p.x + ox, y0 + h, p.y + oz));
     }
 
-    for &(id, lat, lng) in &data.signals {
+    for &(id, lat, lng, button) in &data.signals {
         if !ctx.owns(lat, lng) || props >= MAX_PROPS_PER_CELL {
             continue;
         }
@@ -948,8 +1016,58 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let y0 = ground_at(at);
         let yaw = dir.y.atan2(dir.x);
         let group = signal_group(dir);
-        signal_points.push((Vec2::new(p.x + ox, p.y + oz), group));
+        signal_points.push(SignalPoint {
+            at: Vec2::new(p.x + ox, p.y + oz),
+            group,
+            button,
+            pole: at + Vec2::new(ox, oz),
+            ground: y0,
+            yaw,
+        });
         let post = linear(SIGNAL_POST);
+        if button {
+            // The pedestrian head the button belongs to, below the car head:
+            // the walking man's red lit (`PedRed`), the green dark — a
+            // button-operated light rests on red for the walker until somebody
+            // presses (`systems::give_way` overlays a pressed one).
+            push_yawed_box(
+                &mut solid,
+                at,
+                y0,
+                yaw,
+                [0.0, PED_HEAD_Y, 0.0],
+                [0.09, 0.24, 0.07],
+                post,
+            );
+            push_yawed_box(
+                &mut ped_red,
+                at,
+                y0,
+                yaw,
+                [0.0, PED_HEAD_Y + PED_LAMP_DY, 0.0],
+                PED_LAMP_HALF,
+                white,
+            );
+            push_yawed_box(
+                &mut solid,
+                at,
+                y0,
+                yaw,
+                [0.0, PED_HEAD_Y - PED_LAMP_DY, 0.0],
+                PED_LAMP_HALF,
+                linear(0x10_2A_18),
+            );
+            // The push button's box, at hand height.
+            push_yawed_box(
+                &mut solid,
+                at,
+                y0,
+                yaw,
+                [0.0, 1.1, 0.0],
+                [0.07, 0.11, 0.07],
+                linear(0xD8_C0_30),
+            );
+        }
         push_yawed_box(
             &mut solid,
             at,
@@ -964,19 +1082,19 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             at,
             y0,
             yaw,
-            [0.0, 3.25, 0.0],
+            [0.0, CAR_HEAD_Y, 0.0],
             [0.11, 0.42, 0.09],
             post,
         );
         // Three lamps, each in its phase-group + colour mesh; the cycle system
         // lights them by material.
-        for (slot, dy) in [(0u8, 0.26), (1, 0.0), (2, -0.26)] {
+        for (slot, dy) in (0u8..).zip(CAR_LAMP_DY) {
             push_yawed_box(
                 &mut signals[(group * 3 + slot) as usize],
                 at,
                 y0,
                 yaw,
-                [0.0, 3.25 + dy, 0.10],
+                [0.0, CAR_HEAD_Y + dy, 0.10],
                 [0.07, 0.07, 0.03],
                 white,
             );
@@ -989,7 +1107,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         ));
     }
 
-    for &(id, lat, lng) in &data.crossings {
+    for &(id, lat, lng, zebra) in &data.crossings {
         if !ctx.owns(lat, lng) {
             continue;
         }
@@ -997,6 +1115,13 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             continue;
         };
         let p = local(lat, lng);
+        if zebra {
+            zebra_points.push(ZebraPoint {
+                at: Vec2::new(p.x + ox, p.y + oz),
+                road: dir,
+                half_width: width * 0.5,
+            });
+        }
         let walk = Vec2::new(-dir.y, dir.x);
         let y0 = ground_at(p) + 0.02;
         // Stripes elongated in the walking direction, repeating along the
@@ -1340,6 +1465,9 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             meshes.push((PropClass::Signal(i as u8), m));
         }
     }
+    if let Some(m) = into_mesh(ped_red) {
+        meshes.push((PropClass::PedRed, m));
+    }
 
     // World XZ, the frame the drive network is in — like the signals' stop
     // lines, not cell-local like the meshes.
@@ -1362,6 +1490,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         colliders,
         lamp_points,
         signal_points,
+        zebra_points,
         car_free,
     }))
 }
@@ -1424,7 +1553,9 @@ pub struct StreetDetail {
     lamps: HashMap<(i64, i64), Vec<Vec3>>,
     /// Signal stop lines (world XZ) and their phase groups per cell, for the
     /// traffic that stops at them.
-    signals: HashMap<(i64, i64), Vec<(Vec2, u8)>>,
+    signals: HashMap<(i64, i64), Vec<SignalPoint>>,
+    /// The zebras traffic stops for, per cell (`systems::give_way`).
+    zebras: HashMap<(i64, i64), Vec<ZebraPoint>>,
     /// Ways closed to cars (world XZ) per cell, for the traffic that keeps off
     /// them, and a revision bumped whenever that set changes.
     car_free: HashMap<(i64, i64), Vec<Vec<[f32; 2]>>>,
@@ -1435,6 +1566,7 @@ pub struct StreetDetail {
     paint_material: Option<Handle<StandardMaterial>>,
     lamp_material: Option<Handle<StandardMaterial>>,
     signal_materials: Option<[Handle<StandardMaterial>; 6]>,
+    ped_red_material: Option<Handle<StandardMaterial>>,
     /// The pool of live point lights `update_lamp_lights` re-aims.
     light_pool: Vec<Entity>,
     /// Count of spawned mesh entities, for the shot harness.
@@ -1467,6 +1599,7 @@ impl Default for StreetDetail {
             cell_entities: HashMap::new(),
             lamps: HashMap::new(),
             signals: HashMap::new(),
+            zebras: HashMap::new(),
             car_free: HashMap::new(),
             car_free_revision: 0,
             solid_material: None,
@@ -1474,6 +1607,7 @@ impl Default for StreetDetail {
             paint_material: None,
             lamp_material: None,
             signal_materials: None,
+            ped_red_material: None,
             light_pool: Vec::new(),
             spawned_meshes: 0,
             coverage_wait_since: None,
@@ -1503,13 +1637,24 @@ impl StreetDetail {
     /// Every drawn signal within `radius` of `at` (world XZ): its stop line
     /// and phase group. Only signals that are drawn, so a car never stops at a
     /// light nobody can see.
-    pub fn signals_near(&self, at: Vec2, radius: f32) -> impl Iterator<Item = (Vec2, u8)> + '_ {
+    pub fn signals_near(&self, at: Vec2, radius: f32) -> impl Iterator<Item = SignalPoint> + '_ {
         let r2 = radius * radius;
         self.signals
             .values()
             .flatten()
             .copied()
-            .filter(move |(p, _)| p.distance_squared(at) <= r2)
+            .filter(move |s| s.at.distance_squared(at) <= r2)
+    }
+
+    /// Every drawn zebra within `radius` of `at` (world XZ). Like the
+    /// signals, only drawn ones: with street detail off nothing stops.
+    pub fn zebras_near(&self, at: Vec2, radius: f32) -> impl Iterator<Item = ZebraPoint> + '_ {
+        let r2 = radius * radius;
+        self.zebras
+            .values()
+            .flatten()
+            .copied()
+            .filter(move |z| z.at.distance_squared(at) <= r2)
     }
 
     /// Every loaded way closed to cars, world XZ.
@@ -1563,6 +1708,7 @@ pub fn update_street_detail(
         sd.spawned_meshes = 0;
         sd.lamps.clear();
         sd.signals.clear();
+        sd.zebras.clear();
         if !sd.car_free.is_empty() {
             sd.car_free.clear();
             sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
@@ -1709,6 +1855,9 @@ pub fn update_street_detail(
                 if !build.signal_points.is_empty() {
                     sd.signals.insert(cell, build.signal_points);
                 }
+                if !build.zebra_points.is_empty() {
+                    sd.zebras.insert(cell, build.zebra_points);
+                }
                 if !build.car_free.is_empty() {
                     sd.car_free.insert(cell, build.car_free);
                     sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
@@ -1739,6 +1888,7 @@ pub fn update_street_detail(
         }
         sd.lamps.remove(&cell);
         sd.signals.remove(&cell);
+        sd.zebras.remove(&cell);
         if sd.car_free.remove(&cell).is_some() {
             sd.car_free_revision = sd.car_free_revision.wrapping_add(1);
         }
@@ -1879,6 +2029,27 @@ fn spawn_cell(
                     .spawn((
                         placement,
                         MeshMaterial3d(mats[*i as usize].clone()),
+                        PropNear,
+                        bevy::light::NotShadowCaster,
+                    ))
+                    .id()
+            }
+            PropClass::PedRed => {
+                let material = sd
+                    .ped_red_material
+                    .get_or_insert_with(|| {
+                        materials.add(StandardMaterial {
+                            base_color: Color::srgb(0.10, 0.10, 0.10),
+                            emissive: crate::systems::give_way::PED_RED_GLOW,
+                            perceptual_roughness: 0.3,
+                            ..default()
+                        })
+                    })
+                    .clone();
+                commands
+                    .spawn((
+                        placement,
+                        MeshMaterial3d(material),
                         PropNear,
                         bevy::light::NotShadowCaster,
                     ))
@@ -2218,8 +2389,8 @@ mod tests {
         assert_eq!(data.trees.len(), 1);
         assert_eq!(data.trees[0].2, Some(12.0));
         assert_eq!(data.lamps.len(), 1);
-        assert_eq!(data.signals, vec![(3, 53.212, 6.562)]);
-        assert_eq!(data.crossings, vec![(4, 53.213, 6.563)]);
+        assert_eq!(data.signals, vec![(3, 53.212, 6.562, false)]);
+        assert_eq!(data.crossings, vec![(4, 53.213, 6.563, true)]);
         assert_eq!(data.bollards.len(), 1);
         assert_eq!(data.barriers.len(), 1);
         assert_eq!(data.barriers[0].0, BarrierKind::Hedge);
@@ -2306,6 +2477,27 @@ mod tests {
         let data = parse_detail(text).unwrap();
         assert_eq!(data.crossings.len(), 1);
         assert_eq!(data.crossings[0].0, 2);
+        assert!(data.crossings[0].3, "a zebra by its ref is one to stop for");
+    }
+
+    /// Only a zebra gives the walker priority: `marked` with other markings
+    /// is painted but not stopped for, and a zebra under signals is the
+    /// signals' business. The button is read off the signal.
+    #[test]
+    fn a_zebra_is_told_from_a_marked_crossing_and_a_button_is_read() {
+        let text = r#"{"elements":[
+            {"type":"node","id":1,"lat":1.0,"lon":1.0,"tags":{"highway":"crossing","crossing":"marked","crossing:markings":"zebra"}},
+            {"type":"node","id":2,"lat":1.0,"lon":1.1,"tags":{"highway":"crossing","crossing":"marked","crossing:markings":"dashes"}},
+            {"type":"node","id":3,"lat":1.0,"lon":1.2,"tags":{"highway":"crossing","crossing":"zebra","crossing:signals":"yes"}},
+            {"type":"node","id":4,"lat":1.0,"lon":1.3,"tags":{"highway":"crossing","crossing":"marked"}},
+            {"type":"node","id":5,"lat":1.0,"lon":1.4,"tags":{"highway":"traffic_signals","button_operated":"yes"}},
+            {"type":"node","id":6,"lat":1.0,"lon":1.5,"tags":{"highway":"traffic_signals","button_operated":"no"}}
+        ]}"#;
+        let data = parse_detail(text).unwrap();
+        let zebra: Vec<(i64, bool)> = data.crossings.iter().map(|c| (c.0, c.3)).collect();
+        assert_eq!(zebra, vec![(1, true), (2, false), (3, false), (4, false)]);
+        let button: Vec<(i64, bool)> = data.signals.iter().map(|s| (s.0, s.3)).collect();
+        assert_eq!(button, vec![(5, true), (6, false)]);
     }
 
     #[test]

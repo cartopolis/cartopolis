@@ -397,6 +397,9 @@ impl Reaction {
 pub struct CrowdPeople {
     /// Where each avatar stands, world XZ.
     pub at: Vec<Vec2>,
+    /// Which way each faces, unit world XZ, beside `at` — for the cars that
+    /// stop for somebody waiting at a zebra (`systems::give_way`).
+    pub facing: Vec<Vec2>,
     /// Where each avatar that began a wave this frame stands.
     pub waves: Vec<Vec2>,
     /// The avatars waving last frame, to see a wave begin.
@@ -437,16 +440,21 @@ pub struct AvatarBodies<'w, 's> {
 pub fn gather_people(mut people: ResMut<CrowdPeople>, bodies: AvatarBodies) {
     let CrowdPeople {
         at,
+        facing,
         waves,
         waving,
         waves_seen,
     } = &mut *people;
     at.clear();
+    facing.clear();
     waves.clear();
     let mut seen = 0;
     for (entity, cell, tf, emote) in bodies.local.iter().chain(bodies.remote.iter()) {
         let p = anchored_xz(cell, tf.translation);
         at.push(p);
+        // The models face +z (`avatar::facing`).
+        let f = tf.rotation * Vec3::Z;
+        facing.push(Vec2::new(f.x, f.z).normalize_or(Vec2::Y));
         let is_waving = emote.is_some_and(|e| e.emote() == cartopolis_core::Emote::Wave);
         if !is_waving {
             continue;

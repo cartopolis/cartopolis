@@ -35,6 +35,7 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::traffic::DriveNetwork>()
             .init_resource::<systems::crowd::Crowd>()
             .init_resource::<systems::crowd_react::CrowdPeople>()
+            .init_resource::<systems::give_way::SignalButtons>()
             .init_asset::<systems::crowd::CrowdSwatch>()
             .init_asset_loader::<systems::crowd::CrowdSwatchLoader>();
 
@@ -251,9 +252,14 @@ impl Plugin for NavPlugin {
                 // answer (`systems::crowd_react`).
                 systems::crowd_react::gather_people,
                 systems::crowd_react::scripted_wave,
+                // Signal buttons pressed at the prompt, and the lamps a pressed
+                // crossing draws (`systems::give_way`).
+                systems::give_way::press_buttons,
+                systems::give_way::draw_buttons.after(systems::give_way::press_buttons),
                 systems::traffic::drive_traffic
                     .after(systems::traffic::close_car_free_lines)
-                    .after(systems::crowd_react::gather_people),
+                    .after(systems::crowd_react::gather_people)
+                    .after(systems::give_way::press_buttons),
                 // After it, because a passing walker can flush a feeding crow.
                 systems::crows::drive_crows.after(systems::traffic::drive_traffic),
             )

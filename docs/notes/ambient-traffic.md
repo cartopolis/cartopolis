@@ -5,7 +5,8 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
   agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle",
   cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled,
-  crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back"]
+  crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
+  give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON]
 updated: 2026-11-15
 ---
 
@@ -152,10 +153,10 @@ from the cause. The visibility queries are one `SystemParam` bundle now.
 
 ## What this deliberately is not
 
-No car-to-car collision, no give-way, no car that notices an avatar, and people walk
-through each other and through the cars and ignore the lights. (Queueing came with
-headway on 2026-09-10, stopping at signals on 2026-10-19, and walkers that notice
-avatars on 2026-11-15 — see below.)
+No car-to-car collision, no give-way between agents, and people walk through
+each other and through the cars and ignore the lights. (Queueing came with
+headway on 2026-09-10, stopping at signals on 2026-10-19, walkers that notice
+avatars and cars and cyclists that give way to them on 2026-11-15 — see below.)
 Every one is a simulation cost landing on every frame, and none is what the layer
 is for: the question it answers is "is this street alive", settled at a glance
 from a range where two cars overlapping for a moment is invisible. Recorded here
@@ -587,6 +588,113 @@ it stood in a third of the frames.
 
 **Limits.** Walkers still pass through each other (two stepping aside the
 same way can meet). No line of sight through buildings for a wave (10 m on a
-street rarely crosses one). No nod. Cars do not notice avatars. Frame time on
+street rarely crosses one). No nod. Cars give way to avatars, not to
+walkers (next section). Frame time on
 the phone not measured; the CPU and GPU costs above are counts. Cyclists do
-not react: they ride their own network, and none of this reads them.
+not look or wave back (they give way, next section), and walkers do not make
+way for cyclists: none of this reads them.
+
+## Traffic gives way to you (2026-11-15)
+
+The owner's second step of "the city reacts to the player", chosen as
+*Oversteken en verkeer*: a button at the traffic light, cars that stop at a
+zebra. `systems::give_way` holds the decisions as pure functions;
+`drive_traffic` calls them for every car and cyclist (`drives()`), reading the
+same `CrowdPeople` list the walkers do (now with each avatar's facing). **Per
+viewer, nothing on the wire**: the traffic is invented on each client, so a
+pressed button holds the cars this client draws and nobody else's.
+
+**What yields, and when.**
+
+- **Somebody on the road ahead.** A car or cyclist whose path passes within
+  its half width + 0.35 m (the avatar) + 0.45 m of an avatar up to 40 m ahead
+  brakes on a 3 m/s² curve that ends with its nose 1.6 m short, waits, and
+  pulls away at its usual rate once nobody is in its path (`yield_to`). The
+  path is the agent's own line: the avatar is projected onto it
+  (`traffic::on_path`), so somebody on the pavement of a bend is not in the
+  way; straight ahead inside a junction turn and past the line's end. If the
+  curve cannot be met — somebody stepped out close in front — it brakes at
+  8 m/s², and the step is clamped so the nose never passes the avatar
+  (`Yield::room`): `a_car_never_drives_through_somebody_who_steps_out` holds
+  it from 4 m to 14 m at 11 m/s. Bodies: a car 0.95 m half wide with its nose
+  2.3 m ahead of its centre, a bike 0.35 and 0.95.
+- **A zebra somebody waits at or is on.** A car or cyclist with a zebra across
+  its road up to 45 m ahead stops with its nose 1 m before the stripes when an
+  avatar is on them, or within 2 m of either kerb end (±2.85 m along the road)
+  facing within 60° of straight across (`waiting_at`). A driver who would need
+  more than 7 m/s² goes, as at an amber light; the avatar on the stripes is
+  still given way to by the rule above, which has no such limit.
+- **A pressed button.** At a signal tagged `button_operated=yes` the prompt
+  offers **Press the button** (within 2.5 m of the drawn pole or the mapped
+  node; E or a tap; the avatar plays `interact`). The cycle (`ButtonPhase`):
+  3 s nothing, 3 s amber for the cars, 1.5 s all red, 8 s the walking man
+  green, 3.5 s red again while the crossing clears — cars held 16 s. Every
+  signal of the pressed one's phase group within 30 m is held (both
+  approaches' stop lines and the poles at either kerb), through the existing
+  `signal_speed` — a held light is red to it whatever the global cycle says. A
+  second press mid-cycle does nothing. The prompt reads `(wait for green)`,
+  then `(walk)`.
+
+**Where the crossings and signals come from.** All from the street-detail
+layer's Overpass/atlas cells — no query change, the tags were already in them;
+with street detail off nothing stops, as for the signals. Measured over the
+nine z14 cells round Groningen's centre on 2026-11-15: 250 marked crossings,
+of which **152 are zebras** by `street_detail::zebra_priority` — 97
+`crossing=zebra`, 55 `crossing=marked` + `crossing:markings=zebra`; the rest
+are `marked` with `yes`, `dashes`, `dots` or `surface` markings, which give the
+walker no priority in Dutch law and are only painted; 11 zebras under signals
+(`crossing:signals=yes`) are the signals' business. 266 more are `uncontrolled`
+without a zebra ref and stay undrawn. Of 300 `highway=traffic_signals` nodes,
+**15 carry `button_operated=yes`**, nearly all on footways at the kerb
+(Westersingel × Verlengde Visserstraat, Pleiadenlaan, Eikenlaan,
+Boumaboulevard). Only those get a button: most Dutch pedestrian lights have
+one, but the data says so for these, and a button invented on the others
+would be a placement the data does not have.
+
+**How a pressed crossing is drawn.** A button pole now carries a pedestrian
+head below the car head: the red walking man lit (`PropClass::PedRed`, one
+more shared material), the green dark, and a yellow button box at 1.1 m. The
+car heads are six shared materials cycled by one clock, so one crossing cannot
+change colour through them; while a press holds the cars, `draw_buttons`
+spawns, per held signal, a dark face over the car head with its own red and
+amber over it, and over each button pole's walking man its own red and green.
+One cube mesh and four materials made on the first press, a few entities per
+press despawned when it ends: nothing uploaded after the first.
+
+**What lost.**
+
+- **Taking the button from every signal.** Most Dutch pedestrian lights have
+  one, but 285 of the 300 do not say so; see above.
+- **A button-operated signal resting green for the cars.** That is what a
+  mid-block push-button crossing does, but the heads are drawn in the shared
+  cycled materials; resting them on green needs a second set of six and a
+  rule for which signals rest. Not done: after a press the cars go back to the
+  global cycle, which may well be red.
+- **Walkers of the crowd using the zebras.** They do not cross mid-block at
+  all — a walker changes side only at a junction (`keep_to_pavement`) — so
+  there is nothing for the cars to stop for until they do; sending them
+  across at zebras is a path change, not a give-way.
+- **Replicating presses.** A button on the wire would hold no other viewer's
+  cars, which are their own invention.
+- **A separate yield pass.** The decisions run inside `drive_traffic`'s one
+  pass over the pool, with the people as one short list; the zebras and
+  signals are each one `Vec` a frame from `StreetDetail`.
+
+**Seeing it.** `CARTO_TRAFFIC_HERE=1` sends three cars at the avatar every
+25 s (the drivable line nearest it, 45/60/75 m before it, a direction the line
+may be driven) and logs once a second how near the nearest came and its
+speed; `CARTO_PRESS_BUTTON=<s>` presses the nearest button within 12 m every
+that many seconds. Filmed 2026-11-15 on mac-2 (`--shot-mode avatar
+--video-fps 5`): on the zebra on the Oostersingel (53.220992, 6.574746 — the
+stripes are in PDOK's photograph) the oncoming queue stops before the stripes
+and waits, the near lane and a cyclist too, and pulls away once the avatar is
+on the pavement; at Westersingel × Verlengde Visserstraat (53.21828, 6.55610)
+the prompt goes from "Press the button" to "(wait for green)" to "(walk)", the
+walking man turns green on the pressed pole only (the other pole is the cross
+street's), and a car waits at the stop line. **Not shown**: the car head's
+red overlay at a readable size (it faces the traffic, away from that camera).
+The avatar's own clips are not on the movie clock, so its reach plays at its
+real rate. Limits: the avatar's walking speed is not read, so a car does not
+anticipate somebody about to step out; walkers are not given way to; a
+cyclist on a cycle track crossing a zebra's road is a different line and is
+not stopped by that zebra unless the zebra is mapped across the track too.

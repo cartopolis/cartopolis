@@ -23,6 +23,8 @@ pub mod traffic;
 pub mod crowd;
 // The walkers make way for avatars, look at them and wave back.
 pub mod crowd_react;
+// Cars and cyclists give way to avatars, at zebras and at a pressed button.
+pub mod give_way;
 // Crows over the camera and on its lawns, on the traffic's fixed-pool terms.
 pub mod crows;
 pub mod transit_live;
