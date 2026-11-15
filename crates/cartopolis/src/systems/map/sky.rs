@@ -1597,25 +1597,41 @@ pub(crate) fn update_horizon_haze(
         *vis = want;
     }
 
+    // Written only when a value moved: `get_mut` re-prepares the material on the
+    // render thread whatever it holds, and this ran every frame, still or not
+    // (2026-11-15, the street `cargo perf`: ~30 a second).
+    let color = fog.color.to_linear();
+    // Density-driven only: the built-in atmosphere (Bevy 0.19) has no
+    // single-scattering horizon artifact to cover, so there's no base haze —
+    // a base veil just tinted the (already correct) sky with the warm fog colour.
+    // The zenith floor (w) grows quadratically so light haze leaves the sky
+    // blue while dense fog closes over the whole dome.
+    let params = Vec4::new(0.25 * d, peak, fog.directional_light_exponent, d * d);
+    let dir_light_color = fog.directional_light_color.to_linear();
+    // Where the shell's rim meets the ground, in view-direction `y`: the ray
+    // that grazes the sphere at `radius` is the same one that hits the ground
+    // plane there, so it is `-altitude / radius` (small, and always below the
+    // horizon). The shader ramps the haze from nothing at the rim to full at
+    // the horizon, which is what keeps the rim from being an edge of its own:
+    // the ground just inside it wears the atmosphere's own aerial perspective,
+    // and at sunset that is a strong warm tint for flat fog colour to butt up
+    // against. Fading in over that span also means the haze only takes over
+    // where the ground is far enough for the atmosphere to have got it wrong.
+    let rim = Vec4::new(-(altitude / radius).clamp(1e-4, 1.0), 0.0, 0.0, 0.0);
+    let unchanged = materials.get(&mat_handle.0).is_none_or(|m| {
+        m.color == color
+            && m.params == params
+            && m.dir_light_color == dir_light_color
+            && m.rim == rim
+    });
+    if unchanged {
+        return;
+    }
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-        mat.color = fog.color.to_linear();
-        // Density-driven only: the built-in atmosphere (Bevy 0.19) has no
-        // single-scattering horizon artifact to cover, so there's no base haze —
-        // a base veil just tinted the (already correct) sky with the warm fog colour.
-        // The zenith floor (w) grows quadratically so light haze leaves the sky
-        // blue while dense fog closes over the whole dome.
-        mat.params = Vec4::new(0.25 * d, peak, fog.directional_light_exponent, d * d);
-        mat.dir_light_color = fog.directional_light_color.to_linear();
-        // Where the shell's rim meets the ground, in view-direction `y`: the ray
-        // that grazes the sphere at `radius` is the same one that hits the ground
-        // plane there, so it is `-altitude / radius` (small, and always below the
-        // horizon). The shader ramps the haze from nothing at the rim to full at
-        // the horizon, which is what keeps the rim from being an edge of its own:
-        // the ground just inside it wears the atmosphere's own aerial perspective,
-        // and at sunset that is a strong warm tint for flat fog colour to butt up
-        // against. Fading in over that span also means the haze only takes over
-        // where the ground is far enough for the atmosphere to have got it wrong.
-        mat.rim = Vec4::new(-(altitude / radius).clamp(1e-4, 1.0), 0.0, 0.0, 0.0);
+        mat.color = color;
+        mat.params = params;
+        mat.dir_light_color = dir_light_color;
+        mat.rim = rim;
     }
 }
 
@@ -1697,6 +1713,12 @@ pub(crate) fn update_star_sky(
     };
     if *vis != want {
         *vis = want;
+    }
+    // Hidden, the field draws nothing, so its clock need not run: writing it
+    // re-prepared the material every frame of every day (`get_mut` marks it
+    // changed whatever it holds). The first frame of dusk writes it again.
+    if want == Visibility::Hidden {
+        return;
     }
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params = Vec4::new(
@@ -1958,6 +1980,9 @@ pub(crate) fn update_clouds(
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
     mut clouds_disabled: Local<Option<bool>>,
+    // Whether the hidden deck has been written once — its cover of nothing,
+    // for the water — and so need not be again until it shows.
+    mut hidden_written: Local<bool>,
     weather: Res<systems::weather::WeatherState>,
     mut field: ResMut<CloudField>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
@@ -2003,6 +2028,17 @@ pub(crate) fn update_clouds(
     };
     if *vis != want {
         *vis = want;
+    }
+    // A hidden deck is written once, for the water's sake, and then left: every
+    // write is a `get_mut`, which re-prepares the material on the render thread
+    // whatever it holds (~30 a second at street level, 2026-11-15).
+    if want == Visibility::Hidden {
+        if *hidden_written {
+            return;
+        }
+        *hidden_written = true;
+    } else {
+        *hidden_written = false;
     }
 
     let hours = dev.time_of_day;
