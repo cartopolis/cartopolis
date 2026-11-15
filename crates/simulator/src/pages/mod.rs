@@ -138,6 +138,11 @@ pub struct PageService {
     languages: Arc<Vec<String>>,
 }
 
+/// The page the site's front door shows: `/` sends a reader to `/{lang}/`, which
+/// is this page, once it is published (`http::shell`). Until then `/` is the web
+/// UI's, the chat, as it was before content pages.
+pub const HOME: &str = "home";
+
 /// A page's address: lower-case letters, digits and hyphens.
 #[must_use]
 pub fn valid_slug(slug: &str) -> bool {

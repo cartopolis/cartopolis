@@ -89,8 +89,22 @@ export function resolve(data: PageData, key: string): Resolved | null {
     return lang === undefined ? null : {lang, text: site[lang]}
 }
 
-/** `/{lang}/{slug}`: the address's language and page, or null for any other path. */
+/**
+ * The page the site's front door shows: `/` sends a reader to `/{lang}/`, which
+ * is this page (`pages::HOME` on the simulator).
+ */
+export const HOME = 'home'
+
+/**
+ * `/{lang}/{slug}`, or `/{lang}/` for the home page: the address's language and
+ * page, or null for any other path.
+ */
 export function parsePath(pathname: string): {lang: string; slug: string} | null {
-    const match = /^\/([a-z]{2})\/([a-z0-9][a-z0-9-]*)\/?$/.exec(pathname)
-    return match ? {lang: match[1], slug: match[2]} : null
+    const match = /^\/([a-z]{2})(?:\/([a-z0-9][a-z0-9-]*))?\/?$/.exec(pathname)
+    return match ? {lang: match[1], slug: match[2] ?? HOME} : null
+}
+
+/** Where a page lives in one language: the home page at `/{lang}/`, any other at `/{lang}/{slug}`. */
+export function pageHref(lang: string, slug: string): string {
+    return slug === HOME ? `/${lang}/` : `/${lang}/${slug}`
 }

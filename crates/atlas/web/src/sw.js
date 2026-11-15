@@ -38,9 +38,9 @@ self.addEventListener('notificationclick', (event) => {
     event.notification.close()
     event.waitUntil(
         self.clients.matchAll({includeUncontrolled: true, type: 'window'}).then((windows) => {
-            const chat = windows.find((w) => new URL(w.url).pathname === '/')
+            const chat = windows.find((w) => ['/', '/chat'].includes(new URL(w.url).pathname))
             if (chat) return chat.focus()
-            return self.clients.openWindow('/')
+            return self.clients.openWindow('/chat')
         }),
     )
 })

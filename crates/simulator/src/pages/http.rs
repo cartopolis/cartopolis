@@ -251,13 +251,23 @@ async fn delete_page(
 // The shell
 // ---------------------------------------------------------------------------
 
-/// `/{lang}/{slug}` → the language and the page, when `lang` is one this server
-/// serves; any other path is not a content page (`/c/{handle}`, `/fonts/…`).
+/// `/{lang}/{slug}` → the language and the page, and `/{lang}/` the home page,
+/// when `lang` is one this server serves; any other path is not a content page
+/// (`/c/{handle}`, `/fonts/…`).
 fn page_path<'a>(path: &'a str, languages: &[String]) -> Option<(&'a str, &'a str)> {
     let rest = path.strip_prefix('/')?;
     let rest = rest.strip_suffix('/').unwrap_or(rest);
-    let (lang, slug) = rest.split_once('/')?;
+    let (lang, slug) = rest.split_once('/').unwrap_or((rest, super::HOME));
     (languages.iter().any(|l| l == lang) && super::valid_slug(slug)).then_some((lang, slug))
+}
+
+/// Where a page lives in one language: the home page at `/{lang}/`.
+fn page_url(base: &str, lang: &str, slug: &str) -> String {
+    if slug == super::HOME {
+        format!("{base}/{lang}/")
+    } else {
+        format!("{base}/{lang}/{slug}")
+    }
 }
 
 /// The language a `/p/{slug}` reader asked for: the first of theirs this
@@ -322,19 +332,25 @@ fn head(pages: &PageService, base: &str, lang: &str, slug: &str, draft: bool) ->
             ));
             h.push_str("    <meta property=\"og:type\" content=\"website\" />\n");
             h.push_str("    <meta property=\"og:site_name\" content=\"Cartopolis\" />\n");
+            let url = page_url(base, lang, slug);
             h.push_str(&format!(
-                "    <meta property=\"og:url\" content=\"{base}/{lang}/{slug}\" />\n"
+                "    <meta property=\"og:url\" content=\"{url}\" />\n"
             ));
-            h.push_str(&format!(
-                "    <link rel=\"canonical\" href=\"{base}/{lang}/{slug}\" />\n"
-            ));
+            h.push_str(&format!("    <link rel=\"canonical\" href=\"{url}\" />\n"));
             for l in pages.languages() {
+                let url = page_url(base, l, slug);
                 h.push_str(&format!(
-                    "    <link rel=\"alternate\" hreflang=\"{l}\" href=\"{base}/{l}/{slug}\" />\n"
+                    "    <link rel=\"alternate\" hreflang=\"{l}\" href=\"{url}\" />\n"
                 ));
             }
+            // The home page's own address in no language is the site's root.
+            let any = if slug == super::HOME {
+                format!("{base}/")
+            } else {
+                format!("{base}/p/{slug}")
+            };
             h.push_str(&format!(
-                "    <link rel=\"alternate\" hreflang=\"x-default\" href=\"{base}/p/{slug}\" />"
+                "    <link rel=\"alternate\" hreflang=\"x-default\" href=\"{any}\" />"
             ));
         }
         None => h.push_str("<title>Cartopolis</title>"),
@@ -356,6 +372,20 @@ pub async fn shell(
     headers: &HeaderMap,
 ) -> Option<Response> {
     let path = uri.path();
+    // The front door: the home page in the reader's language once one is
+    // published, else the web UI's `/` (the chat) as before. An address with a
+    // query is the chat's own (`/?show=…` from before Community moved to
+    // `/chat`), so it is left to the web UI.
+    if path == "/" {
+        let accept = headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok());
+        let lang = preferred(accept, pages.languages());
+        if uri.query().is_some() || pages.head(super::HOME, lang).is_none() {
+            return None;
+        }
+        return Some(Redirect::to(&format!("/{lang}/")).into_response());
+    }
     if let Some(slug) = path.strip_prefix("/p/").map(|s| s.trim_end_matches('/')) {
         if !super::valid_slug(slug) {
             return None;
@@ -432,7 +462,10 @@ mod tests {
         assert_eq!(page_path("/de/over", &langs()), None);
         assert_eq!(page_path("/c/groningen", &langs()), None);
         assert_eq!(page_path("/nl/over/meer", &langs()), None);
-        assert_eq!(page_path("/nl", &langs()), None);
+        // The home page is the language alone.
+        assert_eq!(page_path("/nl", &langs()), Some(("nl", "home")));
+        assert_eq!(page_path("/en/", &langs()), Some(("en", "home")));
+        assert_eq!(page_path("/", &langs()), None);
         assert_eq!(page_path("/nl/Over", &langs()), None);
     }
 

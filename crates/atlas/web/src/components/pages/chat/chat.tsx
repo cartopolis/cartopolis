@@ -43,7 +43,7 @@ import {
 } from '@/lib/meeting'
 import {type Meetup, dayStart, longDate, readMeetups, ruleWords} from '@/lib/calendar'
 import {bind, local} from '@/lib/reactive'
-import {ADMIN} from '@/lib/base'
+import {ADMIN, COMMUNITY} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
 import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
@@ -69,7 +69,7 @@ import {Calendar, type CalendarCtx, openCalendar, todayCount} from './calendar'
 /** The switch's three positions, and the path each one lives at. */
 type Mode = 'community' | 'world' | 'admin'
 
-const PATHS: Record<Mode, string> = {admin: ADMIN, community: '/', world: '/world'}
+const PATHS: Record<Mode, string> = {admin: ADMIN, community: COMMUNITY, world: '/world'}
 const LABELS: Record<Mode, string> = {admin: 'Admin', community: 'Community', world: 'World'}
 
 /** Which position the address is at: `/world`, `/admin`, or Community for the rest. */
@@ -946,7 +946,7 @@ export class Chat extends MithrilComponent {
         this.s.space = null
         dropOperator()
         await playerSignOut()
-        if (mode() === 'admin') m.route.set('/')
+        if (mode() === 'admin') m.route.set(COMMUNITY)
     }
 
     /** Open a chat; `null` shows the welcome. Its community becomes the rail's choice. */
@@ -1351,10 +1351,10 @@ export class Chat extends MithrilComponent {
             <header class="home-top">
                 <a
                     class="home-wordmark"
-                    href="/"
+                    href={COMMUNITY}
                     onclick={(e: Event) => {
                         e.preventDefault()
-                        m.route.set('/')
+                        m.route.set(COMMUNITY)
                     }}
                 >
                     <img alt="" class="mark-dark" src="/icon.svg" />
@@ -2998,7 +2998,7 @@ export class Chat extends MithrilComponent {
                 class="chat-call-bar"
                 onclick={() => {
                     // From World or Admin, the call is back in Community.
-                    if (mode() !== 'community') m.route.set('/')
+                    if (mode() !== 'community') m.route.set(COMMUNITY)
                     this.focusCall(true)
                 }}
             >
@@ -4573,9 +4573,9 @@ function onCalendarPath(): boolean {
     return (m.route.get() ?? '/').split('?')[0] === '/calendar'
 }
 
-/** Leaving the calendar for anything else in Community: the address goes back to `/`. */
+/** Leaving the calendar for anything else in Community: the address goes back to Community's. */
 function leaveCalendarPath(): void {
-    if (onCalendarPath()) m.route.set('/')
+    if (onCalendarPath()) m.route.set(COMMUNITY)
 }
 
 function closeMenus() {

@@ -4,7 +4,7 @@ import {ICONS, SYMBOLS} from '@/lib/icons'
 
 import {VIEW_NAMES} from './components'
 import {paragraphs, parseInline} from './markup'
-import {type PageData, parsePath, registry, resolve, safeHref} from './tree'
+import {type PageData, pageHref, parsePath, registry, resolve, safeHref} from './tree'
 
 describe('the registry', () => {
     test('every component has a view, and every view a component', () => {
@@ -74,6 +74,10 @@ describe('addresses', () => {
     test('/{lang}/{slug}', () => {
         expect(parsePath('/nl/over')).toEqual({lang: 'nl', slug: 'over'})
         expect(parsePath('/en/over/')).toEqual({lang: 'en', slug: 'over'})
+        expect(parsePath('/nl/')).toEqual({lang: 'nl', slug: 'home'})
+        expect(parsePath('/en')).toEqual({lang: 'en', slug: 'home'})
+        expect(pageHref('nl', 'home')).toBe('/nl/')
+        expect(pageHref('en', 'over')).toBe('/en/over')
         expect(parsePath('/nl/over/meer')).toBeNull()
         expect(parsePath('/admin')).toBeNull()
         expect(parsePath('/nl/Over')).toBeNull()

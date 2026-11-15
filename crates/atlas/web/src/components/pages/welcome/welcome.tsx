@@ -15,7 +15,7 @@ import {
     readTicket,
     sentence,
 } from '@/lib/auth'
-import {ADMIN} from '@/lib/base'
+import {ADMIN, COMMUNITY} from '@/lib/base'
 import {bind, local} from '@/lib/reactive'
 import {createLabel, safeReturn, welcomeQuery} from '@/lib/signin'
 
@@ -213,7 +213,7 @@ export class Welcome extends MithrilComponent {
         try {
             const link = await communityFromTicket(s.ticket, s.group)
             notifier.success(`${link.group_name} is linked to ${community.name}`)
-            m.route.set('/', {show: community.id})
+            m.route.set(COMMUNITY, {show: community.id})
         } catch (err) {
             s.error = sentence(err, 'Could not link that group')
         } finally {
@@ -288,7 +288,7 @@ export class Welcome extends MithrilComponent {
                 <Card title="That didn't work">
                     <Alert tone="warning">{message}</Alert>
                     <div class="auth__actions">
-                        <Button onclick={() => m.route.set('/')} variant="primary">
+                        <Button onclick={() => m.route.set(COMMUNITY)} variant="primary">
                             Back to sign in
                         </Button>
                     </div>
@@ -464,7 +464,7 @@ export class Welcome extends MithrilComponent {
                         <Button disabled={!s.name.trim() || tooLong} loading={s.busy} type="submit" variant="primary">
                             {createLabel(this.joining().length)}
                         </Button>
-                        <Button disabled={s.busy} onclick={() => m.route.set('/')} variant="ghost">
+                        <Button disabled={s.busy} onclick={() => m.route.set(COMMUNITY)} variant="ghost">
                             That's not me — use another account
                         </Button>
                     </div>
@@ -496,7 +496,7 @@ export class Welcome extends MithrilComponent {
                         <Button disabled={!s.password} loading={s.busy} type="submit" variant="primary">
                             Add {provider} and sign in
                         </Button>
-                        <Button disabled={s.busy} onclick={() => m.route.set('/')} variant="ghost">
+                        <Button disabled={s.busy} onclick={() => m.route.set(COMMUNITY)} variant="ghost">
                             Not now
                         </Button>
                     </div>
@@ -538,7 +538,7 @@ export class Welcome extends MithrilComponent {
                         )}
                         <Button
                             disabled={s.busy}
-                            onclick={() => m.route.set('/', {show: what.community.id})}
+                            onclick={() => m.route.set(COMMUNITY, {show: what.community.id})}
                             variant="ghost"
                         >
                             Back to {what.community.name}

@@ -12,7 +12,7 @@ import {Tokens} from '@/components/pages/tokens/tokens'
 import {Fediverse} from '@/components/pages/fediverse/fediverse'
 import {Welcome} from '@/components/pages/welcome/welcome'
 import {layout} from '@/lib/layout'
-import {ADMIN} from '@/lib/base'
+import {ADMIN, COMMUNITY} from '@/lib/base'
 import {pageView} from '@/lib/stats'
 
 /** The wordmark, as the client draws it: "carto" in cream, "polis" in the brand orange. */
@@ -21,10 +21,10 @@ class Wordmark extends MithrilComponent {
         return (
             <a
                 class="wordmark"
-                href="/"
+                href={COMMUNITY}
                 onclick={(e: Event) => {
                     e.preventDefault()
-                    m.route.set('/')
+                    m.route.set(COMMUNITY)
                 }}
             >
                 carto<b>polis</b>
@@ -80,13 +80,13 @@ const page = (Page: ComponentType<any>, frame: 'page' | 'wide' = 'page'): RouteR
 /**
  * The whole site, told apart by the path (`lib/base.ts`).
  *
- * `/` is Community, `/world` World and `/admin` Admin: the three positions of the
+ * `/chat` is Community, `/world` World and `/admin` Admin: the three positions of the
  * page's switch. `/register` and `/verify` are for people who have no account,
  * `/buildings`, `/building/…` and `/tokens` are for players who do. They share this build because they share an API, and
  * because the verification link has to point *somewhere* the simulator's `/api`
  * is same-origin with. Caddy serves `index.html` for every path it does not route
  * elsewhere, so each is a route rather than a 404 — and an unknown one lands on
- * the front page, through the catch-all rather than a redirect, so the address
+ * Community, through the catch-all rather than a redirect, so the address
  * bar keeps what was typed.
  *
  * Pathname routing (`m.route.prefix = ''`), not Mithril's default `#!`: the
@@ -95,8 +95,9 @@ const page = (Page: ComponentType<any>, frame: 'page' | 'wide' = 'page'): RouteR
 export function mountRoutes(root: Element) {
     m.route.prefix = ''
     m.route(root, '/', {
-        // The site's front door is the chat (2026-10-09): signed in, you land in
-        // it; signed out, its welcome card offers every other way in.
+        // The chat was the front door from 2026-10-09 until 2026-11-15; now `/` is
+        // the content page `home` once one is published (the simulator redirects
+        // it to `/{lang}/`), and this route draws the chat only where none is.
         '/': chatPage,
         '/register': page(Register),
         '/verify': page(Verify),

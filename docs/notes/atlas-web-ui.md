@@ -43,9 +43,16 @@ arrived: the chat worker opens `/ws`, and the pages call `/api/communities`,
 `docs/mockups/cms`): `src/cms/` builds into `pages.html` and `pages-<hash>.js`
 (79 KB, against the chat's 442 KB), which the *simulator* serves at
 `/{lang}/{slug}` with the page's head filled in — so on the hosted server Caddy
-must send `/nl/*`, `/en/*`, `/p/*`, `/mcp` and `/api/pages*` to the simulator,
-and the simulator needs `web_root` to find `pages.html`. A language code there
-is a path the chat no longer routes.
+must send `/` (exactly), `/nl/*`, `/en/*`, `/p/*`, `/mcp` and `/api/pages*` to
+the simulator, and the simulator needs `web_root` to find `pages.html`. A
+language code there is a path the chat no longer routes.
+
+**The front door is the page `home`** (since 2026-11-15): `/` redirects to
+`/{lang}/` in the reader's language, which is that page, and Community moved to
+`/chat` (`lib/base.ts` `COMMUNITY`). Until `home` is published — and on a
+self-hosted server that never publishes one — the simulator answers `/` with the
+web UI as before, so `/` stays a chat route in `main.tsx`. A `/` with a query
+(`/?show=…`, links from before the move) is always the chat's.
 
 History: it was the *console*, at `/console/` (Caddy still redirects it to
 `/admin`), beside a front page atlas served from a string; before that it was

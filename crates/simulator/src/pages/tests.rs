@@ -305,3 +305,58 @@ fn an_outline_an_agent_can_read() {
         "{out}"
     );
 }
+
+/// `/` is the chat until a home page is published, then that page in the
+/// reader's language; a link with a query stays the chat's.
+#[tokio::test]
+async fn the_front_door() {
+    let s = service();
+    let dir = tempfile::tempdir().unwrap();
+    let shell_file = dir.path().join("pages.html");
+    std::fs::write(
+        &shell_file,
+        "<html lang=\"en\"><head><!--cms-head--><!--/cms-head--></head></html>",
+    )
+    .unwrap();
+    let ask = |path: &'static str, accept: &'static str| {
+        let (s, shell_file) = (s.clone(), shell_file.clone());
+        async move {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(axum::http::header::ACCEPT_LANGUAGE, accept.parse().unwrap());
+            let uri: axum::http::Uri = path.parse().unwrap();
+            http::shell(&s, &shell_file, "https://c.test", &uri, &headers).await
+        }
+    };
+    assert!(ask("/", "en").await.is_none(), "no home page: the chat");
+
+    s.put(HOME, JSX, None, &dutch(), "a").unwrap();
+    assert!(
+        ask("/", "en").await.is_none(),
+        "a draft is not the front door"
+    );
+    s.publish(HOME, "a").unwrap();
+
+    let to = ask("/", "en-GB,en;q=0.9").await.unwrap();
+    assert_eq!(to.headers()[axum::http::header::LOCATION], "/en/");
+    let to = ask("/", "fr").await.unwrap();
+    assert_eq!(to.headers()[axum::http::header::LOCATION], "/nl/");
+    assert!(
+        ask("/?show=3", "en").await.is_none(),
+        "the chat's old links"
+    );
+
+    let page = ask("/en/", "en").await.unwrap();
+    assert_eq!(page.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(page.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body.contains("<link rel=\"canonical\" href=\"https://c.test/en/\" />"),
+        "{body}"
+    );
+    assert!(
+        body.contains("hreflang=\"x-default\" href=\"https://c.test/\""),
+        "{body}"
+    );
+}

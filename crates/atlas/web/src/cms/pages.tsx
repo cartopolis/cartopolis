@@ -3,7 +3,7 @@ import './pages.css'
 import m from '@garage44/mithril'
 
 import {type Ctx, draw, inline, langOf} from './components'
-import {type PageData, isTextRef, parsePath, registry, resolve} from './tree'
+import {type PageData, isTextRef, pageHref, parsePath, registry, resolve} from './tree'
 
 /**
  * The content pages' own small app (`docs/mockups/cms`): `pages.html` and this,
@@ -77,7 +77,7 @@ function Frame(lang: string, body: m.Children, languages: string[], ctx: Ctx | n
                     carto<b>polis</b>
                 </a>
                 <nav class="cms-nav">
-                    <a href="/">{label('site.nav.community')}</a>
+                    <a href="/chat">{label('site.nav.community')}</a>
                     <a href="/world">{label('site.nav.world')}</a>
                 </nav>
                 {others ? (
@@ -86,7 +86,7 @@ function Frame(lang: string, body: m.Children, languages: string[], ctx: Ctx | n
                             <a
                                 aria-current={l === lang ? 'page' : undefined}
                                 class={l === lang ? 'on' : ''}
-                                href={`/${l}/${where.slug}${draft ? '?draft' : ''}`}
+                                href={`${pageHref(l, where.slug)}${draft ? '?draft' : ''}`}
                                 hreflang={l}
                                 lang={l}
                             >
