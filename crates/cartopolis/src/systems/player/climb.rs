@@ -442,7 +442,7 @@ fn outer_quay(map: &Surroundings, at: Vec2, water: Vec2) -> Option<(QuayEdge, Ve
 }
 
 /// What the prompt can offer at the wall or edge in front of the avatar,
-/// refreshed every frame in Follow by [`track_edges`].
+/// refreshed by [`track_edges`] in Follow whenever the avatar or the world moves.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
 pub struct Edges {
     /// A wall to climb onto.
@@ -514,6 +514,9 @@ pub fn track_edges(
     avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
     bodies: Query<&crate::systems::avatar::AvatarAnimations, With<crate::components::Avatar>>,
     mut edges: ResMut<Edges>,
+    // What the last search was asked: where, which way, how high, and the
+    // body that would sit. `None` while there is nothing to search for.
+    mut asked: Local<Option<(Vec2, Vec2, f32, f32, SeatFit)>>,
 ) {
     let fit = bodies
         .single()
@@ -565,6 +568,7 @@ pub fn track_edges(
         || avatar_state.holding.is_some()
         || !avatar_state.grounded;
     let found = if idle {
+        *asked = None;
         Edges::default()
     } else {
         let (pos, base) = avatar_frame(
@@ -572,6 +576,20 @@ pub fn track_edges(
             avatar_state.display_position,
             avatars.single().ok(),
         );
+        // An avatar standing still in a world that did not change has the
+        // edges it had: the search below is the dearest thing a still street
+        // frame did on the CPU (`BuildingColliders::ledge_ahead`'s note).
+        let key = (
+            pos,
+            base,
+            avatar_state.facing_yaw,
+            avatar_state.display_position.y,
+            fit,
+        );
+        if *asked == Some(key) && !colliders.is_changed() && !terrain.is_changed() {
+            return;
+        }
+        *asked = Some(key);
         let ground = |p: Vec2| terrain.ground_at(p.x - base.x, p.y - base.y);
         let water = |p: Vec2| terrain.swim_surface_at(p.x - base.x, p.y - base.y);
         let map = Surroundings {

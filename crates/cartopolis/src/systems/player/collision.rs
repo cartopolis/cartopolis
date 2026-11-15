@@ -1041,13 +1041,24 @@ impl BuildingColliders {
             return None;
         }
         let steps = (reach / LEDGE_PROBE_STEP_M).ceil() as usize;
+        let body = Body::new(feet, feet);
+        // The footprints whose box the probed metre touches, gathered once:
+        // every probe point testing every footprint in the ring was 6 ms a
+        // frame of `climb::track_edges` on an M5 at street level
+        // (2026-11-15), and more on a phone.
+        let end = pos + dir * reach;
+        let (lo, hi) = (pos.min(end), pos.max(end));
+        let near: Vec<&Footprint> = self
+            .iter_at(body)
+            .filter(|f| f.min.cmple(hi).all() && f.max.cmpge(lo).all())
+            .collect();
         for i in 1..=steps {
             let p = pos + dir * (i as f32 * LEDGE_PROBE_STEP_M).min(reach);
             // What is solid here at the avatar's height; the first of them
             // decides, so a hedge in front of a wall hides the wall.
-            let body = Body::new(feet, feet);
-            let hit = self
-                .iter_at(body)
+            let hit = near
+                .iter()
+                .copied()
                 .filter(|f| f.contains(p, self.open(f)))
                 .min_by(|a, b| a.top.total_cmp(&b.top));
             let Some(f) = hit else { continue };
