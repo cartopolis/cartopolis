@@ -40,6 +40,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<systems::picking::PrimClick>()
             .init_resource::<systems::collision::BuildingColliders>()
             .init_resource::<systems::interact::InteractState>()
+            .init_resource::<systems::greet::Greetings>()
+            .init_resource::<systems::greet::GreetInbox>()
             .init_resource::<crate::grid::StreamCentre>();
 
         app.add_systems(Startup, systems::free_camera::setup_camera);
@@ -106,6 +108,9 @@ impl Plugin for PlayerPlugin {
                 // Before `send_network_intent`, which is what puts a triggered
                 // emote on the wire this frame rather than the next.
                 systems::interact::handle_interaction_input.before(network::send_network_intent),
+                // The open greetings, and the turn when one starts; before the
+                // input, so E sees the offer the prompt is showing.
+                systems::greet::drive_greetings.before(systems::interact::handle_interaction_input),
             )
                 .in_set(ClientPhase::Input),
         )
@@ -257,6 +262,8 @@ impl Plugin for PlayerPlugin {
                     avatar::update_remote_avatar_animation.after(avatar::smooth_remote_avatars),
                     avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
                     avatar::pin_avatar_animation.after(avatar::update_avatar_animation),
+                    // A capture of a greeting shows both people (`--clip handshake`).
+                    avatar::spawn_clip_partner.before(avatar::update_avatar_animation),
                     // A changed look is built on a worker and swapped in whole
                     // (`human_avatar::HumanRebuild`); the old body stays drawn
                     // until then, so neither needs ordering against the spawn.

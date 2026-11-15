@@ -45,7 +45,11 @@ pub(super) async fn on_intent<T: FrameTransport>(
     if let Some(e) = intent.expression {
         w.start_expression(ctx.avatar_id, e);
     }
-    Ok(())
+    // Walking off withdrew any greeting this avatar had offered; the one it
+    // was offered to is told, so the prompt goes.
+    let withdrawn = w.take_withdrawn();
+    drop(w);
+    super::greet::tell_withdrawn(ctx, withdrawn)
 }
 
 /// Deliberately not rate-limited like intents: a teleport is a deliberate act,

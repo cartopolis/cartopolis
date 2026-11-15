@@ -3412,9 +3412,16 @@ fn emote(w: &mut AgentWorld, args: &EmoteArgs) -> AgentReply {
         "punch" => Emote::Punch,
         "kick" => Emote::Kick,
         "faint" => Emote::Faint,
+        "throw" => Emote::Throw,
+        // Made with somebody, so only the sim starts them (protocol 49).
+        "handshake" | "highfive" => {
+            return AgentReply::refuse(
+                "A greeting is made with somebody: offer it from their person card.",
+            )
+        }
         other => {
             return AgentReply::refuse(format!(
-                "`{other}` is not an emote; use wave, interact, roll, punch, kick or faint"
+                "`{other}` is not an emote; use wave, interact, roll, punch, kick, faint or throw"
             ))
         }
     };

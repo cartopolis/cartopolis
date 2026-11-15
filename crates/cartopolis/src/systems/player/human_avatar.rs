@@ -196,12 +196,30 @@ pub(crate) fn load_human_pack(mut commands: Commands, asset_server: Res<AssetSer
 }
 
 /// The pack's clips the avatar's table is built from, in its order: idle, walk,
-/// run, the six emotes in `EMOTE_CLIPS` order, sitting and swimming. One the
-/// pack does not carry plays the idle instead — an empty clip would drop the
-/// body into its A-shaped rest pose.
-pub(crate) const CLIP_ORDER: [&str; 11] = [
-    "idle", "walk", "run", "wave", "interact", "roll", "punch", "kick", "faint", "sit", "swim",
+/// run, six emotes, sitting and swimming, then the emotes added since — the
+/// two greetings and the throw (2026-11-15), appended so no earlier index
+/// moved. One the pack does not carry plays the idle instead — an empty clip
+/// would drop the body into its A-shaped rest pose.
+pub(crate) const CLIP_ORDER: [&str; 14] = [
+    "idle",
+    "walk",
+    "run",
+    "wave",
+    "interact",
+    "roll",
+    "punch",
+    "kick",
+    "faint",
+    "sit",
+    "swim",
+    "handshake",
+    "highfive",
+    "throw",
 ];
+
+/// Where each emote's clip sits in [`CLIP_ORDER`], in `avatar::EMOTE_ORDER`'s
+/// order: the first six together, the later ones after the sit and the swim.
+pub(crate) const EMOTE_CLIPS: [usize; 9] = [3, 4, 5, 6, 7, 8, 11, 12, 13];
 
 /// What the spawn needs to build a person.
 #[derive(SystemParam)]
@@ -621,9 +639,9 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
     };
     // A gesture the pack lacks plays the idle, for as long as the characters'
     // emotes last.
-    let emote_secs = CLIP_ORDER[3..9]
+    let emote_secs = EMOTE_CLIPS
         .iter()
-        .map(|n| find(n).map_or(1.6, |c| c.duration()))
+        .map(|&i| find(CLIP_ORDER[i]).map_or(1.6, |c| c.duration()))
         .collect();
     PreparedHuman {
         joints,

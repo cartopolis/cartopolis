@@ -111,6 +111,17 @@ pub enum ClientRequest {
         request_id: u32,
         throw: bool,
     },
+    /// Offer a handshake or a high five to another avatar (`greet::on_offer`).
+    OfferGreeting {
+        request_id: u32,
+        to: u64,
+        greeting: cartopolis_core::Greeting,
+    },
+    /// Take a greeting another avatar offered (`greet::on_accept`).
+    AcceptGreeting {
+        request_id: u32,
+        from: u64,
+    },
     SetPushEndpoint {
         endpoint: Option<String>,
     },
@@ -295,6 +306,9 @@ impl ClientRequest {
             // A guest has no avatar in the world to carry anything with.
             | Self::GrabPrim { .. }
             | Self::ReleasePrim { .. }
+            // Nor anybody to greet with.
+            | Self::OfferGreeting { .. }
+            | Self::AcceptGreeting { .. }
             | Self::SetPushEndpoint { .. }
             | Self::TextureCatalogRequest
             | Self::TextureRequest { .. }
@@ -454,6 +468,18 @@ impl TryFrom<NetMessage> for ClientRequest {
             },
             NetMessage::ReleasePrim { request_id, throw } => {
                 Self::ReleasePrim { request_id, throw }
+            }
+            NetMessage::OfferGreeting {
+                request_id,
+                to,
+                greeting,
+            } => Self::OfferGreeting {
+                request_id,
+                to,
+                greeting,
+            },
+            NetMessage::AcceptGreeting { request_id, from } => {
+                Self::AcceptGreeting { request_id, from }
             }
             NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
@@ -730,6 +756,8 @@ impl TryFrom<NetMessage> for ClientRequest {
             | NetMessage::E2eeRedacted { .. }
             | NetMessage::AvatarLookOf { .. }
             | NetMessage::FaceFrameOf { .. }
+            | NetMessage::GreetingOffered { .. }
+            | NetMessage::GreetingStarted { .. }
             | NetMessage::PrimOutOfReach { .. } => return Err(msg),
         })
     }
@@ -763,6 +791,36 @@ mod tests {
             ClientRequest::try_from(NetMessage::AccountDeleted),
             Err(NetMessage::AccountDeleted)
         ));
+    }
+
+    /// Greetings are a client's to send, and a guest's not; the sim's own
+    /// answers are not requests at all.
+    #[test]
+    fn greetings_are_client_requests_guests_may_not_make() {
+        let offer = ClientRequest::try_from(NetMessage::OfferGreeting {
+            request_id: 1,
+            to: 8,
+            greeting: cartopolis_core::Greeting::Handshake,
+        })
+        .expect("a client request");
+        assert!(matches!(offer, ClientRequest::OfferGreeting { to: 8, .. }));
+        assert!(!offer.guest_may());
+        let accept = ClientRequest::try_from(NetMessage::AcceptGreeting {
+            request_id: 2,
+            from: 5,
+        })
+        .expect("a client request");
+        assert!(matches!(
+            accept,
+            ClientRequest::AcceptGreeting { from: 5, .. }
+        ));
+        assert!(!accept.guest_may());
+        assert!(ClientRequest::try_from(NetMessage::GreetingStarted {
+            greeting: cartopolis_core::Greeting::HighFive,
+            partner: 1,
+            yaw: 0.0,
+        })
+        .is_err());
     }
 
     /// Picking up and letting go are a client's to send, and a guest's not.

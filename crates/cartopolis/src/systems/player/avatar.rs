@@ -20,15 +20,18 @@ use std::time::Duration;
 pub(crate) struct AvatarHolder;
 
 /// Emotes in the order their clips sit in an avatar's table
-/// (`human_avatar::CLIP_ORDER`), so an [`Emote`] is an index into
+/// (`human_avatar::EMOTE_CLIPS`), so an [`Emote`] is an index into
 /// [`AvatarAnimations::emote_indices`].
-const EMOTE_ORDER: [Emote; 6] = [
+const EMOTE_ORDER: [Emote; 9] = [
     Emote::Wave,
     Emote::Interact,
     Emote::Roll,
     Emote::Punch,
     Emote::Kick,
     Emote::Faint,
+    Emote::Handshake,
+    Emote::HighFive,
+    Emote::Throw,
 ];
 
 /// Where `emote` sits in [`EMOTE_ORDER`].
@@ -675,7 +678,10 @@ pub(crate) fn animate_holder(
         idle_index: indices[0],
         walk_index: indices[1],
         run_index: indices[2],
-        emote_indices: indices[3..9].to_vec(),
+        emote_indices: human_avatar::EMOTE_CLIPS
+            .iter()
+            .map(|&i| indices[i])
+            .collect(),
         sit_index: indices[9],
         swim_index: indices[10],
         speed: 1.0,
@@ -934,8 +940,21 @@ pub enum ClipName {
 
 impl ClipName {
     /// Every name [`ClipName::parse`] accepts, for the error that refuses one.
-    pub const NAMES: [&'static str; 11] = [
-        "idle", "walk", "run", "sit", "swim", "wave", "interact", "roll", "punch", "kick", "faint",
+    pub const NAMES: [&'static str; 14] = [
+        "idle",
+        "walk",
+        "run",
+        "sit",
+        "swim",
+        "wave",
+        "interact",
+        "roll",
+        "punch",
+        "kick",
+        "faint",
+        "handshake",
+        "highfive",
+        "throw",
     ];
 
     #[must_use]
@@ -952,6 +971,9 @@ impl ClipName {
             "punch" => Self::Emote(Emote::Punch),
             "kick" => Self::Emote(Emote::Kick),
             "faint" => Self::Emote(Emote::Faint),
+            "handshake" => Self::Emote(Emote::Handshake),
+            "highfive" | "high-five" => Self::Emote(Emote::HighFive),
+            "throw" => Self::Emote(Emote::Throw),
             _ => return None,
         })
     }
@@ -980,6 +1002,61 @@ pub struct PinnedAnimation {
     pub clip: ClipName,
     /// Where in the clip, as a fraction of its length.
     pub phase: f32,
+}
+
+/// A second body under the local avatar, playing the same greeting, for a
+/// capture of one (`--clip handshake`, `--clip highfive`): a greeting is two
+/// people, and whether the hands meet can only be seen with both. Offline,
+/// so there is no other avatar to borrow.
+///
+/// A holder of its own kind, not an [`AvatarHolder`], so the model pose
+/// leaves its transform alone: it stands where `greet::Greeting::partner_at`
+/// puts a partner, turned to face back. Being under the avatar, its player
+/// is driven and pinned with the avatar's own.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct ClipPartner;
+
+/// Spawn the [`ClipPartner`] once the avatar has its body, when the pinned
+/// clip is a greeting.
+pub fn spawn_clip_partner(
+    mut commands: Commands,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut clip_assets: ResMut<Assets<AnimationClip>>,
+    pinned: Option<Res<PinnedAnimation>>,
+    avatars: Query<Entity, (With<Avatar>, With<AvatarModelLoaded>)>,
+    partners: Query<(), With<ClipPartner>>,
+    store: Res<UserStore>,
+    mut human: human_avatar::HumanAssets,
+) {
+    use cartopolis_core::Greeting;
+    let greeting = match pinned.map(|p| p.clip) {
+        Some(ClipName::Emote(Emote::Handshake)) => Greeting::Handshake,
+        Some(ClipName::Emote(Emote::HighFive)) => Greeting::HighFive,
+        _ => return,
+    };
+    let (Ok(avatar), true) = (avatars.single(), partners.is_empty()) else {
+        return;
+    };
+    let Some(pack) = human.pack() else { return };
+    let (look, tints) = human.look(&store.data.appearance);
+    let spawned = human_avatar::spawn_human(
+        &mut commands,
+        &mut human,
+        &mut clip_assets,
+        human_avatar::prepare_human(&pack, &look),
+        tints,
+        avatar,
+        ClipPartner,
+        false,
+    );
+    let holder = spawned.holder;
+    animate_holder(&mut commands, &mut graphs, spawned, None);
+    let [x, z] = greeting.partner_at();
+    commands.entity(holder).insert(Transform {
+        translation: Vec3::new(x, 0.0, z),
+        rotation: Quat::from_rotation_y(std::f32::consts::PI),
+        ..default()
+    });
 }
 
 /// Hold the local avatar at [`PinnedAnimation`], when a capture asks for it.
@@ -2312,6 +2389,25 @@ fn distance_band(distance: f32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every emote has a slot of its own, and the slot is the pack clip that
+    /// `--clip` calls by the emote's name — the greetings and the throw were
+    /// appended after the sit and the swim, so the slots are not one run.
+    #[test]
+    fn every_emote_plays_its_own_clip() {
+        for (slot, emote) in EMOTE_ORDER.iter().enumerate() {
+            assert_eq!(emote_slot(*emote), slot, "{emote:?}");
+            let clip = human_avatar::CLIP_ORDER[human_avatar::EMOTE_CLIPS[slot]];
+            assert_eq!(
+                ClipName::parse(clip),
+                Some(ClipName::Emote(*emote)),
+                "{clip}"
+            );
+        }
+        for name in ClipName::NAMES {
+            assert!(ClipName::parse(name).is_some(), "{name}");
+        }
+    }
 
     #[test]
     fn a_climb_to_orbit_logs_a_handful_of_bands() {

@@ -16,6 +16,7 @@ pub mod collision;
 pub mod face_tracking;
 pub mod free_camera;
 pub mod gizmo;
+pub mod greet;
 pub mod held_phone;
 pub mod human_avatar;
 pub mod interact;

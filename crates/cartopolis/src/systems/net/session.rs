@@ -1238,6 +1238,7 @@ mod tests {
             .init_resource::<crate::systems::private_chat::PrivateInbox>()
             .init_resource::<crate::systems::calls::CallInbox>()
             .init_resource::<crate::systems::contacts::ContactsInbox>()
+            .init_resource::<crate::systems::greet::GreetInbox>()
             .init_resource::<crate::systems::prim_sound::PrimSoundInbox>()
             .init_resource::<OsmTileUrlTemplate>()
             .insert_resource(Assets::<Image>::default())

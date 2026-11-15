@@ -41,6 +41,8 @@ pub struct AuthWriteback<'w, 's> {
     calls: ResMut<'w, crate::systems::calls::CallInbox>,
     /// Contacts and message requests, handed on to `contacts::drive_contacts`.
     contacts: ResMut<'w, crate::systems::contacts::ContactsInbox>,
+    /// Greetings (protocol 49), handed on to `greet::drive_greetings`.
+    greet: ResMut<'w, crate::systems::greet::GreetInbox>,
     /// One-shot prim sounds, played by `prim_sound::play_prim_sounds`.
     sounds: ResMut<'w, crate::systems::prim_sound::PrimSoundInbox>,
     /// Physical prims' poses (`PrimMotion`), updated in place so the smoothing
@@ -798,6 +800,11 @@ pub fn apply_network_snapshot(
         }
         if crate::systems::contacts::ContactsInbox::wants(&msg) {
             auth.contacts.0.push(msg);
+            continue;
+        }
+        // A greeting's refusal too is a `ServerError` the prim arm must not see.
+        if crate::systems::greet::GreetInbox::wants(&msg) {
+            auth.greet.0.push(msg);
             continue;
         }
         match msg {

@@ -326,6 +326,22 @@ impl ChatHub {
         }
     }
 
+    /// Whether either of two connected people has blocked the other: `a` is
+    /// avatar `a_id` signed in as `a_name`, and `b` likewise. For acts two
+    /// people do *together* (a greeting, protocol 49), where a block either
+    /// way ends it — unlike a message, which the blocked one may still send
+    /// into the void.
+    #[must_use]
+    pub fn blocked_between(&self, a_id: u64, a_name: &str, b_id: u64, b_name: &str) -> bool {
+        let clients = locked(&self.clients);
+        let blocks = |id: u64, name: &str| {
+            clients
+                .get(&id)
+                .is_some_and(|c| c.blocked.contains(&name.to_lowercase()))
+        };
+        blocks(a_id, b_name) || blocks(b_id, a_name)
+    }
+
     pub fn unregister(&self, avatar_id: u64) {
         locked(&self.clients).remove(&avatar_id);
     }

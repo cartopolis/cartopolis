@@ -19,6 +19,7 @@ impl Plugin for NetPlugin {
             .init_resource::<systems::calls::CallInbox>()
             .init_resource::<systems::calls::Calls>()
             .init_resource::<systems::contacts::ContactsInbox>()
+            .init_resource::<systems::greet::GreetInbox>()
             .init_resource::<systems::prim_sound::PrimSoundInbox>()
             .init_resource::<systems::contacts::Contacts>()
             .init_resource::<systems::voice::VoiceState>();

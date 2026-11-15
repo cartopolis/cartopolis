@@ -102,6 +102,9 @@ next one, a dropped jump simply did not happen. A live emote is then held on the
 wire for `EMOTE_REPLICATE_SECS` (2.5 s) so a client that arrives mid-wave still
 sees it — which means a receiver must diff on `EmoteState::sequence`. Diffing on
 the emote itself restarts the clip with every snapshot, twenty times a second.
+The two greetings (handshake, high five; protocol 49) ride the same level, but
+only the sim starts them, on both avatars with one sequence in one tick
+(`paired-gestures.md`).
 
 ## The camera collided in 2D, and only low down — until 2026-09-28
 

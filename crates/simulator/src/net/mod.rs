@@ -38,6 +38,7 @@ mod chat;
 mod communities;
 mod contacts;
 mod e2ee;
+mod greet;
 mod hand;
 mod look;
 mod moderation;
@@ -534,6 +535,8 @@ struct RateGates {
     face: Instant,
     /// The pick-up and let-go bucket (`carry`, [`take_token`]).
     carry: Instant,
+    /// The greeting-offer bucket (`greet::on_offer`, [`take_token`]).
+    greet: Instant,
 }
 
 impl RateGates {
@@ -558,6 +561,7 @@ impl RateGates {
             look: ago(look::LOOK_INTERVAL * look::LOOK_BURST),
             face: ago(look::FACE_INTERVAL * look::FACE_BURST),
             carry: ago(carry::CARRY_INTERVAL * carry::CARRY_BURST),
+            greet: ago(greet::GREET_INTERVAL * greet::GREET_BURST),
         }
     }
 }
@@ -1335,6 +1339,14 @@ async fn dispatch<T: FrameTransport>(
         } => carry::on_grab(ctx, request_id, prim_id).await,
         ClientRequest::ReleasePrim { request_id, throw } => {
             carry::on_release(ctx, request_id, throw).await
+        }
+        ClientRequest::OfferGreeting {
+            request_id,
+            to,
+            greeting,
+        } => greet::on_offer(ctx, request_id, to, greeting).await,
+        ClientRequest::AcceptGreeting { request_id, from } => {
+            greet::on_accept(ctx, request_id, from).await
         }
         ClientRequest::SetPushEndpoint { endpoint } => {
             calls::on_set_push_endpoint(ctx, endpoint).await

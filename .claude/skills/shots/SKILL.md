@@ -131,7 +131,7 @@ and the feet are most of what a walk cycle is about. Stand it on solid ground:
 the Grote Markt above. By a canal (53.2194,6.5665) the avatar drops toward the
 water once the run starts, and every frame after the first shows the quay wall.
 
-Names: `idle walk run sit swim wave interact roll punch kick faint` (`swim` needs water under the avatar: the Noorderhaven, 53.22005,6.5587). The clip is held
+Names: `idle walk run sit swim wave interact roll punch kick faint handshake highfive throw` (`swim` needs water under the avatar: the Noorderhaven, 53.22005,6.5587; `handshake` and `highfive` draw a stand-in partner where the sim would stand one, so whether the hands meet shows — frame them from the side, `--look=0,90`). The clip is held
 still (`avatar::PinnedAnimation`), so the frames are the clip's own poses at those
 phases however slowly the renderer goes — but that also means a playback *rate*
 fault (feet sliding because the clip plays too fast for the ground speed) is not

@@ -188,6 +188,9 @@ pub struct Card {
     pub link_code: Option<String>,
     /// The ⋯ menu is open.
     pub menu: bool,
+    /// The avatar a tap opened this card on, for the greetings it offers
+    /// (protocol 49); `None` for a card opened by name.
+    pub avatar_id: Option<u64>,
 }
 
 /// The first-message sheet.
@@ -320,6 +323,7 @@ impl Contacts {
         self.card_request = Some(request_id);
         self.card = Some(Card {
             looking: true,
+            avatar_id: Some(avatar_id),
             ..Card::default()
         });
         self.outbox.push(NetMessage::LookupPerson {
@@ -765,6 +769,8 @@ pub fn render_person_card(
     online: Option<Res<OnlineSession>>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut greetings: ResMut<crate::systems::greet::Greetings>,
+    mut interact: ResMut<crate::systems::interact::InteractState>,
 ) {
     if (online.is_none() && !contacts.demo) || driver.active {
         return;
@@ -915,6 +921,7 @@ pub fn render_person_card(
     let mut open_request: Option<String> = None;
     let mut block: Option<String> = None;
     let mut report: Option<String> = None;
+    let mut greet: Option<(u64, cartopolis_core::Greeting, String)> = None;
     let mut toggle_menu = false;
     let error = contacts.error.clone();
     egui::Area::new(egui::Id::new("contacts_person_card"))
@@ -1055,6 +1062,25 @@ pub fn render_person_card(
                         Relation::Me => {}
                     }
                 });
+                // Greeting them (protocol 49): anybody standing near you,
+                // contact or not. The sim checks the reach and the blocks.
+                if let (Some(id), true, true) =
+                    (card.avatar_id, p.relation != Relation::Me, online.is_some())
+                {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        for g in cartopolis_core::Greeting::ALL {
+                            if theme::action_button(ui, format!("{} {}", icons::HAND, g.label()))
+                                .on_hover_text(
+                                    "Offer it: within two paces, they take it with E or a tap",
+                                )
+                                .clicked()
+                            {
+                                greet = Some((id, g, p.username.clone()));
+                            }
+                        }
+                    });
+                }
             });
         });
 
@@ -1062,6 +1088,14 @@ pub fn render_person_card(
         if let Some(c) = contacts.card.as_mut() {
             c.menu = !c.menu;
         }
+    }
+    if let (Some((id, greeting, name)), Some(session)) = (greet, online.as_deref()) {
+        // The card goes, so the two can see each other; the prompt's receipt
+        // line says what is waiting.
+        contacts.card = None;
+        greetings.offer(session, id, greeting);
+        interact.last = Some(format!("{} — waiting for {name}", greeting.label()));
+        interact.last_ttl = cartopolis_core::greet::OFFER_SECS;
     }
     if close {
         contacts.card = None;

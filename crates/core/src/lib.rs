@@ -4,6 +4,7 @@ pub mod address;
 pub mod carry;
 pub mod error;
 pub mod geo;
+pub mod greet;
 pub mod lens;
 pub mod meeting;
 pub mod model_limits;
@@ -33,6 +34,7 @@ pub use error::ProtocolError;
 pub use geo::{
     degree_scale_m, ecef_to_geodetic, geodetic_to_ecef, ground_distance_m, TangentFrame,
 };
+pub use greet::Greeting;
 pub use moderation::Filter;
 pub use particles::{
     ParticleEffect, MAX_PARTICLES, MAX_PARTICLE_GRAVITY, MAX_PARTICLE_LIFE_S, MAX_PARTICLE_SIZE,

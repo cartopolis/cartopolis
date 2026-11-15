@@ -11,6 +11,9 @@ use crate::reach::{ground_m, Place};
 use crate::scripting::{PrimView, ScriptCommand};
 use cartopolis_core::{carry, motion};
 
+mod greet;
+pub use greet::{GreetRefusal, GreetingStart};
+
 struct AvatarSim {
     /// Where this avatar stands on Earth, once its client has said (protocol
     /// 47): the first `ClientIntent` carrying a `geo`, or a `Teleport`. **This
@@ -88,6 +91,11 @@ struct AvatarSim {
     /// tick; sitting, a teleport, leaving, or the prim ceasing to be a
     /// carryable physical prim lets go of it.
     holding: Option<i64>,
+    /// Seconds a greeting still holds this avatar's facing (protocol 49,
+    /// [`cartopolis_core::greet::GREET_HOLD_SECS`]): the sim turned it to its
+    /// partner, and an intent sent before its client heard must not turn it
+    /// back. Moving lets go at once.
+    greet_hold: f32,
 }
 
 impl AvatarSim {
@@ -160,6 +168,11 @@ pub struct SimWorld {
     /// What the last [`Self::step`] moved, for the tick loop to send as one
     /// `PrimMotion` ([`Self::take_motion`]).
     motion: Vec<PrimBody>,
+    /// Greetings offered and not yet taken (protocol 49, `greet.rs`).
+    greetings: Vec<greet::Offer>,
+    /// Offers withdrawn because their offerer moved, `(to, from)`, for the
+    /// connection that moved to tell the one offered ([`Self::take_withdrawn`]).
+    withdrawn: Vec<(u64, u64)>,
 }
 
 /// How far past a prim's `hand_range` a reported hand is still accepted: the
@@ -307,6 +320,8 @@ impl SimWorld {
             meet_clock: 0.0,
             physics: Physics::new(),
             motion: Vec::new(),
+            greetings: Vec::new(),
+            withdrawn: Vec::new(),
         }
     }
 
@@ -340,6 +355,7 @@ impl SimWorld {
                 look: None,
                 seated: None,
                 holding: None,
+                greet_hold: 0.0,
             },
         );
         id
@@ -636,8 +652,16 @@ impl SimWorld {
         }
         av.velocity.x = v.x;
         av.velocity.z = v.z;
-        // Always apply facing so remotes see orbit-camera rotation while idle (not only when moving).
-        av.yaw = snap_yaw_continuation(av.yaw, display_yaw);
+        let moves = mag > 1e-4 || jump;
+        // Always apply facing so remotes see orbit-camera rotation while idle
+        // (not only when moving) — except while a greeting holds it turned to a
+        // partner, until the avatar walks off.
+        if moves {
+            av.greet_hold = 0.0;
+        }
+        if av.greet_hold <= 0.0 {
+            av.yaw = snap_yaw_continuation(av.yaw, display_yaw);
+        }
         // Latch rather than assign: intents arrive faster than ticks and are rate
         // limited on top (`net::MIN_INTENT_INTERVAL`), so a jump that shared a tick
         // with a later "not jumping" intent would be silently dropped. `step`
@@ -658,7 +682,7 @@ impl SimWorld {
                 && o[1].is_finite()
                 && (o[0] * o[0] + o[1] * o[1]) <= MAX_SEAT_OFFSET_M * MAX_SEAT_OFFSET_M
         });
-        if mag > 1e-4 || jump {
+        if moves {
             av.seated = None;
         }
         // Sitting down puts down whatever was being carried: the seated pose
@@ -667,8 +691,10 @@ impl SimWorld {
             av.holding = None;
         }
         // An emote is a one-shot: stamp it with a fresh sequence so receivers can
-        // tell "waved again" from "still waving".
-        if let Some(e) = emote {
+        // tell "waved again" from "still waving". A greeting is not the client's
+        // to start: the sim starts it on both avatars when one is accepted
+        // (`greet.rs`), and one asked for here would shake an empty hand.
+        if let Some(e) = emote.filter(|e| !e.is_paired()) {
             av.emote_sequence = av.emote_sequence.wrapping_add(1);
             av.emote = Some(EmoteState {
                 emote: e,
@@ -687,6 +713,11 @@ impl SimWorld {
                 }
             }
         }
+        // Walking off (or sitting down) withdraws any greeting this avatar
+        // offered or was offered: the two are no longer where it was offered.
+        if moves || seated.is_some() {
+            self.withdraw_greetings_of(avatar_id);
+        }
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -695,6 +726,7 @@ impl SimWorld {
             self.meet_clock = 0.0;
             self.note_meetings();
         }
+        self.age_greetings(dt);
         for av in self.avatars.values_mut() {
             // An avatar that is nowhere has nothing to integrate; its intent's
             // velocity waits for a place.
@@ -754,6 +786,9 @@ impl SimWorld {
                 if av.expression_age > EXPRESSION_REPLICATE_SECS {
                     av.expression = None;
                 }
+            }
+            if av.greet_hold > 0.0 {
+                av.greet_hold -= dt;
             }
             // Horizontal yaw comes from [`SimWorld::apply_intent`] (`display_yaw`); do not derive from
             // `atan2(velocity)` (branch cuts + integration drift caused client flip-flops).

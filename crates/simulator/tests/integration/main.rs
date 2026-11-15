@@ -28,6 +28,7 @@ mod chat;
 mod chat_pictures;
 mod connection_teardown;
 mod fediverse;
+mod greetings;
 mod http_surface;
 mod model_library;
 mod moderation;

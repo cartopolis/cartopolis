@@ -72,7 +72,16 @@ pub struct InteractState {
     /// avatar went into the water, so it is asked once and not every frame
     /// until the snapshot that empties the hands arrives.
     pub let_go_sent: Option<i64>,
+    /// A throw under way: seconds until the arm lets go, when the throw is
+    /// sent ([`THROW_RELEASE_SECS`]).
+    pub throw_in: Option<f32>,
 }
+
+/// How far into the `throw` clip the hand lets go, seconds: CMU 15_12's
+/// release at take frame ~3298, 1.15 s after the cut starts at 3160
+/// (`human-pack`). The throw is sent then, not on the key, or the ball would
+/// fly off while the arm is still drawing back.
+pub const THROW_RELEASE_SECS: f32 = 1.15;
 
 /// A resolved prompt: enough to draw it without re-querying the store.
 #[derive(Clone)]
@@ -286,18 +295,59 @@ impl InteractState {
     /// Let go of what is carried: a throw (E, or the prompt's "Throw") or a
     /// set-down (G, or "Put down"). `None` with empty hands.
     ///
-    /// The throw plays `punch` — the one captured clip with an arm thrust
-    /// forward from the chest — and the set-down `interact`, the reach the
-    /// pick-up played. Neither is a real throw; there is no such take in the
-    /// pack (`avatar-locomotion.md`).
+    /// The throw plays `throw`, an overhand throw cut from CMU 15_12 (it was
+    /// the punch until 2026-11-15, the pack having no throw), and the set-down
+    /// `interact`, the reach the pick-up played.
+    ///
+    /// The throw is not sent here but [`THROW_RELEASE_SECS`] later, by
+    /// [`Self::throw_due`], when the arm in the clip lets go; a second press
+    /// while the arm is drawing back does nothing. A put-down goes at once,
+    /// and cancels a throw under way.
     #[must_use]
     fn let_go(&mut self, avatar_state: &mut AvatarState, throw: bool) -> Option<WorldAct> {
         avatar_state.holding?;
-        avatar_state.pending_emote = Some(if throw { Emote::Punch } else { Emote::Interact });
+        if throw && self.throw_in.is_some() {
+            return None;
+        }
+        avatar_state.pending_emote = Some(if throw { Emote::Throw } else { Emote::Interact });
         self.last = None;
         self.last_ttl = 0.0;
-        Some(WorldAct::Release { throw })
+        if throw {
+            self.throw_in = Some(THROW_RELEASE_SECS);
+            None
+        } else {
+            self.throw_in = None;
+            Some(WorldAct::Release { throw: false })
+        }
     }
+
+    /// Advance a throw under way by `dt`: the release, when the arm reaches
+    /// it. A throw whose hands emptied meanwhile (the sim let go: a teleport,
+    /// the water) is dropped.
+    #[must_use]
+    fn throw_due(&mut self, avatar_state: &AvatarState, dt: f32) -> Option<WorldAct> {
+        let left = self.throw_in.as_mut()?;
+        if avatar_state.holding.is_none() {
+            self.throw_in = None;
+            return None;
+        }
+        *left -= dt;
+        if *left > 0.0 {
+            return None;
+        }
+        self.throw_in = None;
+        Some(WorldAct::Release { throw: true })
+    }
+}
+
+/// Whether the prompt is offering a greeting to take: one is open, and the
+/// avatar is neither seated nor carrying — both have their own prompt, and
+/// the sim would refuse a seated one anyway.
+fn accepts_greeting(
+    avatar_state: &AvatarState,
+    greetings: &crate::systems::greet::Greetings,
+) -> bool {
+    !avatar_state.is_seated() && avatar_state.holding.is_none() && greetings.prompt().is_some()
 }
 
 /// Emote hotkeys. Digits, because they are the row every game puts emotes on and
@@ -718,12 +768,17 @@ pub fn handle_interaction_input(
     mut avatar_state: ResMut<AvatarState>,
     mut state: ResMut<InteractState>,
     mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
+    mut greetings: ResMut<crate::systems::greet::Greetings>,
+    time: Res<Time>,
 ) {
     // Carrying is the sim's, so with no sim there is nothing in the hands —
     // a session that ended mid-carry leaves no "Throw" behind it.
     if online.is_none() && avatar_state.holding.is_some() {
         avatar_state.holding = None;
     }
+    // A throw under way lets go when the arm does, whatever has the keyboard.
+    let due = state.throw_due(&avatar_state, time.delta_secs());
+    send_act(online.as_ref(), due);
     // Into the water, the thing is put down. The sim knows nothing of water
     // (it is every viewer's own map, `avatar-locomotion.md`), so this is the
     // one end of a carry the client asks for; once per carried prim, not every
@@ -768,7 +823,14 @@ pub fn handle_interaction_input(
     }
 
     if keyboard.just_pressed(KeyCode::KeyE) {
-        send_act(online.as_ref(), state.act(&mut avatar_state));
+        // Somebody offering a greeting outranks what the avatar stands next
+        // to: the prompt shows the offer first, so E takes it.
+        match online.as_deref() {
+            Some(session) if accepts_greeting(&avatar_state, &greetings) => {
+                greetings.accept(session);
+            }
+            _ => send_act(online.as_ref(), state.act(&mut avatar_state)),
+        }
     } else if keyboard.just_pressed(KeyCode::KeyG) {
         // G puts down: the key games drop with, and bound to nothing else.
         send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
@@ -802,6 +864,7 @@ pub fn render_interaction_prompt(
     map_anchor: Res<MapAnchor>,
     driver: Res<crate::systems::driver::DriverState>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    mut greetings: ResMut<crate::systems::greet::Greetings>,
 ) {
     // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
     // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
@@ -822,7 +885,12 @@ pub fn render_interaction_prompt(
     // on a phone these buttons are the only way to either.
     let carrying = !seated && avatar_state.holding.is_some();
     let held_name = state.held_name.clone();
-    if target.is_none() && receipt.is_none() && !seated && !carrying {
+    // Somebody offering a greeting: the first thing the prompt says, since it
+    // lapses and the bench beside you does not.
+    let offer = accepts_greeting(&avatar_state, &greetings)
+        .then(|| greetings.prompt().cloned())
+        .flatten();
+    if target.is_none() && receipt.is_none() && !seated && !carrying && offer.is_none() {
         return;
     }
 
@@ -835,15 +903,44 @@ pub fn render_interaction_prompt(
     let mut acted = false;
     let mut routed = false;
     let mut put_down = false;
+    let mut greet = false;
+    let mut ignore = false;
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
         // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some() || seated || carrying)
+        .interactable(target.is_some() || seated || carrying || offer.is_some())
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(&egui_manager.ctx.clone(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    if let Some(o) = &offer {
+                        // A button to take it — E's job on a keyboard, the only
+                        // way on a phone — and one to let it go unanswered.
+                        let hint = if compact { "" } else { "   [E]" };
+                        if ui
+                            .button(
+                                egui::RichText::new(format!(
+                                    "{}  {}{hint}",
+                                    crate::systems::icons::HAND,
+                                    o.line()
+                                ))
+                                .color(theme::p().text)
+                                .strong(),
+                            )
+                            .clicked()
+                        {
+                            greet = true;
+                        }
+                        if ui
+                            .button(crate::systems::icons::CLEAR)
+                            .on_hover_text("Not now")
+                            .clicked()
+                        {
+                            ignore = true;
+                        }
+                        return;
+                    }
                     if seated {
                         // The glyph is the thing being sat on where there is one,
                         // so the button that put you there and the button that
@@ -934,7 +1031,13 @@ pub fn render_interaction_prompt(
             });
         });
 
-    if acted {
+    if greet {
+        if let Some(session) = online.as_deref() {
+            greetings.accept(session);
+        }
+    } else if ignore {
+        greetings.dismiss();
+    } else if acted {
         send_act(online.as_ref(), state.act(&mut avatar_state));
     } else if put_down {
         send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
@@ -1141,16 +1244,31 @@ mod tests {
 
         avatar.holding = Some(42);
         state.target = Some(TargetInfo::of_pickup(7, "Other ball", Vec2::ZERO));
+        // E starts the throw clip; the throw goes when the arm lets go.
+        assert_eq!(state.act(&mut avatar), None);
+        assert!(matches!(avatar.pending_emote, Some(Emote::Throw)));
+        avatar.pending_emote = None;
         assert_eq!(
             state.act(&mut avatar),
+            None,
+            "a second press is not a throw"
+        );
+        assert!(avatar.pending_emote.is_none());
+        assert_eq!(state.throw_due(&avatar, THROW_RELEASE_SECS - 0.1), None);
+        assert_eq!(
+            state.throw_due(&avatar, 0.2),
             Some(WorldAct::Release { throw: true })
         );
-        assert!(matches!(avatar.pending_emote, Some(Emote::Punch)));
+        assert_eq!(state.throw_due(&avatar, 1.0), None, "once");
+
+        // G puts it down at once, and cancels a throw under way.
+        assert_eq!(state.act(&mut avatar), None);
         assert_eq!(
             state.let_go(&mut avatar, false),
             Some(WorldAct::Release { throw: false })
         );
         assert!(matches!(avatar.pending_emote, Some(Emote::Interact)));
+        assert_eq!(state.throw_due(&avatar, 2.0), None, "cancelled");
     }
 
     /// Every emote key is distinct and maps to a distinct emote — a duplicate

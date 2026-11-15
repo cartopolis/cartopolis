@@ -311,7 +311,7 @@ pub struct LookPrep {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EmoteArgs {
-    #[schemars(description = "One of: wave, interact, roll, punch, kick, faint.")]
+    #[schemars(description = "One of: wave, interact, roll, punch, kick, faint, throw.")]
     pub name: String,
 }
 

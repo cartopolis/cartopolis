@@ -134,8 +134,11 @@ wire, `AvatarStateDto::holding` back; `SimWorld::grab_prim` / `release_prim`,
   the client asks for (a put-down when `AvatarState::swimming` starts), because
   the sim knows nothing of water.
 - **Controls.** E on a loose physical prim: "Pick up …" (the `interact` clip).
-  Holding, the prompt is two buttons, "Throw … [E]" (the `punch` clip, the only
-  capture with a forward arm thrust) and "Put down [G]" (`interact`). Two
+  Holding, the prompt is two buttons, "Throw … [E]" (the `throw` clip, an
+  overhand throw from CMU 15_12 since 2026-11-15 — the punch stood in until
+  then; the `ReleasePrim` is sent `interact::THROW_RELEASE_SECS` (1.15 s)
+  after the key, when the arm in the clip lets go, so the ball does not leave
+  while the arm is still drawn back) and "Put down [G]" (`interact`). Two
   buttons rather than a long press, because on touch a long press is already the
   context menu, and G because nothing else binds it. A pickable prim beats a
   scripted one in the prompt: the ball against a scripted goal is still the ball.

@@ -235,6 +235,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "picking things up — GrabPrim asks to hold a physical prim small and light enough to carry, ReleasePrim throws it or puts it down, and AvatarStateDto.holding says which prim an avatar is carrying; the sim holds it in front of the avatar and it moves through PrimMotion like any other body (docs/notes/physical-prims.md)",
     },
+    ProtocolRevision {
+        version: 49,
+        adr: "",
+        summary: "greeting another avatar — OfferGreeting offers a handshake or a high five to an avatar within reach, GreetingOffered tells that avatar (or that the offer is withdrawn), AcceptGreeting takes it, and GreetingStarted tells both the sim has stood them together and started the gesture; Emote gains Handshake and HighFive, which only the sim starts, and Throw, the clip a throw plays (docs/notes/paired-gestures.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -370,6 +375,10 @@ pub enum MessageKind {
     PrimOutOfReach = 125,
     GrabPrim = 126,
     ReleasePrim = 127,
+    OfferGreeting = 128,
+    GreetingOffered = 129,
+    AcceptGreeting = 130,
+    GreetingStarted = 131,
 }
 
 impl MessageKind {
@@ -494,6 +503,10 @@ impl MessageKind {
             125 => Some(Self::PrimOutOfReach),
             126 => Some(Self::GrabPrim),
             127 => Some(Self::ReleasePrim),
+            128 => Some(Self::OfferGreeting),
+            129 => Some(Self::GreetingOffered),
+            130 => Some(Self::AcceptGreeting),
+            131 => Some(Self::GreetingStarted),
             _ => None,
         }
     }
@@ -1041,6 +1054,23 @@ pub enum Emote {
     Kick,
     /// Play dead. Every set has one, and someone will find it.
     Faint,
+    /// The two greetings (protocol 49, [`crate::greet::Greeting`]). **Only the
+    /// sim starts these**, on both avatars at once once one has offered and
+    /// the other accepted; one asked for in a `ClientIntent` is dropped, or
+    /// anyone could shake hands with the air beside a stranger.
+    Handshake,
+    HighFive,
+    /// An overhand throw (protocol 49): what letting go with a throw plays,
+    /// where the punch stood in before.
+    Throw,
+}
+
+impl Emote {
+    /// A gesture made with somebody, which only the sim may start.
+    #[must_use]
+    pub const fn is_paired(self) -> bool {
+        matches!(self, Self::Handshake | Self::HighFive)
+    }
 }
 
 /// An emote plus the sequence number that makes it re-playable: the same emote
@@ -1836,6 +1866,37 @@ pub enum NetMessage {
     /// not. No speed on the wire: the sim throws at its own speed along the
     /// avatar's facing, plus the avatar's own velocity.
     ReleasePrim { request_id: u32, throw: bool },
+    /// Client: offer `greeting` to the avatar `to` (protocol 49). Refused with
+    /// a `ServerError` when `to` is this avatar, is nowhere, is out of
+    /// [`crate::greet::GREET_REACH_M`] of where the sim holds this one, either
+    /// is seated, or either has blocked the other; rate limited. Granted, `to`
+    /// is sent `GreetingOffered`; the offer lapses after
+    /// [`crate::greet::OFFER_SECS`], and is withdrawn if the offerer moves.
+    OfferGreeting {
+        request_id: u32,
+        to: u64,
+        greeting: crate::greet::Greeting,
+    },
+    /// Server: the avatar `from` (signed in as `name`) offers `greeting` to
+    /// this one — or, with `greeting: None`, no longer does (it moved).
+    GreetingOffered {
+        from: u64,
+        name: String,
+        greeting: Option<crate::greet::Greeting>,
+    },
+    /// Client: take the greeting `from` offered. The sim checks the offer is
+    /// still open and the two still within reach, stands them together and
+    /// starts it on both; otherwise a `ServerError`.
+    AcceptGreeting { request_id: u32, from: u64 },
+    /// Server, to both: the greeting has started. Turn to `yaw` (the sim has
+    /// turned this avatar there and holds it while the gesture plays) and play
+    /// it; `partner` is the other avatar. Everyone else sees it as both
+    /// avatars' `emote`, with the same sequence, in the same snapshot.
+    GreetingStarted {
+        greeting: crate::greet::Greeting,
+        partner: u64,
+        yaw: f32,
+    },
     /// Server: what this account may do (`cartopolis_core::permissions`, by
     /// slug) — sent after the handshake and again whenever an operator changes
     /// a role, the account's roles or its admin flag, so a client's buttons
@@ -2870,6 +2931,10 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::PrimOutOfReach { .. } => MessageKind::PrimOutOfReach,
         NetMessage::GrabPrim { .. } => MessageKind::GrabPrim,
         NetMessage::ReleasePrim { .. } => MessageKind::ReleasePrim,
+        NetMessage::OfferGreeting { .. } => MessageKind::OfferGreeting,
+        NetMessage::GreetingOffered { .. } => MessageKind::GreetingOffered,
+        NetMessage::AcceptGreeting { .. } => MessageKind::AcceptGreeting,
+        NetMessage::GreetingStarted { .. } => MessageKind::GreetingStarted,
         NetMessage::CreatePrim { .. } => MessageKind::CreatePrim,
         NetMessage::UpdatePrim { .. } => MessageKind::UpdatePrim,
         NetMessage::DeletePrim { .. } => MessageKind::DeletePrim,
@@ -3024,6 +3089,8 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::SetPrimPhysical { request_id, .. } => *request_id,
         NetMessage::GrabPrim { request_id, .. } => *request_id,
         NetMessage::ReleasePrim { request_id, .. } => *request_id,
+        NetMessage::OfferGreeting { request_id, .. } => *request_id,
+        NetMessage::AcceptGreeting { request_id, .. } => *request_id,
         NetMessage::WherePeople { request_id, .. } => *request_id,
         NetMessage::PeopleWhere { request_id, .. } => *request_id,
         NetMessage::PersonInfo { request_id, .. } => *request_id,
@@ -3361,6 +3428,58 @@ mod tests {
 
     /// Picking up and letting go (protocol 48) travel as their own kinds, and a
     /// held prim survives a snapshot.
+    /// Greetings (protocol 49) travel as their own kinds, a withdrawn offer
+    /// included, and the new emotes survive a snapshot.
+    #[test]
+    fn roundtrip_greeting_app_frames() {
+        use crate::greet::Greeting;
+        for m in [
+            NetMessage::OfferGreeting {
+                request_id: 3,
+                to: 7,
+                greeting: Greeting::HighFive,
+            },
+            NetMessage::GreetingOffered {
+                from: 2,
+                name: "ada".into(),
+                greeting: Some(Greeting::Handshake),
+            },
+            NetMessage::GreetingOffered {
+                from: 2,
+                name: "ada".into(),
+                greeting: None,
+            },
+            NetMessage::AcceptGreeting {
+                request_id: 4,
+                from: 2,
+            },
+            NetMessage::GreetingStarted {
+                greeting: Greeting::Handshake,
+                partner: 7,
+                yaw: -1.25,
+            },
+            NetMessage::WorldSnapshot {
+                tick: 9,
+                avatars: [Emote::Handshake, Emote::HighFive, Emote::Throw]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, emote)| AvatarStateDto {
+                        emote: Some(EmoteState {
+                            emote,
+                            sequence: i as u32,
+                        }),
+                        ..an_avatar(i as u64 + 1)
+                    })
+                    .collect(),
+            },
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+        assert!(Emote::Handshake.is_paired() && Emote::HighFive.is_paired());
+        assert!(!Emote::Throw.is_paired() && !Emote::Wave.is_paired());
+    }
+
     #[test]
     fn roundtrip_grab_and_release_app_frames() {
         for m in [
@@ -3839,7 +3958,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 118] = [
+        const ALL: [MessageKind; 122] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3958,6 +4077,10 @@ mod tests {
             PrimOutOfReach,
             GrabPrim,
             ReleasePrim,
+            OfferGreeting,
+            GreetingOffered,
+            AcceptGreeting,
+            GreetingStarted,
         ];
         for k in ALL {
             assert_eq!(
@@ -3971,7 +4094,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(ReleasePrim as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(GreetingStarted as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

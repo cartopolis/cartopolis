@@ -28,8 +28,14 @@ Every avatar plays the clips the MakeHuman pack carries, cut from motion capture
 complete:
 
 ```
-idle, walk, run, wave, interact, roll, punch, kick, faint, sit, swim
+idle, walk, run, wave, interact, roll, punch, kick, faint, sit, swim,
+handshake, highfive, throw
 ```
+
+The last three were appended (2026-11-15) so no earlier index in
+`human_avatar::CLIP_ORDER` moved; the emotes are therefore not one run of
+it, and `human_avatar::EMOTE_CLIPS` says where each sits. The greetings are
+made with somebody (`paired-gestures.md`).
 
 No jump and no fall. A new one is a cut in `human-pack` from a take that has it
 (CMU has jumps), retargeted by the same code, so adding a gait is a pack
