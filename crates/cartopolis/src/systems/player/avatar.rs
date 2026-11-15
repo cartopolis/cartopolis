@@ -2301,6 +2301,22 @@ pub fn handle_avatar_movement(
         if transform.rotation != rotation {
             transform.rotation = rotation;
         }
+        // Offline the transform is the height, and nothing below runs: a sitter
+        // seated the frame it landed, before the ground under it streamed in,
+        // stayed at the height it landed at — a capture's edge seat drawn a
+        // metre over the grass (2026-11-15). Stand it on its ground and floor.
+        if online.is_none() {
+            let (ground, _) =
+                ground_or_water(&terrain, transform.translation.x, transform.translation.z);
+            let y = GROUND_HEIGHT + ground + avatar_state.floor_lift;
+            if (transform.translation.y - y).abs() > 1e-4 {
+                transform.translation.y = y;
+            }
+            avatar_state.vertical_velocity = 0.0;
+            avatar_state.grounded = true;
+            avatar_state.position = transform.translation;
+            avatar_state.display_position = transform.translation;
+        }
         return;
     }
 

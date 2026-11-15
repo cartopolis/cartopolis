@@ -342,13 +342,50 @@ pub fn avatar_frame(
 /// top — not sitting, climbing, swimming, carrying or in the air.
 pub fn track_edges(
     camera_state: Res<crate::resources::CameraState>,
-    avatar_state: Res<crate::resources::AvatarState>,
+    mut avatar_state: ResMut<crate::resources::AvatarState>,
     online: Option<Res<crate::resources::OnlineSession>>,
     colliders: Res<BuildingColliders>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
     mut edges: ResMut<Edges>,
 ) {
+    // An edge seat's lift, against where the avatar is drawn now.
+    if let Some(seated) = avatar_state.seated.filter(|s| s.edge) {
+        let (pos, base) = avatar_frame(
+            online.is_some(),
+            avatar_state.display_position,
+            avatars.single().ok(),
+        );
+        let ground = |p: Vec2| terrain.ground_at(p.x - base.x, p.y - base.y);
+        let water = |p: Vec2| terrain.swim_surface_at(p.x - base.x, p.y - base.y);
+        let map = Surroundings {
+            colliders: &colliders,
+            ground: &ground,
+            water: &water,
+        };
+        let root = avatar_state.display_position.y;
+        if let Some(e) = remeasure(&map, pos, &seated) {
+            let lift = e.lift(root);
+            if (lift - seated.lift).abs() > 0.01 || e.dangle() != seated.dangle {
+                let at = pos + seated.offset;
+                tracing::info!(
+                    target: "climb",
+                    root,
+                    surface = e.surface,
+                    drop = e.drop,
+                    ground_under_seat = ground(at),
+                    ledge_at_seat = ?colliders.ledge_at(at),
+                    was = drawn_seat(root, seated.lift, seated.dangle),
+                    now = drawn_seat(root, lift, e.dangle()),
+                    "edge seat re-measured: drawn seat height was / is"
+                );
+                if let Some(s) = &mut avatar_state.seated {
+                    s.lift = lift;
+                    s.dangle = e.dangle();
+                }
+            }
+        }
+    }
     let idle = camera_state.mode != crate::resources::CameraMode::Avatar
         || avatar_state.seated.is_some()
         || avatar_state.climb.is_some()
@@ -408,7 +445,34 @@ pub fn sit_on_edge(
         rising: false,
         lift: seat.lift(root),
         dangle: seat.dangle(),
+        edge: true,
     });
+}
+
+/// Re-measure an edge seat for a sitter at `pos` (world XZ): the edge under
+/// the seat point, whose `lift` from the root the sitter is drawn at now puts
+/// the clip's seat on it. `None` when there is no edge there
+/// any more (the wall's cell went), and the seat keeps what it had.
+///
+/// The lift is a difference between two heights measured at different
+/// times unless it is measured again: the root moves after the avatar sits
+/// (a capture seats it the frame it lands, before the ground under it has
+/// streamed in), and the edge moves when its cell is rebuilt on new terrain.
+#[must_use]
+pub fn remeasure(
+    map: &Surroundings,
+    pos: Vec2,
+    seated: &crate::resources::Seated,
+) -> Option<EdgeSeat> {
+    let out = Vec2::new(seated.yaw.sin(), seated.yaw.cos());
+    seat_on_edge(map, pos + seated.offset, out)
+}
+
+/// Where a seated clip's seat is drawn: the root, the lift and the clip's
+/// own seat height.
+#[must_use]
+pub fn drawn_seat(root: f32, lift: f32, dangle: bool) -> f32 {
+    root + lift + if dangle { DANGLE_SEAT_M } else { SIT_SEAT_M }
 }
 
 #[cfg(test)]
@@ -618,6 +682,47 @@ mod tests {
             (s.lift(1.2) + DANGLE_SEAT_M).abs() < 1e-5,
             "the clip sinks to put its seat on the top"
         );
+    }
+
+    /// Wherever the sitter turns out to stand once the ground is in, the seat
+    /// is drawn on the wall: the seat point lies on it, and the clip's seat
+    /// under the pelvis is at its top. Measured once, against the root the
+    /// avatar had the frame it sat (a capture seats it as it lands, 1.2 m up
+    /// before the ground streams in), the seat floated a metre over the grass
+    /// beside the wall (2026-11-15); re-measured, it does not.
+    #[test]
+    fn an_edge_seat_is_drawn_on_the_wall_whatever_the_root_was() {
+        let (ground, water) = (flat(), dry());
+        for (h, from, soles) in [
+            (0.7, Vec2::new(0.0, 1.2), 0.0),
+            (1.2, Vec2::new(0.0, 2.0), 1.2),
+        ] {
+            let c = wall(h);
+            let map = Surroundings {
+                colliders: &c,
+                ground: &ground,
+                water: &water,
+            };
+            let facing = if soles > 0.0 { Vec2::X } else { SOUTH };
+            let seat = find_edge_seat(&map, from, facing, soles).expect("a seat");
+            assert_eq!(
+                c.ledge_at(seat.seat),
+                Some(h),
+                "the seat point is on the wall: {seat:?}"
+            );
+            let mut avatar = crate::resources::AvatarState::default();
+            // Sat while it still stood 1.2 m off its ground.
+            sit_on_edge(&mut avatar, from, soles + 1.2, &seat);
+            let seated = avatar.seated.unwrap();
+            let stale = drawn_seat(soles, seated.lift, seated.dangle);
+            assert!((stale - h).abs() > 1.0, "measured once it floats: {stale}");
+            let e = remeasure(&map, from, &seated).expect("still an edge");
+            let drawn = drawn_seat(soles, e.lift(soles), e.dangle());
+            assert!(
+                (drawn - h).abs() < 0.03,
+                "a {h} m wall: the seat drawn at {drawn}"
+            );
+        }
     }
 
     #[test]

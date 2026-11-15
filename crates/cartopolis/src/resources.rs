@@ -1432,6 +1432,11 @@ pub struct Seated {
     /// Sitting on a high edge with the legs hanging (the `dangle` clip) rather
     /// than on a seat with the feet on the ground (`sit`).
     pub dangle: bool,
+    /// The seat is an edge (`climb::EdgeSeat`), not a bench: its lift is
+    /// re-measured every frame against where the avatar now stands
+    /// (`climb::track_edges`), because the ground under a seat taken the frame
+    /// a place streamed in is not the ground a second later.
+    pub edge: bool,
 }
 
 #[derive(Resource)]

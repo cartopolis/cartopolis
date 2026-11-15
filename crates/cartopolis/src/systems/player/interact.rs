@@ -293,6 +293,7 @@ impl InteractState {
                 rising: false,
                 lift: 0.0,
                 dangle: false,
+                edge: false,
             });
             // No receipt: the body is the feedback, and it stays there. A line
             // reading "Sit at Bench" fading out under a seated avatar would be

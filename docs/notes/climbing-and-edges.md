@@ -113,6 +113,25 @@ bench and draws as one. The local avatar measures with the same function, so
 a viewer with the same map draws the same seat. A viewer with street detail
 off has no walls and draws a wall sitter as on a bench.
 
+**The lift is re-measured every frame, never kept** (`Seated::edge`,
+`climb::remeasure` in `track_edges`). It is a difference between the edge's
+height and the root the sitter is drawn at, and both move after it sits: a
+capture seats the avatar the frame it lands, and the first captures
+(2026-11-15) drew a sitter 1.2–1.4 m over the grass beside the wall and over
+the pavement beside a parked car. Logged at the Noorderhaven: seated with its
+root at 0.0 while the ground under it was −4.76 m, so the lift measured then
+would have put the seat 4.76 m below the quay once the avatar landed. Offline
+a seated avatar also never came down at all — the seated branch of
+`handle_avatar_movement` returned before gravity — and now stands on its
+ground and floor. `an_edge_seat_is_drawn_on_the_wall_whatever_the_root_was`
+pins both: the seat point on the wall, the drawn seat at its top.
+
+**A quay edge is found from the register's water** (`swim_surface_at`), and
+the quay wall is drawn along the map's water polygon, which can stand up to a
+metre further out (`quay-walls.md`). Where they differ the sitter sits behind
+the drawn wall's top with its legs inside it (seen on the Noorderhaven's
+north quay, 2026-11-15; the south quay matched). Not fixed.
+
 ## What lost
 
 - **Telling the sim** (a climbed flag, the seat's height on the wire, a

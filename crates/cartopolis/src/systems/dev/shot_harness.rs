@@ -4062,11 +4062,39 @@ pub fn seat_scripted_avatar(
                 water: &water,
             };
             let yaw = avatar_state.facing_yaw;
-            let seat = (0..4).find_map(|k| {
-                let a = yaw + k as f32 * std::f32::consts::FRAC_PI_2;
-                climb::find_edge_seat(&map, pos, Vec2::new(a.sin(), a.cos()), soles)
+            let from = |at: Vec2| {
+                (0..4).find_map(|k| {
+                    let a = yaw + k as f32 * std::f32::consts::FRAC_PI_2;
+                    climb::find_edge_seat(&map, at, Vec2::new(a.sin(), a.cos()), soles)
+                })
+            };
+            // Where the avatar was put, else the nearest point within a metre
+            // and a half on the same level (a quay's edge is not a place a
+            // coordinate from a map lands on exactly): the seat offset carries
+            // the body there, as the prompt's would from where it stood.
+            let seat = from(pos).or_else(|| {
+                (1..=6).find_map(|ring| {
+                    let r = ring as f32 * 0.25;
+                    (0..16).find_map(|k| {
+                        let a = k as f32 * std::f32::consts::TAU / 16.0;
+                        let at = pos + Vec2::new(a.sin(), a.cos()) * r;
+                        ((ground(at) - ground(pos)).abs() < 0.2 && water(at).is_none())
+                            .then(|| from(at))
+                            .flatten()
+                    })
+                })
             });
             if let Some(seat) = seat {
+                info!(
+                    root = soles,
+                    surface = seat.surface,
+                    drop = seat.drop,
+                    dangle = seat.dangle(),
+                    offset = ?(seat.seat - pos),
+                    ground_under_seat = ground(seat.seat),
+                    ledge_at_seat = ?colliders.ledge_at(seat.seat),
+                    "shot harness: sat on an edge"
+                );
                 climb::sit_on_edge(&mut avatar_state, pos, soles, &seat);
                 if let Some(s) = &mut avatar_state.seated {
                     s.blend = 1.0;
@@ -4084,6 +4112,7 @@ pub fn seat_scripted_avatar(
         rising: false,
         lift: 0.0,
         dangle: false,
+        edge: false,
     });
 }
 
