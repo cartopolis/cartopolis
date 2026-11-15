@@ -104,6 +104,87 @@ pub struct Ledge {
     pub distance: f32,
 }
 
+/// The top edge of one drawn quay wall (`map_geometry::quay_walls`): where a
+/// sitter on a quay sits, its legs over the water (`systems::climb`). Not a
+/// collider — the quay walls never were — only where the wall is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuayEdge {
+    /// Its ends, world XZ (the colliders' frame), and their heights.
+    pub a: Vec2,
+    pub b: Vec2,
+    pub top_a: f32,
+    pub top_b: f32,
+    /// Unit, world XZ: from the wall out over the water.
+    pub water: Vec2,
+}
+
+impl QuayEdge {
+    /// The point of the edge nearest `p`, and the wall's top there.
+    #[must_use]
+    pub fn nearest(&self, p: Vec2) -> (Vec2, f32) {
+        let ab = self.b - self.a;
+        let t = if ab.length_squared() > 1e-9 {
+            ((p - self.a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (self.a + ab * t, self.top_a + (self.top_b - self.top_a) * t)
+    }
+}
+
+/// The top edges of the quay walls in a surface mesh: positions relative to
+/// `origin` (world XZ), with per-vertex normals facing the water, as
+/// `map_geometry::quay_walls` builds them — a quad of two feet and two tops per
+/// edge. Read from the triangles, so a mesh cut into pieces still gives its
+/// edges: a top edge is a triangle edge whose two ends are each the highest
+/// vertex at their place, at two places.
+#[must_use]
+pub fn quay_edges_of(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    indices: &[u32],
+    origin: Vec2,
+) -> Vec<QuayEdge> {
+    let key = |p: [f32; 3]| ((p[0] * 100.0).round() as i32, (p[2] * 100.0).round() as i32);
+    let mut top: HashMap<(i32, i32), f32> = HashMap::new();
+    for p in positions {
+        let t = top.entry(key(*p)).or_insert(f32::MIN);
+        *t = t.max(p[1]);
+    }
+    let is_top = |i: u32| {
+        let p = positions[i as usize];
+        top.get(&key(p)).is_some_and(|t| (p[1] - t).abs() < 1e-4)
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for t in indices.chunks_exact(3) {
+        for k in 0..3 {
+            let (i, j) = (t[k], t[(k + 1) % 3]);
+            let (p, q) = (positions[i as usize], positions[j as usize]);
+            let (kp, kq) = (key(p), key(q));
+            if kp == kq || !is_top(i) || !is_top(j) {
+                continue;
+            }
+            if !seen.insert(if kp <= kq { (kp, kq) } else { (kq, kp) }) {
+                continue;
+            }
+            let n = normals.get(i as usize).copied().unwrap_or([0.0; 3]);
+            let water = Vec2::new(n[0], n[2]).normalize_or_zero();
+            if water == Vec2::ZERO {
+                continue;
+            }
+            out.push(QuayEdge {
+                a: origin + Vec2::new(p[0], p[2]),
+                b: origin + Vec2::new(q[0], q[2]),
+                top_a: p[1],
+                top_b: q[1],
+                water,
+            });
+        }
+    }
+    out
+}
+
 /// Who may go inside a building with doors.
 ///
 /// Houses are private: only public buildings (shops, schools, halls — the
@@ -566,6 +647,10 @@ pub struct BuildingColliders {
     /// each rebuild, and gated with the LoD2.2 source: a room is only ever inside
     /// a shell that source drew.
     rooms: Vec<Footprint>,
+    /// The drawn quay walls' top edges by surface cell, set by the surface
+    /// streamer as it places a cell and dropped with it: where a quay is sat
+    /// on (`systems::climb`). Never in the way of anything.
+    quays: HashMap<(i64, i64), Vec<QuayEdge>>,
 }
 
 impl BuildingColliders {
@@ -751,6 +836,38 @@ impl BuildingColliders {
         self.iter_buildings()
             .filter_map(|f| f.roof_under(p, reach))
             .reduce(f32::max)
+    }
+
+    /// Install (or replace) one surface cell's quay edges.
+    pub fn set_quay_cell(&mut self, cell: (i64, i64), edges: Vec<QuayEdge>) {
+        if edges.is_empty() {
+            self.quays.remove(&cell);
+        } else {
+            self.quays.insert(cell, edges);
+        }
+    }
+    /// Drop one surface cell's quay edges.
+    pub fn remove_quay_cell(&mut self, cell: (i64, i64)) {
+        self.quays.remove(&cell);
+    }
+    /// Drop every quay edge (re-anchor).
+    pub fn clear_quays(&mut self) {
+        self.quays.clear();
+    }
+
+    /// The drawn quay wall top nearest `p` within `reach`: the edge, the point
+    /// on it, and the wall's top there.
+    #[must_use]
+    pub fn quay_near(&self, p: Vec2, reach: f32) -> Option<(QuayEdge, Vec2, f32)> {
+        self.quays
+            .values()
+            .flatten()
+            .map(|e| {
+                let (at, top) = e.nearest(p);
+                (*e, at, top)
+            })
+            .filter(|(_, at, _)| at.distance_squared(p) <= reach * reach)
+            .min_by(|x, y| x.1.distance_squared(p).total_cmp(&y.1.distance_squared(p)))
     }
 
     /// The street-detail footprints whose tops can be stood on

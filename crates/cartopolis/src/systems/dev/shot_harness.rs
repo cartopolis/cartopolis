@@ -4093,6 +4093,10 @@ pub fn seat_scripted_avatar(
                     offset = ?(seat.seat - pos),
                     ground_under_seat = ground(seat.seat),
                     ledge_at_seat = ?colliders.ledge_at(seat.seat),
+                    // From the seat to the drawn quay wall's top edge, and its height.
+                    quay_wall = ?colliders
+                        .quay_near(seat.seat, 2.0)
+                        .map(|(_, at, top)| (at.distance(seat.seat), top)),
                     "shot harness: sat on an edge"
                 );
                 climb::sit_on_edge(&mut avatar_state, pos, soles, &seat);

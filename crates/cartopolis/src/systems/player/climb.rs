@@ -52,10 +52,6 @@ pub const EDGE_DROP_M: f32 = 0.35;
 const SEAT_BACK_M: f32 = 0.1;
 /// Where the feet hang, out from the seat, metres.
 const FEET_OUT_M: f32 = 0.4;
-/// How far ahead the water below a quay is looked for, metres.
-const WATER_REACH_M: f32 = 1.2;
-/// How finely a line is walked for the water's edge, metres.
-const PROBE_M: f32 = 0.05;
 /// A seat hangs the legs (`dangle`) once the drop below it is within this of
 /// the clip's own seat: from there down the feet are off the ground.
 const DANGLE_SLACK_M: f32 = 0.03;
@@ -208,19 +204,42 @@ impl Surroundings<'_> {
 #[must_use]
 pub fn seat_on_edge(map: &Surroundings, seat: Vec2, out: Vec2) -> Option<EdgeSeat> {
     let out = out.normalize_or_zero();
-    if out == Vec2::ZERO || (map.water)(seat).is_some() {
+    // Not "is the seat over the register's water": by a drawn quay wall the
+    // register's ring can reach a metre under the street (`quay-walls.md`).
+    if out == Vec2::ZERO {
         return None;
     }
-    let ledge = map.colliders.ledge_under(seat, f32::INFINITY);
-    let surface = ledge.unwrap_or_else(|| (map.ground)(seat));
-    let drop = surface - map.below(seat + out * FEET_OUT_M);
-    (ledge.is_some() || drop >= EDGE_DROP_M).then_some(EdgeSeat {
+    if let Some(surface) = map.colliders.ledge_under(seat, f32::INFINITY) {
+        let drop = surface - map.below(seat + out * FEET_OUT_M);
+        return Some(EdgeSeat {
+            seat,
+            out,
+            surface,
+            drop,
+        });
+    }
+    // A quay: only where a quay wall is drawn, and on its top — not where the
+    // register's water ends, which can be a metre inside the drawn wall and put
+    // the legs through it (2026-11-15).
+    let (edge, at, top) = map.colliders.quay_near(seat, QUAY_SEAT_REACH_M)?;
+    let drop = top - map.below(at + edge.water * FEET_OUT_M);
+    (drop >= EDGE_DROP_M && out.dot(edge.water) > 0.5).then_some(EdgeSeat {
         seat,
         out,
-        surface,
+        surface: top,
         drop,
     })
 }
+
+/// How far a quay seat may be from the drawn wall's top edge it sits on,
+/// metres: its own set-back and a margin.
+const QUAY_SEAT_REACH_M: f32 = QUAY_SEAT_BACK_M + 0.1;
+/// How far behind a drawn quay wall's top edge the hips sit, metres. Less
+/// than a wall top's [`SEAT_BACK_M`]: the quay wall is drawn as a face with no
+/// thickness, and the street's paving runs up to it.
+const QUAY_SEAT_BACK_M: f32 = 0.05;
+/// How far from the avatar a drawn quay edge is offered, metres.
+pub const QUAY_REACH_M: f32 = 1.5;
 
 /// Somewhere to sit on an edge for an avatar at `pos`, soles at `soles`,
 /// facing `facing` — what the prompt offers as "Sit":
@@ -229,8 +248,10 @@ pub fn seat_on_edge(map: &Surroundings, seat: Vec2, out: Vec2) -> Option<EdgeSea
 ///    trying the way it faces, then either side, then behind;
 /// 2. on the ground facing a wall [`SIT_ON_MIN_M`]..=[`SIT_ON_MAX_M`] high
 ///    within [`CLIMB_REACH_M`], its near edge, facing back out;
-/// 3. on the ground with water [`EDGE_DROP_M`] or more below within
-///    [`WATER_REACH_M`] ahead, the quay's edge, facing the water.
+/// 3. on the ground facing the water, the top of the nearest drawn quay wall
+///    within [`QUAY_REACH_M`] (`BuildingColliders::quay_near`) with
+///    [`EDGE_DROP_M`] or more below it, facing out over the water. No drawn
+///    wall, no quay seat.
 #[must_use]
 pub fn find_edge_seat(map: &Surroundings, pos: Vec2, facing: Vec2, soles: f32) -> Option<EdgeSeat> {
     let f = facing.normalize_or_zero();
@@ -261,21 +282,11 @@ pub fn find_edge_seat(map: &Surroundings, pos: Vec2, facing: Vec2, soles: f32) -
         }
         return None;
     }
-    let here = (map.ground)(pos);
-    let mut last = pos;
-    let mut along = PROBE_M;
-    while along <= WATER_REACH_M {
-        let q = pos + f * along;
-        if let Some(surface) = (map.water)(q) {
-            if here - surface < EDGE_DROP_M {
-                return None;
-            }
-            return seat_on_edge(map, last - f * PROBE_M, f);
-        }
-        last = q;
-        along += PROBE_M;
+    let (edge, at, _) = map.colliders.quay_near(pos, QUAY_REACH_M)?;
+    if f.dot(edge.water) <= 0.0 {
+        return None;
     }
-    None
+    seat_on_edge(map, at - edge.water * QUAY_SEAT_BACK_M, edge.water)
 }
 
 /// What the prompt can offer at the wall or edge in front of the avatar,
@@ -728,19 +739,57 @@ mod tests {
     #[test]
     fn a_quay_over_the_water_is_an_edge_and_a_bench_is_not() {
         let ground = flat();
-        // Water from z = 1 on, its surface 1.4 m below the street.
-        let water = |p: Vec2| (p.y > 1.0).then_some(-1.4);
-        let c = BuildingColliders::default();
+        // The register's water from z = 0.4 on, its surface 1.4 m below the
+        // street — but the quay wall is drawn a metre further out, at z = 1.4,
+        // along the map's water (the north quay of the Noorderhaven).
+        let water = |p: Vec2| (p.y > 0.4).then_some(-1.4);
+        let mut c = BuildingColliders::default();
+        // As `map_geometry::quay_walls` builds it: two feet and two tops, in a
+        // cell whose origin is (-10, 1), facing +z into the water.
+        let positions = [
+            [0.0, -1.7, 0.4],
+            [20.0, -1.7, 0.4],
+            [20.0, 0.0, 0.4],
+            [0.0, 0.0, 0.4],
+        ];
+        let normals = [[0.0, 0.0, 1.0]; 4];
+        let edges = crate::systems::collision::quay_edges_of(
+            &positions,
+            &normals,
+            &[0, 1, 2, 0, 2, 3],
+            Vec2::new(-10.0, 1.0),
+        );
+        assert_eq!(edges.len(), 1, "one top edge: {edges:?}");
+        c.set_quay_cell((0, 0), edges);
         let map = Surroundings {
             colliders: &c,
             ground: &ground,
             water: &water,
         };
         let s = find_edge_seat(&map, Vec2::ZERO, SOUTH, 0.0).expect("the quay");
-        assert!(s.seat.y < 1.0 && s.seat.y > 0.8, "at the edge: {s:?}");
+        // On the drawn wall's top edge (z = 1.4), its set-back behind it on
+        // the street side, and on its top — not where the register's water
+        // starts, a metre in.
+        let off_line = 1.4 - s.seat.y;
+        assert!(
+            (0.0..=QUAY_SEAT_BACK_M + 0.01).contains(&off_line),
+            "on the drawn wall's line: {s:?}"
+        );
+        assert!((s.surface - 0.0).abs() < 0.01, "on its top: {s:?}");
+        assert!((s.out - SOUTH).length() < 1e-5, "facing out over the water");
         assert!(s.dangle() && (s.drop - 1.4).abs() < 1e-5);
-        // Facing away from the water there is no edge.
+        // A remote measures the same seat from the offset.
+        assert_eq!(seat_on_edge(&map, s.seat, s.out), Some(s));
+        // Facing away from the water there is no edge, nor without a drawn wall.
         assert!(find_edge_seat(&map, Vec2::ZERO, -SOUTH, 0.0).is_none());
+        let bare = BuildingColliders::default();
+        let unwalled = Surroundings {
+            colliders: &bare,
+            ground: &ground,
+            water: &water,
+        };
+        assert!(find_edge_seat(&unwalled, Vec2::ZERO, SOUTH, 0.0).is_none());
+        let c = BuildingColliders::default();
         // A bench in a square: its seat is no edge, and keeps the bench's sit.
         let dry = dry();
         let square = Surroundings {

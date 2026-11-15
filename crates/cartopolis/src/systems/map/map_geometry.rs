@@ -308,6 +308,10 @@ pub struct CellStores<'w> {
     /// The trees drawn as models up close (`systems::tree_models`): keyed by cell
     /// and filled from this parse, like the rest.
     tree_models: ResMut<'w, crate::systems::tree_models::TreeModels>,
+    /// Where the quay walls are drawn (`collision::QuayEdge`): read off the
+    /// walls this parse built, and dropped with the cell — a sitter on a quay
+    /// sits on the wall that is drawn (`systems::climb`).
+    colliders: ResMut<'w, crate::systems::collision::BuildingColliders>,
 }
 
 /// Everything a surface cell needs to *make a material out of*, in one parameter
@@ -3330,6 +3334,7 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     stores.grass.remove_cell(&c);
     stores.roads.remove_cell(&c);
     stores.tunnels.drop_cell(c);
+    stores.colliders.remove_quay_cell(c);
     stores.placeholders.forget_cell(c);
 }
 
@@ -3373,6 +3378,7 @@ pub fn update_map_surfaces(
             stores.grass.clear();
             stores.roads.clear();
             stores.tunnels.clear();
+            stores.colliders.clear_quays();
         }
         return;
     }
@@ -3396,6 +3402,7 @@ pub fn update_map_surfaces(
         stores.grass.clear();
         stores.roads.clear();
         stores.tunnels.clear();
+        stores.colliders.clear_quays();
         stores.placeholders.clear_queue();
     }
     // So does the ground moving under them. The measured field lands a second or
@@ -3492,6 +3499,7 @@ pub fn update_map_surfaces(
         stores.grass.clear();
         stores.roads.clear();
         stores.tunnels.clear();
+        stores.colliders.clear_quays();
         stores.placeholders.clear_queue();
     }
 
@@ -3570,6 +3578,7 @@ pub fn update_map_surfaces(
         stores.grass.clear();
         stores.roads.clear();
         stores.tunnels.clear();
+        stores.colliders.clear_quays();
         stores.placeholders.clear_queue();
     }
 
@@ -3971,6 +3980,9 @@ fn upload_finished_cells(
         // The crown pieces, for `TreeModels` to know which chunk each hides.
         let mut crown_pieces: Vec<(Vec2, Entity)> = Vec::new();
         let mut built_bytes = 0usize;
+        // The quay walls' top edges, where a quay is sat on (`systems::climb`):
+        // from the walls as drawn, which the worker stood at their heights.
+        let mut quay_edges = Vec::new();
         for sm in surface_meshes {
             let stand = if placed {
                 Stand::Placed
@@ -3978,6 +3990,14 @@ fn upload_finished_cells(
                 Stand::Terrain(&terrain, &stores.tunnels)
             };
             let group = sm.group;
+            if placed && group == SurfaceGroup::QuayWall {
+                quay_edges.extend(crate::systems::collision::quay_edges_of(
+                    &sm.positions,
+                    &sm.normals,
+                    &sm.indices,
+                    Vec2::new(wx, wz),
+                ));
+            }
             // One entity per piece: a surface stood on the ground here can come
             // out of the refinement several times its measured size, and is cut
             // back to the cap (`build_meshes_owned`).
@@ -4132,6 +4152,7 @@ fn upload_finished_cells(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        stores.colliders.set_quay_cell(c, quay_edges);
         stores
             .tree_models
             .insert_cell(c, Vec2::new(wx, wz), model_trees, crown_pieces, |x, z| {

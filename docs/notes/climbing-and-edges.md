@@ -1,6 +1,6 @@
 ---
 topic: climbing-and-edges
-triggers: [climb, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
+triggers: [climb, QuayEdge, quay_edges_of, quay_near, set_quay_cell, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
 updated: 2026-11-15
 ---
 
@@ -35,8 +35,8 @@ drawn wall from the ground to its top (`height-aware-collision.md`).
   Parapet) are not colliders** and so are not climbed: they are walked
   through today. Making them solid is the next step if the owner wants walls
   with measured heights to climb; it changes what blocks everyone.
-- **Quay walls are not colliders either** (`quay-walls.md`); a quay edge is
-  found from the water instead (sitting, below).
+- **Quay walls are not colliders either** (`quay-walls.md`); a quay is sat
+  on along the drawn wall's top edge (sitting, below).
 
 Being on top is the client's: `BuildingColliders::ledge_under` is a roof to
 `interiors::Footing` beside `roof_under`, so a climber stands on the top,
@@ -92,8 +92,8 @@ slower than that is still drawn climbing it.
    either side, then behind;
 2. on the ground facing a wall 0.35–0.9 m high within reach: on its near
    edge, facing back out;
-3. on the ground with water `EDGE_DROP_M` or more below within 1.2 m ahead:
-   on the quay's edge, facing the water.
+3. on the ground facing the water, within 1.5 m of a drawn quay wall with
+   `EDGE_DROP_M` or more below its top: on the wall's top edge, facing out.
 
 It is the bench's seat (`sitting-down.md`): an XZ offset the wire already
 carries (protocol 19), with a **lift** (`Seated::lift`) and a clip chosen by
@@ -107,9 +107,9 @@ over the side.
 
 **Every viewer measures the edge itself** (`climb::seat_on_edge`) from the
 seat point (position + offset) and the facing (the sitter's replicated yaw):
-on a ledge, or with the water or ground `EDGE_DROP_M` below where the feet
-hang, it is an edge, and the lift and the clip follow; otherwise it is a
-bench and draws as one. The local avatar measures with the same function, so
+on a ledge, or on a drawn quay wall's top with `EDGE_DROP_M` below it, it
+is an edge, and the lift and the clip follow; otherwise it is a bench and
+draws as one. The local avatar measures with the same function, so
 a viewer with the same map draws the same seat. A viewer with street detail
 off has no walls and draws a wall sitter as on a bench.
 
@@ -126,11 +126,18 @@ a seated avatar also never came down at all — the seated branch of
 ground and floor. `an_edge_seat_is_drawn_on_the_wall_whatever_the_root_was`
 pins both: the seat point on the wall, the drawn seat at its top.
 
-**A quay edge is found from the register's water** (`swim_surface_at`), and
-the quay wall is drawn along the map's water polygon, which can stand up to a
-metre further out (`quay-walls.md`). Where they differ the sitter sits behind
-the drawn wall's top with its legs inside it (seen on the Noorderhaven's
-north quay, 2026-11-15; the south quay matched). Not fixed.
+**A quay seat is on the drawn quay wall** (`collision::QuayEdge`). The
+surface streamer reads each cell's quay walls' top edges off the meshes
+`map_geometry::quay_walls` built (`quay_edges_of`) into `BuildingColliders`
+(`set_quay_cell`, dropped with the cell); "Sit" at a quay is the nearest
+drawn top edge within `QUAY_REACH_M` (1.5 m) of an avatar facing the water,
+the hips 5 cm behind it, facing out over the water. No drawn wall, no quay
+seat. It was found from the register's water (`swim_surface_at`) until
+2026-11-15, and on the Noorderhaven's north quay that ring reaches a metre
+under the street: the seat sat behind the drawn wall and the legs went
+through it. Logged after the change: both Noorderhaven seats 5.0 cm from the
+drawn edge, at its top. The seat is not refused for having the register's
+water under it, for the same reason.
 
 ## What lost
 
