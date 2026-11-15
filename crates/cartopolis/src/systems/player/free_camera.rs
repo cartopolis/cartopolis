@@ -297,6 +297,32 @@ fn zoom_orbit_target(target: f64, factor: f64, space: bool, radius: f64, clamp: 
     }
 }
 
+/// Logical pixels of a pixel-unit scroll worth one wheel notch: what Chrome
+/// reports for one notch of a mouse wheel.
+const WHEEL_PIXELS_PER_NOTCH: f32 = 100.0;
+/// The most one wheel event may count for, so a flung trackpad or a fast-spun
+/// free wheel still glides rather than leaps.
+const WHEEL_MAX_NOTCHES: f32 = 3.0;
+
+/// The distance multiplier one wheel event asks for: [`ORBIT_ZOOM_SPEED`] per
+/// notch, whatever unit the event came in.
+///
+/// A native wheel reports lines (±1 a notch), the browser reports pixels (±100
+/// a notch in Chrome, a trickle of small ones from a trackpad), and winit hands
+/// those on as *physical* pixels, so `scale` (the window's scale factor) takes
+/// a high-density screen's doubling back out. Reading `y` as
+/// notches made every web notch hit the old 0.2 clamp — five times closer per
+/// notch, the globe to the street in six.
+fn wheel_zoom_factor(event: &bevy::input::mouse::MouseWheel, scale: f32) -> f64 {
+    use bevy::input::mouse::MouseScrollUnit;
+    let notches = match event.unit {
+        MouseScrollUnit::Line => event.y,
+        MouseScrollUnit::Pixel => event.y / (WHEEL_PIXELS_PER_NOTCH * scale.max(1.0)),
+    }
+    .clamp(-WHEEL_MAX_NOTCHES, WHEEL_MAX_NOTCHES);
+    f64::from(1.0 - ORBIT_ZOOM_SPEED).powf(f64::from(notches))
+}
+
 /// How much closer (or further) one frame of a *held* on-screen zoom button is
 /// worth: a multiplier on the distance, so the step is a fraction of where you
 /// already are, exactly as the wheel's is.
@@ -2811,8 +2837,10 @@ fn attached_mode(
         globe,
         camera_transform,
         camera_cell,
+        window,
         ..
     } = ctx;
+    let scale = window.map_or(1.0, Window::scale_factor);
 
     // The target's horizon frame. North is the planet's axis flattened onto the
     // horizon; at a pole, where that vanishes, any perpendicular will do.
@@ -2874,7 +2902,7 @@ fn attached_mode(
     rig.pitch = (rig.pitch + rot.y * ORBIT_ROT_SENS).clamp(-ATTACH_PITCH_LIMIT, ATTACH_PITCH_LIMIT);
 
     for event in mouse_wheel_events.read() {
-        rig.distance_target *= f64::from((1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0));
+        rig.distance_target *= wheel_zoom_factor(event, scale);
     }
     if osd.zoom != 0.0 {
         rig.distance_target *= f64::from(osd_zoom_factor(osd.zoom, delta_time));
@@ -3229,7 +3257,7 @@ fn earth_mode(ctx: ModeCtx) {
     let mut zoom_mul = 1.0_f64;
     for event in mouse_wheel_events.read() {
         camera_state.rail_goal = None;
-        let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
+        let factor = wheel_zoom_factor(event, window.map_or(1.0, Window::scale_factor));
         zoom_mul *= factor;
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
@@ -4088,6 +4116,33 @@ mod tests {
     use crate::components::Avatar;
     use crate::systems::driver::DriverState;
     use crate::systems::session::{SessionState, SessionStatus};
+
+    fn wheel(unit: bevy::input::mouse::MouseScrollUnit, y: f32) -> bevy::input::mouse::MouseWheel {
+        bevy::input::mouse::MouseWheel {
+            unit,
+            x: 0.0,
+            y,
+            window: Entity::PLACEHOLDER,
+            phase: bevy::input::touch::TouchPhase::Moved,
+        }
+    }
+
+    /// A browser's notch (100 px) zooms as far as a native one (1 line), a
+    /// trackpad's trickle adds up to the same, and no single event leaps.
+    #[test]
+    fn a_web_wheel_notch_zooms_as_far_as_a_native_one() {
+        use bevy::input::mouse::MouseScrollUnit::{Line, Pixel};
+        let native = wheel_zoom_factor(&wheel(Line, 1.0), 1.0);
+        assert!((native - 0.9).abs() < 1e-6);
+        assert!((wheel_zoom_factor(&wheel(Pixel, 100.0), 1.0) - native).abs() < 1e-6);
+        assert!((wheel_zoom_factor(&wheel(Pixel, 200.0), 2.0) - native).abs() < 1e-6);
+        let trickle: f64 = (0..10)
+            .map(|_| wheel_zoom_factor(&wheel(Pixel, 10.0), 1.0))
+            .product();
+        assert!((trickle - native).abs() < 1e-6);
+        assert!(wheel_zoom_factor(&wheel(Pixel, -100.0), 1.0) > 1.0);
+        assert!(wheel_zoom_factor(&wheel(Pixel, 2_000.0), 1.0) >= 0.9_f64.powi(3) - 1e-6);
+    }
 
     /// Just enough world to run [`follow_on_sign_in`]: the three resources it
     /// reads and the avatar entity that is half of `follow_available`.
