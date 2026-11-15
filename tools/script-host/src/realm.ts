@@ -10,7 +10,6 @@
  * so no host object is ever inside — the runtime's allowlist then takes away
  * the globals Bun puts in every realm.
  */
-import {heapSize} from 'bun:jsc'
 import {readFileSync} from 'node:fs'
 
 import {rewrite, ScriptError} from './rewrite'
@@ -51,7 +50,7 @@ export class Realm {
             // a host bug, worth the message as it is.
             throw new ScriptError(`could not compile: ${e.message}`)
         }
-        const realm = new Realm(factory(heapSize, LIMITS_JSON))
+        const realm = new Realm(factory(process.memoryUsage.rss, LIMITS_JSON))
         realm.control('id', primId)
         realm.view({})
         const top = realm.parse(realm.control('load', LIMITS.loadFuel))

@@ -115,13 +115,27 @@
     // `__f` counts loop iterations and function entries, the two places the
     // rewrite puts a check — the same two Luau's interrupt fires on, so the Luau
     // host's budgets carry over as numbers. Every 1024 steps the check also reads
-    // the process heap: a slice that grew it by more than `sliceHeap` is stopped.
+    // the process's resident memory: a slice that grew it by more than
+    // `sliceHeap` is stopped.
+    //
+    // Resident memory, not `bun:jsc`'s `heapSize()`: that walks the heap, 26 µs at
+    // 10 MB and 318 µs at 100 MB (1.4.4), and read once per slice it made a tick
+    // quadratic in the number of scripts — 1000 content scripts took 3.1 s. The
+    // resident size is ~9 µs at any size. It is read lazily, at a slice's first
+    // check, so a handler shorter than 1024 steps never pays for it; what those
+    // steps can allocate is bounded by the built-in caps above, and past that by
+    // the supervisor.
     let __f = 0
-    let __heapStart = 0
+    let __heapStart = -1
     let __memOver = false
     const __SLICE_HEAP = __limits.sliceHeap
     const __mem = () => {
-        if (__heap() - __heapStart > __SLICE_HEAP) {
+        const now = __heap()
+        if (__heapStart < 0) {
+            __heapStart = now
+            return false
+        }
+        if (now - __heapStart > __SLICE_HEAP) {
             __memOver = true
             __f = -1
             return true
@@ -358,7 +372,7 @@
     const __slice = (budget) => {
         __f = budget
         __memOver = false
-        __heapStart = __heap()
+        __heapStart = -1
         let status
         let message = ''
         try {
