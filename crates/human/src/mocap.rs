@@ -307,6 +307,14 @@ pub struct Cut {
     pub kind: CutKind,
     /// The take's true frame rate, when its file states another.
     pub fps: Option<f32>,
+    /// Stand the clip still: through every frame the hips and the legs hold
+    /// the pose they have at this frame of the take (the file's own number),
+    /// and the clip faces the way the hips face there. The trunk, arms and
+    /// head play as captured, keeping the way they turn in the room. For a
+    /// gesture made while walking up to somebody (the CMU greetings), whose
+    /// approach is not wanted: the stride is held as a stance where the
+    /// gesture lands, so the body does it on the spot.
+    pub plant: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -427,6 +435,48 @@ pub fn find_loop(
     best.map(|(_, a, len)| (a, len))
 }
 
+/// Hold the hips and every joint below them but the trunk at `held` through
+/// `frames` ([`Cut::plant`]). The trunk's own local turn is re-expressed under
+/// the held hips, so the upper body keeps its turn in the room and only stops
+/// travelling with the stride.
+fn plant(
+    m: &Motion,
+    frames: &mut [Vec<(Vec3, Quat)>],
+    held: &[(Vec3, Quat)],
+    pelvis: usize,
+    trunk: usize,
+) -> Result<()> {
+    if m.parents[trunk] != Some(pelvis) {
+        return Err("plant: the lower back does not hang from the hips".into());
+    }
+    // The joints that are held: the hips and everything under them that is not
+    // under the trunk.
+    let mut legs = vec![false; m.names.len()];
+    legs[pelvis] = true;
+    for j in 0..m.names.len() {
+        if j == trunk {
+            continue;
+        }
+        if let Some(p) = m.parents[j] {
+            if legs[p] && p < j {
+                legs[j] = true;
+            }
+        }
+    }
+    let held_hips = held[pelvis].1;
+    for f in frames.iter_mut() {
+        let hips = f[pelvis].1;
+        let (t, r) = f[trunk];
+        f[trunk] = (t, (held_hips.inverse() * hips * r).normalize());
+        for (j, is_leg) in legs.iter().enumerate() {
+            if *is_leg {
+                f[j] = held[j];
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Cut `cut` out of the take `m` and express it the way the pack stores clips.
 pub fn clip_from_motion(m: &Motion, cut: &Cut, bones: &[Bone], fps_out: f32) -> Result<SourceClip> {
     let map = map_bones(m, bones);
@@ -480,6 +530,14 @@ pub fn clip_from_motion(m: &Motion, cut: &Cut, bones: &[Bone], fps_out: f32) -> 
         }
     };
     let mut frames: Vec<Vec<(Vec3, Quat)>> = take[a..=a + len].to_vec();
+    if let Some(at) = cut.plant {
+        let held = m
+            .frames
+            .get(at)
+            .ok_or_else(|| format!("{}: no frame {at} to plant at", cut.name))?;
+        let trunk = joint("spine_01").ok_or_else(|| format!("{}: no lower back", cut.name))?;
+        plant(m, &mut frames, held, pelvis, trunk)?;
+    }
     let secs = len as f32 / fps;
 
     // Travel, and the heading to turn to: the way it went if it went anywhere,
@@ -693,6 +751,41 @@ Frame Time: 0.5
             assert_eq!(rig_bone(cap).as_deref(), Some(rig), "{cap}");
         }
         assert_eq!(rig_bone("LHipJoint"), None);
+    }
+
+    /// Planting holds the hips and the legs where they were at one frame and
+    /// leaves the trunk turned in the room as captured: the stride stops, the
+    /// gesture does not.
+    #[test]
+    fn a_planted_stride_holds_the_legs_and_keeps_the_trunk() {
+        let m = Motion {
+            names: ["Hips", "LowerBack", "LeftUpLeg"]
+                .map(String::from)
+                .to_vec(),
+            parents: vec![None, Some(0), Some(0)],
+            offsets: vec![Vec3::ZERO, Vec3::Y, Vec3::X],
+            ends: vec![None; 3],
+            fps: 30.0,
+            frames: (0..3)
+                .map(|i| {
+                    let i = i as f32;
+                    vec![
+                        (Vec3::new(0.0, 9.0, i), Quat::from_rotation_y(0.2 * i)),
+                        (Vec3::Y, Quat::from_rotation_x(0.1 * i)),
+                        (Vec3::X, Quat::from_rotation_x(-0.3 * i)),
+                    ]
+                })
+                .collect(),
+        };
+        let mut frames = m.frames.clone();
+        let held = m.frames[1].clone();
+        plant(&m, &mut frames, &held, 0, 1).unwrap();
+        for (f, before) in frames.iter().zip(&m.frames) {
+            assert_eq!(f[0], held[0], "the hips are held");
+            assert_eq!(f[2], held[2], "and the leg");
+            let (was, now) = (m.world(before)[1].1, m.world(f)[1].1);
+            assert!(was.angle_between(now) < 1e-5, "the trunk keeps its turn");
+        }
     }
 
     /// A take that repeats every 10 frames is found to loop at 10 (or a

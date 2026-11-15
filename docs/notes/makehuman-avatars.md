@@ -1,7 +1,7 @@
 ---
 topic: makehuman-avatars
 triggers: [crates/human, crowd.rs, crowd_pose.wesl, CrowdMaterial, CrowdSwatch, starter_looks, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, aim_screen, DesignerTurn]
-updated: 2026-11-04
+updated: 2026-11-15
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
@@ -395,6 +395,50 @@ the library. Mixamo (no redistribution), Bandai Namco's set and LAFAN1
   FILE START [END]` swapped it into the pack without the other sources — the
   CMU takes come from `raw.githubusercontent.com/una-dinosauria/cmu-mocap/
   master/data/008/08_08.bvh`. `the_walk_is_an_ordinary_walk` is the guard.
+
+## The greetings and the throw (pack 2026-11-15)
+
+Three CMU cuts, added to the shipped pack by `human-pack --add-clip PACK
+CMU_DIR NAME…` (the generalised `--add-swim`: it cuts the named clips exactly
+as `cmu_cuts` lists them, so a full rebuild cuts them the same way):
+
+- **`handshake`**: 18_01 "walk, shake hands", subject A, frames 20–290
+  (2.24 s), planted at 120. The right hands meet at ~75, pump once (~105) and
+  let go at ~215. Subject A rather than B (19_01) because his hand reaches out
+  in front of him; B's stays by his hip and A reaches it.
+- **`highfive`**: 21_11 "high-five, walk", subject B, frames 40–232 (1.59 s),
+  planted at 132, where the palms meet at 1.6 m. B rather than A (20_11)
+  because A slapped out sideways, 66° off his heading, as the two walked past
+  each other; B reaches up in front.
+- **`throw`**: 15_12, frames 3160–3420 (2.16 s): an overhand throw with the
+  feet still — the hand drawn back past the head from ~3180, released forward
+  at head height at ~3302 at 4.4 m/s (the fastest the right hand moves in the
+  75 s take, the first of five throws in a row, found by scanning its speed),
+  followed through to ~3342. It replaced the punch, which stood in for a
+  throw since the carry work.
+
+Both greeting takes are two people **walking up to each other**, and the walk
+is not wanted. **`Cut::plant`** holds the hips and legs at one frame (the
+contact) through the whole clip and keeps the trunk's turn in the room as
+captured, so the gesture is made standing where it lands. Keeping the hips'
+captured travel instead slid the body 0.4 m over frozen feet in the approach;
+held, the hands stay within 0.1 m of where they met through the shake
+(measured on the take, frames 90–170) because the subjects barely move then.
+
+Both avatars play **one subject's clip**, stood point-symmetric by the sim
+(`paired-gestures.md`), so the partner offset is twice the palm's reach at
+contact on the default man — `--add-clip` prints it, `cartopolis_core::greet`
+carries it, and `greetings_meet_halfway` holds the pack to it.
+
+Grips (`hands::grip_for`): half closed for the handshake (a fist read as a
+punch), flat for the high five, round the ball for the throw.
+
+`clothes_do_not_spike` passes on all three with every outfit, and
+`standing_clips_put_the_soles_on_the_ground` and
+`upright_clips_keep_the_shoulders_down` include them, but for the high five
+and the throw in the shoulders test: a hand raised over the head lifts its
+shoulder by design, as the wave's does (the throw's averages 2 mm above rest,
+where the test wants 5–50 mm below).
 
 Known gaps: 100STYLE is all locomotion (CMU supplies the gestures), no faint in
 CMU (a slip-and-fall stands in), the waving hand is the only one that opens on

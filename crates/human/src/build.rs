@@ -1250,6 +1250,10 @@ mod tests {
     /// No upright clip shrugs (`rig::settle_shoulders`): on average the
     /// shoulder joints sit a little lower under the neck than at rest, whose
     /// arms are raised. Every CMU clip held them 8–10 cm higher, level with it.
+    /// Left out: the wave, the high five and the throw, whose hand goes over
+    /// the head and lifts its shoulder on purpose — the throw's right
+    /// shoulder averages 2 mm above rest (0.102 m under the neck against
+    /// 0.104, 2026-11-15).
     #[test]
     fn upright_clips_keep_the_shoulders_down() {
         let Some(pack) = shipped_pack() else { return };
@@ -1260,7 +1264,15 @@ mod tests {
             [neck - p[j("upperarm_l")].y, neck - p[j("upperarm_r")].y]
         };
         let rest = below_neck(&m.joint_positions(None));
-        for name in ["idle", "walk", "run", "interact", "punch", "sit"] {
+        for name in [
+            "idle",
+            "walk",
+            "run",
+            "interact",
+            "punch",
+            "sit",
+            "handshake",
+        ] {
             let c = m.clips.iter().position(|c| c.name == name).unwrap();
             let frames = m.clips[c].rotations[0].len();
             for side in 0..2 {
@@ -1291,7 +1303,17 @@ mod tests {
             .iter()
             .map(|j| Mat4::from_cols_array(&j.inverse_bind))
             .collect();
-        for name in ["idle", "walk", "interact", "wave", "punch", "sit"] {
+        for name in [
+            "idle",
+            "walk",
+            "interact",
+            "wave",
+            "punch",
+            "sit",
+            "handshake",
+            "highfive",
+            "throw",
+        ] {
             let clip = m.clips.iter().find(|c| c.name == name).unwrap();
             let mut lows: Vec<f32> = (0..clip.rotations[0].len())
                 .map(|f| {
@@ -1430,6 +1452,76 @@ mod tests {
         assert!(open > rest, "an open hand: {open} against {rest} at rest");
     }
 
+    /// The greetings meet: both avatars play the same clip, stood
+    /// point-symmetric with the partner where `cartopolis_core::greet::
+    /// Greeting::partner_at` puts them (the numbers below are those; change
+    /// both together), so each right palm meets the other's halfway. On the
+    /// default man they come within a few centimetres, in front of the body,
+    /// at a handshake's and a high five's height, in the middle of the clip —
+    /// not before the arm is out or after it has dropped.
+    #[test]
+    fn greetings_meet_halfway() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let (hand, knuckle) = (m.joint("hand_r").unwrap(), m.joint("middle_01_r").unwrap());
+        for (name, partner, heights) in [
+            ("handshake", Vec3::new(-0.26, 0.0, 0.81), 0.8..1.15),
+            ("highfive", Vec3::new(-0.41, 0.0, 0.70), 1.5..1.95),
+        ] {
+            let c = m.clips.iter().position(|c| c.name == name).unwrap();
+            let frames = m.clips[c].rotations[0].len();
+            let (at, gap, palm) = (0..frames)
+                .map(|f| {
+                    let p = m.joint_positions(Some((c, f)));
+                    let palm = (p[hand] + p[knuckle]) * 0.5;
+                    let gap = (Vec3::new(2.0 * palm.x, 0.0, 2.0 * palm.z) - partner).length();
+                    (f, gap, palm)
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            let phase = at as f32 / (frames - 1) as f32;
+            println!("{name}: palms {gap:.3} m apart at {phase:.2} of the clip, palm at {palm}");
+            assert!(gap < 0.05, "{name}: the palms miss by {gap:.3} m");
+            assert!(
+                (0.2..0.8).contains(&phase),
+                "{name}: they meet at {phase:.2}"
+            );
+            assert!(palm.z > 0.2, "{name}: in front of the body: {palm}");
+            assert!(heights.contains(&palm.y), "{name}: at {:.2} m up", palm.y);
+        }
+    }
+
+    /// The throw draws the hand back past the head and then forward, fast:
+    /// the hand ends up well in front of where it started from behind.
+    #[test]
+    fn the_throw_draws_back_and_lets_fly() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let c = m.clips.iter().position(|c| c.name == "throw").unwrap();
+        let frames = m.clips[c].rotations[0].len();
+        let hand = m.joint("hand_r").unwrap();
+        let head = m.joint("head").unwrap();
+        let at: Vec<(Vec3, Vec3)> = (0..frames)
+            .map(|f| {
+                let p = m.joint_positions(Some((c, f)));
+                (p[hand], p[head])
+            })
+            .collect();
+        let back = at.iter().map(|(h, _)| h.z).fold(f32::MAX, f32::min);
+        let ahead = at.iter().map(|(h, _)| h.z).fold(f32::MIN, f32::max);
+        let raised = at.iter().any(|(h, head)| h.y > head.y - 0.15);
+        // The fastest the hand moves between two frames, m/s.
+        let fps = m.clips[c].fps;
+        let fastest = at
+            .windows(2)
+            .map(|w| w[0].0.distance(w[1].0) * fps)
+            .fold(0.0, f32::max);
+        println!("throw: hand {back:.2}..{ahead:.2} m along, raised {raised}, {fastest:.1} m/s");
+        assert!(back < -0.15 && ahead > 0.35, "{back:.2}..{ahead:.2}");
+        assert!(raised, "the hand comes up by the head");
+        assert!(fastest > 3.0, "{fastest:.1} m/s");
+    }
+
     /// Standing clips look ahead, not at the pavement (`rig::level_gaze`).
     #[test]
     fn standing_clips_look_ahead() {
@@ -1447,7 +1539,7 @@ mod tests {
             w
         };
         let rest = world(None, 0)[head];
-        for name in ["idle", "walk", "wave", "sit"] {
+        for name in ["idle", "walk", "wave", "sit", "handshake"] {
             let c = m.clips.iter().position(|c| c.name == name).unwrap();
             let frames = m.clips[c].rotations[head].len();
             let mean = (0..frames)

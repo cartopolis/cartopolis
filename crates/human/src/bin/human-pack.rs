@@ -33,6 +33,7 @@ fn style_cuts(style: &Path) -> Vec<Cut> {
             max_s: 7.0,
         },
         fps: None,
+        plant: None,
     }]
 }
 
@@ -49,6 +50,7 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
         end: Some(end),
         kind: CutKind::Once,
         fps,
+        plant: None,
     };
     vec![
         // 08_08 "walk": an ordinary walk at 1.76 m/s on a 0.92 s cycle, the
@@ -89,7 +91,47 @@ fn cmu_cuts(cmu: &Path) -> Vec<Cut> {
             },
             ..once("sit", "13_04", 4083, 4533, None)
         },
-        swim_cut(cmu),
+        // 125_01 "Breast Stroke": the subject lies face down on a stool and
+        // strokes, so the loop goes nowhere and the client gives it its pace
+        // (`locomotion::SWIM_SPEED`). Frames 900–4200 are the steady stretch
+        // after he has lain down; a breaststroke cycle is 1.2–2.4 s.
+        Cut {
+            kind: CutKind::Loop {
+                min_s: 1.2,
+                max_s: 2.4,
+            },
+            ..once("swim", "125_01", 900, 4200, None)
+        },
+        // The greetings, from the two-subject takes (2026-11-15). Each is one
+        // subject's side, played by both avatars: the sim stands the pair
+        // point-symmetric (`cartopolis_core::greet`), so the same right hand
+        // meets the same right hand halfway between them. Both were captured
+        // walking up to each other; `plant` holds the legs at the moment of
+        // contact, so the gesture is made standing where it lands.
+        //
+        // 18_01 "walk, shake hands" (subject A): the right hands meet at frame
+        // ~75 and pump once (frame ~105) until ~215; the arm is down by ~290.
+        // 18 rather than 19 because his hand reaches out in front of him (19's
+        // stays by his hip and 18 reaches it).
+        Cut {
+            plant: Some(120),
+            ..once("handshake", "18_01", 20, 290, None)
+        },
+        // 21_11 "high-five, walk" (subject B): the hand rises from ~frame 40,
+        // the palms meet at ~132 at 1.6 m, and it is down by ~230. 21 rather
+        // than 20 because 20 passed his partner to the side and slapped out
+        // sideways, 66° off his heading; 21 reaches up in front of himself.
+        Cut {
+            plant: Some(132),
+            ..once("highfive", "21_11", 40, 232, None)
+        },
+        // 15_12 (a long take of everyday actions): an overhand throw with the
+        // feet planted — the hand drawn back past the head from frame ~3180,
+        // released forward at ~3302 at head height, followed through to
+        // ~3342 and back at the side by ~3420. The first of five in a row,
+        // found by the right hand's speed (4.4 m/s at release, the fastest in
+        // the take). It replaced the punch, which stood in for a throw.
+        once("throw", "15_12", 3160, 3420, None),
     ]
 }
 
@@ -292,6 +334,7 @@ fn probe(style: &Path) {
                 end: range(col + 1),
                 kind: CutKind::Loop { min_s, max_s },
                 fps: None,
+                plant: None,
             };
             match parse_bvh(&text).and_then(|m| clip_from_motion(&m, &cut, &mpfb_bones, 30.0)) {
                 Ok(c) => println!(
@@ -352,6 +395,7 @@ fn walk_cut(file: &Path, name: &str, start: usize, end: Option<usize>) -> Cut {
         end,
         kind: WALK_LOOP,
         fps: None,
+        plant: None,
     }
 }
 
@@ -464,54 +508,114 @@ fn replace_walk(pack_path: &Path, file: &Path, start: usize, end: Option<usize>)
     }
 }
 
-/// The swim, from CMU subject 125 (125_01 "Breast Stroke"): the subject lies
-/// face down on a stool and strokes, so the loop goes nowhere and the client
-/// gives it its pace (`locomotion::SWIM_SPEED`). Frames 900–4200 are the
-/// steady stretch after he has lain down; a breaststroke cycle is 1.2–2.4 s.
-fn swim_cut(cmu: &Path) -> Cut {
-    Cut {
-        name: "swim".into(),
-        file: cmu.join("125_01.bvh"),
-        start: Some(900),
-        end: Some(4200),
-        kind: CutKind::Loop {
-            min_s: 1.2,
-            max_s: 2.4,
-        },
-        fps: None,
-    }
-}
-
-/// `--add-swim PACK CMU_DIR`: cut the swim from its take ([`swim_cut`]) and put
-/// it in the pack, in place of one it already carries — so the swim needs only
-/// its own take, not every source the pack was built from.
-fn add_swim(pack_path: &Path, cmu: &Path) {
+/// `--add-clip PACK CMU_DIR NAME…`: cut the named clips from their takes (as
+/// [`cmu_cuts`] lists them, so a full rebuild cuts them the same way) and put
+/// them in the pack, each in place of one of that name it already carries —
+/// so a new clip needs only its own take, not every source the pack was built
+/// from. The swim (2026-11-14) and the greetings and the throw (2026-11-15)
+/// were added this way.
+fn add_clips(pack_path: &Path, cmu: &Path, names: &[String]) {
     use cartopolis_human::mocap::{clip_from_motion, parse_bvh};
-    let cut = swim_cut(cmu);
+    let cuts = cmu_cuts(cmu);
     let result = std::fs::read(pack_path)
         .map_err(|e| e.to_string())
         .and_then(|b| cartopolis_human::HumanPack::decode(&b))
         .and_then(|mut pack| {
-            let text = std::fs::read_to_string(&cut.file).map_err(|e| e.to_string())?;
-            let clip = clip_from_motion(&parse_bvh(&text)?, &cut, &pack.bones, 30.0)?;
-            let secs = (clip.frames - 1) as f32 / clip.fps;
-            pack.clips.retain(|c| c.name != "swim");
-            pack.clips.push(clip);
+            let mut added = Vec::new();
+            for name in names {
+                let cut = cuts
+                    .iter()
+                    .find(|c| &c.name == name)
+                    .ok_or_else(|| format!("no cut called {name:?} in cmu_cuts"))?;
+                let text = std::fs::read_to_string(&cut.file)
+                    .map_err(|e| format!("{}: {e}", cut.file.display()))?;
+                let clip = clip_from_motion(&parse_bvh(&text)?, cut, &pack.bones, 30.0)?;
+                added.push((cut.clone(), (clip.frames - 1) as f32 / clip.fps));
+                pack.clips.retain(|c| &c.name != name);
+                pack.clips.push(clip);
+            }
             let bytes = pack.encode()?;
             std::fs::write(pack_path, &bytes).map_err(|e| e.to_string())?;
-            Ok((bytes.len(), secs))
+            Ok((bytes.len(), added, pack))
         });
     match result {
-        Ok((n, secs)) => println!(
-            "{}: swim added, a {secs:.2} s stroke, {} KB",
-            pack_path.display(),
-            n / 1024
-        ),
+        Ok((n, added, pack)) => {
+            for (cut, secs) in added {
+                println!("{}: {} added, {secs:.2} s", pack_path.display(), cut.name);
+                measure_greeting(&pack, &cut);
+            }
+            println!("{}: {} KB", pack_path.display(), n / 1024);
+        }
         Err(e) => {
             eprintln!("human-pack: {e}");
             std::process::exit(1);
         }
     }
+}
+
+/// For a greeting, where the default man's right palm is at the moment of
+/// contact — the frame the cut plants at — and so where his partner stands
+/// when both play the clip point-symmetric: twice the palm, across the floor.
+/// `cartopolis_core::greet` carries these numbers for the sim; they are
+/// printed here to be copied there, with how far apart the two palms are
+/// through the clip when the partner stands there.
+fn measure_greeting(pack: &cartopolis_human::HumanPack, cut: &Cut) {
+    use cartopolis_human::{build, Look, Phenotype};
+    let name = cut.name.as_str();
+    let (Some(plant), Some(start), Some(end)) = (cut.plant, cut.start, cut.end) else {
+        return;
+    };
+    let look = Look {
+        phenotype: Phenotype::male(),
+        skin: String::new(),
+        proxies: vec![],
+        eyes: None,
+        modifiers: vec![],
+    };
+    let m = build(pack, &look);
+    let Some(c) = m.clips.iter().position(|c| c.name == name) else {
+        return;
+    };
+    let (Some(hand), Some(knuckle)) = (m.joint("hand_r"), m.joint("middle_01_r")) else {
+        return;
+    };
+    let frames = m.clips[c].rotations.first().map_or(0, Vec::len);
+    let palm = |f: usize| {
+        let p = m.joint_positions(Some((c, f)));
+        (p[hand] + p[knuckle]) * 0.5
+    };
+    // The cut's frames run start..end-1, resampled onto `frames`.
+    let at =
+        ((plant - start) as f32 / (end - 1 - start) as f32 * (frames - 1) as f32).round() as usize;
+    let p = palm(at.min(frames.saturating_sub(1)));
+    let partner = glam::Vec2::new(2.0 * p.x, 2.0 * p.z);
+    println!(
+        "  {name}: at contact (frame {at} of {frames}) the right palm is \
+         {:.3} m to the left, {:.3} up, {:.3} ahead; the partner stands at \
+         [{:.3}, {:.3}] ({:.2} m off)",
+        p.x,
+        p.y,
+        p.z,
+        partner.x,
+        partner.y,
+        partner.length()
+    );
+    // Point-symmetric, the other palm is at `partner - palm`, at the same
+    // height: the gap is twice the palm's drift from where it met.
+    let gaps: Vec<String> = (0..frames)
+        .step_by(4)
+        .map(|f| {
+            let q = palm(f);
+            format!(
+                "{:.2}",
+                (glam::Vec2::new(2.0 * q.x, 2.0 * q.z) - partner).length()
+            )
+        })
+        .collect();
+    println!(
+        "  {name}: the palms apart every 4th frame: {}",
+        gaps.join(" ")
+    );
 }
 
 /// `--add-face-units PACK DIR`: put the face's units from the `faceunits01`
@@ -551,10 +655,10 @@ fn main() {
             add_face_units(Path::new(pack), Path::new(dir));
             return;
         }
-        if flag == "--add-swim" {
-            add_swim(Path::new(pack), Path::new(dir));
-            return;
-        }
+    }
+    if all.get(1).is_some_and(|f| f == "--add-clip") && all.len() > 4 {
+        add_clips(Path::new(&all[2]), Path::new(&all[3]), &all[4..]);
+        return;
     }
     if all.get(1).is_some_and(|f| f == "--try-walk") && all.len() > 3 {
         try_walks(Path::new(&all[2]), &all[3..]);
@@ -588,6 +692,7 @@ fn main() {
                     max_s: 0.9,
                 },
                 fps: None,
+                plant: None,
             };
             let probed = std::fs::read_to_string(file)
                 .map_err(|e| e.to_string())
