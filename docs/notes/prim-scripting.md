@@ -28,6 +28,10 @@ So the comparison that decided this was Luau against *standard Lua*, not against
 the wider field. Anything proposed to replace it has to answer the same question
 first: can an over-budget script be suspended and resumed, or only killed?
 
+`script_engine = "bun"` is the second engine, JavaScript on Bun, which answers
+that question by rewriting the script into generators; its design, measurements
+and traps are `javascript-prim-scripts.md`.
+
 ## A fuel yield is silently a no-op outside a coroutine
 
 The single most important thing to know before adding an entry point, because it
