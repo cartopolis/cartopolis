@@ -1187,7 +1187,14 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                         )
                         .map(|f| {
                             if kind.standable() {
-                                f.as_ledge()
+                                // The wall as `push_wall_segment` below draws it.
+                                f.as_drawn_ledge(crate::systems::collision::DrawnWall {
+                                    a: pa + Vec2::new(ox, oz),
+                                    b: pb + Vec2::new(ox, oz),
+                                    half: half_t,
+                                    top_a: ground_at(pa) + top,
+                                    top_b: ground_at(pb) + top,
+                                })
                             } else {
                                 f
                             }

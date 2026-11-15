@@ -1,6 +1,6 @@
 ---
 topic: climbing-and-edges
-triggers: [climb, pose_for, SeatFit, seat_fit, feet_ground, QuayEdge, quay_edges_of, quay_near, set_quay_cell, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
+triggers: [climb, DrawnWall, drawn_wall_under, on_drawn_wall, as_drawn_ledge, pose_for, SeatFit, seat_fit, feet_ground, QuayEdge, quay_edges_of, quay_near, set_quay_cell, climbing, "climb up", ledge, ledge_under, ledge_ahead, ledge_at, ledge_edge, as_ledge, standable, CLIMB_MIN_M, CLIMB_MAX_M, LEDGE_FOOTING_M, systems/player/climb.rs, systems::climb, Edges, EdgeSeat, seat_on_edge, find_edge_seat, dangle, "--clip climb", "--clip dangle", "--ui ledge", "--ui edgesit", sit on a wall, quay edge, remote_ledge_step, wants_climb]
 updated: 2026-11-15
 ---
 
@@ -123,6 +123,20 @@ the hips, and the swinging calves pass back under the stool; bounded to a
 third of the hips' height under the joint (`build::seat_depth`) it is the
 seat. With 0.45 the clip was lowered 0.17 m too far, and legs chosen to hang
 from any edge 0.42 m up.
+
+**A wall seat is on the wall as drawn** (`collision::DrawnWall`). Each
+ledge footprint carries the wall `street_detail` draws for it — centreline,
+half its drawn thickness (0.125 m for a wall), its top at each end — beside
+the collider, which is wider (0.15 m either side at least) and as high as its
+higher end. A seat is put on the drawn centreline (`climb::on_drawn_wall`),
+measured at the drawn top there, and refused where no drawn wall is under it.
+Checked on a capture against the mesh itself: `--ui edgesit` logs the drawn
+barrier triangles over the seat (`the walls drawn over the seat`), and the
+0.4 m wall by 53.21917,6.56389 had its drawn top at the seat at 0.400, the
+seat's surface. That wall stands only 0.29–0.35 m over the ground drawn round
+it once the terrain is in, so from where the avatar lands it is a step and
+no seat is offered; the first capture of it seated the avatar before the
+ground had streamed in, when it was still 0.4 m.
 
 **Every viewer measures the edge itself** (`climb::seat_on_edge`) from the
 seat point (position + offset) and the facing (the sitter's replicated yaw):

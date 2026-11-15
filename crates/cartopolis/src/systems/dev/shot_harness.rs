@@ -4037,6 +4037,11 @@ pub fn seat_scripted_avatar(
     terrain: Res<crate::systems::terrain::TerrainField>,
     avatars: Query<&big_space::prelude::GridCell, With<crate::components::Avatar>>,
     bodies: Query<&crate::systems::avatar::AvatarAnimations, With<crate::components::Avatar>>,
+    drawn_walls: Query<
+        (&Mesh3d, &big_space::prelude::GridCell, &Transform),
+        With<crate::systems::street_detail::PropFar>,
+    >,
+    mesh_assets: Res<Assets<Mesh>>,
 ) {
     use crate::systems::climb;
     let panels = harness.ui_for(progress.index);
@@ -4056,7 +4061,16 @@ pub fn seat_scripted_avatar(
             }
             soles = top;
         }
-        if exactly("edgesit") && avatar_state.seated.is_none() {
+        // Not only with no seat: one getting up (`Seated::rising`, as leaving
+        // Follow between two shots asks) is sat again, or the second shot of
+        // a run photographed the avatar standing beside the wall.
+        debug!(
+            shot = progress.index,
+            seated = ?avatar_state.seated.map(|s| (s.rising, s.blend, s.edge)),
+            ?pos,
+            "shot harness: edgesit"
+        );
+        if exactly("edgesit") && !avatar_state.is_seated() {
             let map = climb::Surroundings {
                 colliders: &colliders,
                 ground: &ground,
@@ -4085,6 +4099,9 @@ pub fn seat_scripted_avatar(
                     })
                 })
             });
+            if seat.is_none() {
+                debug!(?pos, soles, yaw, "shot harness: no edge to sit on here");
+            }
             if let Some(seat) = seat {
                 info!(
                     root = soles,
@@ -4110,6 +4127,62 @@ pub fn seat_scripted_avatar(
                         "shot harness: a drawn quay wall near the seat"
                     );
                 }
+                for (ring, bottom, top) in colliders.ledges_at(seat.seat) {
+                    info!(?ring, bottom, top, seat = ?seat.seat, "shot harness: the ledge under the seat");
+                }
+                // Where the walls are drawn over the seat: the street-detail
+                // barrier triangles whose plan covers it (a wall's top, its
+                // faces edge-on), their heights there, in the colliders' frame;
+                // and the nearest drawn top-face centre. Against the drawn wall
+                // the seat was put on (`collision::DrawnWall`).
+                let (mut over, mut nearest) = (Vec::new(), None::<(f32, Vec3)>);
+                let mut extracted = 0;
+                for (mesh, cell, tf) in &drawn_walls {
+                    let Some(m) = mesh_assets.get(&mesh.0) else {
+                        continue;
+                    };
+                    let (Ok(Some(bevy::mesh::VertexAttributeValues::Float32x3(ps))), Ok(Some(ix))) = (
+                        m.try_attribute_option(Mesh::ATTRIBUTE_POSITION),
+                        m.try_indices_option(),
+                    ) else {
+                        extracted += 1;
+                        continue;
+                    };
+                    let base = Vec3::new(
+                        cell.x as f32 * crate::grid::WORLD_CELL_EDGE,
+                        0.0,
+                        cell.z as f32 * crate::grid::WORLD_CELL_EDGE,
+                    ) + tf.translation;
+                    let idx: Vec<usize> = ix.iter().collect();
+                    for t in idx.chunks_exact(3) {
+                        let [a, b, c] = [t[0], t[1], t[2]].map(|i| base + Vec3::from_array(ps[i]));
+                        let (a2, b2, c2) = (a.xz(), b.xz(), c.xz());
+                        let area = (b2 - a2).perp_dot(c2 - a2);
+                        if area.abs() < 1e-6 {
+                            continue;
+                        }
+                        let centre = (a + b + c) / 3.0;
+                        let d = centre.xz().distance(seat.seat);
+                        if nearest.is_none_or(|(n, _)| d < n) {
+                            nearest = Some((d, centre));
+                        }
+                        let p = seat.seat;
+                        let w0 = (b2 - p).perp_dot(c2 - p) / area;
+                        let w1 = (c2 - p).perp_dot(a2 - p) / area;
+                        let w2 = 1.0 - w0 - w1;
+                        if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                            over.push(a.y * w0 + b.y * w1 + c.y * w2);
+                        }
+                    }
+                }
+                info!(
+                    seat = ?seat.seat,
+                    drawn_tops_over_seat = ?over,
+                    nearest_drawn_face = ?nearest,
+                    meshes_already_uploaded = extracted,
+                    wall_seated_on = ?colliders.drawn_wall_under(seat.seat),
+                    "shot harness: the walls drawn over the seat"
+                );
                 let fit = bodies
                     .single()
                     .map_or_else(|_| climb::SeatFit::default(), |b| b.seat_fit());

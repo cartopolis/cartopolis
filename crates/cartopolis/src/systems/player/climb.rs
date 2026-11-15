@@ -305,7 +305,11 @@ pub fn seat_on_edge(map: &Surroundings, seat: Vec2, out: Vec2) -> Option<EdgeSea
     if out == Vec2::ZERO {
         return None;
     }
-    if let Some(surface) = map.colliders.ledge_under(seat, f32::INFINITY) {
+    // On a wall: only where one is drawn under the seat, and on its drawn
+    // top. The collider round it is wider (0.15 m either side at least) and
+    // as high as its higher end, and a seat placed by it could sit beside
+    // the wall or over its lower end in the air (2026-11-15).
+    if let Some((_, surface)) = map.colliders.drawn_wall_under(seat) {
         let drop = surface - map.feet_ground(seat, out);
         return Some(EdgeSeat {
             seat,
@@ -337,6 +341,29 @@ const QUAY_SEAT_BACK_M: f32 = 0.05;
 /// How far from the avatar a drawn quay edge is offered, metres.
 pub const QUAY_REACH_M: f32 = 1.5;
 
+/// A seat at `seat` facing `out`, put on the drawn wall nearest it: on its
+/// centreline, or as far toward the face `out` looks over as leaves a hand's
+/// width of wall behind the hips on a thick one. `seat` unchanged where no
+/// wall is drawn within half a metre ([`seat_on_edge`] then refuses it).
+fn on_drawn_wall(map: &Surroundings, seat: Vec2, out: Vec2) -> Vec2 {
+    let Some(wall) = map
+        .colliders
+        .drawn_walls_near(seat, 0.5)
+        .into_iter()
+        .min_by(|a, b| a.distance(seat).total_cmp(&b.distance(seat)))
+    else {
+        return seat;
+    };
+    let centre = wall.centre_at(seat);
+    let normal = wall.normal();
+    let side = if normal.dot(out) >= 0.0 {
+        normal
+    } else {
+        -normal
+    };
+    centre + side * (wall.half - SEAT_BACK_M).max(0.0)
+}
+
 /// Somewhere to sit on an edge for an avatar at `pos`, soles at `soles`,
 /// facing `facing` — what the prompt offers as "Sit":
 ///
@@ -365,7 +392,7 @@ pub fn find_edge_seat(map: &Surroundings, pos: Vec2, facing: Vec2, soles: f32) -
             let Some(edge) = map.colliders.ledge_edge(pos, d, 0.8) else {
                 continue;
             };
-            let seat = edge - d * SEAT_BACK_M.min(edge.distance(pos));
+            let seat = on_drawn_wall(map, edge - d * SEAT_BACK_M.min(edge.distance(pos)), d);
             if let Some(s) = seat_on_edge(map, seat, d).filter(|s| s.drop >= EDGE_DROP_M) {
                 return Some(s);
             }
@@ -374,7 +401,11 @@ pub fn find_edge_seat(map: &Surroundings, pos: Vec2, facing: Vec2, soles: f32) -
     }
     if let Some(ledge) = map.colliders.ledge_ahead(pos, f, soles, CLIMB_REACH_M) {
         if (SIT_ON_MIN_M..=SIT_ON_MAX_M).contains(&ledge.height) {
-            return seat_on_edge(map, ledge.entry + f * SEAT_BACK_M, -f);
+            return seat_on_edge(
+                map,
+                on_drawn_wall(map, ledge.entry + f * SEAT_BACK_M, -f),
+                -f,
+            );
         }
         return None;
     }
@@ -643,6 +674,13 @@ mod tests {
     /// A wall `height` m high on flat ground at 0, running east–west along
     /// z = 2, 0.3 m thick and 6 m long.
     fn wall(height: f32) -> BuildingColliders {
+        sloped_wall(height, height)
+    }
+
+    /// The same wall drawn as `street_detail` draws one: 0.25 m thick (the
+    /// collider 0.3 m, its floor), its top `west` over the ground at x = -3
+    /// and `east` at x = 3, the collider as high as the higher end.
+    fn sloped_wall(west: f32, east: f32) -> BuildingColliders {
         let mut c = BuildingColliders::default();
         let f = Footprint::new(vec![
             Vec2::new(-3.0, 1.85),
@@ -651,8 +689,14 @@ mod tests {
             Vec2::new(-3.0, 2.15),
         ])
         .unwrap()
-        .with_extent(-0.5, height)
-        .as_ledge();
+        .with_extent(-0.5, west.max(east))
+        .as_drawn_ledge(crate::systems::collision::DrawnWall {
+            a: Vec2::new(-3.0, 2.0),
+            b: Vec2::new(3.0, 2.0),
+            half: 0.125,
+            top_a: west,
+            top_b: east,
+        });
         c.set_feature_cell((0, 0), vec![f]);
         c
     }
@@ -873,6 +917,10 @@ mod tests {
                 Some(h),
                 "the seat point is on the wall: {seat:?}"
             );
+            assert!(
+                c.drawn_wall_under(seat.seat).is_some() && (seat.seat.y - 2.0).abs() <= 0.125,
+                "inside the drawn wall's footprint: {seat:?}"
+            );
             let mut avatar = crate::resources::AvatarState::default();
             // Sat while it still stood 1.2 m off its ground.
             let fit = SeatFit::default();
@@ -1062,5 +1110,45 @@ mod tests {
                 "both poses chosen: {hung} {planted}"
             );
         }
+    }
+
+    /// A seat is on the wall as drawn: inside its drawn footprint (0.25 m,
+    /// narrower than the collider) and at its drawn top where the wall
+    /// slopes, not at the collider's (as high as the higher end). Beside the
+    /// drawn wall, in the collider's margin, there is no seat. A 0.4 m wall
+    /// in Groningen sat its avatar in the air beside the drawn one
+    /// (2026-11-15).
+    #[test]
+    fn a_seat_is_on_the_drawn_wall() {
+        let (ground, water) = (flat(), dry());
+        let c = sloped_wall(0.4, 0.7);
+        let map = Surroundings {
+            colliders: &c,
+            ground: &ground,
+            water: &water,
+        };
+        let mut seats = 0;
+        for x in [-2.5, -1.0, 0.0, 1.0, 2.5] {
+            let from = Vec2::new(x, 1.2);
+            let Some(s) = find_edge_seat(&map, from, SOUTH, 0.0) else {
+                continue;
+            };
+            seats += 1;
+            let wall = c
+                .drawn_wall_under(s.seat)
+                .expect("a drawn wall under the seat");
+            assert!(
+                wall.0.holds(s.seat, 0.0),
+                "inside the drawn footprint: {s:?}"
+            );
+            let drawn = 0.4 + 0.3 * (s.seat.x + 3.0) / 6.0;
+            assert!(
+                (s.surface - drawn).abs() < 0.01,
+                "at the drawn top {drawn:.3}, not the collider's: {s:?}"
+            );
+        }
+        assert_eq!(seats, 5, "a seat all along the wall");
+        // In the collider's margin, beside the drawn wall: no seat.
+        assert_eq!(seat_on_edge(&map, Vec2::new(0.0, 1.86), -SOUTH), None);
     }
 }

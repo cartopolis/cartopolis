@@ -248,6 +248,72 @@ pub struct Footprint {
     /// stands there ([`BuildingColliders::ledge_under`]); to everyone else it
     /// is a wall as before. `docs/notes/climbing-and-edges.md` has which.
     ledge: bool,
+    /// The wall as `street_detail` draws it, for a ledge it built: its
+    /// centreline, half its drawn thickness and its top at each end. The
+    /// footprint above is a little wider (at least 0.15 m either side, so a
+    /// thin wall still stops a body) and as high as its highest end; a seat
+    /// on the wall is put on what is drawn (`systems::climb`).
+    drawn: Option<DrawnWall>,
+}
+
+/// One drawn piece of wall (`Footprint::drawn`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnWall {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub half: f32,
+    pub top_a: f32,
+    pub top_b: f32,
+}
+
+impl DrawnWall {
+    /// How far along (0..1) and across (metres from the centreline) `p` is.
+    fn place(&self, p: Vec2) -> (f32, f32) {
+        let ab = self.b - self.a;
+        let len2 = ab.length_squared().max(1e-9);
+        let t = (p - self.a).dot(ab) / len2;
+        let across = (p - (self.a + ab * t.clamp(0.0, 1.0))).length();
+        (t, across)
+    }
+
+    /// Whether `p` is on the wall as drawn, within `margin` of its faces.
+    #[must_use]
+    pub fn holds(&self, p: Vec2, margin: f32) -> bool {
+        let (t, across) = self.place(p);
+        (0.0..=1.0).contains(&t) && across <= self.half + margin
+    }
+
+    /// The point of the centreline across from `p`, kept a hand's width in
+    /// from the ends.
+    #[must_use]
+    pub fn centre_at(&self, p: Vec2) -> Vec2 {
+        let ab = self.b - self.a;
+        let len = ab.length().max(1e-6);
+        let inset = (0.25 / len).min(0.5);
+        let (t, _) = self.place(p);
+        self.a + ab * t.clamp(inset, 1.0 - inset)
+    }
+
+    /// A unit normal to the wall.
+    #[must_use]
+    pub fn normal(&self) -> Vec2 {
+        let d = (self.b - self.a).normalize_or_zero();
+        Vec2::new(-d.y, d.x)
+    }
+
+    /// How far `p` is from the wall's centreline segment.
+    #[must_use]
+    pub fn distance(&self, p: Vec2) -> f32 {
+        self.place(p).1
+    }
+
+    /// The drawn top over `p`, along the wall.
+    #[must_use]
+    pub fn top_at(&self, p: Vec2) -> f32 {
+        let (t, _) = self.place(p);
+        let t = t.clamp(0.0, 1.0);
+        self.top_a + (self.top_b - self.top_a) * t
+    }
 }
 
 /// The volume an avatar takes up, for the vertical half of every collision query.
@@ -337,15 +403,33 @@ impl Footprint {
             top: f32::INFINITY,
             surfaces: std::sync::Arc::new([]),
             ledge: false,
+            drawn: None,
         })
     }
 
     /// Make the top something to stand on ([`Self::ledge`]). Only meaningful
     /// with a finite extent.
+    /// Only tests build one without its drawn wall: a client's ledges are
+    /// all drawn by `street_detail` ([`Self::as_drawn_ledge`]).
+    #[cfg(test)]
     #[must_use]
     pub fn as_ledge(mut self) -> Self {
         self.ledge = self.top.is_finite();
         self
+    }
+
+    /// A ledge, and the wall drawn for it ([`DrawnWall`]).
+    #[must_use]
+    pub fn as_drawn_ledge(mut self, drawn: DrawnWall) -> Self {
+        self.ledge = self.top.is_finite();
+        self.drawn = Some(drawn);
+        self
+    }
+
+    /// The top of this ledge over `p`: the drawn wall's there, where it was
+    /// drawn, else the footprint's.
+    fn ledge_top(&self, p: Vec2) -> f32 {
+        self.drawn.map_or(self.top, |d| d.top_at(p))
     }
 
     /// Whether `p` is on this footprint, or within `margin` of its outline —
@@ -899,9 +983,19 @@ impl BuildingColliders {
     #[must_use]
     pub fn ledge_under(&self, p: Vec2, reach: f32) -> Option<f32> {
         self.ledges()
-            .filter(|f| f.top <= reach && f.near(p, LEDGE_FOOTING_M))
-            .map(|f| f.top)
+            .filter(|f| f.ledge_top(p) <= reach && f.near(p, LEDGE_FOOTING_M))
+            .map(|f| f.ledge_top(p))
             .reduce(f32::max)
+    }
+
+    /// The outline and the extent of the ledges at `p`: for the log a capture
+    /// writes when it seats the avatar on one.
+    #[must_use]
+    pub fn ledges_at(&self, p: Vec2) -> Vec<(Vec<Vec2>, f32, f32)> {
+        self.ledges()
+            .filter(|f| f.near(p, LEDGE_FOOTING_M))
+            .map(|f| (f.ring.clone(), f.bottom, f.top))
+            .collect()
     }
 
     /// The top of the highest ledge at `p`, however high — for another
@@ -911,8 +1005,28 @@ impl BuildingColliders {
     pub fn ledge_at(&self, p: Vec2) -> Option<f32> {
         self.ledges()
             .filter(|f| f.contains(p, false))
-            .map(|f| f.top)
+            .map(|f| f.ledge_top(p))
             .reduce(f32::max)
+    }
+
+    /// The drawn walls within `reach` of `p`.
+    #[must_use]
+    pub fn drawn_walls_near(&self, p: Vec2, reach: f32) -> Vec<DrawnWall> {
+        self.ledges()
+            .filter_map(|f| f.drawn)
+            .filter(|d| d.distance(p) <= reach)
+            .collect()
+    }
+
+    /// The drawn wall under a seat at `p` and its top there: `None` where no
+    /// ledge was drawn under `p` — a seat there would sit on nothing.
+    #[must_use]
+    pub fn drawn_wall_under(&self, p: Vec2) -> Option<(DrawnWall, f32)> {
+        self.ledges()
+            .filter_map(|f| f.drawn)
+            .filter(|d| d.holds(p, 0.0))
+            .map(|d| (d, d.top_at(p)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     /// The ledge an avatar at `pos` with its soles at `feet` would climb
@@ -937,7 +1051,7 @@ impl BuildingColliders {
                 .filter(|f| f.contains(p, self.open(f)))
                 .min_by(|a, b| a.top.total_cmp(&b.top));
             let Some(f) = hit else { continue };
-            let height = f.top - feet;
+            let height = f.ledge_top(p) - feet;
             if !f.ledge || !(CLIMB_MIN_M..=CLIMB_MAX_M).contains(&height) {
                 return None;
             }
@@ -950,7 +1064,7 @@ impl BuildingColliders {
             }
             let into = (across * 0.5).min(LEDGE_STAND_IN_M);
             return Some(Ledge {
-                top: f.top,
+                top: f.ledge_top(entry + dir * into),
                 height,
                 entry,
                 landing: entry + dir * into,
