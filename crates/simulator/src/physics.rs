@@ -38,7 +38,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use cartopolis_core::{motion, GeoAnchor, PrimBody, PrimDto};
+use cartopolis_core::{carry, motion, GeoAnchor, PrimBody, PrimDto};
 use glam::{EulerRot, Quat, Vec3};
 use rapier3d::math::{Pose, Rotation as RQuat, Vector as RVec};
 use rapier3d::prelude::{
@@ -68,7 +68,9 @@ pub const MAX_PHYSICAL_PRIMS: usize = 64;
 
 /// Kilograms per cubic metre. A football (22 cm across) comes out at 0.56 kg,
 /// near the real 0.43; a one-metre crate at 100 kg, which a kick barely moves.
-pub const DENSITY_KG_M3: f32 = 100.0;
+/// In `cartopolis_core::carry`, because what may be carried is decided by it
+/// and the client offers "Pick up" by the same rule.
+pub const DENSITY_KG_M3: f32 = carry::DENSITY_KG_M3;
 
 /// Fastest a script may send a prim (`set_vel`), in metres per second.
 pub const MAX_SCRIPT_SPEED: f32 = 60.0;
@@ -95,6 +97,75 @@ const KICK_MASS_REF_KG: f32 = 2.0;
 
 /// How long a physical prim stays where an edit put it before it falls again.
 pub const HOLD_AFTER_EDIT_S: f32 = 1.0;
+
+/// Where a carried thing is held: this high above the feet (the hands in
+/// front of the chest of a 1.8 m capsule)…
+pub const CARRY_HEIGHT_M: f32 = 1.1;
+/// …and this far clear of the front of the body, past the thing's own half
+/// width, so a crate is held against the chest and not inside it.
+const CARRY_GAP_M: f32 = 0.12;
+/// A throw from the hands: this much speed along the facing, this much up
+/// (about 25° above level; from chest height a ball lands ~7 m away), plus
+/// the thrower's own velocity.
+pub const THROW_SPEED: f32 = 8.0;
+const THROW_LIFT: f32 = 3.5;
+/// Above this mass a throw is slower, by the square root of the ratio — the
+/// same arm, a heavier thing: a 12 kg crate leaves at about 3.3 m/s.
+const THROW_MASS_REF_KG: f32 = 2.0;
+/// Fastest anything leaves an avatar's hands, its own run included.
+pub const MAX_THROW_SPEED: f32 = 15.0;
+
+/// An avatar holding a physical prim this step (`SimWorld`'s `holding`).
+#[derive(Debug, Clone, Copy)]
+pub struct Carry {
+    pub prim_id: i64,
+    pub geo: GeoAnchor,
+    pub feet_y: f32,
+    /// The carrier's facing, as [`Kick::yaw`].
+    pub yaw: f32,
+}
+
+/// A carried prim let go on purpose. One that simply stops being carried — the
+/// carrier left, sat down, was teleported — is dropped where it is instead.
+#[derive(Debug, Clone, Copy)]
+pub struct Release {
+    pub prim_id: i64,
+    /// Thrown forward and up from the hands; otherwise set down at the feet.
+    pub throw: bool,
+    pub yaw: f32,
+    pub feet_y: f32,
+    /// What the sim moved the carrier by on its last tick, m/s.
+    pub carrier_velocity: Vec3,
+}
+
+/// The facing of a yaw, as the client's avatars face: 0 is +z (south).
+fn facing_of(yaw: f32) -> Vec3 {
+    Vec3::new(yaw.sin(), 0.0, yaw.cos())
+}
+
+/// Where a carried prim's centre goes, in a zone frame, given the carrier's
+/// feet there.
+fn carry_point(feet: Vec3, yaw: f32, p: &PrimDto) -> Vec3 {
+    let s = size(p);
+    let half_width = s.x.max(s.z).max(s.y) * 0.5;
+    feet + Vec3::Y * CARRY_HEIGHT_M + facing_of(yaw) * (AVATAR_RADIUS + half_width + CARRY_GAP_M)
+}
+
+/// The velocity a throw gives a prim of `mass_kg`: [`THROW_SPEED`] and a
+/// little lift along the facing, slower for anything over
+/// [`THROW_MASS_REF_KG`], plus the thrower's own velocity, clamped to
+/// [`MAX_THROW_SPEED`].
+#[must_use]
+pub fn throw_velocity(yaw: f32, carrier_velocity: Vec3, mass_kg: f32) -> Vec3 {
+    let scale = (THROW_MASS_REF_KG / mass_kg.max(1e-3)).sqrt().min(1.0);
+    let carrier = if carrier_velocity.is_finite() {
+        carrier_velocity
+    } else {
+        Vec3::ZERO
+    };
+    ((facing_of(yaw) * THROW_SPEED + Vec3::Y * THROW_LIFT) * scale + carrier)
+        .clamp_length_max(MAX_THROW_SPEED)
+}
 
 /// Somebody kicked. Taken from an intent carrying `Emote::Kick`.
 #[derive(Debug, Clone, Copy)]
@@ -239,7 +310,7 @@ impl Placed {
 }
 
 fn size(p: &PrimDto) -> Vec3 {
-    p.scale.abs().max(Vec3::splat(0.01))
+    carry::prim_size(p.scale)
 }
 
 /// The collision shape for a prim, at its scale, before it is placed.
@@ -287,19 +358,13 @@ fn collider_for(p: &PrimDto) -> ColliderBuilder {
 /// What a prim weighs at [`DENSITY_KG_M3`], from the same shape it collides as.
 #[must_use]
 pub fn mass_of(p: &PrimDto) -> f32 {
-    let s = size(p);
-    let box_volume = s.x * s.y * s.z;
-    let volume = if p.model.is_some() {
-        box_volume
-    } else {
-        match p.shape.to_ascii_lowercase().as_str() {
-            "sphere" => box_volume * std::f32::consts::PI / 6.0,
-            "cylinder" => box_volume * std::f32::consts::PI / 4.0,
-            "cone" => box_volume * std::f32::consts::PI / 12.0,
-            _ => box_volume,
-        }
-    };
-    volume * DENSITY_KG_M3
+    carry::prim_mass_kg(&p.shape, p.scale, p.model.is_some())
+}
+
+/// Whether an avatar could lift this prim, physics aside.
+#[must_use]
+pub fn can_carry(p: &PrimDto) -> bool {
+    carry::can_carry(&p.shape, p.scale, p.model.is_some())
 }
 
 /// Bounciness and grip. A ball bounces; a crate lands.
@@ -321,6 +386,20 @@ struct Body {
     /// The last pose sent said it was resting, so nothing more is sent until it
     /// moves.
     resting_sent: bool,
+    /// Set while an avatar carries it: its orientation relative to the
+    /// carrier's facing at the moment it was picked up, so it turns with them.
+    /// The body is kinematic for as long as this is set.
+    carried: Option<Quat>,
+}
+
+/// A carried body's path through one tick, in its zone's frame: stepped like an
+/// avatar's capsule, from where it was to where the hands are now.
+struct CarriedPath {
+    handle: RigidBodyHandle,
+    from: Vec3,
+    to: Vec3,
+    from_rot: Quat,
+    to_rot: Quat,
 }
 
 struct AvatarBody {
@@ -335,6 +414,8 @@ struct Zone {
     statics: Vec<ColliderHandle>,
     statics_hash: Option<u64>,
     avatars: HashMap<u64, AvatarBody>,
+    /// This tick's carried bodies (`Physics::sync_carries`).
+    carried: Vec<CarriedPath>,
 }
 
 impl Zone {
@@ -357,6 +438,7 @@ impl Zone {
             statics: Vec::new(),
             statics_hash: None,
             avatars: HashMap::new(),
+            carried: Vec::new(),
         }
     }
 }
@@ -370,6 +452,7 @@ pub struct Physics {
     kicks: Vec<Kick>,
     impulses: Vec<(i64, Vec3)>,
     velocities: Vec<(i64, Vec3)>,
+    releases: Vec<Release>,
     /// Simulated time not yet stepped, in seconds.
     clock: f32,
 }
@@ -421,16 +504,33 @@ impl Physics {
         self.bodies.len()
     }
 
+    /// Queue a deliberate let-go (a throw or a set-down) for the next step.
+    pub fn release(&mut self, release: Release) {
+        self.releases.push(release);
+    }
+
+    /// Whether an avatar was carrying this prim at the last step.
+    #[must_use]
+    pub fn is_carried(&self, prim_id: i64) -> bool {
+        self.bodies
+            .get(&prim_id)
+            .is_some_and(|b| b.carried.is_some())
+    }
+
     /// Advance by `dt` seconds: bring the bodies in line with `prims`, step, and
     /// write the result back into `prims`.
     ///
-    /// `prims` must be sorted by id (`SimWorld` keeps it so). Returns the bodies
-    /// that moved, which is the whole of what clients are told.
+    /// `prims` must be sorted by id (`SimWorld` keeps it so). `carries` is every
+    /// prim held this tick and by whom; a body carried last tick and absent now
+    /// is let go — thrown or set down if [`Self::release`] said so, dropped
+    /// where it is otherwise. Returns the bodies that moved, which is the whole
+    /// of what clients are told.
     pub fn step(
         &mut self,
         dt: f32,
         prims: &mut [PrimDto],
         avatars: &[AvatarProbe],
+        carries: &[Carry],
     ) -> Vec<PrimBody> {
         let any_physical = prims.iter().any(|p| p.physical);
         if !any_physical && self.bodies.is_empty() {
@@ -438,11 +538,13 @@ impl Physics {
             self.kicks.clear();
             self.impulses.clear();
             self.velocities.clear();
+            self.releases.clear();
             self.clock = 0.0;
             return Vec::new();
         }
 
         self.sync_bodies(prims, dt);
+        self.sync_carries(prims, carries);
         self.sync_statics(prims);
         self.sync_avatars(avatars);
         self.apply_pushes(prims);
@@ -455,6 +557,16 @@ impl Physics {
             self.clock = 0.0;
         }
         if steps == 0 {
+            // Nothing steps, so put the carried bodies straight into the hands:
+            // a tick that runs no step must not leave one behind.
+            for zone in self.zones.values_mut() {
+                for c in zone.carried.drain(..) {
+                    if let Some(rb) = zone.world.bodies.get_mut(c.handle) {
+                        rb.set_translation(rv(c.to), true);
+                        rb.set_rotation(rq(c.to_rot), true);
+                    }
+                }
+            }
             return Vec::new();
         }
         for zone in self.zones.values_mut() {
@@ -465,13 +577,102 @@ impl Physics {
                         rb.set_next_kinematic_translation(rv(a.from.lerp(a.to, t)));
                     }
                 }
+                for c in &zone.carried {
+                    if let Some(rb) = zone.world.bodies.get_mut(c.handle) {
+                        rb.set_next_kinematic_translation(rv(c.from.lerp(c.to, t)));
+                        rb.set_next_kinematic_rotation(rq(c.from_rot.slerp(c.to_rot, t)));
+                    }
+                }
                 zone.world.step();
             }
             for a in zone.avatars.values_mut() {
                 a.from = a.to;
             }
+            zone.carried.clear();
         }
         self.read_back(prims)
+    }
+
+    /// Put this tick's carried bodies on their way to the hands, and let go of
+    /// the ones no longer carried.
+    fn sync_carries(&mut self, prims: &[PrimDto], carries: &[Carry]) {
+        let prim = |id: i64| {
+            prims
+                .binary_search_by_key(&id, |p| p.id)
+                .ok()
+                .map(|i| &prims[i])
+        };
+        let held: HashMap<i64, Carry> = carries.iter().map(|c| (c.prim_id, *c)).collect();
+        let releases: HashMap<i64, Release> = std::mem::take(&mut self.releases)
+            .into_iter()
+            .map(|r| (r.prim_id, r))
+            .collect();
+
+        for (id, b) in &mut self.bodies {
+            let Some(zone) = self.zones.get_mut(&b.zone) else {
+                continue;
+            };
+            let Some(rb) = zone.world.bodies.get_mut(b.handle) else {
+                continue;
+            };
+            let Some(p) = prim(*id) else {
+                continue;
+            };
+            match held.get(id) {
+                Some(c) => {
+                    let yaw_rot = Quat::from_rotation_y(c.yaw);
+                    let rel = *b.carried.get_or_insert_with(|| {
+                        // Picked up now: keep the way it lay, relative to the
+                        // way the carrier faces.
+                        yaw_rot.inverse() * gq(*rb.rotation()).normalize()
+                    });
+                    if !rb.is_kinematic() {
+                        rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
+                        rb.set_linvel(RVec::ZERO, false);
+                        rb.set_angvel(RVec::ZERO, false);
+                    }
+                    // Carrying wins over an edit's hold: the hands have it.
+                    b.held = 0.0;
+                    b.resting_sent = false;
+                    let feet = zone.frame.to_local(c.geo, c.feet_y);
+                    let to = carry_point(feet, c.yaw, p);
+                    let from = gv(rb.translation());
+                    // Kinematic bodies sleep like any other; one being walked
+                    // with has to be awake to be moved and to be sent.
+                    rb.wake_up(true);
+                    zone.carried.push(CarriedPath {
+                        handle: b.handle,
+                        from,
+                        to,
+                        from_rot: gq(*rb.rotation()).normalize(),
+                        to_rot: (yaw_rot * rel).normalize(),
+                    });
+                }
+                None if b.carried.is_some() => {
+                    b.carried = None;
+                    rb.set_body_type(RigidBodyType::Dynamic, true);
+                    rb.set_angvel(RVec::ZERO, false);
+                    let v = match releases.get(id) {
+                        Some(r) if r.throw => throw_velocity(r.yaw, r.carrier_velocity, mass_of(p)),
+                        Some(r) => {
+                            // Set down: lowered from the hands to the feet in
+                            // front of them, and let go at rest.
+                            let at = gv(rb.translation());
+                            let half = size(p).max_element() * 0.5;
+                            let low = r.feet_y + half + 0.01;
+                            rb.set_translation(rv(Vec3::new(at.x, low.min(at.y), at.z)), true);
+                            Vec3::ZERO
+                        }
+                        // Let go of without asking — the carrier left — so it
+                        // falls from where it was.
+                        None => Vec3::ZERO,
+                    };
+                    rb.set_linvel(rv(v), true);
+                    b.resting_sent = false;
+                }
+                None => {}
+            }
+        }
     }
 
     fn sync_bodies(&mut self, prims: &[PrimDto], dt: f32) {
@@ -586,6 +787,7 @@ impl Physics {
             placed: Placed::of(p),
             held: 0.0,
             resting_sent: false,
+            carried: None,
         }
     }
 
@@ -726,7 +928,7 @@ impl Physics {
         for kick in std::mem::take(&mut self.kicks) {
             let facing = Vec3::new(kick.yaw.sin(), 0.0, kick.yaw.cos());
             for (id, b) in &self.bodies {
-                if b.held > 0.0 || !b.zone.reaches(kick.geo) {
+                if b.held > 0.0 || b.carried.is_some() || !b.zone.reaches(kick.geo) {
                     continue;
                 }
                 let Some(zone) = self.zones.get_mut(&b.zone) else {
@@ -758,7 +960,7 @@ impl Physics {
     fn locate(&self, id: i64) -> Option<(ZoneKey, RigidBodyHandle)> {
         self.bodies
             .get(&id)
-            .filter(|b| b.held <= 0.0)
+            .filter(|b| b.held <= 0.0 && b.carried.is_none())
             .map(|b| (b.zone, b.handle))
     }
 
@@ -855,7 +1057,7 @@ mod tests {
     fn run(phys: &mut Physics, prims: &mut [PrimDto], avatars: &[AvatarProbe], secs: f32) {
         let ticks = (secs * 20.0).round() as usize;
         for _ in 0..ticks {
-            phys.step(0.05, prims, avatars);
+            phys.step(0.05, prims, avatars, &[]);
         }
     }
 
@@ -882,7 +1084,7 @@ mod tests {
         let y = prims[0].position.y;
         assert!((y - 0.11).abs() < 0.02, "ball centre at {y}, radius 0.11");
         // At rest it stops being sent.
-        let sent = phys.step(0.05, &mut prims, &[]);
+        let sent = phys.step(0.05, &mut prims, &[], &[]);
         assert!(
             sent.is_empty(),
             "a resting ball is still being sent: {sent:?}"
@@ -920,7 +1122,7 @@ mod tests {
                 },
                 feet_y: 0.0,
             };
-            phys.step(0.05, &mut prims, &[avatar]);
+            phys.step(0.05, &mut prims, &[avatar], &[]);
         }
         let moved = offset(start, prims[0].geo);
         assert!(
@@ -1061,5 +1263,129 @@ mod tests {
         assert!((mass_of(&b) - 0.557).abs() < 0.01);
         let crate_ = prim(2, "box", Vec3::ONE, 0.5, PITCH, true);
         assert_eq!(mass_of(&crate_), DENSITY_KG_M3);
+    }
+
+    /// `geo` moved `east` and `south` metres.
+    fn moved(geo: GeoAnchor, east: f32, south: f32) -> GeoAnchor {
+        let (m_lat, m_lng) = cartopolis_core::degree_scale_m(geo.latitude);
+        GeoAnchor {
+            latitude: geo.latitude - f64::from(south) / m_lat,
+            longitude: geo.longitude + f64::from(east) / m_lng,
+        }
+    }
+
+    /// Carried, a ball is held in front of the carrier at chest height and
+    /// goes where they go; it neither falls nor is pushed off by their body.
+    #[test]
+    fn a_carried_ball_is_held_in_front_and_follows() {
+        let mut phys = Physics::new();
+        let mut prims = vec![ball(1, 0.11)];
+        run(&mut phys, &mut prims, &[], 0.5);
+        let east = std::f32::consts::FRAC_PI_2;
+        let mut feet = moved(PITCH, -0.6, 0.0);
+        for _ in 0..40 {
+            // Walking east at 2 m/s.
+            feet = moved(feet, 0.1, 0.0);
+            let carrier = AvatarProbe {
+                id: 7,
+                geo: feet,
+                feet_y: 0.0,
+            };
+            let carry = Carry {
+                prim_id: 1,
+                geo: feet,
+                feet_y: 0.0,
+                yaw: east,
+            };
+            phys.step(0.05, &mut prims, &[carrier], &[carry]);
+        }
+        assert!(phys.is_carried(1));
+        let rel = offset(feet, prims[0].geo);
+        assert!(
+            (prims[0].position.y - CARRY_HEIGHT_M).abs() < 0.05,
+            "held at {} m",
+            prims[0].position.y
+        );
+        assert!(
+            rel.x > AVATAR_RADIUS && rel.x < 0.8 && rel.z.abs() < 0.05,
+            "held in front, east of the feet: {rel:?}"
+        );
+    }
+
+    /// A throw sends it the way the carrier faces, faster than a walk, and it
+    /// comes down.
+    #[test]
+    fn a_throw_flies_forward_and_falls() {
+        let mut phys = Physics::new();
+        let mut prims = vec![ball(1, 0.11)];
+        let east = std::f32::consts::FRAC_PI_2;
+        let feet = moved(PITCH, -0.6, 0.0);
+        let carry = Carry {
+            prim_id: 1,
+            geo: feet,
+            feet_y: 0.0,
+            yaw: east,
+        };
+        for _ in 0..10 {
+            phys.step(0.05, &mut prims, &[], &[carry]);
+        }
+        let from = prims[0].geo;
+        phys.release(Release {
+            prim_id: 1,
+            throw: true,
+            yaw: east,
+            feet_y: 0.0,
+            carrier_velocity: Vec3::ZERO,
+        });
+        let sent = phys.step(0.05, &mut prims, &[], &[]);
+        let v = sent.iter().find(|b| b.id == 1).expect("moving").velocity;
+        assert!(v.x > 6.0 && v.y > 0.0 && v.z.abs() < 0.5, "thrown {v:?}");
+        assert!(!phys.is_carried(1));
+        run(&mut phys, &mut prims, &[], 3.0);
+        let flew = offset(from, prims[0].geo).x;
+        assert!(flew > 4.0, "landed {flew} m out");
+        assert!(
+            prims[0].position.y < 0.2,
+            "still up at {}",
+            prims[0].position.y
+        );
+    }
+
+    /// Let go of without a throw — the carrier gone — it drops where it was.
+    #[test]
+    fn an_ended_carry_drops_the_ball_where_it_is() {
+        let mut phys = Physics::new();
+        let mut prims = vec![ball(1, 0.11)];
+        let feet = moved(PITCH, 0.0, -0.6);
+        let carry = Carry {
+            prim_id: 1,
+            geo: feet,
+            feet_y: 0.0,
+            yaw: 0.0,
+        };
+        for _ in 0..10 {
+            phys.step(0.05, &mut prims, &[], &[carry]);
+        }
+        let held_at = prims[0].geo;
+        run(&mut phys, &mut prims, &[], 2.0);
+        assert!(prims[0].position.y < 0.2, "fell to {}", prims[0].position.y);
+        let drift = offset(held_at, prims[0].geo);
+        assert!(
+            Vec3::new(drift.x, 0.0, drift.z).length() < 1.0,
+            "dropped, not thrown: {drift:?}"
+        );
+    }
+
+    /// A throw is the sim's, and clamped: a heavier thing leaves slower, and a
+    /// sprinting thrower cannot exceed the cap.
+    #[test]
+    fn throw_speed_is_bounded() {
+        let light = throw_velocity(0.0, Vec3::ZERO, 0.5);
+        let heavy = throw_velocity(0.0, Vec3::ZERO, 12.0);
+        assert!(heavy.length() < light.length() * 0.5);
+        let run = throw_velocity(0.0, Vec3::new(0.0, 0.0, 100.0), 0.5);
+        assert!(run.length() <= MAX_THROW_SPEED + 1e-3);
+        let nan = throw_velocity(0.0, Vec3::NAN, 0.5);
+        assert!(nan.is_finite());
     }
 }

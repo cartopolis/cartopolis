@@ -1586,6 +1586,11 @@ pub struct AvatarState {
     /// locomotion (any movement input stands it back up) and swaps the animation
     /// for the authored seated pose.
     pub seated: Option<Seated>,
+    /// The physical prim the sim says this avatar is carrying (protocol 48,
+    /// `AvatarStateDto::holding`), from the latest snapshot. The sim alone
+    /// decides it; the client only reads it to offer "Throw" and "Put down"
+    /// in place of the usual prompt (`systems::interact`).
+    pub holding: Option<i64>,
 }
 
 impl AvatarState {
@@ -1655,6 +1660,7 @@ impl Default for AvatarState {
             teleport_hold: None,
             teleport_sequence: 0,
             seated: None,
+            holding: None,
         }
     }
 }

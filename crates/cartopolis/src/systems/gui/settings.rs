@@ -753,6 +753,7 @@ fn controls_section(ui: &mut egui::Ui) {
     row(ui, "Shift / Alt", "Run / stroll");
     row(ui, "Space", "Jump");
     row(ui, "E", "Interact with whatever is in front of you");
+    row(ui, "E / G", "Carrying something: throw it / put it down");
     row(
         ui,
         "1 – 6",

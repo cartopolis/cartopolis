@@ -101,6 +101,16 @@ pub enum ClientRequest {
         prim_id: i64,
         physical: bool,
     },
+    /// Pick up a physical prim (`carry::on_grab`).
+    GrabPrim {
+        request_id: u32,
+        prim_id: i64,
+    },
+    /// Throw or put down what the avatar carries (`carry::on_release`).
+    ReleasePrim {
+        request_id: u32,
+        throw: bool,
+    },
     SetPushEndpoint {
         endpoint: Option<String>,
     },
@@ -282,6 +292,9 @@ impl ClientRequest {
             | Self::DeletePrim { .. }
             | Self::SetPrimVideo { .. }
             | Self::SetPrimPhysical { .. }
+            // A guest has no avatar in the world to carry anything with.
+            | Self::GrabPrim { .. }
+            | Self::ReleasePrim { .. }
             | Self::SetPushEndpoint { .. }
             | Self::TextureCatalogRequest
             | Self::TextureRequest { .. }
@@ -432,6 +445,16 @@ impl TryFrom<NetMessage> for ClientRequest {
                 prim_id,
                 physical,
             },
+            NetMessage::GrabPrim {
+                request_id,
+                prim_id,
+            } => Self::GrabPrim {
+                request_id,
+                prim_id,
+            },
+            NetMessage::ReleasePrim { request_id, throw } => {
+                Self::ReleasePrim { request_id, throw }
+            }
             NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
             NetMessage::TextureRequest {
@@ -740,5 +763,36 @@ mod tests {
             ClientRequest::try_from(NetMessage::AccountDeleted),
             Err(NetMessage::AccountDeleted)
         ));
+    }
+
+    /// Picking up and letting go are a client's to send, and a guest's not.
+    #[test]
+    fn grab_and_release_are_client_requests_guests_may_not_make() {
+        let grab = ClientRequest::try_from(NetMessage::GrabPrim {
+            request_id: 4,
+            prim_id: 9,
+        })
+        .expect("a client request");
+        assert!(matches!(
+            grab,
+            ClientRequest::GrabPrim {
+                request_id: 4,
+                prim_id: 9
+            }
+        ));
+        assert!(!grab.guest_may());
+        let release = ClientRequest::try_from(NetMessage::ReleasePrim {
+            request_id: 5,
+            throw: true,
+        })
+        .expect("a client request");
+        assert!(matches!(
+            release,
+            ClientRequest::ReleasePrim {
+                request_id: 5,
+                throw: true
+            }
+        ));
+        assert!(!release.guest_may());
     }
 }

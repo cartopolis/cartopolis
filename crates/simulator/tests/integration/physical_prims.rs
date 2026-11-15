@@ -16,14 +16,14 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-type Client = Framed<TcpStream, LengthDelimitedCodec>;
+pub(super) type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
-const PITCH: GeoAnchor = GeoAnchor {
+pub(super) const PITCH: GeoAnchor = GeoAnchor {
     latitude: 53.20662,
     longitude: 6.59188,
 };
 
-async fn server(db: &str) -> SimHandle {
+pub(super) async fn server(db: &str) -> SimHandle {
     let config = SimConfig {
         database_path: db.to_string(),
         listen: "127.0.0.1:0".into(),
@@ -57,13 +57,13 @@ async fn connect(handle: &SimHandle, username: &str) -> Client {
     c
 }
 
-async fn send(c: &mut Client, msg: &NetMessage) {
+pub(super) async fn send(c: &mut Client, msg: &NetMessage) {
     c.send(Bytes::from(encode_app_frame(msg).unwrap()))
         .await
         .unwrap();
 }
 
-async fn next<T>(c: &mut Client, mut f: impl FnMut(NetMessage) -> Option<T>) -> T {
+pub(super) async fn next<T>(c: &mut Client, mut f: impl FnMut(NetMessage) -> Option<T>) -> T {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -78,7 +78,7 @@ async fn next<T>(c: &mut Client, mut f: impl FnMut(NetMessage) -> Option<T>) -> 
     }
 }
 
-fn ball_body(m: NetMessage, id: i64) -> Option<PrimBody> {
+pub(super) fn ball_body(m: NetMessage, id: i64) -> Option<PrimBody> {
     match m {
         NetMessage::PrimMotion { bodies, .. } => bodies.into_iter().find(|b| b.id == id),
         _ => None,
@@ -86,7 +86,7 @@ fn ball_body(m: NetMessage, id: i64) -> Option<PrimBody> {
 }
 
 /// An intent that stands still at `geo`, facing `yaw`, optionally kicking.
-fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessage {
+pub(super) fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessage {
     NetMessage::ClientIntent {
         request_id: 0,
         move_x: 0.0,

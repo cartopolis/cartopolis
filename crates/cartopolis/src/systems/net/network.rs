@@ -1256,6 +1256,7 @@ fn apply_local_avatar_pose(
     let Some(a) = local_avatar_dto(avatars, local_id) else {
         return;
     };
+    adopt_local_holding(avatar_state, a.state.holding);
     if !adopt_local_pose(avatar_state, a.position) {
         return;
     }
@@ -1273,6 +1274,7 @@ fn apply_local_avatar_pose_full(
     let Some(a) = local_avatar_dto(avatars, local_id) else {
         return;
     };
+    adopt_local_holding(avatar_state, a.state.holding);
     if !adopt_local_pose(avatar_state, a.position) {
         return;
     }
@@ -1286,6 +1288,16 @@ fn apply_local_avatar_pose_full(
         // toward the travel direction and sends it as `display_yaw`); adopting the
         // snapshot's yaw here would replay our own turn a tick late.
         tf.rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
+    }
+}
+
+/// What the sim says the local avatar is carrying (protocol 48). Taken before
+/// the pose test, and whatever it says: a teleport hold that skips a stale
+/// position must not also skip the hands, which the sim emptied on the same
+/// teleport. Written only on a change, as everything read by the HUD is.
+fn adopt_local_holding(avatar_state: &mut AvatarState, holding: Option<i64>) {
+    if avatar_state.holding != holding {
+        avatar_state.holding = holding;
     }
 }
 

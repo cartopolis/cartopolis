@@ -210,6 +210,18 @@ impl PrimShape {
             _ => PrimShape::Box,
         }
     }
+
+    /// The wire's name for it, as `PrimDto::shape` carries it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrimShape::Box => "box",
+            PrimShape::Sphere => "sphere",
+            PrimShape::Cylinder => "cylinder",
+            PrimShape::Cone => "cone",
+            PrimShape::Torus => "torus",
+        }
+    }
 }
 
 // ─── Markers lifted out of `systems/` ─────────────────────────────────────────

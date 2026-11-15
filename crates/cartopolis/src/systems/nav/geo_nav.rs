@@ -2649,6 +2649,9 @@ pub fn place_avatar(
     // (`resources::Seated` holds an offset, and after this the offset points at
     // a place in the new city).
     avatar_state.seated = None;
+    // So does carrying: the sim lets go of the thing at the old place on the
+    // same teleport, and the next snapshot would say so a tick later.
+    avatar_state.holding = None;
     // Online, the sim owns this position, so ask it to place the avatar too
     // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
     // pulled the body straight back to where it was, which is what every

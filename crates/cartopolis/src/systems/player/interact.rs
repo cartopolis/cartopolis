@@ -22,7 +22,24 @@ use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPan
 use crate::systems::geo_nav::{world_to_lat_lng, GeoNavState};
 use crate::systems::theme;
 use crate::systems::world_places::{Interactable, SeatSpot, WorldPlaces};
-use cartopolis_core::Emote;
+use cartopolis_core::{carry, Emote};
+
+/// How close a loose physical prim must be for "Pick up" to be offered: the
+/// sim's own reach (`carry::GRAB_REACH_M`) less a margin, so a prompt shown at
+/// the edge is not refused because the sim's copy of the avatar is a tick
+/// behind this one's.
+pub const PICKUP_RADIUS: f32 = carry::GRAB_REACH_M - 0.3;
+
+/// What acting on the prompt asks the server for, if anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldAct {
+    /// Press a scripted prim (`TouchPrim`).
+    Touch(i64),
+    /// Pick up a physical prim (`GrabPrim`, protocol 48).
+    Grab(i64),
+    /// Let go of what is carried (`ReleasePrim`): thrown, or put down.
+    Release { throw: bool },
+}
 
 /// How close the avatar must be for a prompt to appear (metres). Roughly two
 /// paces: near enough that the thing prompted for is unambiguous even where a
@@ -48,6 +65,13 @@ pub struct InteractState {
     pub last: Option<String>,
     /// Seconds the `last` line has left before it fades.
     pub last_ttl: f32,
+    /// The name of what the avatar is carrying, for the "Throw" prompt —
+    /// resolved by [`track_interaction_target`], which has the prims.
+    pub held_name: Option<String>,
+    /// The carried prim a set-down has already been sent for because the
+    /// avatar went into the water, so it is asked once and not every frame
+    /// until the snapshot that empties the hands arrives.
+    pub let_go_sent: Option<i64>,
 }
 
 /// A resolved prompt: enough to draw it without re-querying the store.
@@ -76,6 +100,18 @@ pub struct TargetInfo {
     /// and they meet only here, in the one question the player is actually asking:
     /// what is in front of me, and what happens if I press it.
     pub prim_id: Option<i64>,
+    /// The prim is a loose physical one to pick up (`GrabPrim`), not a
+    /// scripted one to press.
+    pub pickup: bool,
+}
+
+/// The name a prim goes by in a prompt: its own, or "object" when it has none.
+fn prim_label(name: &str) -> String {
+    if name.trim().is_empty() {
+        "object".to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 impl TargetInfo {
@@ -88,6 +124,21 @@ impl TargetInfo {
             pos: i.pos,
             seat: i.seat_spot(from),
             prim_id: None,
+            pickup: false,
+        }
+    }
+
+    /// The prompt for a loose physical prim small enough to carry.
+    fn of_pickup(id: i64, name: &str, pos: Vec2) -> Self {
+        Self {
+            name: prim_label(name),
+            glyph: crate::systems::icons::HAND,
+            verb: "Pick up",
+            detail: None,
+            pos,
+            seat: None,
+            prim_id: Some(id),
+            pickup: true,
         }
     }
 
@@ -100,17 +151,14 @@ impl TargetInfo {
     /// ended up with one for a close button.
     fn of_prim(id: i64, name: &str, pos: Vec2) -> Self {
         Self {
-            name: if name.trim().is_empty() {
-                "object".to_string()
-            } else {
-                name.to_string()
-            },
+            name: prim_label(name),
             glyph: crate::systems::icons::SCRIPT,
             verb: "Press",
             detail: None,
             pos,
             seat: None,
             prim_id: Some(id),
+            pickup: false,
         }
     }
 
@@ -127,25 +175,43 @@ impl TargetInfo {
 /// How long an acted-on line stays on screen.
 const LAST_LINE_SECS: f32 = 4.0;
 
-/// Tell the server a prim was pressed, if one was and if there is a server.
+/// Tell the server what was acted on, if anything was and if there is a server.
 ///
-/// One definition for the two ways to press (the key and the prompt), on the same
+/// One definition for the two ways to act (the keys and the prompt), on the same
 /// rule [`InteractState::act`] itself follows: a second copy is how they come to
-/// behave differently. Offline this does nothing at all — a prim with a script is
-/// a server-owned object, and `--offline` runs no sim — and that is a silence
-/// rather than a failure, because the prompt only ever appears for a prim a
-/// server sent.
-fn send_touch(online: Option<&Res<crate::resources::OnlineSession>>, prim_id: Option<i64>) {
-    let (Some(session), Some(prim_id)) = (online, prim_id) else {
+/// behave differently. Offline this does nothing at all — a prim with a script
+/// and a physical prim are server-owned objects, and `--offline` runs no sim —
+/// and that is a silence rather than a failure, because the prompt only ever
+/// appears for a prim a server sent.
+fn send_act(online: Option<&Res<crate::resources::OnlineSession>>, act: Option<WorldAct>) {
+    let (Some(session), Some(act)) = (online, act) else {
         return;
     };
-    session.send(
-        "touch prim",
-        cartopolis_core::NetMessage::TouchPrim {
-            request_id: 0,
-            prim_id,
-        },
-    );
+    use cartopolis_core::NetMessage;
+    // Whether it went is logged by `send`; a lost link has nothing to retry.
+    let _ = match act {
+        WorldAct::Touch(prim_id) => session.send(
+            "touch prim",
+            NetMessage::TouchPrim {
+                request_id: 0,
+                prim_id,
+            },
+        ),
+        WorldAct::Grab(prim_id) => session.send(
+            "pick up",
+            NetMessage::GrabPrim {
+                request_id: 0,
+                prim_id,
+            },
+        ),
+        WorldAct::Release { throw } => session.send(
+            "let go",
+            NetMessage::ReleasePrim {
+                request_id: 0,
+                throw,
+            },
+        ),
+    };
 }
 
 impl InteractState {
@@ -154,14 +220,14 @@ impl InteractState {
     /// second copy of "play the clip, remember the line, start its timer" is how
     /// they would come to behave differently.
     ///
-    /// Returns the prim that has to be told about it, when the thing acted on was
-    /// a scripted object.
+    /// Returns what the server has to be told, when the thing acted on is
+    /// server-owned: a scripted prim pressed, a physical one picked up or let go.
     ///
     /// Returned rather than sent from here, because this type has no session and
     /// should not grow one: it is read by the HUD and written by two different
     /// systems, and the network handle belongs to the caller.
     #[must_use]
-    fn act(&mut self, avatar_state: &mut AvatarState) -> Option<i64> {
+    fn act(&mut self, avatar_state: &mut AvatarState) -> Option<WorldAct> {
         // Sitting is the one interaction that is a *state* rather than a gesture,
         // so the same control leaves it. Asked for while seated, this is "stand
         // up" whatever the prompt is standing next to.
@@ -171,9 +237,22 @@ impl InteractState {
             self.last_ttl = 0.0;
             return None;
         }
+        // Carrying is the other state, and the same control throws: E picks
+        // a ball up and E throws it, as a kick is one key.
+        if avatar_state.holding.is_some() {
+            return self.let_go(avatar_state, true);
+        }
         let Some(target) = self.target.clone() else {
             return None;
         };
+        if let (true, Some(id)) = (target.pickup, target.prim_id) {
+            // No receipt: the thing in the hands is the feedback, and the
+            // prompt turns into "Throw" as soon as the sim says so.
+            avatar_state.pending_emote = Some(Emote::Interact);
+            self.last = None;
+            self.last_ttl = 0.0;
+            return Some(WorldAct::Grab(id));
+        }
         if let Some(seat) = target.seat {
             // The offset, not the destination: the sim owns the avatar's position
             // and knows nothing about benches, so the seat is carried as a
@@ -201,7 +280,23 @@ impl InteractState {
         avatar_state.pending_emote = Some(Emote::Interact);
         self.last = Some(target.line());
         self.last_ttl = LAST_LINE_SECS;
-        target.prim_id
+        target.prim_id.map(WorldAct::Touch)
+    }
+
+    /// Let go of what is carried: a throw (E, or the prompt's "Throw") or a
+    /// set-down (G, or "Put down"). `None` with empty hands.
+    ///
+    /// The throw plays `punch` — the one captured clip with an arm thrust
+    /// forward from the chest — and the set-down `interact`, the reach the
+    /// pick-up played. Neither is a real throw; there is no such take in the
+    /// pack (`avatar-locomotion.md`).
+    #[must_use]
+    fn let_go(&mut self, avatar_state: &mut AvatarState, throw: bool) -> Option<WorldAct> {
+        avatar_state.holding?;
+        avatar_state.pending_emote = Some(if throw { Emote::Punch } else { Emote::Interact });
+        self.last = None;
+        self.last_ttl = 0.0;
+        Some(WorldAct::Release { throw })
     }
 }
 
@@ -270,6 +365,48 @@ pub fn track_interaction_target(
     // use. No transform needed here, which is the point of converting once.
     let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
 
+    // Hands full: the prompt is "Throw" and "Put down", whatever is near, so
+    // there is no target — only the name of what is held, for the button.
+    if let Some(held) = avatar_state.holding {
+        let name = prims
+            .iter()
+            .find(|(p, ..)| p.id == held)
+            .map(|(p, ..)| prim_label(&p.name));
+        if state.held_name != name {
+            state.held_name = name;
+        }
+        if state.target.is_some() {
+            state.target = None;
+        }
+        let address = nearest_address(&facts, &places, &anchor, &avatar_state, pos);
+        if state.address != address {
+            state.address = address;
+        }
+        return;
+    }
+    if state.held_name.is_some() {
+        state.held_name = None;
+    }
+
+    // A loose thing small enough to pick up wins over everything else in
+    // reach: it is the one prompt that is about what is at your feet rather
+    // than what you are standing beside, and a ball rolled up against a
+    // scripted goal is still the ball you walked up to.
+    if let Some(hit) = nearest_pickable_prim(&prims, &anchor, pos) {
+        let same = state
+            .target
+            .as_ref()
+            .is_some_and(|t| t.pickup && t.prim_id == Some(hit.0));
+        if !same {
+            state.target = Some(TargetInfo::of_pickup(hit.0, &hit.1, hit.2));
+        }
+        let address = nearest_address(&facts, &places, &anchor, &avatar_state, pos);
+        if state.address != address {
+            state.address = address;
+        }
+        return;
+    }
+
     // Compare before building: this resource is read by the HUD, and rewriting it
     // every frame would mark it changed every frame. The comparison is against the
     // same three fields `line()` formats, so the update rule is unchanged — but
@@ -289,7 +426,7 @@ pub fn track_interaction_target(
         let same = state
             .target
             .as_ref()
-            .is_some_and(|t| t.prim_id == Some(hit.0) && t.name == hit.1);
+            .is_some_and(|t| !t.pickup && t.prim_id == Some(hit.0) && t.name == hit.1);
         if !same {
             state.target = Some(TargetInfo::of_prim(hit.0, &hit.1, hit.2));
         }
@@ -385,6 +522,43 @@ fn nearest_scripted_prim(
         }
     }
     best.map(|(_, id, name, at)| (id, name, at))
+}
+
+/// Whether "Pick up" is offered for this prim: physical, and small and light
+/// enough by the sim's own rule (`carry::can_carry`). The sim still decides —
+/// reach, and whether somebody else has it, are its to check.
+#[must_use]
+pub fn pickable(prim: &crate::components::Prim, scale: Vec3) -> bool {
+    prim.physical && carry::can_carry(prim.shape.as_str(), scale, prim.model.is_some())
+}
+
+/// The nearest loose physical prim within [`PICKUP_RADIUS`] small enough to
+/// carry: `(id, name, anchored world XZ)`. Through the geo anchor, as
+/// [`nearest_scripted_prim`] is, and for the same reason; a physical prim's
+/// anchor follows its `PrimMotion`.
+fn nearest_pickable_prim(
+    prims: &Query<(
+        &crate::components::Prim,
+        &crate::components::PrimGeo,
+        &Transform,
+    )>,
+    anchor: &MapAnchor,
+    pos: Vec2,
+) -> Option<(i64, String, Vec2)> {
+    let geo = anchor.geo?;
+    let mut best: Option<(f32, i64, &str, Vec2)> = None;
+    for (prim, at, tf) in prims.iter() {
+        if !pickable(prim, tf.scale) {
+            continue;
+        }
+        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, at.latitude, at.longitude);
+        let here = Vec2::new(wx as f32, wz as f32);
+        let d = here.distance(pos);
+        if d <= PICKUP_RADIUS && best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
+            best = Some((d, prim.id, prim.name.as_str(), here));
+        }
+    }
+    best.map(|(_, id, name, at)| (id, name.to_string(), at))
 }
 
 /// The BAG's own line for wherever the avatar is standing: the nearest addressed
@@ -545,6 +719,24 @@ pub fn handle_interaction_input(
     mut state: ResMut<InteractState>,
     mut faces: MessageWriter<crate::systems::avatar_face::StartExpression>,
 ) {
+    // Carrying is the sim's, so with no sim there is nothing in the hands —
+    // a session that ended mid-carry leaves no "Throw" behind it.
+    if online.is_none() && avatar_state.holding.is_some() {
+        avatar_state.holding = None;
+    }
+    // Into the water, the thing is put down. The sim knows nothing of water
+    // (it is every viewer's own map, `avatar-locomotion.md`), so this is the
+    // one end of a carry the client asks for; once per carried prim, not every
+    // frame until the snapshot that empties the hands.
+    if avatar_state.swimming && avatar_state.holding.is_some() {
+        if state.let_go_sent != avatar_state.holding {
+            state.let_go_sent = avatar_state.holding;
+            send_act(online.as_ref(), Some(WorldAct::Release { throw: false }));
+        }
+    } else if state.let_go_sent.is_some() && avatar_state.holding.is_none() {
+        state.let_go_sent = None;
+    }
+
     if camera_state.mode != CameraMode::Avatar
         || egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard)
     {
@@ -576,7 +768,10 @@ pub fn handle_interaction_input(
     }
 
     if keyboard.just_pressed(KeyCode::KeyE) {
-        send_touch(online.as_ref(), state.act(&mut avatar_state));
+        send_act(online.as_ref(), state.act(&mut avatar_state));
+    } else if keyboard.just_pressed(KeyCode::KeyG) {
+        // G puts down: the key games drop with, and bound to nothing else.
+        send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
     }
 }
 
@@ -623,7 +818,11 @@ pub fn render_interaction_prompt(
     // getting up is the one thing it can do, and on a phone this button is the
     // only way to ask for it.
     let seated = avatar_state.is_seated();
-    if target.is_none() && receipt.is_none() && !seated {
+    // So does a carrying one: "Throw" and "Put down" are the two ways out, and
+    // on a phone these buttons are the only way to either.
+    let carrying = !seated && avatar_state.holding.is_some();
+    let held_name = state.held_name.clone();
+    if target.is_none() && receipt.is_none() && !seated && !carrying {
         return;
     }
 
@@ -635,10 +834,11 @@ pub fn render_interaction_prompt(
     let pos = egui::pos2(map.center().x, map.bottom() - PROMPT_BOTTOM_MARGIN);
     let mut acted = false;
     let mut routed = false;
+    let mut put_down = false;
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
         // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some() || seated)
+        .interactable(target.is_some() || seated || carrying)
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(&egui_manager.ctx.clone(), |ui| {
@@ -659,6 +859,44 @@ pub fn render_interaction_prompt(
                             .clicked()
                         {
                             acted = true;
+                        }
+                        return;
+                    }
+                    if carrying {
+                        // Two buttons rather than a long press for the second,
+                        // because a long press on a phone already means the
+                        // context menu (`touch-input.md`), and both are the
+                        // same kind of control the rest of the prompt is.
+                        let what = held_name.as_deref().unwrap_or("it");
+                        let (throw_hint, down_hint) = if compact {
+                            ("", "")
+                        } else {
+                            ("   [E]", "   [G]")
+                        };
+                        if ui
+                            .button(
+                                egui::RichText::new(format!(
+                                    "{}  Throw {what}{throw_hint}",
+                                    crate::systems::icons::SEND
+                                ))
+                                .color(theme::p().text)
+                                .strong(),
+                            )
+                            .clicked()
+                        {
+                            acted = true;
+                        }
+                        if ui
+                            .button(
+                                egui::RichText::new(format!(
+                                    "{}  Put down{down_hint}",
+                                    crate::systems::icons::DOWNLOAD
+                                ))
+                                .color(theme::p().text),
+                            )
+                            .clicked()
+                        {
+                            put_down = true;
                         }
                         return;
                     }
@@ -697,7 +935,9 @@ pub fn render_interaction_prompt(
         });
 
     if acted {
-        send_touch(online.as_ref(), state.act(&mut avatar_state));
+        send_act(online.as_ref(), state.act(&mut avatar_state));
+    } else if put_down {
+        send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
     }
     if routed {
         // The store holds anchored world XZ; the planner speaks lat/lng. Without
@@ -872,6 +1112,47 @@ mod tests {
         assert_eq!(TargetInfo::of(&it, Vec2::ZERO).pos, Vec2::new(120.0, -40.0));
     }
 
+    /// E on a loose ball asks the sim for it and reaches for it; the prompt
+    /// names it as something to pick up.
+    #[test]
+    fn picking_up_asks_the_sim_and_reaches() {
+        let mut state = InteractState::default();
+        let mut avatar = AvatarState::default();
+        state.target = Some(TargetInfo::of_pickup(42, "Ball", Vec2::ZERO));
+        assert_eq!(state.target.as_ref().unwrap().line(), "Pick up Ball");
+        assert_eq!(state.act(&mut avatar), Some(WorldAct::Grab(42)));
+        assert!(matches!(avatar.pending_emote, Some(Emote::Interact)));
+        assert!(state.last.is_none(), "the ball in the hands is the receipt");
+        // An unnamed prim still reads as a sentence.
+        assert_eq!(
+            TargetInfo::of_pickup(1, " ", Vec2::ZERO).line(),
+            "Pick up object"
+        );
+    }
+
+    /// With something in the hands E throws it, whatever the prompt is near,
+    /// and G puts it down; empty hands let go of nothing.
+    #[test]
+    fn carrying_turns_e_into_a_throw_and_g_puts_down() {
+        let mut state = InteractState::default();
+        let mut avatar = AvatarState::default();
+        assert_eq!(state.let_go(&mut avatar, false), None);
+        assert!(avatar.pending_emote.is_none());
+
+        avatar.holding = Some(42);
+        state.target = Some(TargetInfo::of_pickup(7, "Other ball", Vec2::ZERO));
+        assert_eq!(
+            state.act(&mut avatar),
+            Some(WorldAct::Release { throw: true })
+        );
+        assert!(matches!(avatar.pending_emote, Some(Emote::Punch)));
+        assert_eq!(
+            state.let_go(&mut avatar, false),
+            Some(WorldAct::Release { throw: false })
+        );
+        assert!(matches!(avatar.pending_emote, Some(Emote::Interact)));
+    }
+
     /// Every emote key is distinct and maps to a distinct emote — a duplicate
     /// would silently shadow one, and the list is the only place it is stated.
     #[test]
@@ -905,6 +1186,47 @@ mod prim_prompt_tests {
 
     /// Groningen's Grote Markt, at the zoom the map anchors at.
     const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
+
+    fn a_prim(id: i64, name: &str, shape: PrimShape, scripted: bool, physical: bool) -> Prim {
+        Prim {
+            id,
+            name: name.to_string(),
+            shape,
+            color: Color::WHITE,
+            texture_id: None,
+            model: None,
+            path_cut_begin: 0.0,
+            path_cut_end: 1.0,
+            hollow: 0.0,
+            twist_begin: 0.0,
+            twist_end: 0.0,
+            taper_x: 0.0,
+            taper_y: 0.0,
+            top_shear_x: 0.0,
+            top_shear_y: 0.0,
+            slice_begin: 0.0,
+            slice_end: 1.0,
+            surface: cartopolis_core::PrimSurface::default(),
+            particles: None,
+            scripted,
+            video: None,
+            sound_loop: None,
+            physical,
+        }
+    }
+
+    /// "Pick up" is offered by the sim's own rule: a physical football yes, the
+    /// same ball fixed in place no, a physical crate a metre on a side no.
+    #[test]
+    fn a_physical_ball_is_pickable_and_a_crate_is_not() {
+        let ball = a_prim(1, "Ball", PrimShape::Sphere, false, true);
+        assert!(pickable(&ball, Vec3::splat(0.22)));
+        let fixed = a_prim(2, "Ball", PrimShape::Sphere, false, false);
+        assert!(!pickable(&fixed, Vec3::splat(0.22)));
+        let crate_ = a_prim(3, "Crate", PrimShape::Box, false, true);
+        assert!(!pickable(&crate_, Vec3::ONE));
+        assert!(pickable(&crate_, Vec3::splat(0.4)));
+    }
 
     fn world_with(prims: &[(i64, &str, bool, f64, f64)]) -> World {
         let mut world = World::new();

@@ -230,6 +230,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "an avatar stands on Earth, and a client is sent what is within its reach — AvatarStateDto.geo and alt_m replace the frame-metre position, Teleport places by geo and alt_m, WorldSnapshot carries avatars only and is assembled per connection from the avatars within reach, things arrive as PrimUpsert when they come within reach and leave with PrimOutOfReach (docs/notes/interest-by-reach.md)",
     },
+    ProtocolRevision {
+        version: 48,
+        adr: "",
+        summary: "picking things up — GrabPrim asks to hold a physical prim small and light enough to carry, ReleasePrim throws it or puts it down, and AvatarStateDto.holding says which prim an avatar is carrying; the sim holds it in front of the avatar and it moves through PrimMotion like any other body (docs/notes/physical-prims.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -363,6 +368,8 @@ pub enum MessageKind {
     SetFaceFrame = 123,
     FaceFrameOf = 124,
     PrimOutOfReach = 125,
+    GrabPrim = 126,
+    ReleasePrim = 127,
 }
 
 impl MessageKind {
@@ -485,6 +492,8 @@ impl MessageKind {
             123 => Some(Self::SetFaceFrame),
             124 => Some(Self::FaceFrameOf),
             125 => Some(Self::PrimOutOfReach),
+            126 => Some(Self::GrabPrim),
+            127 => Some(Self::ReleasePrim),
             _ => None,
         }
     }
@@ -998,6 +1007,10 @@ pub struct AvatarStateDto {
     /// the gait changes. With it, a receiver draws another avatar where it is
     /// now (`position + velocity × age`) instead of trailing where it was.
     pub velocity: Vec3,
+    /// The physical prim this avatar is carrying (protocol 48), held in front
+    /// of it by the sim until it is thrown, put down, or the hold ends. A
+    /// level, resent every snapshot, as `seated` is.
+    pub holding: Option<i64>,
 }
 
 /// How far a seat may draw an avatar from the position the sim holds for it.
@@ -1812,6 +1825,17 @@ pub enum NetMessage {
     /// times a second; a body is ~50 bytes. A body that has come to rest is sent
     /// once more with `resting` set, and then not until it moves again.
     PrimMotion { tick: u64, bodies: Vec<PrimBody> },
+    /// Client: pick up this physical prim (protocol 48). Anyone may, as anyone
+    /// may kick the ball; the sim refuses with a `ServerError` a prim that is not
+    /// physical, too big or heavy to carry (`carry::can_carry`), out of reach of
+    /// where the sim holds the avatar, or already in somebody's hands. Granted,
+    /// it shows as `AvatarStateDto::holding` and the prim follows the avatar.
+    GrabPrim { request_id: u32, prim_id: i64 },
+    /// Client: let go of whatever this avatar holds (protocol 48) — thrown
+    /// forward and up from the hands when `throw`, set down at the feet when
+    /// not. No speed on the wire: the sim throws at its own speed along the
+    /// avatar's facing, plus the avatar's own velocity.
+    ReleasePrim { request_id: u32, throw: bool },
     /// Server: what this account may do (`cartopolis_core::permissions`, by
     /// slug) — sent after the handshake and again whenever an operator changes
     /// a role, the account's roles or its admin flag, so a client's buttons
@@ -2844,6 +2868,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::WorldSnapshot { .. } => MessageKind::WorldSnapshot,
         NetMessage::PrimRemoved { .. } => MessageKind::PrimRemoved,
         NetMessage::PrimOutOfReach { .. } => MessageKind::PrimOutOfReach,
+        NetMessage::GrabPrim { .. } => MessageKind::GrabPrim,
+        NetMessage::ReleasePrim { .. } => MessageKind::ReleasePrim,
         NetMessage::CreatePrim { .. } => MessageKind::CreatePrim,
         NetMessage::UpdatePrim { .. } => MessageKind::UpdatePrim,
         NetMessage::DeletePrim { .. } => MessageKind::DeletePrim,
@@ -2996,6 +3022,8 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::LookupPerson { request_id, .. } => *request_id,
         NetMessage::SetPrimVideo { request_id, .. } => *request_id,
         NetMessage::SetPrimPhysical { request_id, .. } => *request_id,
+        NetMessage::GrabPrim { request_id, .. } => *request_id,
+        NetMessage::ReleasePrim { request_id, .. } => *request_id,
         NetMessage::WherePeople { request_id, .. } => *request_id,
         NetMessage::PeopleWhere { request_id, .. } => *request_id,
         NetMessage::PersonInfo { request_id, .. } => *request_id,
@@ -3254,6 +3282,7 @@ mod tests {
             expression: None,
             seated: (id % 5 == 0).then_some([0.4, -1.0]),
             velocity: Vec3::new(1.8, 0.0, -0.5),
+            holding: (id % 7 == 0).then_some(id as i64 * 300),
         }
     }
 
@@ -3322,11 +3351,49 @@ mod tests {
                     expression: None,
                     seated,
                     velocity: Vec3::new(1.8, 0.0, -0.5),
+                    holding: None,
                 }],
             };
             let b = encode_app_frame(&m).unwrap();
             assert_eq!(decode_app_frame(&b).unwrap(), m);
         }
+    }
+
+    /// Picking up and letting go (protocol 48) travel as their own kinds, and a
+    /// held prim survives a snapshot.
+    #[test]
+    fn roundtrip_grab_and_release_app_frames() {
+        for m in [
+            NetMessage::GrabPrim {
+                request_id: 9,
+                prim_id: 4_242,
+            },
+            NetMessage::ReleasePrim {
+                request_id: 10,
+                throw: true,
+            },
+            NetMessage::ReleasePrim {
+                request_id: 11,
+                throw: false,
+            },
+            NetMessage::WorldSnapshot {
+                tick: 3,
+                avatars: vec![AvatarStateDto {
+                    holding: Some(4_242),
+                    ..an_avatar(1)
+                }],
+            },
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+        assert_eq!(
+            message_kind(&NetMessage::GrabPrim {
+                request_id: 0,
+                prim_id: 1
+            }),
+            MessageKind::GrabPrim
+        );
     }
 
     #[test]
@@ -3772,7 +3839,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 116] = [
+        const ALL: [MessageKind; 118] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -3889,6 +3956,8 @@ mod tests {
             SetFaceFrame,
             FaceFrameOf,
             PrimOutOfReach,
+            GrabPrim,
+            ReleasePrim,
         ];
         for k in ALL {
             assert_eq!(
@@ -3902,7 +3971,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(PrimOutOfReach as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(ReleasePrim as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

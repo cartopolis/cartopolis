@@ -33,6 +33,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 mod avatar;
 mod calls;
+mod carry;
 mod chat;
 mod communities;
 mod contacts;
@@ -531,6 +532,8 @@ struct RateGates {
     look: Instant,
     /// The tracked-face bucket (`look::on_face`, [`take_token`]).
     face: Instant,
+    /// The pick-up and let-go bucket (`carry`, [`take_token`]).
+    carry: Instant,
 }
 
 impl RateGates {
@@ -554,6 +557,7 @@ impl RateGates {
             hand: ago(hand::HAND_INTERVAL * hand::HAND_BURST),
             look: ago(look::LOOK_INTERVAL * look::LOOK_BURST),
             face: ago(look::FACE_INTERVAL * look::FACE_BURST),
+            carry: ago(carry::CARRY_INTERVAL * carry::CARRY_BURST),
         }
     }
 }
@@ -1325,6 +1329,13 @@ async fn dispatch<T: FrameTransport>(
             prim_id,
             physical,
         } => prims::on_set_physical(ctx, request_id, prim_id, physical).await,
+        ClientRequest::GrabPrim {
+            request_id,
+            prim_id,
+        } => carry::on_grab(ctx, request_id, prim_id).await,
+        ClientRequest::ReleasePrim { request_id, throw } => {
+            carry::on_release(ctx, request_id, throw).await
+        }
         ClientRequest::SetPushEndpoint { endpoint } => {
             calls::on_set_push_endpoint(ctx, endpoint).await
         }

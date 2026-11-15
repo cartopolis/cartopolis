@@ -6,10 +6,10 @@ use cartopolis_core::{
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
 
-use crate::physics::{AvatarProbe, Kick, Physics, MAX_PHYSICAL_PRIMS};
+use crate::physics::{AvatarProbe, Carry, Kick, Physics, Release, MAX_PHYSICAL_PRIMS};
 use crate::reach::{ground_m, Place};
 use crate::scripting::{PrimView, ScriptCommand};
-use cartopolis_core::motion;
+use cartopolis_core::{carry, motion};
 
 struct AvatarSim {
     /// Where this avatar stands on Earth, once its client has said (protocol
@@ -83,6 +83,11 @@ struct AvatarSim {
     /// it the moment the same avatar asks to move, so "sitting" cannot become a
     /// way to walk around displaced from your own position.
     seated: Option<[f32; 2]>,
+    /// The physical prim this avatar is carrying (protocol 48,
+    /// [`SimWorld::grab_prim`]). The sim holds it in front of the avatar every
+    /// tick; sitting, a teleport, leaving, or the prim ceasing to be a
+    /// carryable physical prim lets go of it.
+    holding: Option<i64>,
 }
 
 impl AvatarSim {
@@ -211,6 +216,50 @@ fn ground_distance_m(a: GeoAnchor, b: GeoAnchor) -> f32 {
     ground_m(a, b)
 }
 
+/// Why a [`SimWorld::grab_prim`] was refused. Each is a `ServerError` to the
+/// client that asked, with [`Self::code`] and [`Self::message`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrabRefusal {
+    /// The avatar is not standing anywhere yet.
+    Nowhere,
+    Seated,
+    /// Already carrying something else.
+    HandsFull,
+    NoSuchPrim,
+    NotPhysical,
+    TooBig,
+    OutOfReach,
+    HeldByOther,
+}
+
+impl GrabRefusal {
+    /// The HTTP-style code the refusal travels with.
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::NoSuchPrim => 404,
+            Self::HandsFull | Self::HeldByOther => 409,
+            Self::Nowhere | Self::Seated | Self::NotPhysical | Self::TooBig | Self::OutOfReach => {
+                422
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Nowhere => "your avatar is not in the world yet",
+            Self::Seated => "stand up first",
+            Self::HandsFull => "your hands are full",
+            Self::NoSuchPrim => "there is no such thing",
+            Self::NotPhysical => "that is fixed in place",
+            Self::TooBig => "that is too big or heavy to carry",
+            Self::OutOfReach => "that is out of reach",
+            Self::HeldByOther => "somebody else is holding that",
+        }
+    }
+}
+
 /// What the world may hold at once ([`SimWorld::caps`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorldCaps {
@@ -290,6 +339,7 @@ impl SimWorld {
                 name: "Someone".to_string(),
                 look: None,
                 seated: None,
+                holding: None,
             },
         );
         id
@@ -463,6 +513,10 @@ impl SimWorld {
         };
         av.place = Some(geo);
         av.alt = alt_m.max(motion::GROUND_Y);
+        // What was in the hands stays where the avatar left: carried along, it
+        // would be a way to move a ball across the world in one message. The
+        // next step drops it where it was held.
+        av.holding = None;
         av.velocity = Vec3::ZERO;
         av.vertical_velocity = 0.0;
         av.jump_requested = false;
@@ -607,6 +661,11 @@ impl SimWorld {
         if mag > 1e-4 || jump {
             av.seated = None;
         }
+        // Sitting down puts down whatever was being carried: the seated pose
+        // has the hands on the thighs.
+        if av.seated.is_some() {
+            av.holding = None;
+        }
         // An emote is a one-shot: stamp it with a fresh sequence so receivers can
         // tell "waved again" from "still waving".
         if let Some(e) = emote {
@@ -714,7 +773,32 @@ impl SimWorld {
                 })
             })
             .collect();
-        let moved = self.physics.step(dt, &mut self.prims, &probes);
+        // What each avatar carries, after checking it still may: a prim deleted,
+        // switched off or rescaled past carrying since the grab is let go of.
+        for av in self.avatars.values_mut() {
+            if let Some(id) = av.holding {
+                let still = self.index.get(&id).is_some_and(|&i| {
+                    let p = &self.prims[i];
+                    p.physical && crate::physics::can_carry(p)
+                });
+                if !still || av.place.is_none() {
+                    av.holding = None;
+                }
+            }
+        }
+        let carries: Vec<Carry> = self
+            .avatars
+            .values()
+            .filter_map(|a| {
+                Some(Carry {
+                    prim_id: a.holding?,
+                    geo: a.place?,
+                    feet_y: a.alt,
+                    yaw: a.yaw,
+                })
+            })
+            .collect();
+        let moved = self.physics.step(dt, &mut self.prims, &probes, &carries);
         // Persisted on the same timer as a script's writes, so a ball left in the
         // goal is still in the goal after a restart.
         self.dirty.extend(moved.iter().map(|b| b.id));
@@ -760,6 +844,76 @@ impl SimWorld {
         self.physics.velocity(prim_id)
     }
 
+    /// Pick up a physical prim (protocol 48, `NetMessage::GrabPrim`).
+    ///
+    /// Anyone may, as anyone may kick the ball — it is not an edit, so there is
+    /// no owner to ask. What the sim does check is everything a client must not
+    /// be trusted with: that the prim is physical and small and light enough
+    /// (`carry::can_carry`), that it is within [`carry::GRAB_REACH_M`] of where
+    /// *the sim* holds the avatar, and that nobody else has it. One thing per
+    /// avatar; asking again for the same one is granted, so a repeated key
+    /// press is harmless.
+    pub fn grab_prim(&mut self, avatar_id: u64, prim_id: i64) -> Result<(), GrabRefusal> {
+        let av = self.avatars.get(&avatar_id).ok_or(GrabRefusal::Nowhere)?;
+        if av.holding == Some(prim_id) {
+            return Ok(());
+        }
+        if av.holding.is_some() {
+            return Err(GrabRefusal::HandsFull);
+        }
+        let place = av.place.ok_or(GrabRefusal::Nowhere)?;
+        if av.seated.is_some() {
+            return Err(GrabRefusal::Seated);
+        }
+        let p = self.prim(prim_id).ok_or(GrabRefusal::NoSuchPrim)?;
+        if !p.physical {
+            return Err(GrabRefusal::NotPhysical);
+        }
+        if !crate::physics::can_carry(p) {
+            return Err(GrabRefusal::TooBig);
+        }
+        let flat = ground_distance_m(place, p.geo);
+        let up = p.position.y - av.alt;
+        if !(flat <= carry::GRAB_REACH_M
+            && (-carry::GRAB_BELOW_M..=carry::GRAB_ABOVE_M).contains(&up))
+        {
+            return Err(GrabRefusal::OutOfReach);
+        }
+        if self
+            .avatars
+            .iter()
+            .any(|(&id, a)| id != avatar_id && a.holding == Some(prim_id))
+        {
+            return Err(GrabRefusal::HeldByOther);
+        }
+        if let Some(av) = self.avatars.get_mut(&avatar_id) {
+            av.holding = Some(prim_id);
+        }
+        Ok(())
+    }
+
+    /// Let go of whatever this avatar carries (`NetMessage::ReleasePrim`):
+    /// thrown along its facing when `throw`, set down at its feet otherwise.
+    /// Returns the prim let go of, `None` when the hands were empty.
+    pub fn release_prim(&mut self, avatar_id: u64, throw: bool) -> Option<i64> {
+        let av = self.avatars.get_mut(&avatar_id)?;
+        let prim_id = av.holding.take()?;
+        self.physics.release(Release {
+            prim_id,
+            throw,
+            yaw: av.yaw,
+            feet_y: av.alt,
+            carrier_velocity: av.moved,
+        });
+        Some(prim_id)
+    }
+
+    /// What an avatar is carrying, if anything.
+    #[must_use]
+    pub fn holding(&self, avatar_id: u64) -> Option<i64> {
+        self.avatars.get(&avatar_id).and_then(|a| a.holding)
+    }
+
     /// Every placed avatar: its id, where it stands, and its state as a client
     /// receives it. What the tick loop hands `reach::TickTable`, which encodes
     /// each state once and lets every connection take the ones within its reach
@@ -790,6 +944,7 @@ impl SimWorld {
                         expression: a.expression,
                         seated: a.seated,
                         velocity: a.moved,
+                        holding: a.holding,
                     },
                 ))
             })
@@ -1658,6 +1813,31 @@ mod tests {
 
         // And the place itself never moved through any of it.
         assert!(world.embodied_place(id).expect("placed").is_valid());
+    }
+
+    /// Sitting down puts down what was carried, and a sitter picks nothing up:
+    /// the seated pose has its hands on its thighs.
+    #[test]
+    fn sitting_lets_go_and_a_sitter_picks_nothing_up() {
+        let (mut world, dir) = test_world();
+        let mut ball = stored_prim(&mut world, &dir);
+        ball.shape = "sphere".into();
+        ball.scale = Vec3::splat(0.22);
+        ball.position.y = 0.11;
+        ball.geo = here();
+        assert!(world.replace_prim(ball.clone()));
+        world.set_physical(ball.id, true).expect("room for one");
+        let id = world.spawn_avatar();
+        world.teleport_avatar(id, here(), 0.0);
+
+        world.grab_prim(id, ball.id).expect("a ball at the feet");
+        world.step(0.05);
+        assert_eq!(dto(&world, id).expect("in view").holding, Some(ball.id));
+
+        world.apply_intent(id, 0.0, 0.0, 0.0, false, None, Some([0.4, -0.9]), None);
+        world.step(0.05);
+        assert_eq!(world.holding(id), None, "sitting should put it down");
+        assert_eq!(world.grab_prim(id, ball.id), Err(GrabRefusal::Seated));
     }
 
     /// A teleport (protocol 17) *places* the avatar: place set, motion cleared,

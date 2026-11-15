@@ -1,7 +1,7 @@
 ---
 topic: physical prims
-triggers: ["physical prim", "physics", rapier, Rapier, SetPrimPhysical, PrimMotion, PrimBody, physics.rs, PhysicalMotion, smooth_physical_prims, set_physical, apply_impulse, set_vel, football, Euroborg, "kick emote", "Emote::Kick"]
-updated: 2026-10-05
+triggers: ["physical prim", "physics", rapier, Rapier, SetPrimPhysical, PrimMotion, PrimBody, physics.rs, PhysicalMotion, smooth_physical_prims, set_physical, apply_impulse, set_vel, football, Euroborg, "kick emote", "Emote::Kick", GrabPrim, ReleasePrim, "pick up", carry, carrying, throw, core/src/carry.rs, net/carry.rs, can_carry, grab_prim, release_prim, holding, WorldAct, "protocol 48"]
+updated: 2026-11-15
 ---
 
 # Physical prims
@@ -92,6 +92,65 @@ drawn toward that; a jump over 4 m is drawn as a teleport. `place_geo_prims`
 skips prims that have a `PhysicalMotion`, because two systems inserting one
 `GridCell` in a frame race on whose command lands last. A full `PrimUpsert`
 removes the component, so an edit is placed from the upsert.
+
+## Picking up, carrying and throwing (protocol 48, 2026-11-15)
+
+Asked for by the owner ("oppakken en gooien"): walk up to the ball, pick it up,
+carry it, throw it or put it down. `GrabPrim` / `ReleasePrim { throw }` on the
+wire, `AvatarStateDto::holding` back; `SimWorld::grab_prim` / `release_prim`,
+`physics::Carry` / `Release`, `net/carry.rs`, and the client's prompt in
+`systems::interact`.
+
+- **What can be carried** is `cartopolis_core::carry::can_carry`, one rule both
+  ends call: physical, longest side ≤ 1.2 m, mass ≤ 15 kg at the physics step's
+  own density (which moved to `carry` with `prim_mass_kg` so the client weighs
+  a prim the way the sim does). A football (0.56 kg) yes; a 0.5 m crate (12.5
+  kg) yes; a 1 m crate (100 kg) and a 2.4 m goal post no. **Size and mass both**,
+  because density is uniform: a mass bound alone lets a 3 m plank through, a
+  size bound alone a solid 1.2 m ball of 90 kg.
+- **The sim checks everything.** Anyone may pick a thing up, as anyone may
+  kick it — it is not an edit, so no owner is asked. Refused with a
+  `ServerError`: not physical or too big (422), more than `GRAB_REACH_M`
+  (2.5 m flat, −0.5…+2.3 m in height) from where *the sim* holds the avatar
+  (422), seated (422), already held by someone else or hands full (409),
+  no such prim (404). A grant is not answered: it shows as `holding` in the
+  next snapshot, to everyone at once. Grabs share a 5/s bucket; a release is
+  never throttled, since a dropped one would leave the thing stuck in the hands.
+- **Carried is kinematic.** Each tick `SimWorld::step` hands the physics step
+  every `(prim, carrier geo, feet, yaw)`; the body is switched to
+  kinematic-position-based and stepped along a path to 1.1 m above the feet,
+  just clear of the capsule's front, turning with the carrier. Kinematic bodies
+  do not react to the carrier's (kinematic) capsule, so the ball is neither
+  dropped nor pushed off by the body holding it; it does push other balls, and
+  it passes through static prims. It moves through `PrimMotion` like any body,
+  so every viewer sees it carried with no client change.
+- **Throw** is the sim's: 8 m/s along the facing, 3.5 m/s up, slowed by
+  √(2 kg / mass) above 2 kg, plus the thrower's own velocity, clamped to
+  15 m/s. The client sends only `throw: true` — there is no speed on the wire
+  to validate. **Put down** lowers it to the feet in front and lets go at rest.
+- **What ends a hold** without asking: the carrier leaving (no carry that tick,
+  so it drops where it was), a teleport, sitting (an intent with a seat), the
+  prim deleted, made non-physical or rescaled past carrying. Swimming is the one
+  the client asks for (a put-down when `AvatarState::swimming` starts), because
+  the sim knows nothing of water.
+- **Controls.** E on a loose physical prim: "Pick up …" (the `interact` clip).
+  Holding, the prompt is two buttons, "Throw … [E]" (the `punch` clip, the only
+  capture with a forward arm thrust) and "Put down [G]" (`interact`). Two
+  buttons rather than a long press, because on touch a long press is already the
+  context menu, and G because nothing else binds it. A pickable prim beats a
+  scripted one in the prompt: the ball against a scripted goal is still the ball.
+
+**What lost.** A client-sent throw velocity (aimed by the camera) — a speed the
+sim would have to clamp and could not check against anything, for an aim the
+avatar's facing already gives. A dynamic body held by a spring or a joint to the
+hands — it would swing, collide with the carrier's own capsule and need tuning
+per mass, for a sway nobody asked for (not built; reasoned, not measured). Only physical prims: carrying a non-physical prim
+would be an edit by a non-owner.
+
+**Not done here.** No carry pose (the arms play idle under a floating ball;
+there is no carry take in the pack), and remote avatars' `holding` is not used
+by the client at all — so the prompt offers "Pick up" for a ball in someone
+else's hands and the sim refuses it (409). No MCP tool for it.
 
 ## Not done
 
