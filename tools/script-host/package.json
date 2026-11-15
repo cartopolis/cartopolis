@@ -1,0 +1,19 @@
+{
+  "name": "cartopolis-script-host",
+  "description": "Prototype: prim scripts in JavaScript on Bun, measured against the Luau host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "test": "bun test",
+    "bench": "bun run bench/bench.ts"
+  },
+  "dependencies": {
+    "acorn": "^8.15.0",
+    "astring": "^1.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.17"
+  }
+}

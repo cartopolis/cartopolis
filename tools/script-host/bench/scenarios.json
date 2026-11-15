@@ -1,0 +1,14 @@
+{
+  "busy": {
+    "lua": "local s = 0\nfunction on_start() while true do s = s + 1 if s % 100000 == 0 then log(tostring(s)) end end end",
+    "js": "let s = 0\nfunction on_start() { while (true) { s = s + 1; if (s % 100000 === 0) log(String(s)) } }"
+  },
+  "calls": {
+    "lua": "local n = 0\nlocal function fib(k) if k < 2 then return k end return fib(k - 1) + fib(k - 2) end\nfunction on_start() while true do fib(15) n = n + 1 if n % 100 == 0 then log(tostring(n)) end end end",
+    "js": "let n = 0\nfunction fib(k) { return k < 2 ? k : fib(k - 1) + fib(k - 2) }\nfunction on_start() { while (true) { fib(15); n = n + 1; if (n % 100 === 0) log(String(n)) } }"
+  },
+  "idle": {
+    "lua": "function on_touch() end",
+    "js": "function on_touch() {}"
+  }
+}

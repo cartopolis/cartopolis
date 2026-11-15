@@ -1,0 +1,20 @@
+# The Luau side of the comparison: the simulator's own `ScriptHost`, driven with
+# the scenarios in `../scenarios.json` and the content packs, printing the same
+# JSON lines as `../bench.ts`. Its own workspace, so it never joins the main one's
+# build or lock file.
+[package]
+name = "luau-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+cartopolis_simulator = { path = "../../../../crates/simulator" }
+cartopolis_core = { path = "../../../../crates/core" }
+glam = "0.33"
+serde_json = "1"
+
+[profile.release]
+debug = false
