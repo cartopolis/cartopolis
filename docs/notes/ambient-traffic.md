@@ -3,8 +3,9 @@ topic: ambient-traffic
 triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffic",
   DriveNetwork, drive_traffic, oneway_reverse, "streets layer", data_layers.rs,
   "Life layer", life_enabled, "cars move badly", "car trajectory", "traffic spread", Turn, headway, corner_speed, place_agent, cars_visible, people_enabled, "layer toggle",
-  agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle"]
-updated: 2026-11-04
+  agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle",
+  cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled]
+updated: 2026-11-15
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -419,3 +420,69 @@ two of the four commonest Dutch car colours and the palette had no dark car.
 (`a_car_stops_at_red_and_drives_on_green`, `a_car_through_a_junction_ignores_the_far_stop_line`,
 `the_body_dips_braking_and_leans_out_of_a_turn`, `walkers_keep_to_either_pavement`,
 `agent_models`' winding and proportion tests); the models were checked in stills.
+
+## Cyclists (2026-11-15)
+
+The third pool, asked for by the owner ("kunnen we ook fietsers toevoegen?"),
+on the same terms as the other two: invented riders on surveyed ways, under
+**Life ▸ Cyclists** (`cyclists_enabled`, `LayerPrefs::cyclists`), off in the
+navigation display's minimal mode with the rest. Until then a walker on a
+cycleway stood in for a cyclist, on the argument that inventing one would claim
+the tile knows which it is — but every person in this layer is invented
+already, and a Dutch street without bikes read as emptier than one with them.
+
+**Where they ride** is `cartopolis_geo::traffic::cycle_ok`: a `cycleway`, and
+the streets bikes share with cars from a living street up to a secondary road.
+**Not a primary road**: in the Netherlands it has a cycle track of its own,
+mapped as its own `cycleway`, and riders on the carriageway too would ride
+beside the ones already on the track. A footway, path or pedestrian street only
+with `bicycle=designated|yes`; `bicycle=no|dismount` closes any way, as the
+router reads it. A cycle track takes 1.8× a street's share of the pool
+(`CYCLE_TRACK_SHARE`). On a street a rider keeps 0.9 m in from the edge of the
+carriageway — the cycle lane — and on a track to its right-hand half. One-way
+streets are obeyed: the tile does not carry `oneway:bicycle=no`, so the
+*tegenrichting* is not ridden.
+
+**A rider is a crowd person posed on a bike, not a capture.** The pack holds no
+cycling take and needs none (`cartopolis_human::crowd::ride_poses`): the
+standing person is put on the saddle, the trunk leaned until the wrists reach
+the grips at 90 % of the arm (a search over 0–45°), the head turned most of the
+way back up, and each limb solved onto what it holds with the same two-bone
+reach the phone in the hand uses (`reach`) — the ankles onto the pedals through
+a turn of the cranks, with the foot pitched by an ankling curve, the wrists onto
+the grips. Eight poses a turn (`RIDE_POSES`) are baked after the standing pose
+into the same pose texture. **The bike is scaled to each body**
+(`CrowdBody::bike_scale`), solved so the leg is 95 % straight at the bottom of
+the stroke, as a saddle set right leaves it; the shortest starters ride a bike
+about 0.8× the reference (`BIKE_FIT`, a 28-inch city bike for ~1.85 m).
+
+**The rider wears its own material, not a tag bit.** The walker's `MeshTag`
+bits were being taken for a wave and a head turn as this was built, so rather
+than compete for them each body and level has a second `CrowdMaterial` whose
+`cycle` uniform starts its cycle at
+the riding poses (`cycle.x`) and names the standing pose (`cycle.y`); a
+walker's starts at 0. `CrowdBodyGpu::wear` picks one by `CrowdFigure::riding`.
+
+**Pedalling is by distance**, one turn per gear's development (4.6 m, scaled),
+so the feet keep pace with the road; slowing (accel below −0.3 m/s²) or held at
+a light the rider stops pedalling and coasts. The cranks and both wheels are
+child meshes turned about their axles by a transform write; the frame
+(diamond or step-through, paint from `BIKE_PAINTS`) is scaled once the body is
+dressed. A rider **leans into a turn** by `atan(v·ω / g)`, capped at 0.35 rad
+(`bike_lean`) — the opposite sign to a car body's roll.
+
+Cyclists `drives()`: they slow for bends, stop at the drawn signals in their
+phase group, and queue behind one another. **Occupancy is one table per kind**
+since this change: before it, a car on a street queued behind the walkers on its
+own pavement going the same way, at walking pace, and with bikes in the lane it
+would have queued behind every one. Now a car follows cars and a rider riders,
+and a car passes through a rider in the cycle lane beside it by the lane offset,
+not by overtaking.
+
+Not done: a rider waiting at a red light stays balanced on the bike rather than
+putting a foot down; nobody parks a bike or gets on one; a cyclist on a street
+with a mapped track beside it still rides the street if it is a secondary road
+or smaller. **Not verified by watching**, as before; the pure parts are tested
+(`a_shipped_person_rides_with_her_feet_on_the_pedals`, `cyclists_ride_their_own_network`,
+`a_rider_leans_into_the_turn`, `cyclists_keep_to_where_bikes_ride`,
+`a_bike_is_bike_sized_and_meets_its_rider_where_the_fit_says`).

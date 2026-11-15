@@ -942,8 +942,8 @@ pub struct ShotMetrics {
     /// arrived (Overpass, cache, or the toggle), which a capture alone cannot
     /// tell apart from "this town has none of it mapped".
     pub prop_meshes: usize,
-    /// Ambient agents currently **placed on a line** — cars and people, counted
-    /// apart (`systems::traffic`).
+    /// Ambient agents currently **placed on a line** — cars, people and
+    /// cyclists, counted apart (`systems::traffic`).
     ///
     /// Placed, **not** on screen: the test is `Visibility != Hidden`, which an
     /// agent behind a building or beyond the far plane still passes. That is the
@@ -958,6 +958,7 @@ pub struct ShotMetrics {
     /// that it is broken.
     pub traffic_cars: usize,
     pub traffic_walkers: usize,
+    pub traffic_cyclists: usize,
     /// Crows placed (`systems::crows`): in the air (flying, landing or taking
     /// off) and on the ground. Placed, not in frame, on the traffic's terms;
     /// `crows_ground == 0` over a park for long means no lawn was found.
@@ -1323,7 +1324,7 @@ gizmo_render,gizmo_selected,gizmo_axes_hit,\
 grass_patches,grass_slots,grass_rendered,\
 bag_buildings,bag_addresses,bag_berths,surveyed_trees,municipal_trees,surveyed_props,municipal_props,surveyed_lines,surveyed_paving,crop_parcels,nav_marks,level_crossings,prop_colliders,flood_defences,flood_defences_measured,sewer_pipes,sewer_meshes,underground_shapes,underground_meshes,ground_unopened,backdrop_present,backdrop_visible,backdrop_depth_m,backdrop_half_m,tunnel_count,tunnel_road_m,tunnel_meshes,tunnel_rendered,tunnel_ahead_m,tunnel_ahead_road_m,tunnel_entrance_lat,tunnel_entrance_lng,tunnel_entrance_heading,basemap_open_tiles,interior_rooms,interior_storeys,interior_designed,cutaway_storey,building_doors,building_scaffolds,building_fences,building_selected,building_indoors,building_shell_meshes,building_shell_rendered,\
 lod22_dated,lod22_elements,prop_meshes,\
-traffic_cars,traffic_walkers,crows_air,crows_ground,\
+traffic_cars,traffic_walkers,traffic_cyclists,crows_air,crows_ground,\
 avatar_meshes,avatar_rendered,avatar_floor_m,eye_ground_m,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,terrain_sample_m,terrain_graded_samples,\
@@ -5291,6 +5292,13 @@ fn record_metrics(
                 **k == crate::systems::traffic::AgentKind::Walker && **v != Visibility::Hidden
             })
             .count(),
+        traffic_cyclists: visuals
+            .agents
+            .iter()
+            .filter(|(k, v)| {
+                **k == crate::systems::traffic::AgentKind::Cyclist && **v != Visibility::Hidden
+            })
+            .count(),
         crows_air: visuals.crows.iter().filter(|c| c.flying()).count(),
         crows_ground: visuals
             .crows
@@ -5457,6 +5465,7 @@ fn record_metrics(
                 prop_meshes = m.prop_meshes,
                 traffic_cars = m.traffic_cars,
                 traffic_walkers = m.traffic_walkers,
+                traffic_cyclists = m.traffic_cyclists,
                 crows_air = m.crows_air,
                 crows_ground = m.crows_ground,
                 avatar_meshes = m.avatar_meshes,
@@ -6193,6 +6202,7 @@ mod tests {
             prop_meshes: 0,
             traffic_cars: 0,
             traffic_walkers: 0,
+            traffic_cyclists: 0,
             crows_air: 0,
             crows_ground: 0,
             furniture_factor: 0.0,

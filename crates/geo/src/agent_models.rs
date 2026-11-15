@@ -623,6 +623,319 @@ const fn st(
     }
 }
 
+// ─── Bicycles ────────────────────────────────────────────────────────────────
+
+/// Where a rider touches a bicycle, in the model's frame (origin on the ground
+/// under the bottom bracket, `+z` forward), at scale 1. The crowd's riders are
+/// posed onto these (`cartopolis_human::crowd`), and each body rides the bike
+/// scaled to its own legs, so the points scale with it.
+#[derive(Debug, Clone, Copy)]
+pub struct BikeFit {
+    /// The top of the saddle, where the seat bones rest.
+    pub saddle: [f32; 3],
+    /// The crank axle.
+    pub bottom_bracket: [f32; 3],
+    /// Axle to pedal, metres.
+    pub crank: f32,
+    /// How far either side of the middle each pedal's centre is.
+    pub pedal_x: f32,
+    /// One grip's middle, at `+x`; the other mirrors it.
+    pub grip: [f32; 3],
+    /// The two axles, rear and front, and the wheels' radius to the tyre.
+    pub rear_axle: [f32; 3],
+    pub front_axle: [f32; 3],
+    pub wheel_r: f32,
+    /// Metres the bike travels for one turn of the cranks: a city bike's
+    /// middle gear (38/18 on a 28-inch wheel is 4.6 m).
+    pub development: f32,
+}
+
+/// A Dutch city bike, upright, 28-inch wheels, for a rider of about 1.85 m —
+/// the crowd's riders scale it down to their legs.
+pub const BIKE_FIT: BikeFit = BikeFit {
+    saddle: [0.0, 0.98, -0.36],
+    bottom_bracket: [0.0, 0.28, -0.08],
+    crank: 0.17,
+    pedal_x: 0.12,
+    grip: [0.27, 1.07, 0.12],
+    rear_axle: [0.0, 0.35, -0.53],
+    front_axle: [0.0, 0.35, 0.60],
+    wheel_r: 0.35,
+    development: 4.6,
+};
+
+/// A bicycle's four meshes. The cranks and the wheels turn, so each is its own
+/// mesh with its origin on its axle: one wheel mesh serves both wheels.
+#[derive(Debug, Clone)]
+pub struct BikeModel {
+    /// Frame, fork, mudguards and chain guard: white under the bike's paint.
+    pub frame: ModelMesh,
+    /// Saddle, handlebar, rack and lamps, coloured per vertex.
+    pub trim: ModelMesh,
+    /// Both cranks and pedals about the axle, the right crank (at `-x`) pointing up
+    /// (`+y`); a turn about `+x` pedals forward.
+    pub crank: ModelMesh,
+    /// Tyre, rim, hub and spokes about the axle, which runs along `x`.
+    pub wheel: ModelMesh,
+}
+
+/// Black tyres, a dull rim, black leather-look saddle and grips.
+const BIKE_TYRE: u32 = 0x1E_1E_20;
+const BIKE_RIM: u32 = 0x8E_92_96;
+const BIKE_SADDLE: u32 = 0x2A_25_22;
+const BIKE_STEEL: u32 = 0x9A_9E_A2;
+const BIKE_RACK: u32 = 0x26_27_29;
+
+impl ModelMesh {
+    /// A tube of `sides` flat faces from `a` to `b`, radius `r`, open at both
+    /// ends: the ends of a frame's tubes are inside its joints.
+    fn tube(&mut self, a: [f32; 3], b: [f32; 3], r: f32, sides: usize, rgba: [f32; 4]) {
+        let d = sub(b, a);
+        let len = dot(d, d).sqrt();
+        if len < 1e-5 {
+            return;
+        }
+        let d = scale(d, 1.0 / len);
+        let reference = if d[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let u = cross(d, reference);
+        let u = scale(u, 1.0 / dot(u, u).sqrt());
+        let v = cross(d, u);
+        let ring = |k: usize| {
+            let t = k as f32 / sides as f32 * std::f32::consts::TAU;
+            add(scale(u, r * t.cos()), scale(v, r * t.sin()))
+        };
+        for k in 0..sides {
+            let (o0, o1) = (ring(k), ring((k + 1) % sides));
+            let out = add(o0, o1);
+            self.quad([add(a, o0), add(a, o1), add(b, o1), add(b, o0)], out, rgba);
+        }
+    }
+
+    /// A band round the axle at `c` (which runs along `x`), radius `r`, `half_w`
+    /// either side, from angle `a0` to `a1` (0 is `+z`, a quarter turn `+y`) —
+    /// faced both ways, as a mudguard is seen from inside and out.
+    #[allow(clippy::too_many_arguments)]
+    fn band(
+        &mut self,
+        c: [f32; 3],
+        r: f32,
+        half_w: f32,
+        a0: f32,
+        a1: f32,
+        segs: usize,
+        rgba: [f32; 4],
+    ) {
+        let at = |a: f32, x: f32| [c[0] + x, c[1] + r * a.sin(), c[2] + r * a.cos()];
+        for k in 0..segs {
+            let (t0, t1) = (
+                a0 + (a1 - a0) * k as f32 / segs as f32,
+                a0 + (a1 - a0) * (k + 1) as f32 / segs as f32,
+            );
+            let mid = 0.5 * (t0 + t1);
+            let out = [0.0, mid.sin(), mid.cos()];
+            let q = [
+                at(t0, -half_w),
+                at(t1, -half_w),
+                at(t1, half_w),
+                at(t0, half_w),
+            ];
+            self.quad(q, out, rgba);
+            self.quad(q, scale(out, -1.0), rgba);
+        }
+    }
+
+    /// A ring round the axle at `c` along `x`: outer face at `r`, inner at
+    /// `r - depth`, and both sides. A tyre, or a rim.
+    #[allow(clippy::too_many_arguments)]
+    fn hoop(&mut self, c: [f32; 3], r: f32, depth: f32, half_w: f32, segs: usize, rgba: [f32; 4]) {
+        let at = |a: f32, x: f32, rr: f32| [c[0] + x, c[1] + rr * a.sin(), c[2] + rr * a.cos()];
+        let ri = r - depth;
+        for k in 0..segs {
+            let t0 = k as f32 / segs as f32 * std::f32::consts::TAU;
+            let t1 = (k + 1) as f32 / segs as f32 * std::f32::consts::TAU;
+            let mid = 0.5 * (t0 + t1);
+            let out = [0.0, mid.sin(), mid.cos()];
+            let (w0, w1) = (-half_w, half_w);
+            self.quad(
+                [at(t0, w0, r), at(t1, w0, r), at(t1, w1, r), at(t0, w1, r)],
+                out,
+                rgba,
+            );
+            self.quad(
+                [
+                    at(t0, w0, ri),
+                    at(t1, w0, ri),
+                    at(t1, w1, ri),
+                    at(t0, w1, ri),
+                ],
+                scale(out, -1.0),
+                rgba,
+            );
+            for (x, side) in [(w0, -1.0), (w1, 1.0)] {
+                self.quad(
+                    [at(t0, x, ri), at(t1, x, ri), at(t1, x, r), at(t0, x, r)],
+                    [side, 0.0, 0.0],
+                    rgba,
+                );
+            }
+        }
+    }
+}
+
+/// A Dutch city bike at [`BIKE_FIT`]: mudguards, a chain guard and a rack, as
+/// nearly every bike on a Dutch street has. `step_through` is the low frame
+/// (the *omafiets*), else a diamond frame.
+#[must_use]
+pub fn bicycle(step_through: bool) -> BikeModel {
+    let f = BIKE_FIT;
+    let paint = WHITE;
+    let (bb, ra, fa) = (f.bottom_bracket, f.rear_axle, f.front_axle);
+    let mut frame = ModelMesh::default();
+    let mut trim = ModelMesh::default();
+    let main = 0.017;
+    let stay = 0.009;
+
+    // The seat tube, along the line from the axle to the saddle.
+    let seat_top = [0.0, 0.88, -0.32];
+    frame.tube(bb, seat_top, main, 6, paint);
+    // The head tube and the fork.
+    let (head_lo, head_hi) = ([0.0, 0.78, 0.47], [0.0, 0.95, 0.40]);
+    frame.tube(head_lo, head_hi, 0.02, 6, paint);
+    let crown = [0.0, 0.74, 0.485];
+    frame.tube(head_lo, crown, 0.02, 6, paint);
+    for x in [-0.05, 0.05] {
+        frame.tube([x, crown[1], crown[2]], [x, fa[1], fa[2]], 0.011, 5, paint);
+    }
+    // The down tube; the top tube, or the step-through's low swoop.
+    frame.tube(bb, head_lo, main, 6, paint);
+    if step_through {
+        let swoop = [
+            [0.0, 0.52, -0.21],
+            [0.0, 0.58, 0.08],
+            [0.0, 0.70, 0.30],
+            [0.0, 0.86, 0.435],
+        ];
+        for w in swoop.windows(2) {
+            frame.tube(w[0], w[1], 0.015, 6, paint);
+        }
+    } else {
+        frame.tube([0.0, 0.84, -0.305], [0.0, 0.92, 0.41], main, 6, paint);
+    }
+    // Chain stays and seat stays, a pair each.
+    for x in [-0.065, 0.065] {
+        frame.tube([x * 0.4, bb[1], bb[2]], [x, ra[1], ra[2]], stay, 5, paint);
+        frame.tube([x * 0.4, 0.83, -0.30], [x, ra[1], ra[2]], stay, 5, paint);
+    }
+    // Mudguards over both wheels, and the chain guard along the right stay.
+    frame.band(
+        ra,
+        f.wheel_r + 0.025,
+        0.03,
+        0.15,
+        std::f32::consts::PI + 0.35,
+        14,
+        paint,
+    );
+    frame.band(
+        fa,
+        f.wheel_r + 0.025,
+        0.03,
+        -0.35,
+        std::f32::consts::FRAC_PI_2 + 1.1,
+        12,
+        paint,
+    );
+    frame.tube(
+        [-0.055, bb[1] + 0.01, bb[2] + 0.10],
+        [-0.055, ra[1], ra[2] + 0.05],
+        0.04,
+        4,
+        paint,
+    );
+
+    // Seat post and saddle.
+    let steel = lin(BIKE_STEEL);
+    let s = f.saddle;
+    trim.tube(seat_top, [0.0, s[1] - 0.05, s[2] + 0.01], 0.013, 5, steel);
+    trim.cuboid(
+        [0.0, s[1] - 0.03, s[2] - 0.01],
+        [0.085, 0.03, 0.13],
+        lin(BIKE_SADDLE),
+    );
+    // Stem and the swept-back handlebar, grips on its ends.
+    let g = f.grip;
+    let bar_mid = [0.0, g[1] + 0.03, 0.36];
+    trim.tube(head_hi, [0.0, g[1] + 0.03, 0.37], 0.012, 5, steel);
+    for side in [-1.0f32, 1.0] {
+        let bend = [side * 0.17, g[1] + 0.03, 0.30];
+        let end = [side * (g[0] - 0.05), g[1], g[2] + 0.04];
+        trim.tube(bar_mid, bend, 0.011, 5, steel);
+        trim.tube(bend, end, 0.011, 5, steel);
+        trim.tube(
+            end,
+            [side * (g[0] + 0.05), g[1], g[2] - 0.02],
+            0.016,
+            5,
+            lin(BIKE_TYRE),
+        );
+    }
+    // The rack over the back wheel, on two struts to the axle.
+    let rack = lin(BIKE_RACK);
+    trim.cuboid([0.0, 0.79, -0.56], [0.085, 0.01, 0.17], rack);
+    for x in [-0.07, 0.07] {
+        trim.tube([x, 0.78, -0.70], [x, ra[1], ra[2]], 0.007, 4, rack);
+    }
+    // A lamp on the fork crown and a reflector on the rear guard.
+    trim.cuboid([0.0, 0.72, 0.53], [0.03, 0.025, 0.03], lin(HEADLAMP));
+    trim.cuboid([0.0, 0.62, -0.81], [0.03, 0.02, 0.008], lin(TAIL_LAMP));
+
+    // The cranks, about the axle: the right one (at `-x`: the bike faces `+z`)
+    // up, the left one down.
+    let mut crank = ModelMesh::default();
+    let arm = 0.012;
+    crank.tube([-0.10, 0.0, 0.0], [0.10, 0.0, 0.0], 0.012, 5, steel);
+    for side in [-1.0f32, 1.0] {
+        let tip = [side * 0.10, -side * f.crank, 0.0];
+        crank.tube([side * 0.10, 0.0, 0.0], tip, arm, 4, steel);
+        crank.cuboid(
+            [side * f.pedal_x, tip[1], 0.0],
+            [0.045, 0.012, 0.035],
+            lin(BIKE_RACK),
+        );
+    }
+
+    // A wheel about its axle: tyre, rim, hub, spokes.
+    let mut wheel = ModelMesh::default();
+    let o = [0.0, 0.0, 0.0];
+    wheel.hoop(o, f.wheel_r, 0.035, 0.022, 28, lin(BIKE_TYRE));
+    wheel.hoop(o, f.wheel_r - 0.035, 0.015, 0.012, 28, lin(BIKE_RIM));
+    wheel.tube([-0.05, 0.0, 0.0], [0.05, 0.0, 0.0], 0.022, 6, steel);
+    let spokes = 12;
+    for k in 0..spokes {
+        let a = k as f32 / spokes as f32 * std::f32::consts::TAU;
+        let x = if k % 2 == 0 { 0.035 } else { -0.035 };
+        let rim = f.wheel_r - 0.05;
+        wheel.tube(
+            [x, 0.0, 0.0],
+            [0.0, rim * a.sin(), rim * a.cos()],
+            0.0025,
+            3,
+            steel,
+        );
+    }
+
+    BikeModel {
+        frame,
+        trim,
+        crank,
+        wheel,
+    }
+}
+
 // ─── Crows ───────────────────────────────────────────────────────────────────
 
 /// The crow's neck joint on its body, which is where the head mesh's origin
@@ -1011,6 +1324,60 @@ mod tests {
         }
         assert!(seen.iter().all(|&n| n >= 15), "{seen:?}");
         assert!(seen[0] > seen[3], "more hatchbacks than vans: {seen:?}");
+    }
+
+    /// A bike is bike-sized, stands on its tyres, and puts its saddle and grips
+    /// where the fit says a rider will look for them.
+    #[test]
+    fn a_bike_is_bike_sized_and_meets_its_rider_where_the_fit_says() {
+        for step_through in [false, true] {
+            let b = bicycle(step_through);
+            for part in [&b.frame, &b.trim, &b.crank, &b.wheel] {
+                assert!(!part.indices.is_empty());
+                closed_enough(part);
+            }
+            let f = BIKE_FIT;
+            // The wheel mesh is about its axle: its lowest point is the tyre.
+            let low = b
+                .wheel
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::MAX, f32::min);
+            assert!((low + f.wheel_r).abs() < 0.01, "tyre bottom {low}");
+            assert!(
+                (f.rear_axle[1] - f.wheel_r).abs() < 1e-3,
+                "the wheels stand on the road"
+            );
+            let length = f.front_axle[2] - f.rear_axle[2] + 2.0 * f.wheel_r;
+            assert!((1.6..=2.0).contains(&length), "{length} m long");
+            // Nothing of the frame or trim under the road, or far over the bars.
+            for p in b.frame.positions.iter().chain(&b.trim.positions) {
+                assert!(p[1] > 0.0 && p[1] < 1.2, "{p:?}");
+            }
+            let saddle_top = b
+                .trim
+                .positions
+                .iter()
+                .filter(|p| (p[2] - f.saddle[2]).abs() < 0.15)
+                .map(|p| p[1])
+                .fold(f32::MIN, f32::max);
+            assert!(
+                saddle_top >= f.saddle[1] - 0.01,
+                "the saddle reaches the fit: {saddle_top}"
+            );
+            // The crank's pedals sit where the fit puts them, either side.
+            let reach = b
+                .crank
+                .positions
+                .iter()
+                .map(|p| p[1].abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                (reach - f.crank - 0.012).abs() < 0.005,
+                "crank reach {reach}"
+            );
+        }
     }
 
     #[test]

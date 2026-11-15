@@ -493,6 +493,12 @@ pub struct DataLayers {
     /// want exactly one of them. Cheap, too — a hidden pool costs a transform
     /// write it never makes.
     pub people_enabled: bool,
+    /// Feature toggle (under Life): the ambient cyclists (`systems::traffic`'s
+    /// [`AgentKind::Cyclist`](crate::systems::traffic::AgentKind) pool) on the
+    /// cycle tracks and in the streets' cycle lanes. Its own row on the terms
+    /// the people have one: a separate pool, and one somebody judging a street
+    /// wants apart from the others.
+    pub cyclists_enabled: bool,
     /// Feature toggle (under Life): the crows (`systems::crows`) flying over
     /// and feeding on the lawns. Its own row because it is its own kind of
     /// motion — in the sky, not on the street — and the first thing someone
@@ -660,6 +666,12 @@ impl DataLayers {
         self.people_enabled
     }
 
+    /// Should the ambient cyclists be drawn and ridden? (`systems::traffic`)
+    #[must_use]
+    pub fn cyclists_visible(&self) -> bool {
+        self.cyclists_enabled
+    }
+
     /// Should the crows be drawn and flown? (`systems::crows`)
     #[must_use]
     pub fn birds_visible(&self) -> bool {
@@ -725,6 +737,7 @@ impl DataLayers {
             furniture,
             traffic: self.traffic_enabled,
             people: self.people_enabled,
+            cyclists: self.cyclists_enabled,
             birds: self.birds_enabled,
             friends: self.friends_enabled,
             community_posts: self.community_posts_enabled,
@@ -825,6 +838,7 @@ impl DataLayers {
         self.furniture_enabled = p.furniture;
         self.traffic_enabled = p.traffic;
         self.people_enabled = p.people;
+        self.cyclists_enabled = p.cyclists;
         self.birds_enabled = p.birds;
         self.friends_enabled = p.friends;
         self.community_posts_enabled = p.community_posts;
@@ -857,6 +871,7 @@ struct MinimalSave {
     street_detail: bool,
     traffic: bool,
     people: bool,
+    cyclists: bool,
     birds: bool,
     layers: Vec<bool>,
     fog_density: f32,
@@ -900,6 +915,7 @@ impl Default for DataLayers {
             // draw on the one platform whose schedule has no second thread.
             traffic_enabled: detail,
             people_enabled: detail,
+            cyclists_enabled: detail,
             birds_enabled: detail,
             friends_enabled: true,
             community_posts_enabled: true,
@@ -1836,6 +1852,7 @@ pub fn apply_minimal_mode(
                 street_detail: dl.street_detail_enabled,
                 traffic: dl.traffic_enabled,
                 people: dl.people_enabled,
+                cyclists: dl.cyclists_enabled,
                 birds: dl.birds_enabled,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
@@ -1851,6 +1868,7 @@ pub fn apply_minimal_mode(
             // cannot tell from the ones the map is supposed to be about.
             dl.traffic_enabled = false;
             dl.people_enabled = false;
+            dl.cyclists_enabled = false;
             dl.birds_enabled = false;
             dl.grass_enabled = false;
             dl.furniture_enabled = false;
@@ -1874,6 +1892,7 @@ pub fn apply_minimal_mode(
                 dl.street_detail_enabled = saved.street_detail;
                 dl.traffic_enabled = saved.traffic;
                 dl.people_enabled = saved.people;
+                dl.cyclists_enabled = saved.cyclists;
                 dl.birds_enabled = saved.birds;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
@@ -2423,6 +2442,7 @@ fn category_counts(dl: &DataLayers) -> [usize; 6] {
         n(&[
             dl.traffic_enabled,
             dl.people_enabled,
+            dl.cyclists_enabled,
             dl.birds_enabled,
             dl.vehicles_enabled,
         ]),
@@ -2687,7 +2707,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
         LayerCategory::Moving => {
             ui.label(
                 egui::RichText::new(
-                    "Traffic, people and birds are made up; buses and trains are real.",
+                    "Traffic, people, cyclists and birds are made up; buses and trains are real.",
                 )
                 .size(theme::SIZE_SUB)
                 .color(theme::p().text_dim),
@@ -2703,6 +2723,10 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     (
                         tile(icons::WALK, "People", false, false, low),
                         &mut dl.people_enabled,
+                    ),
+                    (
+                        tile(icons::BIKE, "Cyclists", false, false, low),
+                        &mut dl.cyclists_enabled,
                     ),
                     (
                         tile(icons::CROW, "Birds", false, false, low),
@@ -3017,6 +3041,7 @@ pub fn render_data_layers_panel(
         // toggle that has stuck.
         dl.traffic_enabled = fresh.traffic_enabled;
         dl.people_enabled = fresh.people_enabled;
+        dl.cyclists_enabled = fresh.cyclists_enabled;
         dl.birds_enabled = fresh.birds_enabled;
         dl.friends_enabled = fresh.friends_enabled;
         dl.community_posts_enabled = fresh.community_posts_enabled;
@@ -3762,6 +3787,7 @@ mod tests {
             street_detail: true,
             traffic: true,
             people: true,
+            cyclists: true,
             birds: true,
             layers: vec![false; LAYER_DEFS.len()],
             fog_density: 0.4,

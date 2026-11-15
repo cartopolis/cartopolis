@@ -138,6 +138,25 @@ impl CrowdMesh {
     }
 }
 
+/// Where a rider meets a bicycle, at the bike's own scale 1, in the body's
+/// frame (origin on the ground, `+z` forward). The client passes
+/// `cartopolis_geo::agent_models::BIKE_FIT`; this crate does not depend on geo.
+#[derive(Clone, Copy, Debug)]
+pub struct Ride {
+    /// The top of the saddle.
+    pub saddle: Vec3,
+    /// The crank axle.
+    pub bottom_bracket: Vec3,
+    /// Axle to pedal.
+    pub crank: f32,
+    /// Either pedal's distance from the middle.
+    pub pedal_x: f32,
+    /// One grip, at `+x`; the other mirrors it.
+    pub grip: Vec3,
+    /// Poses baked through one turn of the cranks.
+    pub poses: usize,
+}
+
 /// A person as the crowd draws them.
 #[derive(Clone, Debug)]
 pub struct CrowdBody {
@@ -145,6 +164,13 @@ pub struct CrowdBody {
     pub levels: Vec<CrowdMesh>,
     /// Poses in the walk cycle; the standing pose is the one after them.
     pub walk_poses: usize,
+    /// Poses through one turn of the cranks, after the standing pose; 0 when
+    /// no [`Ride`] was asked for. Pose `k` has the right pedal at `k / n` of a
+    /// turn from the top, going forward (see [`pedal_at`]).
+    pub ride_poses: usize,
+    /// The scale this body rides the bike at: the bike, and the [`Ride`]
+    /// points it was posed onto, scaled to its legs.
+    pub bike_scale: f32,
     /// Metres walked in one cycle of the captured walk, on this body.
     pub stride: f32,
     /// Top of the head above the soles, metres.
@@ -155,14 +181,16 @@ pub struct CrowdBody {
 const FALLBACK_STRIDE_M: f32 = 1.4;
 
 /// Cut `model` down to each of `budgets` triangles (finest first) and bake
-/// `walk_poses` poses of its walk and one of it standing. `paint` has one
-/// entry per `model.parts`.
+/// `walk_poses` poses of its walk and one of it standing — and, given a
+/// [`Ride`], its poses pedalling a bike. `paint` has one entry per
+/// `model.parts`.
 #[must_use]
 pub fn crowd_body(
     model: &HumanModel,
     paint: &[PartPaint],
     budgets: &[usize],
     walk_poses: usize,
+    ride: Option<&Ride>,
 ) -> CrowdBody {
     let welded = weld(model, paint);
     let mut simplifier = Simplifier::new(&welded);
@@ -172,7 +200,17 @@ pub fn crowd_body(
         levels.push(simplifier.snapshot());
     }
 
-    let poses = poses(model, walk_poses);
+    let mut poses = poses(model, walk_poses);
+    let walk_poses = poses.len() - 1;
+    let (ride_poses, bike_scale) = match ride {
+        Some(ride) => {
+            let (riding, scale) = ride_poses(model, ride, &poses[walk_poses]);
+            let n = riding.len();
+            poses.extend(riding);
+            (n, scale)
+        }
+        None => (0, 1.0),
+    };
     let skins: Vec<Vec<Mat4>> = poses.iter().map(|p| skin_matrices(model, p)).collect();
     let levels = levels
         .into_iter()
@@ -210,13 +248,255 @@ pub fn crowd_body(
         .map_or(FALLBACK_STRIDE_M, |c| c.speed * c.duration());
     CrowdBody {
         levels,
-        walk_poses: poses.len() - 1,
+        walk_poses,
+        ride_poses,
+        bike_scale,
         stride,
         height: model.height,
     }
 }
 
+/// Where a pedal is at `turn` radians from the top, forward, relative to the
+/// crank axle: the right pedal at `turn`, the left half a turn on. `x` is the
+/// pedal's side, `±1`.
+#[must_use]
+pub fn pedal_at(turn: f32, crank: f32) -> Vec3 {
+    Vec3::new(0.0, crank * turn.cos(), crank * turn.sin())
+}
+
+/// How far the foot points its toe down at `turn` from the top, radians:
+/// nearly level over the top, most at the bottom of the stroke — the ankling
+/// a rider does without thinking.
+fn ankling(turn: f32) -> f32 {
+    0.22 - 0.12 * turn.cos()
+}
+
+/// How far the hip joint sits above the saddle, metres for a leg of
+/// [`REFERENCE_LEG_M`]: the seat bones are a hand under the joint.
+const HIP_OVER_SADDLE_M: f32 = 0.10;
+
+/// The default man's leg, hip joint to ankle, straight; what
+/// [`HIP_OVER_SADDLE_M`] is measured against.
+const REFERENCE_LEG_M: f32 = 0.86;
+
+/// How straight the leg is at the bottom of the stroke, as a share of its
+/// length: a saddle set right leaves the knee a little bent there.
+const LEG_AT_BOTTOM: f32 = 0.95;
+
+/// How far the wrist is from the shoulder on the bars, as a share of the arm:
+/// elbows soft, not locked.
+const ARM_ON_BARS: f32 = 0.9;
+
+/// The wrist's place relative to the middle of a grip: a hand's breadth back
+/// along the bar and a little above it.
+const WRIST_FROM_GRIP: Vec3 = Vec3::new(0.0, 0.025, -0.06);
+
+/// `ride.poses` poses of `model` riding a bike scaled to its legs, from its
+/// standing pose `standing`; and that scale.
+///
+/// No capture of anybody cycling is in the pack, and none is needed: a rider
+/// is the standing person put on the saddle, the trunk leaned to the bars, and
+/// each limb solved onto what it holds — the feet onto the pedals through a
+/// turn of the cranks, the hands onto the grips — with the same two-bone
+/// reach the phone in the hand uses (`reach`). The bike is scaled so the leg
+/// is [`LEG_AT_BOTTOM`] straight at the bottom of the stroke, as a saddle set
+/// to the rider leaves it.
+fn ride_poses(model: &HumanModel, ride: &Ride, standing: &Pose) -> (Vec<Pose>, f32) {
+    let n = ride.poses.max(1);
+    let names = [
+        "pelvis",
+        "thigh_l",
+        "calf_l",
+        "foot_l",
+        "thigh_r",
+        "calf_r",
+        "foot_r",
+        "ball_r",
+        "spine_01",
+        "spine_02",
+        "spine_03",
+        "neck_01",
+        "upperarm_l",
+        "lowerarm_l",
+        "hand_l",
+        "upperarm_r",
+        "lowerarm_r",
+        "hand_r",
+    ];
+    let Some(j) = names
+        .iter()
+        .map(|n| model.joint(n))
+        .collect::<Option<Vec<usize>>>()
+    else {
+        // A rig without the bones to ride with: it stands, on every pose.
+        return ((0..n).map(|_| standing.clone()).collect(), 1.0);
+    };
+    let [pelvis, thigh_l, calf_l, foot_l, thigh_r, calf_r, foot_r, ball_r, spine_1, spine_2, spine_3, neck, upper_l, lower_l, hand_l, upper_r, lower_r, hand_r] =
+        j[..]
+    else {
+        unreachable!("one index per name")
+    };
+
+    let base = fk(model, standing);
+    let at = |i: usize| base[i].0;
+    let leg = at(thigh_r).distance(at(calf_r)) + at(calf_r).distance(at(foot_r));
+    let arm = at(upper_r).distance(at(lower_r)) + at(lower_r).distance(at(hand_r));
+    let hip_mid = (at(thigh_l) + at(thigh_r)) * 0.5;
+    let hip_lift = HIP_OVER_SADDLE_M * leg / REFERENCE_LEG_M;
+    // Where the hips go on a bike at scale `s`, and how far each moves to get
+    // there.
+    let seat = |s: f32| ride.saddle * s + Vec3::new(0.0, hip_lift, 0.02 * s);
+    // The foot as it stands: the ankle relative to the ball of the foot, and
+    // the ball's height over the sole.
+    let ankle_from_ball = at(foot_r) - at(ball_r);
+    let sole = at(ball_r).y.max(0.0);
+    let ankle_on = |pedal: Vec3, turn: f32| {
+        pedal + Vec3::Y * sole + Quat::from_rotation_x(ankling(turn)) * ankle_from_ball
+    };
+    let pedal = |s: f32, turn: f32, side: f32| {
+        ride.bottom_bracket * s
+            + Vec3::X * (side * ride.pedal_x * s)
+            + pedal_at(turn, ride.crank * s)
+    };
+
+    // The scale: the right leg's reach at the bottom of the stroke, solved by
+    // halving — it only grows with the bike.
+    let bottom = std::f32::consts::PI;
+    let reach_at = |s: f32| {
+        let hip = at(thigh_r) + (seat(s) - hip_mid);
+        hip.distance(ankle_on(pedal(s, bottom, -1.0), bottom))
+    };
+    let (mut lo, mut hi) = (0.4f32, 1.6f32);
+    for _ in 0..30 {
+        let mid = 0.5 * (lo + hi);
+        if reach_at(mid) > LEG_AT_BOTTOM * leg {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let s = 0.5 * (lo + hi);
+
+    // On the saddle.
+    let mut seated = standing.clone();
+    let pelvis_to = base[pelvis].0 + (seat(s) - hip_mid);
+    let local = match model.joints[pelvis].parent {
+        Some(p) => base[p].1.inverse() * (pelvis_to - base[p].0),
+        None => pelvis_to,
+    };
+    seated.pelvis = Some((pelvis, local));
+
+    // The lean that brings the hands to the bars with the elbows soft. The
+    // right side stands for both; the bike is symmetric and so near enough is
+    // the body.
+    let wrist_at =
+        |side: f32| Vec3::new(side * ride.grip.x, ride.grip.y, ride.grip.z) * s + WRIST_FROM_GRIP;
+    let lean = |pose: &mut Pose, lean: f32| {
+        for (joint, share) in [(spine_1, 0.5), (spine_2, 0.25), (spine_3, 0.25)] {
+            turn_world(model, pose, joint, Quat::from_rotation_x(lean * share));
+        }
+        // The head comes most of the way back up: a rider looks down the road.
+        turn_world(model, pose, neck, Quat::from_rotation_x(-lean * 0.7));
+    };
+    let best = (0..=45)
+        .map(|deg| (deg as f32).to_radians())
+        .min_by(|a, b| {
+            let miss = |l: f32| {
+                let mut p = seated.clone();
+                lean(&mut p, l);
+                let w = fk(model, &p);
+                (w[upper_r].0.distance(wrist_at(-1.0)) - ARM_ON_BARS * arm).abs()
+            };
+            miss(*a).total_cmp(&miss(*b))
+        })
+        .unwrap_or(0.0);
+    lean(&mut seated, best);
+
+    let poses = (0..n)
+        .map(|k| {
+            let turn = k as f32 / n as f32 * std::f32::consts::TAU;
+            let mut pose = seated.clone();
+            // Each foot onto its pedal: the right at `turn`, the left half a
+            // turn on, knees forward and a little out.
+            for (side, thigh, calf, foot, turn) in [
+                (1.0f32, thigh_r, calf_r, foot_r, turn),
+                (-1.0, thigh_l, calf_l, foot_l, turn + std::f32::consts::PI),
+            ] {
+                // The rig's `_r` is the body's right, at `-x` (MakeHuman faces
+                // `+z` with its left at `+x`).
+                let x = -side;
+                let w = fk(model, &pose);
+                let target = ankle_on(pedal(s, turn, x), turn);
+                let r = crate::reach::reach(
+                    &crate::reach::Arm {
+                        shoulder: w[thigh].0,
+                        elbow: w[calf].0,
+                        wrist: w[foot].0,
+                    },
+                    target,
+                    Vec3::new(x * 0.15, 0.2, 1.0),
+                );
+                turn_world(model, &mut pose, thigh, r.upper);
+                turn_world(model, &mut pose, calf, r.lower);
+                // The foot keeps its standing turn, pitched by the ankling.
+                let w = fk(model, &pose);
+                let want = Quat::from_rotation_x(ankling(turn)) * base[foot].1;
+                turn_world(model, &mut pose, foot, want * w[foot].1.inverse());
+            }
+            // The hands onto the grips, elbows out and down.
+            for (side, upper, lower) in [(1.0f32, upper_r, lower_r), (-1.0, upper_l, lower_l)] {
+                let x = -side;
+                let w = fk(model, &pose);
+                let r = crate::reach::reach(
+                    &crate::reach::Arm {
+                        shoulder: w[upper].0,
+                        elbow: w[lower].0,
+                        wrist: w[if side > 0.0 { hand_r } else { hand_l }].0,
+                    },
+                    wrist_at(x),
+                    Vec3::new(x, -0.6, -0.3),
+                );
+                turn_world(model, &mut pose, upper, r.upper);
+                turn_world(model, &mut pose, lower, r.lower);
+            }
+            pose
+        })
+        .collect();
+    (poses, s)
+}
+
+/// Every joint's position and rotation relative to the model in `pose`.
+fn fk(model: &HumanModel, pose: &Pose) -> Vec<(Vec3, Quat)> {
+    let mut world: Vec<(Vec3, Quat)> = Vec::with_capacity(model.joints.len());
+    for (i, j) in model.joints.iter().enumerate() {
+        let t = match pose.pelvis {
+            Some((p, at)) if p == i => at,
+            _ => Vec3::from_array(j.translation),
+        };
+        let r = pose.rotations[i];
+        world.push(match j.parent {
+            Some(p) => {
+                let (pt, pr) = world[p];
+                (pt + pr * t, (pr * r).normalize())
+            }
+            None => (t, r),
+        });
+    }
+    world
+}
+
+/// Turn `joint` by `turn` in the model's frame, about the joint itself: its
+/// children go with it.
+fn turn_world(model: &HumanModel, pose: &mut Pose, joint: usize, turn: Quat) {
+    let w = fk(model, pose);
+    let parent = model.joints[joint]
+        .parent
+        .map_or(Quat::IDENTITY, |p| w[p].1);
+    pose.rotations[joint] = (parent.inverse() * turn * w[joint].1).normalize();
+}
+
 /// Every joint's local rotation, and the pelvis's translation, for one pose.
+#[derive(Clone)]
 struct Pose {
     rotations: Vec<Quat>,
     pelvis: Option<(usize, Vec3)>,
@@ -979,7 +1259,7 @@ mod tests {
             })
             .collect();
         let started = std::time::Instant::now();
-        let body = crowd_body(&m, &paint, &[3000, 600], 16);
+        let body = crowd_body(&m, &paint, &[3000, 600], 16, None);
         let took = started.elapsed();
         let full: usize = m
             .parts
@@ -1034,6 +1314,107 @@ mod tests {
                 striding > standing + 0.2,
                 "stride {striding:.2} m, standing {standing:.2} m"
             );
+        }
+    }
+
+    /// The bike the client gives the riders (`cartopolis_geo::agent_models::BIKE_FIT`).
+    fn city_bike() -> Ride {
+        Ride {
+            saddle: Vec3::new(0.0, 0.98, -0.36),
+            bottom_bracket: Vec3::new(0.0, 0.28, -0.08),
+            crank: 0.17,
+            pedal_x: 0.12,
+            grip: Vec3::new(0.27, 1.07, 0.12),
+            poses: 8,
+        }
+    }
+
+    /// A shipped person on the bike: the bike scaled to a plausible size for
+    /// her, her hips on the saddle, each ankle on its pedal and each wrist on
+    /// its grip in every pose, her feet going round, and nothing of her under
+    /// the road. Checked on the joints, which is where the solve aims.
+    #[test]
+    fn a_shipped_person_rides_with_her_feet_on_the_pedals() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = woman(&pack);
+        let bike = city_bike();
+        let walk = poses(&m, 16);
+        let (riding, s) = ride_poses(&m, &bike, &walk[16]);
+        eprintln!("bike scale {s:.3} for a {:.2} m rider", m.height);
+        assert_eq!(riding.len(), 8);
+        assert!((0.7..1.1).contains(&s), "bike scale {s}");
+        let j = |n: &str| m.joint(n).expect(n);
+        let ankle_from_ball = {
+            let w = fk(&m, &walk[16]);
+            (
+                w[j("foot_r")].0 - w[j("ball_r")].0,
+                w[j("ball_r")].0.y.max(0.0),
+            )
+        };
+        let mut heights = Vec::new();
+        for (k, pose) in riding.iter().enumerate() {
+            let turn = k as f32 / 8.0 * std::f32::consts::TAU;
+            let w = fk(&m, pose);
+            let hips = (w[j("thigh_l")].0 + w[j("thigh_r")].0) * 0.5;
+            assert!(
+                (hips.y - bike.saddle.y * s).abs() < 0.2
+                    && (hips.z - bike.saddle.z * s).abs() < 0.08,
+                "pose {k}: hips at {hips:?}, saddle at {:?}",
+                bike.saddle * s
+            );
+            for (foot, x, t) in [
+                ("foot_r", -1.0, turn),
+                ("foot_l", 1.0, turn + std::f32::consts::PI),
+            ] {
+                let pedal = bike.bottom_bracket * s
+                    + Vec3::X * (x * bike.pedal_x * s)
+                    + pedal_at(t, bike.crank * s);
+                let want = pedal
+                    + Vec3::Y * ankle_from_ball.1
+                    + Quat::from_rotation_x(ankling(t)) * ankle_from_ball.0;
+                let got = w[j(foot)].0;
+                assert!(
+                    got.distance(want) < 0.03,
+                    "pose {k}: {foot} at {got:?}, its pedal wants {want:?}"
+                );
+            }
+            heights.push(w[j("foot_r")].0.y);
+            for (hand, x) in [("hand_r", -1.0), ("hand_l", 1.0)] {
+                let want =
+                    Vec3::new(x * bike.grip.x, bike.grip.y, bike.grip.z) * s + WRIST_FROM_GRIP;
+                let got = w[j(hand)].0;
+                assert!(
+                    got.distance(want) < 0.04,
+                    "pose {k}: {hand} at {got:?}, the grip wants {want:?}"
+                );
+            }
+        }
+        let span = heights.iter().copied().fold(f32::MIN, f32::max)
+            - heights.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            span > 1.6 * bike.crank * s,
+            "the right foot rises and falls {span:.3} m"
+        );
+
+        // The baked body: no pose puts anything under the road, and the
+        // riding poses lift the feet off it.
+        let paint: Vec<PartPaint> = m
+            .parts
+            .iter()
+            .map(|_| PartPaint {
+                swatch: None,
+                tint: [0.5; 3],
+                region: Region::Own,
+            })
+            .collect();
+        let body = crowd_body(&m, &paint, &[600], 16, Some(&bike));
+        assert_eq!(body.ride_poses, 8);
+        assert!((body.bike_scale - s).abs() < 1e-4);
+        let level = &body.levels[0];
+        assert_eq!(level.positions.len(), 16 + 1 + 8);
+        for (p, pose) in level.positions[17..].iter().enumerate() {
+            let low = pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
+            assert!(low > 0.02, "riding pose {p}: lowest point {low:.3} m");
         }
     }
 }

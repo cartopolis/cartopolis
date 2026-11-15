@@ -18,9 +18,14 @@ pub const CROWD_PALETTE: usize = 16;
 #[derive(Asset, AsBindGroup, Reflect, Clone, Debug)]
 #[uniform(100, CrowdGpu)]
 pub struct CrowdExtension {
-    /// x: the mesh's vertices. y: the poses in its walk cycle (the standing
-    /// pose is the one after them). z: the pose texture's width in texels.
+    /// x: the mesh's vertices. y: the poses in the cycle it plays (a walker's
+    /// walk, with the standing pose after it). z: the pose texture's width in
+    /// texels.
     pub counts: UVec4,
+    /// Which poses this material plays: x the first of its cycle of `counts.y`
+    /// (0, the walk, for a walker; the turn of the cranks after the standing
+    /// pose for a rider), y the standing pose it eases into.
+    pub cycle: UVec4,
     /// The colours a walker's top and bottom may take, linear.
     pub tops: [Vec4; CROWD_PALETTE],
     pub bottoms: [Vec4; CROWD_PALETTE],
@@ -35,6 +40,7 @@ pub struct CrowdExtension {
 #[derive(ShaderType, Clone, Copy, Debug)]
 pub struct CrowdGpu {
     pub counts: UVec4,
+    pub cycle: UVec4,
     pub tops: [Vec4; CROWD_PALETTE],
     pub bottoms: [Vec4; CROWD_PALETTE],
 }
@@ -43,6 +49,7 @@ impl From<&CrowdExtension> for CrowdGpu {
     fn from(c: &CrowdExtension) -> Self {
         Self {
             counts: c.counts,
+            cycle: c.cycle,
             tops: c.tops,
             bottoms: c.bottoms,
         }

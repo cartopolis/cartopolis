@@ -70,6 +70,9 @@ pub enum Flow {
 pub struct Uses {
     pub drive: bool,
     pub walk: bool,
+    /// Bicycles: a cycleway, and the ordinary streets they share with cars
+    /// ([`cycle_ok`]).
+    pub cycle: bool,
 }
 
 /// One travelable centreline, in the tessellator's tile-local metre frame (origin
@@ -284,6 +287,30 @@ pub fn walk_ok(kind: &str) -> bool {
     )
 }
 
+/// Whether bicycles ride along a Shortbread `streets` kind, given the way's
+/// `bicycle` tag as the tile carries it.
+///
+/// A cycleway, and the streets a cyclist shares with cars, from a living street
+/// up to a secondary road. **Not a primary road**: in the Netherlands one has a
+/// cycle track of its own beside it, mapped as its own `cycleway`, so cyclists
+/// on the carriageway as well would ride beside the people the map already has
+/// on the track. A footway, a path or a pedestrian street only where the way
+/// says bikes are welcome (`designated` or `yes`) — a cyclist weaving through a
+/// shopping street's walkers is worse than an empty one. `bicycle=no` closes
+/// any of them, as the router reads it (`routing::bike_denied`).
+#[must_use]
+pub fn cycle_ok(kind: &str, bicycle: Option<&str>) -> bool {
+    if matches!(bicycle, Some("no" | "dismount")) {
+        return false;
+    }
+    match kind {
+        "cycleway" | "living_street" | "residential" | "unclassified" | "service" | "tertiary"
+        | "secondary" => true,
+        "path" | "footway" | "pedestrian" => matches!(bicycle, Some("designated" | "yes")),
+        _ => false,
+    }
+}
+
 /// Whether OSM's access tags on a highway way keep cars off it.
 ///
 /// **The tile cannot answer this.** Shortbread's `streets` layer carries no
@@ -384,7 +411,8 @@ pub fn extract_drive_lines(
             sunken.iter().filter(|s| s.feature == fi).collect();
         let drive = drive_speed(kind);
         let walk = walk_ok(kind);
-        if drive.is_none() && !walk {
+        let cycle = cycle_ok(kind, bicycle_of(feature));
+        if drive.is_none() && !walk && !cycle {
             continue;
         }
         let speed = drive.unwrap_or(0.0);
@@ -463,6 +491,7 @@ pub fn extract_drive_lines(
                 uses: Uses {
                     drive: drive.is_some(),
                     walk,
+                    cycle,
                 },
                 deck,
                 on_deck,
@@ -494,6 +523,14 @@ pub fn flow_from(oneway: bool, oneway_reverse: bool) -> Flow {
         Flow::Forward
     } else {
         Flow::Both
+    }
+}
+
+/// The way's `bicycle` tag, which Shortbread passes through as a string.
+fn bicycle_of(feature: &Feature) -> Option<&str> {
+    match feature.properties.as_ref()?.get("bicycle")? {
+        mvt_reader::feature::Value::String(s) => Some(s.as_str()),
+        _ => None,
     }
 }
 
@@ -572,7 +609,11 @@ mod tests {
             flow: Flow::Both,
             speed: 7.5,
             half_width: 3.0,
-            uses: Uses { drive, walk: true },
+            uses: Uses {
+                drive,
+                walk: true,
+                cycle: true,
+            },
             deck: vec![f32::NAN; points.len()],
             on_deck: false,
             pavements: Pavements::BOTH,
@@ -661,6 +702,49 @@ mod tests {
                 "{kind} carries both"
             );
         }
+    }
+
+    /// Cyclists ride the cycleways and the streets they share with cars, never a
+    /// motorway or a primary road (which has its own track), and a footpath only
+    /// where the way invites them.
+    #[test]
+    fn cyclists_keep_to_where_bikes_ride() {
+        for kind in [
+            "cycleway",
+            "residential",
+            "living_street",
+            "tertiary",
+            "secondary",
+        ] {
+            assert!(cycle_ok(kind, None), "{kind} carries bikes");
+        }
+        for kind in ["motorway", "trunk", "primary", "steps", "rail", "track"] {
+            assert!(!cycle_ok(kind, None), "{kind} carries no bikes");
+        }
+        assert!(!cycle_ok("footway", None));
+        assert!(!cycle_ok("pedestrian", Some("permissive")));
+        assert!(cycle_ok("path", Some("designated")));
+        assert!(cycle_ok("footway", Some("yes")));
+        assert!(
+            !cycle_ok("cycleway", Some("no")),
+            "bicycle=no closes any way"
+        );
+        assert!(!cycle_ok("residential", Some("dismount")));
+    }
+
+    #[test]
+    fn the_fixture_has_cycleways() {
+        let lines = extract_drive_lines(&fixture(), TILE_M, &[]).expect("extract");
+        let only_bikes = lines
+            .iter()
+            .filter(|l| l.uses.cycle && !l.uses.drive)
+            .count();
+        let shared = lines
+            .iter()
+            .filter(|l| l.uses.cycle && l.uses.drive)
+            .count();
+        assert!(only_bikes > 0, "Groningen has cycle tracks");
+        assert!(shared > 0, "and streets bikes share with cars");
     }
 
     /// The one thing in this module a picture cannot show and a drive can: a

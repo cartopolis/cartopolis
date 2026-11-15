@@ -1,8 +1,8 @@
-//! Ambient traffic: cars driving the streets the map already draws.
+//! Ambient traffic: cars, people and cyclists on the streets the map already draws.
 //!
 //! The pure half — which centrelines are drivable, which way and how fast — is
 //! [`cartopolis_geo::traffic`]. This is the ECS half: where the network is kept,
-//! the pool of cars and people that travels it, and the models they share.
+//! the pools of cars, people and cyclists that travel it, and the models they share.
 //!
 //! It is the first thing in this codebase that *moves on its own*. Everything
 //! else streamed from the map is placed and then stands still — buildings,
@@ -699,31 +699,46 @@ struct LineKey {
 
 // ─── The cars ────────────────────────────────────────────────────────────────
 
-/// What an agent is. The steering is identical for both — what differs is which
-/// lines they may use, how fast they go, and where across the road they sit.
+/// What an agent is. The steering is the same for all three — what differs is
+/// which lines they may use, how fast they go, and where across the road they
+/// sit.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
     Car,
-    /// A person on foot. Also stands in for a cyclist on a cycleway: at the range
-    /// this is seen from the difference is a bicycle-sized silhouette, and
-    /// inventing one would claim the tile knows which it is.
+    /// A person on foot.
     Walker,
+    /// A person on a bike: the crowd's people again, posed on a city bike
+    /// (`cartopolis_human::crowd::Ride`), on the cycle tracks and the streets
+    /// bikes share with cars (`cartopolis_geo::traffic::cycle_ok`).
+    Cyclist,
 }
 
 impl AgentKind {
+    /// Which of the per-kind tables in [`drive_traffic`] this kind uses.
+    fn index(self) -> usize {
+        match self {
+            Self::Car => 0,
+            Self::Walker => 1,
+            Self::Cyclist => 2,
+        }
+    }
+
     fn may_use(self, uses: Uses) -> bool {
         match self {
             Self::Car => uses.drive,
             Self::Walker => uses.walk,
+            Self::Cyclist => uses.cycle,
         }
     }
 
-    /// Pace in m/s. A car takes its road's speed; a walker keeps its own, because
-    /// a pavement has no speed limit and nobody walks faster down a main road.
+    /// Pace in m/s. A car takes its road's speed; a walker and a cyclist keep
+    /// their own, because a pavement has no speed limit and nobody pedals
+    /// faster down a main road.
     fn speed(self, line: &WorldDriveLine) -> f32 {
         match self {
             Self::Car => line.speed,
             Self::Walker => WALK_SPEED,
+            Self::Cyclist => CYCLE_SPEED,
         }
     }
 
@@ -733,14 +748,16 @@ impl AgentKind {
         match self {
             Self::Car => (CAR_ACCEL, CAR_BRAKE),
             Self::Walker => (WALK_ACCEL, WALK_ACCEL),
+            Self::Cyclist => (CYCLE_ACCEL, CYCLE_BRAKE),
         }
     }
 
-    /// Whether this kind slows for the bend ahead and for whatever is in front
-    /// of it. Both are about vehicles sharing a carriageway; a person on a
-    /// pavement neither corners nor queues.
+    /// Whether this kind slows for the bend ahead, for whatever of its own kind
+    /// is in front of it, and for a red light. All three are about vehicles on
+    /// a carriageway or a cycle track; a person on a pavement neither corners
+    /// nor queues.
     fn drives(self) -> bool {
-        matches!(self, Self::Car)
+        matches!(self, Self::Car | Self::Cyclist)
     }
 
     /// How much traffic of this kind a line of this sort carries, relative to a
@@ -752,11 +769,14 @@ impl AgentKind {
     /// every side street is empty is as wrong as one where the main road is.
     /// People are the other way round: a pavement is a pavement, and a busy
     /// street is busy with pedestrians because it is long, not because it is
-    /// fast.
+    /// fast. A cycle track carries more bikes than a street does: it is where
+    /// the bikes are sent.
     fn importance(self, line: &WorldDriveLine) -> f32 {
         match self {
             Self::Car => (line.speed / RESIDENTIAL_SPEED).max(0.2).powf(0.7),
             Self::Walker => 1.0,
+            Self::Cyclist if !line.uses.drive => CYCLE_TRACK_SHARE,
+            Self::Cyclist => 1.0,
         }
     }
 
@@ -765,6 +785,7 @@ impl AgentKind {
         match self {
             Self::Car => SPAWN_GAP_M,
             Self::Walker => SPAWN_GAP_M * 0.2,
+            Self::Cyclist => SPAWN_GAP_M * 0.75,
         }
     }
 
@@ -775,11 +796,13 @@ impl AgentKind {
     /// it where nobody can resolve a walker anyway, and leaves the pavement in
     /// front of you empty. Measured 2026-08-26: at one radius for both, 220
     /// walkers over a city-centre ring put none on the street in view, while the
-    /// metrics happily reported all 220 placed.
+    /// metrics happily reported all 220 placed. A bike and its rider are between
+    /// the two.
     fn place_radius(self) -> f32 {
         match self {
             Self::Car => PLACE_RADIUS_M,
             Self::Walker => PLACE_RADIUS_M * 0.45,
+            Self::Cyclist => PLACE_RADIUS_M * 0.6,
         }
     }
 
@@ -796,10 +819,19 @@ impl AgentKind {
     /// where the pavement is: the tile does not model pavements separately, so
     /// this offset is the whole of what puts a person beside a street rather than
     /// down the middle of it.
+    ///
+    /// A cyclist on a street keeps to the edge of the carriageway, where a
+    /// Dutch street paints its cycle lane, with the cars between it and the
+    /// middle; on a cycle track, to the right-hand half of it, which is two-way
+    /// unless the track is one-way.
     fn offset(self, line: &WorldDriveLine) -> f32 {
         match self {
             Self::Car => line.half_width * LANE_FRACTION,
             Self::Walker => line.half_width + PAVEMENT_CLEARANCE_M,
+            Self::Cyclist if line.uses.drive => {
+                (line.half_width - CYCLE_KERB_M).max(line.half_width * LANE_FRACTION + 0.6)
+            }
+            Self::Cyclist => line.half_width * 0.4,
         }
     }
 }
@@ -807,6 +839,27 @@ impl AgentKind {
 /// A person's pace, m/s. A stroll rather than the avatar's purposeful walk —
 /// ambient people are not going anywhere in particular.
 const WALK_SPEED: f32 = 1.25;
+
+/// A city bike's pace, m/s: 16.5 km/h, what a Dutch cyclist rides at in town
+/// (each rider ±15 % by its `speed_scale`).
+const CYCLE_SPEED: f32 = 4.6;
+
+/// How a cyclist pulls away and slows, m/s².
+const CYCLE_ACCEL: f32 = 1.0;
+const CYCLE_BRAKE: f32 = 2.5;
+
+/// How far in from the edge of the carriageway a cyclist on a street rides —
+/// the middle of a cycle lane, metres.
+const CYCLE_KERB_M: f32 = 0.9;
+
+/// A cycle track's share of the riders relative to a street of the same
+/// length, in [`AgentKind::importance`].
+const CYCLE_TRACK_SHARE: f32 = 1.8;
+
+/// How far a rider leans into a turn: the angle whose tangent is the lateral
+/// acceleration over gravity, capped where a city bike's pedal would touch the
+/// road. Eased like a car body's tilt.
+const MAX_BIKE_LEAN: f32 = 0.35;
 
 /// How far either way of a pavement's middle a walker may keep, metres. A
 /// pavement is two or three metres wide; more than this and the outer ones
@@ -848,8 +901,11 @@ pub struct Car {
     /// A walker's gait phase, radians; one cycle per stride of its crowd
     /// body's walk (`systems::crowd`), walked.
     phase: f32,
-    /// A car's body pitch and roll, radians, eased — see [`body_tilt`].
+    /// A car's body pitch and roll, radians, eased — see [`body_tilt`]; a
+    /// cyclist's lean into a turn is the roll ([`bike_lean`]).
     tilt: Vec2,
+    /// How far a bike's wheels have turned, radians.
+    roll: f32,
     /// Metres of road over which signals are ignored after driving through
     /// one, so a car that crossed on green does not stop in the middle of the
     /// junction for the opposite approach's stop line.
@@ -864,9 +920,22 @@ pub struct Car {
 /// The child entities an agent drives besides its own transform.
 #[derive(Clone, Copy)]
 enum AgentParts {
-    Car { tail: Entity },
+    Car {
+        tail: Entity,
+    },
     Walker,
+    /// The rider is on the agent itself, as a walker is; the bike is a child
+    /// scaled to the rider's body, and its cranks and wheels turn.
+    Cyclist {
+        bike: Entity,
+        crank: Entity,
+        wheels: [Entity; 2],
+    },
 }
+
+/// A bike's parts that the drive turns or scales (`AgentParts::Cyclist`).
+#[derive(Component)]
+pub struct BikePart;
 
 /// The two tail-lamp materials, swapped per car as it brakes.
 #[derive(Resource)]
@@ -1016,6 +1085,7 @@ pub fn setup_traffic(
             },
             phase: r(13) * std::f32::consts::TAU,
             tilt: Vec2::ZERO,
+            roll: 0.0,
             signal_grace: 0.0,
             braking: false,
             parts,
@@ -1087,10 +1157,121 @@ pub fn setup_traffic(
                 top: (i % COAT_COLOURS.len()) as u8,
                 bottom: ((i * 7 + 3) % TROUSER_COLOURS.len()) as u8,
                 near: false,
+                riding: false,
             },
         ));
     }
+
+    // The riders: a crowd person on the agent, as a walker is, and a bike under
+    // them — the frame in its paint, the trim, the cranks and two wheels, the
+    // last three turning about their axles. Two frames, the diamond and the
+    // step-through, five meshes each counting the shared wheel; nothing more
+    // is uploaded.
+    use cartopolis_geo::agent_models::{bicycle, BIKE_FIT};
+    let frames: Vec<[Handle<Mesh>; 4]> = [false, true]
+        .iter()
+        .map(|&step_through| {
+            let b = bicycle(step_through);
+            [
+                meshes.add(model_mesh_to_bevy(&b.frame)),
+                meshes.add(model_mesh_to_bevy(&b.trim)),
+                meshes.add(model_mesh_to_bevy(&b.crank)),
+                meshes.add(model_mesh_to_bevy(&b.wheel)),
+            ]
+        })
+        .collect();
+    let bike_paints: Vec<Handle<StandardMaterial>> = BIKE_PAINTS
+        .iter()
+        .map(|&rgb| {
+            let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(r, g, b),
+                perceptual_roughness: 0.45,
+                reflectance: 0.5,
+                ..default()
+            })
+        })
+        .collect();
+    for i in 0..MAX_CYCLISTS {
+        use crate::systems::crowd::{CrowdFigure, COAT_COLOURS, TROUSER_COLOURS};
+        let r = |stream: u64| rand01(0xB1CE, i as u64, stream);
+        let [frame, bike_trim, crank_mesh, wheel] = frames[usize::from(r(1) < 0.5)].clone();
+        let part = |commands: &mut Commands, mesh: Handle<Mesh>, at: [f32; 3]| {
+            commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(trim.clone()),
+                    Transform::from_translation(Vec3::from_array(at)),
+                    BikePart,
+                ))
+                .id()
+        };
+        let crank = part(&mut commands, crank_mesh, BIKE_FIT.bottom_bracket);
+        let wheels = [
+            part(&mut commands, wheel.clone(), BIKE_FIT.rear_axle),
+            part(&mut commands, wheel, BIKE_FIT.front_axle),
+        ];
+        let fittings = part(&mut commands, bike_trim, [0.0; 3]);
+        let bike = commands
+            .spawn((
+                Mesh3d(frame),
+                MeshMaterial3d(
+                    bike_paints[(r(2) * bike_paints.len() as f32) as usize % bike_paints.len()]
+                        .clone(),
+                ),
+                Transform::default(),
+                BikePart,
+            ))
+            .add_children(&[crank, wheels[0], wheels[1], fittings])
+            .id();
+        let height = 0.96 + r(14) * 0.08;
+        let rider = commands
+            .spawn((
+                Visibility::Hidden,
+                Transform::from_scale(Vec3::splat(height)),
+                GridCell::default(),
+                ChildOf(root),
+                HideInSpace,
+                AgentKind::Cyclist,
+                agent(
+                    AgentKind::Cyclist,
+                    i,
+                    0xB1CE,
+                    AgentParts::Cyclist {
+                        bike,
+                        crank,
+                        wheels,
+                    },
+                ),
+                CrowdFigure {
+                    // Past the walkers' seeds, so a street's riders and walkers
+                    // are dealt different people.
+                    seed: (MAX_WALKERS + i) as u32,
+                    top: ((i * 5 + 2) % COAT_COLOURS.len()) as u8,
+                    bottom: ((i * 3 + 1) % TROUSER_COLOURS.len()) as u8,
+                    near: false,
+                    riding: true,
+                },
+            ))
+            .id();
+        commands.entity(bike).insert(ChildOf(rider));
+    }
 }
+
+/// How many cyclists exist, on the same fixed-pool terms as the cars.
+///
+/// Fewer than the cars because a ring holds far less cycle track than road:
+/// at 120 (2026-11-15) the cycle track by Groningen's northern railway carried
+/// the pool as one unbroken column, a rider every few metres.
+pub const MAX_CYCLISTS: usize = 70;
+
+/// Bike frames: mostly black, as a Dutch street's are, then the dark blues,
+/// greys and greens, and one cream for the old *omafiets*. Muted for the reason
+/// the cars' paints are: a primary-coloured pool is the loudest thing on a
+/// pale map.
+const BIKE_PAINTS: &[u32] = &[
+    0x1F_1F_21, 0x1F_1F_21, 0x1F_1F_21, 0x26_2E_3F, 0x5A_5E_63, 0x2F_45_3A, 0xD2_C9_B2, 0x6E_2E_2A,
+];
 
 /// Most vans are white; see [`CarBody::fleet_white`](cartopolis_geo::agent_models::CarBody::fleet_white).
 const VAN_WHITE: u32 = 0xEC_EC_EA;
@@ -1135,15 +1316,19 @@ pub fn drive_traffic(
     tail_materials: Option<Res<TailLampMaterials>>,
     mut tails: Query<&mut MeshMaterial3d<StandardMaterial>, Without<Car>>,
     crowd: Res<crate::systems::crowd::Crowd>,
+    // A bike's frame, cranks and wheels (`AgentParts::Cyclist`).
+    mut bike_parts: Query<&mut Transform, (With<BikePart>, Without<Car>, Without<FreeCamera>)>,
     mut frame: Local<u64>,
 ) {
-    // One toggle per pool (Layers ▸ Life ▸ Traffic / People). A pool that is off
-    // is hidden and then skipped entirely — it holds its line and its distance
-    // along it, so switching it back on resumes rather than re-places, and a
-    // hidden agent costs neither the scan nor the transform write.
+    // One toggle per pool (Layers ▸ Life ▸ Traffic / People / Cyclists). A pool
+    // that is off is hidden and then skipped entirely — it holds its line and
+    // its distance along it, so switching it back on resumes rather than
+    // re-places, and a hidden agent costs neither the scan nor the transform
+    // write.
     let show_cars = layers.cars_visible();
     let show_people = layers.people_visible();
-    if (!show_cars && !show_people) || net.is_empty() {
+    let show_cyclists = layers.cyclists_visible();
+    if (!show_cars && !show_people && !show_cyclists) || net.is_empty() {
         for (.., mut vis) in &mut cars {
             vis.set_if_neq(Visibility::Hidden);
         }
@@ -1152,6 +1337,7 @@ pub fn drive_traffic(
     let showing = |kind: AgentKind| match kind {
         AgentKind::Car => show_cars,
         AgentKind::Walker => show_people,
+        AgentKind::Cyclist => show_cyclists,
     };
     let (Some((cam_cell, cam_tf)), Ok(grid)) = (camera.get(), grids.single()) else {
         return;
@@ -1188,13 +1374,19 @@ pub fn drive_traffic(
     } else {
         Vec::new()
     };
-    if roads.is_empty() && paths.is_empty() {
+    let lanes = if show_cyclists {
+        net.near(cam, AgentKind::Cyclist.place_radius(), AgentKind::Cyclist)
+    } else {
+        Vec::new()
+    };
+    if roads.is_empty() && paths.is_empty() && lanes.is_empty() {
         return;
     }
     // How much of the pool each candidate deserves — see `weigh`. Built once per
     // frame beside the candidate lists themselves, for the same reason.
     let road_weights = weigh(&net, &roads, AgentKind::Car);
     let path_weights = weigh(&net, &paths, AgentKind::Walker);
+    let lane_weights = weigh(&net, &lanes, AgentKind::Cyclist);
 
     // Where every placed agent is, keyed by its line **and** the direction it is
     // travelling, as the distance it has run along that line. Two things read
@@ -1203,15 +1395,20 @@ pub fn drive_traffic(
     // both are visible: a fast car overtook a slow one *through* it, and two of
     // the pool on one street a metre apart drew one car twice.
     //
+    // **One table per kind** (`AgentKind::index`): a car queues behind a car, a
+    // cyclist behind a cyclist. Kept in one table, a car on a street followed
+    // the people on its pavement at walking pace, and would have followed every
+    // bike in the cycle lane beside it — which a driver overtakes.
+    //
     // It is a read-only pass over the same query — one hash insert per placed
-    // agent, no allocation per frame beyond the map itself.
-    let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
+    // agent, no allocation per frame beyond the maps themselves.
+    let mut occupied: [HashMap<(LineKey, i8), Vec<f32>>; 3] = Default::default();
     for (car, &kind, ..) in cars.iter() {
         if !showing(kind) {
             continue;
         }
         if let Some(key) = car.line {
-            occupied
+            occupied[kind.index()]
                 .entry((key, lane_key(car.dir)))
                 .or_default()
                 .push(car.s);
@@ -1223,7 +1420,7 @@ pub fn drive_traffic(
     // The drawn signals a car could reach before it is recycled. Empty with the
     // street-detail layer off, which is right: a car stops only at a light that
     // is on the screen to be red.
-    let signals: Vec<(Vec2, u8)> = if show_cars {
+    let signals: Vec<(Vec2, u8)> = if show_cars || show_cyclists {
         detail
             .signals_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
             .collect()
@@ -1239,7 +1436,9 @@ pub fn drive_traffic(
         let (candidates, weights): (&[LineKey], &[f32]) = match kind {
             AgentKind::Car => (&roads, &road_weights),
             AgentKind::Walker => (&paths, &path_weights),
+            AgentKind::Cyclist => (&lanes, &lane_weights),
         };
+        let occupied = &mut occupied[kind.index()];
         if candidates.is_empty() {
             *vis = Visibility::Hidden;
             continue;
@@ -1279,7 +1478,7 @@ pub fn drive_traffic(
                 if let Some(t) = &car.turn {
                     want = want.min(t.speed_limit());
                 }
-                want = want.min(headway_speed(&occupied, k, car.dir, car.s, want));
+                want = want.min(headway_speed(occupied, k, car.dir, car.s, want));
                 if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
                     let reach = l.half_width + 1.0;
                     let mut grace = car.signal_grace;
@@ -1375,7 +1574,7 @@ pub fn drive_traffic(
         // ── Recycling ────────────────────────────────────────────────────────
         if line.is_none() {
             match place_agent(
-                &net, candidates, weights, cam, kind, &occupied, i as u64, *frame,
+                &net, candidates, weights, cam, kind, occupied, i as u64, *frame,
             ) {
                 Some((k, dir, s)) => {
                     let l = net.get(k).expect("place_agent only offers lines it read");
@@ -1517,14 +1716,67 @@ pub fn drive_traffic(
                 let near = crowd::wants_near(&figure, (pos - cam).length());
                 if near != figure.near {
                     figure.near = near;
-                    let level = if near { 0 } else { body.levels.len() - 1 };
-                    let (m, mat) = &body.levels[level];
-                    mesh.0 = m.clone();
-                    material.0 = mat.clone();
+                    (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
                 }
                 // Slowing to a stop eases from the stride into standing.
                 let standing = 1.0 - (car.speed / (WALK_SPEED * 0.5)).clamp(0.0, 1.0);
                 let t = crowd::tag(car.phase, standing, &figure);
+                if tag.value != t {
+                    tag.value = t;
+                }
+            }
+            AgentParts::Cyclist {
+                bike,
+                crank,
+                wheels,
+            } => {
+                use crate::systems::crowd;
+                // Into the turn, as far as the turn asks — the opposite way to a
+                // car body's roll.
+                car.tilt.y = bike_lean(car.tilt.y, car.speed * yaw_rate, dt);
+                tf.rotation *= Quat::from_rotation_z(car.tilt.y);
+                let Some((mut figure, mut mesh, mut material, mut tag)) = dressed else {
+                    vis.set_if_neq(Visibility::Hidden);
+                    continue;
+                };
+                let Some(body) = crowd.body(figure.body(&crowd)) else {
+                    vis.set_if_neq(Visibility::Hidden);
+                    continue;
+                };
+                // The bike is the rider's size: its every length scaled to the
+                // legs the rider was posed onto it with.
+                let scale = body.bike_scale;
+                let fit = cartopolis_geo::agent_models::BIKE_FIT;
+                // Pedalled by distance, a turn of the cranks per gear's
+                // development, so the feet keep pace with the road; slowing for a
+                // corner or a light, the rider stops pedalling and coasts.
+                let ride_scale = scale * tf.scale.y;
+                if accel_now > -0.3 && !held {
+                    car.phase = (car.phase
+                        + stepped / (fit.development * ride_scale) * std::f32::consts::TAU)
+                        % std::f32::consts::TAU;
+                }
+                car.roll =
+                    (car.roll + stepped / (fit.wheel_r * ride_scale)) % std::f32::consts::TAU;
+                if let Ok(mut t) = bike_parts.get_mut(bike) {
+                    if t.scale.x != scale {
+                        t.scale = Vec3::splat(scale);
+                    }
+                }
+                if let Ok(mut t) = bike_parts.get_mut(crank) {
+                    t.rotation = Quat::from_rotation_x(car.phase);
+                }
+                for wheel in wheels {
+                    if let Ok(mut t) = bike_parts.get_mut(wheel) {
+                        t.rotation = Quat::from_rotation_x(car.roll);
+                    }
+                }
+                let near = crowd::wants_near(&figure, (pos - cam).length());
+                if near != figure.near {
+                    figure.near = near;
+                    (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
+                }
+                let t = crowd::tag(car.phase, 0.0, &figure);
                 if tag.value != t {
                     tag.value = t;
                 }
@@ -1633,6 +1885,20 @@ fn body_tilt(tilt: Vec2, accel: f32, lateral: f32, dt: f32) -> Vec2 {
         return tilt;
     }
     tilt + (target - tilt) * (1.0 - (-dt / TILT_TAU).exp())
+}
+
+/// Ease a rider's lean toward what the turn asks: the angle whose tangent is
+/// the lateral acceleration over gravity, so a bike and rider stay balanced
+/// round the bend. `lateral` is speed × yaw rate, positive turning toward
+/// [`right_of`]; turning right the bike leans its top toward `-x`, the rider's
+/// right, which is a positive turn about `z` — the other way to a car body's
+/// roll ([`body_tilt`]).
+fn bike_lean(lean: f32, lateral: f32, dt: f32) -> f32 {
+    let target = (lateral / 9.81).atan().clamp(-MAX_BIKE_LEAN, MAX_BIKE_LEAN);
+    if dt <= 0.0 {
+        return lean;
+    }
+    lean + (target - lean) * (1.0 - (-dt / TILT_TAU).exp())
 }
 
 /// Whether a car's brake lamps are lit: while it slows harder than it would
@@ -1888,6 +2154,7 @@ mod tests {
             uses: Uses {
                 drive: true,
                 walk: true,
+                cycle: true,
             },
             deck: vec![f32::NAN; points.len()],
             on_deck: false,
@@ -2005,11 +2272,13 @@ mod tests {
         road.uses = Uses {
             drive: true,
             walk: false,
+            cycle: false,
         };
         let mut path = line(&[[0.0, 50.0], [100.0, 50.0]], Flow::Both);
         path.uses = Uses {
             drive: false,
             walk: true,
+            cycle: true,
         };
         net.insert_cell((0, 0), 0.0, 0.0, vec![road, path]);
 
@@ -2039,6 +2308,80 @@ mod tests {
         let walker = AgentKind::Walker.offset(l);
         assert!(car < l.half_width, "a car drives inside its own kerb");
         assert!(walker > l.half_width, "a walker stands beyond it");
+        let cyclist = AgentKind::Cyclist.offset(l);
+        assert!(
+            cyclist > car && cyclist < l.half_width,
+            "a cyclist rides between the car and the kerb: {cyclist} (car {car}, kerb {})",
+            l.half_width
+        );
+    }
+
+    /// A cyclist rides the cycle track and the street, and nobody else's
+    /// network: not the footpath, not the motorway. A cycle track draws more
+    /// riders than a street of its length.
+    #[test]
+    fn cyclists_ride_their_own_network() {
+        let mut net = DriveNetwork::default();
+        let mut motorway = line(&[[0.0, 0.0], [100.0, 0.0]], Flow::Both);
+        motorway.uses = Uses {
+            drive: true,
+            walk: false,
+            cycle: false,
+        };
+        let mut footway = line(&[[0.0, 20.0], [100.0, 20.0]], Flow::Both);
+        footway.uses = Uses {
+            drive: false,
+            walk: true,
+            cycle: false,
+        };
+        let mut track = line(&[[0.0, 40.0], [100.0, 40.0]], Flow::Both);
+        track.uses = Uses {
+            drive: false,
+            walk: true,
+            cycle: true,
+        };
+        let street = line(&[[0.0, 60.0], [100.0, 60.0]], Flow::Both);
+        net.insert_cell((0, 0), 0.0, 0.0, vec![motorway, footway, track, street]);
+        let mut rides: Vec<usize> = net
+            .near(Vec2::new(50.0, 30.0), 80.0, AgentKind::Cyclist)
+            .iter()
+            .map(|k| k.index)
+            .collect();
+        rides.sort_unstable();
+        assert_eq!(rides, vec![2, 3], "the track and the street");
+        let key = |index| LineKey {
+            cell: (0, 0),
+            index,
+        };
+        let (track, street) = (net.get(key(2)).unwrap(), net.get(key(3)).unwrap());
+        assert!(AgentKind::Cyclist.importance(track) > AgentKind::Cyclist.importance(street));
+        assert_eq!(AgentKind::Cyclist.speed(street), CYCLE_SPEED);
+        assert!(
+            AgentKind::Cyclist.offset(track) < track.half_width,
+            "on a track, on it"
+        );
+    }
+
+    /// A rider leans into a turn, the other way to a car body, by the angle the
+    /// turn's lateral acceleration makes with gravity, and no further than a
+    /// pedal clears the road.
+    #[test]
+    fn a_rider_leans_into_the_turn() {
+        let mut lean = 0.0;
+        for _ in 0..200 {
+            lean = bike_lean(lean, 2.0, 0.02);
+        }
+        assert!((lean - (2.0f32 / 9.81).atan()).abs() < 1e-3, "{lean}");
+        let car = body_tilt(Vec2::ZERO, 0.0, 2.0, 1.0).y;
+        assert!(
+            lean > 0.0 && car < 0.0,
+            "the bike leans in, the car body out"
+        );
+        let mut hard = 0.0;
+        for _ in 0..200 {
+            hard = bike_lean(hard, -40.0, 0.02);
+        }
+        assert!((hard + MAX_BIKE_LEAN).abs() < 1e-3);
     }
 
     /// A person walks; a car drives at the road's speed. The pace is not the same
@@ -2542,6 +2885,7 @@ mod tests {
             lateral: 0.0,
             phase: 0.0,
             tilt: Vec2::ZERO,
+            roll: 0.0,
             signal_grace: 0.0,
             braking: false,
             parts: AgentParts::Walker,
@@ -2565,6 +2909,7 @@ mod tests {
             lateral,
             phase: 0.0,
             tilt: Vec2::ZERO,
+            roll: 0.0,
             signal_grace: 0.0,
             braking: false,
             parts: AgentParts::Walker,

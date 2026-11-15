@@ -134,6 +134,12 @@ fn swatch_from(bytes: &[u8]) -> std::io::Result<CrowdSwatch> {
 /// One body on the GPU: per level, its mesh and its material.
 pub struct CrowdBodyGpu {
     pub levels: Vec<(Handle<Mesh>, Handle<CrowdMaterial>)>,
+    /// Per level, the material a cyclist wears the body in: the same poses,
+    /// played from the turn of the cranks.
+    pub riders: Vec<Handle<CrowdMaterial>>,
+    /// The scale this body rides the bike at, fitted to its legs
+    /// (`cartopolis_human::crowd::CrowdBody::bike_scale`).
+    pub bike_scale: f32,
     /// Metres walked in one walk cycle at scale 1.
     pub stride: f32,
     /// What every pose of every level fits in, for culling.
@@ -183,6 +189,42 @@ impl Crowd {
     }
 }
 
+impl CrowdBodyGpu {
+    /// The mesh and material a figure wears at `level` (0 the finest).
+    #[must_use]
+    pub fn wear(
+        &self,
+        level: usize,
+        figure: &CrowdFigure,
+    ) -> (Handle<Mesh>, Handle<CrowdMaterial>) {
+        let level = level.min(self.levels.len() - 1);
+        let (mesh, walking) = &self.levels[level];
+        let material = if figure.riding {
+            self.riders.get(level).unwrap_or(walking)
+        } else {
+            walking
+        };
+        (mesh.clone(), material.clone())
+    }
+}
+
+/// Poses baked through one turn of a bike's cranks: eight, a pose every 45°,
+/// is a foot circle off by a centimetre between them.
+pub const RIDE_POSES: usize = 8;
+
+/// The bike the riders are posed onto, as `cartopolis_human` takes it.
+fn ride() -> cartopolis_human::crowd::Ride {
+    let f = cartopolis_geo::agent_models::BIKE_FIT;
+    cartopolis_human::crowd::Ride {
+        saddle: Vec3::from_array(f.saddle),
+        bottom_bracket: Vec3::from_array(f.bottom_bracket),
+        crank: f.crank,
+        pedal_x: f.pedal_x,
+        grip: Vec3::from_array(f.grip),
+        poses: RIDE_POSES,
+    }
+}
+
 /// Which body a walker wears and in what colours, and which level it is
 /// drawn at. Set at spawn; the body is put on when it is made
 /// ([`dress_walkers`]).
@@ -194,6 +236,8 @@ pub struct CrowdFigure {
     pub bottom: u8,
     /// Wearing the finer level.
     pub near: bool,
+    /// On a bike: worn through the body's riding material.
+    pub riding: bool,
 }
 
 impl CrowdFigure {
@@ -328,7 +372,11 @@ pub(crate) fn build_crowd(
                                 })
                                 .collect();
                             let _ = done.send(cartopolis_human::crowd::crowd_body(
-                                &model, &paint, &LEVELS, WALK_POSES,
+                                &model,
+                                &paint,
+                                &LEVELS,
+                                WALK_POSES,
+                                Some(&ride()),
                             ));
                         }),
                     );
@@ -347,7 +395,7 @@ pub(crate) fn build_crowd(
                 let bytes: usize = body
                     .levels
                     .iter()
-                    .map(|l| l.vertices() * (40 + 16 * (body.walk_poses + 1)) + l.indices.len() * 2)
+                    .map(|l| l.vertices() * (40 + 16 * l.positions.len()) + l.indices.len() * 2)
                     .sum();
                 (!uploaded && crate::systems::stream_ledger::admit(bytes)).then(|| {
                     uploaded = true;
@@ -455,30 +503,44 @@ fn upload(
                 TextureFormat::Rgba16Float,
                 RenderAssetUsages::RENDER_WORLD,
             ));
-            let material = materials.add(CrowdMaterial {
-                base: StandardMaterial {
-                    base_color: Color::WHITE,
-                    perceptual_roughness: 0.8,
-                    reflectance: 0.35,
-                    ..default()
-                },
-                extension: CrowdExtension {
-                    counts: UVec4::new(
-                        level.vertices() as u32,
-                        body.walk_poses as u32,
-                        POSE_TEXTURE_WIDTH,
-                        0,
-                    ),
-                    tops: palette(COAT_COLOURS),
-                    bottoms: palette(TROUSER_COLOURS),
-                    poses,
-                },
-            });
-            (meshes.add(mesh), material)
+            // One material walks the body and one rides it: the same poses,
+            // played from a different first one.
+            let mut playing = |cycle_poses: usize, first: usize| {
+                materials.add(CrowdMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.8,
+                        reflectance: 0.35,
+                        ..default()
+                    },
+                    extension: CrowdExtension {
+                        counts: UVec4::new(
+                            level.vertices() as u32,
+                            cycle_poses as u32,
+                            POSE_TEXTURE_WIDTH,
+                            0,
+                        ),
+                        cycle: UVec4::new(first as u32, standing as u32, 0, 0),
+                        tops: palette(COAT_COLOURS),
+                        bottoms: palette(TROUSER_COLOURS),
+                        poses: poses.clone(),
+                    },
+                })
+            };
+            let walking = playing(body.walk_poses, 0);
+            let riding = if body.ride_poses > 0 {
+                playing(body.ride_poses, standing + 1)
+            } else {
+                walking.clone()
+            };
+            ((meshes.add(mesh), walking), riding)
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let (levels, riders) = levels.into_iter().unzip();
     CrowdBodyGpu {
         levels,
+        riders,
+        bike_scale: body.bike_scale,
         stride: body.stride,
         bounds: Aabb::from_min_max(lo, hi),
     }
@@ -499,7 +561,7 @@ pub fn dress_walkers(
         let Some(body) = crowd.body(figure.body(&crowd)) else {
             continue;
         };
-        let (mesh, material) = body.levels.last().cloned().expect("a body has a level");
+        let (mesh, material) = body.wear(usize::MAX, figure);
         commands.entity(entity).try_insert((
             Mesh3d(mesh),
             MeshMaterial3d(material),
@@ -587,6 +649,7 @@ mod tests {
             top: 9,
             bottom: 5,
             near: false,
+            riding: false,
         };
         let t = tag(std::f32::consts::PI, 1.0, &figure);
         assert_eq!(t & 0xFFF, 2048, "half way through the cycle");
@@ -608,6 +671,7 @@ mod tests {
             top: 0,
             bottom: 0,
             near: false,
+            riding: false,
         };
         assert!(!wants_near(&figure, NEAR_M + 1.0));
         figure.near = true;

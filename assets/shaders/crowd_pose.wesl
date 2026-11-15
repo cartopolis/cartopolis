@@ -10,6 +10,11 @@
 // is in its cycle and how far it has slowed to a stand, so every walker
 // wearing a body shares one mesh and one draw and still steps on its own.
 //
+// A cyclist wears the same body and texture through a material of its own,
+// whose `cycle.x` starts its cycle at the riding poses — a turn of the cranks,
+// baked after the standing pose — so its phase is the cranks'. A rider never
+// stands.
+//
 // The tag, from bit 0:
 //   0–11   the phase through the cycle, 0 … 4095
 //   12–17  standing, 0 (walking) … 63 (stood still)
@@ -19,8 +24,10 @@
 import bevy_pbr::render::{mesh_bindings::mesh, mesh_functions};
 
 struct Crowd {
-    // x: vertices. y: poses in the walk cycle. z: the pose texture's width.
+    // x: vertices. y: poses in the cycle played. z: the pose texture's width.
     counts: vec4<u32>,
+    // x: the cycle's first pose. y: the standing pose.
+    cycle: vec4<u32>,
     tops: array<vec4<f32>, 16>,
     bottoms: array<vec4<f32>, 16>,
 }
@@ -48,15 +55,16 @@ fn posed(v: u32, instance_index: u32) -> Posed {
     let tag = mesh_functions::get_tag(instance_index);
     let n = max(crowd.counts.y, 1u);
     let phase = f32(tag & 0xFFFu) / 4096.0 * f32(n);
-    let a = u32(floor(phase)) % n;
-    let b = (a + 1u) % n;
+    let a = crowd.cycle.x + u32(floor(phase)) % n;
+    let b = crowd.cycle.x + (u32(floor(phase)) + 1u) % n;
     let k = fract(phase);
     let stand = f32((tag >> 12u) & 0x3Fu) / 63.0;
+    let s = crowd.cycle.y;
     let walk_p = mix(texel(a, v, 0u), texel(b, v, 0u), k);
     let walk_n = mix(texel(a, v, 1u), texel(b, v, 1u), k);
     var out: Posed;
-    out.position = mix(walk_p, texel(n, v, 0u), stand);
-    out.normal = normalize(mix(walk_n, texel(n, v, 1u), stand));
+    out.position = mix(walk_p, texel(s, v, 0u), stand);
+    out.normal = normalize(mix(walk_n, texel(s, v, 1u), stand));
     return out;
 }
 
