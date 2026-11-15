@@ -198,9 +198,6 @@ fn a_hung_script_is_killed_blamed_and_the_rest_come_back() {
             .any(|c| matches!(c, ScriptCommand::Say { prim_id: 1, .. }));
         killed && back
     });
-    for c in out.iter().filter(|c| matches!(c, ScriptCommand::Output { .. })) {
-        eprintln!("DEBUG {c:?}");
-    }
     let errs = errors(&out);
     assert_eq!(errs.len(), 1, "exactly the hung script is blamed: {errs:?}");
     assert_eq!(errs[0].0, 2);
