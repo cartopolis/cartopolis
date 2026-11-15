@@ -611,6 +611,29 @@ fn is_loopback_bind(addr: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A typo in `script_engine` is refused at startup rather than read as
+    /// Luau, which would quietly run every script in the other language.
+    #[test]
+    fn the_script_engine_is_named_exactly() {
+        let engine = |name: &str| {
+            SimConfig {
+                script_engine: name.into(),
+                ..SimConfig::default()
+            }
+            .script_engine()
+        };
+        assert!(matches!(engine("luau"), Ok(crate::scripting::Engine::Luau)));
+        assert!(matches!(
+            engine("bun"),
+            Ok(crate::scripting::Engine::Bun(_))
+        ));
+        assert!(engine("javascript").is_err());
+        assert!(matches!(
+            SimConfig::default().script_engine(),
+            Ok(crate::scripting::Engine::Luau)
+        ));
+    }
+
     /// A development sim binds loopback and is told to say so: the client cannot
     /// work the HTTP port out from the game port, so without this there is no
     /// model store on the documented dev loop.
