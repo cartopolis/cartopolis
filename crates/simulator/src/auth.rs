@@ -187,7 +187,7 @@ pub struct AccountRow {
 pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, username, disabled, admin, created_at, email, email_verified_at, agent
-         FROM accounts ORDER BY created_at, username",
+         FROM accounts WHERE home IS NULL ORDER BY created_at, username",
     )?;
     let rows = stmt
         .query_map([], |r| {

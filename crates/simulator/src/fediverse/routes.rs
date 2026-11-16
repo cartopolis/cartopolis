@@ -324,7 +324,7 @@ async fn nodeinfo_links(State(state): State<HttpState>) -> Response {
 async fn nodeinfo(State(state): State<HttpState>) -> Response {
     let counts = with_db(&state, |c| {
         let users: i64 = c.query_row(
-            "SELECT COUNT(*) FROM accounts WHERE disabled = 0",
+            "SELECT COUNT(*) FROM accounts WHERE disabled = 0 AND home IS NULL",
             [],
             |r| r.get(0),
         )?;

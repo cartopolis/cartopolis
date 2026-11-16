@@ -186,6 +186,12 @@ pub struct SimConfig {
     /// reachable with `fediverse_allow_private`, whose guard it relies on.
     #[serde(default)]
     pub signin_test_base: Option<String>,
+    /// Tests only: where another server's HTTP surface is, by its name, for
+    /// servers on this machine whose names cannot carry their ports
+    /// (`crate::remote`). Only read with `fediverse_allow_private`; everywhere
+    /// else a server `x` is at `https://x`.
+    #[serde(default)]
+    pub peer_test_bases: std::collections::HashMap<String, String>,
     /// Shared block lists of servers nobody here hears from or sends to
     /// (`fediverse::blocklist`), re-read daily: Mastodon's CSV or one server per
     /// line. The operator's own blocks are kept apart and survive every import.
@@ -383,6 +389,7 @@ impl Default for SimConfig {
             fediverse: default_fediverse(),
             fediverse_allow_private: false,
             signin_test_base: None,
+            peer_test_bases: std::collections::HashMap::new(),
             fediverse_blocklists: default_fediverse_blocklists(),
             page_languages: default_page_languages(),
             house_claims_open: default_house_claims_open(),

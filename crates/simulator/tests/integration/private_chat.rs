@@ -223,7 +223,7 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
     group
 }
 
-async fn say(c: &mut Client, dev: &mut Device, group: &[u8], body: &str) -> u64 {
+pub(super) async fn say(c: &mut Client, dev: &mut Device, group: &[u8], body: &str) -> u64 {
     let out = dev
         .encrypt(
             group,
@@ -255,7 +255,7 @@ async fn say(c: &mut Client, dev: &mut Device, group: &[u8], body: &str) -> u64 
     seq.unwrap()
 }
 
-fn text(dev: &mut Device, group: &[u8], message: &[u8]) -> String {
+pub(super) fn text(dev: &mut Device, group: &[u8], message: &[u8]) -> String {
     match dev.receive(group, message).unwrap() {
         Received::Message { bytes, .. } => match Payload::decode(&bytes).unwrap() {
             Payload::Text { body, .. } => body,

@@ -33,6 +33,7 @@ pub mod prims;
 pub mod push;
 pub mod reach;
 pub mod registration;
+pub mod remote;
 pub mod roles;
 pub mod scripting;
 pub mod server_update;

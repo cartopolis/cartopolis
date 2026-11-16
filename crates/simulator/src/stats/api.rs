@@ -206,7 +206,7 @@ pub struct Overview {
 fn accounts_made(c: &Connection, from: i64, to: i64) -> anyhow::Result<Vec<(String, i64)>> {
     let mut st = c.prepare(
         "SELECT id, CAST(strftime('%s', created_at) AS INTEGER) / 86400 AS d FROM accounts \
-         WHERE d BETWEEN ?1 AND ?2",
+         WHERE home IS NULL AND d BETWEEN ?1 AND ?2",
     )?;
     let rows = st
         .query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -321,7 +321,7 @@ async fn overview(
     let today = to;
     let (accounts_total, made, made_prev) = with_db(&state, |c| {
         let total: i64 = c.query_row(
-            "SELECT COUNT(*) FROM accounts WHERE disabled = 0",
+            "SELECT COUNT(*) FROM accounts WHERE disabled = 0 AND home IS NULL",
             [],
             |r| r.get(0),
         )?;

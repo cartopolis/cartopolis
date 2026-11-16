@@ -1,0 +1,11 @@
+-- People on other servers (docs/notes/chat-across-servers.md).
+--
+-- Somebody on another server who has a contact, a request or a private chat
+-- with somebody here is an account here too, so every rule keyed by account
+-- (contacts, requests, blocks, chat membership, devices) holds for them
+-- unchanged. Its username is their full address (`bob@rug.example`), which no
+-- account made here can have, since a username made here holds no `@`; its
+-- password is no PHC string, so nobody signs in as it; and `home` names the
+-- server that vouches for them and to which whatever is for them is forwarded.
+-- NULL for everybody whose home is here.
+ALTER TABLE accounts ADD COLUMN home TEXT;

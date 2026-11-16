@@ -331,6 +331,48 @@ impl Client {
         }
     }
 
+    /// POST a JSON body signed by `key`, and answer the status and the body
+    /// whatever the status: a server-to-server call for a private chat
+    /// (`crate::remote`) says why it refused in its body.
+    pub fn post_signed_json(
+        &self,
+        url: &str,
+        body: &[u8],
+        key: &RsaPrivateKey,
+        key_id: &str,
+    ) -> Result<(u16, Vec<u8>), FetchError> {
+        let parsed = self.check_url(url)?;
+        let mut req = self
+            .agent
+            .post(parsed.as_str())
+            .set("Content-Type", "application/json");
+        for (k, v) in signing::sign(
+            key,
+            key_id,
+            "POST",
+            &host_header(&parsed),
+            &path_and_query(&parsed),
+            Some(body),
+            SystemTime::now(),
+        ) {
+            req = req.set(k, &v);
+        }
+        let resp = match req.send_bytes(body) {
+            Ok(resp) | Err(ureq::Error::Status(_, resp)) => resp,
+            Err(e) => return Err(FetchError::Transport(url.into(), e.to_string())),
+        };
+        let status = resp.status();
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .take(MAX_JSON_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| FetchError::Transport(url.into(), e.to_string()))?;
+        if bytes.len() as u64 > MAX_JSON_BYTES {
+            return Err(FetchError::Refused(url.into(), "too large"));
+        }
+        Ok((status, bytes))
+    }
+
     /// Find an account or community by its address (`name@server`), through
     /// the server's WebFinger: the URL of its actor.
     pub fn webfinger(&self, address: &str) -> Result<String, FetchError> {

@@ -524,6 +524,15 @@ pub fn remove(conn: &Connection, me: &str, them: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Take back the request `me` just sent `them`, which their home refused
+/// (`crate::remote`): it never reached them, so it must not count as sent.
+pub fn forget_request(conn: &Connection, me: &str, them: &str) -> Result<(), Refusal> {
+    if let Some(id) = waiting_request(conn, me, them)? {
+        conn.execute("DELETE FROM contact_requests WHERE id = ?1", params![id])?;
+    }
+    Ok(())
+}
+
 /// Whether `me` may add `target`'s devices to a private chat (rule 4): they
 /// are contacts, or there is a request between them either way round.
 ///

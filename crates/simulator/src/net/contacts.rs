@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// Build `account`'s contact state and hand it to every connection it has
 /// (`contacts`). Sent whole after anything in it changes, including a change
 /// the *other* person made, so each side's lists never need merging.
-pub(super) async fn push_contacts(conn: &SharedConn, chat: &Arc<ChatHub>, account: &str) {
+pub(crate) async fn push_contacts(conn: &SharedConn, chat: &Arc<ChatHub>, account: &str) {
     let Some(msg) = contacts_message(conn, chat, account).await else {
         return;
     };
@@ -27,7 +27,7 @@ pub(super) async fn push_contacts(conn: &SharedConn, chat: &Arc<ChatHub>, accoun
 
 /// `account`'s contact state as a message, read on the blocking pool; `None`
 /// if the account is gone or the read failed (logged).
-pub(super) async fn contacts_message(
+pub(crate) async fn contacts_message(
     conn: &SharedConn,
     chat: &Arc<ChatHub>,
     account: &str,
@@ -136,6 +136,11 @@ pub(super) async fn on_request<T: FrameTransport>(
     if subject.is_empty() || subject.chars().count() > MAX_USERNAME_LEN {
         return Ok(());
     }
+    let link = crate::remote::Link::from_config(&ctx.config);
+    if let Some((name, server)) = link.elsewhere(&subject) {
+        let (name, server) = (name.to_string(), server.to_string());
+        return request_elsewhere(ctx, request_id, &link, &name, &server, link_code).await;
+    }
     let met = ctx.world.read().await.met(&ctx.display_name, &subject);
     let principal = ctx.principal_key.clone();
     let target_name = subject.clone();
@@ -176,21 +181,30 @@ pub(super) async fn on_answer<T: FrameTransport>(
     accept: bool,
 ) -> anyhow::Result<()> {
     let principal = ctx.principal_key.clone();
-    let result = match db::call(&ctx.conn, move |c| -> Result<String, Refusal> {
-        let me = own_account(c, &principal)?;
-        let from = crate::contacts::account_by_name(c, &subject)?
-            .ok_or_else(|| Refusal::NoRequest(subject.clone()))?;
-        crate::contacts::answer(c, &me, &from, accept, now_millis())?;
-        Ok(from.id)
-    })
+    let result = match db::call(
+        &ctx.conn,
+        move |c| -> Result<(String, String, Option<String>), Refusal> {
+            let me = own_account(c, &principal)?;
+            let from = crate::contacts::account_by_name(c, &subject)?
+                .ok_or_else(|| Refusal::NoRequest(subject.clone()))?;
+            crate::contacts::answer(c, &me, &from, accept, now_millis())?;
+            let home = crate::remote::home_of(c, &from.id)?;
+            Ok((from.id, from.username, home))
+        },
+    )
     .await
     {
         Ok(result) => result,
         Err(_) => return Ok(()),
     };
     match result {
-        Ok(from) => {
+        Ok((from, username, home)) => {
             push_contacts(&ctx.conn, &ctx.chat, &ctx.principal_key).await;
+            // Somebody elsewhere: their home keeps its own copy of the request,
+            // and a decline is applied there as silently as here.
+            if let Some(home) = home {
+                answer_elsewhere(ctx, &home, &username, accept);
+            }
             // Only an acceptance is news to the sender: a decline must look like
             // nothing happened.
             if accept {
@@ -296,7 +310,29 @@ pub(super) async fn on_lookup<T: FrameTransport>(
             .and_then(|n| w.distance_between(&ctx.display_name, n));
         (name, met, distance)
     };
+    let link = crate::remote::Link::from_config(&ctx.config);
+    let elsewhere = name
+        .as_deref()
+        .and_then(|n| link.elsewhere(n))
+        .map(|(n, s)| (n.to_string(), s.to_string()));
     let person = match name.filter(|n| !n.is_empty() && n.chars().count() <= MAX_USERNAME_LEN) {
+        // Somebody elsewhere: their home knows whether they exist and whether
+        // they take a request, and answers for them.
+        Some(_) if elsewhere.is_some() => {
+            let (n, server) = elsewhere.unwrap_or_default();
+            let ask = crate::remote::LookUp {
+                by: cartopolis_core::address::person(&ctx.display_name, &link.server),
+                name: n,
+            };
+            let found: Result<crate::remote::Person, String> =
+                crate::remote::post(&link, &ctx.conn, &server, "/person", &ask).await;
+            match found {
+                Ok(p) => p.person,
+                Err(why) => {
+                    return ctx.send(&server_error(request_id, 404, why)).await;
+                }
+            }
+        }
         None => None,
         Some(n) => {
             let principal = ctx.principal_key.clone();
@@ -368,4 +404,88 @@ pub(super) async fn on_nearby<T: FrameTransport>(
     };
     ctx.send(&NetMessage::NearbyPeople { request_id, people })
         .await
+}
+
+/// A request to somebody on another server: kept here under this server's
+/// limits, then sent to their home, which applies their setting and keeps its
+/// own copy. A refusal there takes it back here and is said in their words.
+async fn request_elsewhere<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    link: &crate::remote::Link,
+    name: &str,
+    server: &str,
+    link_code: Option<String>,
+) -> anyhow::Result<()> {
+    if !link.enabled {
+        let refusal = format!(
+            "{name}@{server} is on another server: {}",
+            crate::remote::OFF
+        );
+        return ctx.send(&server_error(request_id, 403, refusal)).await;
+    }
+    let them = cartopolis_core::address::person(name, server);
+    let (principal, here, who) = (ctx.principal_key.clone(), link.server.clone(), them.clone());
+    let local = match db::call(&ctx.conn, move |c| -> Result<(Sent, String), Refusal> {
+        crate::remote::account(c, &who, &here)?
+            .ok_or_else(|| Refusal::NoSuchPerson(who.clone()))?;
+        contact_request(c, &principal, &who, None, None)
+    })
+    .await
+    {
+        Ok(local) => local,
+        Err(_) => return Ok(()),
+    };
+    let (sent, target) = match local {
+        Ok(v) => v,
+        Err(refusal) => {
+            return ctx
+                .send(&server_error(request_id, 403, refusal.to_string()))
+                .await
+        }
+    };
+    if sent != Sent::Unchanged {
+        let body = crate::remote::ContactRequest {
+            from: cartopolis_core::address::person(&ctx.display_name, &link.server),
+            to: name.to_string(),
+            link_code,
+        };
+        let answer: Result<crate::remote::ContactRequested, String> =
+            crate::remote::post(link, &ctx.conn, server, "/contact-request", &body).await;
+        if let Err(refusal) = answer {
+            if sent == Sent::Waiting {
+                let principal = ctx.principal_key.clone();
+                let _ = db::call(&ctx.conn, move |c| {
+                    crate::contacts::forget_request(c, &principal, &target)
+                })
+                .await;
+            }
+            push_contacts(&ctx.conn, &ctx.chat, &ctx.principal_key).await;
+            return ctx.send(&server_error(request_id, 403, refusal)).await;
+        }
+    }
+    push_contacts(&ctx.conn, &ctx.chat, &ctx.principal_key).await;
+    Ok(())
+}
+
+/// Tell `username`'s home (somebody elsewhere) how their request was
+/// answered, in the background: nothing here waits on it.
+fn answer_elsewhere<T>(ctx: &ConnCtx<T>, home: &str, username: &str, accept: bool) {
+    let link = crate::remote::Link::from_config(&ctx.config);
+    let Some((name, _)) = cartopolis_core::address::split(username) else {
+        return;
+    };
+    let body = crate::remote::ContactAnswer {
+        from: cartopolis_core::address::person(&ctx.display_name, &link.server),
+        to: name.to_string(),
+        accept,
+    };
+    let (conn, home) = (ctx.conn.clone(), home.to_string());
+    tokio::spawn(async move {
+        let done: Result<crate::remote::Done, String> =
+            crate::remote::post(&link, &conn, &home, "/contact-answer", &body).await;
+        if let Err(why) = done {
+            tracing::info!(%home, "chat elsewhere: answer not delivered: {why}");
+        }
+    });
 }

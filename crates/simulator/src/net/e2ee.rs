@@ -6,6 +6,7 @@ use super::{
     MIN_CLAIM_INTERVAL,
 };
 use crate::db;
+use crate::remote;
 use bytes::Bytes;
 use cartopolis_core::{
     address, encode_app_frame, E2eeCursor, E2eeKeyPackage, E2eeNewDevice, E2eeWelcome, NetMessage,
@@ -16,25 +17,195 @@ use uuid::Uuid;
 /// cannot be served. Storage here is keyed by local account; addresses are the
 /// wire's, and this is the one place they are translated on the way in.
 ///
-/// Somebody on another server is refused in words: every identity is already
-/// a full address so that chats can span servers later, but nothing forwards
-/// to another server yet. A bare name is read as a local one.
+/// Somebody on another server is the account here that stands for them
+/// (`crate::remote`), whose username is their full address; on a server that
+/// does not talk to others they are refused in words. A bare name is read as
+/// a local one.
 pub(super) fn local_name<T>(ctx: &ConnCtx<T>, who: &str) -> Result<String, String> {
     match address::split(who.trim()) {
         Some((name, server)) if server.eq_ignore_ascii_case(&ctx.config.server_name()) => {
             Ok(name.to_string())
         }
-        Some(_) => Err(format!(
-            "{} is on another server, and chats between servers are not built yet",
-            who.trim()
-        )),
+        Some((name, server)) => {
+            if remote::Link::from_config(&ctx.config).enabled {
+                Ok(address::person(name, server))
+            } else {
+                Err(format!(
+                    "{} is on another server: {}",
+                    who.trim(),
+                    remote::OFF
+                ))
+            }
+        }
         None => Ok(who.trim().to_string()),
     }
 }
 
-/// A local account as the full address the wire carries.
+/// An account here as the full address the wire carries: its name on this
+/// server, or the address it already is for somebody elsewhere.
 fn full<T>(ctx: &ConnCtx<T>, name: &str) -> String {
-    address::person(name, &ctx.config.server_name())
+    address::qualify(name, &ctx.config.server_name())
+}
+
+/// Claim `name@server`'s key packages from their home, for a chat with
+/// somebody elsewhere, and keep their devices as theirs here so the
+/// invitation that names them is taken.
+async fn claim_elsewhere<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    request_id: u32,
+    name: &str,
+    server: &str,
+) -> anyhow::Result<()> {
+    let link = remote::Link::from_config(&ctx.config);
+    let them = address::person(name, server);
+    let (key, here, who) = (ctx.principal_key.clone(), link.server.clone(), them.clone());
+    // Rule 4 here first: a request or a contact between the two.
+    let allowed = db::call(&ctx.conn, move |c| -> Result<String, String> {
+        let shadow = remote::account(c, &who, &here)
+            .map_err(|e| e.to_string())?
+            .ok_or("no such person")?;
+        match crate::contacts::may_invite(c, &key, &shadow) {
+            Ok(true) => Ok(shadow),
+            Ok(false) => Err(crate::contacts::Refusal::NotAContact(who).to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await;
+    let shadow = match allowed {
+        Ok(Ok(shadow)) => shadow,
+        Ok(Err(refusal)) => return ctx.send(&server_error(request_id, 403, refusal)).await,
+        Err(_) => return Ok(()),
+    };
+    let claim = remote::ClaimKeys {
+        by: full(ctx, &ctx.display_name),
+        of: name.to_string(),
+    };
+    let keys: remote::Keys = match remote::post(&link, &ctx.conn, server, "/keys", &claim).await {
+        Ok(keys) => keys,
+        Err(refusal) => return ctx.send(&server_error(request_id, 403, refusal)).await,
+    };
+    let packages = match db::call(&ctx.conn, move |c| {
+        keys.packages
+            .into_iter()
+            .filter(|p| remote::own_device(c, &shadow, p.device).unwrap_or(false))
+            .map(|p| E2eeKeyPackage {
+                device: p.device,
+                bytes: p.bytes,
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        Ok(packages) => packages,
+        Err(_) => return Ok(()),
+    };
+    ctx.send(&NetMessage::E2eeKeyPackages {
+        request_id,
+        address: them,
+        packages,
+    })
+    .await
+}
+
+/// An `E2eeSend` into a chat whose hub is another server: forwarded there, and
+/// its answer passed back. The hub applies every rule; this server only
+/// vouches that the sender is who they are.
+async fn send_elsewhere<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    device: Uuid,
+    hub: String,
+    send: Outgoing,
+) -> anyhow::Result<()> {
+    let link = remote::Link::from_config(&ctx.config);
+    let submit = remote::Submit {
+        from: full(ctx, &ctx.display_name),
+        device,
+        group: send.group.clone(),
+        epoch: send.epoch,
+        commit: send.commit,
+        message: send.message,
+        welcome: send.welcome.map(|w| remote::Welcome {
+            devices: w.devices,
+            members: w
+                .members
+                .iter()
+                .map(|m| address::qualify(m, &link.server))
+                .collect(),
+            bytes: w.bytes,
+        }),
+    };
+    let answer: Result<remote::Submitted, String> =
+        remote::post(&link, &ctx.conn, &hub, "/submit", &submit).await;
+    let (seq, refused) = match answer {
+        Ok(a) => (a.seq, a.refused),
+        Err(why) => (None, Some(why)),
+    };
+    if seq.is_some() && !send.commit {
+        ctx.stats
+            .event(crate::stats::Event::PrivateMessage, None, None);
+    }
+    ctx.send(&NetMessage::E2eeSent {
+        request_id: send.request_id,
+        group: send.group,
+        seq,
+        refused,
+    })
+    .await
+}
+
+/// Catch a device up on chats other servers are the hubs of, by asking each
+/// hub through this server. Commits always; lines from somebody this person
+/// blocked never, as for a chat here.
+async fn sync_elsewhere<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    device: Uuid,
+    cursors: &[(Vec<u8>, u64)],
+) -> anyhow::Result<()> {
+    let link = remote::Link::from_config(&ctx.config);
+    let mut hubs: std::collections::BTreeMap<String, Vec<remote::Cursor>> = Default::default();
+    for (group, after) in cursors {
+        if let Some(hub) = link.hub_elsewhere(group) {
+            hubs.entry(hub).or_default().push(remote::Cursor {
+                group: group.clone(),
+                after: *after,
+            });
+        }
+    }
+    if hubs.is_empty() || !link.enabled {
+        return Ok(());
+    }
+    let account = ctx.principal_key.clone();
+    let blocked = db::call(&ctx.conn, move |c| blocked_lowercase(c, &account))
+        .await
+        .unwrap_or_default();
+    let who = full(ctx, &ctx.display_name);
+    for (hub, cursors) in hubs {
+        let ask = remote::Sync {
+            who: who.clone(),
+            device,
+            cursors,
+        };
+        let synced: remote::Synced = match remote::post(&link, &ctx.conn, &hub, "/sync", &ask).await
+        {
+            Ok(s) => s,
+            // Unreachable for now: the device keeps its cursor and asks again.
+            Err(why) => {
+                tracing::info!(%hub, "chat elsewhere: sync failed: {why}");
+                continue;
+            }
+        };
+        for e in synced.entries {
+            // Only the hub's own chats, whatever it sent.
+            if link.hub_elsewhere(&e.group).as_deref() != Some(hub.as_str()) {
+                continue;
+            }
+            if !e.commit && blocked.contains(&e.sender.to_lowercase()) {
+                continue;
+            }
+            ctx.feed(&e.message()).await?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn on_register_device<T: FrameTransport>(
@@ -100,6 +271,15 @@ pub(super) async fn on_claim_key_packages<T: FrameTransport>(
                 "too many new private chats at once — try again in a moment",
             ))
             .await;
+    }
+    let link = remote::Link::from_config(&ctx.config);
+    if let Some((name, server)) = link.elsewhere(&subject) {
+        if !link.enabled {
+            let refusal = format!("{} is on another server: {}", subject.trim(), remote::OFF);
+            return ctx.send(&server_error(request_id, 501, refusal)).await;
+        }
+        let (name, server) = (name.to_string(), server.to_string());
+        return claim_elsewhere(ctx, request_id, &name, &server).await;
     }
     let subject = match local_name(ctx, &subject) {
         Ok(name) => name,
@@ -187,6 +367,13 @@ pub(super) async fn on_create_group<T: FrameTransport>(
     let id = group.clone();
     let device = ctx.e2ee_device;
     let result = match db::call(&ctx.conn, move |c| {
+        // Somebody elsewhere is an account here from the first time they are named.
+        if let Some(w) = direct_with
+            .as_deref()
+            .filter(|w| w.contains(remote::ADDRESS_MARK))
+        {
+            let _ = remote::account(c, w, &home);
+        }
         let created = crate::e2ee::create_group(c, &account, &id, direct_with.as_deref());
         if let (Ok(None), Some(device)) = (&created, device) {
             crate::e2ee::hold(c, &id, device)?;
@@ -226,6 +413,9 @@ pub(super) async fn on_send<T: FrameTransport>(
     let Some(device) = ctx.e2ee_device else {
         return Ok(());
     };
+    if let Some(hub) = remote::Link::from_config(&ctx.config).hub_elsewhere(&send.group) {
+        return send_elsewhere(ctx, device, hub, send).await;
+    }
     let Outgoing {
         request_id,
         group,
@@ -369,6 +559,14 @@ pub(super) async fn on_send<T: FrameTransport>(
                 ),
                 None => (appended.members, appended.invites),
             };
+            // Members elsewhere get it through their homes.
+            remote::forward_appended(
+                &remote::Link::from_config(&ctx.config),
+                &ctx.conn,
+                &members,
+                &invites,
+                &appended.entry,
+            );
             let e = appended.entry;
             let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeDeliver {
                 group: e.group,
@@ -420,6 +618,7 @@ pub(super) async fn on_sync<T: FrameTransport>(
         return Ok(());
     };
     let cursors: Vec<(Vec<u8>, u64)> = cursors.into_iter().map(|c| (c.group, c.after)).collect();
+    let asked = cursors.clone();
     let account = ctx.principal_key.clone();
     let result = match db::call(&ctx.conn, move |c| {
         // Read fresh rather than from the list at connect: a block made since
@@ -464,6 +663,7 @@ pub(super) async fn on_sync<T: FrameTransport>(
         })
         .await?;
     }
+    sync_elsewhere(ctx, device, &asked).await?;
     // Topics this device still holds that its account was taken out of while
     // it was away: say so, so it forgets them rather than waiting for ever.
     for (group, community) in gone {

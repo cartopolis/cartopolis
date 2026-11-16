@@ -167,6 +167,7 @@ pub fn router(state: HttpState) -> Router {
         // Communities' public posts, and what other fediverse servers ask
         // for (`crate::fediverse`).
         .merge(crate::fediverse::routes::routes())
+        .merge(crate::remote::routes::routes())
         // Usage statistics: the page-view beacon, Admin › Stats and a
         // community's own numbers (`crate::stats`).
         .merge(crate::stats::api::routes())
@@ -729,6 +730,11 @@ pub(crate) fn check_username(username: &str) -> ApiResult<()> {
     }
     if username.trim() != username {
         return Err(bad_request("username may not begin or end with whitespace"));
+    }
+    // `name@server` is somebody on another server (`crate::remote`), and must
+    // never also be the name of somebody here.
+    if username.contains(crate::remote::ADDRESS_MARK) {
+        return Err(bad_request("username may not hold an @"));
     }
     Ok(())
 }

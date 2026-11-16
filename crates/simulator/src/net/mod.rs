@@ -36,7 +36,7 @@ mod calls;
 mod carry;
 mod chat;
 mod communities;
-mod contacts;
+pub(crate) mod contacts;
 mod e2ee;
 mod greet;
 mod hand;
