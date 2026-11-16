@@ -41,8 +41,9 @@ const TAU: f32 = 6.283185307;
 
 // x: size at birth, metres. y: size at death. z: overall opacity. w: the shape —
 // 0 a camera-facing blob, 1 a flat ring lying on the emitter's level (water
-// rings, `ParticleMaterial::rings`). A prim's effect is always a blob; rings are
-// the client's own (`systems::splashes`) and never come off the wire.
+// rings, `ParticleMaterial::rings`), 2 droplets streaked along their motion
+// (`ParticleMaterial::droplets`). A prim's effect is always a blob; the others
+// are the client's own (`systems::splashes`) and never come off the wire.
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> sizing: vec4<f32>;
 
 // rgb: linear colour at birth / at death. These are emissive and routinely above
@@ -129,7 +130,7 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
     // curve — most of all a linear fade — reads as a bug rather than as a choice.
     let envelope = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.5, 1.0, t));
 
-    if sizing.w > 0.5 {
+    if sizing.w > 0.5 && sizing.w < 1.5 {
         // A ring on the water: a flat quad on the emitter's level, centred on
         // a point in the source disc, growing at this particle's speed. The
         // ring is drawn by the fragment stage inside it, so the quad is the
@@ -137,14 +138,20 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
         // turns one burst into rings of several sizes.
         let ring_speed = motion.x * (0.6 + 0.8 * h.z);
         let radius = 0.03 + ring_speed * age;
-        let band = max(mix(sizing.x, sizing.y, t), 0.01);
+        // A real ripple spreads as it goes: the band widens with the radius
+        // and its light is shared out over it, so it fades and softens rather
+        // than staying a drawn line (2026-11-16: thin rings read as UI).
+        let band = max(mix(sizing.x, sizing.y, t), 0.01) + 0.35 * radius;
         let half = (radius + band) * alive;
         let off = (h.xy - 0.5) * 2.0 * emitter.z;
         let centre = origin + vec3<f32>(off.x, 0.0, off.y);
         let world = centre + vec3<f32>(v.position.x * 2.0 * half, 0.0, v.position.y * 2.0 * half);
+        // Gone smoothly by the end of its life, from the start: a ripple is at
+        // its clearest the moment it forms.
+        let fade = smoothstep(0.0, 0.06, t) * (1.0 - t) * (1.0 - t);
         out.position = position_world_to_clip(world);
         out.uv = v.position.xy + 0.5;
-        out.tint = vec4<f32>(mix(hot.rgb, cool.rgb, t), sizing.z * envelope * alive);
+        out.tint = vec4<f32>(mix(hot.rgb, cool.rgb, t), sizing.z * fade * alive);
         let span = max(radius + band, 1e-4);
         out.ring = vec2<f32>(radius / span, 0.5 * band / span);
         return out;
@@ -183,17 +190,39 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
         + vec3<f32>(0.0, 0.5 * motion.z * age * age, 0.0)
         + swirl * (emitter.w * age);
 
-    let size = mix(sizing.x, sizing.y, t) * alive;
+    var size = mix(sizing.x, sizing.y, t) * alive;
 
     // Camera-facing. The first two columns of `world_from_view` are the camera's
     // right and up in world space, which is the whole of a billboard.
     let cam_right = normalize(view.world_from_view[0].xyz);
     let cam_up = normalize(view.world_from_view[1].xyz);
-    let world = centre + cam_right * (v.position.x * size) + cam_up * (v.position.y * size);
+    var world = centre + cam_right * (v.position.x * size) + cam_up * (v.position.y * size);
+    var tint = mix(hot.rgb, cool.rgb, t);
+
+    if sizing.w > 1.5 {
+        // Droplets (`ParticleMaterial::droplets`): each one its own size, from
+        // a fine mist to a fat drop, drawn as a streak along its motion as a
+        // camera's shutter sees it, and brightest as it leaves the water.
+        let grain = fract(h.x * 13.7 + h.z * 5.1);
+        size = size * (0.35 + 1.3 * grain * grain);
+        let vel = dir * speed + vec3<f32>(0.0, motion.z * age, 0.0);
+        let to_cam = normalize(view.world_position - centre);
+        let across_view = vel - to_cam * dot(vel, to_cam);
+        let moving = length(across_view);
+        var along = cam_up;
+        if moving > 1e-3 {
+            along = across_view / moving;
+        }
+        let side = normalize(cross(to_cam, along));
+        // The streak: a 1/25 s exposure's travel on top of the drop itself.
+        let length_m = size + moving * 0.04 * alive;
+        world = centre + side * (v.position.x * size * 0.6) + along * (v.position.y * length_m);
+        tint = tint * mix(1.5, 0.6, t);
+    }
 
     out.position = position_world_to_clip(world);
     out.uv = v.position.xy + 0.5;
-    out.tint = vec4<f32>(mix(hot.rgb, cool.rgb, t), sizing.z * envelope * alive);
+    out.tint = vec4<f32>(tint, sizing.z * envelope * alive);
     out.ring = vec2<f32>(-1.0, 0.0);
     return out;
 }
@@ -204,9 +233,9 @@ fn fragment(in: ParticleOut) -> @location(0) vec4<f32> {
     var a: f32;
     if in.ring.x >= 0.0 {
         // A ring: a soft band at its radius, brightest in the middle of the
-        // band. Squared for the blob's reason.
+        // band and with no edge of its own — a ripple has none.
         let band = 1.0 - smoothstep(0.0, max(in.ring.y, 1e-3), abs(r - in.ring.x));
-        a = band * band * in.tint.a;
+        a = band * band * (3.0 - 2.0 * band) * in.tint.a;
     } else {
         // A soft round blob out of a square quad. Squared, so the core is bright
         // and the edge is genuinely gone — a linear falloff leaves a visible

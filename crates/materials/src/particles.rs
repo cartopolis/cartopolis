@@ -99,4 +99,13 @@ impl ParticleMaterial {
         m.sizing.w = 1.0;
         m
     }
+
+    /// The same effect drawn as water droplets: each particle its own size
+    /// (0.35–1.65× the effect's), streaked along its motion, brightest as it
+    /// leaves. Client-only, like [`Self::rings`].
+    pub fn droplets(e: &ParticleEffect, burst_start: f32) -> Self {
+        let mut m = Self::from_effect(e, burst_start);
+        m.sizing.w = 2.0;
+        m
+    }
 }

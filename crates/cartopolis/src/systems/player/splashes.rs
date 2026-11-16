@@ -159,11 +159,17 @@ pub fn splash_sound(size: f32) -> (bool, f32) {
     (s >= 0.45, 0.30 + 0.55 * s)
 }
 
-/// Linear colours, emissive: the spray is lit water, a little blue.
-const SPRAY: [f32; 3] = [0.80, 0.86, 0.92];
-const SPRAY_END: [f32; 3] = [0.55, 0.62, 0.70];
-const FOAM: [f32; 3] = [0.70, 0.75, 0.80];
-const FOAM_END: [f32; 3] = [0.40, 0.45, 0.50];
+/// Linear colours, emissive (added to what is behind). The droplets are lit
+/// water catching the sky; the shader brightens them as they leave.
+const SPRAY: [f32; 3] = [0.95, 1.0, 1.05];
+const SPRAY_END: [f32; 3] = [0.60, 0.66, 0.72];
+/// A ripple only tilts the reflection a little: a faint brightening, not a
+/// line (2026-11-16 — crisp white rings read as UI drawn on the water).
+const RIPPLE: [f32; 3] = [0.45, 0.50, 0.55];
+const RIPPLE_END: [f32; 3] = [0.30, 0.34, 0.38];
+/// The white water where a body broke the surface.
+const FOAM: [f32; 3] = [0.90, 0.95, 0.97];
+const FOAM_END: [f32; 3] = [0.50, 0.55, 0.58];
 /// Droplets fall at the Earth's gravity: this is water, not the avatar.
 const DROPLET_GRAVITY: f32 = -9.8;
 
@@ -179,38 +185,90 @@ pub fn entry_spray(size: f32) -> ParticleEffect {
     let s = size.clamp(0.0, 1.0);
     let speed = 1.6 + 4.4 * s;
     ParticleEffect {
-        count: (40.0 + 190.0 * s) as u16,
+        // Many small drops, each its own size and streaked along its flight
+        // (`ParticleMaterial::droplets`): one size of soft round blob read as
+        // snow (2026-11-16).
+        count: (110.0 + 140.0 * s) as u16,
         life: flight_secs(speed),
         speed,
-        spread_deg: 26.0,
+        spread_deg: 22.0,
         gravity: DROPLET_GRAVITY,
-        source_radius: 0.20 + 0.45 * s,
-        // Large and faint: overlapping, they read as a sheet of spray; small
-        // and bright, as sparkles (seen 2026-11-16 on mac-1).
-        size_start: 0.30 + 0.40 * s,
-        size_end: 0.16 + 0.20 * s,
+        source_radius: 0.20 + 0.40 * s,
+        size_start: 0.045 + 0.025 * s,
+        size_end: 0.03,
         color_start: SPRAY,
         color_end: SPRAY_END,
-        alpha: 0.42,
-        turbulence: 0.15,
+        alpha: 0.85,
+        turbulence: 0.05,
         burst: true,
         sequence: 0,
     }
 }
 
-/// The rings spreading from where a body went in.
+/// The ripples spreading from where a body went in: two or three, faint,
+/// widening and fading as they go.
 #[must_use]
 pub fn entry_rings(size: f32) -> ParticleEffect {
     let s = size.clamp(0.0, 1.0);
     ParticleEffect {
-        count: (3.0 + 5.0 * s) as u16,
-        life: 1.6 + 1.6 * s,
-        speed: 0.7 + 1.2 * s,
+        count: (2.0 + 2.0 * s) as u16,
+        life: 2.0 + 1.5 * s,
+        speed: 0.7 + 1.0 * s,
+        spread_deg: 0.0,
+        gravity: 0.0,
+        source_radius: 0.10 + 0.20 * s,
+        size_start: 0.10,
+        size_end: 0.25,
+        color_start: RIPPLE,
+        color_end: RIPPLE_END,
+        alpha: 0.28,
+        turbulence: 0.0,
+        burst: true,
+        sequence: 0,
+    }
+}
+
+/// The crown: the dense white sheet of water thrown up round the hole a body
+/// punches in the surface — lower, slower and thicker than the drops flung
+/// off it, and what a photograph of a splash is mostly made of (the drops
+/// alone read as sparks, 2026-11-16).
+#[must_use]
+pub fn entry_crown(size: f32) -> ParticleEffect {
+    let s = size.clamp(0.0, 1.0);
+    let speed = 1.0 + 2.2 * s;
+    ParticleEffect {
+        count: (90.0 + 120.0 * s) as u16,
+        life: flight_secs(speed),
+        speed,
+        spread_deg: 38.0,
+        gravity: DROPLET_GRAVITY,
+        source_radius: 0.25 + 0.35 * s,
+        size_start: 0.14 + 0.12 * s,
+        size_end: 0.05,
+        color_start: SPRAY,
+        color_end: SPRAY_END,
+        alpha: 0.5,
+        turbulence: 0.10,
+        burst: true,
+        sequence: 0,
+    }
+}
+
+/// The patch of white water where a body broke the surface: a few wide, slow
+/// "rings" whose band is wider than they are, i.e. soft discs, gone in a
+/// second or two.
+#[must_use]
+pub fn entry_foam(size: f32) -> ParticleEffect {
+    let s = size.clamp(0.0, 1.0);
+    ParticleEffect {
+        count: 5,
+        life: 0.9 + 0.7 * s,
+        speed: 0.25,
         spread_deg: 0.0,
         gravity: 0.0,
         source_radius: 0.15 + 0.30 * s,
-        size_start: 0.22 + 0.12 * s,
-        size_end: 0.06,
+        size_start: 0.6 + 0.8 * s,
+        size_end: 1.0 + 1.0 * s,
         color_start: FOAM,
         color_end: FOAM_END,
         alpha: 0.55,
@@ -225,18 +283,18 @@ pub fn entry_rings(size: f32) -> ParticleEffect {
 pub fn stroke_spray() -> ParticleEffect {
     let speed = 1.3;
     ParticleEffect {
-        count: 20,
+        count: 30,
         life: flight_secs(speed),
         speed,
         spread_deg: 40.0,
         gravity: DROPLET_GRAVITY,
         source_radius: 0.30,
-        size_start: 0.14,
-        size_end: 0.08,
+        size_start: 0.03,
+        size_end: 0.02,
         color_start: SPRAY,
         color_end: SPRAY_END,
-        alpha: 0.45,
-        turbulence: 0.05,
+        alpha: 0.7,
+        turbulence: 0.03,
         burst: true,
         sequence: 0,
     }
@@ -247,17 +305,17 @@ pub fn stroke_spray() -> ParticleEffect {
 #[must_use]
 pub fn stroke_rings() -> ParticleEffect {
     ParticleEffect {
-        count: 4,
-        life: 1.8,
+        count: 2,
+        life: 2.0,
         speed: 0.45,
         spread_deg: 0.0,
         gravity: 0.0,
-        source_radius: 0.40,
-        size_start: 0.14,
-        size_end: 0.05,
-        color_start: FOAM,
-        color_end: FOAM_END,
-        alpha: 0.45,
+        source_radius: 0.35,
+        size_start: 0.16,
+        size_end: 0.20,
+        color_start: RIPPLE,
+        color_end: RIPPLE_END,
+        alpha: 0.18,
         turbulence: 0.0,
         burst: true,
         sequence: 0,
@@ -268,17 +326,17 @@ pub fn stroke_rings() -> ParticleEffect {
 #[must_use]
 pub fn tread_rings() -> ParticleEffect {
     ParticleEffect {
-        count: 5,
+        count: 3,
         life: 2.4,
         speed: 0.35,
         spread_deg: 0.0,
         gravity: 0.0,
         source_radius: 0.25,
-        size_start: 0.10,
-        size_end: 0.04,
-        color_start: FOAM,
-        color_end: FOAM_END,
-        alpha: 0.32,
+        size_start: 0.16,
+        size_end: 0.18,
+        color_start: RIPPLE,
+        color_end: RIPPLE_END,
+        alpha: 0.18,
         turbulence: 0.0,
         burst: false,
         sequence: 0,
@@ -289,22 +347,22 @@ pub fn tread_rings() -> ParticleEffect {
 /// back round it into the water.
 #[must_use]
 pub fn jet_spray() -> ParticleEffect {
-    let speed = 2.2;
+    let speed = 2.6;
     ParticleEffect {
-        count: 220,
+        count: 256,
         // Up and back down past the column's top to the water under it.
         life: (speed + (speed * speed + 2.0 * -DROPLET_GRAVITY * JET_TOP_M).sqrt())
             / -DROPLET_GRAVITY,
         speed,
-        spread_deg: 16.0,
+        spread_deg: 14.0,
         gravity: DROPLET_GRAVITY,
         source_radius: 0.08,
-        size_start: 0.16,
-        size_end: 0.32,
+        size_start: 0.05,
+        size_end: 0.07,
         color_start: SPRAY,
         color_end: SPRAY_END,
-        alpha: 0.26,
-        turbulence: 0.12,
+        alpha: 0.8,
+        turbulence: 0.08,
         burst: false,
         sequence: 0,
     }
@@ -314,17 +372,17 @@ pub fn jet_spray() -> ParticleEffect {
 #[must_use]
 pub fn jet_rings() -> ParticleEffect {
     ParticleEffect {
-        count: 8,
+        count: 4,
         life: 2.2,
         speed: 0.5,
         spread_deg: 0.0,
         gravity: 0.0,
         source_radius: 0.6,
-        size_start: 0.14,
-        size_end: 0.05,
-        color_start: FOAM,
-        color_end: FOAM_END,
-        alpha: 0.42,
+        size_start: 0.16,
+        size_end: 0.20,
+        color_start: RIPPLE,
+        color_end: RIPPLE_END,
+        alpha: 0.18,
         turbulence: 0.0,
         burst: false,
         sequence: 0,
@@ -513,9 +571,11 @@ pub fn detect_splashes(
 // The drawing.
 // ---------------------------------------------------------------------------
 
-/// Burst emitters, re-armed in turn: two a splash (spray and rings), so this
-/// is a dozen splashes on the water at once — a stroke's lasts two seconds.
-const BURST_SLOTS: usize = 24;
+/// Burst emitters, re-armed in turn: two a stroke (droplets and ripples),
+/// four a body going in (drops, crown, ripples, foam), so a dozen or more
+/// splashes on the water at once — a stroke's lasts two seconds. Each is one
+/// draw of the shared pool and nothing uploaded, so this is the whole cost.
+const BURST_SLOTS: usize = 40;
 /// Swimmers treading water drawn with rings at once.
 const TREAD_SLOTS: usize = 8;
 /// Fountain jets sprayed at once: the nearest to the camera.
@@ -693,7 +753,7 @@ pub fn draw_splashes(
         fx.tread = (0..TREAD_SLOTS)
             .map(|_| spawn_emitter(&mut commands, root, &mesh, tread.clone()))
             .collect();
-        let spray = materials.add(ParticleMaterial::from_effect(&jet_spray(), 0.0));
+        let spray = materials.add(ParticleMaterial::droplets(&jet_spray(), 0.0));
         let rings = materials.add(ParticleMaterial::rings(&jet_rings(), 0.0));
         fx.jets = (0..JET_SLOTS)
             .map(|_| {
@@ -717,12 +777,24 @@ pub fn draw_splashes(
         if !on {
             continue;
         }
-        let (spray, rings) = match splash.kind {
-            SplashKind::Entry { size } => (entry_spray(size), entry_rings(size)),
-            SplashKind::Stroke => (stroke_spray(), stroke_rings()),
-            SplashKind::Jet => (entry_spray(0.35), entry_rings(0.35)),
+        // Droplets, the ripples, and — where a body went in — the white crown
+        // of foam on the surface, which is a ring too wide to have a hole.
+        let parts: Vec<(ParticleEffect, bool)> = match splash.kind {
+            SplashKind::Entry { size } => vec![
+                (entry_spray(size), false),
+                (entry_crown(size), false),
+                (entry_rings(size), true),
+                (entry_foam(size), true),
+            ],
+            SplashKind::Stroke => vec![(stroke_spray(), false), (stroke_rings(), true)],
+            SplashKind::Jet => vec![
+                (entry_spray(0.35), false),
+                (entry_crown(0.35), false),
+                (entry_rings(0.35), true),
+                (entry_foam(0.35), true),
+            ],
         };
-        for (effect, flat) in [(spray, false), (rings, true)] {
+        for (effect, flat) in parts {
             let i = fx.next;
             fx.next = (fx.next + 1) % fx.bursts.len();
             let slot = &mut fx.bursts[i];
@@ -730,7 +802,7 @@ pub fn draw_splashes(
                 *m = if flat {
                     ParticleMaterial::rings(&effect, shader_now)
                 } else {
-                    ParticleMaterial::from_effect(&effect, shader_now)
+                    ParticleMaterial::droplets(&effect, shader_now)
                 };
             }
             slot.ends = now + effect.life;
@@ -1056,6 +1128,8 @@ mod tests {
             small,
             big,
             entry_rings(0.5),
+            entry_foam(1.0),
+            entry_crown(1.0),
             stroke_spray(),
             stroke_rings(),
             tread_rings(),
@@ -1066,6 +1140,23 @@ mod tests {
         }
         // Droplets come back down: a spray that rises forever is smoke.
         assert!(big.gravity < 0.0 && jet_spray().gravity < 0.0);
+    }
+
+    /// Ripples are a faint disturbance of the reflection — a few at a time,
+    /// low in contrast and widening — not lines drawn on the water, which is
+    /// what the first, crisp white rings looked like (2026-11-16).
+    #[test]
+    fn ripples_are_few_faint_and_widen() {
+        for r in [entry_rings(1.0), stroke_rings(), tread_rings(), jet_rings()] {
+            assert!(r.count <= 4, "{} rings at once", r.count);
+            assert!(r.alpha <= 0.3, "a ring at alpha {}", r.alpha);
+            assert!(r.size_end > r.size_start, "the band narrows: {r:?}");
+            assert!(r.color_start.iter().all(|c| *c < 0.6), "a white ring");
+        }
+        // Droplets are small: a spray of blobs as big as a hand is snow.
+        for d in [entry_spray(1.0), stroke_spray(), jet_spray()] {
+            assert!(d.size_start <= 0.07, "a drop {} m across", d.size_start);
+        }
     }
 
     #[test]

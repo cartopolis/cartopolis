@@ -14,12 +14,12 @@ fountains made no splash and no sound.
 
 | Moment | Drawn | Heard |
 |---|---|---|
-| A body goes into the water | spray and rings at the entry point, sized by the entry speed | `splash-big-*` (size ≥ 0.45) or `splash-small-*`, louder with size |
-| A swimmer's stroke | a small throw of spray and a few rings ahead of the feet, where the head and hands meet the water | `stroke-*` |
+| A body goes into the water | fine streaked drops, a white crown, a foam patch on the surface and two or three faint ripples, all sized by the entry speed | `splash-big-*` (size ≥ 0.45) or `splash-small-*`, louder with size |
+| A swimmer's stroke | a small throw of drops and two faint ripples ahead of the feet, where the head and hands meet the water | `stroke-*` |
 | Treading water (in it, not moving) | gentle continuous rings at the body | — |
 | Swimming at all (own avatar) | — | `tread.ogg` loop, eased in; footsteps are off and the landing thud is not played |
 | Another swimmer near | the same, from this viewer's map | `tread.ogg` by distance, strokes and splashes by distance |
-| A fountain jet (`amenity=fountain` in open water) | a plume from the column's top and rings at its foot, for the six jets nearest the camera within 300 m | `fountain.ogg` loop by distance to the nearest jet (full within 4 m, gone at 60 m) |
+| A fountain jet (`amenity=fountain` in open water) | a plume of streaked drops from the column's top and faint ripples at its foot, for the six jets nearest the camera within 300 m | `fountain.ogg` loop by distance to the nearest jet (full within 4 m, gone at 60 m) |
 | A swimmer reaches a jet (within 1 m) | a medium splash, once on the way in | a small splash |
 
 Nothing went on the wire. Who is in the water is each viewer's own reading
@@ -49,16 +49,36 @@ seek time over the clip's own length (`swim_secs`) — so the splash follows a
 re-cut pack, a playback-rate change and a pinned capture alike. A rebuilt pack
 whose stroke moves fails that test rather than splashing at the wrong moment.
 
-## Drawn with the particle shader, plus one shape
+## Drawn with the particle shader, plus two shapes
 
 `systems::particles`' closed form and quad pool, unchanged in principle
-(`particles-are-a-function-of-time.md`). The one addition is a flat-ring shape
-in `particles.wesl`, chosen by the spare `sizing.w` (`ParticleMaterial::rings`):
-each particle is a ring lying on the emitter's level, growing at its speed,
-the band its size. A prim's effect never sets it, so it is not on the wire.
+(`particles-are-a-function-of-time.md`). Two shapes are added, chosen by the
+spare `sizing.w`; a prim's effect never sets it, so neither is on the wire.
 
-- **Bursts re-arm a fixed set of 24 emitters** (two a splash) in turn — a
-  material rewrite, never a spawn. A burst past its life is hidden.
+- **Rings** (`ParticleMaterial::rings`, 1): each particle a ring lying on the
+  emitter's level, growing at its speed. The band widens with the radius
+  (+0.35 × radius) and the ring fades as (1 − t)² from the start, so a ripple
+  softens and thins out as it spreads, as a real one does.
+- **Droplets** (`ParticleMaterial::droplets`, 2): each particle its own size
+  (0.35–1.65× by a hash), drawn as a streak along its motion across the view
+  (a 1/25 s exposure's travel) and brighter as it leaves the water.
+
+**What it is meant to look like, and how it first did not** (owner review,
+2026-11-16): the first rings were crisp thin white circles that read as UI
+drawn on the water, and the spray was round soft blobs of one size that read
+as snow. The reference photos (CC0, Wikimedia Commons: a girl jumping into the
+sea at Röe Sandvik; ripples on a foggy lake) show a splash as a dense white
+crown with fine streaked drops flung off it and white water on the surface,
+and ripples as a faint brightening of the reflection. So a body going in is
+now four bursts: fine drops, a lower and thicker crown, two or three faint
+ripples (alpha ≤ 0.3, a test holds it), and a patch of foam — a "ring" whose
+band is wider than it is, i.e. a soft disc, gone in a second or two. A stroke
+is fine drops and two ripples. Judged on mac-1's GPU, which is evidence for
+the shape and not for exact colour.
+
+- **Bursts re-arm a fixed set of 40 emitters** (two a stroke, four a body
+  going in) in turn — a material rewrite, never a spawn. A burst past its
+  life is hidden. Each is one draw of the shared pool.
 - **A moving emitter drags its particles**: they are placed from the emitter's
   *current* origin. So continuous rings are only for a body treading water;
   a moving swimmer leaves a burst at each stroke, where it happened — a wake.
