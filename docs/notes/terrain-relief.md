@@ -382,8 +382,10 @@ halves exactly.
 Three things were considered and are worth recording:
 
 * **Half a metre, AHN's own grid, over the whole box.** 12800², 625 MB, 144 requests.
-  That resolution is what the fine tier follows the camera to reach, for consumers that
-  ask about a point rather than build a mesh.
+  That resolution is what the fine tier follows the camera to reach — for the ground's
+  shading (`ground_detail`). It was also stood on by every point consumer until
+  2026-11-16, which put the avatar up to 1.7 m off the drawn ground on a graded path;
+  `ground_at` now reads the drawn sheets (`foot-placement.md`).
 * **A finer camera-centred mid tier instead of a finer field.** Rejected: the fine tier
   re-centres every 96 m of walking, and anything that *meshes* off a moving tier retears
   its geometry every 96 m and changes shape at the rim as you walk. The field is

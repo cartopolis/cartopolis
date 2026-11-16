@@ -730,6 +730,7 @@ impl DeckPlates {
         set_walk_decks(*cell, Vec::new());
         set_walk_landings(*cell, Vec2::ZERO, Vec::new());
         set_walk_streets(*cell, None);
+        crate::systems::drawn_ground::set_cell(*cell, None);
         self.piers.remove(cell);
         self.digests.remove(cell);
         if self.plates.remove(cell).is_some() {
@@ -745,6 +746,7 @@ impl DeckPlates {
         if let Ok(mut w) = WALK_LANDINGS.write() {
             *w = None;
         }
+        crate::systems::drawn_ground::clear();
         self.piers.clear();
         if !self.plates.is_empty() {
             self.plates.clear();
@@ -2815,10 +2817,23 @@ fn spawn_geometry_task(
                     &ramps,
                 );
                 lap.mark("ground");
+                // What is walked on is what was just stood: the sheets'
+                // own triangles, sampled (`systems::drawn_ground`).
+                let mut walk_kb = 0;
+                if let (true, Some(meshes), Some((_, origin))) =
+                    (placed, outcome.as_ref(), ground.as_ref())
+                {
+                    let raster =
+                        crate::systems::drawn_ground::DrawnGround::rasterize(meshes, tile_m);
+                    walk_kb = raster.bytes() / 1024;
+                    crate::systems::drawn_ground::set_cell(cell, Some((*origin, raster)));
+                    lap.mark("walk raster");
+                }
                 let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
                 tracing::debug!(
                     cell = ?cell,
                     placed,
+                    walk_kb,
                     stages = %lap.split,
                     refine_ms = split[0] / 1000,
                     displace_ms = split[1] / 1000,

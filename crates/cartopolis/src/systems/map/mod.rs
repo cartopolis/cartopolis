@@ -40,6 +40,8 @@ pub mod light_shafts;
 pub mod building_designs;
 pub mod cutaway;
 pub mod ground_probe;
+// The ground as drawn, sampled for whatever stands on it.
+pub mod drawn_ground;
 pub mod load_control;
 // Only the kerbs near the camera go into the shadow maps.
 pub mod kerb_shadows;

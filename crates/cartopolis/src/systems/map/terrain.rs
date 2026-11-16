@@ -135,21 +135,6 @@ const FINE_RECENTRE_M: f32 = 96.0;
 /// scenario, 2026-10-16). The first box is still baked wherever the camera starts.
 const FINE_FREEZE_ALT: f32 = 800.0;
 
-/// Width of the ring, in world metres, over which the fine tier fades into the coarse
-/// field at its own boundary.
-///
-/// Not the [`edge_taper`] the coarse field uses, and the difference matters: that one
-/// fades to *flat*, because outside the coarse field there are no measurements at all.
-/// Here there are — the coarse field covers this ground too — so the fine tier fades to
-/// **the coarse answer**, and the two agree at the rim instead of meeting at a step.
-const FINE_BLEND_M: f32 = 24.0;
-
-/// How far the land beside the water may be lifted over the carve before
-/// [`TerrainField::ground_at`] stops applying the half-metre tier there, metres.
-/// The lift is bilinear and so continuous, and fading by it keeps the footing
-/// continuous too as the avatar walks up to a bank.
-const FINE_BANK_FADE_M: f32 = 0.1;
-
 /// Fraction of the half-extent held at full strength before the edge taper begins.
 const TAPER_START: f32 = 0.82;
 
@@ -699,78 +684,59 @@ impl TerrainField {
         self.ground.clone()
     }
 
-    /// Ground height at a point, preferring the half-metre tier where it reaches.
+    /// The ground at a point **as it is drawn**: what the avatar, its feet,
+    /// the collision, a car, a crow and a pin stand on.
     ///
-    /// **For point consumers only** — the avatar's footing, the collision eject, a car
-    /// on a road, a pin over the map. Anything that *bakes a mesh* must keep calling
-    /// [`TerrainSnapshot::at`] on the coarse field, and that is not a style preference:
-    /// subdivision is sized off [`TERRAIN_SAMPLE_M`] ([`MAX_GROUND_EDGE_M`],
-    /// `map_stream::relief_divisions`), so a mesh with a vertex every 24 m that sampled
-    /// a half-metre field would alias it — and would change shape every time the tier
-    /// re-centres, which is a 25 m grid twitching as you walk.
+    /// **For point consumers only.** Anything that *bakes a mesh* calls
+    /// [`TerrainSnapshot::at`] (or `land_at`) on the coarse field and is what this
+    /// reads back: subdivision is sized off [`TERRAIN_SAMPLE_M`]
+    /// ([`MAX_GROUND_EDGE_M`], `map_stream::relief_divisions`).
     ///
     /// Same contract as `at`: `0.0` when nothing is known, so a caller adds it
     /// unconditionally.
+    ///
+    /// **Where a cell's sheets are built, it is those sheets**
+    /// (`systems::drawn_ground`): their own triangles sampled on a metre
+    /// raster by the cell's worker, refinement chords, streets on their solved
+    /// levels, landings and lower quays and all. Elsewhere it is the field the
+    /// sheets are cut from, with the streets' and landings' corrections
+    /// (`map_geometry::walk_beside_roads`, `walk_landed`).
+    ///
+    /// **It used to prefer the half-metre tier**, from when the field was 25 m
+    /// and nothing finer could be stood on. Nothing is drawn on that tier — it
+    /// shades the ground (`ground_detail`) and no more — and over a path atlas
+    /// graded it puts back what the grade took out: on the Noorderplantsoen
+    /// rampart the avatar stood 1.7 m over the drawn path, and ±15–45 cm over a
+    /// street's kerbs by the Oosterhaven (2026-11-16, `foot-placement.md`).
     ///
     /// **Beside registered water this is the land, not the carve** — the
     /// [`land_at`](TerrainSnapshot::land_at) every flat ground sheet is stood on. A
     /// register's ring is routinely a metre or two wider than the drawn water (the
     /// the study pond's is 1.2 m, 2026-10-08), so the carve reaches under the lawn,
     /// and reading `at` there put the avatar and the grass a metre and a half under
-    /// the lawn they were standing on. The half-metre tier is carved too and knows no
-    /// banks, so its correction fades out wherever the land was lifted
-    /// ([`FINE_BANK_FADE_M`]).
+    /// the lawn they were standing on.
     ///
-    /// **And on a bridge laid flat it is the deck**, where that is higher, and off
-    /// its ends the landing the street is stood on there: what
+    /// **And on a bridge laid flat it is the deck**, where that is higher: what
     /// stands on the Oosterbrug stands on it, not on the canal bed under it
     /// (`map_geometry::walk_deck_top`).
     #[must_use]
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
-        self.ground_with(wx, wz, self.ground_only_at(wx, wz))
-    }
-
-    /// [`ground_at`](Self::ground_at) without the half-metre tier: the ground
-    /// as the sheets are drawn on it, from the field they are meshed from.
-    ///
-    /// What a foot is placed by (`systems::feet`), as a difference between
-    /// two points. The half-metre tier holds kerbs and AHN's ±2 cm the drawn
-    /// ground does not, and over a path atlas graded it holds the slope the
-    /// grade took out: on the Noorderplantsoen rampart `ground_at` rose 4.2 m
-    /// over 12 m where the drawn path rises 1.9 (2026-11-16). Feet placed on
-    /// that stood on ground nobody sees.
-    #[must_use]
-    pub fn drawn_ground_at(&self, wx: f32, wz: f32) -> f32 {
-        self.ground_with(wx, wz, self.ground.land_at(wx, wz))
-    }
-
-    /// The decks, the landings and the street correction over `land`.
-    fn ground_with(&self, wx: f32, wz: f32, land: f32) -> f32 {
-        // The landings off flat deck ends, as the ground sheets stand on them
-        // (`map_geometry::walk_landed`).
-        // And the correction the sheets beside a street take from it
-        // (`map_geometry::walk_beside_roads`).
-        let beside = crate::systems::map_geometry::walk_beside_roads(wx, wz, &self.ground.land());
-        let ground = crate::systems::map_geometry::walk_landed(wx, wz, land + beside);
+        let ground = match crate::systems::drawn_ground::height_at(wx, wz) {
+            Some(drawn) => drawn,
+            None => {
+                let beside =
+                    crate::systems::map_geometry::walk_beside_roads(wx, wz, &self.ground.land());
+                crate::systems::map_geometry::walk_landed(
+                    wx,
+                    wz,
+                    self.ground.land_at(wx, wz) + beside,
+                )
+            }
+        };
         match crate::systems::map_geometry::walk_deck_top(wx, wz) {
             Some(top) => ground.max(top),
             None => ground,
         }
-    }
-
-    /// [`ground_at`](Self::ground_at) without the decks.
-    fn ground_only_at(&self, wx: f32, wz: f32) -> f32 {
-        let land = self.ground.land_at(wx, wz);
-        if !self.fine.is_ready() {
-            return land;
-        }
-        let w = self.fine.rim_weight(wx, wz);
-        if w <= 0.0 {
-            return land;
-        }
-        let coarse = self.ground.at(wx, wz);
-        let keep = (1.0 - (land - coarse).abs() / FINE_BANK_FADE_M).clamp(0.0, 1.0);
-        land + (self.fine.at(wx, wz) - coarse) * w * keep
     }
 
     /// Whether the half-metre tier currently carries measurements.
@@ -1291,30 +1257,6 @@ impl TerrainSnapshot {
         let a = s(x0, z0) + (s(x1, z0) - s(x0, z0)) * tx;
         let b = s(x0, z1) + (s(x1, z1) - s(x0, z1)) * tx;
         a + (b - a) * tz
-    }
-
-    /// How much this snapshot should be trusted at a world-XZ point: 1 through the
-    /// middle, easing to 0 over [`FINE_BLEND_M`] at the boundary, and 0 outside.
-    ///
-    /// Smoothstepped rather than linear for the reason [`edge_taper`] is: a linear ramp
-    /// meets full strength at a crease, and on a blend between two *different
-    /// measurements* of the same ground that crease is a visible ridge running round a
-    /// square.
-    #[must_use]
-    fn rim_weight(&self, wx: f32, wz: f32) -> f32 {
-        if self.samples.is_empty() || self.half_m <= 0.0 {
-            return 0.0;
-        }
-        let d = (wx - self.centre.x).abs().max((wz - self.centre.y).abs());
-        let inner = (self.half_m - FINE_BLEND_M).max(0.0);
-        if d <= inner {
-            return 1.0;
-        }
-        if d >= self.half_m {
-            return 0.0;
-        }
-        let t = ((d - inner) / (self.half_m - inner)).clamp(0.0, 1.0);
-        1.0 - t * t * (3.0 - 2.0 * t)
     }
 
     /// Surface normal at a world-XZ point, from the field's own slope (central
@@ -2608,10 +2550,9 @@ fn fine_request(anchor: (f64, f64, u32), centre: Vec2) -> HeightRequest {
 ///
 /// Two things differ from [`bake`] and both are deliberate. The datum is **passed in**
 /// rather than derived: the tier has to be expressed against the same zero as the
-/// coarse field it blends into, and a tier that picked its own centre sample would step
-/// by that difference at the rim. And there is no [`edge_taper`] — the fade is
-/// [`TerrainSnapshot::rim_weight`], applied at lookup against the coarse answer rather
-/// than baked toward flat.
+/// coarse field, and a tier that picked its own centre sample would be off by that
+/// difference. And there is no [`edge_taper`]: the tier only shades the ground
+/// (`ground_detail`), whose own residual fades it.
 ///
 /// `None` when the box holds no measurement at all.
 fn bake_fine(
@@ -3447,9 +3388,10 @@ mod tests {
             let h = field.ground_at(x, 0.0);
             assert!((h - 2.0).abs() < 1e-3, "footing at x = {x}: {h}");
         }
-        // Away from the water the half-metre tier still has its say.
+        // Away from the water too it is the land the sheets stand on, not the
+        // half-metre tier, on which nothing is drawn.
         let h = field.ground_at(25.0, 0.0);
-        assert!((h - 2.3).abs() < 1e-3, "fine tier away from the bank: {h}");
+        assert!((h - 2.0).abs() < 1e-3, "away from the bank: {h}");
     }
 
     /// The street beside the water is the dry ground next to it, not a bank
@@ -4122,10 +4064,11 @@ mod tests {
         assert!(worst <= 1, "worst quantised difference was {worst}");
     }
 
-    /// The tier must agree with the coarse field at its own rim, or walking out of it
-    /// is a step rather than a loss of detail.
+    /// Nothing is drawn on the half-metre tier, so nothing stands on it: a body
+    /// on it stood 1.7 m over the drawn path on the Noorderplantsoen rampart
+    /// (2026-11-16, `foot-placement.md`).
     #[test]
-    fn the_fine_tier_fades_into_the_coarse_answer_at_its_rim() {
+    fn the_fine_tier_is_not_stood_on() {
         let mut field = ramp_field(0.0);
         let centre = Vec2::new(100.0, -50.0);
         // A tier that disagrees with the (flat, zero) coarse field everywhere.
@@ -4137,37 +4080,10 @@ mod tests {
             floors: std::sync::Arc::default(),
             banks: std::sync::Arc::default(),
         };
-
-        let mid = field.ground_at(centre.x, centre.y);
-        assert!(
-            (mid - 10.0).abs() < 1e-3,
-            "the tier should be trusted completely in the middle, got {mid}"
-        );
-        let out = field.ground_at(centre.x + FINE_HALF_M + 1.0, centre.y);
-        assert!(
-            out.abs() < 1e-6,
-            "outside the box the coarse answer must be returned unchanged, got {out}"
-        );
-        let rim = field.ground_at(centre.x + FINE_HALF_M, centre.y);
-        assert!(
-            rim.abs() < 1e-3,
-            "the tier must reach zero weight at its boundary, got {rim}"
-        );
-        // And it has to get there smoothly.
-        let mut prev = field.ground_at(centre.x + FINE_HALF_M - FINE_BLEND_M - 1.0, centre.y);
-        let mut step = 0.0f32;
-        for i in 0..=64 {
-            let t = i as f32 / 64.0;
-            let x = centre.x + FINE_HALF_M - FINE_BLEND_M - 1.0 + t * (FINE_BLEND_M + 2.0);
-            let h = field.ground_at(x, centre.y);
-            step = step.max((h - prev).abs());
-            prev = h;
+        for x in [0.0, FINE_HALF_M - 30.0, FINE_HALF_M + 1.0] {
+            let h = field.ground_at(centre.x + x, centre.y);
+            assert!(h.abs() < 1e-6, "{x}: {h}");
         }
-        assert!(
-            step < 1.0,
-            "the blend has a {step} m cliff in it; a smoothstep should spread 10 m over \
-             {FINE_BLEND_M} m"
-        );
     }
 
     /// **The property the whole coarse-level scheme rests on.** A clipmap level whose

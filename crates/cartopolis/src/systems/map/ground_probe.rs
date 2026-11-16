@@ -25,14 +25,18 @@ pub fn probes() -> Vec<Vec2> {
 pub fn update_ground_probes(
     anchor: Res<crate::resources::MapAnchor>,
     field: Res<crate::systems::terrain::TerrainField>,
-    // The half-metre tier landing changes `walk` without a new revision.
-    mut last: Local<Option<((f64, f64, u32), u32, bool)>>,
+    // A cell's drawn ground arriving changes `walk` without a new revision.
+    mut last: Local<Option<((f64, f64, u32), u32, u32)>>,
 ) {
     let Some(a) = anchor.geo else { return };
     let Ok(spec) = std::env::var("CARTO_PROBE") else {
         return;
     };
-    let key = (a, field.revision, field.fine_ready());
+    let key = (
+        a,
+        field.revision,
+        crate::systems::drawn_ground::generation(),
+    );
     if *last == Some(key) {
         return;
     }

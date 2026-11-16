@@ -222,14 +222,12 @@ pub fn place_feet(
         // slope there in the holder's frame.
         let to_world = body * *holder_tf;
         let to_holder = to_world.rotation.inverse();
-        // The feet follow the ground as drawn, from one to the other: the
-        // half-metre tier the body stands on holds kerbs, noise and the
-        // slope a grade took out, none of which is drawn
-        // (`TerrainField::drawn_ground_at`).
-        let drawn = |x: f32, z: f32| terrain.drawn_ground_at(x, z);
+        // The ground as drawn (`TerrainField::ground_at`, `systems::drawn_ground`),
+        // which is also what the body stands on.
+        let drawn = ground;
         let here = drawn(body.translation.x, body.translation.z);
-        // Where the body stands over the drawn ground: the feet move only
-        // relative to it, so this much stays (logged).
+        // Where the body stands over it (logged): a teleport arriving, a
+        // water lift easing, and nothing once standing.
         let body_off = body.translation.y - here;
         let mut clip = [None; 2];
         let mut rise = [0.0f32; 2];

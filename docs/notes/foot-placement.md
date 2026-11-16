@@ -1,67 +1,96 @@
 ---
 topic: foot-placement
-triggers: [systems/player/feet.rs, drawn_ground_at, crates/human/src/feet.rs, crates/human/src/reach.rs, systems::feet, place_feet, HumanLegs, FootPlacement, pelvis_drop, plant_leg, reach_from_pose, CARTO_NO_FOOT_IK, CARTO_FOOT_LOG, foot IK, "feet float", "feet sink"]
+triggers: [systems/player/feet.rs, systems/map/drawn_ground.rs, systems::drawn_ground, crates/human/src/feet.rs, crates/human/src/reach.rs, systems::feet, place_feet, HumanLegs, FootPlacement, pelvis_drop, plant_leg, reach_from_pose, DrawnGround, ground_at, CARTO_NO_FOOT_IK, CARTO_FOOT_LOG, foot IK, "feet float", "feet sink", "avatar floats"]
 updated: 2026-11-16
 ---
 
-# The feet stand on the ground they are over
+# The body and its feet stand on the ground as drawn
 
-Asked for by the owner as "voeten op de grond" (2026-11-16). Every clip is
-captured on a flat floor and the avatar stands on the one ground height under
-its origin (`avatar::ground_or_water` → `TerrainField::ground_at`), so on a
-slope the foot ahead is in the ground and the one behind floats, by the
-foot's distance from the origin times the gradient.
+Asked for by the owner as "voeten op de grond" (2026-11-16). Two things were
+wrong, and the bigger one was not the feet:
 
-## Where it shows (measured 2026-11-16)
+1. **The body stood on ground nobody sees.** `TerrainField::ground_at` — what
+   the avatar, the collision, cars, crows, pins and prims stand on — added
+   AHN's half-metre tier to the field the ground sheets are meshed from. Nothing
+   is drawn on that tier (it only shades the ground, `ground_detail`), and over
+   a path atlas graded it put back what the grade took out.
+2. **The clips are flat-floor captures** and the body stands on the one ground
+   height under its origin, so on a slope the foot ahead is in the ground and
+   the one behind floats, by the foot's distance from the origin times the
+   gradient.
 
-Two measurements: AHN's own half-metre DTM over central Groningen
-(6 km², four 1.5 km WCS tiles, buildings and water left out as no-data), and
-the client itself on mac-1, `CARTO_FOOT_LOG=1` logging, at the frame each
-capture was taken, each foot's ankle over the ground under it less what the
-clip has on its own floor (zero is the clip's contact at every phase), and
-where the body stands over the drawn ground. Planted feet only (stance ≥ 0.8).
+## How far off it was (measured 2026-11-16, mac-1)
 
-- **Open ground by gradient over 1 m** (AHN smoothed over 1.5 m, which leaves
-  2 cm of residual noise): 74 % under 5 % (a planted foot ~0.3 m from the
-  origin off by < 1.5 cm), 13 % 5–8 %, 7 % 8–15 % (2.5–4.5 cm), 5.9 % over
-  15 %. Unsmoothed, AHN holds kerbs as 10–18 cm ramps about a metre wide.
+`CARTO_PROBE` points every 0.5 m along three walks, `ground_at` (`walk`) set
+against the height the ground sheet's own triangles have there (`ground probe:
+sheet`, the mesh itself). In a single-place run on the
+**Noorderplantsoen rampart** path (53.22532,6.55544 → 53.22538,6.55529, a
+34 % slope, 4 m of rise in AHN), `ground_at` rose 4.2 m where the drawn path
+rises 1.9: the body stood **up to 1.7 m over the path** at its top and 0.7 m
+under it at its foot. Seen side by side in the same pose
+(`/tmp/s690-feet/final2/rampart_*`): the avatar stood on the grass of the
+rampart beside a path it was supposed to be on. By the Oosterhaven (a street,
+its kerb and the grass bank to the water, 53.21205 → 53.21228 at 6.5700) it
+was ±15–45 cm off; on the Berlagebrug's NW approach up to 12 cm.
 
-| place | against `ground_at` (half-metre tier) | against the drawn ground |
+AHN itself, over 6 km² of central Groningen (half-metre DTM, buildings and
+water left out): 74 % of open ground slopes under 5 % over a metre, 5.9 % over
+15 %. Unsmoothed it holds kerbs as 10–18 cm ramps a metre wide — the kerbs a
+body on the half-metre tier stepped up and down that are not drawn.
+
+## The ground is the drawn sheet (`systems::drawn_ground`)
+
+No formula over the field reproduces the sheets: between vertices up to
+12.5 m apart a sheet is a chord, refined where the field creases; streets
+stand on their solved levels, landings and lower quays on their own. On the
+rampart the chord stood 21 cm off the field it was cut from, and the field
+function the walker had (`land_at` and the street and landing corrections)
+was 39 cm off the sheet at one point. So each cell's worker, once it has
+stood the sheets, samples their triangles onto a **one-metre raster**
+(`DrawnGround::rasterize`, the higher sheet where two overlap; the ground
+groups only, not water, decks, tunnels or anything with volume), registered
+per cell like the walkable decks and landings and dropped with the cell.
+`ground_at` reads it first, the field function only where no sheet is built,
+and a flat deck over either.
+
+Measured with the same probes after (`final2/numbers.txt`), `ground_at` less
+the sheet:
+
+| walk | before: max / mean / within 2 cm | after |
 |---|---|---|
-| Noorderplantsoen rampart, 53.22532,6.55544 → 53.22538,6.55529, walking up | max 26.5, mean 6.7 cm | max 14.4, mean 4.1 cm |
-| the same, idle across the slope at 53.225348,6.555364 | 2.9 / 4.9 cm | 1.1–1.4 cm |
-| street, kerb and bank by the Oosterhaven, 53.21205 → 53.21228 at 6.5700 | mean 2.0, ±3–6 at the kerbs | max 1.6, mean 0.3 cm |
-| Berlagebrug's NW approach, 53.22091,6.58969 → 53.22048,6.59009 | mean 2.0, max 6 cm | max 4.4, mean 1.2 cm |
+| rampart path | 23 / 7.6 cm / 32 % (170 cm in the single-place run) | 13.7 / 2.0 cm / 68 % |
+| Oosterhaven street and bank | 46 / 7.3 cm / 25 % | 11.0 / 0.8 cm / 88 % |
+| Berlagebrug approach | 12 / 3.1 cm / 40 % | 5.9 / 1.1 cm / 81 % |
 
-So it shows on the slopes of parks, dykes and banks, and nowhere a street
-is drawn: the drawn ground holds neither kerbs nor AHN's noise, and a bridge
-ramp is graded to at most 6 % (`MAX_APPROACH_GRADE`), under 2 cm a foot.
+What is left is the raster cutting corners: within a metre of a crease it is
+off by the change of slope over a quarter metre (8.5 cm at a 34 % rampart's
+foot), and at a step (a terrace's edge, the bank's wall) it spans the step.
+A half-metre raster would halve that at four times the memory.
 
-**The bigger float is the whole body, and this does not touch it.** The body
-stands on `ground_at`, which adds the half-metre tier to the field the
-sheets are meshed from (`terrain-relief.md`); over ground atlas graded, that
-puts back what the grade took out. Logged as `body_over_drawn_cm`: on the
-rampart **−38 to +170 cm** (`ground_at` rose 4.2 m over the 12 m where the
-drawn path rises 1.9; a `CARTO_PROBE` run read the same off the sheets
-themselves), −51 to +20 cm on the Oosterhaven street and bank, −10 to +40 cm
-on the Berlagebrug's approach. The captures did not show a body plainly that
-far up, and the drawn-ground stand-in (`land_at` plus the street and landing
-corrections) is not what a road is drawn on, so this is **measured in
-numbers, not yet confirmed in a picture**. Fixing it is a change to
-`ground_at` (every point consumer: collision, cars, pins), not to the feet.
+**Cost:** 4.2 MB a cell (every 64 m tile of a city cell has a sheet in it;
+i16 centimetres), so about 38 MB for the nine cells at street level, and
+280–470 ms per cell on the cell's worker, against 2–24 s of refinement.
+Storing it as an i8 residual over the field, or only for cells near the
+avatar, would halve or better that; not done.
 
-## What it does
+**Who stands on it:** everything that called `ground_at` — the avatar and
+remote avatars, their feet, the collision and the climb, the follow camera's
+ground, traffic and transit vehicles, crows, pins, prims, splashes, sewers
+(depth under the drawn street), GPS placement and the MCP readouts. **Not**
+what is built on a worker from `LidSnapshot::ground_at`: the grass mask,
+trees, street furniture. Those stand on the sheets' own field function (the
+values at the sheets' vertices), so they differ from the sheet only by the
+chord; they are built before the raster of their cell exists and would have
+to be rebuilt when it arrives.
 
-`systems::feet::place_feet` runs in `PostUpdate` after the animation and
-before propagation, like the held phone. Per body near the camera (the local
+## The feet (`systems::feet`)
+
+`place_feet` runs in `PostUpdate` after the animation and before
+propagation, like the held phone. Per body near the camera (the local
 avatar, and remote ones within `RANGE_M`, 40 m):
 
-1. Each ankle as the clip has it, the **drawn** ground under it
-   (`TerrainField::drawn_ground_at`: `ground_at` without the half-metre tier)
-   less the drawn ground under the origin: the **rise** each foot needs
-   (±`MAX_STEP_M`). A difference, so the body's own offset stays as it is.
-   Against `ground_at` the first cut stood feet on kerbs and slopes nobody
-   sees.
+1. Each ankle as the clip has it, `ground_at` under it less `ground_at`
+   under the origin: the **rise** each foot needs (±`MAX_STEP_M`).
 2. **The pelvis comes down only for planted feet** (`feet::pelvis_drop`): a
    foot's *stance* fades from planted to lifted as its ankle rises
    4.5–10 cm over rest, and a planted leg keeps the bend the clip gave it.
@@ -81,33 +110,31 @@ avatar, and remote ones within `RANGE_M`, 40 m):
 On: standing, walking or running on the ground. Off (`feet::Footing`):
 swimming, seated, climbing, an emote (and any pinned clip but idle, walk and
 run), in the air, and **more than 5 cm off `ground_at` at the origin** — a
-floor, a wall top, a roof, which the ground field does not hold. Eased over
-`BLEND_S` (0.2 s). Below 1 mm nothing is solved, so flat ground is the clip
-exactly.
+floor, a wall top, a roof. Eased over `BLEND_S` (0.2 s). Below 1 mm nothing
+is solved, so flat ground is the clip exactly.
 
-After: every planted foot within 2.0 cm of its drawn ground in all four
-places (0.0–0.1 cm except the rampart's steepest frames, where a lifting heel
-is partly planted).
+Planted feet against the drawn ground (`CARTO_FOOT_LOG=1`, the stance foot
+at each captured frame): walking up the rampart up to 14 cm in or over it
+(mean 4), 1–1.5 cm standing across it, up to 4 cm on the Berlagebrug's
+approach, under 2 cm on the Oosterhaven street; after, within 2 cm
+everywhere. Eight ground lookups per body per frame, no allocation; the
+joint names are looked up once when the body is built (`HumanLegs`). Nothing
+is on the wire: every viewer places everybody's feet on its own map.
 
-## Costs
-
-Eight ground lookups per body per frame (`ground_at` at the origin for the
-on/off rule; `drawn_ground_at` at the origin, each ankle and two slope
-samples per foot), each a bilinear sample plus the per-cell street and
-landing corrections; a joint walk to the holder per bone, no allocation; the
-joint names are looked up once when the body is built
-(`human_avatar::spawn_human` puts `HumanLegs` on the holder). Nothing is on
-the wire: every viewer places everybody's feet on its own map.
+`CARTO_NO_FOOT_IK=1` leaves the clips' feet alone for a "before" capture.
 
 ## What is not done, and what lost
 
-- **The body's own offset** from the drawn ground (above) is left as it was.
 - **The drawn kerbstone** (`LineKind::Kerb`, a 10 cm box) is not stood on:
-  it collides with nothing and is not in `ground_at`.
+  it is not a ground sheet.
 - **Stairs** inside buildings are floors (`interiors::Footing`), flat, and
   the placement is off there (the 5 cm rule).
-- **No toe/heel split**: the foot is one bone tilted as a whole; the ball
-  joint is left to the clip.
-- **Sampling the slope as one plane under the body** (a fit through the
-  origin's neighbourhood instead of the ground under each foot) would have
-  ignored AHN noise and kerbs, and also every step; per foot won.
+- **No toe/heel split**: the foot is one bone tilted as a whole.
+- **Keeping the half-metre tier for the feet only**, the body on the drawn
+  ground: feet on kerbs and slopes nobody sees. Tried first; the first cut
+  stood every foot on it.
+- **Making the field function match the sheets** (the tunnels' lids, the
+  roads' levels, the quays' terraces added to `ground_at`): still a chord
+  away, 21 cm on the rampart.
+- **Keeping each cell's triangles** to query exactly: ~3 million vertices a
+  street-level cell, 36 MB or more each.
