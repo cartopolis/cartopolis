@@ -336,8 +336,25 @@ impl Supervisor {
     }
 }
 
+/// `bin` as a path the child can be started from. A bare name is looked up on
+/// this process's `PATH` here, because `Command` looks it up on the *child's*,
+/// which [`spawn`] clears to `/usr/bin:/bin` — where a Homebrew `bun` is not, so
+/// every script failed to start on the Mac build nodes (2026-11-15).
+fn resolve_bin(bin: &std::path::Path) -> PathBuf {
+    if bin.components().count() > 1 {
+        return bin.to_path_buf();
+    }
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(bin))
+                .find(|candidate| candidate.is_file())
+        })
+        .unwrap_or_else(|| bin.to_path_buf())
+}
+
 fn spawn(engine: &BunEngine, blame: &std::path::Path) -> std::io::Result<Process> {
-    let mut child = Command::new(&engine.bun)
+    let mut child = Command::new(resolve_bin(&engine.bun))
         .arg(engine.host_dir.join("src/child.ts"))
         .arg(blame)
         .current_dir(&engine.host_dir)
