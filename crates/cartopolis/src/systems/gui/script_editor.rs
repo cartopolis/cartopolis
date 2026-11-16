@@ -1,4 +1,4 @@
-//! The in-world script editor: the panel that writes a prim's Luau source, and
+//! The in-world script editor: the panel that writes a prim's JavaScript, and
 //! the console that is the only channel a broken script has.
 //!
 //! Source is fetched and stored on demand (`GetPrimScript` / `SetPrimScript`),
@@ -38,22 +38,22 @@ const MAX_CONSOLE_LINES: usize = 200;
 /// (`prim_geo::place_geo_prims`), so an orbiting demo would quietly snap back the
 /// next time the map re-anchors. Height has no such owner and stays put.
 const TEMPLATE: &str = "\
--- Handlers are plain functions. The host calls them; you define them.
-function on_start()
-    log(\"hello from \" .. get_name())
+// Handlers are plain functions. The host calls them; you define them.
+function on_start() {
+    log(\"hello from \" + get_name())
     set_timer_event(0.1)
-end
+}
 
-function on_touch(id, name)
-    say(name .. \" touched me\")
-    set_color(math.random(), math.random(), math.random())
-end
+function on_touch(id, name) {
+    say(name + \" touched me\")
+    set_color(Math.random(), Math.random(), Math.random())
+}
 
-function on_timer()
-    -- Bob gently, using the script's own clock.
-    local x, y, z = get_pos()
-    set_pos(x, y + math.sin(get_time() * 2) * 0.01, z)
-end
+function on_timer() {
+    // Bob gently, using the script's own clock.
+    const [x, y, z] = get_pos()
+    set_pos(x, y + Math.sin(get_time() * 2) * 0.01, z)
+}
 ";
 
 /// One line of script output, as received.
@@ -223,6 +223,15 @@ fn level_color(level: ScriptLevel) -> egui::Color32 {
     }
 }
 
+/// A script's memory ceiling, in the unit it is set in: "16 MiB", not "16384 KiB".
+fn memory_label(bytes: u32) -> String {
+    if bytes >= 1 << 20 && bytes % (1 << 20) == 0 {
+        format!("{} MiB", bytes >> 20)
+    } else {
+        format!("{} KiB", bytes / 1024)
+    }
+}
+
 /// The script editor panel (right-hand slot, like the other panels).
 ///
 /// Only shown online: a script is server state, and `--offline` has no server to
@@ -316,19 +325,20 @@ pub fn render_script_panel(
             if let Some(b) = budget {
                 ui.label(
                     egui::RichText::new(format!(
-                        "region: {} / {} scripts · {} / {} prims · {} KiB each",
+                        "region: {} / {} scripts · {} / {} prims · {} each",
                         b.scripts_used,
                         b.scripts_max,
                         b.prims_used,
                         b.prims_max,
-                        b.script_memory_bytes / 1024
+                        memory_label(b.script_memory_bytes)
                     ))
                     .color(theme::p().text_dim)
                     .small(),
                 )
                 .on_hover_text(
                     "What this region has left. Scripts and prims are budgeted per region, \
-                 and every script gets its own memory ceiling.",
+                 and each script may take at most this much more memory at a time: one \
+                 that takes more is stopped.",
                 );
             }
             ui.separator();
@@ -407,7 +417,7 @@ pub fn render_script_panel(
             }
             let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                 let font = egui::TextStyle::Monospace.resolve(ui.style());
-                let job = crate::systems::lua_highlight::layout_job(buf.as_str(), font, wrap_width);
+                let job = crate::systems::js_highlight::layout_job(buf.as_str(), font, wrap_width);
                 ui.fonts_mut(|f| f.layout_job(job))
             };
             egui::ScrollArea::vertical()
@@ -421,9 +431,7 @@ pub fn render_script_panel(
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .desired_rows(18)
-                            .hint_text(
-                                "function on_touch(id, name)\n    vf.say(\"hi \" .. name)\nend",
-                            ),
+                            .hint_text("function on_touch(id, name) {\n    say(\"hi \" + name)\n}"),
                     );
                 });
         },

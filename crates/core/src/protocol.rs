@@ -1432,7 +1432,8 @@ pub enum NetMessage {
         prims_max: u32,
         scripts_used: u32,
         scripts_max: u32,
-        /// Per-script memory ceiling in bytes, enforced by the Lua allocator.
+        /// Per-script memory ceiling in bytes: how far one script may grow the
+        /// heap in one slice (`scripting::SCRIPT_MEMORY_BYTES`).
         script_memory_bytes: u32,
     },
     /// Client sends one encoded audio frame into a scope. Voice reuses the chat

@@ -9,12 +9,12 @@
  * function handed in. A ShadowRealm passes only primitives and wraps callables,
  * so no host object is ever inside.
  */
-import {readFileSync} from 'node:fs'
+// Imported as text rather than read from disk, so `bun build --compile` carries it
+// inside the executable the simulator runs (`deploy/build/script-host.sh`).
+import RUNTIME from './realm-runtime.js' with {type: 'text'}
 
 import {rewrite, ScriptError} from './rewrite'
 import {LIMITS, HANDLERS} from './limits'
-
-const RUNTIME = readFileSync(new URL('./realm-runtime.js', import.meta.url), 'utf8')
 
 /** Every name a script gets from the API, as the destructuring that hands them over. */
 export const API_NAMES = [

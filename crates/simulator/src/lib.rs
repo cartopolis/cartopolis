@@ -129,7 +129,10 @@ pub async fn serve_with(
     // Compile the world's stored scripts before the first tick, so a prim that was
     // moving when the server stopped is moving again when it comes back rather
     // than waiting for someone to open the editor.
-    let scripts_host = scripting::ScriptHost::spawn_with(config.script_engine()?);
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let scripts_host = scripting::ScriptHost::spawn_with(config.script_host(beside.as_deref()));
     for (prim_id, source) in scripts {
         scripts_host.load(prim_id, source);
     }

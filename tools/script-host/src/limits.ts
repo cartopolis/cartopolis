@@ -1,7 +1,9 @@
 /**
- * The Luau host's numbers (`crates/simulator/src/scripting.rs`), carried over so
- * the two hosts are compared under one budget. Fuel counts the same two things
- * in both — loop iterations and function entries — so the values transfer.
+ * The script host's budgets. The fuel numbers are the retired Luau host's,
+ * carried over when it was compared with this one: fuel counts loop iterations
+ * and function entries, the two places Luau's interrupt fired, so the values
+ * transferred. `maxSourceBytes`, `maxText` and `sliceHeap` have twins in
+ * `crates/simulator/src/scripting.rs`.
  */
 export const LIMITS = {
     /** `WORLD_FUEL_PER_TICK`: shared by every script, refilled each tick. */

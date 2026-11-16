@@ -149,8 +149,11 @@ systemd units behind Caddy; it does not use this binary yet.
 
 **The download** (`deploy/build/server-package.sh` → `dist/server/`, published
 by `midas deploy server` at `https://cartopolis.org/server/` since 2026-11-12) is
-the binary, the built web UI in `web/` beside it — found there when the file
-names no `web_root` — an example `cartopolis.toml`, the systemd units and
+the binary, `cartopolis-script-host` beside it (the process prim scripts run
+in, Bun compiled into it by `deploy/build/script-host.sh`, 87 MB
+unpacked; found there when the file names no `script_host` —
+`javascript-prim-scripts.md`), the built web UI in `web/` beside it — found
+there when the file names no `web_root` — an example `cartopolis.toml`, the systemd units and
 `install.sh`, and `release.json` beside it for the owner to sign. That one
 script is both `curl … | sh` and the unpacked package's installer: it puts them
 in `/opt/cartopolis-server` (owned by `cartopolis`), asks for the address and the
@@ -169,8 +172,8 @@ P-256 signature by a key compiled into it (`RELEASE_KEYS`, empty until the
 owner's phone key exists — so today nothing installs) and a version code higher
 than its own, and downloads the package into `data/update/`. **Install** asks
 the admin's password again (`prove_again`), runs the new program's `version`
-and `check-database` on a `VACUUM INTO` copy, keeps the old program, web UI and
-a database snapshot in `previous/`, renames the new ones into place and ends;
+and `check-database` on a `VACUUM INTO` copy, keeps the old program, script
+host, web UI and a database snapshot in `previous/`, renames the new ones into place and ends;
 systemd starts the new one. That one counts its starts in
 `data/update/pending.json` and, past three that did not stay up two minutes,
 restores `previous/` and ends so the old one starts; the release goes into

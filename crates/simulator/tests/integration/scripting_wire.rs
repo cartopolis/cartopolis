@@ -1,7 +1,7 @@
 //! Prim scripting end-to-end over loopback TCP: the path the editor actually
 //! drives, which the `scripting` unit tests deliberately do not cover.
 //!
-//! They test the VM in isolation — a `Slot` compiled and stepped in-process. This
+//! They drive the script host directly, one `ScriptHost` and its process. This
 //! tests everything between it and a client: that a stored script is compiled and
 //! answers, that its console output reaches the wire, that a touch from a
 //! connection becomes an `on_touch`, and that a `set_pos` becomes an authoritative
@@ -187,7 +187,7 @@ async fn store_compile_touch_and_hear_back() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_touch(id, name) log('touched by ' .. name) end".into(),
+            source: "function on_touch(id, name) { log('touched by ' + name) }".into(),
         },
     )
     .await;
@@ -253,7 +253,7 @@ async fn script_moves_the_prim_for_everyone() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() set_pos(42.0, 7.0, -3.0) end".into(),
+            source: "function on_start() { set_pos(42.0, 7.0, -3.0) }".into(),
         },
     )
     .await;
@@ -281,15 +281,15 @@ async fn a_broken_script_reports_and_does_not_run() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start( end".into(),
+            source: "function on_start( }".into(),
         },
     )
     .await;
     let (level, text) = recv_output(&mut c).await;
     assert_eq!(level, ScriptLevel::Error, "{text}");
     assert!(
-        text.contains(&format!("prim{prim_id}")),
-        "the error should name the chunk so the editor can point at a line: {text}"
+        text.contains("line 1"),
+        "the error should name the line, so the editor can point at it: {text}"
     );
 }
 
@@ -306,7 +306,7 @@ async fn an_empty_script_removes_it() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() log('up') end".into(),
+            source: "function on_start() { log('up') }".into(),
         },
     )
     .await;
@@ -353,13 +353,13 @@ async fn appearance_calls_become_prim_state() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() \
-                     set_name('lantern') \
-                     set_alpha(0.5) \
-                     set_glow(0.75) \
-                     set_full_bright(true) \
-                     set_rot(0, 90, 0) \
-                     end"
+            source: "function on_start() { \
+                     set_name('lantern'); \
+                     set_alpha(0.5); \
+                     set_glow(0.75); \
+                     set_full_bright(true); \
+                     set_rot(0, 90, 0); \
+                     }"
             .into(),
         },
     )
@@ -400,7 +400,7 @@ async fn a_script_can_end_its_own_prim() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() die() end".into(),
+            source: "function on_start() { die() }".into(),
         },
     )
     .await;
@@ -436,8 +436,8 @@ async fn a_hand_near_a_prim_becomes_a_tone_everybody_hears() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() sense_hands(2) end \
-                     function on_hand(id, name, x, y, z, precise) set_tone{ pitch = 200 + x * 100 } end"
+            source: "function on_start() { sense_hands(2) } \
+                     function on_hand(id, name, x, y, z, precise) { set_tone({pitch: 200 + x * 100}) }"
                 .into(),
         },
     )

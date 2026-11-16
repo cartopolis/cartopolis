@@ -11,7 +11,9 @@
 # (crates/server/src/update.rs).
 #
 # The binary is server.sh's (linked against an older glibc, so it runs on the
-# Ubuntu and Debian releases people still have), the web UI web.sh's.
+# Ubuntu and Debian releases people still have), the script host prim scripts
+# run in script-host.sh's (Bun inside it, found beside the binary), the web UI
+# web.sh's.
 . "$(dirname "$0")/lib.sh"
 # The version code, as the APK's (deploy/build/apk.sh): only ever rises along
 # main. The program carries it, and refuses a release that is not higher.
@@ -19,6 +21,7 @@ CARTOPOLIS_BUILD_CODE=${CARTOPOLIS_BUILD_CODE:-$(( 20000 + $(git -C "$ROOT" rev-
 CARTOPOLIS_BUILD_NAME="$CARTOPOLIS_BUILD_CODE ($(git -C "$ROOT" rev-parse --short HEAD))"
 export CARTOPOLIS_BUILD_CODE CARTOPOLIS_BUILD_NAME
 "$ROOT/deploy/build/server.sh" cartopolis_server cartopolis-server release
+"$ROOT/deploy/build/script-host.sh"
 "$ROOT/deploy/build/web.sh"
 
 cd "$ROOT"
@@ -28,10 +31,11 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 rm -rf "$out" && mkdir -p "$stage/$PKG" "$out"
 cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/cartopolis-server" "$stage/$PKG/"
+cp "${CARGO_TARGET_DIR:-target}/script-host/cartopolis-script-host" "$stage/$PKG/"
 cp -r crates/atlas/web/dist "$stage/$PKG/web"
 cp deploy/server-package/* "$stage/$PKG/"
 cp LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY.md "$stage/$PKG/"
-chmod +x "$stage/$PKG/install.sh" "$stage/$PKG/cartopolis-server"
+chmod +x "$stage/$PKG/install.sh" "$stage/$PKG/cartopolis-server" "$stage/$PKG/cartopolis-script-host"
 tar -czf "$out/$PKG.tar.gz" -C "$stage" "$PKG"
 ( cd "$out" && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
 cp deploy/server-package/install.sh "$out/install.sh"

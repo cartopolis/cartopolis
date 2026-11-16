@@ -1,9 +1,9 @@
-//! The JavaScript engine: prim scripts in a Bun process (`tools/script-host`),
-//! behind the same [`ScriptHost`](super::ScriptHost) the Luau engine is.
+//! The script engine: prim scripts in a Bun process (`tools/script-host`),
+//! behind [`ScriptHost`](super::ScriptHost).
 //!
-//! The host thread here does what the Luau thread does — takes `HostMsg`s,
-//! answers with `ScriptCommand`s — by speaking newline-delimited JSON with a
-//! child process, and it is that process's supervisor as well:
+//! The host thread takes `HostMsg`s and answers with `ScriptCommand`s by
+//! speaking newline-delimited JSON with a child process, and it is that
+//! process's supervisor as well:
 //!
 //! - **A hung tick is killed.** JavaScriptCore cannot stop a built-in mid-call (a
 //!   regular expression that backtracks, a string doubled to a gigabyte), so a
@@ -13,8 +13,7 @@
 //! - **The prim that was running is blamed** — the child writes its id into a
 //!   file both processes map, which can still be read after the kill — and
 //!   stays stopped; every other script is loaded again into a fresh process.
-//!   That restart loses their state (they begin again at `on_start`), which the
-//!   Luau engine never has to do.
+//!   That restart loses their state: they begin again at `on_start`.
 //!
 //! The child gets an empty environment: it holds untrusted code, and nothing the
 //! simulator was started with (an admin password, a token) belongs in it.
@@ -32,17 +31,61 @@ use serde_json::{json, Map, Value};
 
 use super::{rules, HostMsg, PrimView, ScriptCommand, ScriptEvent};
 
-/// Where Bun is and how the process is held to account.
+/// Which script process to run and how it is held to account.
 #[derive(Debug, Clone)]
 pub struct BunEngine {
-    /// The `bun` executable, 1.4 or later.
-    pub bun: PathBuf,
-    /// `tools/script-host`, holding `src/child.ts` and its `node_modules`.
-    pub host_dir: PathBuf,
+    /// What is started: the compiled `cartopolis-script-host`
+    /// (`deploy/build/script-host.sh`, Bun inside it), or `bun` 1.4 or later
+    /// running a checkout's `tools/script-host`.
+    pub program: PathBuf,
+    /// `tools/script-host` when [`Self::program`] is `bun`, holding
+    /// `src/child.ts` and its `node_modules`; `None` for the compiled host.
+    pub host_dir: Option<PathBuf>,
     /// A tick that has not answered by then is a hung script.
     pub tick_timeout: Duration,
     /// Resident memory past which the process is killed outright.
     pub memory_limit_bytes: u64,
+}
+
+/// The compiled script host's file name, looked for beside the simulator's
+/// own binary.
+pub const COMPILED_HOST: &str = "cartopolis-script-host";
+
+impl BunEngine {
+    pub const DEFAULT_TICK_TIMEOUT: Duration = Duration::from_millis(1000);
+    pub const DEFAULT_MEMORY_LIMIT_BYTES: u64 = 1 << 30;
+
+    /// The compiled host at `program`.
+    #[must_use]
+    pub fn compiled(program: PathBuf) -> Self {
+        Self {
+            program,
+            host_dir: None,
+            tick_timeout: Self::DEFAULT_TICK_TIMEOUT,
+            memory_limit_bytes: Self::DEFAULT_MEMORY_LIMIT_BYTES,
+        }
+    }
+
+    /// `bun` running the script host's source in `host_dir`.
+    #[must_use]
+    pub fn source(bun: PathBuf, host_dir: PathBuf) -> Self {
+        Self {
+            program: bun,
+            host_dir: Some(host_dir),
+            ..Self::compiled(PathBuf::new())
+        }
+    }
+
+    /// This checkout's `tools/script-host` under the `bun` on the path: right
+    /// for the tests and `cargo run`, wrong for an installed server, which
+    /// finds [`COMPILED_HOST`] beside itself instead (`SimConfig::script_host`).
+    #[must_use]
+    pub fn development() -> Self {
+        Self::source(
+            "bun".into(),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/script-host"),
+        )
+    }
 }
 
 struct Process {
@@ -353,11 +396,42 @@ fn resolve_bin(bin: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| bin.to_path_buf())
 }
 
+/// A checkout's script host needs its packages; a fresh one has none. Installed
+/// from the lockfile once, the first time a host starts there.
+fn install_packages(bun: &std::path::Path, host_dir: &std::path::Path) -> std::io::Result<()> {
+    if host_dir.join("node_modules/acorn").exists() {
+        return Ok(());
+    }
+    let status = Command::new(bun)
+        .args(["install", "--frozen-lockfile"])
+        .current_dir(host_dir)
+        .stdout(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "`bun install` in {} failed ({status})",
+            host_dir.display()
+        )))
+    }
+}
+
 fn spawn(engine: &BunEngine, blame: &std::path::Path) -> std::io::Result<Process> {
-    let mut child = Command::new(resolve_bin(&engine.bun))
-        .arg(engine.host_dir.join("src/child.ts"))
+    let program = resolve_bin(&engine.program);
+    let mut command = Command::new(&program);
+    match &engine.host_dir {
+        Some(dir) => {
+            install_packages(&program, dir)?;
+            command.arg(dir.join("src/child.ts")).current_dir(dir);
+        }
+        // Nothing to find beside it: it carries its sources and Bun.
+        None => {
+            command.current_dir(std::env::temp_dir());
+        }
+    }
+    let mut child = command
         .arg(blame)
-        .current_dir(&engine.host_dir)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
@@ -526,10 +600,9 @@ pub(super) fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>, engine: BunE
                         }
                         Ok(None) => {}
                         Err(message) => {
-                            // The Luau engine raises these inside the call, on the
-                            // author's line; here the check is the simulator's, after
-                            // the slice, so the script is stopped the same way but
-                            // the message has no line.
+                            // The check is the simulator's, after the slice (see
+                            // `rules`), so the script is stopped but the message
+                            // has no line.
                             sup.send(
                                 &json!({"op": "fault", "prim_id": prim_id, "message": message}),
                             );

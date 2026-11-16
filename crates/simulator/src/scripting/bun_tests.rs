@@ -3,8 +3,8 @@
 //!
 //! Needs Bun 1.4 or later. It is found as `CARTO_TEST_BUN`, then
 //! `~/.cache/bun-1.4.4/bun` (where `tools/script-host/bench/run-on-node.sh`
-//! puts it), then `bun` on the path; without one these tests say so and pass,
-//! because a build node without Bun is not a broken engine. The engine's own
+//! puts it), then `bun` on the path; without one they fail, since it is the
+//! only engine prim scripts have. The engine's own
 //! guarantees — the sandbox, fuel, memory — are tested in Bun itself
 //! (`tools/script-host/test`); these test the seam.
 
@@ -38,32 +38,22 @@ fn host_dir() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/script-host")
 }
 
-/// A host on the Bun engine, or `None` (with a note) where there is no Bun 1.4
-/// or the script host's packages are not installed.
-fn host() -> Option<ScriptHost> {
-    let Some(bun) = bun() else {
-        eprintln!("skipped: no Bun 1.4 (set CARTO_TEST_BUN)");
-        return None;
-    };
-    if !host_dir().join("node_modules/acorn").exists() {
-        let status = std::process::Command::new(&bun)
-            .args(["install", "--frozen-lockfile"])
-            .current_dir(host_dir())
-            .status();
-        if !matches!(status, Ok(s) if s.success()) {
-            eprintln!("skipped: `bun install` in tools/script-host failed");
-            return None;
-        }
-    }
-    Some(ScriptHost::spawn_with(Engine::Bun(BunEngine {
-        bun,
-        host_dir: host_dir(),
+/// A host on this checkout's script host. Its packages are installed on first
+/// start (`bun.rs`).
+///
+/// Fails without Bun 1.4 rather than skipping: it is the only engine prim
+/// scripts have, and a suite that passed by skipping would vouch for nothing.
+pub(super) fn host() -> ScriptHost {
+    let bun = bun().expect(
+        "prim scripts run on Bun 1.4 or later and none was found: install it, or set CARTO_TEST_BUN",
+    );
+    ScriptHost::spawn_with(BunEngine {
         tick_timeout: Duration::from_millis(1500),
-        memory_limit_bytes: 1 << 30,
-    })))
+        ..BunEngine::source(bun, host_dir())
+    })
 }
 
-fn view(lat: f64, lng: f64) -> PrimView {
+pub(super) fn view(lat: f64, lng: f64) -> PrimView {
     PrimView {
         geo: GeoAnchor {
             latitude: lat,
@@ -76,7 +66,7 @@ fn view(lat: f64, lng: f64) -> PrimView {
 }
 
 /// Tick until `done` says so or `limit` passes; everything that came out.
-fn tick_until(
+pub(super) fn tick_until(
     host: &ScriptHost,
     ids: &[i64],
     limit: Duration,
@@ -98,7 +88,7 @@ fn tick_until(
     out
 }
 
-fn errors(out: &[ScriptCommand]) -> Vec<(i64, String)> {
+pub(super) fn errors(out: &[ScriptCommand]) -> Vec<(i64, String)> {
     out.iter()
         .filter_map(|c| match c {
             ScriptCommand::Output {
@@ -113,7 +103,7 @@ fn errors(out: &[ScriptCommand]) -> Vec<(i64, String)> {
 
 #[test]
 fn the_content_packs_run_on_bun() {
-    let Some(host) = host() else { return };
+    let host = host();
     host.load(1, include_str!("../../content/firebird.js").into());
     host.load(2, include_str!("../../content/football.js").into());
     let out = tick_until(&host, &[1, 2], Duration::from_secs(20), |out| {
@@ -144,8 +134,8 @@ fn the_content_packs_run_on_bun() {
 }
 
 #[test]
-fn a_bad_particle_rule_stops_the_script_with_the_luau_message() {
-    let Some(host) = host() else { return };
+fn a_bad_particle_rule_stops_the_script_naming_the_rule() {
+    let host = host();
     host.load(1, "function on_start() { particles({lifetime: 3}) }".into());
     let out = tick_until(&host, &[1], Duration::from_secs(10), |out| {
         !errors(out).is_empty()
@@ -161,7 +151,7 @@ fn a_bad_particle_rule_stops_the_script_with_the_luau_message() {
 
 #[test]
 fn a_hung_script_is_killed_blamed_and_the_rest_come_back() {
-    let Some(host) = host() else { return };
+    let host = host();
     host.load(
         1,
         "let n = 0; function on_start() { set_timer_event(0.05) } function on_timer() { n++; say(String(n)) }".into(),

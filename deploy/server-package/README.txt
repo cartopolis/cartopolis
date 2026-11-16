@@ -31,6 +31,8 @@ without an admin. To stop looking, add to cartopolis.toml:
 Where things are:
     /opt/cartopolis-server/cartopolis.toml   the settings
     /opt/cartopolis-server/data/             the world, the accounts and the map data
+    /opt/cartopolis-server/cartopolis-script-host
+                                             runs the scripts people put on objects
     journalctl -u cartopolis-server          what it logs
 
 The map data for your area (buildings, search, terrain) is made by the server

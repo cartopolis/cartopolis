@@ -332,8 +332,15 @@ if want tests; then
     # of the shared Bevy stack. ci.yml's own comment measures it at a third of
     # the job. `--locked` because a Cargo.toml edit arriving without its lockfile
     # update must fail rather than silently re-resolve.
-    run tests "cargo test --locked --workspace --exclude cartopolis_android" <<'CMD'
+    # The script host's own suite as well: the sandbox, pausing and memory
+    # ceilings prim scripts rely on are tested in Bun, not in Rust
+    # (docs/notes/javascript-prim-scripts.md). It needs Bun 1.4, which the
+    # nodes have and the container's 1.3 is not.
+    run tests "cargo test --locked --workspace --exclude cartopolis_android, and the script host's bun test" <<'CMD'
 cargo test --locked --workspace --exclude cartopolis_android
+cd tools/script-host
+bun install --frozen-lockfile
+bun test
 CMD
 fi
 

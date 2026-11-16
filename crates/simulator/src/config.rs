@@ -48,21 +48,20 @@ pub struct SimConfig {
     /// fuel bank, where a plain prim costs a row.
     #[serde(default = "default_max_scripts")]
     pub max_scripts: u32,
-    /// Which engine runs prim scripts: `"luau"` (the default) or `"bun"`, which
-    /// runs them as JavaScript in a Bun process the simulator supervises
-    /// (`scripting::bun`, `docs/notes/prim-scripting.md`). A world's stored
-    /// scripts are in one language, so switching engines stops every script
-    /// written for the other with a compile error.
-    #[serde(default = "default_script_engine")]
-    pub script_engine: String,
-    /// The `bun` executable (1.4 or later), for `script_engine = "bun"`.
-    #[serde(default = "default_script_bun")]
-    pub script_bun: String,
-    /// `tools/script-host` (its `src/child.ts` and `node_modules`), for
-    /// `script_engine = "bun"`. Defaults to this checkout's, which is right
-    /// for a development build and wrong for an installed one.
+    /// The compiled script host prim scripts run in (`deploy/build/script-host.sh`,
+    /// `docs/notes/javascript-prim-scripts.md`). Unset, it is
+    /// `cartopolis-script-host` beside the simulator's own binary, where the
+    /// deploy and the server download put it ([`Self::script_host`]).
+    #[serde(default)]
+    pub script_host: Option<String>,
+    /// `tools/script-host` to run from source with [`Self::script_bun`]
+    /// instead, for a server run from a checkout. Unset and with no compiled
+    /// host beside the binary, it is this checkout's.
     #[serde(default)]
     pub script_host_dir: Option<String>,
+    /// The `bun` executable (1.4 or later) for [`Self::script_host_dir`].
+    #[serde(default = "default_script_bun")]
+    pub script_bun: String,
     /// A tick the script process has not answered by then is a hung script:
     /// the process is killed and the running prim blamed.
     #[serde(default = "default_script_tick_timeout_ms")]
@@ -295,10 +294,6 @@ fn default_max_scripts() -> u32 {
     200
 }
 
-fn default_script_engine() -> String {
-    "luau".into()
-}
-
 fn default_script_bun() -> String {
     "bun".into()
 }
@@ -361,9 +356,9 @@ impl Default for SimConfig {
             tick_hz: default_tick_hz(),
             max_prims: default_max_prims(),
             max_scripts: default_max_scripts(),
-            script_engine: default_script_engine(),
-            script_bun: default_script_bun(),
+            script_host: None,
             script_host_dir: None,
+            script_bun: default_script_bun(),
             script_tick_timeout_ms: default_script_tick_timeout_ms(),
             script_memory_limit_mib: default_script_memory_limit_mib(),
             osm_tile_url_template: default_osm_tile_url_template(),
@@ -403,24 +398,32 @@ impl Default for SimConfig {
 impl SimConfig {
     /// The two ceilings `SimWorld` enforces, in the shape it holds them.
     #[must_use]
-    /// The engine `script_engine` names. An unknown name is an error rather
-    /// than Luau, so a typo does not quietly run the other language.
-    pub fn script_engine(&self) -> anyhow::Result<crate::scripting::Engine> {
-        match self.script_engine.as_str() {
-            "luau" => Ok(crate::scripting::Engine::Luau),
-            "bun" => Ok(crate::scripting::Engine::Bun(crate::scripting::BunEngine {
-                bun: self.script_bun.clone().into(),
-                host_dir: self.script_host_dir.clone().map_or_else(
-                    || {
-                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .join("../../tools/script-host")
-                    },
-                    Into::into,
-                ),
-                tick_timeout: std::time::Duration::from_millis(self.script_tick_timeout_ms),
-                memory_limit_bytes: self.script_memory_limit_mib << 20,
-            })),
-            other => anyhow::bail!("script_engine = \"{other}\" is not one of: luau, bun"),
+    /// The script process to run, first match wins: `script_host`;
+    /// `script_host_dir` under `script_bun`; `cartopolis-script-host` beside
+    /// the running binary (`beside`, `None` when it cannot be told); this
+    /// checkout's `tools/script-host`. An installed server finds the third, a
+    /// `cargo run` the fourth.
+    pub fn script_host(&self, beside: Option<&Path>) -> crate::scripting::BunEngine {
+        use crate::scripting::{BunEngine, COMPILED_HOST};
+        let engine = if let Some(exe) = &self.script_host {
+            BunEngine::compiled(exe.into())
+        } else if let Some(dir) = &self.script_host_dir {
+            BunEngine::source(self.script_bun.clone().into(), dir.into())
+        } else if let Some(exe) = beside
+            .map(|dir| dir.join(COMPILED_HOST))
+            .filter(|exe| exe.is_file())
+        {
+            BunEngine::compiled(exe)
+        } else {
+            BunEngine {
+                program: self.script_bun.clone().into(),
+                ..BunEngine::development()
+            }
+        };
+        BunEngine {
+            tick_timeout: std::time::Duration::from_millis(self.script_tick_timeout_ms),
+            memory_limit_bytes: self.script_memory_limit_mib << 20,
+            ..engine
         }
     }
 
@@ -611,27 +614,35 @@ fn is_loopback_bind(addr: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A typo in `script_engine` is refused at startup rather than read as
-    /// Luau, which would quietly run every script in the other language.
+    /// An installed server runs the compiled host it was shipped with, and a
+    /// setting still wins over it; with neither, a checkout runs its source.
     #[test]
-    fn the_script_engine_is_named_exactly() {
-        let engine = |name: &str| {
-            SimConfig {
-                script_engine: name.into(),
-                ..SimConfig::default()
-            }
-            .script_engine()
-        };
-        assert!(matches!(engine("luau"), Ok(crate::scripting::Engine::Luau)));
-        assert!(matches!(
-            engine("bun"),
-            Ok(crate::scripting::Engine::Bun(_))
-        ));
-        assert!(engine("javascript").is_err());
-        assert!(matches!(
-            SimConfig::default().script_engine(),
-            Ok(crate::scripting::Engine::Luau)
-        ));
+    fn the_script_host_beside_the_binary_is_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = SimConfig::default();
+        let dev = config.script_host(Some(dir.path()));
+        assert_eq!(dev.program, std::path::PathBuf::from("bun"));
+        assert!(
+            dev.host_dir.is_some(),
+            "no compiled host: this checkout's source"
+        );
+
+        let exe = dir.path().join(crate::scripting::COMPILED_HOST);
+        std::fs::write(&exe, "").unwrap();
+        let shipped = config.script_host(Some(dir.path()));
+        assert_eq!(shipped.program, exe);
+        assert_eq!(shipped.host_dir, None);
+
+        let chosen = SimConfig {
+            script_host_dir: Some("/srv/script-host".into()),
+            script_bun: "/opt/bun".into(),
+            script_tick_timeout_ms: 250,
+            ..SimConfig::default()
+        }
+        .script_host(Some(dir.path()));
+        assert_eq!(chosen.program, std::path::PathBuf::from("/opt/bun"));
+        assert_eq!(chosen.host_dir, Some("/srv/script-host".into()));
+        assert_eq!(chosen.tick_timeout.as_millis(), 250);
     }
 
     /// A development sim binds loopback and is told to say so: the client cannot

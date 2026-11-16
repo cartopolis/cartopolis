@@ -64,41 +64,6 @@ pub fn pack(name: &str) -> Option<Pack> {
     packs().into_iter().find(|p| p.name == name)
 }
 
-/// Each pack script in Luau and in JavaScript, for a world whose
-/// `script_engine` is `"bun"` (`scripting::bun`). The packs are built with the
-/// Luau text; [`in_javascript`] swaps it for its translation.
-const TRANSLATIONS: &[(&str, &str)] = &[
-    (
-        include_str!("../content/beacon.lua"),
-        include_str!("../content/beacon.js"),
-    ),
-    (
-        include_str!("../content/firebird.lua"),
-        include_str!("../content/firebird.js"),
-    ),
-    (
-        include_str!("../content/football.lua"),
-        include_str!("../content/football.js"),
-    ),
-    (
-        include_str!("../content/theremin.lua"),
-        include_str!("../content/theremin.js"),
-    ),
-];
-
-/// `pack` with every script in JavaScript.
-#[must_use]
-pub fn in_javascript(mut pack: Pack) -> Pack {
-    for prim in &mut pack.prims {
-        if let Some(lua) = prim.script.as_deref() {
-            if let Some((_, js)) = TRANSLATIONS.iter().find(|(l, _)| *l == lua) {
-                prim.script = Some((*js).into());
-            }
-        }
-    }
-    pack
-}
-
 /// The firebird and the beacon that calls it.
 ///
 /// Two prims and two scripts, because the pair is the demonstration: a button
@@ -131,7 +96,7 @@ fn firebird() -> Pack {
                     turbulence: Some(1.2),
                     ..ParticleSpec::default()
                 })),
-                script: Some(include_str!("../content/firebird.lua").into()),
+                script: Some(include_str!("../content/firebird.js").into()),
                 ..PrimSpec::default()
             },
             PrimSpec {
@@ -160,7 +125,7 @@ fn firebird() -> Pack {
                     turbulence: Some(0.7),
                     ..ParticleSpec::default()
                 })),
-                script: Some(include_str!("../content/beacon.lua").into()),
+                script: Some(include_str!("../content/beacon.js").into()),
                 ..PrimSpec::default()
             },
         ],
@@ -169,7 +134,7 @@ fn firebird() -> Pack {
 
 /// The middle of each goal line on the Euroborg's pitch — FC Groningen's
 /// stadium — from OpenStreetMap way 185043967 (106 × 68 m, running north–south).
-/// `football.lua` carries the same two numbers; a test holds them together.
+/// `football.js` carries the same two numbers; a test holds them together.
 const EUROBORG_NORTH_GOAL: (f64, f64) = (53.206_619_75, 6.591_665_8);
 const EUROBORG_SOUTH_GOAL: (f64, f64) = (53.205_663_15, 6.591_642_7);
 
@@ -369,7 +334,7 @@ fn football() -> Pack {
         scale: Some([0.22, 0.22, 0.22]),
         color: Some([1.0, 1.0, 1.0]),
         physical: Some(true),
-        script: Some(include_str!("../content/football.lua").into()),
+        script: Some(include_str!("../content/football.js").into()),
         ..PrimSpec::default()
     }];
     prims.extend(goal(1.0, "North"));
@@ -392,13 +357,13 @@ const THEREMIN_AT: (f64, f64) = (53.21858, 6.56750);
 /// Height of the cabinet's centre — waist high, played standing.
 const THEREMIN_CABINET_Y: f32 = 1.0;
 /// The two antennas, metres from the cabinet's centre (east, up, south). The
-/// same numbers are `ROD` and `LOOP` in `theremin.lua`; a test holds them
+/// same numbers are `ROD` and `LOOP` in `theremin.js`; a test holds them
 /// together, because the rod you see and the rod you play must be one rod.
 const THEREMIN_ROD: [f32; 3] = [0.35, 0.45, 0.0];
 const THEREMIN_LOOP: [f32; 3] = [-0.4, 0.05, 0.0];
 
 /// A theremin you play with your hand: a cabinet on a stand, with its pitch rod
-/// and volume loop. Everything that makes it an instrument is `theremin.lua`,
+/// and volume loop. Everything that makes it an instrument is `theremin.js`,
 /// built on `sense_hands`, `on_hand` and `set_tone`.
 ///
 /// The rod and the loop are prims of their own, placed where the cabinet's
@@ -428,7 +393,7 @@ fn theremin() -> Pack {
                   and plays with their hand, heard by everybody near it.",
         prims: vec![
             PrimSpec {
-                script: Some(include_str!("../content/theremin.lua").into()),
+                script: Some(include_str!("../content/theremin.js").into()),
                 ..part(
                     "Theremin",
                     "box",
@@ -496,24 +461,6 @@ mod tests {
         }
     }
 
-    /// A pack script added without its JavaScript would install as Luau into a
-    /// world running Bun, and fail to compile there.
-    #[test]
-    fn every_pack_script_has_a_javascript_translation() {
-        for p in packs() {
-            let js = in_javascript(pack(&p.name).expect("the pack by its own name"));
-            for (lua, prim) in p.prims.iter().zip(&js.prims) {
-                if lua.script.is_some() {
-                    assert_ne!(
-                        lua.script, prim.script,
-                        "{}'s {:?} has no .js beside its .lua",
-                        p.name, prim.name
-                    );
-                }
-            }
-        }
-    }
-
     /// The scripts are embedded, not read from disk — a deployed server has no
     /// repository beside it. An empty one means the `include_str!` path moved and
     /// somebody pointed it at a stub.
@@ -542,27 +489,27 @@ mod tests {
     /// The theremin's script plays the antennas the pack drew.
     #[test]
     fn the_theremin_plays_the_antennas_it_shows() {
-        let source = include_str!("../content/theremin.lua");
+        let source = include_str!("../content/theremin.js");
         let fmt = |name: &str, v: [f32; 3]| {
-            format!("local {name} = {{{:?}, {:?}, {}}}", v[0], v[1], v[2] as i32)
+            format!("const {name} = [{:?}, {:?}, {}]", v[0], v[1], v[2] as i32)
         };
         for (name, v) in [("ROD", THEREMIN_ROD), ("LOOP", THEREMIN_LOOP)] {
             let line = fmt(name, v);
-            assert!(source.contains(&line), "theremin.lua lacks `{line}`");
+            assert!(source.contains(&line), "theremin.js lacks `{line}`");
         }
     }
 
-    /// The referee in `football.lua` finds the goals by the same two points the
+    /// The referee in `football.js` finds the goals by the same two points the
     /// pack built them on. Written twice, so held together here.
     #[test]
     fn the_football_script_knows_where_the_goals_are() {
-        let source = include_str!("../content/football.lua");
+        let source = include_str!("../content/football.js");
         for (name, (lat, lng)) in [
             ("NORTH", EUROBORG_NORTH_GOAL),
             ("SOUTH", EUROBORG_SOUTH_GOAL),
         ] {
-            let line = format!("local {name} = {{ lat = {lat}, lng = {lng} }}");
-            assert!(source.contains(&line), "football.lua lacks `{line}`");
+            let line = format!("const {name} = {{lat: {lat}, lng: {lng}}}");
+            assert!(source.contains(&line), "football.js lacks `{line}`");
         }
     }
 
@@ -601,7 +548,7 @@ mod tests {
     /// test would notice one of them being edited.
     #[test]
     fn the_beacon_and_the_firebird_are_on_the_same_channel() {
-        let channel = "local CHANNEL = 4747";
+        let channel = "const CHANNEL = 4747";
         let pack = pack("firebird").unwrap();
         for prim in &pack.prims {
             assert!(

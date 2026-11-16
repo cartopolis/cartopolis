@@ -17,7 +17,7 @@ Two generic script features (protocol 36), added so a theremin could be built
   a synthesised tone (sine, organ, saw, square) every client in range plays.
 
 The engine maps nothing to pitch or volume and decides nothing about who
-plays. `crates/simulator/content/theremin.lua` (the `theremin` content pack)
+plays. `crates/simulator/content/theremin.js` (the `theremin` content pack)
 takes the first hand to arrive as its player, ignores everybody else's until
 the player's stops arriving for a second, turns the hand's distance to a rod
 and to a loop into `set_tone` calls, and shows who is playing in its name.

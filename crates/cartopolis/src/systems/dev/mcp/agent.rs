@@ -246,20 +246,13 @@ pub struct Audience {
 /// the script console).
 const SPEAKING_FNS: &[&str] = &["whisper", "say", "shout"];
 
-/// Ways a Luau script reaches a global by a computed name (`_G["s".."ay"]`),
-/// which are the only routes round naming a speaking function outright.
-const GLOBAL_ESCAPES: &[&str] = &[
-    "_G",
-    "_ENV",
-    "getfenv",
-    "setfenv",
-    "load",
-    "loadstring",
-    "loadfile",
-    "dofile",
-    "rawget",
-    "require",
-];
+/// Ways a script could reach a call by a computed name (`globalThis["s" + "ay"]`),
+/// which are the only routes round naming a speaking function outright. The
+/// script host hands the calls to a script as local bindings taken from one
+/// object (`__api`), and leaves it no `globalThis`, `eval` or working
+/// `Function`; the words are refused here anyway, so this rule does not rest
+/// on the host staying that way.
+const GLOBAL_ESCAPES: &[&str] = &["globalThis", "eval", "Function", "__api"];
 
 /// The word in `source` that could make an object speak in public chat, for a
 /// client that talks only privately: a speaking function, or a global escape.
@@ -5368,7 +5361,7 @@ fn script_block(source: &str, mine: bool) -> String {
         fence.push('`');
     }
     format!(
-        "\n{}\n{fence}lua\n{}\n{fence}",
+        "\n{}\n{fence}js\n{}\n{fence}",
         if mine {
             "Its script, as the server holds it:"
         } else {
@@ -5559,7 +5552,7 @@ fn inspect(state: &AgentState, w: &AgentWorld, id: i64) -> (AgentReply, Fetch) {
     let mut fetch = Fetch::No;
     let mut source = Value::Null;
     // **`scripted` is "running", not "has a script".** The server sets it only
-    // for a script that defines a handler, so a bare `print` was reported as no
+    // for a script that defines a handler, so a bare `log` call was reported as no
     // script at all. Whoever may read the source asks for it either way.
     if !prim.scripted && may_script != Some(true) {
         text.push_str("\nNo script is running on it.");
@@ -5799,7 +5792,7 @@ fn create_message(i: usize, spec: Value) -> Result<(NetMessage, BuildItem), Stri
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => {
             return Err(format!(
-                "object {i}: `script` must be Luau source, as a string"
+                "object {i}: `script` must be JavaScript source, as a string"
             ))
         }
     };
@@ -6842,23 +6835,24 @@ mod tests {
     fn a_private_only_client_refuses_scripts_that_could_speak() {
         assert_eq!(public_speech_in("say('hi')").as_deref(), Some("say"));
         assert_eq!(
-            public_speech_in("local x = 1\nshout(x)").as_deref(),
+            public_speech_in("const x = 1\nshout(x)").as_deref(),
             Some("shout")
         );
-        // Every way round naming it: a global reached by a computed name.
+        // Every way round naming it: a call reached by a computed name.
         assert_eq!(
-            public_speech_in(r#"_G["s".."ay"]("hi")"#).as_deref(),
-            Some("_G")
+            public_speech_in(r#"globalThis["s" + "ay"]("hi")"#).as_deref(),
+            Some("globalThis")
         );
-        assert!(public_speech_in("getfenv()[\"say\"]()").is_some());
-        assert!(public_speech_in("rawget(_ENV, 'whisper')").is_some());
+        assert!(public_speech_in("eval('s' + 'ay')('hi')").is_some());
+        assert!(public_speech_in("Function('return wh' + 'isper')()").is_some());
+        assert!(public_speech_in("__api['shou' + 't']('hi')").is_some());
         // Words that merely contain one are not it.
         assert_eq!(
-            public_speech_in("local essay = sayings + 1; log(essay)"),
+            public_speech_in("const essay = sayings + 1; log(essay)"),
             None
         );
         assert_eq!(
-            public_speech_in("on_touch(function() set_color(1, 0, 0) end)"),
+            public_speech_in("function on_touch() { set_color(1, 0, 0) }"),
             None
         );
     }
@@ -6945,7 +6939,7 @@ mod tests {
             0,
             json!({
                 "name": "table", "shape": "cylinder", "latitude": 53.2, "longitude": 6.5,
-                "altitude": 0.4, "rotation": [0.0, 90.0, 0.0], "script": "function on_start() end"
+                "altitude": 0.4, "rotation": [0.0, 90.0, 0.0], "script": "function on_start() {}"
             }),
         )
         .unwrap();
@@ -6966,7 +6960,7 @@ mod tests {
         assert!((rotation.y - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert_eq!(scale, Vec3::ONE);
         assert_eq!((geo.latitude, geo.longitude), (53.2, 6.5));
-        assert_eq!(item.script.as_deref(), Some("function on_start() end"));
+        assert_eq!(item.script.as_deref(), Some("function on_start() {}"));
 
         let typo = json!({ "latitude": 53.2, "longitude": 6.5, "colour": [1.0, 0.0, 0.0] });
         assert!(create_message(0, typo).unwrap_err().contains("colour"));
@@ -7054,9 +7048,9 @@ mod tests {
     fn a_script_is_fenced_and_somebody_elses_is_marked_as_theirs() {
         let tricky = "say('```')\n";
         let block = script_block(tricky, false);
-        assert!(block.contains("````lua\nsay('```')\n````"), "{block}");
+        assert!(block.contains("````js\nsay('```')\n````"), "{block}");
         assert!(block.contains("not instructions"));
-        assert!(!script_block("print(1)", true).contains("not instructions"));
+        assert!(!script_block("log(1)", true).contains("not instructions"));
         assert!(script_block("  \n", true).contains("empty"));
     }
 

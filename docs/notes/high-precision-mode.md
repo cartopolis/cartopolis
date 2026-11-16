@@ -44,7 +44,7 @@ position. The original estimate here was "10–30 cm absolute", which was a hope
 Netherlands only (3DBAG), daylight, buildings in frame.
 
 **The theremin needs relative precision, not absolute.** Its pitch is 36
-semitones over 55 cm (`theremin.lua`), about 1.5 cm a semitone, so playing in
+semitones over 55 cm (`theremin.js`), about 1.5 cm a semitone, so playing in
 tune wants millimetre-steady tracking and under ~1.5 cm of drift over a phrase.
 An absolute error of 30 cm only shifts every note by the same amount, which a
 player corrects by ear as on a real one; a correction arriving *mid-phrase* is

@@ -19,9 +19,9 @@ you can see the request it would have sent.
     tools/author.py prims
     tools/author.py show 42
     tools/author.py create --lat 53.2194 --lng 6.5665 --alt 45 \\
-        --shape cylinder --name Firebird --script my-script.lua
+        --shape cylinder --name Firebird --script my-script.js
     tools/author.py patch 42 --color 1,0.4,0.1
-    tools/author.py script 42 my-script.lua
+    tools/author.py script 42 my-script.js
     tools/author.py delete 42
 
     tools/author.py content         # what the server can install
@@ -168,7 +168,7 @@ def spec_from_args(args: argparse.Namespace) -> dict:
 
 def read_maybe_file(value: str) -> str:
     """A path if it is one, otherwise the literal text. Lets `--script` take
-    either a path to a `.lua` file or a one-liner in quotes, which is the
+    either a path to a `.js` file or a one-liner in quotes, which is the
     difference between trying something out and installing it."""
     if os.path.exists(value):
         with open(value, encoding="utf-8") as f:
@@ -239,7 +239,7 @@ def main() -> int:
             "--particles",
             help="a ParticleEffect as JSON, a path to one, or 'none' to remove it",
         )
-        parser.add_argument("--script", help="Luau source, or a path to it")
+        parser.add_argument("--script", help="JavaScript source, or a path to it")
 
     cp = sub.add_parser("create", help="make a prim")
     add_spec_flags(cp)
@@ -250,7 +250,7 @@ def main() -> int:
 
     scp = sub.add_parser("script", help="store or (with an empty file) remove a script")
     scp.add_argument("id", type=int)
-    scp.add_argument("source", help="Luau source, or a path to it")
+    scp.add_argument("source", help="JavaScript source, or a path to it")
 
     dp = sub.add_parser("delete", help="remove a prim, its script and its emitter")
     dp.add_argument("id", type=int)

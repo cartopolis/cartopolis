@@ -73,7 +73,6 @@ base64 = "0.22"
 # Reading a texture's dimensions out of its header, which is the only way to tell
 # a small file from a small *image*: a decompression bomb is tiny on disk.
 image.workspace = true
-mlua.workspace = true
 refinery = { workspace = true }
 rusqlite.workspace = true
 serde.workspace = true

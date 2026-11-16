@@ -1,25 +1,71 @@
-// firebird.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
-// comments explaining the design stay in the Lua original.
+// The firebird: a burning thing that circles Groningen, comes when the beacon on
+// the Grote Markt calls it, and goes off if you sneak up on it.
+//
+// It is the worked example for everything protocol 20 and 21 added, and it uses
+// each of those the way an author would rather than the way a test would:
+//
+//   set_geo      moves it across the map *durably* — set_pos's x and z are a
+//                 client-frame echo, so a lap flown with those would be undone by
+//                 the next re-anchor (see docs/notes/prim-scripting.md).
+//   geo_scale    turns a radius in metres into an offset in degrees, which is
+//                 the one bit of geodesy a script cannot sensibly do itself.
+//   sensor      answers "is anybody near me?" in the only frame where that has
+//                 an answer — an avatar's sim position is metres in its own
+//                 client's anchored frame, and a prim's anchor is absolute.
+//   listen /    the channel the beacon presses arrive on. Nothing else can
+//   send        reach another prim: every other call acts on this one.
+//   particles   the flame it flies with.
+//   particle_burst  the explosion, which is the same call fired once.
+//
+// Installed with the beacon by:  tools/author.py install firebird
+//
+// **It reforms rather than dying.** The first version ended on die, which is
+// the honest reading of "it explodes" and is also a machine that works once: a
+// summon button is pointless if the thing it summons deleted itself the first
+// time somebody walked near it. So the blast is followed by a dark interval and
+// then it is back on its circle. `die()` in place of the reform below is a
+// one-line change if a one-shot is what you want.
+
+// Where it circles, how wide, how long a lap takes, and how high it flies.
 const CENTRE_LAT = 53.2194, CENTRE_LNG = 6.5665
 const RADIUS_M = 180.0
 const LAP_S = 48.0
 const ALTITUDE_M = 45.0
+// Where it hovers when it has been called in. The beacon's own spot, a little to
+// one side and low enough to be worth looking at.
 const BEACON_LAT = 53.21935, BEACON_LNG = 6.56675
 const HOVER_M = 9.0
 const HOVER_DRIFT_M = 2.5
+// How near an avatar has to get to startle it, in metres. Comfortably inside the
+// sim's sensor ceiling and comfortably outside "you had to walk into it".
 const NOTICE_M = 45.0
+// How long it shakes before it goes, and how far it rattles.
 const SHAKE_S = 2.5
 const SHAKE_M = 0.6
+// How long the blast is left standing before the shell reforms. The explosion is
+// drawn by the client for its own lifetime; reforming at the same instant would
+// take the emitter away mid-bang.
 const LINGER_S = 2.0
+// How long after being released it is too busy climbing away to be startled.
+// Without this, pressing the beacon a second time while standing next to it sends
+// the firebird out and it immediately explodes in your face — which is a fair
+// reading of the rules and is not what anybody pressing a button twice meant.
 const RELEASE_GRACE_S = 6.0
+// The channel the beacon is on.
 const CHANNEL = 4747
+// Metres per degree here. Computed once: it changes with latitude and this thing
+// never leaves Groningen.
 const [M_PER_LAT, M_PER_LNG] = geo_scale(CENTRE_LAT)
 
 let state = 'patrol'
 let marked = 0
+// Simulated time the patrol is measured from, so being summoned and released does
+// not teleport it round its own circle.
 let lap_epoch = 0
 let calm_until = 0
 
+// A flame: hot core, rising, curling. Every field left out keeps the fire
+// preset's value.
 const FLAME = {
     count: 120,
     life: 1.3,
@@ -42,22 +88,31 @@ function light_it() {
 
 function on_start() {
     set_name('Firebird')
+    // A dark shell, so what you see is the fire and not a lit cylinder.
     set_color(0.09, 0.07, 0.06)
     set_scale(1.6, 0.9, 1.6)
+    // Only the height: horizontal placement belongs to the geo anchor, which
+    // set_geo writes below.
     const [x, , z] = get_pos()
     set_pos(x, ALTITUDE_M, z)
     light_it()
     listen(CHANNEL)
     shout('The firebird is up.')
+    // One tick at 20 Hz. The handler is a few function calls and no loops, so it
+    // spends a few dozen steps of fuel; the per-script slice is 20,000.
     set_timer_event(0.05)
 }
 
+// Where on the circle it is at time `t`.
 function fly(t) {
     const a = ((t - lap_epoch) / LAP_S) * 2 * Math.PI
     set_geo(CENTRE_LAT + (RADIUS_M * Math.cos(a)) / M_PER_LAT, CENTRE_LNG + (RADIUS_M * Math.sin(a)) / M_PER_LNG)
+    // Nose along the tangent. Degrees, as set_rot takes and the edit dialog
+    // shows.
     set_rot(0, -(a * 180) / Math.PI, 0)
 }
 
+// Hovering over the beacon, turning slowly and bobbing.
 function hover(t) {
     const a = t * 0.7
     set_geo(BEACON_LAT + (HOVER_DRIFT_M * Math.cos(a)) / M_PER_LAT, BEACON_LNG + (HOVER_DRIFT_M * Math.sin(a)) / M_PER_LNG)
@@ -66,6 +121,7 @@ function hover(t) {
     set_rot(0, ((a * 180) / Math.PI) * 2.0, 0)
 }
 
+// What the beacon's label is asking about.
 function report() {
     send(CHANNEL, state === 'summoned' ? 'here' : 'patrolling')
 }
@@ -75,8 +131,13 @@ function on_message(channel, text, sender) {
         report()
         return
     }
+    // Anything else on this channel is a press. The beacon does not say which way
+    // to go, on purpose — only this script knows what it is currently doing, and
+    // two objects each holding half a state machine is how they come apart.
     if (state === 'summoned') {
         state = 'patrol'
+        // Re-base the lap so it rejoins the circle where it left it rather than
+        // wherever the clock happens to have got to.
         lap_epoch = get_time()
         calm_until = get_time() + RELEASE_GRACE_S
         const [x, , z] = get_pos()
@@ -86,6 +147,8 @@ function on_message(channel, text, sender) {
         state = 'summoned'
         shout('Coming.')
     } else {
+        // Mid-explosion. It will report again when it reforms; saying nothing is
+        // better than promising something that is currently in pieces.
         return
     }
     report()
@@ -105,6 +168,7 @@ function on_timer() {
                 state = 'shaking'
                 marked = now
                 shout(`${who} is ${distance.toFixed(0)} m away. Stand back.`)
+                // Wind the flame up: the fire is the warning.
                 FLAME.count = 200
                 FLAME.speed = 4.0
                 FLAME.size_start = 1.6
@@ -115,6 +179,10 @@ function on_timer() {
     }
     if (state === 'shaking') {
         const t = now - marked
+        // Rattle in place. In *geo*, not in set_pos: horizontal position is the
+        // anchor's, so a jitter written to x/z would be quietly discarded by
+        // every client the moment the map re-anchored — which reads as a shake
+        // that works until it doesn't.
         const wobble = SHAKE_M * (t / SHAKE_S)
         const [lat, lng] = get_geo()
         set_geo(lat + (wobble * Math.sin(t * 47.0)) / M_PER_LAT, lng + (wobble * Math.cos(t * 53.0)) / M_PER_LNG)
@@ -135,12 +203,16 @@ function on_timer() {
                 color_start: [8.0, 3.6, 1.0],
                 color_end: [0.9, 0.12, 0.02],
             })
+            // The shell goes, the blast stays: what is left on screen is the
+            // explosion rather than a cylinder standing inside one.
             set_alpha(0.0)
             set_glow(0.0)
         }
         return
     }
     if (state === 'blown' && now - marked >= LINGER_S) {
+        // Reform, out on the circle rather than where it went off — the person
+        // who startled it is standing there.
         state = 'patrol'
         lap_epoch = now
         calm_until = now + RELEASE_GRACE_S

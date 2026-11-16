@@ -98,7 +98,7 @@ appears. `PUT /prims/{id}/script` says so in its own reply.
 ## Content the server carries
 
 `POST /api/admin/content/{name}` installs a named piece of world the *simulator*
-defines — `crates/simulator/src/content.rs`, with the Luau `include_str!`-ed from
+defines — `crates/simulator/src/content.rs`, with the JavaScript `include_str!`-ed from
 `crates/simulator/content/`.
 
 It started the other way round: a `.lua` file in the repository and a Python

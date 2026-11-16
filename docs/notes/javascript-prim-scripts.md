@@ -1,15 +1,15 @@
 ---
 topic: javascript-prim-scripts
-triggers: [scripting/bun.rs, scripting/rules.rs, bun_tests.rs, tools/script-host, script_engine, script_host_dir, realm-runtime.js, rewrite.ts, ShadowRealm, "bun:jsc", heapSize, BunEngine]
-updated: 2026-11-15
+triggers: [scripting/bun.rs, scripting/rules.rs, bun_tests.rs, js_tests.rs, tools/script-host, script-host.sh, cartopolis-script-host, COMPILED_HOST, script_host, script_host_dir, realm-runtime.js, rewrite.ts, ShadowRealm, "bun:jsc", heapSize, BunEngine]
+updated: 2026-11-16
 ---
 
 # Prim scripts in JavaScript, on Bun
 
-`script_engine = "bun"` runs prim scripts as JavaScript in a Bun process the
-simulator supervises (`scripting::bun`, `tools/script-host`); `"luau"` is the
-default and the engine `prim-scripting.md` describes. The question that note
-puts to any replacement — can an over-budget script be *suspended*, or only
+Prim scripts run as JavaScript in a Bun process the simulator supervises
+(`scripting::bun`, `tools/script-host`) — the only engine since 2026-11-16,
+when Luau (`prim-scripting.md`) was removed. The question that note put to any
+replacement — can an over-budget script be *suspended*, or only
 killed? — is answered here by rewriting the script, not by the engine.
 
 ## How the Luau guarantees are rebuilt
@@ -92,13 +92,30 @@ own process, 2026-11-15 (`tools/script-host/bench`):
 The content mix at 2000 is a message storm — the packs assume one firebird, and
 firebirds read each other's replies as a toggle — so it measures delivery.
 
+## Where the process comes from
+
+`deploy/build/script-host.sh` compiles `src/child.ts` with `bun build --compile
+--target=bun-linux-x64` into one executable, `cartopolis-script-host` (87 MB,
+Bun 1.4.4 inside; `realm-runtime.js` is imported as text so it travels in it).
+The simulator looks for it beside its own binary (`COMPILED_HOST`,
+`SimConfig::script_host`), so a server needs neither Bun nor `node_modules`: the
+server download carries it next to `cartopolis-server` and its updater swaps
+and rolls it back with the program; the hosted sim's deploy publishes it next to
+`simulator`. `script_host` names another; `script_host_dir` (with `script_bun`)
+runs a checkout's source; with neither and nothing beside the binary, a
+`cargo run` runs this checkout's under the `bun` on the path, installing its
+packages on first start. The script tests need that Bun and fail without it,
+since a pass by skipping would vouch for nothing; the gate also runs
+`bun test` here.
+
+A Luau script stored before the switch does not compile as JavaScript; the
+hosted world had none left when Luau went (2026-11-16, 64 scripts, all JS).
+
 ## What is not done
 
-- Deploying it: the hosted sim has no Bun, and `script_host_dir` defaults to the
-  build checkout's `tools/script-host`, which an installed sim does not have.
-- The editor's reference (`cartopolis_core::SCRIPT_API`) shows Luau signatures;
-  in JavaScript several results come back as an array (`const [x, y, z] = get_pos()`).
-- Stored Luau scripts are not converted: switching a world's engine stops every
-  script written for the other with a compile error.
+- The heap audit (`LIMITS.scriptRetained`, what a script holds between ticks)
+  is not run by the Rust supervisor; per script only the slice ceiling
+  (`sliceHeap`, 16 MiB, what clients are told as `script_memory_bytes`) holds,
+  and the process ceiling above it.
 - Classes, getters, async functions and an author's own generators are refused
   by the rewrite; errors raised by the Rust-side rule checks carry no line.

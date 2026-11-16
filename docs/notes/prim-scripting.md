@@ -4,12 +4,22 @@ triggers: [scripting.rs, script_editor.rs, mlua, luau, "script", "sandbox", "fue
 updated: 2026-10-17
 ---
 
-# What the scripting engine is, and what mlua hands you that Luau does not
+# Prim scripts: the API, and what the Luau engine taught
 
-Prims run **Luau**, through `mlua`, one VM per scripted prim, on a dedicated OS
-thread (`cartopolis_simulator::scripting`).
+Prims run **JavaScript** in one Bun process the simulator supervises, one
+script host thread talking to it (`cartopolis_simulator::scripting`,
+`tools/script-host`). Its design, measurements and traps are
+`javascript-prim-scripts.md`; this note holds the API's decisions, which hold
+for any engine, and what the first engine taught.
 
-## Why Luau, and why the choice is not really about the language
+**Luau, through `mlua`, one VM per prim, was the engine until 2026-11-16**, and
+for a day the two ran side by side behind `script_engine`. Then Luau was removed
+with `mlua`: the hosted world's 64 scripts were all JavaScript by then, and two
+engines meant every API call, rule and pack script written twice. Its sections
+below are history, kept because the question it was chosen on is the one any
+engine still has to answer.
+
+## Why Luau was chosen, and why the choice is not really about the language
 
 Three capabilities decided it, and standard Lua has only two:
 
@@ -28,11 +38,10 @@ So the comparison that decided this was Luau against *standard Lua*, not against
 the wider field. Anything proposed to replace it has to answer the same question
 first: can an over-budget script be suspended and resumed, or only killed?
 
-`script_engine = "bun"` is the second engine, JavaScript on Bun, which answers
-that question by rewriting the script into generators; its design, measurements
-and traps are `javascript-prim-scripts.md`.
+JavaScript on Bun answers that question by rewriting the script into
+generators (`javascript-prim-scripts.md`).
 
-## A fuel yield is silently a no-op outside a coroutine
+## A fuel yield is silently a no-op outside a coroutine (Luau, history)
 
 The single most important thing to know before adding an entry point, because it
 looks like nothing is wrong and there is no diagnostic anywhere. Found and fixed
@@ -61,7 +70,7 @@ the sandbox has a second door onto the same problem — `Slot::handler` uses
 `raw_get` because a top-level `setmetatable(getfenv(), …)` is not something
 `luaL_sandbox` prevents.
 
-## Two things `sandbox(true)` does not do
+## Two things `sandbox(true)` does not do (Luau, history)
 
 Measured against mlua 0.12 / Luau, 2026-08-10.
 
@@ -96,34 +105,34 @@ Calls are flat, plain snake_case globals — `set_pos`, `say`, `set_timer_event`
 prefix. They were `vf`-prefixed (`vfSetPos`) until 2026-10-04; that prefix was
 the old brand name in front of every call, and it went without aliases, so a
 script written against it fails on its first call and has to be rewritten.
-snake_case matches Luau's own library, so a script reads as one language.
+snake_case was chosen to match Luau's own library and stayed through the move
+to JavaScript, where every stored script and pack already used the names.
 
 Two consequences worth knowing:
 
-- **A script can shadow a host function, and that is not a hole.** The functions
-  live in the script's own environment table, which is also where
-  `function on_start()` lands — a read-only table could not hold a handler. Since
-  every script is its own Luau state, `say = nil` breaks exactly one script.
-  (The earlier design had a read-only `vf` *table*; the flat namespace gave that
-  up, and the thing it was protecting turns out not to need protecting.)
+- **A script can shadow a host function, and that is not a hole.** Each script
+  gets the calls as its own bindings, which is also where `function on_start()`
+  lands; `say = null` breaks exactly one script (`sandbox.test.ts`, "replacing
+  an API call breaks only the script that did it"). The earlier design had a
+  read-only `vf` *table*; the flat namespace gave that up, and the thing it was
+  protecting turns out not to need protecting.
 - **The catalogue lives in `cartopolis_core::SCRIPT_API`**, not in the simulator,
-  because the editor renders it and the server implements it. A simulator test
-  compiles an empty script and asserts the installed names are exactly the
-  catalogued ones — a reference that drifts is worse than none, since an author
-  trusts it.
+  because the editor renders it and the server implements it.
+  `scripting::js_tests::the_catalogue_matches_the_installed_api` holds it equal
+  to the host's `API_NAMES` (`tools/script-host/src/realm.ts`) both ways — a
+  reference that drifts is worse than none, since an author trusts it.
 
-What is *not* in the API is equally deliberate. Luau ships `math`, `string`,
-`table` and `os`, so there is no `frand` (`math.random`) and no `get_unix_time`
-(`os.time`). A host function that only forwards to the standard library is a
-second name for one thing.
+What is *not* in the API is equally deliberate. The realm keeps `Math`, `Date`,
+`JSON`, `Map` and `Set` (`realm-runtime.js`'s allowlist), so there is no `frand`
+(`Math.random()`) and no `get_unix_time` (`Date.now()`). A host function that
+only forwards to the standard library is a second name for one thing.
 
-`sleep` is written in Lua, not Rust, and that is the interesting one: a host
-function cannot yield the coroutine that called it, but Lua code can, and the
-scheduler already resumes a yielded handler next tick. So sleeping is "yield
-until the clock says otherwise" — no scheduler machinery at all, and a sleeping
+`sleep` is a yield, not a host call that blocks: the rewrite turns every
+handler into a generator, and the scheduler already resumes a paused handler
+next tick. So sleeping is "yield until the clock says otherwise" — a sleeping
 script is descheduled by exactly the mechanism that deschedules one which
 overran. Its clock (`get_time`) is *simulated* time for the same reason fuel is
-counted in instructions: two hosts running the same script should agree.
+counted in steps: two hosts running the same script should agree.
 
 ## `set_pos` is durable in y and not in x/z — `set_geo` is the horizontal one
 

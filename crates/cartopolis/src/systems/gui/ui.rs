@@ -1035,7 +1035,7 @@ pub fn render_context_menu(
                 key: "script",
                 icon: icons::NOTE,
                 label: "Script",
-                hint: "Write a Luau script that runs on this object",
+                hint: "Write JavaScript that runs on this object",
             });
         }
         actions.push(RingAction {

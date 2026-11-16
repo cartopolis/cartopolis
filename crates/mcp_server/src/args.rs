@@ -323,7 +323,7 @@ pub struct BuildArgs {
                        build's origin). Other fields: `name`, `shape` (box, sphere, \
                        cylinder, cone, torus), `altitude` (metres above the ground to the \
                        object's centre), `scale` [x, y, z] in metres, `rotation` [x, y, z] \
-                       in degrees, `color` [r, g, b] from 0 to 1, `script` (Luau source \
+                       in degrees, `color` [r, g, b] from 0 to 1, `script` (JavaScript source \
                        — see the scripting_guide tool), and `model`: a model's asset hash from \
                        `find_models`, drawn instead of the shape at its own size (`scale` then \
                        multiplies it)."
@@ -341,7 +341,7 @@ pub struct BuildArgs {
 pub struct ScriptArgs {
     #[schemars(description = "The object's id, as `build` or `my_builds` reported it.")]
     pub id: i64,
-    #[schemars(description = "Luau source. An empty string removes the script.")]
+    #[schemars(description = "JavaScript source. An empty string removes the script.")]
     pub source: String,
 }
 

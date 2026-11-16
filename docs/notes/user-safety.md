@@ -93,9 +93,10 @@ authenticated as nobody.
 
 Guideline 2.5.2 forbids downloading and executing code that changes an app's
 features; 4.7's list of permitted interpreted content (HTML5/JS mini-apps,
-chatbots, plug-ins, emulators) does not name Luau. Roblox is a live counter-
-example, but there is no need to argue it here: `mlua` is a **simulator-only**
-dependency, and since solo mode's removal (2026-08-21) the client ships no
-interpreter in any build — `cartopolis_simulator` is only a dev-dependency for
-tests. Author scripts run on the server and the app renders the result. Keep it
+chatbots, plug-ins, emulators) is about code the app itself runs. Roblox is a
+live counter-example, but there is no need to argue it here: prim scripts
+run in the simulator's own script process (Bun, `javascript-prim-scripts.md`;
+Luau through `mlua` until 2026-11-16), and since solo mode's removal
+(2026-08-21) the client ships no script engine in any build —
+`cartopolis_simulator` is only a dev-dependency for tests. Author scripts run on the server and the app renders the result. Keep it
 that way on any store lane, and the question does not arise.

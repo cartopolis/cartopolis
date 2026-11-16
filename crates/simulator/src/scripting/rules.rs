@@ -1,10 +1,11 @@
-//! The checks on a script's rule tables — `particles{…}`, `set_tone{…}` — and on
-//! sound names, written once for both engines.
+//! The checks on a script's rule objects — `particles({…})`, `set_tone({…})` —
+//! and on sound names.
 //!
-//! A Luau script hands over a table, a JavaScript one an object that reaches the
-//! simulator as JSON (`bun.rs`); [`Rules`] is what the two have in common, so
-//! that "which keys are allowed, what a missing one means, what is clamped" is
-//! one function per call rather than one per engine to keep in step.
+//! They run here, in the simulator, after the script process has answered
+//! (`bun.rs`): everything inside the script's realm is the script's to replace,
+//! the API functions included, so a check made only there is not a check.
+//! [`Rules`] is the shape a rule object is read through; it was the common
+//! ground of two engines until Luau was retired (2026-11-16).
 
 use cartopolis_core::tone::{note_hz, Voice};
 use cartopolis_core::{ParticleEffect, PrimSound, SoundName, ToneSpec, DEFAULT_SOUND_RANGE_M};
@@ -213,50 +214,6 @@ pub(crate) fn tone(t: &dyn Rules) -> Result<ToneSpec, String> {
         range_m: num("range", d.range_m)?,
     }
     .sanitized())
-}
-
-impl Rules for mlua::Table {
-    fn keys(&self) -> Result<Vec<String>, String> {
-        let mut out = Vec::new();
-        for pair in self.clone().pairs::<mlua::Value, mlua::Value>() {
-            let (k, _) = pair.map_err(|e| e.to_string())?;
-            out.push(
-                k.as_string()
-                    .and_then(|s| s.to_str().ok().map(|v| v.to_string()))
-                    .unwrap_or_default(),
-            );
-        }
-        Ok(out)
-    }
-    fn num(&self, key: &str) -> Result<Option<f32>, String> {
-        self.get::<Option<f32>>(key).map_err(|e| e.to_string())
-    }
-    fn rgb(&self, key: &str) -> Result<Option<[Option<f32>; 3]>, String> {
-        let Some(c) = self
-            .get::<Option<mlua::Table>>(key)
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok(None);
-        };
-        let at = |i: i64| c.get::<Option<f32>>(i).map_err(|e| e.to_string());
-        Ok(Some([at(1)?, at(2)?, at(3)?]))
-    }
-    fn text(&self, key: &str) -> Result<Option<String>, String> {
-        self.get::<Option<String>>(key).map_err(|e| e.to_string())
-    }
-    fn pitch(&self, key: &str) -> Result<Pitch, String> {
-        Ok(
-            match self.get::<mlua::Value>(key).map_err(|e| e.to_string())? {
-                mlua::Value::Integer(i) => Pitch::Hz(i as f32),
-                mlua::Value::Number(n) => Pitch::Hz(n as f32),
-                mlua::Value::String(s) => {
-                    Pitch::Note(s.to_str().map_err(|e| e.to_string())?.to_string())
-                }
-                mlua::Value::Nil => Pitch::Missing,
-                _ => Pitch::Other,
-            },
-        )
-    }
 }
 
 impl Rules for serde_json::Map<String, serde_json::Value> {

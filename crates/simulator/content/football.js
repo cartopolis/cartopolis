@@ -1,15 +1,32 @@
-// football.lua beside this, line for line in JavaScript, for `script_engine = "bun"`. The
-// comments explaining the design stay in the Lua original.
+// The football in the Euroborg: a physical prim (`docs/notes/physical-prims.md`)
+// that referees itself.
+//
+// The physics is the simulator's, not this script's: run into the ball and you
+// dribble it, use the kick emote (5) beside it and it flies the way you face.
+// What the script adds is the game around it — it notices the ball crossing a
+// goal line between the posts, keeps the score, says so, and puts the ball back
+// on the centre spot. It also fetches the ball back when it leaves the stadium.
+//
+// The pitch is described by the two points the content pack built the goals on
+// (the middle of each goal line, from OpenStreetMap way 185043967), so this file
+// and `content.rs` agree on where the goals are by having the same two numbers.
+
 const NORTH = {lat: 53.20661975, lng: 6.5916658}
 const SOUTH = {lat: 53.20566315, lng: 6.5916427}
+// Metres either side of the middle of the line.
 const GOAL_HALF_WIDTH = 3.66
 const GOAL_HEIGHT = 2.44
 const BALL_RADIUS = 0.11
+// Further than this outside the lines and the ball is past the advertising
+// boards (4 m out), where nobody can play it back.
 const OUT_OF_PLAY = 4.5
+// Half of the pitch's 68 m width; the two goal points carry only its length.
 const HALF_WIDTH = 34
 
 const centre = {lat: (NORTH.lat + SOUTH.lat) / 2, lng: (NORTH.lng + SOUTH.lng) / 2}
 const [mlat, mlng] = geo_scale(centre.lat)
+// The pitch's own axes in metres: `along` points at the north goal, `across` is
+// square to it, pointing roughly east.
 let axis_e = (NORTH.lng - SOUTH.lng) * mlng
 let axis_n = (NORTH.lat - SOUTH.lat) * mlat
 const length = Math.sqrt(axis_e * axis_e + axis_n * axis_n)
@@ -18,6 +35,7 @@ axis_n = axis_n / length
 const HALF_LENGTH = length / 2
 
 let north_score = 0, south_score = 0
+// Seconds until the ball goes back to the centre spot, or null when in play.
 let restart_in = null
 
 function on_pitch() {
@@ -34,6 +52,7 @@ function score_line() {
 function place_on_centre_spot() {
     set_geo(centre.lat, centre.lng)
     const [x, , z] = get_pos()
+    // Dropped from a little height, so a restart reads as one.
     set_pos(x, 1.0, z)
     set_vel(0, 0, 0)
 }
@@ -63,6 +82,7 @@ function on_timer() {
     const [along, across] = on_pitch()
     const [, y] = get_pos()
     const between_posts = Math.abs(across) < GOAL_HALF_WIDTH - BALL_RADIUS && y < GOAL_HEIGHT - BALL_RADIUS
+    // Wholly over the line, between the posts and under the bar.
     if (between_posts && along > HALF_LENGTH + BALL_RADIUS) {
         south_score = south_score + 1
         shout('GOAL at the north end! ' + score_line())

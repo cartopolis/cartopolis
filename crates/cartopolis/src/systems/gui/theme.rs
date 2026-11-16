@@ -512,7 +512,7 @@ pub const COUNCIL: Color32 = Color32::from_rgb(0x2F, 0x4A, 0x7A);
 /// blue, light enough to read.
 pub const COUNCIL_LIGHT: Color32 = Color32::from_rgb(0x9D, 0xB7, 0xE6);
 
-// Script editor syntax colours (`lua_highlight`), on the code box's ink —
+// Script editor syntax colours (`js_highlight`), on the code box's ink —
 // [`DARK`]'s in both themes: the script editor keeps a dark code box in the
 // light theme, so these are one set. Their own constants rather than borrowed
 // ones: a warning tone on every string would read as a page of warnings.

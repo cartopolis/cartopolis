@@ -434,7 +434,7 @@ mod tests {
 /// player — a connection of its own, standing at the cabinet — moves its hand
 /// along the rod through a melody at [`cartopolis_core::tone::HAND_HZ`], the
 /// rate `prim_hand` reports at; the real simulator runs the real
-/// `theremin.lua`; a second connection, a listener two metres away, takes the
+/// `theremin.js`; a second connection, a listener two metres away, takes the
 /// `PrimTone`s it hears and plays them through this module's own decoder into a
 /// WAV file. Every seam between a hand and a speaker is in the path except the
 /// two ends: the tracker that finds the hand (the offsets are computed here, as
@@ -460,8 +460,8 @@ mod virtual_player {
 
     type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
-    const SCRIPT: &str = include_str!("../../../../simulator/content/theremin.lua");
-    /// `ROD`, `LOW`, `HIGH`, `PITCH_NEAR` and `PITCH_FAR` in `theremin.lua`,
+    const SCRIPT: &str = include_str!("../../../../simulator/content/theremin.js");
+    /// `ROD`, `LOW`, `HIGH`, `PITCH_NEAR` and `PITCH_FAR` in `theremin.js`,
     /// read back here to place the hand. Change them there and the notes
     /// asserted below move off their pitches.
     const ROD: [f32; 3] = [0.35, 0.45, 0.0];
@@ -551,7 +551,7 @@ mod virtual_player {
     }
 
     /// Where the hand must be for the script to sound `hz`: to the right of the
-    /// rod, at the distance `theremin.lua` maps to that pitch, out of the
+    /// rod, at the distance `theremin.js` maps to that pitch, out of the
     /// loop's reach so it plays at full volume.
     fn hand_for(hz: f32) -> [f32; 3] {
         let t = (hz / LOW).ln() / (HIGH / LOW).ln();

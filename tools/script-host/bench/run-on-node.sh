@@ -1,4 +1,4 @@
-# Both hosts, one machine: `ssh <node> bash tools/script-host/bench/run-on-node.sh`.
+# The bench on one machine: `ssh <node> bash tools/script-host/bench/run-on-node.sh`.
 # Fetches Bun 1.4.4 into ~/.cache once. Every group runs in a process of its own,
 # and a failing group does not stop the rest.
 B=$HOME/.cache/bun-1.4.4/bun
@@ -14,4 +14,3 @@ cd "$(dirname "$0")/.." || exit 1
 for group in "memory 200" "memory 2000" "cpu" "process 200" "process 2000"; do
   "$B" bench/bench.ts $group 2>&1 | grep '^{' || echo "{\"engine\":\"bun\",\"group\":\"$group\",\"failed\":true}"
 done
-cd bench/luau && cargo run --release --quiet 2>&1 | grep -E '^\{|panicked|error'

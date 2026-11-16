@@ -72,7 +72,7 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in the
 
 ## Putting things in the world
 
-Prims, and the Luau scripts on them, can be authored from a shell — no viewer, no
+Prims, and the JavaScript scripts on them, can be authored from a shell — no viewer, no
 GPU, no session. It is the same set of operations the create dialog and the
 script editor drive, over `/api/admin/prims` with an admin token
 (`docs/notes/authoring-content-from-outside-the-viewer.md`).
@@ -89,7 +89,7 @@ tools/author.py content                 # what the server can install
 tools/author.py install firebird        # the worked example, over Groningen
 tools/author.py create --lat 53.2194 --lng 6.5665 --alt 20 \
     --shape sphere --particles '{"color_start": [0.2, 0.6, 4.0]}'
-tools/author.py script 3 mine.lua
+tools/author.py script 3 mine.js
 tools/author.py --print patch 3 --color 1,0.4,0.1   # show the request, send nothing
 
 tools/author.py export --out my-build.json         # everything you own
@@ -103,7 +103,7 @@ account built — an admin token gets no reach into somebody else's work. Import
 entry was.
 
 The **content the server installs is the server's**, not the tool's:
-`crates/simulator/src/content.rs` defines each pack and embeds its Luau from
+`crates/simulator/src/content.rs` defines each pack and embeds its JavaScript from
 `crates/simulator/content/` at compile time, because a deployed simulator has no
 repository beside it. Installing a pack twice replaces what it installed.
 
@@ -130,7 +130,7 @@ console in a connected viewer is still where the answer appears.
 | `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs`, `http.rs` + `authoring.rs` (the admin/authoring API) |
 | `crates/cartopolis/` | Bevy client — everything below |
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
-| `crates/simulator/content/` | Luau for the content packs the server carries, embedded into the binary by `content.rs` |
+| `crates/simulator/content/` | JavaScript for the content packs the server carries, embedded into the binary by `content.rs` |
 
 Inside the client, `components.rs` / `resources.rs` hold the ECS types and
 `systems/` is one file per concern, grouped into folders and registered in ordered

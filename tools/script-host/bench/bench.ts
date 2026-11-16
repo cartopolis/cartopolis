@@ -1,8 +1,8 @@
 /**
- * The Bun host under the scenarios `luau/` runs, printing the same JSON lines.
- *
- * Run both on one machine (`bun run bench` here, `cargo run --release` in
- * `luau/`); the numbers only mean something side by side.
+ * The script host under the scenarios in `scenarios.json`, one JSON line per
+ * measurement (`bun run bench`). The Luau host these were first run against
+ * (`luau/`, until 2026-11-16) is gone; its numbers are in
+ * `docs/notes/javascript-prim-scripts.md`.
  */
 import {readFileSync} from 'node:fs'
 import path from 'node:path'

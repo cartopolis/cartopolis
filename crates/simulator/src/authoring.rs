@@ -212,7 +212,7 @@ pub struct PrimSpec {
     /// A particle emitter; `null` takes an existing one off.
     #[serde(default, deserialize_with = "present")]
     pub particles: Option<Option<ParticleSpec>>,
-    /// Luau source. Empty string removes the script, exactly as the editor's
+    /// JavaScript source. Empty string removes the script, exactly as the editor's
     /// empty buffer does. Absent leaves whatever is there.
     pub script: Option<String>,
     /// Whether the simulator's physics moves it (`docs/notes/physical-prims.md`).
@@ -342,7 +342,7 @@ async fn list_prims(
 ) -> ApiResult<Json<serde_json::Value>> {
     require(&state, &headers, Permission::ContentInstall)?;
     let w = state.world.read().await;
-    // Source is left out here on purpose: a hundred prims' worth of Luau is not
+    // Source is left out here on purpose: a hundred prims' worth of JavaScript is not
     // what "list the prims" means, and the single-prim route has it.
     let prims: Vec<PrimView> = w
         .prims()
@@ -515,7 +515,7 @@ async fn delete_prim(
 
 #[derive(Deserialize)]
 struct ScriptBody {
-    /// Luau source. Empty removes the script.
+    /// JavaScript source. Empty removes the script.
     source: String,
 }
 
@@ -814,12 +814,6 @@ async fn install_content(
             format!("no content called `{name}`; GET /api/admin/content lists what there is"),
         )
     })?;
-    // In the language the world's scripts run in.
-    let pack = if state.config.script_engine == "bun" {
-        crate::content::in_javascript(pack)
-    } else {
-        pack
-    };
 
     // Out with the old — by *provenance*, not by name.
     //

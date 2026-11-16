@@ -29,6 +29,7 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use cartopolis_simulator::scripting::COMPILED_HOST;
 use cartopolis_simulator::server_update::ServerUpdates;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -485,6 +486,12 @@ impl Updater {
         if web.is_dir() {
             copy_dir(&web, &previous.join("web")).map_err(|e| e.to_string())?;
         }
+        // The process prim scripts run in, which the simulator finds beside
+        // this program: it changes with it, so it is kept and swapped with it.
+        let script_host = self.paths.program.join(COMPILED_HOST);
+        if script_host.is_file() {
+            std::fs::copy(&script_host, previous.join(COMPILED_HOST)).map_err(|e| e.to_string())?;
+        }
         snapshot_db(&self.paths.db, &previous.join("world.db"))?;
         write_json(
             &previous.join("version.json"),
@@ -507,6 +514,10 @@ impl Updater {
             },
         )?;
         std::fs::rename(&new_exe, &exe).map_err(|e| e.to_string())?;
+        if new_dir.join(COMPILED_HOST).is_file() {
+            std::fs::rename(new_dir.join(COMPILED_HOST), &script_host)
+                .map_err(|e| e.to_string())?;
+        }
         if new_dir.join("web").is_dir() {
             let _ = std::fs::remove_dir_all(&web);
             std::fs::rename(new_dir.join("web"), &web).map_err(|e| e.to_string())?;
@@ -613,6 +624,11 @@ pub fn on_start(paths: &Paths) -> anyhow::Result<bool> {
         paths.program.join("cartopolis-server.back"),
         paths.program.join("cartopolis-server"),
     )?;
+    if previous.join(COMPILED_HOST).is_file() {
+        let back = paths.program.join(format!("{COMPILED_HOST}.back"));
+        std::fs::copy(previous.join(COMPILED_HOST), &back)?;
+        std::fs::rename(&back, paths.program.join(COMPILED_HOST))?;
+    }
     if previous.join("web").is_dir() {
         let web = paths.program.join("web");
         let _ = std::fs::remove_dir_all(&web);

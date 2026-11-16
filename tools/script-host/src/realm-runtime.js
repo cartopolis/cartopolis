@@ -21,9 +21,10 @@
     // ── What the realm may still reach ──
     //
     // An allowlist, so that anything Bun adds to a realm's global in a future
-    // release arrives switched *off* — the rule `Slot::compile` applies to mlua's
-    // `require`. Measured on Bun 1.4.4: a fresh ShadowRealm carries `process`,
-    // `fetch` and `Bun`, so without this a script holds the server.
+    // release arrives switched *off* — the rule the retired Luau host applied to
+    // mlua's `require` (`docs/notes/prim-scripting.md`). Measured on Bun
+    // 1.4.4: a fresh ShadowRealm carries `process`, `fetch` and `Bun`, so
+    // without this a script holds the server.
     const __keep = new Set([
         'Object', 'Function', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN',
         'undefined', 'Boolean', 'String', 'Symbol', 'Date', 'RegExp', 'Error', 'AggregateError',

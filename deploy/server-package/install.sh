@@ -83,6 +83,8 @@ id cartopolis >/dev/null 2>&1 \
 $SUDO systemctl stop cartopolis-server 2>/dev/null || true
 $SUDO mkdir -p "$DIR/data"
 $SUDO install -m 0755 "$pkg/cartopolis-server" "$DIR/cartopolis-server"
+# Where prim scripts run: the server finds it beside itself.
+$SUDO install -m 0755 "$pkg/cartopolis-script-host" "$DIR/cartopolis-script-host"
 $SUDO rm -rf "$DIR/web"
 $SUDO cp -r "$pkg/web" "$DIR/web"
 if [ "$first" = 1 ]; then

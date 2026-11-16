@@ -15,6 +15,13 @@ where it constrains future work it is in `docs/notes/`.
 
 ### Changed
 
+- **Scripts on objects are JavaScript only.** The Luau engine is gone, and with
+  it the `script_engine` setting: every server runs prim scripts in its own
+  script process (`cartopolis-script-host`, Bun compiled in), which the server
+  download installs beside the program and its updater updates with it. The
+  script editor, its reference and the MCP scripting guide speak JavaScript
+  (`const [x, y, z] = get_pos()`). A script still stored in Luau stops with a
+  compile error and has to be rewritten.
 - **Regions are retired** (wire protocol 23, schema V17). A region was a 256 m
   square of ground with a map tile painted on it, from before the client
   streamed a map; an object's place has been an absolute lat/lng since then and

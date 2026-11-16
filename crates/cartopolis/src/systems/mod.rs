@@ -60,7 +60,7 @@ pub use gui::{
     access_tokens, action_ring, admin, app_update, avatar_designer, bookmarks, bridges,
     building_card, calendar, call_screen, camera_screen, chat, chat_overlay, chat_people, chats,
     communities, community_posts, contacts, cosmos, data_layers, dismiss, dock, egui_manager,
-    external_signin, faces, floor_picker, hud, icons, layer_tiles, login_screen, lua_highlight,
+    external_signin, faces, floor_picker, hud, icons, js_highlight, layer_tiles, login_screen,
     map_osd, model_library, motion, onscreen_keyboard, place_card, place_names, place_pins, plans,
     scenario, script_editor, settings, splash, text_touch, theme, ui, ui_theme, welcome, zoom_rail,
 };

@@ -3,24 +3,32 @@
 //!
 //! It lives in `cartopolis_core` for the same reason `PROTOCOL_HISTORY` does: two
 //! crates have to agree, and the way they stay in agreement is that there is only
-//! one list. The simulator has a test
-//! (`scripting::tests::the_catalogue_matches_the_installed_api`) asserting that a
-//! freshly compiled script sees *exactly* these names — no undocumented function,
-//! no documented-but-missing one. A reference that drifts is worse than none,
-//! because an author trusts it.
+//! one list. The script host has a test (`tools/script-host/test/sandbox.test.ts`,
+//! "every call in the catalogue in cartopolis_core is there") that reads this
+//! file and asserts every name in `SCRIPT_API` is a function a script can call;
+//! the host's own list (`API_NAMES` in `tools/script-host/src/realm.ts`) is what
+//! hands them over. A reference that drifts is worse than none, because an
+//! author trusts it.
+//!
+//! Signatures are JavaScript as an author writes it. A call that gives back
+//! several values gives back an array, written `get_pos() -> [x, y, z]` and read
+//! as `const [x, y, z] = get_pos()`; `name?` is an argument that may be left out.
 //!
 //! Names are a flat namespace of plain `verb_noun` calls — `set_pos`, `say`,
-//! `play_sound`. Second Life's *shape* (one global per verb, `set_pos` where it
-//! has `llSetPos`) without its prefix: the `vf` prefix the API had until
-//! 2026-10-04 was a brand name standing in front of every call, and it outlived
-//! the brand. snake_case because that is what Luau's own library uses
-//! (`string.format`, `table.insert`), so a script reads as one language.
+//! `play_sound`. Second Life's *shape* (one name per verb, `set_pos` where it has
+//! `llSetPos`) without its prefix: the `vf` prefix the API had until 2026-10-04
+//! was a brand name standing in front of every call, and it outlived the brand.
+//! snake_case, which JavaScript's own library does not use (`Math.random`,
+//! `toFixed`): the names were chosen when scripts were Luau, and keeping them
+//! kept every script and note written since, and makes a call into the world
+//! read apart from a call into the language.
 //!
-//! What is *not* here is as deliberate. Luau already ships `math`, `string`,
-//! `table` and `os`, so there is no `frand` (that is `math.random`) and no
-//! `get_unix_time` (that is `os.time`). A host function that only forwards to the
-//! standard library is a second name for one thing, which is how a reference
-//! becomes a place names go to drift apart.
+//! What is *not* here is as deliberate. A script keeps JavaScript's own `Math`,
+//! `String`, `Array`, `JSON`, `Date`, `Map` and `Set`, so there is no `frand`
+//! (that is `Math.random()`) and no `get_unix_time` (that is `Date.now()`). A
+//! host function that only forwards to the standard library is a second name
+//! for one thing, which is how a reference becomes a place names go to drift
+//! apart.
 
 /// Which part of the model a call belongs to. Used to group the editor's
 /// reference; purely presentational.
@@ -137,7 +145,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     // ── Movement ──
     ScriptFn {
         name: "get_pos",
-        signature: "get_pos() -> x, y, z",
+        signature: "get_pos() -> [x, y, z]",
         summary: "This prim's position in metres.",
         group: ScriptGroup::Movement,
     },
@@ -150,7 +158,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "get_geo",
-        signature: "get_geo() -> latitude, longitude",
+        signature: "get_geo() -> [latitude, longitude]",
         summary: "Where this prim is on Earth, in degrees.",
         group: ScriptGroup::Movement,
     },
@@ -164,14 +172,14 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "geo_scale",
-        signature: "geo_scale(latitude) -> metres_per_degree_lat, metres_per_degree_lng",
+        signature: "geo_scale(latitude) -> [metres_per_degree_lat, metres_per_degree_lng]",
         summary: "The local scale of the map at a latitude, so metres can be \
                   turned into degrees: lat + north/mlat, lng + east/mlng.",
         group: ScriptGroup::Movement,
     },
     ScriptFn {
         name: "get_rot",
-        signature: "get_rot() -> rx, ry, rz",
+        signature: "get_rot() -> [rx, ry, rz]",
         summary: "Euler rotation in degrees, the same numbers the edit dialog shows.",
         group: ScriptGroup::Movement,
     },
@@ -183,7 +191,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "get_scale",
-        signature: "get_scale() -> x, y, z",
+        signature: "get_scale() -> [x, y, z]",
         summary: "Size in metres per axis.",
         group: ScriptGroup::Movement,
     },
@@ -209,7 +217,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "get_vel",
-        signature: "get_vel() -> x, y, z",
+        signature: "get_vel() -> [x, y, z]",
         summary: "How fast it is moving, in metres per second (x east, y up, \
                   z south). Zero for a prim that is not physical.",
         group: ScriptGroup::Physics,
@@ -237,7 +245,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     // ── Appearance ──
     ScriptFn {
         name: "get_color",
-        signature: "get_color() -> r, g, b",
+        signature: "get_color() -> [r, g, b]",
         summary: "Tint, each channel 0–1.",
         group: ScriptGroup::Appearance,
     },
@@ -280,18 +288,18 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     ScriptFn {
         name: "particles",
         signature: "particles(rules)",
-        summary: "Attach a particle emitter, described by a table of named fields \
-                  (count, life, speed, spread_deg, gravity, source_radius, \
+        summary: "Attach a particle emitter, described by an object of named fields \
+                  ({count, life, speed, spread_deg, gravity, source_radius, \
                   size_start, size_end, color_start, color_end, alpha, \
-                  turbulence) — the same names the admin API takes. Anything left \
-                  out keeps the fire preset's value; particles(nil) puts the \
-                  emitter out.",
+                  turbulence}; the colours are [r, g, b]) — the same names the admin \
+                  API takes. Anything left out keeps the fire preset's value; \
+                  particles(null) puts the emitter out.",
         group: ScriptGroup::Appearance,
     },
     ScriptFn {
         name: "particle_burst",
         signature: "particle_burst(rules)",
-        summary: "The same table, fired once instead of continuously — an \
+        summary: "The same object, fired once instead of continuously — an \
                   explosion. Defaults to the blast preset rather than the fire one.",
         group: ScriptGroup::Appearance,
     },
@@ -320,7 +328,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "set_tone",
-        signature: "set_tone{pitch, gain?, voice?, glide?, vibrato?, range?}",
+        signature: "set_tone({pitch, gain?, voice?, glide?, vibrato?, range?})",
         summary: "Sound a synthesised tone from this prim until stop_tone, replacing \
                   any tone already sounding. pitch is hertz or a note (\"A4\", \"C#3\"); \
                   gain 0–1 (default 0.5); voice: sine, organ, saw, square; glide: \
@@ -388,8 +396,8 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     // ── Sensing ──
     ScriptFn {
         name: "sensor",
-        signature: "sensor(range_m) -> avatar_id, name, distance_m",
-        summary: "The nearest avatar within range, or nothing at all if there is \
+        signature: "sensor(range_m) -> [avatar_id, name, distance_m]",
+        summary: "The nearest avatar within range, or an empty array if there is \
                   none. Measured on the ground, between the prim's geographic \
                   anchor and the avatar's — an avatar whose client has not said \
                   where it is yet is not seen.",
@@ -414,7 +422,7 @@ pub const SCRIPT_API: &[ScriptFn] = &[
     },
     ScriptFn {
         name: "listen",
-        signature: "listen(channel [, on])",
+        signature: "listen(channel, on?)",
         summary: "Start hearing a channel as on_message; listen(channel, false) \
                   stops. A script hears nothing until it asks.",
         group: ScriptGroup::Messaging,
@@ -457,46 +465,67 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Luau's own globals. A host function named like one of these would hide it
-    /// from every script.
-    const LUAU_GLOBALS: &[&str] = &[
-        "assert",
-        "error",
-        "getmetatable",
-        "ipairs",
-        "next",
-        "pairs",
-        "pcall",
-        "print",
-        "rawequal",
-        "rawget",
-        "rawlen",
-        "rawset",
-        "require",
-        "select",
-        "setmetatable",
-        "tonumber",
-        "tostring",
-        "type",
+    /// Names a host function must not take. Each one is a `const` binding around
+    /// the script (`tools/script-host/src/realm.ts`), so a reserved word would
+    /// stop every script compiling, and a global of the realm's would be hidden
+    /// from every script. Only the lowercase ones: a snake_case name can be
+    /// nothing else.
+    const JS_NAMES: &[&str] = &[
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "debugger",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "function",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "let",
+        "new",
+        "null",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "return",
+        "static",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
         "typeof",
-        "unpack",
-        "xpcall",
-        "gcinfo",
-        "newproxy",
-        "bit32",
-        "buffer",
-        "coroutine",
-        "debug",
-        "math",
-        "os",
-        "string",
-        "table",
-        "utf8",
-        "vector",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+        // Strict code cannot bind these two either.
+        "arguments",
+        "eval",
+        // The realm's one lowercase global.
+        "undefined",
     ];
 
     #[test]
-    fn names_are_unique_snake_case_and_clear_of_luau() {
+    fn names_are_unique_snake_case_and_clear_of_javascript() {
         let mut seen = HashSet::new();
         for f in SCRIPT_API {
             assert!(
@@ -508,8 +537,8 @@ mod tests {
                 f.name
             );
             assert!(
-                !LUAU_GLOBALS.contains(&f.name),
-                "{} would hide a Luau global of the same name",
+                !JS_NAMES.contains(&f.name),
+                "{} is a reserved word or a global of JavaScript's",
                 f.name
             );
             assert!(seen.insert(f.name), "{} is listed twice", f.name);

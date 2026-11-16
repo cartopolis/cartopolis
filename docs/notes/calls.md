@@ -78,8 +78,9 @@ as it is: it is public, like nearby chat.
   on `dimpl`'s `rcgen` feature, which turns on `aws-lc-rs`, a C library, only
   to make the DTLS certificate. The first run of this check missed it because
   `cargo tree -e build -i cc` walks only build edges from the root and prints
-  nothing; `-e normal,build` finds it (control: it finds `cc` under the
-  simulator's `mlua-sys`). So `cartopolis_calls` carries upstream's provider
+  nothing; `-e normal,build` finds it (control: it found `cc` under the
+  simulator's `mlua-sys`, before Luau was removed on 2026-11-16). So
+  `cartopolis_calls` carries upstream's provider
   with a RustCrypto certificate (`crates/calls/src/crypto`), and with that the
   same query prints nothing for all three targets.
 - Two str0m clients through a str0m forwarder over loopback UDP, 6 s: 280 of 281

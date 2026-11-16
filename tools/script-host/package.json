@@ -1,6 +1,6 @@
 {
   "name": "cartopolis-script-host",
-  "description": "Prototype: prim scripts in JavaScript on Bun, measured against the Luau host",
+  "description": "The process prim scripts run in, supervised by the simulator (crates/simulator/src/scripting/bun.rs)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

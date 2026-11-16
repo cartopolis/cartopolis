@@ -2,9 +2,9 @@
 
 /// What a script can do, for an agent that has no repository beside it.
 ///
-/// The calls come from `cartopolis_core::script_api`, the catalogue the server's
-/// own test holds to exactly the functions it installs — so this cannot list one
-/// that does not exist. The beacon is included verbatim because a working script
+/// The calls come from `cartopolis_core::script_api`, the catalogue the script
+/// host's own test holds to the functions it hands a script — so this cannot list
+/// one that does not exist. The beacon is included verbatim because a working script
 /// is worth more than a list of functions, and it is the one the Grote Markt
 /// already runs.
 #[must_use]
@@ -12,10 +12,15 @@ pub fn scripting_guide() -> String {
     use cartopolis_core::script_api::{api_in_group, ScriptGroup, SCRIPT_EVENTS};
     let mut out = String::from(
         "# Scripting objects\n\n\
-         Objects run Luau (a sandboxed Lua). A script is event handlers plus calls such as `say` and `set_color`, \
-         and every call acts on the object the script is in: another object is reached \
-         only by messages on a channel. Luau's own `math`, `string`, `table` and `os` are \
-         there too.\n\n## Events (define the ones you need)\n",
+         Objects run JavaScript, in a sandbox. A script is event handlers — plain \
+         top-level functions such as `function on_touch(id, name) { … }` — plus calls \
+         such as `say` and `set_color`, and every call acts on the object the script is \
+         in: another object is reached only by messages on a channel. A call that gives \
+         back several values gives back an array: `const [x, y, z] = get_pos()`. \
+         JavaScript's own `Math`, `String`, `Array`, `JSON`, `Date`, `Map` and `Set` are \
+         there too; there is no `fetch`, no `require` or `import`, no `eval`, and no \
+         classes, getters, `async` functions or generators of your own.\n\n\
+         ## Events (define the ones you need)\n",
     );
     for f in SCRIPT_EVENTS {
         out.push_str(&format!("- `{}` — {}\n", f.signature, f.summary));
@@ -34,9 +39,9 @@ pub fn scripting_guide() -> String {
          hands cannot be built this way.\n\
          - A long loop is paused rather than killed, but it costs the object its turn; use \
          timers instead of busy loops.\n\n\
-         ## A working example: the beacon on the Grote Markt\n\n```lua\n",
+         ## A working example: the beacon on the Grote Markt\n\n```js\n",
     );
-    out.push_str(include_str!("../../simulator/content/beacon.lua"));
+    out.push_str(include_str!("../../simulator/content/beacon.js"));
     out.push_str("```\n");
     out
 }

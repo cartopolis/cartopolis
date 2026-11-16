@@ -479,7 +479,7 @@ async fn a_player_can_export_their_own_build_and_import_it_back() {
     // Built over the wire, which is the path that records an owner.
     let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
     let prim_id = build(&mut c, "Lamp", LAT, LNG).await;
-    set_script(&mut c, prim_id, "function on_touch(id, who) say(who) end").await;
+    set_script(&mut c, prim_id, "function on_touch(id, who) { say(who) }").await;
 
     // Give it something worth carrying, so the document is not trivially equal.
     let (status, _) = api(
@@ -916,7 +916,7 @@ async fn only_the_owner_or_an_admin_may_change_a_prim() {
 
     // …and cannot take it over by scripting it either, which would be the most
     // complete way around an edit check.
-    send_script(&mut other, theirs, "function on_start() die() end").await;
+    send_script(&mut other, theirs, "function on_start() { die() }").await;
     let (level, text) = recv_output(&mut other).await;
     assert_eq!(level, cartopolis_core::ScriptLevel::Error, "{text}");
     assert!(text.contains("somebody else"), "{text}");
@@ -1180,40 +1180,42 @@ async fn a_scripted_prim_circles_senses_and_explodes() {
     // the shipped firebird's exactly, except that this one ends on `die` —
     // the shipped one reforms, and `die` is the arm nothing else covers.
     let source = r#"
-        local LAT, LNG = 53.2194, 6.5665
-        local RADIUS, LAP, NOTICE, SHAKE = 40.0, 4.0, 60.0, 0.4
-        local M_LAT, M_LNG = geo_scale(LAT)
-        local state, marked = "flying", 0
+        const LAT = 53.2194, LNG = 6.5665
+        const RADIUS = 40.0, LAP = 4.0, NOTICE = 60.0, SHAKE = 0.4
+        const [M_LAT, M_LNG] = geo_scale(LAT)
+        let state = "flying", marked = 0
 
-        function on_start()
+        function on_start() {
             set_name("Firebird")
-            particles{ count = 64, life = 1.0 }
+            particles({count: 64, life: 1.0})
             set_timer_event(0.05)
-        end
+        }
 
-        function on_timer()
-            local now = get_time()
-            if state == "flying" then
-                local a = (now / LAP) * 2 * math.pi
-                set_geo(LAT + (RADIUS * math.cos(a)) / M_LAT,
-                         LNG + (RADIUS * math.sin(a)) / M_LNG)
-                local id, who = sensor(NOTICE)
-                if id then
-                    state, marked = "shaking", now
-                    set_name("Firebird sees " .. who)
-                end
-            elseif state == "shaking" then
-                local lat, lng = get_geo()
-                set_geo(lat + 0.4 * math.sin(now * 47.0) / M_LAT, lng)
-                if now - marked >= SHAKE then
-                    state, marked = "blown", now
-                    particle_burst{ count = 200, life = 0.5 }
+        function on_timer() {
+            const now = get_time()
+            if (state === "flying") {
+                const a = (now / LAP) * 2 * Math.PI
+                set_geo(LAT + (RADIUS * Math.cos(a)) / M_LAT,
+                        LNG + (RADIUS * Math.sin(a)) / M_LNG)
+                const [id, who] = sensor(NOTICE)
+                if (id !== undefined) {
+                    state = "shaking"
+                    marked = now
+                    set_name("Firebird sees " + who)
+                }
+            } else if (state === "shaking") {
+                const [lat, lng] = get_geo()
+                set_geo(lat + 0.4 * Math.sin(now * 47.0) / M_LAT, lng)
+                if (now - marked >= SHAKE) {
+                    state = "blown"
+                    marked = now
+                    particle_burst({count: 200, life: 0.5})
                     set_alpha(0.0)
-                end
-            elseif state == "blown" and now - marked >= 0.3 then
+                }
+            } else if (state === "blown" && now - marked >= 0.3) {
                 die()
-            end
-        end
+            }
+        }
     "#;
 
     let (status, created) = api(
@@ -1623,7 +1625,7 @@ async fn a_script_is_private_without_script_read_any() {
     assert_eq!(status, 200);
     let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
     let lamp = build(&mut walker, "Secret lamp", LAT, LNG).await;
-    set_script(&mut walker, lamp, "function on_touch() say('hi') end").await;
+    set_script(&mut walker, lamp, "function on_touch() { say('hi') }").await;
 
     let mut meddler = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
     ask_script(&mut meddler, lamp).await;
