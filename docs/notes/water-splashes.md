@@ -1,6 +1,6 @@
 ---
 topic: water-splashes
-triggers: [splashes.rs, systems::splashes, WaterFx, water_effects, "Splashes and spray", SWIM_STROKE_PHASE, swim_phase, assets/sounds/water, particles.wesl, ParticleMaterial::rings, "splash", "fountain jet", "fountain sound"]
+triggers: [splashes.rs, systems::splashes, WaterFx, water_effects, "Splashes and spray", SWIM_STROKE_PHASE, swim_phase, assets/sounds/water, particles.wesl, ParticleMaterial::rings, splash.wesl, SplashMaterial, materials/src/splash.rs, "splash", "fountain jet", "fountain sound"]
 updated: 2026-11-16
 ---
 
@@ -14,7 +14,7 @@ fountains made no splash and no sound.
 
 | Moment | Drawn | Heard |
 |---|---|---|
-| A body goes into the water | fine streaked drops, a white crown, a foam patch on the surface and two or three faint ripples, all sized by the entry speed | `splash-big-*` (size ≥ 0.45) or `splash-small-*`, louder with size |
+| A body goes into the water | a crown of water rising and collapsing, a column up its middle after a real drop, foam left on the surface, three throws of streaked drops and two or three faint ripples, all sized by the entry speed | `splash-big-*` (size ≥ 0.45) or `splash-small-*`, louder with size |
 | A swimmer's stroke | a small throw of drops and two faint ripples ahead of the feet, where the head and hands meet the water | `stroke-*` |
 | Treading water (in it, not moving) | gentle continuous rings at the body | — |
 | Swimming at all (own avatar) | — | `tread.ogg` loop, eased in; footsteps are off and the landing thud is not played |
@@ -36,6 +36,15 @@ flips. `splash_size` maps 1 m/s (a wade) to 0 and 8 m/s to 1; a walk off a
 1.5 m quay is 8.2 m/s, i.e. the biggest; running down a bank into a pond is
 about a third. The drop is clamped to 6 m so a teleport into the water is not
 a meteor — it does still splash, which reads as arriving in the water.
+
+**Where** is where the feet go through the surface (within 5 cm of it), not
+where the body crossed into the water body: off a quay that crossing is the
+wall's own line, and half of every splash was drawn inside the wall. The lift
+sinks the feet at 4 m/s, so a walk off a 1.4 m quay goes through about half a
+metre out, and the sound starts then too. A body whose feet never get there
+(a remote drawn without the lift) splashes after 45 frames anyway. A `--shot`
+capture does not carry the body forward while it sinks, so there the splash
+still stands on the bank's line.
 
 ## A stroke is timed by the arms
 
@@ -69,12 +78,70 @@ drawn on the water, and the spray was round soft blobs of one size that read
 as snow. The reference photos (CC0, Wikimedia Commons: a girl jumping into the
 sea at Röe Sandvik; ripples on a foggy lake) show a splash as a dense white
 crown with fine streaked drops flung off it and white water on the surface,
-and ripples as a faint brightening of the reflection. So a body going in is
-now four bursts: fine drops, a lower and thicker crown, two or three faint
-ripples (alpha ≤ 0.3, a test holds it), and a patch of foam — a "ring" whose
-band is wider than it is, i.e. a soft disc, gone in a second or two. A stroke
-is fine drops and two ripples. Judged on mac-1's GPU, which is evidence for
+and ripples as a faint brightening of the reflection. So the ripples became
+faint (alpha ≤ 0.3, a test holds it), and a body going in became four
+bursts: fine drops, a "crown" of bigger slower drops, the ripples, and a
+foam "ring" whose band was wider than it was, i.e. a soft disc. A stroke is
+fine drops and two ripples. Judged on mac-1's GPU, which is evidence for
 the shape and not for exact colour.
+
+That was still not a splash (owner, comparing it with the photo the same
+day: "a scatter of streaks over a glowing disc with a round edge"). What the
+photo is mostly made of is a *sheet* — water thrown up as a ragged wall,
+clear between white streaks, breaking into fingers and beads at the top — and
+no number of particles draws a sheet. So a body going in is now:
+
+- **The crown** (`SplashMaterial`, `SplashShape::Crown`): an open shell
+  rising round the entry point in 0.20–0.28 s and falling back over
+  0.45–0.70 s. Off a quay it is about 1.3 m high and two metres across at its
+  top. It leans out, further as it falls (the top folds over outward), and is
+  taller on some sides than others. A tall narrow crown read as a white cup;
+  a low wide one (1.1 m by 2.5 m, leaning 0.5) read as a thin glass ribbon.
+  This is between the two.
+- **The column** (`Column`): a narrow jet up the middle that rises a tenth of a
+  second later and higher than the crown, only for a real drop (size above
+  0.4). It is what a feet-first entry from height sends up.
+- **The foam** (`Foam`): a flat patch of lace and blotches with an edge that
+  wanders in and out. It is churned white where the body went through at
+  first, and its holes grow until nothing is left, over 1.6–3 s.
+- **Three throws of drops**: fine spray up, the crown's beads, and a low wide
+  fling (`entry_fling`). That is 740 drops at most, up from 460, each throw
+  one 256-quad draw.
+- The ripples, as before.
+
+**How the sheets are drawn.** One shared grid mesh (64 segments round, 12
+rows up: 845 vertices) is shaped in `assets/shaders/splash.wesl` from the
+clock and two vec4s, as the particles are. A splash writes one small uniform
+and uploads no vertices. The vertex stage gives only the broad shape.
+**Everything small is cut per pixel**: the rim's fingers, the beads they break
+into, the white streaks up the sheet, the torn foot, the holes as it falls
+apart, and the foam's lace and edge. The first version shaped the rim from
+vertices, and with 64 segments the fingers came out as straight-edged white
+shards over a smooth white bowl. The fragment keeps the rim under the grid's
+top row for the same reason. It is alpha-blended (white water covers what is
+behind it, clear water tints it). It is lit by the directional lights, two-sided
+and wrapped, plus the ambient, so it follows the hour, and a noisy facet
+normal gives sun glints.
+
+**Cost.** Six slots of three sheets (six bodies going in within one crown's
+life), re-armed in turn like the bursts. A live entry is three draws of
+1,536 triangles and four particle draws; nothing is drawn once it is over.
+The fragment work is three to four layers of 3D value noise over what the
+crown covers on screen, which is a large area only when the camera is
+within a few metres. No GPU timing: the Mac VM nodes have no Metal counters
+(`gpu-timings-on-the-mac-workstation.md`).
+
+**Where it stands: on the water as drawn.** The sheet is clamped above the
+ground under it (`map_geometry`'s water clamp, `level.max(sunk_at)`). Where a
+bank sample was not carved, that ground is the bank's, and at Noorderhaven
+it is 0.86 m over the registered level at the entry point. A splash on the
+level there was buried, and only the highest drops showed. The splash and
+the treading rings stand on the drawn height. Flat foam on a sloping sheet
+cut into it along straight lines. Foam tilted to the slope was worse: the
+slope, read off the bank, stood it up as a white wedge. So the foam stays
+level and fades out, in each of eight directions, before the drawn sheet
+leaves its level by 8 cm (`foam_reach`, two more vec4s on the material). The
+ripples are still flat on a sheet that slopes there.
 
 - **Bursts re-arm a fixed set of 40 emitters** (two a stroke, four a body
   going in) in turn — a material rewrite, never a spawn. A burst past its
@@ -82,13 +149,11 @@ the shape and not for exact colour.
 - **A moving emitter drags its particles**: they are placed from the emitter's
   *current* origin. So continuous rings are only for a body treading water;
   a moving swimmer leaves a burst at each stroke, where it happened — a wake.
-- The rings ride 10 cm over the registered surface. **Beside a quay wall the
-  half of a ring towards the wall is still cut off** (Noorderhaven,
-  2026-11-16, mac-1, at 3, 6 and 10 cm alike): the drawn water there rises
-  towards the wall above the registered level, so it is the water's shape,
-  not the lift. In open water and on the Noorderplantsoen pond the rings are
-  whole. Unsolved; the cure is in the water near a wall, or a depth bias on
-  the rings, not a higher lift.
+- The rings ride 10 cm over the drawn surface. Beside a quay wall the drawn
+  water climbs towards the wall above the registered level (above). Rings on
+  the registered level had their wall-side half cut off (Noorderhaven,
+  2026-11-16, at 3, 6 and 10 cm lift alike). They now stand on the drawn
+  height at their centre, but they are still flat where the sheet slopes.
 - All of it follows **Settings ▸ Graphics ▸ Splashes and spray**
   (`AppPrefs::water_effects`, on by default) and nothing else — never the frame
   rate. A jet's plume also follows the furniture layer, since it belongs to

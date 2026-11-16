@@ -57,6 +57,7 @@ use crate::systems::avatar::AvatarAnimations;
 use crate::systems::particles::{ParticleMaterial, ParticlePool};
 use crate::systems::terrain::TerrainField;
 use crate::systems::world_places::WorldPlaces;
+use cartopolis_materials::splash::{SplashMaterial, SplashShape};
 
 pub use cartopolis_human::build::SWIM_STROKE_PHASE;
 
@@ -167,9 +168,6 @@ const SPRAY_END: [f32; 3] = [0.60, 0.66, 0.72];
 /// line (2026-11-16 — crisp white rings read as UI drawn on the water).
 const RIPPLE: [f32; 3] = [0.45, 0.50, 0.55];
 const RIPPLE_END: [f32; 3] = [0.30, 0.34, 0.38];
-/// The white water where a body broke the surface.
-const FOAM: [f32; 3] = [0.90, 0.95, 0.97];
-const FOAM_END: [f32; 3] = [0.50, 0.55, 0.58];
 /// Droplets fall at the Earth's gravity: this is water, not the avatar.
 const DROPLET_GRAVITY: f32 = -9.8;
 
@@ -194,7 +192,7 @@ pub fn entry_spray(size: f32) -> ParticleEffect {
         spread_deg: 22.0,
         gravity: DROPLET_GRAVITY,
         source_radius: 0.20 + 0.40 * s,
-        size_start: 0.045 + 0.025 * s,
+        size_start: 0.022 + 0.012 * s,
         size_end: 0.03,
         color_start: SPRAY,
         color_end: SPRAY_END,
@@ -228,51 +226,50 @@ pub fn entry_rings(size: f32) -> ParticleEffect {
     }
 }
 
-/// The crown: the dense white sheet of water thrown up round the hole a body
-/// punches in the surface — lower, slower and thicker than the drops flung
-/// off it, and what a photograph of a splash is mostly made of (the drops
-/// alone read as sparks, 2026-11-16).
+/// The beads the crown's fingers break into: slower and a little bigger than
+/// the fine spray, thrown from the crown's ring. The crown itself is a sheet
+/// ([`entry_sheets`]); drawn as big soft drops it read as snow (2026-11-16).
 #[must_use]
 pub fn entry_crown(size: f32) -> ParticleEffect {
     let s = size.clamp(0.0, 1.0);
-    let speed = 1.0 + 2.2 * s;
+    let speed = 1.2 + 2.4 * s;
     ParticleEffect {
-        count: (90.0 + 120.0 * s) as u16,
+        count: (120.0 + 130.0 * s) as u16,
         life: flight_secs(speed),
         speed,
-        spread_deg: 38.0,
+        spread_deg: 34.0,
         gravity: DROPLET_GRAVITY,
-        source_radius: 0.25 + 0.35 * s,
-        size_start: 0.14 + 0.12 * s,
-        size_end: 0.05,
+        source_radius: 0.30 + 0.40 * s,
+        size_start: 0.030 + 0.016 * s,
+        size_end: 0.02,
         color_start: SPRAY,
         color_end: SPRAY_END,
-        alpha: 0.5,
-        turbulence: 0.10,
+        alpha: 0.75,
+        turbulence: 0.08,
         burst: true,
         sequence: 0,
     }
 }
 
-/// The patch of white water where a body broke the surface: a few wide, slow
-/// "rings" whose band is wider than they are, i.e. soft discs, gone in a
-/// second or two.
+/// Drops flung low and wide off the crown's outside, landing a metre or two
+/// out: what makes the photo's splash spill over the water round it.
 #[must_use]
-pub fn entry_foam(size: f32) -> ParticleEffect {
+pub fn entry_fling(size: f32) -> ParticleEffect {
     let s = size.clamp(0.0, 1.0);
+    let speed = 1.8 + 2.6 * s;
     ParticleEffect {
-        count: 5,
-        life: 0.9 + 0.7 * s,
-        speed: 0.25,
-        spread_deg: 0.0,
-        gravity: 0.0,
-        source_radius: 0.15 + 0.30 * s,
-        size_start: 0.6 + 0.8 * s,
-        size_end: 1.0 + 1.0 * s,
-        color_start: FOAM,
-        color_end: FOAM_END,
-        alpha: 0.55,
-        turbulence: 0.0,
+        count: (90.0 + 150.0 * s) as u16,
+        life: flight_secs(speed * 0.6),
+        speed,
+        spread_deg: 62.0,
+        gravity: DROPLET_GRAVITY,
+        source_radius: 0.25 + 0.35 * s,
+        size_start: 0.018 + 0.010 * s,
+        size_end: 0.014,
+        color_start: SPRAY,
+        color_end: SPRAY_END,
+        alpha: 0.8,
+        turbulence: 0.05,
         burst: true,
         sequence: 0,
     }
@@ -419,7 +416,16 @@ pub struct Track {
     feet_y: f32,
     phase: Option<f32>,
     in_jet: bool,
+    /// A body that is in the water but whose feet have not yet gone through
+    /// its surface: the splash's size, and frames waited.
+    entering: Option<(f32, u8)>,
 }
+
+/// The feet this close over the surface (m) are through it.
+const THROUGH_M: f32 = 0.05;
+/// A body whose feet never reach the surface (a remote drawn without the
+/// water's lift) splashes after this many frames anyway.
+const THROUGH_WAIT_FRAMES: u8 = 45;
 
 /// A body this frame, in the terms the detection needs.
 struct Body {
@@ -510,13 +516,21 @@ pub fn detect_splashes(
                     feet_y: body.feet.y,
                     phase,
                     in_jet,
+                    entering: None,
                 },
             );
             continue;
         };
 
+        let mut entering = None;
         if let Some(surface) = surface {
-            let on_water = Vec3::new(flat.x, surface, flat.y);
+            // On the water as it is *drawn*: the sheet is never below the
+            // ground under it (`map_geometry`'s water clamp), and beside a quay
+            // that ground can be the bank's, a metre or more over the level —
+            // a splash on the level there was buried (Noorderhaven, 2026-11-16).
+            let drawn = surface.max(terrain.sunk_at(flat.x, flat.y));
+            let on_water = Vec3::new(flat.x, drawn, flat.y);
+            entering = prev.entering;
             if !prev.swimming {
                 // The drop is from where the feet were *before* this frame:
                 // the lift into the water eases, and a capture flown frame by
@@ -531,10 +545,35 @@ pub fn detect_splashes(
                     size,
                     "splash: in"
                 );
-                out.write(Splash {
-                    at: on_water,
-                    kind: SplashKind::Entry { size },
-                });
+                entering = Some((size, 0));
+            }
+            // The splash is where the feet go through the surface, not where
+            // the body crossed into the water: off a quay that is the wall's
+            // own line, and half a splash there is drawn inside the wall
+            // (2026-11-16). The lift sinks the feet at 4 m/s, so a walk off a
+            // 1.4 m quay goes through about half a metre out.
+            if let Some((size, waited)) = entering {
+                if body.feet.y <= drawn + THROUGH_M || waited >= THROUGH_WAIT_FRAMES {
+                    tracing::debug!(
+                        target: "cartopolis::splashes",
+                        x = flat.x,
+                        z = flat.y,
+                        size,
+                        waited,
+                        // The register's level the body swims at, and the height
+                        // the sheet is drawn at here, which the splash stands on.
+                        swim_level = surface,
+                        drawn,
+                        "splash: through"
+                    );
+                    out.write(Splash {
+                        at: on_water,
+                        kind: SplashKind::Entry { size },
+                    });
+                    entering = None;
+                } else {
+                    entering = Some((size, waited + 1));
+                }
             }
             if let (Some(a), Some(b)) = (prev.phase, phase) {
                 if crossed(a, b, SWIM_STROKE_PHASE) {
@@ -561,6 +600,7 @@ pub fn detect_splashes(
                 feet_y: body.feet.y,
                 phase,
                 in_jet,
+                entering,
             },
         );
     }
@@ -572,9 +612,10 @@ pub fn detect_splashes(
 // ---------------------------------------------------------------------------
 
 /// Burst emitters, re-armed in turn: two a stroke (droplets and ripples),
-/// four a body going in (drops, crown, ripples, foam), so a dozen or more
-/// splashes on the water at once — a stroke's lasts two seconds. Each is one
-/// draw of the shared pool and nothing uploaded, so this is the whole cost.
+/// four a body going in (spray, the crown's beads, the low fling, ripples),
+/// so ten or more splashes on the water at once — a stroke's lasts two
+/// seconds. Each is one draw of the shared pool and nothing uploaded; the
+/// sheets ([`SHEET_SLOTS`]) are the rest of the cost.
 const BURST_SLOTS: usize = 40;
 /// Swimmers treading water drawn with rings at once.
 const TREAD_SLOTS: usize = 8;
@@ -604,13 +645,111 @@ pub struct WaterFx {
     next: usize,
     tread: Vec<Entity>,
     jets: Vec<(Entity, Entity)>,
+    /// The sheets of water a body going in throws up: crown, column, foam.
+    sheets: Vec<[SheetSlot; 3]>,
+    next_sheet: usize,
 }
 
-fn spawn_emitter(
+struct SheetSlot {
+    entity: Entity,
+    material: Handle<SplashMaterial>,
+    ends: f32,
+}
+
+/// Sets of sheets (crown, column, foam) at once: six bodies going in within
+/// the life of one, which is a crowd jumping off a quay together.
+const SHEET_SLOTS: usize = 6;
+/// The sheet mesh: segments round, rows up. 64 × 12 is 845 vertices and
+/// 1,536 triangles, shared by every sheet and built once; the fine detail is
+/// cut per pixel, so more vertices would buy nothing but the broad shape.
+const SHEET_SEGMENTS: usize = 64;
+const SHEET_ROWS: usize = 12;
+
+/// The grid every splash sheet is drawn from: `position` (cos θ, v, sin θ),
+/// `uv` (θ / 2π, v). The shape is all in `splash.wesl`.
+fn sheet_mesh() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let (n, m) = (SHEET_SEGMENTS, SHEET_ROWS);
+    let mut positions = Vec::with_capacity((n + 1) * (m + 1));
+    let mut uvs = Vec::with_capacity((n + 1) * (m + 1));
+    for j in 0..=m {
+        let v = j as f32 / m as f32;
+        for i in 0..=n {
+            let u = i as f32 / n as f32;
+            let a = u * std::f32::consts::TAU;
+            positions.push([a.cos(), v, a.sin()]);
+            uvs.push([u, v]);
+        }
+    }
+    let mut indices = Vec::with_capacity(n * m * 6);
+    for j in 0..m {
+        for i in 0..n {
+            let a = (j * (n + 1) + i) as u32;
+            let b = a + (n + 1) as u32;
+            indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+/// The three sheets of a body going in at `size` (0..1), started at `start`
+/// on the shader clock, with a `seed` for the ragged edges: a crown rising
+/// in a quarter second and collapsing over about half a second, a column up
+/// the middle only for a real drop (it is what a feet-first entry from
+/// height sends up), and foam left on the surface.
+#[must_use]
+pub fn entry_sheets(size: f32, start: f32, seed: f32) -> [SplashMaterial; 3] {
+    let s = size.clamp(0.0, 1.0);
+    let column = ((s - 0.4) / 0.6).clamp(0.0, 1.0);
+    [
+        // Wider than it is high, as in the photo: about two metres across and
+        // a metre high for a drop off a quay, knee-high for a wade.
+        SplashMaterial::new(
+            SplashShape::Crown,
+            start,
+            0.20 + 0.08 * s,
+            0.45 + 0.25 * s,
+            0.22 + 0.20 * s,
+            0.28 + 0.50 * s,
+            0.35 + 0.95 * s,
+            seed,
+        ),
+        SplashMaterial::new(
+            SplashShape::Column,
+            start + 0.10,
+            0.26,
+            0.40,
+            0.10 + 0.05 * s,
+            0.12,
+            // Nothing to draw without a drop: a zero height is a flat ring.
+            (0.9 + 1.4 * s) * column,
+            seed + 0.37,
+        ),
+        SplashMaterial::new(
+            SplashShape::Foam,
+            start + 0.05,
+            0.01,
+            1.6 + 1.4 * s,
+            0.40 + 0.30 * s,
+            0.50 + 0.90 * s,
+            0.0,
+            seed + 0.71,
+        ),
+    ]
+}
+
+fn spawn_emitter<M: Material>(
     commands: &mut Commands,
     root: Entity,
     mesh: &Handle<Mesh>,
-    material: Handle<ParticleMaterial>,
+    material: Handle<M>,
 ) -> Entity {
     commands
         .spawn((
@@ -678,6 +817,36 @@ impl WaterScene<'_, '_> {
 }
 
 /// Place one emitter at an anchored position, shown.
+/// How far foam lying level at `at` stays on the water as drawn, in each of
+/// eight directions (angle `i`/8 of a turn from +x towards +z, as the sheet
+/// mesh runs). Beside a quay the drawn sheet climbs to the bank
+/// (`map_geometry`'s clamp above the ground): level foam there cut into it
+/// along straight lines, and foam tilted to follow it stood up as a white
+/// wedge where the slope was read off the bank (Noorderhaven, 2026-11-16).
+/// So the foam stays level and fades out before the sheet leaves it.
+fn foam_reach(terrain: &TerrainField, at: Vec3) -> [f32; 8] {
+    const STEP_M: f32 = 0.2;
+    const MAX_M: f32 = 4.0;
+    /// The sheet this far off the foam's level (m) is no longer under it.
+    const OFF_M: f32 = 0.08;
+    std::array::from_fn(|i| {
+        let a = i as f32 * std::f32::consts::TAU / 8.0;
+        let dir = Vec2::new(a.cos(), a.sin());
+        let mut reach = 0.0;
+        while reach < MAX_M {
+            let p = Vec2::new(at.x, at.z) + dir * (reach + STEP_M);
+            let Some(level) = terrain.swim_surface_at(p.x, p.y) else {
+                break;
+            };
+            if (level.max(terrain.sunk_at(p.x, p.y)) - at.y).abs() > OFF_M {
+                break;
+            }
+            reach += STEP_M;
+        }
+        reach.max(0.3)
+    })
+}
+
 fn place(
     emitters: &mut Query<
         (&mut Transform, &mut GridCell, &mut Visibility),
@@ -717,6 +886,8 @@ pub fn draw_splashes(
     mut commands: Commands,
     pool: Option<Res<ParticlePool>>,
     mut materials: ResMut<Assets<ParticleMaterial>>,
+    mut sheet_materials: ResMut<Assets<SplashMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     clock: Res<AnimClock>,
     roots: Query<(Entity, &Grid), With<BigSpace>>,
     mut fx: ResMut<WaterFx>,
@@ -763,6 +934,19 @@ pub fn draw_splashes(
                 )
             })
             .collect();
+        let sheet = meshes.add(sheet_mesh());
+        fx.sheets = (0..SHEET_SLOTS)
+            .map(|_| {
+                entry_sheets(0.0, -1.0e6, 0.0).map(|m| {
+                    let material = sheet_materials.add(m);
+                    SheetSlot {
+                        entity: spawn_emitter(&mut commands, root, &sheet, material.clone()),
+                        material,
+                        ends: f32::MIN,
+                    }
+                })
+            })
+            .collect();
         // Spawned by command: placed from the next frame.
         splashes.clear();
         return;
@@ -777,23 +961,48 @@ pub fn draw_splashes(
         if !on {
             continue;
         }
-        // Droplets, the ripples, and — where a body went in — the white crown
-        // of foam on the surface, which is a ring too wide to have a hole.
-        let parts: Vec<(ParticleEffect, bool)> = match splash.kind {
-            SplashKind::Entry { size } => vec![
+        // Droplets and the ripples; where a body went in, also the drops shed
+        // off the crown and the sheets of water (crown, column, foam) below.
+        let entry = match splash.kind {
+            SplashKind::Entry { size } => Some(size),
+            SplashKind::Jet => Some(0.35),
+            SplashKind::Stroke => None,
+        };
+        let parts: Vec<(ParticleEffect, bool)> = match entry {
+            Some(size) => vec![
                 (entry_spray(size), false),
                 (entry_crown(size), false),
+                (entry_fling(size), false),
                 (entry_rings(size), true),
-                (entry_foam(size), true),
             ],
-            SplashKind::Stroke => vec![(stroke_spray(), false), (stroke_rings(), true)],
-            SplashKind::Jet => vec![
-                (entry_spray(0.35), false),
-                (entry_crown(0.35), false),
-                (entry_rings(0.35), true),
-                (entry_foam(0.35), true),
-            ],
+            None => vec![(stroke_spray(), false), (stroke_rings(), true)],
         };
+        if let Some(size) = entry {
+            let i = fx.next_sheet;
+            fx.next_sheet = (fx.next_sheet + 1) % fx.sheets.len().max(1);
+            // A seed from the place, so two splashes are not the same shape.
+            let seed = (splash.at.x * 0.731 + splash.at.z * 0.377).fract().abs();
+            let reach = foam_reach(&scene.terrain, splash.at);
+            let sheets = entry_sheets(size, shader_now, seed);
+            for (slot, mut m) in fx.sheets[i].iter_mut().zip(sheets) {
+                slot.ends = now + (m.timing.x - shader_now) + m.life();
+                // The foam lies on the water; the crown and column rise from it.
+                let foam = m.timing.w > 1.5;
+                let lift = if foam { RING_LIFT_M } else { 0.0 };
+                if foam {
+                    m = m.with_reach(reach);
+                }
+                if let Some(mut mat) = sheet_materials.get_mut(&slot.material) {
+                    *mat = m;
+                }
+                place(
+                    &mut emitters,
+                    grid,
+                    slot.entity,
+                    Some(splash.at + Vec3::Y * lift),
+                );
+            }
+        }
         for (effect, flat) in parts {
             let i = fx.next;
             fx.next = (fx.next + 1) % fx.bursts.len();
@@ -822,6 +1031,11 @@ pub fn draw_splashes(
             place(&mut emitters, grid, slot.entity, None);
         }
     }
+    for slot in fx.sheets.iter().flatten() {
+        if !on || now > slot.ends {
+            place(&mut emitters, grid, slot.entity, None);
+        }
+    }
 
     // Treading water: one emitter per body that is, on the water at its feet.
     let here = scene.avatar_state.display_position;
@@ -834,7 +1048,11 @@ pub fn draw_splashes(
     };
     for (i, entity) in fx.tread.iter().enumerate() {
         let at = treading.get(i).and_then(|feet| {
-            let s = scene.terrain.swim_surface_at(feet.x, feet.z)?;
+            // On the sheet as drawn, as a splash is (`detect_splashes`).
+            let s = scene
+                .terrain
+                .swim_surface_at(feet.x, feet.z)?
+                .max(scene.terrain.sunk_at(feet.x, feet.z));
             Some(Vec3::new(feet.x, s + RING_LIFT_M, feet.z))
         });
         place(&mut emitters, grid, *entity, at);
@@ -1128,8 +1346,8 @@ mod tests {
             small,
             big,
             entry_rings(0.5),
-            entry_foam(1.0),
             entry_crown(1.0),
+            entry_fling(1.0),
             stroke_spray(),
             stroke_rings(),
             tread_rings(),
@@ -1140,6 +1358,34 @@ mod tests {
         }
         // Droplets come back down: a spray that rises forever is smoke.
         assert!(big.gravity < 0.0 && jet_spray().gravity < 0.0);
+    }
+
+    /// The crown rises in about a quarter second and has fallen back within
+    /// about a second; the column comes only with a real drop, and the foam
+    /// outlasts both.
+    #[test]
+    fn a_crown_rises_fast_and_falls_and_only_a_drop_sends_up_a_column() {
+        for s in [0.0, 0.5, 1.0] {
+            let [crown, column, foam] = entry_sheets(s, 10.0, 0.3);
+            assert!(
+                (0.15..0.32).contains(&crown.timing.y),
+                "rise {}",
+                crown.timing.y
+            );
+            assert!(crown.life() < 1.1, "crown lasts {}", crown.life());
+            assert!(foam.life() > crown.life());
+            assert!(
+                column.timing.x > crown.timing.x,
+                "the column follows the crown"
+            );
+            assert!(crown.shape.z > 0.0);
+        }
+        assert_eq!(
+            entry_sheets(0.3, 0.0, 0.0)[1].shape.z,
+            0.0,
+            "a wade has no column"
+        );
+        assert!(entry_sheets(1.0, 0.0, 0.0)[1].shape.z > entry_sheets(1.0, 0.0, 0.0)[0].shape.z);
     }
 
     /// Ripples are a faint disturbance of the reflection — a few at a time,
