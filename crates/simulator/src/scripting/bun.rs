@@ -417,7 +417,12 @@ fn install_packages(bun: &std::path::Path, host_dir: &std::path::Path) -> std::i
     }
 }
 
-fn spawn(engine: &BunEngine, blame: &std::path::Path) -> std::io::Result<Process> {
+/// The host executable ready to take its own arguments: the compiled one as it
+/// is, or `bun` with the checkout's `src/child.ts` (its packages installed
+/// first). With an empty environment, since what runs in it is not trusted
+/// with anything the simulator was started with. The content pages' renderer
+/// (`pages::render`) starts the same executable in its `render` mode.
+pub(crate) fn host_command(engine: &BunEngine) -> std::io::Result<Command> {
     let program = resolve_bin(&engine.program);
     let mut command = Command::new(&program);
     match &engine.host_dir {
@@ -430,10 +435,13 @@ fn spawn(engine: &BunEngine, blame: &std::path::Path) -> std::io::Result<Process
             command.current_dir(std::env::temp_dir());
         }
     }
-    let mut child = command
+    command.env_clear().env("PATH", "/usr/bin:/bin");
+    Ok(command)
+}
+
+fn spawn(engine: &BunEngine, blame: &std::path::Path) -> std::io::Result<Process> {
+    let mut child = host_command(engine)?
         .arg(blame)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

@@ -18,6 +18,7 @@ pub mod check;
 pub mod http;
 pub mod jsx;
 pub mod mcp;
+pub mod render;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};

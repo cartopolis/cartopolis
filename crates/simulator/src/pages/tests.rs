@@ -324,7 +324,15 @@ async fn the_front_door() {
             let mut headers = axum::http::HeaderMap::new();
             headers.insert(axum::http::header::ACCEPT_LANGUAGE, accept.parse().unwrap());
             let uri: axum::http::Uri = path.parse().unwrap();
-            http::shell(&s, &shell_file, "https://c.test", &uri, &headers).await
+            http::shell(
+                &s,
+                &render::Renderer::off(),
+                &shell_file,
+                "https://c.test",
+                &uri,
+                &headers,
+            )
+            .await
         }
     };
     assert!(ask("/", "en").await.is_none(), "no home page: the chat");
@@ -358,5 +366,90 @@ async fn the_front_door() {
     assert!(
         body.contains("hreflang=\"x-default\" href=\"https://c.test/\""),
         "{body}"
+    );
+}
+
+/// A live page goes out drawn, with the data it was drawn from beside it; a
+/// draft, and any page the renderer cannot draw, goes out for the browser.
+#[tokio::test]
+async fn a_live_page_is_drawn_for_the_visit() {
+    let s = service();
+    let dir = tempfile::tempdir().unwrap();
+    let shell_file = dir.path().join("pages.html");
+    std::fs::write(
+        &shell_file,
+        "<html lang=\"en\"><head><!--cms-head--><!--/cms-head--></head><body data-cms></body></html>",
+    )
+    .unwrap();
+    let bundle = dir.path().join(render::BUNDLE);
+    std::fs::write(
+        &bundle,
+        "export async function renderPage(d) { return `<main>${d.texts['hero.heading'].text}</main>` }",
+    )
+    .unwrap();
+    let drawn = render::Renderer::start(crate::scripting::BunEngine::development(), bundle);
+    let ask = |path: &'static str, renderer: render::Renderer| {
+        let (s, shell_file) = (s.clone(), shell_file.clone());
+        async move {
+            let uri: axum::http::Uri = path.parse().unwrap();
+            let page = http::shell(
+                &s,
+                &renderer,
+                &shell_file,
+                "https://c.test",
+                &uri,
+                &axum::http::HeaderMap::new(),
+            )
+            .await
+            .unwrap();
+            let body = axum::body::to_bytes(page.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            String::from_utf8(body.to_vec()).unwrap()
+        }
+    };
+
+    let mut words = dutch();
+    words
+        .get_mut("nl")
+        .unwrap()
+        .insert("hero.heading".into(), "</script><b>x</b>".into());
+    s.put("over", JSX, None, &words, "a").unwrap();
+    s.publish("over", "a").unwrap();
+
+    let page = ask("/nl/over", drawn.clone()).await;
+    assert!(
+        page.contains("<body data-cms><main></script><b>x</b></main></body>"),
+        "{page}"
+    );
+    // The data cannot end its own script element.
+    let data = page
+        .split("id=\"cms-data\">")
+        .nth(1)
+        .unwrap()
+        .split("</script>")
+        .next()
+        .unwrap();
+    assert!(
+        data.contains("\\u003c/script>\\u003cb>x\\u003c/b>"),
+        "{data}"
+    );
+    assert!(!data.contains('<'), "{data}");
+
+    let draft = ask("/nl/over?draft", drawn).await;
+    assert!(
+        draft.contains("<body data-cms></body>"),
+        "a draft is the browser's: {draft}"
+    );
+    assert!(!draft.contains("cms-data"), "{draft}");
+
+    let unrendered = ask("/nl/over", render::Renderer::off()).await;
+    assert!(
+        unrendered.contains("<body data-cms></body>"),
+        "{unrendered}"
+    );
+    assert!(
+        unrendered.contains("id=\"cms-data\""),
+        "the browser draws it from the data: {unrendered}"
     );
 }

@@ -311,6 +311,12 @@ fn escape(s: &str) -> String {
     out
 }
 
+/// JSON to sit inside a `<script>` element: a `<` in a text cannot close it
+/// (`</script>`) or open a comment there, written as the escape JSON reads back.
+fn script_safe(json: &str) -> String {
+    json.replace('<', "\\u003c")
+}
+
 /// The head a page's shell carries: its title and description, the link
 /// preview's tags, and where it is in every other language.
 fn head(pages: &PageService, base: &str, lang: &str, slug: &str, draft: bool) -> (String, bool) {
@@ -366,6 +372,7 @@ fn head(pages: &PageService, base: &str, lang: &str, slug: &str, draft: bool) ->
 /// page, the redirect for `/p/{slug}`, or `None` for any other path.
 pub async fn shell(
     pages: &PageService,
+    renderer: &super::render::Renderer,
     shell_file: &FsPath,
     base: &str,
     uri: &Uri,
@@ -414,7 +421,23 @@ pub async fn shell(
             );
         }
     };
-    let (head, live) = head(pages, base, lang, slug, draft);
+    let (mut head, live) = head(pages, base, lang, slug, draft);
+    // A live page is drawn here for this visit, and the data it was drawn from
+    // goes with it, so the browser takes the HTML over without asking again
+    // (`render`, `src/cms/pages.tsx`). A draft is the browser's to draw: the
+    // editor's session is in its storage, not in this request.
+    let mut body = None;
+    if live && !draft {
+        if let Some(data) = pages.live_data(slug, lang) {
+            body = renderer.render(&data).await;
+            if let Ok(json) = serde_json::to_string(&data) {
+                head.push_str(&format!(
+                    "\n    <script type=\"application/json\" id=\"cms-data\">{}</script>",
+                    script_safe(&json)
+                ));
+            }
+        }
+    }
     let html = match (
         template.find("<!--cms-head-->"),
         template.find("<!--/cms-head-->"),
@@ -427,6 +450,16 @@ pub async fn shell(
         _ => template,
     };
     let html = html.replacen("<html lang=\"en\">", &format!("<html lang=\"{lang}\">"), 1);
+    let html = match body {
+        // No whitespace around it: the browser's takeover matches the body's
+        // children one for one with what the views draw.
+        Some(body) => html.replacen(
+            "<body data-cms></body>",
+            &format!("<body data-cms>{body}</body>"),
+            1,
+        ),
+        None => html,
+    };
     // A draft is drawn by the page's script with the editor's session, so its
     // shell is a 200 even though nothing is live at the address.
     let status = if live || draft {

@@ -52,12 +52,33 @@ pub fn mount<S: Clone + Send + Sync + 'static>(
         let shell = Arc::new(std::path::Path::new(dir).join("pages.html"));
         let base = Arc::new(config.public_base_url.clone());
         let pages = pages.clone();
+        // The pages' views from the same build, in the script host's Bun
+        // (`pages::render`), found as the script process is.
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+        let renderer = crate::pages::render::Renderer::start(
+            config.script_host(beside.as_deref()),
+            std::path::Path::new(dir).join(crate::pages::render::BUNDLE),
+        );
         router = router.fallback(move |req: Request| {
-            let (files, shell, base, pages) =
-                (files.clone(), shell.clone(), base.clone(), pages.clone());
+            let (files, shell, base, pages, renderer) = (
+                files.clone(),
+                shell.clone(),
+                base.clone(),
+                pages.clone(),
+                renderer.clone(),
+            );
             async move {
-                if let Some(page) =
-                    crate::pages::http::shell(&pages, &shell, &base, req.uri(), req.headers()).await
+                if let Some(page) = crate::pages::http::shell(
+                    &pages,
+                    &renderer,
+                    &shell,
+                    &base,
+                    req.uri(),
+                    req.headers(),
+                )
+                .await
                 {
                     return page;
                 }

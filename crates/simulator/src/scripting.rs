@@ -410,6 +410,7 @@ impl Drop for ScriptHost {
 mod bun;
 mod rules;
 
+pub(crate) use bun::host_command;
 pub use bun::{BunEngine, COMPILED_HOST};
 
 #[cfg(test)]
