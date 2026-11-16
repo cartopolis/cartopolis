@@ -108,6 +108,11 @@ packages on first start. The script tests need that Bun and fail without it,
 since a pass by skipping would vouch for nothing; the gate also runs
 `bun test` here.
 
+**The same executable is the content pages' renderer**, started as `render
+<bundle>` (`src/render.ts`, `pages::render`): a second process, never this
+one, because what it writes is the site (`docs/mockups/cms`, v3). A change to
+`child.ts`'s arguments is a change to both.
+
 A Luau script stored before the switch does not compile as JavaScript; the
 hosted world had none left when Luau went (2026-11-16, 64 scripts, all JS).
 

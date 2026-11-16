@@ -45,7 +45,11 @@ arrived: the chat worker opens `/ws`, and the pages call `/api/communities`,
 `/{lang}/{slug}` with the page's head filled in — so on the hosted server Caddy
 must send `/` (exactly), `/nl/*`, `/en/*`, `/p/*`, `/mcp` and `/api/pages*` to
 the simulator, and the simulator needs `web_root` to find `pages.html`. A
-language code there is a path the chat no longer routes.
+language code there is a path the chat no longer routes. Since 2026-11-16 the
+simulator also draws each visit to a live page on the server, with the build's
+`pages-ssr.js` in the script host's Bun, and `pages-<hash>.js` takes that HTML
+over (v3 in `docs/mockups/cms`): **a view in `src/cms/` must draw the same on
+both sides**, so it never reads `location`, storage or the clock.
 
 **The front door is the page `home`** (since 2026-11-15): `/` redirects to
 `/{lang}/` in the reader's language, which is that page, and Community moved to
