@@ -464,6 +464,9 @@ pub(crate) struct SpawnedHuman {
     pub run: ClipGait,
     /// Each emote's length, in `CLIP_ORDER`'s emote order.
     pub emote_secs: Vec<f32>,
+    /// One stroke of the `swim` loop, seconds: what a stroke's splash is
+    /// timed against (`systems::splashes`).
+    pub swim_secs: f32,
     /// How this body sits on its own legs (`systems::climb::pose_for`).
     pub seat_fit: Option<cartopolis_human::build::SeatFit>,
 }
@@ -481,6 +484,7 @@ pub(crate) struct PreparedHuman {
     walk: ClipGait,
     run: ClipGait,
     emote_secs: Vec<f32>,
+    swim_secs: f32,
     seat_fit: Option<cartopolis_human::build::SeatFit>,
     /// Each hand round a phone, and every joint at rest in the holder's
     /// frame: what `held_phone` poses an arm from.
@@ -658,6 +662,10 @@ pub(crate) fn prepare_human(pack: &HumanPack, look: &Look) -> PreparedHuman {
         walk: gait("walk", ClipGait::CHARACTER_WALK),
         run: gait("run", ClipGait::CHARACTER_RUN),
         emote_secs,
+        swim_secs: find("swim")
+            .map(|c| c.duration())
+            .filter(|s| *s > 0.1)
+            .unwrap_or(crate::systems::locomotion::SWIM_CLIP_SECS),
         // Measured on this body's legs, so an edge seat never puts its feet
         // under the ground (`systems::climb`).
         seat_fit: cartopolis_human::build::seat_fit(&model),
@@ -808,6 +816,7 @@ pub(crate) fn spawn_human(
         walk: prepared.walk,
         run: prepared.run,
         emote_secs: prepared.emote_secs,
+        swim_secs: prepared.swim_secs,
         seat_fit: prepared.seat_fit,
     }
 }

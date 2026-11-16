@@ -32,4 +32,7 @@ pub mod prim_geo;
 // either way, so they stay covered by the suite on a host that cannot build the
 // backend at all.
 pub mod soundscape;
+/// Water that reacts: splashes, strokes, ripples and fountain jets, drawn
+/// and heard. The drawing compiles everywhere; the sound behind `audio`.
+pub mod splashes;
 pub mod touch;

@@ -1895,6 +1895,16 @@ fn graphics_tab(
         .small()
         .color(theme::p().text_dim),
     );
+    ui.add_space(6.0);
+    ui.checkbox(&mut prefs.water_effects, "Splashes and spray");
+    ui.label(
+        egui::RichText::new(
+            "Water that reacts: a splash where someone goes in, rings as they \
+             swim, spray on fountain jets. Their sound follows Sound effects.",
+        )
+        .small()
+        .color(theme::p().text_dim),
+    );
 
     ui.add_space(8.0);
     ui.separator();
@@ -2241,9 +2251,11 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
             .show_value(false),
     );
     ui.label(
-        egui::RichText::new("Footsteps, wind, landings and the driving turn cues.")
-            .small()
-            .color(theme::p().text_dim),
+        egui::RichText::new(
+            "Footsteps, wind, landings, splashes and fountains, and the driving turn cues.",
+        )
+        .small()
+        .color(theme::p().text_dim),
     );
     ui.add(
         egui::Slider::new(&mut prefs.voice_volume, 0.0..=1.0)

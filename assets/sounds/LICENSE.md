@@ -47,3 +47,23 @@ and checked as spectrograms — a twelfth take was another bird and was dropped.
 |---|---|---|
 | `caw-1`–`caw-4` | Call of a carrion crow (Germany) | [cfrooos](https://freesound.org/people/cfrooos/sounds/181088/) |
 | `caw-5`–`caw-11` | Crows sounding the alarm at a fox in a garden | [richwise](https://freesound.org/people/richwise/sounds/521019/) |
+
+## Water
+
+`water/` is what `systems::splashes` plays (`docs/notes/water-splashes.md`):
+single splashes and strokes peak-normalised to −1.5 dBFS with a 5 ms fade in
+and a 150 ms fade out, and two 27–30 s loops at −20 LUFS crossfaded
+end-into-start over 3 s. All mono Ogg Vorbis, 48 kHz, cut from the HQ
+previews; every recording checked as CC0 on its own page on 2026-11-16. Cut by
+onset detection and checked as waveform pictures, spectra (no mains hum, no
+sustained voice) and loop seams — not by ear.
+
+| Files | Recording | Author |
+|---|---|---|
+| `splash-big-1`, `tread.ogg` | Jumping into a lake, then swimming | [lurpsis](https://freesound.org/people/lurpsis/sounds/444015/) |
+| `splash-big-2` | Cannonball into a backyard pool | [tbsounddesigns](https://freesound.org/people/tbsounddesigns/sounds/530152/) |
+| `splash-big-3` | A body diving into a pool | [kyles](https://freesound.org/people/kyles/sounds/637823/) |
+| `splash-small-1`–`3` | Wading in shallow water | [ryansitz](https://freesound.org/people/ryansitz/sounds/342932/) |
+| `stroke-1`–`5` | Swimming in a lake, Jezioro Dobczyckie, Poland | [dawidwmika](https://freesound.org/people/dawidwmika/sounds/372518/) |
+| `stroke-6` | Swimming and paddling in a pool | [tbsounddesigns](https://freesound.org/people/tbsounddesigns/sounds/530158/) |
+| `fountain.ogg` | Märchenbrunnen fountain, Berlin, close | [Pfannkuchn](https://freesound.org/people/Pfannkuchn/sounds/457615/) |

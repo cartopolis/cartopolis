@@ -361,6 +361,10 @@ pub struct WorldPlaces {
     addresses: HashMap<(i64, i64), Vec<(Vec2, String)>>,
     /// The surveyed paving per cell, at the cell's world origin.
     paving: HashMap<(i64, i64), (Vec2, cartopolis_geo::paving::PavingIndex)>,
+    /// Fountains drawn as a jet in open water (`FurnitureInstance::over_water`),
+    /// in anchored world XZ: what `systems::splashes` sprays, sounds and
+    /// splashes a swimmer at.
+    jets: HashMap<(i64, i64), Vec<Vec2>>,
     /// Bumped whenever the contents change, so consumers that cache a nearest
     /// answer know to recompute rather than diffing the maps.
     pub revision: u32,
@@ -371,6 +375,7 @@ impl WorldPlaces {
         let origin = Vec2::new(wx, wz);
         let mut interactables: Vec<Interactable> = Vec::new();
         let mut props: Vec<(Vec2, f32)> = Vec::new();
+        let mut jets: Vec<Vec2> = Vec::new();
 
         for f in &places.furniture {
             let pos = origin + Vec2::new(f.x, f.z);
@@ -381,6 +386,9 @@ impl WorldPlaces {
             // up to something nobody can reach. The bank is what stops you, and the
             // bank is drawn.
             let afloat = f.over_water && matches!(f.kind, FurnitureKind::Fountain);
+            if afloat {
+                jets.push(pos);
+            }
             let radius = if afloat { 0.0 } else { prop_radius(f.kind) };
             if radius > 0.0 {
                 props.push((pos, radius));
@@ -441,11 +449,22 @@ impl WorldPlaces {
             self.paving.insert(cell, (origin, places.paving));
         }
         self.surveyed.insert(cell, places.surveyed);
+        if jets.is_empty() {
+            self.jets.remove(&cell);
+        } else {
+            self.jets.insert(cell, jets);
+        }
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Every loaded fountain jet, anchored world XZ.
+    pub fn jets(&self) -> impl Iterator<Item = Vec2> + '_ {
+        self.jets.values().flatten().copied()
     }
 
     pub fn remove_cell(&mut self, cell: &(i64, i64)) {
         let had = self.cells.remove(cell).is_some()
+            | self.jets.remove(cell).is_some()
             | self.props.remove(cell).is_some()
             | self.addresses.remove(cell).is_some()
             | self.paving.remove(cell).is_some()
@@ -460,10 +479,12 @@ impl WorldPlaces {
             && self.props.is_empty()
             && self.addresses.is_empty()
             && self.paving.is_empty()
+            && self.jets.is_empty()
         {
             return;
         }
         self.cells.clear();
+        self.jets.clear();
         self.props.clear();
         self.addresses.clear();
         self.paving.clear();

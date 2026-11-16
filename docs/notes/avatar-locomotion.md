@@ -83,6 +83,13 @@ quays are stood on (`quay-walls.md`), i.e. street height.
 - **Pace.** Every gait swims `SWIM_SPEED` (0.9 m/s), a run `SWIM_FAST_SPEED`
   (1.4), built and shed at `SWIM_ACCEL`/`SWIM_DECEL`, far softer than on foot.
   No jump in water; no footsteps.
+- **Splashes and sound** (2026-11-16, `water-splashes.md`): going in splashes
+  by the entry speed (the drop from the frame before, and the pace), each
+  stroke throws a ripple and a sound at `SWIM_STROKE_PHASE` of the clip read
+  off the animation player, treading water rings, and a lapping loop replaces
+  the footsteps; the landing thud is not played in water. Other swimmers are
+  splashed from each viewer's own map. A `--clip walk` path that goes into the
+  water swims there, which is how the drop off a quay is filmed.
 
 `--clip swim` photographs the stroke; the Noorderhaven at 53.22005,6.5587 is in
 the water (the skill's canal-side point at 53.2194,6.5665 is not).

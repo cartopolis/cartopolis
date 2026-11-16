@@ -76,6 +76,7 @@ the right way round — a missing feature beats a stone basin floating in a lake
 
 A still column of water. Nothing in the furniture group animates — a cell is one
 merged mesh with one shared material, which is what makes a city's worth of
-street objects affordable at all. A plume that moves is `systems::particles`,
-which is a formula rather than a simulation and would suit this well; hanging one
-on a fountain is unbuilt.
+street objects affordable at all. The plume that moves is `systems::splashes`
+(2026-11-16, `water-splashes.md`): `WorldPlaces::jets` keeps the afloat ones,
+and the nearest six get a particle plume over the still column, rings at its
+foot, and a looping sound by distance. The basin on a square still has none.

@@ -70,6 +70,14 @@ pub struct ParticlePool {
     mesh: Handle<Mesh>,
 }
 
+impl ParticlePool {
+    /// The shared quad pool, for an emitter that is not a prim's
+    /// (`systems::splashes`).
+    pub fn mesh(&self) -> Handle<Mesh> {
+        self.mesh.clone()
+    }
+}
+
 /// Marks a prim's emitter child, and remembers what it is currently showing.
 #[derive(Component)]
 pub struct ParticleEmitter {

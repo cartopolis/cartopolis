@@ -39,7 +39,10 @@ const TAU: f32 = 6.283185307;
 // a negative number for a continuous emitter.
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> motion: vec4<f32>;
 
-// x: size at birth, metres. y: size at death. z: overall opacity. w: spare.
+// x: size at birth, metres. y: size at death. z: overall opacity. w: the shape —
+// 0 a camera-facing blob, 1 a flat ring lying on the emitter's level (water
+// rings, `ParticleMaterial::rings`). A prim's effect is always a blob; rings are
+// the client's own (`systems::splashes`) and never come off the wire.
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> sizing: vec4<f32>;
 
 // rgb: linear colour at birth / at death. These are emissive and routinely above
@@ -62,6 +65,9 @@ struct ParticleOut {
     @location(0) uv: vec2<f32>,
     // rgb: this particle's colour. a: its opacity, envelope already applied.
     @location(1) tint: vec4<f32>,
+    // A ring's radius and half its band width, both as fractions of the quad's
+    // half-size; x is negative for a blob.
+    @location(2) ring: vec2<f32>,
 };
 
 // Four decorrelated randoms for one particle. A hash rather than a texture or a
@@ -110,9 +116,39 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
         age = fract(globals.time / life + idx / count) * life;
         alive = 1.0;
     }
+    // The pool holds `MAX_PARTICLES` quads and an emitter draws all of them; the
+    // ones past its own count collapse to nothing here. Without this every
+    // emitter drew the whole pool — a 96-particle fire was 256 (found
+    // 2026-11-16, when four water rings came out as a white disc).
+    alive = alive * f32(idx < count);
     let t = age / life;
 
     let h = hash4(idx + 0.5);
+
+    // In fast, out slow. Not configurable, because every other shape of this
+    // curve — most of all a linear fade — reads as a bug rather than as a choice.
+    let envelope = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.5, 1.0, t));
+
+    if sizing.w > 0.5 {
+        // A ring on the water: a flat quad on the emitter's level, centred on
+        // a point in the source disc, growing at this particle's speed. The
+        // ring is drawn by the fragment stage inside it, so the quad is the
+        // ring's outer edge. Speed varies per particle as below, which is what
+        // turns one burst into rings of several sizes.
+        let ring_speed = motion.x * (0.6 + 0.8 * h.z);
+        let radius = 0.03 + ring_speed * age;
+        let band = max(mix(sizing.x, sizing.y, t), 0.01);
+        let half = (radius + band) * alive;
+        let off = (h.xy - 0.5) * 2.0 * emitter.z;
+        let centre = origin + vec3<f32>(off.x, 0.0, off.y);
+        let world = centre + vec3<f32>(v.position.x * 2.0 * half, 0.0, v.position.y * 2.0 * half);
+        out.position = position_world_to_clip(world);
+        out.uv = v.position.xy + 0.5;
+        out.tint = vec4<f32>(mix(hot.rgb, cool.rgb, t), sizing.z * envelope * alive);
+        let span = max(radius + band, 1e-4);
+        out.ring = vec2<f32>(radius / span, 0.5 * band / span);
+        return out;
+    }
 
     // A direction inside a cone about world up. Sampled in the cosine, not in the
     // angle: sampling the angle uniformly crowds the particles towards the axis
@@ -147,9 +183,6 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
         + vec3<f32>(0.0, 0.5 * motion.z * age * age, 0.0)
         + swirl * (emitter.w * age);
 
-    // In fast, out slow. Not configurable, because every other shape of this
-    // curve — most of all a linear fade — reads as a bug rather than as a choice.
-    let envelope = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.5, 1.0, t));
     let size = mix(sizing.x, sizing.y, t) * alive;
 
     // Camera-facing. The first two columns of `world_from_view` are the camera's
@@ -161,17 +194,26 @@ fn vertex(v: ParticleVertex) -> ParticleOut {
     out.position = position_world_to_clip(world);
     out.uv = v.position.xy + 0.5;
     out.tint = vec4<f32>(mix(hot.rgb, cool.rgb, t), sizing.z * envelope * alive);
+    out.ring = vec2<f32>(-1.0, 0.0);
     return out;
 }
 
 @fragment
 fn fragment(in: ParticleOut) -> @location(0) vec4<f32> {
-    // A soft round blob out of a square quad. Squared, so the core is bright and
-    // the edge is genuinely gone — a linear falloff leaves a visible disc rim
-    // once a few hundred of these overlap.
     let r = length(in.uv * 2.0 - 1.0);
-    let core = 1.0 - smoothstep(0.0, 1.0, r);
-    let a = core * core * in.tint.a;
+    var a: f32;
+    if in.ring.x >= 0.0 {
+        // A ring: a soft band at its radius, brightest in the middle of the
+        // band. Squared for the blob's reason.
+        let band = 1.0 - smoothstep(0.0, max(in.ring.y, 1e-3), abs(r - in.ring.x));
+        a = band * band * in.tint.a;
+    } else {
+        // A soft round blob out of a square quad. Squared, so the core is bright
+        // and the edge is genuinely gone — a linear falloff leaves a visible
+        // disc rim once a few hundred of these overlap.
+        let core = 1.0 - smoothstep(0.0, 1.0, r);
+        a = core * core * in.tint.a;
+    }
     if a <= 0.003 {
         // Cheaper than blending a transparent fragment, and — since the material
         // is `AlphaMode::Add` and writes no depth — it costs nothing else.

@@ -183,7 +183,10 @@ pub fn play_avatar_sounds(
 
     // A landing is an edge published for one frame by whichever path owns
     // movement (`motion::step_fall`), so both run modes get it from one place.
-    if avatar_state.landing_impact > LAND_MIN_IMPACT {
+    // Not in the water: a body dropping off a quay "lands" on the drawn ground
+    // a tread under the surface, and what is heard is the splash
+    // (`systems::splashes`), not a thud.
+    if avatar_state.landing_impact > LAND_MIN_IMPACT && !avatar_state.swimming {
         let t = ((avatar_state.landing_impact - LAND_MIN_IMPACT)
             / (motion::TERMINAL_FALL_SPEED - LAND_MIN_IMPACT))
             .clamp(0.0, 1.0);

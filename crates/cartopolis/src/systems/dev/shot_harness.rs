@@ -3846,6 +3846,21 @@ pub fn hold_scripted_clip(
             if avatar_state.facing_yaw != facing {
                 avatar_state.facing_yaw = facing;
             }
+            // A walk that goes into the water swims there, as the game does:
+            // the stroke, at the distance over one stroke's travel. Off a quay
+            // into the Noorderhaven is how a splash is filmed.
+            if avatar_state.swimming {
+                let stroke = crate::systems::locomotion::SWIM_CLIP_SPEED
+                    * crate::systems::locomotion::SWIM_CLIP_SECS;
+                let want = crate::systems::avatar::PinnedAnimation {
+                    clip: crate::systems::avatar::ClipName::Swim,
+                    phase: along / stroke,
+                };
+                if pinned.as_deref() != Some(&want) {
+                    commands.insert_resource(want);
+                }
+                return;
+            }
             let (walk, run) = gaits.single().map_or(
                 (
                     crate::systems::avatar::ClipGait::CHARACTER_WALK,

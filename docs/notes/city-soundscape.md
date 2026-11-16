@@ -1,6 +1,6 @@
 ---
 topic: city-soundscape
-triggers: [ambience, city sound, background sound, footsteps, footstep surface, recorded sound, freesound, assets/sounds, systems::ambience, ambience.rs, soundscape.rs, PavingIndex, paving_at, drivable_near, step echo, --clip walk, walk video]
+triggers: [ambience, city sound, splash sound, fountain sound, assets/sounds/water, background sound, footsteps, footstep surface, recorded sound, freesound, assets/sounds, systems::ambience, ambience.rs, soundscape.rs, PavingIndex, paving_at, drivable_near, step echo, --clip walk, walk video]
 updated: 2026-10-20
 ---
 
@@ -68,3 +68,21 @@ Deck, 2026-10-20: 407 frames at 1280×720 in 17 min (~2.5 s a frame) for a
 34 s walk at 12 fps. Pick the path from OSM's way geometry, not address
 points (those sit on facades), and check the turns with a still first — the
 first try walked into a building, which the sampler duly reported as indoors.
+
+## Water: splashes, strokes, lapping and fountains (2026-11-16)
+
+Fourteen more CC0 recordings in `assets/sounds/water/`, chosen and cut the
+same way (Freesound HQ previews, onset detection, waveform and spectrum checks,
+credited in `assets/sounds/LICENSE.md`); played by `systems::splashes`
+(`water-splashes.md`). A splash or stroke is a one-shot at its place, heard by
+`splashes::water_level` — full within 3 m, a point source's 6 dB a doubling
+past it, faded out by 45 m. Two loops start silent with the beds: `tread`
+(close water round a swimmer, full while the own avatar swims, by distance for
+others) and `fountain` (the nearest jet: full within 4 m, gone at 60 m). A
+fountain is a sound tied to one spot, so only where the data names a fountain
+in the water. Footsteps stop and the landing thud is skipped while swimming.
+
+The weakest takes, by the analysis rather than by ear: `tread` is somebody
+swimming with a stroke every ~0.35 s rather than treading, and needed 9 dB of
+peak limiting to reach −20 LUFS; the strokes are a lake swimmer recorded from
+the shore; `fountain` carries light city rumble under 150 Hz.

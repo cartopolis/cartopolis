@@ -562,6 +562,8 @@ pub(crate) struct AvatarAnimations {
     /// How long each emote holds the body, in [`EMOTE_ORDER`]: the clip's own
     /// length, or [`EMOTE_DURATION`] for one the pack lacks.
     emote_secs: Vec<f32>,
+    /// One stroke of the swim loop, seconds (the clip's own length).
+    swim_secs: f32,
     /// How this body sits on its own legs, for a seat on an edge
     /// (`systems::climb::SeatFit`).
     seat_fit: crate::systems::climb::SeatFit,
@@ -705,6 +707,7 @@ pub(crate) fn animate_holder(
         walk: spawned.walk,
         run: spawned.run,
         emote_secs: spawned.emote_secs,
+        swim_secs: spawned.swim_secs,
         seat_fit: spawned
             .seat_fit
             .map_or_else(crate::systems::climb::SeatFit::default, Into::into),
@@ -847,6 +850,22 @@ impl AvatarAnimations {
     /// This model's walk and run.
     pub(crate) fn gaits(&self) -> (ClipGait, ClipGait) {
         (self.walk, self.run)
+    }
+
+    /// Where in its stroke this body's swim clip is, 0..1, when the stroke is
+    /// the clip playing (the main animation of a holder's player); `None`
+    /// treading water or on land. What a stroke's splash and sound are timed
+    /// by (`systems::splashes`), so they land on the arms, not on a count.
+    pub(crate) fn swim_phase(
+        &self,
+        player: &AnimationPlayer,
+        transitions: &AnimationTransitions,
+    ) -> Option<f32> {
+        if transitions.get_main_animation() != Some(self.swim_index) {
+            return None;
+        }
+        let seek = player.animation(self.swim_index)?.seek_time();
+        Some(crate::systems::splashes::loop_phase(seek, self.swim_secs))
     }
 
     /// One cycle of `node` in seconds, for the two clips whose phase means the

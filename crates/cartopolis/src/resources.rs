@@ -584,6 +584,13 @@ pub struct AppPrefs {
     /// `AMBIENT_DAY_BRIGHTNESS_NO_IBL` exists to stand in for it.
     #[serde(default)]
     pub sky_lighting: Option<bool>,
+    /// Water that reacts: the spray and rings of a splash, a swimmer's strokes
+    /// and ripples, and a fountain jet's spray (`systems::splashes`). On by
+    /// default and switched only here — never by the frame rate
+    /// (`docs/notes/water-splashes.md`). Their sounds follow
+    /// [`Self::effects_volume`], not this.
+    #[serde(default = "yes")]
+    pub water_effects: bool,
     /// Hold the connection open while the app is off screen
     /// (`systems::background`, `ConnectionService.java`).
     ///
@@ -728,6 +735,7 @@ impl Default for AppPrefs {
             light_shafts: None,
             sun_rays: None,
             sky_lighting: None,
+            water_effects: yes(),
             background_connection: false,
             debug_switches: DebugSwitches::default(),
             mcp_enabled: yes(),
@@ -2375,6 +2383,8 @@ mod tests {
             light_shafts: Some(true),
             sun_rays: Some(false),
             sky_lighting: Some(true),
+            // Off: on is the serde default.
+            water_effects: false,
             // `Some(0)` is "no cap" and must survive as itself, not as `None`.
             frame_rate: Some(0),
             bloom: Some(false),

@@ -291,6 +291,34 @@ impl Plugin for PlayerPlugin {
                     .in_set(ClientPhase::Present),
             );
 
+        // Water that reacts (`systems::splashes`): found after every body has
+        // been placed and posed this frame — the local and remote lifts into
+        // the water and the clip each one is playing — then drawn.
+        app.add_message::<systems::splashes::Splash>()
+            .init_resource::<systems::splashes::WaterFx>()
+            .add_systems(
+                Update,
+                (
+                    systems::splashes::detect_splashes
+                        .after(avatar::smooth_remote_avatars)
+                        .after(avatar::update_avatar_animation)
+                        .after(avatar::update_remote_avatar_animation)
+                        .after(avatar::pin_avatar_animation),
+                    systems::splashes::draw_splashes.after(systems::splashes::detect_splashes),
+                )
+                    .in_set(ClientPhase::Present),
+            );
+        #[cfg(feature = "audio")]
+        app.add_systems(Startup, systems::splashes::setup_water_sounds)
+            .add_systems(
+                Update,
+                (
+                    systems::splashes::play_splash_sounds.after(systems::splashes::detect_splashes),
+                    systems::splashes::update_water_loops,
+                )
+                    .in_set(ClientPhase::Present),
+            );
+
         // The soundscape. Its own registration because the whole module is behind
         // the `audio` feature (ALSA headers on Linux — see Cargo.toml), and a
         // `#[cfg]` inside a system tuple would have to be repeated per entry.

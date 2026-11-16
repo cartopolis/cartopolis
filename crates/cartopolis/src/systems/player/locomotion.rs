@@ -72,6 +72,9 @@ pub const SWIM_LIFT: f32 = TREAD_DEPTH - SWIM_HEAD_Y + SWIM_HEAD_ABOVE;
 /// and goes nowhere, so this is chosen: one 1.76 s stroke carries an easy
 /// swimmer about 1.6 m.
 pub const SWIM_CLIP_SPEED: f32 = 0.9;
+/// One stroke of the `swim` clip at 1× (s), for a pack that lacks the clip;
+/// a body built from the pack times its strokes by the clip's own length.
+pub const SWIM_CLIP_SECS: f32 = 1.76;
 /// The swimming target speed for the speed the gait or the stick asks for on
 /// land: a run is the fast stroke, anything else the easy one.
 #[must_use]

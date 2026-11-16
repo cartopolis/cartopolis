@@ -85,4 +85,18 @@ impl ParticleMaterial {
             cool: Vec4::new(e.color_end[0], e.color_end[1], e.color_end[2], 1.0),
         }
     }
+
+    /// The same effect drawn as flat rings lying on the emitter's level, for
+    /// rings spreading on water (`cartopolis::systems::splashes`): each particle
+    /// is a ring growing at its speed, `source_radius` scatters the centres over
+    /// a disc, and the sizes are the band's width at birth and at death.
+    /// Gravity, the cone and the turbulence do nothing to a ring.
+    ///
+    /// Client-only: the shape rides in `sizing.w`, which a prim's effect leaves
+    /// at zero, so nothing on the wire can ask for it.
+    pub fn rings(e: &ParticleEffect, burst_start: f32) -> Self {
+        let mut m = Self::from_effect(e, burst_start);
+        m.sizing.w = 1.0;
+        m
+    }
 }

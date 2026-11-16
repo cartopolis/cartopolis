@@ -75,6 +75,21 @@ The fragment outputs an alpha of *zero* to reach pure `src + dst`. An alpha of
 one there would be an ordinary over-blend and the fire would occlude what is
 behind it.
 
+## The client's own emitters, and the ring shape
+
+`systems::splashes` draws water with this shader and pool, on emitters that
+are not prims (`water-splashes.md`). It adds one shape: `sizing.w` = 1
+(`ParticleMaterial::rings`) lays each particle down as a flat ring on the
+emitter's level, growing at its speed. No prim can ask for it — the wire's
+`ParticleEffect` has no field for it. Because every particle is placed from the
+emitter's *current* origin, a moving emitter drags its particles; a trail is a
+row of bursts left where things happened, not one moving emitter.
+
+**Until 2026-11-16 the surplus was not collapsed**: the shader never compared
+a quad's index with the count, so every emitter drew all 256 — a fire asking
+for 96 drew 256, and four water rings came out as a solid white disc, which is
+how it was found. `alive` now carries `idx < count`.
+
 ## Measured, and unverified
 
 `MAX_PARTICLES` is 256 and the pool is allocated once at that size; an emitter

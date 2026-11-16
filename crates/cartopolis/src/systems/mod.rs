@@ -98,7 +98,7 @@ pub use player::avatar_video;
 pub use player::face_tracking;
 pub use player::{
     avatar, avatar_face, camera_attach, climb, collision, free_camera, gizmo, greet, held_phone,
-    human_avatar, interact, local_avatar, locomotion, picking, prim_geo, touch,
+    human_avatar, interact, local_avatar, locomotion, picking, prim_geo, splashes, touch,
 };
 // Re-exported only where something reaches it by name: with `audio` off the
 // module is still compiled (its synthesis and rate maths are pure and tested),

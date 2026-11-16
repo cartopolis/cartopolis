@@ -114,6 +114,11 @@ pub struct HumanModel {
     pub missing_targets: Vec<String>,
 }
 
+/// Where in the `swim` loop (0..1) the hands shoot forward through the
+/// surface: the moment a stroke splashes and is heard. Measured on the shipped
+/// pack (`the_stroke_splashes_where_the_hands_shoot_forward`).
+pub const SWIM_STROKE_PHASE: f32 = 0.95;
+
 /// Rounds of [`fit::smooth_weights`] over a garment: each round reaches one
 /// edge further across the garment's mesh.
 const GARMENT_SMOOTHING: usize = 8;
@@ -1531,6 +1536,44 @@ mod tests {
         assert!(
             (0.05..0.3).contains(&head_y),
             "the head is {head_y:.2} m up"
+        );
+    }
+
+    /// Where in the breaststroke the hands shoot forward — the moment the
+    /// client splashes and plays a stroke (`systems::splashes`), held as
+    /// [`SWIM_STROKE_PHASE`]. Measured on the default man: the frame the hands'
+    /// mean forward speed peaks, as a fraction of the loop.
+    #[test]
+    fn the_stroke_splashes_where_the_hands_shoot_forward() {
+        let Some(pack) = shipped_pack() else { return };
+        let m = man(&pack);
+        let Some(swim) = m.clips.iter().position(|c| c.name == "swim") else {
+            return;
+        };
+        let frames = m.clips[swim].rotations[0].len();
+        let j = |n: &str| m.joint(n).unwrap();
+        let hands: Vec<Vec3> = (0..frames)
+            .map(|f| {
+                let p = m.joint_positions(Some((swim, f)));
+                (p[j("hand_l")] + p[j("hand_r")]) * 0.5
+            })
+            .collect();
+        // The loop's last frame is its first again.
+        let n = frames - 1;
+        let (mut best, mut at) = (f32::MIN, 0);
+        for f in 0..n {
+            let v = hands[(f + 1) % n].z - hands[f].z;
+            if v > best {
+                best = v;
+                at = f;
+            }
+        }
+        let phase = (at as f32 + 0.5) / n as f32;
+        println!("swim: hands shoot forward fastest at phase {phase:.3}");
+        let off = (phase - SWIM_STROKE_PHASE).rem_euclid(1.0);
+        assert!(
+            off.min(1.0 - off) < 0.08,
+            "the hands shoot forward at {phase:.3}, not {SWIM_STROKE_PHASE}"
         );
     }
 
