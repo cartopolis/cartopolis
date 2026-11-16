@@ -1,10 +1,71 @@
 ---
 topic: cms
-triggers: [cms, "content pages", "$t(", crates/atlas/web/src/cms, registry.json, pages.html, "/api/pages", "/mcp", PagesEdit, PagesPublish, hreflang, translation, static_files.rs]
-updated: 2026-11-14
+triggers: [cms, "content pages", "$t(", crates/atlas/web/src/cms, registry.json, pages.html, pages-ssr.js, ssr.tsx, frame.tsx, pages/render.rs, script-host/src/render.ts, renderPage, cms-data, "/api/pages", "/mcp", PagesEdit, PagesPublish, hreflang, translation, static_files.rs]
+updated: 2026-11-16
 ---
 
 # Content pages: JSX blocks, every text a `$t`, made through MCP
+
+## v3 (2026-11-16): drawn on the server for every visit, taken over in the browser
+
+Asked for once Bun was in the server for prim scripts: serve the content pages
+server-rendered, and keep them able to be interactive. Chosen by the owner over
+rendering once per publish, so that a component with live data can have it in
+the first HTML. Everything below v3 still holds, except "no server-side
+rendering" and step 3 of "How a page reaches a reader".
+
+- **The simulator renders every visit to a live page** with the web UI's own
+  views. The web build writes them a second time for the server,
+  `pages-ssr.js` (`src/cms/ssr.tsx`, `renderPage(data) → HTML`), beside
+  `pages.html` and `pages-<hash>.js`, so the HTML, the script and the styles
+  always come from one build. A web deploy replaces it; the simulator sees the
+  new modification time and starts its renderer again.
+- **The renderer is the script host's executable**, started as
+  `cartopolis-script-host render <bundle>` (`tools/script-host/src/render.ts`):
+  the server ships one Bun, not two. **Never the script process itself**: that
+  one runs players' code, and a script that got out of its realm must not be
+  able to write cartopolis.org's pages. It gets an empty environment, as the
+  script process does.
+- **One process, kept running, one page at a time** (`pages/render.rs`): a line
+  of JSON in, a line of HTML out. Its stdout is the answer channel, so
+  Mithril's server log on import and any component's `console.log` are moved to
+  stderr before the bundle loads.
+- **The browser takes the HTML over** (hydration): the page's data goes with it
+  as `<script type="application/json" id="cms-data">` (every `<` written
+  `<`), and `pages.tsx` mounts on the drawn body without fetching. Mithril
+  keeps each element and attaches the components' handlers.
+- **Nothing gets worse when it fails.** No bundle, no executable, a crash, a
+  page that throws, an answer later than 2 s, more than 64 visits waiting: the
+  visit gets the shell with the data and an empty body, and the browser draws
+  it as v2 did. A hung renderer is killed and started again at the next visit;
+  a failed start is retried after 30 s.
+- **A draft is never server-rendered.** The session that may see it is in the
+  editor's browser storage, not in the request.
+
+**The rule for a component**: server and browser must draw the same tree, node
+for node, and Mithril repairs a difference without saying so. So nothing in a
+view may read the browser (`location`, `localStorage`, the theme, the clock,
+the visitor): where the page is comes in as an argument (`frame.tsx`), and what
+differs per visitor goes in `oncreate`, after the takeover. `ssr.test.ts` holds
+the server's output to the browser's first view at the page's own address.
+
+Measured (the live `home` page, 2.3 KB of HTML, real components):
+
+| | Bun 1.3.14, container | Bun 1.4.4, mac-2 |
+|---|---|---|
+| first render after start | 7.6 ms | 1.2 ms |
+| each render after | 0.12 ms | 0.025 ms |
+| process start to 2001 renders done | 0.3 s | 50–70 ms |
+| resident memory | 105 MB | 37 MB |
+
+The takeover in headless Chromium, the page at `/nl/`: the server's `<h1>` kept
+as the same element, the body's HTML unchanged, no request for the page, no
+warning, 11.9 ms.
+
+Rejected: **rendering once per publish**, cached per revision, with no process
+kept running — cheaper, but a component with live data would show it only
+after the takeover; **the script process** (above); **a renderer in Rust**,
+a second set of views to keep equal to the first.
 
 ![v2](v2.png)
 
@@ -187,7 +248,7 @@ obvious second step, and the data shape already allows it.
 
 ## Not in v1
 
-Server-side rendering of the body; a visual editor; uploading pictures from the
+Server-side rendering of the body (v3 adds it); a visual editor; uploading pictures from the
 CMS; components with live data; a slug per language; scheduled
 publishing; pages federated as ActivityPub articles; the client app showing
 these pages.
