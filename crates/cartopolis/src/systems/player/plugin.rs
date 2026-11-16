@@ -156,6 +156,14 @@ impl Plugin for PlayerPlugin {
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate),
         )
+        // The feet on the ground under each of them, over the clip, at the
+        // same point in the frame (`systems::feet`).
+        .add_systems(
+            PostUpdate,
+            systems::feet::place_feet
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate),
+        )
         // Faces: what each avatar's shows, onto its body's morph weights
         // (`systems::avatar_face`).
         .add_message::<systems::avatar_face::StartExpression>()

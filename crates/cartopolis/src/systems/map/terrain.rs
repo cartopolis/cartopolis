@@ -727,13 +727,31 @@ impl TerrainField {
     /// (`map_geometry::walk_deck_top`).
     #[must_use]
     pub fn ground_at(&self, wx: f32, wz: f32) -> f32 {
+        self.ground_with(wx, wz, self.ground_only_at(wx, wz))
+    }
+
+    /// [`ground_at`](Self::ground_at) without the half-metre tier: the ground
+    /// as the sheets are drawn on it, from the field they are meshed from.
+    ///
+    /// What a foot is placed by (`systems::feet`), as a difference between
+    /// two points. The half-metre tier holds kerbs and AHN's ±2 cm the drawn
+    /// ground does not, and over a path atlas graded it holds the slope the
+    /// grade took out: on the Noorderplantsoen rampart `ground_at` rose 4.2 m
+    /// over 12 m where the drawn path rises 1.9 (2026-11-16). Feet placed on
+    /// that stood on ground nobody sees.
+    #[must_use]
+    pub fn drawn_ground_at(&self, wx: f32, wz: f32) -> f32 {
+        self.ground_with(wx, wz, self.ground.land_at(wx, wz))
+    }
+
+    /// The decks, the landings and the street correction over `land`.
+    fn ground_with(&self, wx: f32, wz: f32, land: f32) -> f32 {
         // The landings off flat deck ends, as the ground sheets stand on them
         // (`map_geometry::walk_landed`).
         // And the correction the sheets beside a street take from it
         // (`map_geometry::walk_beside_roads`).
         let beside = crate::systems::map_geometry::walk_beside_roads(wx, wz, &self.ground.land());
-        let ground =
-            crate::systems::map_geometry::walk_landed(wx, wz, self.ground_only_at(wx, wz) + beside);
+        let ground = crate::systems::map_geometry::walk_landed(wx, wz, land + beside);
         match crate::systems::map_geometry::walk_deck_top(wx, wz) {
             Some(top) => ground.max(top),
             None => ground,

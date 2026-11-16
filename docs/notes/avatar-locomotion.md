@@ -94,6 +94,16 @@ quays are stood on (`quay-walls.md`), i.e. street height.
 `--clip swim` photographs the stroke; the Noorderhaven at 53.22005,6.5587 is in
 the water (the skill's canal-side point at 53.2194,6.5665 is not).
 
+## The feet are placed on the ground under each of them (2026-11-16)
+
+The clips are flat-floor captures and the body stands on the ground under its
+origin, so on a slope a planted foot was up to 14 cm in or over the drawn ground (a park's
+rampart, 34 %).
+Each leg is now solved over the clip so its foot lands on its own ground, the
+pelvis lowered for a planted foot below the body — on the ground only, not
+swimming, sitting, climbing or in an emote. [foot-placement.md](foot-placement.md)
+has where it was measured, the rule for the pelvis, and what it does not do.
+
 ## The clips are played at the speed the avatar is actually moving
 
 Since 2026-08-09 the locomotion clip is chosen by ground speed and its playback

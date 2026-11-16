@@ -22,6 +22,7 @@
 pub mod build;
 pub mod crowd;
 pub mod face;
+pub mod feet;
 pub mod fit;
 pub mod hands;
 pub mod macros;

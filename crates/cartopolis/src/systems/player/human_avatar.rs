@@ -762,6 +762,17 @@ pub(crate) fn spawn_human(
         });
     }
 
+    // The legs the feet are stood on the ground with (`systems::feet`).
+    {
+        let index = |name: &str| names.iter().position(|n| n == name);
+        let joint = |name: &str| index(name).map(|i| (joints[i], prepared.rest[i]));
+        if let Some(legs) = super::feet::HumanLegs::new(joint) {
+            commands
+                .entity(holder)
+                .insert((legs, super::feet::FootPlacement::default()));
+        }
+    }
+
     // The face's weights, on the holder, for every part that has its units.
     if prepared.parts.iter().any(|(_, info, _)| info.morphs) {
         if let Ok(weights) = MorphWeights::new(vec![0.0; cartopolis_human::face::UNITS.len()], None)

@@ -52,6 +52,18 @@ const FOLDED: f32 = 0.3;
 /// and out to the side). Out of reach, the arm points at the target.
 #[must_use]
 pub fn reach(arm: &Arm, target: Vec3, elbow_towards: Vec3) -> Reach {
+    solve(arm, target, elbow_towards, false)
+}
+
+/// [`reach`], except that the limb may be as straight as the pose it starts
+/// in, when the clip holds it straighter than [`STRAIGHTEST`]: a leg standing
+/// straight is not pulled in by solving it for where it already is (`feet`).
+#[must_use]
+pub fn reach_from_pose(arm: &Arm, target: Vec3, elbow_towards: Vec3) -> Reach {
+    solve(arm, target, elbow_towards, true)
+}
+
+fn solve(arm: &Arm, target: Vec3, elbow_towards: Vec3, keep_straight: bool) -> Reach {
     let upper_len = arm.elbow.distance(arm.shoulder);
     let lower_len = arm.wrist.distance(arm.elbow);
     let to = target - arm.shoulder;
@@ -62,7 +74,12 @@ pub fn reach(arm: &Arm, target: Vec3, elbow_towards: Vec3) -> Reach {
             reached: false,
         };
     };
-    let longest = (upper_len + lower_len) * STRAIGHTEST;
+    let mut longest = (upper_len + lower_len) * STRAIGHTEST;
+    if keep_straight {
+        longest = longest
+            .max(arm.wrist.distance(arm.shoulder))
+            .min(upper_len + lower_len);
+    }
     let nearest = ((upper_len - lower_len).abs()).max(FOLDED * upper_len.max(lower_len));
     let wanted = to.length();
     let d = wanted.clamp(nearest, longest);

@@ -15,6 +15,8 @@ pub mod climb;
 pub mod collision;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod face_tracking;
+/// The feet stood on the ground under each of them, over the clip.
+pub mod feet;
 pub mod free_camera;
 pub mod gizmo;
 pub mod greet;

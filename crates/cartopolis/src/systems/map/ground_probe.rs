@@ -25,16 +25,18 @@ pub fn probes() -> Vec<Vec2> {
 pub fn update_ground_probes(
     anchor: Res<crate::resources::MapAnchor>,
     field: Res<crate::systems::terrain::TerrainField>,
-    mut last: Local<Option<((f64, f64, u32), u32)>>,
+    // The half-metre tier landing changes `walk` without a new revision.
+    mut last: Local<Option<((f64, f64, u32), u32, bool)>>,
 ) {
     let Some(a) = anchor.geo else { return };
     let Ok(spec) = std::env::var("CARTO_PROBE") else {
         return;
     };
-    if *last == Some((a, field.revision)) {
+    let key = (a, field.revision, field.fine_ready());
+    if *last == Some(key) {
         return;
     }
-    *last = Some((a, field.revision));
+    *last = Some(key);
     let points: Vec<Vec2> = spec
         .split(';')
         .filter_map(|p| {
@@ -50,6 +52,8 @@ pub fn update_ground_probes(
             x = p.x,
             z = p.y,
             field = field.at(p.x, p.y),
+            // What an avatar (and each of its feet) stands on there.
+            walk = field.ground_at(p.x, p.y),
             floor_3m = field.floor_at(p.x, p.y, 3.125),
             floor_6m = field.floor_at(p.x, p.y, 6.25),
             floor_12m = field.floor_at(p.x, p.y, 12.5),
