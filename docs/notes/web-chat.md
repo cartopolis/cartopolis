@@ -67,7 +67,8 @@ easier, because a server only ever relays sealed bytes. The model to grow into
 is the IETF's MIMI (chat between providers, on MLS): every conversation has
 one **home server** that orders its log, every person has one home server that
 holds their key packages and delivers to their devices, and servers forward to
-each other. Nothing forwards yet. What could not wait is everything written
+each other. Since 2026-11-16 servers forward direct chats and contact requests
+(`chat-across-servers.md`). What could not wait is everything written
 into something that outlives a change of mind (protocol 37,
 `cartopolis_core::address`):
 
@@ -80,7 +81,8 @@ into something that outlives a change of mind (protocol 37,
 - **A conversation's id begins with its home server**: `server/` and sixteen
   random bytes. The simulator registers only ids that name it.
 - **Key packages are claimed by full address.** The simulator answers for its
-  own people and refuses anybody else's address in words (501), never with the
+  own people and asks the home of anybody else (`chat-across-servers.md`); a
+  server that does not talk to others refuses in words (501), never with the
   empty answer that means "they have no devices".
 - **A server's name is the host of its public URL** (`SimConfig::server_name`,
   `cartopolis.org` live, `localhost` for a development sim), sent in

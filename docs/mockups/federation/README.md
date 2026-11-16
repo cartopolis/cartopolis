@@ -310,7 +310,10 @@ Each lands alone and is useful alone; the order is by what each needs.
    across peers.
 5. **Chat across servers**: key packages, hub and follower forwarding,
    communities with members elsewhere, contacts and presence home to home,
-   calls at the hub.
+   calls at the hub. *Built in part* 2026-11-16: key packages, hub and
+   follower forwarding for direct chats, contact requests home to home, over
+   `/ap/chat/*` (`docs/notes/chat-across-servers.md`); communities, presence
+   and calls are not.
 6. **Voice across peers**, if wanted after measuring stage 4's bandwidth.
 
 ## Rejected
