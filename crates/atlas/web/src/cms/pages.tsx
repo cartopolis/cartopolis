@@ -2,18 +2,25 @@ import './pages.css'
 
 import m from '@garage44/mithril'
 
-import {type Ctx, draw, inline, langOf} from './components'
-import {type PageData, isTextRef, pageHref, parsePath, registry, resolve} from './tree'
+import {Frame, PageView, siteText} from './frame'
+import {type PageData, isTextRef, parsePath, resolve} from './tree'
 
 /**
  * The content pages' own small app (`docs/mockups/cms`): `pages.html` and this,
- * not the chat app, so a page about Cartopolis loads like a page. The server has
- * already put the title, description and language alternates into the HTML; this
- * fetches the page's tree and its texts in the address's language and draws them.
+ * not the chat app, so a page about Cartopolis loads like a page.
+ *
+ * A live page arrives already drawn: the simulator rendered it for this visit
+ * (`ssr.tsx`) and put the data it drew from into `#cms-data`, so this takes the
+ * HTML over — Mithril keeps the elements and attaches what handlers the
+ * components have — without asking the server again. When the server could not
+ * render (no renderer, or it failed) the body is empty and this draws it from
+ * the same data; when there is no data either, it fetches the page.
  *
  * `?draft` draws the draft instead of the live revision, through the admin route,
  * with the session the web UI keeps (`src/lib/store.ts`): an editor's preview,
- * which needs `pages_edit` on the server and shows nothing to anybody else.
+ * which needs `pages_edit` on the server and shows nothing to anybody else. A
+ * draft is never server-rendered: the session that may see it is in this
+ * browser's storage, not in the request.
  */
 
 type State = {kind: 'loading'} | {kind: 'page'; data: PageData} | {kind: 'missing'} | {kind: 'failed'}
@@ -30,6 +37,17 @@ function sessionToken(): string {
 const where = parsePath(location.pathname)
 const draft = new URLSearchParams(location.search).has('draft')
 let state: State = {kind: 'loading'}
+
+/** The page the server drew this visit from, if it put one in. */
+function embedded(): PageData | null {
+    const text = document.getElementById('cms-data')?.textContent
+    if (!text || draft) return null
+    try {
+        return JSON.parse(text) as PageData
+    } catch {
+        return null
+    }
+}
 
 async function load() {
     if (!where) {
@@ -57,69 +75,24 @@ async function load() {
     m.redraw()
 }
 
-/** Words of the frame before a page has said which languages exist. */
-function siteText(lang: string, key: string): string {
-    const texts = registry.site_texts[key]
-    return texts?.[lang] ?? texts?.en ?? ''
-}
-
-function Frame(lang: string, body: m.Children, languages: string[], ctx: Ctx | null) {
-    const label = (key: string) => {
-        if (!ctx) return siteText(lang, key)
-        const r = resolve(ctx.data, key)
-        return <span lang={langOf(ctx, r)}>{inline(r)}</span>
-    }
-    const others = languages.length > 1 && where
-    return (
-        <div class="cms-frame">
-            <header class="cms-top">
-                <a class="wordmark" href="/">
-                    carto<b>polis</b>
-                </a>
-                <nav class="cms-nav">
-                    <a href="/chat">{label('site.nav.community')}</a>
-                    <a href="/world">{label('site.nav.world')}</a>
-                </nav>
-                {others ? (
-                    <nav aria-label={siteText(lang, 'site.language')} class="cms-langs">
-                        {languages.map((l) => (
-                            <a
-                                aria-current={l === lang ? 'page' : undefined}
-                                class={l === lang ? 'on' : ''}
-                                href={`${pageHref(l, where.slug)}${draft ? '?draft' : ''}`}
-                                hreflang={l}
-                                lang={l}
-                            >
-                                {l.toUpperCase()}
-                            </a>
-                        ))}
-                    </nav>
-                ) : null}
-            </header>
-            {ctx && ctx.data.revision === null ? <div class="cms-draft">{label('site.draft')}</div> : null}
-            <main class="cms-main">{body}</main>
-        </div>
-    )
-}
-
 export const PagesApp = {
     view() {
         const lang = where?.lang ?? document.documentElement.lang ?? 'en'
-        if (state.kind === 'page') {
-            const ctx = {data: state.data}
-            return Frame(state.data.lang, draw(ctx, state.data.tree), state.data.languages, ctx)
-        }
+        if (state.kind === 'page') return PageView(state.data, where, draft)
         const message =
             state.kind === 'loading'
                 ? siteText(lang, 'site.loading')
                 : state.kind === 'missing'
                   ? siteText(lang, 'site.not_found')
                   : siteText(lang, 'site.failed')
-        return Frame(lang, <p class="cms-message">{message}</p>, [], null)
+        return Frame(lang, <p class="cms-message">{message}</p>, [], null, where, draft)
     },
 }
 
 if (typeof document !== 'undefined' && document.body?.dataset.cms !== undefined) {
+    const data = embedded()
+    if (data) state = {data, kind: 'page'}
+    // With the server's HTML in the body, this mount is the takeover.
     m.mount(document.body, PagesApp)
-    void load()
+    if (!data) void load()
 }

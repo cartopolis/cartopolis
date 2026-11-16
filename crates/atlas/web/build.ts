@@ -143,6 +143,24 @@ async function buildPages() {
     await Bun.write(path.join(dist, 'pages.html'), html)
     const bytes = (await Bun.file(path.join(dist, js)).arrayBuffer()).byteLength
     console.log(`built dist/pages.html (${js.slice(1)} ${Math.round(bytes / 1024)} KB)`)
+
+    // The same views for the server: the simulator's render process loads this
+    // file from its `web_root` and draws every visit to a live page with it, so
+    // the HTML always comes from the build the page's script and styles came
+    // from. A fixed name, because the simulator looks it up; it notices a new
+    // one by its modification time and starts its renderer again.
+    const ssr = await Bun.build({
+        entrypoints: [path.join(root, 'src/cms/ssr.tsx')],
+        external: ['/fonts/*', '/img/*'],
+        minify: !serve,
+        naming: 'pages-ssr.[ext]',
+        outdir: dist,
+        target: 'bun',
+    })
+    if (!ssr.success) {
+        for (const log of ssr.logs) console.error(log)
+        throw new Error('content pages server build failed')
+    }
 }
 
 /**
