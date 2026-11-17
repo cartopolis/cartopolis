@@ -1255,6 +1255,8 @@ pub fn render_plans_news(
                         ui.vertical(|ui| {
                             let head = if count == 1 {
                                 "New near a place you follow".to_string()
+                            } else if plans.news.iter().all(|(_, p)| *p == place) {
+                                format!("{count} new near a place you follow")
                             } else {
                                 format!("{count} new near places you follow")
                             };
