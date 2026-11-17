@@ -97,6 +97,9 @@ firebirds read each other's replies as a toggle — so it measures delivery.
 `deploy/build/script-host.sh` compiles `src/child.ts` with `bun build --compile
 --target=bun-linux-x64` into one executable, `cartopolis-script-host` (87 MB,
 Bun 1.4.4 inside; `realm-runtime.js` is imported as text so it travels in it).
+The Bun inside is Bun's release build, never the node's: Arch's asks for
+GLIBC_2.44, the deploy host has 2.43, and a host built with it could not start
+there (2026-11-17), so the script checks the ceiling as `server.sh` does.
 The simulator looks for it beside its own binary (`COMPILED_HOST`,
 `SimConfig::script_host`), so a server needs neither Bun nor `node_modules`: the
 server download carries it next to `cartopolis-server` and its updater swaps
