@@ -26,6 +26,12 @@
 //! 52 k for the crowns (`docs/notes/tree-silhouettes.md`) before the light model
 //! and the chunk distance existed. The light model casts no shadow.
 //!
+//! **Every streamer that stands crowns hands its trees here.** The map's cells
+//! carry the scattered, registered and BGT trees; street detail's carry OSM's
+//! `natural=tree`, which in Groningen is the city's register again. Until
+//! 2026-11-17 only the map's did, and the street trees' crowns stood on around
+//! the models planted inside them.
+//!
 //! A setting, "Tree models" under the map layers (`DataLayers::tree_models_enabled`),
 //! whose default is [`quality::Budget::tree_models`]: on for a workstation, off
 //! on the phone and in the browser, where the person may turn it on. Off, the
@@ -152,6 +158,18 @@ struct CellTrees {
     chunks: HashMap<(i32, i32), Chunk>,
 }
 
+/// Whose cell a set of trees came from. Trees are stood by two streamers with
+/// cells of their own: the map's (scattered, registered and BGT trees), and
+/// street detail's (OSM's `natural=tree`), and each must hand its trees to the
+/// models or its crowns stand on under them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Source {
+    /// A `MapSurfaces` cell; retired when the map lets it go.
+    Map((i64, i64)),
+    /// A street-detail cell; retired by `systems::street_detail`.
+    Detail((i64, i64)),
+}
+
 /// Every live cell's chunks, and the models standing in the near ones.
 #[derive(Resource, Default)]
 pub struct TreeModels {
@@ -160,14 +178,14 @@ pub struct TreeModels {
     /// when it changes.
     pub enabled: bool,
     assets: Option<ModelAssets>,
-    cells: HashMap<(i64, i64), CellTrees>,
+    cells: HashMap<Source, CellTrees>,
 }
 
 impl TreeModels {
-    /// Record a cell's model trees and the crown pieces they were merged into
-    /// (`(piece centre, entity)`, cell-local). A piece belongs to the chunk its
-    /// centre is in: the worker built each piece from one chunk's trees, and a
-    /// crown is centred on its trunk.
+    /// Record a map cell's model trees and the crown pieces they were merged
+    /// into (`(piece centre, entity)`, cell-local). A piece belongs to the
+    /// chunk its centre is in: the worker built each piece from one chunk's
+    /// trees, and a crown is centred on its trunk.
     pub fn insert_cell(
         &mut self,
         cell: (i64, i64),
@@ -176,13 +194,85 @@ impl TreeModels {
         crowns: Vec<(Vec2, Entity)>,
         ground: impl Fn(f32, f32) -> f32,
     ) {
+        let trees = trees
+            .into_iter()
+            .map(|t| ModelTree {
+                y: ground(origin.x + t.x, origin.y + t.z),
+                ..t
+            })
+            .collect();
+        self.insert(Source::Map(cell), origin, trees, crowns, ground);
+    }
+
+    /// The same for a street-detail cell, whose trees carry their ground
+    /// already (the worker stood them on the lids, `LidSnapshot::ground_at`).
+    /// Returns the models standing in the cell it replaces, for the caller to
+    /// retire with its own entities.
+    pub fn insert_detail_cell(
+        &mut self,
+        cell: (i64, i64),
+        origin: Vec2,
+        trees: Vec<ModelTree>,
+        crowns: Vec<(Vec2, Entity)>,
+    ) -> Vec<Entity> {
+        let old = self.remove_detail_cell(cell);
+        // A chunk's centre is only measured against the camera: the mean of its
+        // trees' ground is as good as the ground at its centre.
+        let mean_y = |chunk: &[ModelTree]| {
+            chunk.iter().map(|t| t.y).sum::<f32>() / chunk.len().max(1) as f32
+        };
+        let mut by_chunk: HashMap<(i32, i32), Vec<ModelTree>> = HashMap::new();
+        for t in &trees {
+            by_chunk.entry(chunk_of(t.x, t.z)).or_default().push(*t);
+        }
+        self.insert(Source::Detail(cell), origin, trees, crowns, |x, z| {
+            by_chunk
+                .get(&chunk_of(x - origin.x, z - origin.y))
+                .map_or(0.0, |c| mean_y(c))
+        });
+        old
+    }
+
+    /// Forget a street-detail cell, returning the models standing in it.
+    pub fn remove_detail_cell(&mut self, cell: (i64, i64)) -> Vec<Entity> {
+        self.cells
+            .remove(&Source::Detail(cell))
+            .into_iter()
+            .flat_map(|c| c.chunks.into_values())
+            .flat_map(|chunk| chunk.models)
+            .collect()
+    }
+
+    /// Forget every street-detail cell, returning the models standing in them.
+    pub fn clear_detail(&mut self) -> Vec<Entity> {
+        let keys: Vec<_> = self
+            .cells
+            .keys()
+            .filter_map(|k| match k {
+                Source::Detail(c) => Some(*c),
+                Source::Map(_) => None,
+            })
+            .collect();
+        keys.into_iter()
+            .flat_map(|c| self.remove_detail_cell(c))
+            .collect()
+    }
+
+    /// `trees` stand on their ground already; `ground` gives a chunk centre's.
+    fn insert(
+        &mut self,
+        key: Source,
+        origin: Vec2,
+        trees: Vec<ModelTree>,
+        crowns: Vec<(Vec2, Entity)>,
+        ground: impl Fn(f32, f32) -> f32,
+    ) {
         if trees.is_empty() {
-            self.cells.remove(&cell);
+            self.cells.remove(&key);
             return;
         }
         let mut chunks: HashMap<(i32, i32), Chunk> = HashMap::new();
-        for mut t in trees {
-            t.y = ground(origin.x + t.x, origin.y + t.z);
+        for t in trees {
             chunks.entry(chunk_of(t.x, t.z)).or_default().trees.push(t);
         }
         for (key, chunk) in &mut chunks {
@@ -198,7 +288,7 @@ impl TreeModels {
                 chunk.crowns.push(entity);
             }
         }
-        self.cells.insert(cell, CellTrees { origin, chunks });
+        self.cells.insert(key, CellTrees { origin, chunks });
     }
 }
 
@@ -262,10 +352,14 @@ pub fn update_tree_models(
     let allowed = veg.enabled && veg.factor <= 0.0;
     let TreeModels { assets, cells, .. } = &mut *models;
     let assets = assets.as_ref().expect("checked above");
-    cells.retain(|cell, _| surfaces.holds(*cell));
+    cells.retain(|key, _| match key {
+        Source::Map(cell) => surfaces.holds(*cell),
+        // Street detail retires its own (`remove_detail_cell`).
+        Source::Detail(_) => true,
+    });
     let mut budget = MAX_TREES_PER_FRAME;
     let mut to_attach = Vec::new();
-    for (cell, trees) in cells.iter_mut() {
+    for (key, trees) in cells.iter_mut() {
         for chunk in trees.chunks.values_mut() {
             let d = chunk.centre.distance(eye);
             let near = allowed && d < NEAR_M + if chunk.near { HYSTERESIS_M } else { 0.0 };
@@ -334,7 +428,9 @@ pub fn update_tree_models(
                         }
                         let id = e.id();
                         chunk.models.push(id);
-                        to_attach.push((*cell, id));
+                        if let Source::Map(cell) = key {
+                            to_attach.push((*cell, id));
+                        }
                     }
                 }
             }

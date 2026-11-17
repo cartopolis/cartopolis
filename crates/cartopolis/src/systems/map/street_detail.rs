@@ -535,6 +535,11 @@ pub(crate) struct DetailCellBuild {
     zebra_points: Vec<ZebraPoint>,
     /// The ways closed to cars, world XZ (`systems::traffic`).
     car_free: Vec<Vec<[f32; 2]>>,
+    /// The trees stood as models up close, cell-local on their ground, and the
+    /// crown pieces they were merged into: an index into `meshes` and the
+    /// piece's centre, cell-local (`systems::tree_models`).
+    model_trees: Vec<crate::systems::tree_models::ModelTree>,
+    crown_pieces: Vec<(usize, Vec2)>,
 }
 
 /// A drawn traffic signal, world frame.
@@ -774,6 +779,8 @@ struct BuildCtx {
     /// ground filled back over a lid (`LidSnapshot::ground_at`).
     lids: crate::systems::tunnels::LidSnapshot,
     wants_trees: bool,
+    /// Hand the trees to `systems::tree_models`, the crowns chunk by chunk.
+    wants_tree_models: bool,
 }
 
 impl BuildCtx {
@@ -809,6 +816,10 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     let mut lamp_points: Vec<Vec3> = Vec::new();
     let mut signal_points: Vec<SignalPoint> = Vec::new();
     let mut zebra_points: Vec<ZebraPoint> = Vec::new();
+    // The trees stood as models up close, and which of `meshes` are the crowns
+    // they were merged into (`systems::tree_models`).
+    let mut model_trees = Vec::new();
+    let mut crown_pieces: Vec<(usize, Vec2)> = Vec::new();
 
     // ── Trees ────────────────────────────────────────────────────────────
     if ctx.wants_trees {
@@ -857,6 +868,16 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 push_tree(p, None, None, TreeForm::Round, seed);
             }
         }
+        // The trunk is solid; the crown is not, since it is overhead.
+        for t in &instances {
+            let at = Vec2::new(t.x, t.z);
+            colliders.extend(square_collider(
+                at + Vec2::new(ox, oz),
+                crate::systems::collision::TRUNK_RADIUS,
+                ground_at(at),
+                t.height,
+            ));
+        }
         // The vegetation builder works in a tile-local frame with ground y = 0;
         // ours is cell-local. Lift each mesh onto the terrain afterwards, the
         // way `map_geometry` does for volumetric groups (no refinement — a
@@ -864,10 +885,37 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         // The same derived cap the barrier pieces below take, and for the same
         // reason: the raw upload ceiling is `None` off the phone, which leaves a
         // dense row of surveyed trees as one unsplittable mesh.
-        for sm in build_vegetation_meshes(
-            &instances,
-            Some(crate::systems::lod22::max_cell_mesh_bytes()),
-        ) {
+        let cap = Some(crate::systems::lod22::max_cell_mesh_bytes());
+        // Where real models stand up close, the crowns go chunk by chunk, so a
+        // near chunk can hide its own under them (`systems::tree_models`).
+        let mut tree_meshes = Vec::new();
+        if ctx.wants_tree_models {
+            let (chunked, trees) = crate::systems::tree_models::chunked_meshes(&mut instances, cap);
+            tree_meshes.extend(chunked.into_iter().map(|sm| (true, sm)));
+            model_trees = trees
+                .into_iter()
+                .map(|t| crate::systems::tree_models::ModelTree {
+                    y: ground_at(Vec2::new(t.x, t.z)),
+                    ..t
+                })
+                .collect();
+        }
+        tree_meshes.extend(
+            build_vegetation_meshes(&instances, cap)
+                .into_iter()
+                .map(|sm| (false, sm)),
+        );
+        for (chunked, sm) in tree_meshes {
+            if chunked {
+                // Before the lift: by its footprint, as `map_geometry` places
+                // its pieces.
+                let (mut lo, mut hi) = (Vec2::MAX, Vec2::MIN);
+                for p in &sm.positions {
+                    lo = lo.min(Vec2::new(p[0], p[2]));
+                    hi = hi.max(Vec2::new(p[0], p[2]));
+                }
+                crown_pieces.push((meshes.len(), (lo + hi) * 0.5));
+            }
             let mut positions = sm.positions.clone();
             if ctx.ground.is_ready() {
                 for p in positions.iter_mut() {
@@ -902,16 +950,6 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 PropClass::Canopy
             };
             meshes.push((class, mesh));
-        }
-        // The trunk is solid; the crown is not, since it is overhead.
-        for t in &instances {
-            let at = Vec2::new(t.x, t.z);
-            colliders.extend(square_collider(
-                at + Vec2::new(ox, oz),
-                crate::systems::collision::TRUNK_RADIUS,
-                ground_at(at),
-                t.height,
-            ));
         }
     }
 
@@ -1492,6 +1530,8 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         signal_points,
         zebra_points,
         car_free,
+        model_trees,
+        crown_pieces,
     }))
 }
 
@@ -1544,9 +1584,9 @@ pub struct StreetDetail {
     terrain_revision: u32,
     /// The lids every built cell was placed against (`Tunnels::lid_digest`).
     lid_digest: u64,
-    /// (master toggle, trees toggle) the standing cells were built under; a
-    /// change is a full retear, like `DetailWants`.
-    wants_was: Option<(bool, bool)>,
+    /// (master toggle, trees toggle, tree models) the standing cells were built
+    /// under; a change is a full retear, like `DetailWants`.
+    wants_was: Option<(bool, bool, bool)>,
     cells: CellStream<(i64, i64), CellResult>,
     cell_entities: HashMap<(i64, i64), Vec<Entity>>,
     /// Lamp head positions (world frame) per cell, for the light pool.
@@ -1682,6 +1722,7 @@ pub fn update_street_detail(
     layers: Res<crate::systems::data_layers::DataLayers>,
     surfaces: ResMut<crate::systems::map_geometry::MapSurfaces>,
     veg_lod: Res<crate::systems::vegetation::VegetationLod>,
+    mut tree_models: ResMut<crate::systems::tree_models::TreeModels>,
 ) {
     let surfaces = surfaces.into_inner();
     // Free retired entities at the per-frame cap, before any early return.
@@ -1692,7 +1733,11 @@ pub fn update_street_detail(
     };
 
     let terrain = &filled.terrain;
-    let wants = (layers.street_detail_enabled, layers.trees_enabled);
+    let wants = (
+        layers.street_detail_enabled,
+        layers.trees_enabled,
+        layers.tree_models_enabled,
+    );
     let reanchored = sd.cells.sync(stream.anchor_generation);
     // The lids, as the terrain: what stands on the ground was placed on the
     // ground as it was filled when the cell was built.
@@ -1715,6 +1760,7 @@ pub fn update_street_detail(
         }
         colliders.clear_features();
         let sd = &mut *sd;
+        sd.cells.retire_all(tree_models.clear_detail());
         sd.cells.restart(&mut sd.cell_entities, &mut sd.anchor);
     }
     if !wants.0 {
@@ -1789,6 +1835,7 @@ pub fn update_street_detail(
                 filled.tunnels.lids_near(Vec2::new(c.x, c.y), half)
             },
             wants_trees: wants.1,
+            wants_tree_models: wants.2,
         };
         IoTaskPool::get()
             .spawn(async move {
@@ -1845,6 +1892,23 @@ pub fn update_street_detail(
                     &build,
                 );
                 sd.spawned_meshes += entities.len();
+                // `entities` is one to a mesh, in order.
+                let crowns = build
+                    .crown_pieces
+                    .iter()
+                    .map(|&(i, centre)| (centre, entities[i]))
+                    .collect();
+                let (ox, oz) = (
+                    build.grid_cell.x as f32 * WORLD_CELL_EDGE,
+                    build.grid_cell.z as f32 * WORLD_CELL_EDGE,
+                );
+                let replaced = tree_models.insert_detail_cell(
+                    cell,
+                    Vec2::new(ox, oz),
+                    build.model_trees,
+                    crowns,
+                );
+                sd.cells.retire_all(replaced);
                 sd.cell_entities.insert(cell, entities);
                 if !build.colliders.is_empty() {
                     colliders.set_feature_cell(cell, build.colliders);
@@ -1886,6 +1950,7 @@ pub fn update_street_detail(
             sd.spawned_meshes = sd.spawned_meshes.saturating_sub(entities.len());
             sd.cells.retire_all(entities);
         }
+        sd.cells.retire_all(tree_models.remove_detail_cell(cell));
         sd.lamps.remove(&cell);
         sd.signals.remove(&cell);
         sd.zebras.remove(&cell);
@@ -2364,6 +2429,7 @@ mod tests {
             ground: TerrainSnapshot::default(),
             lids: crate::systems::tunnels::LidSnapshot::default(),
             wants_trees: true,
+            wants_tree_models: false,
         }
     }
 
@@ -2530,6 +2596,40 @@ mod tests {
         let mut c = ctx();
         c.wants_trees = false;
         assert!(build_cell(text, cx, cy, &c).unwrap().is_none());
+    }
+
+    /// With the tree models on, a surveyed tree is handed to them and its
+    /// crown is marked as one a near chunk hides; a willow keeps its crown.
+    #[test]
+    fn surveyed_trees_go_to_the_models() {
+        let text = r#"{"elements":[
+            {"type":"node","id":1,"lat":53.21,"lon":6.56,"tags":{"natural":"tree"}},
+            {"type":"node","id":2,"lat":53.2101,"lon":6.5601,
+             "tags":{"natural":"tree","genus":"Salix","species":"Salix babylonica"}}
+        ]}"#;
+        let (cx, cy) = lat_lng_to_tile(53.21, 6.56, DETAIL_ZOOM);
+        let mut c = ctx();
+        c.wants_tree_models = true;
+        let build = build_cell(text, cx, cy, &c).unwrap().unwrap();
+        let weeping = parse_detail(text)
+            .unwrap()
+            .trees
+            .iter()
+            .filter(|t| t.4 == TreeForm::Weeping)
+            .count();
+        assert_eq!(build.model_trees.len(), 2 - weeping);
+        assert!(!build.crown_pieces.is_empty());
+        for &(i, _) in &build.crown_pieces {
+            assert!(matches!(
+                build.meshes[i].0,
+                PropClass::Canopy | PropClass::Trunk
+            ));
+        }
+        // Both trunks still stop the walker.
+        assert_eq!(build.colliders.len(), 2);
+        c.wants_tree_models = false;
+        let plain = build_cell(text, cx, cy, &c).unwrap().unwrap();
+        assert!(plain.model_trees.is_empty() && plain.crown_pieces.is_empty());
     }
 
     #[test]
