@@ -24,8 +24,9 @@ these differences: the ⋯ filters are by kind of notice (applications,
 decisions, notifications, events, traffic, other) plus a Council switch, and
 the dot's colour alone says open or decided, rather than "open" and "decided"
 being filters of their own; the council square carries a tick when the council
-has decided. Following a place and its notification (v1 screen 4) are not
-built (`docs/notes/plans.md` says why). v1's counts were corrected the same
+has decided. Following a place and its notification (v1 screen 4) came on
+2026-11-17, from *Plans here* rather than the notice's card
+(`docs/notes/plans.md`). v1's counts were corrected the same
 day: the first query also counted the Provinciaal blad.
 
 ## v1 — proposed 2026-10-30

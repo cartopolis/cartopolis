@@ -1,7 +1,7 @@
 ---
 topic: plans
-triggers: [plans.rs, crates/atlas/src/plans.rs, systems::plans, "/plans/groningen.json", plans_refresh, CARTO_PLANS_URL, bekendmakingen, Gemeenteblad, gemeenteraad, raadsinformatie]
-updated: 2026-10-30
+triggers: [plans.rs, plans_watch, FollowPlans, PlansFollow, plans_follow, crates/atlas/src/plans.rs, systems::plans, "/plans/groningen.json", plans_refresh, CARTO_PLANS_URL, bekendmakingen, Gemeenteblad, gemeenteraad, raadsinformatie]
+updated: 2026-11-17
 ---
 
 # Plans: notices and council business on the map
@@ -54,9 +54,48 @@ first. That is a guess, and the client says so ("matched by place name",
 - The agenda committee, presidium and clerk's meetings list items again as
   procedure and are not steps.
 
+## Following a place (protocol 50, built 2026-11-17)
+
+*Plans here* has **Follow this place**. A followed place is a spot, not a
+street: a notice whose pin is within 100 m of it (`plans::NEAR_M`, the same
+"here" the card counts) is news.
+
+- **In the app** news is a chip at the top of the map, "New near a place you
+  follow", with the newest notice's title; a tap opens that notice and counts
+  everything near its place as shown. What was published before the place was
+  followed is not news. The app reads the feed while anything is followed, not
+  only with the layer on. What counts as shown is the device's own
+  (`UserData::plans_follow`).
+- **With the app closed** the server wakes the phone: it reads the feed every
+  15 minutes (`simulator::plans_watch`), keeps the ids it has checked
+  (`plans_seen`, so a restart wakes nobody twice; its very first read wakes
+  nobody for a year of notices), and for a notice it has not checked, dated in
+  the last 14 days, wakes every account following a spot near it. The push is
+  the word "plan" (`message-wake-ups.md` says why so little), only to phones
+  registered as `plans:<address>` — an app older than this would show it as
+  "Incoming call". Android shows "New plan near a place you follow"; opening it
+  opens the app, which finds the notice itself.
+- **The server is told the places** (`FollowPlans`, the whole list): once a
+  connection when there are any, and on every change. A device that follows
+  nothing says nothing, so it does not clear another device's places; two
+  devices with *different* lists overwrite each other, the last to connect
+  winning. 20 places at most. Deleting the account deletes them.
+- **Where the server reads the feed:** `plans_url` (`CARTO_PLANS_URL`), else
+  `atlas_url`'s `/plans/groningen.json`, else nowhere — and then nobody is
+  woken, which it says at startup. The hosted server runs atlas as a separate
+  unit and needs `CARTO_PLANS_URL=http://172.17.0.1:4749/plans/groningen.json`
+  in `/etc/cartopolis-sim.env`.
+
+**Not checked from here:** a real phone woken by a real distributor. The
+server's half is tested with a database; the Android notice and the app's chip
+were not seen on a device.
+
+Not done: the browser is never woken for a plan (the web page follows no
+places, and `sw.js` shows any word but "message" as a call); the notice's own
+card has no Follow button (v1 screen 2), only *Plans here*; and a followed
+place has no name — the chip names the notice's place instead.
+
 ## Not built yet
 
-Following a place and being told of a new notice near it (v1 screen 4's
-notification) — it needs a notification path that runs with the app closed.
 Other municipalities: the notices query is one constant away, the council site
-is Groningen's own.
+is Groningen's own. Following only reaches Groningen for that reason.

@@ -1,6 +1,6 @@
 ---
 topic: message-wake-ups
-triggers: [push.rs, simulator::push, wake_for_message, NOTICES_PREFIX, PushReceiver.java, Push.java, sw.js, web-push.ts, systems::push, "Web Push", UnifiedPush, "New message"]
+triggers: [push.rs, simulator::push, wake_for_message, NOTICES_PREFIX, PLANS_PREFIX, PushReceiver.java, Push.java, sw.js, web-push.ts, systems::push, "Web Push", UnifiedPush, "New message"]
 updated: 2026-11-17
 ---
 
@@ -35,6 +35,13 @@ prefixed `notices:` (`systems::push`), a page's carrying its keys. A device
 that registers its address in the new form has the old form dropped
 (`db::set_push_endpoint`), or a call would wake it twice. No protocol revision:
 the marker rides in `SetPushEndpoint`'s string, as `webpush:` does.
+
+A third word, **"plan"** (a new notice near a followed place, `plans.md`),
+came on 2026-11-17 with protocol 50: an app that knows it registers its
+address as `plans:` instead of `notices:` (which it implies), and only those
+are woken for a plan. The client can use the new prefix unconditionally
+because a server speaks its protocol or refuses it. Browsers are not woken for
+plans.
 
 ## Who is woken, and how often
 
