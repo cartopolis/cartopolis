@@ -1,6 +1,6 @@
 ---
 topic: chat-across-servers
-triggers: [crates/simulator/src/remote, remote.rs, "accounts.home", V45__people_elsewhere.sql, "/ap/chat", peer_test_bases, chat_elsewhere.rs, "other servers", "full address", local_name, ADDRESS_MARK]
+triggers: [crates/simulator/src/remote, "accounts.home", V45__people_elsewhere.sql, "/ap/chat", peer_test_bases, chat_elsewhere.rs, "other servers", "full address", local_name, ADDRESS_MARK]
 updated: 2026-11-16
 ---
 
