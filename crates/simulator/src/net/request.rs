@@ -125,6 +125,10 @@ pub enum ClientRequest {
     SetPushEndpoint {
         endpoint: Option<String>,
     },
+    /// The spots this account follows for new plans (`plans_watch`).
+    FollowPlans {
+        places: Vec<[f64; 2]>,
+    },
     TextureCatalogRequest,
     TextureRequest {
         request_id: u32,
@@ -310,6 +314,7 @@ impl ClientRequest {
             | Self::OfferGreeting { .. }
             | Self::AcceptGreeting { .. }
             | Self::SetPushEndpoint { .. }
+            | Self::FollowPlans { .. }
             | Self::TextureCatalogRequest
             | Self::TextureRequest { .. }
             | Self::ChatSend { .. }
@@ -482,6 +487,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 Self::AcceptGreeting { request_id, from }
             }
             NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
+            NetMessage::FollowPlans { places } => Self::FollowPlans { places },
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
             NetMessage::TextureRequest {
                 request_id,

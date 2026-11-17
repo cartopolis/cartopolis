@@ -90,6 +90,12 @@ pub struct SimConfig {
     /// such route, as on the hosted server where Caddy routes them itself.
     #[serde(default)]
     pub atlas_url: Option<String>,
+    /// The municipality's notices (atlas's `/plans/groningen.json`), read
+    /// every so often to wake a closed phone for a notice near a place its
+    /// account follows (`plans_watch`). Unset, it is `atlas_url`'s when that
+    /// is set, and otherwise nothing is read and nobody is woken.
+    #[serde(default)]
+    pub plans_url: Option<String>,
     /// The web UI's built files, served at the root of the HTTP listener with
     /// its `index.html` for any path it has no file for (`static_files`). Unset
     /// on the hosted server, where Caddy serves them.
@@ -370,6 +376,7 @@ impl Default for SimConfig {
             osm_tile_url_template: default_osm_tile_url_template(),
             api_base_url: String::new(),
             atlas_url: None,
+            plans_url: None,
             web_root: None,
             map_data_dir: None,
             geocoder_url: default_geocoder_url(),

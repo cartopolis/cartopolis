@@ -146,6 +146,10 @@ impl Plugin for GuiPlugin {
                 systems::plans::render_plans_card
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
+                // News near a followed place, at the top of the map.
+                systems::plans::render_plans_news
+                    .after(systems::plans::render_plans_card)
+                    .in_set(ClientPhase::Present),
             ),
         );
 

@@ -73,6 +73,9 @@ pub enum Kind {
     Call,
     /// Somebody wrote in one of its private chats or topics.
     Message,
+    /// The municipality published a notice near a place the account follows
+    /// (`plans_watch`).
+    Plan,
 }
 
 impl Kind {
@@ -84,6 +87,7 @@ impl Kind {
             (Kind::Call, false) => b"1",
             (Kind::Call, true) => b"call",
             (Kind::Message, _) => b"message",
+            (Kind::Plan, _) => b"plan",
         }
     }
 }
@@ -117,6 +121,13 @@ pub const WEB_PREFIX: &str = "webpush:";
 /// any push as "Incoming call".
 pub const NOTICES_PREFIX: &str = "notices:";
 
+/// What a phone's address is registered as when its app also shows a plan
+/// wake-up as one (`systems::push`, protocol 50). It implies [`NOTICES_PREFIX`]:
+/// an app that knows "plan" knows "message". A browser is never woken for a
+/// plan — the web page follows no places, and `sw.js` shows any word but
+/// "message" as a call.
+pub const PLANS_PREFIX: &str = "plans:";
+
 /// What a registered endpoint says about the device behind it.
 #[derive(Debug, PartialEq, Eq)]
 struct Target<'a> {
@@ -129,6 +140,8 @@ struct Target<'a> {
     keys: Option<(&'a str, &'a str)>,
     /// Whether the device may be woken for a message.
     notices: bool,
+    /// Whether it may be woken for a plan near a followed place.
+    plans: bool,
 }
 
 fn target(endpoint: &str) -> Target<'_> {
@@ -142,6 +155,16 @@ fn target(endpoint: &str) -> Target<'_> {
             web: true,
             notices: keys.is_some(),
             keys,
+            plans: false,
+        };
+    }
+    if let Some(url) = endpoint.strip_prefix(PLANS_PREFIX) {
+        return Target {
+            url,
+            web: false,
+            keys: None,
+            notices: true,
+            plans: true,
         };
     }
     match endpoint.strip_prefix(NOTICES_PREFIX) {
@@ -150,12 +173,14 @@ fn target(endpoint: &str) -> Target<'_> {
             web: false,
             keys: None,
             notices: true,
+            plans: false,
         },
         None => Target {
             url: endpoint,
             web: false,
             keys: None,
             notices: false,
+            plans: false,
         },
     }
 }
@@ -336,7 +361,7 @@ fn post(agent: &ureq::Agent, endpoint: &str, kind: Kind, vapid: Option<&Vapid>) 
     // is off, and need not wake one that is dozing.
     let (ttl, urgency) = match kind {
         Kind::Call => ("60", "high"),
-        Kind::Message => ("86400", "normal"),
+        Kind::Message | Kind::Plan => ("86400", "normal"),
     };
     let t = target(endpoint);
     let result = if t.web {
@@ -402,7 +427,11 @@ fn endpoints_for(c: &rusqlite::Connection, ring: &Ring) -> Vec<String> {
             db::push_endpoints(c, account)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|e| ring.kind == Kind::Call || target(e).notices),
+                .filter(|e| match ring.kind {
+                    Kind::Call => true,
+                    Kind::Message => target(e).notices,
+                    Kind::Plan => target(e).plans,
+                }),
         );
     }
     out
@@ -441,7 +470,7 @@ async fn run(conn: SharedConn, vapid: Option<Arc<Vapid>>, mut rx: mpsc::Unbounde
         // the ring of a call started a moment after it.
         let due: Vec<String> = endpoints
             .into_iter()
-            .filter(|e| kind == Kind::Message || !last.contains_key(e))
+            .filter(|e| kind != Kind::Call || !last.contains_key(e))
             .filter(|e| check_endpoint(e).is_ok())
             .collect();
         if kind == Kind::Call {
@@ -582,6 +611,41 @@ mod tests {
         db::set_push_endpoint(&c, "dee", &phone, 2).unwrap();
         db::set_push_endpoint(&c, "dee", &page, 2).unwrap();
         assert_eq!(db::push_endpoints(&c, "dee").unwrap(), vec![phone, page]);
+    }
+
+    #[test]
+    fn a_plan_wakes_only_phones_that_know_the_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = db::open_and_migrate(dir.path().join("w.db").to_str().unwrap()).unwrap();
+        let keys = format!("#{}.{}", "A".repeat(87), "A".repeat(22));
+        let plans_phone = format!("{PLANS_PREFIX}https://push.example/eve-phone");
+        for endpoint in [
+            "https://push.example/eve-old-phone".to_string(),
+            format!("{NOTICES_PREFIX}https://push.example/eve-tablet"),
+            format!("{WEB_PREFIX}https://fcm.example/eve-page{keys}"),
+            plans_phone.clone(),
+        ] {
+            assert!(check_endpoint(&endpoint).is_ok(), "{endpoint}");
+            db::set_push_endpoint(&c, "eve", &endpoint, 1).unwrap();
+        }
+        let mut ring = Ring {
+            kind: Kind::Plan,
+            caller: String::new(),
+            caller_name: String::new(),
+            members: vec!["eve".into()],
+        };
+        assert_eq!(endpoints_for(&c, &ring), vec![plans_phone.clone()]);
+        // It knows a message and a call as well.
+        ring.kind = Kind::Message;
+        assert!(endpoints_for(&c, &ring).contains(&plans_phone));
+        assert_eq!(address(&plans_phone), "https://push.example/eve-phone");
+
+        // The phone that knew messages and now knows plans is registered once.
+        let tablet = format!("{PLANS_PREFIX}https://push.example/eve-tablet");
+        db::set_push_endpoint(&c, "eve", &tablet, 2).unwrap();
+        let all = db::push_endpoints(&c, "eve").unwrap();
+        assert_eq!(all.len(), 4);
+        assert!(!all.iter().any(|e| e.starts_with(NOTICES_PREFIX)));
     }
 
     /// RFC 8291's own example (appendix A): the same keys, salt and text give

@@ -223,6 +223,25 @@ impl PlansFeed {
     }
 }
 
+/// How near a notice must be to a followed place to wake its follower, and
+/// what the ring's *Plans here* counts as "here".
+pub const NEAR_M: f64 = 100.0;
+
+/// Metres between two `(lat, lng)` points, near enough at city scale.
+#[must_use]
+pub fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dy = (a.0 - b.0) * 111_320.0;
+    let dx = (a.1 - b.1) * 111_320.0 * a.0.to_radians().cos();
+    dx.hypot(dy)
+}
+
+/// Whether a notice is published within [`NEAR_M`] of a followed place: its
+/// pin, the point *Plans here* lists it by.
+#[must_use]
+pub fn near_followed(place: [f64; 2], n: &Notice) -> bool {
+    metres((place[0], place[1]), (n.lat, n.lng)) <= NEAR_M
+}
+
 /// `YYYY-MM-DD` for `unix_secs` seconds since the epoch, UTC — the form every
 /// date in the feed is in, so "still open" and "since" are string comparisons.
 /// Howard Hinnant's civil-from-days, for the proleptic Gregorian calendar.

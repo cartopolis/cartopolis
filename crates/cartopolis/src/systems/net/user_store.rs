@@ -162,6 +162,11 @@ pub struct UserData {
     /// from before it holds the phone in the right hand and shows the card.
     #[serde(default)]
     pub hand: crate::systems::held_phone::HandPrefs,
+    /// Places followed for new plans, and the notices near them already
+    /// shown (`systems::plans`). The server is told the places too, to wake a
+    /// closed phone; what counts as new is this device's.
+    #[serde(default)]
+    pub plans_follow: crate::systems::plans::PlansFollow,
 }
 
 /// See [`UserData::screen`].

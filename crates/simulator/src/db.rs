@@ -1439,13 +1439,14 @@ pub fn set_push_endpoint(
     let keyed = format!("{web}#");
     conn.execute(
         "DELETE FROM push_endpoints WHERE endpoint != ?1
-         AND (endpoint IN (?2, ?3, ?4) OR substr(endpoint, 1, length(?5)) = ?5)",
+         AND (endpoint IN (?2, ?3, ?4, ?6) OR substr(endpoint, 1, length(?5)) = ?5)",
         rusqlite::params![
             endpoint,
             url,
             format!("{}{url}", crate::push::NOTICES_PREFIX),
             web,
-            keyed
+            keyed,
+            format!("{}{url}", crate::push::PLANS_PREFIX),
         ],
     )?;
     Ok(())
@@ -1470,6 +1471,67 @@ pub fn drop_push_endpoint(conn: &Connection, endpoint: &str) -> anyhow::Result<(
         "DELETE FROM push_endpoints WHERE endpoint = ?1",
         rusqlite::params![endpoint],
     )?;
+    Ok(())
+}
+
+// ── Following a place for new plans (`plans_watch`, `docs/notes/plans.md`) ──
+
+/// Most spots one account follows; the rest of a longer list is dropped.
+pub const MAX_PLAN_FOLLOWS: usize = 20;
+
+/// Replace the spots `account` follows, `[lat, lng]`.
+pub fn set_plan_follows(
+    conn: &mut Connection,
+    account: &str,
+    places: &[[f64; 2]],
+) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM plan_follows WHERE account = ?1", [account])?;
+    for [lat, lng] in places
+        .iter()
+        .filter(|[lat, lng]| lat.abs() <= 90.0 && lng.abs() <= 180.0)
+        .take(MAX_PLAN_FOLLOWS)
+    {
+        tx.execute(
+            "INSERT INTO plan_follows (account, lat, lng) VALUES (?1, ?2, ?3)",
+            rusqlite::params![account, lat, lng],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Every followed spot: `(account, lat, lng)`.
+pub fn plan_follows(conn: &Connection) -> anyhow::Result<Vec<(String, f64, f64)>> {
+    let mut stmt = conn.prepare("SELECT account, lat, lng FROM plan_follows")?;
+    let out = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(out)
+}
+
+/// Of `ids`, the notices not checked yet, and whether any had been checked at
+/// all — on a server's first read every notice is new, and nobody is woken
+/// for a year of them.
+pub fn unseen_notices(conn: &Connection, ids: &[&str]) -> anyhow::Result<(Vec<String>, bool)> {
+    let any: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM plans_seen)", [], |r| r.get(0))?;
+    let mut stmt = conn.prepare_cached("SELECT 1 FROM plans_seen WHERE id = ?1")?;
+    let mut out = Vec::new();
+    for id in ids {
+        if !stmt.exists([id])? {
+            out.push((*id).to_string());
+        }
+    }
+    Ok((out, any))
+}
+
+/// Mark notices as checked.
+pub fn mark_notices_seen(conn: &mut Connection, ids: &[String]) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    for id in ids {
+        tx.execute("INSERT OR IGNORE INTO plans_seen (id) VALUES (?1)", [id])?;
+    }
+    tx.commit()?;
     Ok(())
 }
 

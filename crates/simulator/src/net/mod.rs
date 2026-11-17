@@ -42,6 +42,7 @@ mod greet;
 mod hand;
 mod look;
 mod moderation;
+mod plans;
 mod prims;
 mod reach;
 pub mod request;
@@ -1351,6 +1352,7 @@ async fn dispatch<T: FrameTransport>(
         ClientRequest::SetPushEndpoint { endpoint } => {
             calls::on_set_push_endpoint(ctx, endpoint).await
         }
+        ClientRequest::FollowPlans { places } => plans::on_follow(ctx, places).await,
         ClientRequest::GetPrimScript {
             request_id,
             prim_id,

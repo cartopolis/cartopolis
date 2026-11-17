@@ -2552,6 +2552,8 @@ const UI_ELEMENTS: &[&str] = &[
     "planshere",
     // The card of the notice nearest the shot's point that names council business.
     "plansnotice",
+    // The shot's point followed for new plans, every notice near it news.
+    "plansnews",
     "places",
     "bookmarks",
     "route",
@@ -2785,6 +2787,16 @@ pub fn open_scripted_ui(
     }
     if want("plansnotice") {
         cards.plans.open_nearest = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
+    }
+    // `--ui plansnews`: the shot's point followed with nothing shown yet, so
+    // every notice near it is news — the chip a follower meets on opening.
+    if want("plansnews") {
+        if let Some(s) = harness.shots.get(progress.index) {
+            store.data.plans_follow = crate::systems::plans::PlansFollow {
+                places: vec![[s.lat, s.lng]],
+                seen: Vec::new(),
+            };
+        }
     }
     // A scripted run reads no `user.json`, so the form comes up empty — and an
     // empty form is the *disabled* state of the button, which is the one state

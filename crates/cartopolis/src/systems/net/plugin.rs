@@ -38,6 +38,12 @@ impl Plugin for NetPlugin {
             Update,
             systems::push::send_push_endpoint.in_set(ClientPhase::Input),
         );
+        // The places followed for new plans, which the simulator wakes this
+        // account's closed phones for, followed on whichever device.
+        app.add_systems(
+            Update,
+            systems::plans::send_plan_follows.in_set(ClientPhase::Input),
+        );
         // Voice plays through the output device the soundscape already opened, as a
         // custom `Decodable` asset. Registering the type is what teaches bevy_audio
         // to build a rodio source from it; without this an `AudioPlayer<VoiceStream>`

@@ -6,7 +6,8 @@
 // ## Why the message says so little
 //
 // The simulator sends a wake-up with one word in it (`simulator::push`):
-// "message", or anything else for a call. Who is calling or writing, and in
+// "message", "plan" (a new notice near a followed place), or anything else
+// for a call. Who is calling or writing, and in
 // which chat, never passes through the distributor's server. So this shows
 // "Incoming call" or "New message" and lets the app, once opened, show who —
 // the roster and the chats reach it over its own connection the moment it
@@ -41,6 +42,9 @@ public final class PushReceiver extends BroadcastReceiver {
     private static final String MESSAGES_CHANNEL_ID = "messages";
     /** Distinct from the service's 1 and a call's 2. */
     static final int MESSAGE_NOTIFICATION_ID = 3;
+    private static final String PLANS_CHANNEL_ID = "plans";
+    /** Distinct from the service's 1, a call's 2 and a message's 3. */
+    static final int PLAN_NOTIFICATION_ID = 4;
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -66,8 +70,11 @@ public final class PushReceiver extends BroadcastReceiver {
                 if (MainActivity.onScreen) {
                     break;
                 }
-                if (isMessage(intent)) {
+                String word = word(intent);
+                if ("message".equals(word)) {
                     tell(context);
+                } else if ("plan".equals(word)) {
+                    tellPlan(context);
                 } else {
                     ring(context);
                 }
@@ -77,14 +84,41 @@ public final class PushReceiver extends BroadcastReceiver {
         }
     }
 
-    /** Whether the push is a message wake-up: the word "message". A call's is
-     *  "1", and so is every push from a server older than message wake-ups. */
-    private static boolean isMessage(Intent intent) {
+    /** The push's word: "message" for a message, "plan" for a new notice near
+     *  a followed place (docs/notes/plans.md). A call's is "1", and so is every
+     *  push from a server older than message wake-ups. */
+    private static String word(Intent intent) {
         byte[] bytes = intent.getByteArrayExtra("bytesMessage");
-        String word = bytes != null
+        return bytes != null
                 ? new String(bytes, StandardCharsets.UTF_8)
                 : intent.getStringExtra("message");
-        return "message".equals(word);
+    }
+
+    /** A notice was published near a place this account follows. Which one,
+     *  and where, the app finds in the plans feed once opened. */
+    private static void tellPlan(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                PLANS_CHANNEL_ID, "Plans near places you follow", NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription("The municipality published something new near a place you follow.");
+        manager.createNotificationChannel(channel);
+
+        Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        Notification.Builder builder = new Notification.Builder(context, PLANS_CHANNEL_ID)
+                .setContentTitle("New plan near a place you follow")
+                .setContentText("Open Cartopolis to see what was published.")
+                .setSmallIcon(android.R.drawable.ic_dialog_map)
+                .setCategory(Notification.CATEGORY_EVENT)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true);
+        if (launch != null) {
+            builder.setContentIntent(PendingIntent.getActivity(context, 0, launch,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+        }
+        manager.notify(PLAN_NOTIFICATION_ID, builder.build());
     }
 
     /** One notice for however many lines: a later push posts it again

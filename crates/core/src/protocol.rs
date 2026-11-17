@@ -240,6 +240,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "greeting another avatar — OfferGreeting offers a handshake or a high five to an avatar within reach, GreetingOffered tells that avatar (or that the offer is withdrawn), AcceptGreeting takes it, and GreetingStarted tells both the sim has stood them together and started the gesture; Emote gains Handshake and HighFive, which only the sim starts, and Throw, the clip a throw plays (docs/notes/paired-gestures.md)",
     },
+    ProtocolRevision {
+        version: 50,
+        adr: "",
+        summary: "following a place for new plans — FollowPlans gives the server the spots this account follows, which it checks the municipality's new notices against and wakes a closed phone for with the push word \"plan\"; a phone says it knows that word by registering its address with the \"plans:\" prefix (docs/notes/plans.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -379,6 +384,7 @@ pub enum MessageKind {
     GreetingOffered = 129,
     AcceptGreeting = 130,
     GreetingStarted = 131,
+    FollowPlans = 132,
 }
 
 impl MessageKind {
@@ -507,6 +513,7 @@ impl MessageKind {
             129 => Some(Self::GreetingOffered),
             130 => Some(Self::AcceptGreeting),
             131 => Some(Self::GreetingStarted),
+            132 => Some(Self::FollowPlans),
             _ => None,
         }
     }
@@ -1898,6 +1905,15 @@ pub enum NetMessage {
         partner: u64,
         yaw: f32,
     },
+
+    // ── Following a place for new plans (protocol 50, `docs/notes/plans.md`) ──
+    /// Client: the spots this account follows, `[lat, lng]`, replacing what the
+    /// server held. The server checks every new notice in the municipality's
+    /// feed against them and wakes the account's closed phones for one within
+    /// 100 m (`simulator::plans_watch`). Sent once a connection when the list
+    /// is not empty, and on every change, so a device that follows nothing
+    /// does not clear what another device follows.
+    FollowPlans { places: Vec<[f64; 2]> },
     /// Server: what this account may do (`cartopolis_core::permissions`, by
     /// slug) — sent after the handshake and again whenever an operator changes
     /// a role, the account's roles or its admin flag, so a client's buttons
@@ -2936,6 +2952,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::GreetingOffered { .. } => MessageKind::GreetingOffered,
         NetMessage::AcceptGreeting { .. } => MessageKind::AcceptGreeting,
         NetMessage::GreetingStarted { .. } => MessageKind::GreetingStarted,
+        NetMessage::FollowPlans { .. } => MessageKind::FollowPlans,
         NetMessage::CreatePrim { .. } => MessageKind::CreatePrim,
         NetMessage::UpdatePrim { .. } => MessageKind::UpdatePrim,
         NetMessage::DeletePrim { .. } => MessageKind::DeletePrim,
@@ -3459,6 +3476,9 @@ mod tests {
                 partner: 7,
                 yaw: -1.25,
             },
+            NetMessage::FollowPlans {
+                places: vec![[53.2166, 6.5672], [53.2190, 6.5650]],
+            },
             NetMessage::WorldSnapshot {
                 tick: 9,
                 avatars: [Emote::Handshake, Emote::HighFive, Emote::Throw]
@@ -3959,7 +3979,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 122] = [
+        const ALL: [MessageKind; 123] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -4082,6 +4102,7 @@ mod tests {
             GreetingOffered,
             AcceptGreeting,
             GreetingStarted,
+            FollowPlans,
         ];
         for k in ALL {
             assert_eq!(
@@ -4095,7 +4116,7 @@ mod tests {
         // when a kind is added — that is the point of the test, and the reason it
         // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
-        assert_eq!(MessageKind::from_wire(GreetingStarted as u16 + 1), None);
+        assert_eq!(MessageKind::from_wire(FollowPlans as u16 + 1), None);
         // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
         // retired number stays retired: reusing it would make a stale client's
         // observer update decode as whatever took the slot, and the run is

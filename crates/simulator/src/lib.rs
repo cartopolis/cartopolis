@@ -29,6 +29,7 @@ pub mod net;
 pub mod pages;
 pub mod physics;
 pub mod pictures;
+pub mod plans_watch;
 pub mod prims;
 pub mod push;
 pub mod reach;
@@ -154,6 +155,7 @@ pub async fn serve_with(
     let vapid = Some(Arc::new(load_vapid(&config)?));
     let ring = push::spawn(conn.clone(), vapid.clone());
     chat.set_wake(ring.clone());
+    plans_watch::spawn(conn.clone(), &config, ring.clone());
     let calls = match config.calls_listen {
         Some(ref listen) => {
             let public = config

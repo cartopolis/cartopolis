@@ -321,6 +321,8 @@ pub fn is_agent(conn: &Connection, id: &str) -> bool {
 
 /// Delete an account outright.
 pub fn delete_account(conn: &Connection, id: &str) -> anyhow::Result<bool> {
+    // Where somebody follows plans is likely where they live.
+    conn.execute("DELETE FROM plan_follows WHERE account = ?1", [id])?;
     let n = conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
     Ok(n > 0)
 }

@@ -32,7 +32,10 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::GridCell;
-use cartopolis_core::plans::{civil_date, days_between, notice_url, Notice, NoticeKind, PlansFeed};
+use cartopolis_core::plans::{
+    civil_date, days_between, metres, near_followed, notice_url, Notice, NoticeKind, PlansFeed,
+    NEAR_M as HERE_M,
+};
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::components::FreeCamera;
@@ -72,9 +75,8 @@ const DOT_R: f32 = 5.5;
 const OPEN_R: f32 = 6.5;
 /// The council square's half-size, points.
 const COUNCIL_R: f32 = 9.0;
-/// How near counts as "here" for the ring's *Plans here* and a card's "Also
-/// here", metres.
-const HERE_M: f64 = 100.0;
+/// How near counts as "here" for a card's "Also here", metres. The ring's
+/// *Plans here* and a followed place use the shared `HERE_M`.
 const ALSO_HERE_M: f64 = 40.0;
 /// Width of the card: fixed, as the place card's is.
 const CARD_WIDTH: f32 = 330.0;
@@ -170,6 +172,91 @@ pub fn covers(lat: f64, lng: f64) -> bool {
     lat >= s && lat <= n && lng >= w && lng <= e
 }
 
+/// Places followed for new plans (`UserData::plans_follow`, protocol 50).
+///
+/// A notice published within `HERE_M` of one is news until it has been shown:
+/// the chip over the map says so, and the server wakes a closed phone for it
+/// (`simulator::plans_watch`). The server holds the places too; what this
+/// device has shown is its own.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct PlansFollow {
+    /// `[lat, lng]`, in the order they were followed.
+    #[serde(default)]
+    pub places: Vec<[f64; 2]>,
+    /// Notices near a followed place that were there when it was followed or
+    /// have been shown since, by id.
+    #[serde(default)]
+    pub seen: Vec<String>,
+}
+
+/// Most places one device follows; the server keeps as many.
+pub const MAX_FOLLOWS: usize = 20;
+
+/// A spot this near a followed place is that place: the ring is opened by a
+/// finger, never twice on the same metre.
+const SAME_PLACE_M: f64 = 25.0;
+
+impl PlansFollow {
+    /// The followed place at `at`, if there is one.
+    #[must_use]
+    pub fn at(&self, at: (f64, f64)) -> Option<usize> {
+        self.places
+            .iter()
+            .position(|p| metres(at, (p[0], p[1])) <= SAME_PLACE_M)
+    }
+
+    /// Follow `at`, with every notice already published near it counted as
+    /// seen; or stop following it.
+    pub fn toggle(&mut self, at: (f64, f64), feed: Option<&PlansFeed>) {
+        if let Some(i) = self.at(at) {
+            self.places.remove(i);
+            return;
+        }
+        if self.places.len() >= MAX_FOLLOWS {
+            self.places.remove(0);
+        }
+        let place = [at.0, at.1];
+        self.places.push(place);
+        if let Some(feed) = feed {
+            let near = feed.notices.iter().filter(|n| near_followed(place, n));
+            self.seen.extend(near.map(|n| n.id.clone()));
+        }
+    }
+
+    /// Notices near a followed place not shown yet, newest first: the index
+    /// in the feed and the place it is near.
+    #[must_use]
+    pub fn news(&self, feed: &PlansFeed) -> Vec<(usize, [f64; 2])> {
+        if self.places.is_empty() {
+            return Vec::new();
+        }
+        let seen: std::collections::HashSet<&str> = self.seen.iter().map(String::as_str).collect();
+        feed.notices
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !seen.contains(n.id.as_str()))
+            .filter_map(|(i, n)| {
+                self.places
+                    .iter()
+                    .find(|p| near_followed(**p, n))
+                    .map(|p| (i, *p))
+            })
+            .collect()
+    }
+
+    /// Count everything near `place` as shown, and forget shown notices the
+    /// feed no longer holds, so the list does not grow for ever.
+    pub fn mark_seen(&mut self, place: [f64; 2], feed: &PlansFeed) {
+        let near = feed.notices.iter().filter(|n| near_followed(place, n));
+        self.seen.extend(near.map(|n| n.id.clone()));
+        let ids: std::collections::HashSet<&str> =
+            feed.notices.iter().map(|n| n.id.as_str()).collect();
+        self.seen.retain(|id| ids.contains(id.as_str()));
+        self.seen.sort();
+        self.seen.dedup();
+    }
+}
+
 /// What the card shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Card {
@@ -200,6 +287,8 @@ pub struct Plans {
     /// An agent asked about notices (`mcp::world`): read the feed as if the
     /// layer were on, without drawing it on the person's map.
     pub agent_wants: bool,
+    /// Notices near a followed place not shown yet ([`PlansFollow::news`]).
+    news: Vec<(usize, [f64; 2])>,
 }
 
 impl Plans {
@@ -278,11 +367,22 @@ pub fn drive_plans(
     mut plans: ResMut<Plans>,
     dl: Res<DataLayers>,
     mut context_menu: ResMut<crate::resources::ContextMenuState>,
+    store: Res<crate::systems::user_store::UserStore>,
 ) {
+    let plans = &mut *plans;
     if let Some((lat, lng)) = context_menu.plans_here.take() {
         plans.card = Some(Card::Here { lat, lng });
     }
     let arrived = plans.inbox.lock().ok().and_then(|mut g| g.take());
+    let follow = &store.data.plans_follow;
+    if arrived.is_some() || store.is_changed() {
+        plans.news = arrived
+            .as_ref()
+            .and_then(Option::as_ref)
+            .or(plans.feed.as_deref())
+            .map(|f| follow.news(f))
+            .unwrap_or_default();
+    }
     if let Some(result) = arrived {
         plans.loading = false;
         match result {
@@ -317,10 +417,13 @@ pub fn drive_plans(
             plans.card = Some(Card::Notice(i));
         }
     }
+    // A followed place keeps the feed read, or its news would wait for the
+    // layer to be turned on.
     let wanted = dl.plans_enabled
         || plans.card.is_some()
         || plans.open_nearest.is_some()
-        || plans.agent_wants;
+        || plans.agent_wants
+        || !follow.places.is_empty();
     let stale = plans.loaded_at.is_none_or(|t| t.elapsed() >= FEED_TTL);
     let backing_off = plans.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER);
     if wanted && stale && !plans.loading && !backing_off {
@@ -337,6 +440,44 @@ pub fn drive_plans(
     }
 }
 
+/// Tell the server the places this device follows for new plans: once a
+/// connection when there are any, and whenever they change. A device that
+/// follows nothing says nothing on connecting, so it does not clear what the
+/// account follows on another device.
+pub fn send_plan_follows(
+    online: Option<Res<crate::resources::OnlineSession>>,
+    store: Res<crate::systems::user_store::UserStore>,
+    mut sent: Local<Option<Vec<[f64; 2]>>>,
+) {
+    let Some(online) = online else {
+        *sent = None;
+        return;
+    };
+    if online.is_added() {
+        *sent = None;
+    }
+    let places = &store.data.plans_follow.places;
+    let due = match &*sent {
+        None => !places.is_empty(),
+        Some(was) => was != places,
+    };
+    if due {
+        online.send(
+            "followed places",
+            cartopolis_core::NetMessage::FollowPlans {
+                places: places.clone(),
+            },
+        );
+        tracing::info!(
+            places = places.len(),
+            "followed places told to the simulator"
+        );
+    }
+    if due || sent.is_none() {
+        *sent = Some(places.clone());
+    }
+}
+
 /// Whether a notice passes the layer's filters on `today`.
 fn shown(n: &Notice, dl: &DataLayers, today: &str, since: &str) -> bool {
     let kind_on = KINDS
@@ -350,13 +491,6 @@ fn shown(n: &Notice, dl: &DataLayers, today: &str, since: &str) -> bool {
         Period::Open => n.open_on(today),
         _ => n.date.as_str() >= since,
     }
-}
-
-/// Metres between two points, near enough at city scale.
-fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let dy = (a.0 - b.0) * 111_320.0;
-    let dx = (a.1 - b.1) * 111_320.0 * a.0.to_radians().cos();
-    dx.hypot(dy)
 }
 
 /// The dots, areas and council squares over the map, and the chip saying how
@@ -782,6 +916,7 @@ pub fn render_plans_card(
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
 ) {
     let Some(card) = plans.card else {
         return;
@@ -875,6 +1010,7 @@ pub fn render_plans_card(
                         if let Some(go) = here_body(ui, feed, (lat, lng), &dl, &today, &since) {
                             next = Some(Some(go));
                         }
+                        follow_row(ui, &mut store, (lat, lng), feed);
                     }
                 }
             });
@@ -1025,6 +1161,142 @@ fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> O
     go
 }
 
+/// Under *Plans here*: follow this place for new notices, or stop. Seeing a
+/// followed place's card counts what is near it as shown.
+fn follow_row(
+    ui: &mut egui::Ui,
+    store: &mut crate::systems::user_store::UserStore,
+    at: (f64, f64),
+    feed: &PlansFeed,
+) {
+    let follow = &store.data.plans_follow;
+    let followed = follow.at(at);
+    if let Some(i) = followed {
+        let place = follow.places[i];
+        if follow.news(feed).iter().any(|(_, p)| *p == place) {
+            store.data.plans_follow.mark_seen(place, feed);
+            store.dirty = true;
+        }
+    }
+    ui.add_space(6.0);
+    let label = if followed.is_some() {
+        "Following · stop"
+    } else {
+        "Follow this place"
+    };
+    let pressed = theme::secondary_toggle(ui, icons::FLAG, label, 0.0, followed.is_some())
+        .on_hover_text(format!(
+            "Be told when something new is published within {HERE_M:.0} m, also while the app is closed"
+        ))
+        .clicked();
+    if pressed {
+        store.data.plans_follow.toggle(at, Some(feed));
+        store.dirty = true;
+    }
+    if followed.is_some() || pressed {
+        ui.label(
+            egui::RichText::new(format!(
+                "New notices within {HERE_M:.0} m are shown at the top of the map, and wake the phone app when it is closed."
+            ))
+            .size(theme::SIZE_TINY)
+            .color(theme::p().text_dim),
+        );
+    }
+}
+
+/// The chip at the top while a followed place has news: how many, and a tap
+/// opens the newest one's card. Its own `Foreground` area, as the card is.
+pub fn render_plans_news(
+    egui: EguiRef,
+    mut plans: ResMut<Plans>,
+    dl: Res<DataLayers>,
+    right_panel: Res<crate::resources::RightPanel>,
+    menu: Res<crate::systems::ui::MainMenu>,
+    driver: Res<crate::systems::driver::DriverState>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+) {
+    if plans.news.is_empty() || plans.card.is_some() || driver.active || menu.open {
+        return;
+    }
+    if !right_panel.is(crate::resources::RightPanel::None) {
+        return;
+    }
+    let Some(feed) = plans.feed.clone() else {
+        return;
+    };
+    let (first, place) = plans.news[0];
+    let Some(newest) = feed.notices.get(first) else {
+        return;
+    };
+    let count = plans.news.len();
+    // Under the layer's own chip when that is up.
+    let chip_up = dl.plans_enabled;
+    let top = crate::systems::dock::reserved_top()
+        + theme::OSD_MARGIN
+        + 52.0
+        + if chip_up { 40.0 } else { 0.0 };
+    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
+    let mut open = false;
+    egui::Area::new(egui::Id::new("plans_news"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
+        .show(egui.ctx(), |ui| {
+            let r = crate::systems::chats::glass_frame()
+                .corner_radius(egui::CornerRadius::same(14))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(icons::FLAG)
+                                .size(theme::SIZE_BODY)
+                                .color(theme::BRAND),
+                        );
+                        ui.vertical(|ui| {
+                            let head = if count == 1 {
+                                "New near a place you follow".to_string()
+                            } else {
+                                format!("{count} new near places you follow")
+                            };
+                            ui.label(
+                                egui::RichText::new(head)
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::p().cream),
+                            );
+                            let mut line = format!("{}: {}", kind_label(newest.kind), newest.title);
+                            if !newest.place.is_empty() {
+                                line.push_str(&format!(" · {}", newest.place));
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(line)
+                                        .size(theme::SIZE_TINY)
+                                        .color(theme::p().text_dim),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                });
+            let tap = ui.interact(
+                r.response.rect,
+                egui::Id::new("plans_news_tap"),
+                egui::Sense::click(),
+            );
+            let tap = theme::named(ui, tap, "New near a place you follow");
+            open = tap
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
+        });
+    if open {
+        // The newest notice's own card; everything near its place is shown.
+        store.data.plans_follow.mark_seen(place, &feed);
+        store.dirty = true;
+        plans.news.retain(|(_, p)| *p != place);
+        plans.card = Some(Card::Notice(first));
+    }
+}
+
 /// Everything published within [`HERE_M`] of a spot, open first.
 fn here_body(
     ui: &mut egui::Ui,
@@ -1148,5 +1420,55 @@ mod tests {
         // The Akerkhof and the Zwanestraat tree are ~170 m apart.
         let d = metres((53.2169, 6.5626), (53.218_354, 6.563_906));
         assert!((150.0..200.0).contains(&d), "{d}");
+    }
+
+    fn notice(id: &str, lat: f64, lng: f64) -> Notice {
+        Notice {
+            id: id.into(),
+            kind: NoticeKind::Application,
+            title: "kappen van 1 boom".into(),
+            place: "Zwanestraat 27".into(),
+            date: "2026-11-17".into(),
+            respond_until: None,
+            lat,
+            lng,
+            area: Vec::new(),
+            council: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_followed_place_has_news_only_of_what_came_after() {
+        let zwanestraat = (53.218_354, 6.563_906);
+        let mut feed = PlansFeed {
+            notices: vec![
+                notice("gmb-1", zwanestraat.0, zwanestraat.1),
+                notice("gmb-far", 53.2169, 6.5626),
+            ],
+            ..PlansFeed::default()
+        };
+        let mut follow = PlansFollow::default();
+        follow.toggle(zwanestraat, Some(&feed));
+        // What was there when it was followed is not news.
+        assert!(follow.news(&feed).is_empty());
+        // A tap a few metres off is the same place.
+        assert_eq!(follow.at((53.21837, 6.56392)), Some(0));
+
+        // A notice 40 m away is; one 170 m away is not.
+        feed.notices
+            .insert(0, notice("gmb-2", zwanestraat.0 + 0.000_36, zwanestraat.1));
+        feed.notices.insert(0, notice("gmb-3", 53.2169, 6.5626));
+        let news = follow.news(&feed);
+        assert_eq!(news, vec![(1, [zwanestraat.0, zwanestraat.1])]);
+
+        // Shown, it is not news any more, and only ids still in the feed are kept.
+        follow.seen.push("gmb-gone".into());
+        follow.mark_seen(news[0].1, &feed);
+        assert!(follow.news(&feed).is_empty());
+        assert!(!follow.seen.contains(&"gmb-gone".to_string()));
+
+        // Stopping is a second tap.
+        follow.toggle(zwanestraat, Some(&feed));
+        assert!(follow.places.is_empty());
     }
 }
