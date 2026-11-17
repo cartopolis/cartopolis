@@ -791,4 +791,27 @@ mod tests {
         let p = c.inner_point().unwrap();
         assert!(c.contains(p), "{p:?}");
     }
+
+    /// An area file stores its rung as the rung's place in `Rung`, so a rung
+    /// inserted anywhere but the end moves every file written before it. That
+    /// happened on 2026-11-01: eight rungs above the world went in at the top,
+    /// and the published CBS, SES, PBL and WLO files were read four rungs too
+    /// coarse — a buurt as a world region, a gemeente as a body of the solar
+    /// system — until they were written again on 2026-11-17. `Rung`'s order
+    /// is its meaning (coarsest first), so a new rung cannot simply go at the
+    /// end: change this test only together with every published file
+    /// (`atlas areas`), and bump `AREA_FORMAT` so a client never reads one
+    /// numbering as the other.
+    #[test]
+    fn a_stored_rung_keeps_its_number() {
+        let at = |r: Rung| postcard::to_allocvec(&r).unwrap();
+        assert_eq!(at(Rung::Universe), [0]);
+        assert_eq!(at(Rung::World), [8]);
+        assert_eq!(at(Rung::Country), [10]);
+        assert_eq!(at(Rung::Province), [11]);
+        assert_eq!(at(Rung::Municipality), [12]);
+        assert_eq!(at(Rung::District), [13]);
+        assert_eq!(at(Rung::Neighbourhood), [14]);
+        assert_eq!(at(Rung::Street), [15]);
+    }
 }

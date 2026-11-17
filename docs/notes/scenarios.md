@@ -1,7 +1,7 @@
 ---
 topic: scenarios
-triggers: [crates/scenario, cartopolis_scenario, scenario.rs, official_areas.rs, xlsx.rs, ladder.rs, cbs-2024.toml, ses-2023.toml, pbl-2050.toml, wlo-2060.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024", SES-WOA, statusscores, "regionale prognose", WLO, COROP, "change_since", "field_at"]
-updated: 2026-11-01
+triggers: [crates/scenario, lens_areas.rs, lens_areas.wesl, LensAreaMaterial, cartopolis_scenario, scenario.rs, official_areas.rs, xlsx.rs, ladder.rs, cbs-2024.toml, ses-2023.toml, pbl-2050.toml, wlo-2060.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024", SES-WOA, statusscores, "regionale prognose", WLO, COROP, "change_since", "field_at"]
+updated: 2026-11-17
 ---
 
 # Scenarios: generic layers on a ladder of places
@@ -184,13 +184,47 @@ before the chrome**, so a band picked on the scale reaches the map a frame
 later, and the chrome asks for that frame itself. A finger has no hover: on
 a phone the crosshair is the pointer.
 
-## Drawn as an overlay, culled by a box
+## Drawn by the GPU, a texel an area
 
-`systems::scenario` paints the layer as egui shapes projected through
-`place_pins::place_delta`, so the flat map and the globe agree. Areas whose
-box lies outside a box of four camera heights round the camera are skipped
-(at a buurt's height that leaves hundreds of 14,574); triangles are made once
-per area (earcut, in degrees) and dropped wholesale past 6,000.
+Until 2026-11-17 `systems::scenario` painted the areas as egui shapes: every
+frame, every area in a box round the camera projected vertex by vertex through
+`place_pins::place_delta`, its outline a second time, and all of it
+tessellated by egui on the main thread. The person steering reported the app
+slow with a lens on, and it was: measured on mac-1 (M5 Pro VM, dev profile,
+1280×720, `CARTO_SCENARIO=cbs-2024/share_65_plus`, the session's scratch
+`--perf` manifest), Groningen from 12 km ran at **6.1 fps** settled and 5.6 fps
+turning, and the whole country from 120 km at 9.4 fps.
+
+`systems::lens_areas` meshes each board **once per frame of reference** on a
+worker — laid where `place_delta` puts a point, on the flat map's curve below
+the space tier and on the sphere above it, cut into about 6×6 chunks so the GPU
+culls — and draws it with `LensAreaMaterial` (`shaders/lens_areas.wesl`): every
+vertex names its area's texel, so a played year, a switched figure or a
+singled band rewrites one texel an area and nothing else moves. Edges are a
+line list on the same material, each border once, the ink one texel past the
+areas. Same runs after: **84.5 fps** settled and 41 fps turning (that window
+still streaming tiles) at 12 km, 60 and 62 fps at 120 km. Meshing the buurt
+board took a worker 453 ms once.
+
+The material draws with the depth test off, over the map as the overlay did,
+and drops in its shader what the camera cannot see past the horizon (the
+`place_delta` test, 200 m margin), so the far side of the globe does not show
+through. The board is laid on the Earth's curve, not on the relief. The
+pointer's area is found by casting the pointer onto the ground and asking the
+board (`area_at`), not by hit-testing triangles; the outline of the area being
+read and its card are still egui, one area's worth.
+
+## A rung is stored as a number
+
+An area file stores its rung as its place in `Rung`. The zoom rail put eight
+rungs above the world on 2026-11-01, after the CBS files were written and
+before the others were deployed with it, so every lens file was read four
+rungs too coarse — a buurt as a "world region", and "This place" compared with
+no town or country, because no board stood on `Municipality`. Found
+2026-11-17; every lens set was written again on the host that day
+(`atlas areas … --out` a staging directory, then moved in;
+`areas.bak-20261117` holds the old ones). `board::a_stored_rung_keeps_its_number`
+pins the numbering now.
 
 ## Tracks, against the drone sheet
 
