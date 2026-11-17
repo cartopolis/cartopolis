@@ -178,6 +178,10 @@ pub struct CrowdBody {
     /// The scale this body rides the bike at: the bike, and the [`Ride`]
     /// points it was posed onto, scaled to its legs.
     pub bike_scale: f32,
+    /// When the riding poses are followed by one more — stopped, the left
+    /// foot on the ground ([`stop_pose`]) — how far the bike leans toward
+    /// that foot for it to reach, radians (its top toward `+x`).
+    pub ride_stop: Option<f32>,
     /// Metres walked in one cycle of the captured walk, on this body.
     pub stride: f32,
     /// Top of the head above the soles, metres.
@@ -219,14 +223,18 @@ pub fn crowd_body(
 
     let mut poses = poses(model, walk_poses);
     let walk_poses = poses.len() - 1;
-    let (ride_poses, bike_scale) = match ride {
+    let (ride_poses, bike_scale, ride_stop) = match ride {
         Some(ride) => {
-            let (riding, scale) = ride_poses(model, ride, &poses[walk_poses]);
+            let (riding, scale, stop) = ride_poses(model, ride, &poses[walk_poses]);
             let n = riding.len();
             poses.extend(riding);
-            (n, scale)
+            let lean = stop.map(|(pose, lean)| {
+                poses.push(pose);
+                lean
+            });
+            (n, scale, lean)
         }
-        None => (0, 1.0),
+        None => (0, 1.0, None),
     };
     let wave = model.clips.iter().find(|c| c.name == "wave");
     let wave_poses = if wave.is_some() { wave_poses } else { 0 };
@@ -245,8 +253,9 @@ pub fn crowd_body(
         })
         .collect();
     let turns = head_shares(model);
-    // Every level walks, stands and rides; the wave follows on the finest.
-    let shared = walk_poses + 1 + ride_poses;
+    // Every level walks, stands and rides (and stops); the wave follows on
+    // the finest.
+    let shared = walk_poses + 1 + ride_poses + usize::from(ride_stop.is_some());
     let levels = levels
         .into_iter()
         .enumerate()
@@ -301,6 +310,7 @@ pub fn crowd_body(
         walk_poses,
         ride_poses,
         bike_scale,
+        ride_stop,
         stride,
         height: model.height,
         pivots,
@@ -344,7 +354,9 @@ const ARM_ON_BARS: f32 = 0.9;
 const WRIST_FROM_GRIP: Vec3 = Vec3::new(0.0, 0.025, -0.06);
 
 /// `ride.poses` poses of `model` riding a bike scaled to its legs, from its
-/// standing pose `standing`; and that scale.
+/// standing pose `standing`; that scale; and, if it can reach the road,
+/// the rider stopped with a foot down and the lean that takes
+/// ([`foot_down`]).
 ///
 /// No capture of anybody cycling is in the pack, and none is needed: a rider
 /// is the standing person put on the saddle, the trunk leaned to the bars, and
@@ -353,7 +365,11 @@ const WRIST_FROM_GRIP: Vec3 = Vec3::new(0.0, 0.025, -0.06);
 /// reach the phone in the hand uses (`reach`). The bike is scaled so the leg
 /// is [`LEG_AT_BOTTOM`] straight at the bottom of the stroke, as a saddle set
 /// to the rider leaves it.
-fn ride_poses(model: &HumanModel, ride: &Ride, standing: &Pose) -> (Vec<Pose>, f32) {
+fn ride_poses(
+    model: &HumanModel,
+    ride: &Ride,
+    standing: &Pose,
+) -> (Vec<Pose>, f32, Option<(Pose, f32)>) {
     let n = ride.poses.max(1);
     let names = [
         "pelvis",
@@ -381,7 +397,7 @@ fn ride_poses(model: &HumanModel, ride: &Ride, standing: &Pose) -> (Vec<Pose>, f
         .collect::<Option<Vec<usize>>>()
     else {
         // A rig without the bones to ride with: it stands, on every pose.
-        return ((0..n).map(|_| standing.clone()).collect(), 1.0);
+        return ((0..n).map(|_| standing.clone()).collect(), 1.0, None);
     };
     let [pelvis, thigh_l, calf_l, foot_l, thigh_r, calf_r, foot_r, ball_r, spine_1, spine_2, spine_3, neck, upper_l, lower_l, hand_l, upper_r, lower_r, hand_r] =
         j[..]
@@ -464,16 +480,16 @@ fn ride_poses(model: &HumanModel, ride: &Ride, standing: &Pose) -> (Vec<Pose>, f
         .unwrap_or(0.0);
     lean(&mut seated, best);
 
-    let poses = (0..n)
-        .map(|k| {
-            let turn = k as f32 / n as f32 * std::f32::consts::TAU;
-            let mut pose = seated.clone();
+    let limbs = |mut pose: Pose, turn: f32, left_too: bool| {
+        {
             // Each foot onto its pedal: the right at `turn`, the left half a
             // turn on, knees forward and a little out.
-            for (side, thigh, calf, foot, turn) in [
+            let feet = [
                 (1.0f32, thigh_r, calf_r, foot_r, turn),
                 (-1.0, thigh_l, calf_l, foot_l, turn + std::f32::consts::PI),
-            ] {
+            ];
+            for (side, thigh, calf, foot, turn) in feet.into_iter().take(1 + usize::from(left_too))
+            {
                 // The rig's `_r` is the body's right, at `-x` (MakeHuman faces
                 // `+z` with its left at `+x`).
                 let x = -side;
@@ -511,10 +527,112 @@ fn ride_poses(model: &HumanModel, ride: &Ride, standing: &Pose) -> (Vec<Pose>, f
                 turn_world(model, &mut pose, upper, r.upper);
                 turn_world(model, &mut pose, lower, r.lower);
             }
-            pose
+        }
+        pose
+    };
+    let poses = (0..n)
+        .map(|k| {
+            limbs(
+                seated.clone(),
+                k as f32 / n as f32 * std::f32::consts::TAU,
+                true,
+            )
         })
         .collect();
-    (poses, s)
+
+    // Stopped: slid forward off the saddle and down onto the frame, the right
+    // pedal up and forward to push off from, the hands still on the grips —
+    // and the left foot down ([`foot_down`]).
+    let mut slid = seated.clone();
+    let slid_to = pelvis_to + Vec3::new(0.0, -STOP_DROP_M, STOP_SLIDE_M) * s;
+    let local = match model.joints[pelvis].parent {
+        Some(p) => base[p].1.inverse() * (slid_to - base[p].0),
+        None => slid_to,
+    };
+    slid.pelvis = Some((pelvis, local));
+    let slid = limbs(slid, std::f32::consts::FRAC_PI_4, false);
+    let stop = foot_down(model, ride, s, &slid, standing);
+    (poses, s, stop)
+}
+
+/// How far a stopped rider slides forward off the saddle, and down onto the
+/// frame, metres at the bike's scale 1.
+const STOP_SLIDE_M: f32 = 0.15;
+const STOP_DROP_M: f32 = 0.08;
+
+/// How straight the leg reaching for the road at a stop is.
+const LEG_TO_GROUND: f32 = 0.97;
+/// How far out past its pedal the foot goes down, and how far forward of
+/// the crank axle, metres at the bike's scale 1.
+const FOOT_DOWN_OUT_M: f32 = 0.2;
+const FOOT_DOWN_FORWARD_M: f32 = 0.05;
+/// The most a stopped bike leans toward the foot on the ground, radians.
+const MAX_STOP_LEAN: f32 = 0.4;
+
+/// `slid` — a rider stopped, slid forward off the saddle, hands on the
+/// grips and the right foot on its pedal — with the left foot put down on
+/// the road beside the bike, which leans toward it just far enough for the
+/// leg to reach at [`LEG_TO_GROUND`] straight. The pose, and that lean (the
+/// bike's top toward `+x`, the rider's left); `None` for a rig without the
+/// bones, or a rider who could not reach the road within [`MAX_STOP_LEAN`].
+///
+/// In the bike's own frame the road rises toward the side the bike leans
+/// to — `y = x · tan(lean)` — so the foot is solved onto that, and turned
+/// to lie flat on it.
+fn foot_down(
+    model: &HumanModel,
+    ride: &Ride,
+    s: f32,
+    slid: &Pose,
+    standing: &Pose,
+) -> Option<(Pose, f32)> {
+    let thigh = model.joint("thigh_l")?;
+    let calf = model.joint("calf_l")?;
+    let foot = model.joint("foot_l")?;
+    let base = fk(model, standing);
+    let leg = base[thigh].0.distance(base[calf].0) + base[calf].0.distance(base[foot].0);
+    // The ankle's height over the sole, standing.
+    let ankle = base[foot].0.y.max(0.0);
+    let w = fk(model, slid);
+    let hip = w[thigh].0;
+    let x = (ride.pedal_x + FOOT_DOWN_OUT_M) * s;
+    let z = (ride.bottom_bracket.z + FOOT_DOWN_FORWARD_M) * s;
+    let target = |lean: f32| Vec3::new(x, x * lean.tan() + ankle, z);
+    let reaches = |lean: f32| hip.distance(target(lean)) <= LEG_TO_GROUND * leg;
+    if !reaches(MAX_STOP_LEAN) {
+        return None;
+    }
+    let lean = if reaches(0.0) {
+        0.0
+    } else {
+        let (mut lo, mut hi) = (0.0f32, MAX_STOP_LEAN);
+        for _ in 0..24 {
+            let mid = 0.5 * (lo + hi);
+            if reaches(mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi
+    };
+    let mut pose = slid.clone();
+    let r = crate::reach::reach(
+        &crate::reach::Arm {
+            shoulder: w[thigh].0,
+            elbow: w[calf].0,
+            wrist: w[foot].0,
+        },
+        target(lean),
+        Vec3::new(0.4, 0.2, 1.0),
+    );
+    turn_world(model, &mut pose, thigh, r.upper);
+    turn_world(model, &mut pose, calf, r.lower);
+    // Flat on the road, which in the bike's frame is turned by the lean.
+    let w = fk(model, &pose);
+    let want = Quat::from_rotation_z(lean) * base[foot].1;
+    turn_world(model, &mut pose, foot, want * w[foot].1.inverse());
+    Some((pose, lean))
 }
 
 /// Every joint's position and rotation relative to the model in `pose`.
@@ -1540,8 +1658,43 @@ mod tests {
         let m = woman(&pack);
         let bike = city_bike();
         let walk = poses(&m, 16);
-        let (riding, s) = ride_poses(&m, &bike, &walk[16]);
+        let (riding, s, stop) = ride_poses(&m, &bike, &walk[16]);
         eprintln!("bike scale {s:.3} for a {:.2} m rider", m.height);
+        // Stopped, her left foot is on the road — which, in the bike's frame,
+        // rises toward the side the bike leans to — out beside the pedal, and
+        // the bike leans a little for her to reach it; her right foot is still
+        // on its pedal and her hands on the grips.
+        let (stopped, lean) = stop.expect("she can put a foot down");
+        eprintln!("stopped, the bike leans {:.1}°", lean.to_degrees());
+        assert!((0.0..0.3).contains(&lean), "lean {lean}");
+        {
+            let j = |n: &str| m.joint(n).expect(n);
+            let w = fk(&m, &stopped);
+            let ankle = fk(&m, &walk[16])[j("foot_l")].0.y;
+            let foot = w[j("foot_l")].0;
+            let road = foot.x * lean.tan();
+            assert!(
+                (foot.y - ankle - road).abs() < 0.03,
+                "left ankle {foot:?} over the road at {road:.3}"
+            );
+            assert!(
+                foot.x > (bike.pedal_x + 0.1) * s,
+                "beside the bike: {foot:?}"
+            );
+            for (hand, x) in [("hand_r", -1.0), ("hand_l", 1.0)] {
+                let want =
+                    Vec3::new(x * bike.grip.x, bike.grip.y, bike.grip.z) * s + WRIST_FROM_GRIP;
+                assert!(w[j(hand)].0.distance(want) < 0.04, "{hand} on its grip");
+            }
+            let turn = std::f32::consts::FRAC_PI_4;
+            let pedal = bike.bottom_bracket * s
+                + Vec3::X * (-bike.pedal_x * s)
+                + pedal_at(turn, bike.crank * s);
+            assert!(
+                w[j("foot_r")].0.distance(pedal) < 0.15,
+                "right foot at its pedal"
+            );
+        }
         assert_eq!(riding.len(), 8);
         assert!((0.7..1.1).contains(&s), "bike scale {s}");
         let j = |n: &str| m.joint(n).expect(n);
@@ -1611,23 +1764,34 @@ mod tests {
         let body = crowd_body(&m, &paint, &[600], 16, Some(&bike), 0);
         assert_eq!(body.ride_poses, 8);
         assert!((body.bike_scale - s).abs() < 1e-4);
+        assert_eq!(body.ride_stop, Some(lean));
         let level = &body.levels[0];
-        assert_eq!(level.positions.len(), 16 + 1 + 8);
-        for (p, pose) in level.positions[17..].iter().enumerate() {
+        assert_eq!(level.positions.len(), 16 + 1 + 8 + 1);
+        for (p, pose) in level.positions[17..25].iter().enumerate() {
             let low = pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
             assert!(low > 0.02, "riding pose {p}: lowest point {low:.3} m");
         }
+        // Stopped, the lowest point is the sole on the road (which the lean
+        // tilts in the bike's frame), not under it.
+        let low = level.positions[25]
+            .iter()
+            .map(|v| v[1] - v[0] * lean.tan())
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            low.abs() < 0.06,
+            "stopped: lowest point {low:.3} m off the road"
+        );
 
-        // Riding and waving together: every level walks, stands and rides,
-        // the finest then waves, and every pose has its head pivot — the
-        // layout the client's materials index (`cycle`).
+        // Riding and waving together: every level walks, stands, rides and
+        // stops, the finest then waves, and every pose has its head pivot —
+        // the layout the client's materials index (`cycle`).
         let both = crowd_body(&m, &paint, &[3000, 600], 16, Some(&bike), 10);
-        assert_eq!(both.levels[0].positions.len(), 16 + 1 + 8 + 10);
-        assert_eq!(both.levels[1].positions.len(), 16 + 1 + 8);
-        assert_eq!(both.pivots.len(), 16 + 1 + 8 + 10);
+        assert_eq!(both.levels[0].positions.len(), 16 + 1 + 8 + 1 + 10);
+        assert_eq!(both.levels[1].positions.len(), 16 + 1 + 8 + 1);
+        assert_eq!(both.pivots.len(), 16 + 1 + 8 + 1 + 10);
         // The wave's first pose stands where the stand does, near enough:
         // it is what the shader blends out of standing into.
-        let (stand, wave0) = (&both.levels[0].positions[16], &both.levels[0].positions[25]);
+        let (stand, wave0) = (&both.levels[0].positions[16], &both.levels[0].positions[26]);
         let feet = |pose: &Vec<[f32; 3]>| pose.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
         assert!(feet(wave0).abs() < 0.08 && feet(stand).abs() < 0.08);
     }

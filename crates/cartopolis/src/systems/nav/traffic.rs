@@ -981,6 +981,9 @@ pub struct Car {
     /// Where it last crossed, so it does not turn round at the far kerb and
     /// cross the same stripes back.
     last_cross: Option<Vec2>,
+    /// How far a rider held still has put its foot down, 0 … 1
+    /// ([`foot_down`]).
+    foot_down: f32,
 }
 
 /// A walker crossing the street it walks beside, at a zebra or at a light:
@@ -1387,6 +1390,7 @@ pub fn setup_traffic(
             defiant: kind == AgentKind::Fatbike && r(15) < FATBIKE_DEFIANT_SHARE,
             crossing: None,
             last_cross: None,
+            foot_down: 0.0,
         }
     };
 
@@ -2619,6 +2623,7 @@ pub fn drive_traffic(
                     car.react.reset();
                     car.crossing = None;
                     car.last_cross = None;
+                    car.foot_down = 0.0;
                     shift_to = 0.0;
                     accel_now = 0.0;
                     held = false;
@@ -2858,12 +2863,20 @@ pub fn drive_traffic(
                 // Into the turn, as far as the turn asks — the opposite way to a
                 // car body's roll.
                 car.tilt.y = bike_lean(car.tilt.y, car.speed * yaw_rate, dt);
-                tf.rotation *= Quat::from_rotation_z(car.tilt.y);
+                let body = dressed
+                    .as_ref()
+                    .and_then(|(figure, ..)| crowd.body(figure.body(&crowd)));
+                // Held at a light or in a queue, the rider puts a foot down and
+                // the bike leans onto it; moving off, the foot comes back up.
+                let stop_lean = body.and_then(|b| b.stop_lean);
+                car.foot_down = foot_down(car.foot_down, held && stop_lean.is_some(), dt);
+                let leaning = stop_lean.unwrap_or(0.0) * car.foot_down;
+                tf.rotation *= Quat::from_rotation_z(car.tilt.y - leaning);
                 let Some((mut figure, mut mesh, mut material, mut tag)) = dressed else {
                     vis.set_if_neq(Visibility::Hidden);
                     continue;
                 };
-                let Some(body) = crowd.body(figure.body(&crowd)) else {
+                let Some(body) = body else {
                     vis.set_if_neq(Visibility::Hidden);
                     continue;
                 };
@@ -2876,7 +2889,11 @@ pub fn drive_traffic(
                 // corner or a light, the rider stops pedalling and coasts.
                 let ride_scale = scale * tf.scale.y;
                 let fat = kind == AgentKind::Fatbike;
-                if fat {
+                if car.foot_down > 0.0 {
+                    // The right pedal back up and forward, where the stopped
+                    // pose has the foot, ready to push off.
+                    car.phase = toward_angle(car.phase, STOP_CRANK, 4.0 * dt);
+                } else if fat {
                     // The motor does the work: the feet rest on level cranks.
                     car.phase = std::f32::consts::FRAC_PI_2;
                 } else if accel_now > -0.3 && !held {
@@ -2908,10 +2925,13 @@ pub fn drive_traffic(
                     figure.near = near;
                     (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
                 }
+                // The foot goes down by blending into the riders' "standing"
+                // pose, which is the stopped one (`crowd::upload`).
+                let f = car.foot_down;
                 let t = crowd::tag(
                     crowd::BodyPose::Walk {
                         phase: car.phase,
-                        standing: 0.0,
+                        standing: f * f * (3.0 - 2.0 * f),
                     },
                     0.0,
                     &figure,
@@ -3070,6 +3090,33 @@ fn bike_lean(lean: f32, lateral: f32, dt: f32) -> f32 {
         return lean;
     }
     lean + (target - lean) * (1.0 - (-dt / TILT_TAU).exp())
+}
+
+/// Where the right crank points in a stopped rider's pose, radians from the
+/// top, forward: an eighth of a turn, where `cartopolis_human::crowd` bakes
+/// the stopped pose's right foot.
+const STOP_CRANK: f32 = std::f32::consts::FRAC_PI_4;
+/// Seconds for a held rider's foot to go down, and to come back up.
+const FOOT_DOWN_S: f32 = 0.7;
+const FOOT_UP_S: f32 = 0.35;
+
+/// Ease how far a rider's foot is down (0 riding … 1 on the road) toward
+/// down while `held`, up otherwise: slowly down, so a moment's check at a
+/// corner does not put it out, and quickly up as the bike moves off.
+fn foot_down(now: f32, held: bool, dt: f32) -> f32 {
+    if held {
+        (now + dt / FOOT_DOWN_S).min(1.0)
+    } else {
+        (now - dt / FOOT_UP_S).max(0.0)
+    }
+}
+
+/// Turn the angle `from` toward `to` by at most `step`, the short way round,
+/// in `0..TAU`.
+fn toward_angle(from: f32, to: f32, step: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let d = (to - from + PI).rem_euclid(TAU) - PI;
+    (from + d.clamp(-step, step)).rem_euclid(TAU)
 }
 
 /// Whether a car's brake lamps are lit: while it slows harder than it would
@@ -4167,6 +4214,7 @@ mod tests {
             defiant: false,
             crossing: None,
             last_cross: None,
+            foot_down: 0.0,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -4197,6 +4245,7 @@ mod tests {
             defiant: false,
             crossing: None,
             last_cross: None,
+            foot_down: 0.0,
         }
     }
 
@@ -4414,6 +4463,7 @@ mod crossing_tests {
             defiant: false,
             crossing: None,
             last_cross: None,
+            foot_down: 0.0,
         }
     }
 
@@ -4471,5 +4521,42 @@ mod crossing_tests {
         out.clear();
         closing_walkers(&grid, 0, me, Vec2::ZERO, &mut out);
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rider_tests {
+    use super::*;
+
+    /// A held rider's foot goes down over most of a second and comes back
+    /// up in about a third of one; a moment's hold barely moves it.
+    #[test]
+    fn a_held_rider_puts_a_foot_down_and_picks_it_up() {
+        let mut f = 0.0;
+        for _ in 0..10 {
+            f = foot_down(f, true, 0.02);
+        }
+        assert!(f < 0.35, "a fifth of a second held: {f}");
+        for _ in 0..40 {
+            f = foot_down(f, true, 0.02);
+        }
+        assert_eq!(f, 1.0);
+        for _ in 0..18 {
+            f = foot_down(f, false, 0.02);
+        }
+        assert_eq!(f, 0.0);
+    }
+
+    /// The cranks come round to the stopped pose's pedal the short way.
+    #[test]
+    fn the_cranks_come_round_the_short_way() {
+        use std::f32::consts::TAU;
+        let a = toward_angle(TAU - 0.1, 0.2, 0.05);
+        assert!((a - (TAU - 0.05)).abs() < 1e-5, "{a}");
+        let mut a = 3.0;
+        for _ in 0..100 {
+            a = toward_angle(a, STOP_CRANK, 0.1);
+        }
+        assert!((a - STOP_CRANK).abs() < 1e-5);
     }
 }

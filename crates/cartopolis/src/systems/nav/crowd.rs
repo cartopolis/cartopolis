@@ -151,6 +151,12 @@ pub struct CrowdBodyGpu {
     /// The scale this body rides the bike at, fitted to its legs
     /// (`cartopolis_human::crowd::CrowdBody::bike_scale`).
     pub bike_scale: f32,
+    /// How far the bike leans toward the rider's left foot when it stops
+    /// with that foot down (`CrowdBody::ride_stop`), radians; `None` when
+    /// the body has no such pose and a stopped rider stays balanced. The
+    /// riding material's "standing" pose is that one, so a rider's
+    /// `standing` blend puts the foot down.
+    pub stop_lean: Option<f32>,
     /// Metres walked in one walk cycle at scale 1.
     pub stride: f32,
     /// Seconds the baked wave lasts; 0 when the body has none.
@@ -531,8 +537,16 @@ fn upload(
             // played from a different first one. Only the walking one waves
             // (a rider never does); its wave follows the ride.
             let waves = level.wave_poses as u32;
-            let wave_first = (standing + 1 + body.ride_poses) as u32;
-            let mut playing = |cycle_poses: usize, first: usize, waves: u32| {
+            let stops = usize::from(body.ride_stop.is_some());
+            let wave_first = (standing + 1 + body.ride_poses + stops) as u32;
+            // A rider "stands" in the stopped pose, foot down, when there is
+            // one; a walker in the standing pose.
+            let rider_stands = if stops > 0 {
+                standing + 1 + body.ride_poses
+            } else {
+                standing
+            };
+            let mut playing = |cycle_poses: usize, first: usize, stands: usize, waves: u32| {
                 materials.add(CrowdMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
@@ -547,7 +561,7 @@ fn upload(
                             POSE_TEXTURE_WIDTH,
                             waves,
                         ),
-                        cycle: UVec4::new(first as u32, standing as u32, wave_first, 0),
+                        cycle: UVec4::new(first as u32, stands as u32, wave_first, 0),
                         tops: palette(COAT_COLOURS),
                         bottoms: palette(TROUSER_COLOURS),
                         pivots,
@@ -555,9 +569,9 @@ fn upload(
                     },
                 })
             };
-            let walking = playing(body.walk_poses, 0, waves);
+            let walking = playing(body.walk_poses, 0, standing, waves);
             let riding = if body.ride_poses > 0 {
-                playing(body.ride_poses, standing + 1, 0)
+                playing(body.ride_poses, standing + 1, rider_stands, 0)
             } else {
                 walking.clone()
             };
@@ -569,6 +583,7 @@ fn upload(
         levels,
         riders,
         bike_scale: body.bike_scale,
+        stop_lean: body.ride_stop,
         stride: body.stride,
         wave_secs: if body.levels.first().is_some_and(|l| l.wave_poses > 1) {
             body.wave_secs
