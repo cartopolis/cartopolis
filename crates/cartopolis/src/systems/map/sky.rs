@@ -433,12 +433,15 @@ pub(crate) fn night_vision_grading(hours: f32, decl_rad: f32) -> bevy::render::v
     grading
 }
 
-/// Fraction of the direct beam a full overcast takes away.
+/// Fraction of the direct beam a full cover of **high** cloud takes away.
 ///
-/// A stratus deck does not thin the sun, it *replaces* it: at full cover there is
-/// no beam and no shadow left, only a sky-wide light source. At the old 0.72 the
-/// sun still carried 28 % of a noon beam through a solid deck — a directional key
-/// light under a sky that by construction has no direction.
+/// A low or middle deck does not thin the sun, it *replaces* it: at full cover
+/// there is no beam and no shadow left, only a sky-wide light source — and that
+/// part of the cover takes all of the beam ([`overcast_lighting`]). This is
+/// what is left for the cover the live weather reports as high cloud only, and
+/// it is the old single cut: from 2026-11-11 to 2026-11-17 it was applied to
+/// every cloud, so a closed grey deck over Groningen (MET: 100 % low cloud) still
+/// threw sharp shadows at 8 % of the beam.
 pub(crate) const OVERCAST_BEAM_CUT: f32 = 0.92;
 /// Illuminance (lux) the deck itself contributes at full overcast, on top of the
 /// clear-sky ambient.
@@ -451,11 +454,14 @@ pub(crate) const OVERCAST_BEAM_CUT: f32 = 0.92;
 /// shadowless, and bright. There is a test for that ordering, because it is the
 /// one that makes a grey day read as a grey day rather than as a dim sunny one.
 ///
-/// 12 klux against the ~7 klux of beam left puts a full overcast at ~20 klux of
-/// ground illuminance, about two thirds of it diffuse. Real overcast daylight is
-/// 15–25 klux and effectively all diffuse; the beam that survives here is the
-/// price of `cloud_cover` being one scalar for every kind of cloud there is.
+/// 12 klux, with [`DECK_FILL`] for a deck, puts a full overcast at ~20 klux of
+/// ground illuminance, all of it diffuse; real overcast daylight is 15–25 klux
+/// and effectively all diffuse.
 pub(crate) const OVERCAST_SKY_FILL: f32 = 12_000.0;
+/// What a low or middle deck adds to [`OVERCAST_SKY_FILL`]: the ~7 klux of noon
+/// beam that the high-cloud cut ([`OVERCAST_BEAM_CUT`]) would have left, which a
+/// deck scatters into the sky instead of letting through.
+pub(crate) const DECK_FILL: f32 = 7_000.0;
 
 /// How saturated the sun's *light* colour is (1 = full transmittance colour,
 /// 0 = white). Kept well below 1 because the built-in atmosphere already reddens
@@ -686,6 +692,15 @@ pub(crate) fn overcast(dev: &DevPanelState) -> f32 {
     dev.cloud_cover.max(dev.precipitation * 0.9).clamp(0.0, 1.0)
 }
 
+/// How much of the sky is a deck the sun cannot shine through, 0 to
+/// [`overcast`]: the cover less what is high cloud only, and rain, which falls
+/// from a deck.
+pub(crate) fn deck(dev: &DevPanelState) -> f32 {
+    (dev.cloud_cover - dev.cloud_high)
+        .max(dev.precipitation * 0.9)
+        .clamp(0.0, overcast(dev))
+}
+
 /// How a cloud deck redistributes the ground's light: what is left of the direct
 /// beam, and the diffuse fill that replaces what it took.
 ///
@@ -696,10 +711,15 @@ pub(crate) fn overcast(dev: &DevPanelState) -> f32 {
 /// and left an exposure lift to pay for a three-stop hole with 0.4 of a stop
 /// (there is no lift now: the comment by `NIGHT_EXPOSURE_LIFT` says why). An overcast day is not a dim day, it is a day whose light arrives from
 /// the whole sky instead of from one direction.
-pub(crate) fn overcast_lighting(overcast: f32) -> (f32, f32) {
+///
+/// `deck` is the part of `overcast` that is a low or middle deck ([`deck`]):
+/// it takes all of the beam, so a closed deck leaves no sun and no shadow; the
+/// rest, high cloud, takes [`OVERCAST_BEAM_CUT`] of it.
+pub(crate) fn overcast_lighting(overcast: f32, deck: f32) -> (f32, f32) {
+    let deck = deck.clamp(0.0, overcast);
     (
-        1.0 - OVERCAST_BEAM_CUT * overcast,
-        OVERCAST_SKY_FILL * overcast,
+        (1.0 - deck - OVERCAST_BEAM_CUT * (overcast - deck)).max(0.0),
+        OVERCAST_SKY_FILL * overcast + DECK_FILL * deck,
     )
 }
 
@@ -1043,6 +1063,7 @@ pub(crate) fn apply_day_night_cycle(
     // out. Ground tier only (space has its own lighting model, and the planet
     // cloud sphere shades the globe there), so it fades out with `space`.
     let overcast = overcast(&dev) * (1.0 - space);
+    let deck = deck(&dev) * (1.0 - space);
 
     // Adapt exposure to the light level (eye/camera adaptation): brighten toward
     // twilight and night by up to NIGHT_EXPOSURE_LIFT stops so dusk and the lit city
@@ -1102,7 +1123,7 @@ pub(crate) fn apply_day_night_cycle(
             .lerp(LinearRgba::WHITE.to_vec4(), space),
     ));
     let mut illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
-    let (beam_factor, sky_fill) = overcast_lighting(overcast);
+    let (beam_factor, sky_fill) = overcast_lighting(overcast, deck);
     if overcast > 0.0 {
         // Cloud replaces the direct beam with sky (`overcast_lighting`) and greys
         // what is left of its colour toward the sky's.
@@ -1225,7 +1246,7 @@ pub(crate) fn dim_sky_reflections_under_cloud(
         return;
     };
     let space = globe.space_factor(cell, tf);
-    let (beam, _) = overcast_lighting(overcast(&dev) * (1.0 - space));
+    let (beam, _) = overcast_lighting(overcast(&dev) * (1.0 - space), deck(&dev) * (1.0 - space));
     if (env.intensity - beam).abs() > 1e-3 {
         env.intensity = beam;
     }
@@ -2544,8 +2565,13 @@ mod overcast_tests {
     /// it added 1.4, the sky staying on under the fill
     /// (`dim_sky_reflections_under_cloud`).
     fn ground_lux(overcast: f32) -> f32 {
+        ground_lux_under(overcast, overcast)
+    }
+
+    /// [`ground_lux`] with the deck named apart from the cover.
+    fn ground_lux_under(overcast: f32, deck: f32) -> f32 {
         let (hours, decl) = (12.0, 0.0);
-        let (beam, fill) = overcast_lighting(overcast);
+        let (beam, fill) = overcast_lighting(overcast, deck);
         let (_, lux) = sun_light(hours, decl, 0.0);
         let day = utils::sun::daylight(hours, decl);
         lux * beam + ambient_light(hours, 0.0, decl, false).brightness
@@ -2557,7 +2583,7 @@ mod overcast_tests {
     /// coverage, so zero coverage is the old scene exactly.
     #[test]
     fn a_clear_sky_is_not_an_overcast_one_with_the_knobs_at_zero() {
-        assert_eq!(overcast_lighting(0.0), (1.0, 0.0));
+        assert_eq!(overcast_lighting(0.0, 0.0), (1.0, 0.0));
         assert_eq!(cloud_sky_floor(0.0), CLOUD_SKY_FLOOR_SCATTERED);
     }
 
@@ -2580,7 +2606,7 @@ mod overcast_tests {
     #[test]
     fn a_full_overcast_is_lit_by_the_sky_rather_than_by_the_sun() {
         let (hours, decl) = (12.0, 0.0);
-        let (beam, fill) = overcast_lighting(1.0);
+        let (beam, fill) = overcast_lighting(1.0, 1.0);
         let (_, lux) = sun_light(hours, decl, 0.0);
         let diffuse = ambient_light(hours, 0.0, decl, false).brightness
             - clear_sky_ambient(hours, decl, false) * (1.0 - beam)
@@ -2590,6 +2616,50 @@ mod overcast_tests {
             "the deck should out-light the beam it replaced: sky {diffuse}, sun {}",
             lux * beam
         );
+    }
+
+    /// A closed deck takes the whole beam: no sun and so no shadow. Until
+    /// 2026-11-17 one cut served every cloud and left 8 % of the beam under a
+    /// solid grey sky, enough for sharp shadows.
+    #[test]
+    fn a_closed_deck_leaves_no_sun() {
+        let (beam, _) = overcast_lighting(1.0, 1.0);
+        assert_eq!(beam, 0.0);
+    }
+
+    /// High cloud alone keeps the old cut: the sun shines through a veil.
+    #[test]
+    fn high_cloud_only_thins_the_sun() {
+        let (beam, _) = overcast_lighting(1.0, 0.0);
+        assert!((beam - (1.0 - OVERCAST_BEAM_CUT)).abs() < 1e-6);
+        assert!(overcast_lighting(1.0, 1.0).0 < beam);
+    }
+
+    /// The deck's light is moved into the fill, not lost: the ground under a
+    /// closed deck is within a fifth of a stop of the old full overcast's.
+    #[test]
+    fn the_deck_keeps_the_light_it_takes_from_the_beam() {
+        let stops = (ground_lux_under(1.0, 0.0) / ground_lux_under(1.0, 1.0)).log2();
+        assert!(
+            stops.abs() < 0.2,
+            "a closed deck moved the ground {stops} stops"
+        );
+    }
+
+    /// Rain falls from a deck; high cloud is never more than the cover.
+    #[test]
+    fn the_deck_follows_the_layers_and_the_rain() {
+        let mut dev = DevPanelState {
+            cloud_cover: 1.0,
+            cloud_high: 1.0,
+            ..default()
+        };
+        assert_eq!(deck(&dev), 0.0);
+        dev.precipitation = 1.0;
+        assert!((deck(&dev) - 0.9).abs() < 1e-6);
+        dev.precipitation = 0.0;
+        dev.cloud_high = 0.25;
+        assert!((deck(&dev) - 0.75).abs() < 1e-6);
     }
 
     /// The sky's fill on the deck at noon (`update_clouds`' `haze`).

@@ -41,6 +41,9 @@ const HAZE_FLOOR: f32 = 0.05;
 #[derive(Clone, Copy, Debug)]
 pub struct Observation {
     pub cloud_cover: f32,
+    /// Of the cover, how much is high cloud only: the total less the larger of
+    /// the low and the middle layer (`DevPanelState::cloud_high`).
+    pub cloud_high: f32,
     pub fog_density: f32,
     pub precipitation: f32,
     pub air_temp_c: f32,
@@ -160,12 +163,17 @@ pub fn poll_weather(
     if weather.live {
         if let Some(obs) = weather.latest {
             if dev.cloud_cover != obs.cloud_cover
+                || dev.cloud_high != obs.cloud_high
                 || dev.fog_density != obs.fog_density
                 || dev.precipitation != obs.precipitation
             {
                 apply(&obs, &mut dev);
             }
         }
+    } else if dev.cloud_high != 0.0 {
+        // By hand the cover is a deck (`DevPanelState::cloud_high`): a layer split
+        // left over from the live sample would make a slider's cloud see-through.
+        dev.cloud_high = 0.0;
     }
 
     let Some((lat, lng, _zoom)) = stream.geo_anchor() else {
@@ -188,6 +196,7 @@ pub fn poll_weather(
 /// Write a sample onto the renderer's live knobs.
 fn apply(obs: &Observation, dev: &mut DevPanelState) {
     dev.cloud_cover = obs.cloud_cover;
+    dev.cloud_high = obs.cloud_high;
     dev.fog_density = obs.fog_density;
     dev.precipitation = obs.precipitation;
 }
@@ -217,6 +226,15 @@ fn parse_weather(text: &str, lat: f64, lng: f64) -> FetchResult {
     }
 
     let cloud_frac = inst["cloud_area_fraction"].as_f64().unwrap_or(0.0) / 100.0;
+    // The layers, which MET reports beside the total: a deck (low or middle) takes
+    // the sun, high cloud only veils it. A sample without them is all deck, the
+    // reading before the layers were read.
+    let low = inst["cloud_area_fraction_low"].as_f64();
+    let medium = inst["cloud_area_fraction_medium"].as_f64();
+    let deck_frac = match (low, medium) {
+        (None, None) => cloud_frac,
+        (l, m) => (l.unwrap_or(0.0).max(m.unwrap_or(0.0)) / 100.0).min(cloud_frac),
+    };
     let fog_frac = inst["fog_area_fraction"].as_f64().unwrap_or(0.0) / 100.0;
     let humidity = inst["relative_humidity"].as_f64().unwrap_or(0.0);
     let air_temp_c = inst["air_temperature"].as_f64().unwrap_or(0.0) as f32;
@@ -235,6 +253,7 @@ fn parse_weather(text: &str, lat: f64, lng: f64) -> FetchResult {
 
     Ok(Observation {
         cloud_cover: (cloud_frac as f32).clamp(0.0, 1.0),
+        cloud_high: ((cloud_frac - deck_frac) as f32).clamp(0.0, 1.0),
         fog_density,
         precipitation: (precip_mm / RAIN_FULL_MM).clamp(0.0, 1.0),
         air_temp_c,
@@ -314,6 +333,29 @@ mod tests {
         assert_eq!(o.precipitation, 1.0); // 6 mm > RAIN_FULL_MM, clamped
                                           // fog_area_fraction 0.40 dominates the humidity haze, plus the floor.
         assert!((o.fog_density - (HAZE_FLOOR + 0.40)).abs() < 1e-4);
+    }
+
+    /// Groningen on 2026-11-17: a closed low deck is all deck, and a sky of
+    /// cirrus alone is all high cloud.
+    #[test]
+    fn tells_a_deck_from_a_veil() {
+        let sample = |low: f64, medium: f64, high: f64| {
+            format!(
+                r#"{{"properties":{{"timeseries":[{{"data":{{"instant":{{"details":{{
+                "cloud_area_fraction":100.0,"cloud_area_fraction_low":{low},
+                "cloud_area_fraction_medium":{medium},"cloud_area_fraction_high":{high}}}}}}}}}]}}}}"#
+            )
+        };
+        let deck = parse_weather(&sample(100.0, 0.0, 0.0), 0.0, 0.0).unwrap();
+        assert_eq!(deck.cloud_high, 0.0);
+        let veil = parse_weather(&sample(0.0, 0.0, 100.0), 0.0, 0.0).unwrap();
+        assert_eq!(veil.cloud_high, 1.0);
+        let mixed = parse_weather(&sample(76.8, 59.0, 100.0), 0.0, 0.0).unwrap();
+        assert!((mixed.cloud_high - 0.232).abs() < 1e-4);
+        // No layers in the sample: all of it a deck.
+        let bare = r#"{"properties":{"timeseries":[{"data":{
+            "instant":{"details":{"cloud_area_fraction":80.0}}}}]}}"#;
+        assert_eq!(parse_weather(bare, 0.0, 0.0).unwrap().cloud_high, 0.0);
     }
 
     #[test]

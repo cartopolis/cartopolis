@@ -993,6 +993,12 @@ pub struct DevPanelState {
     /// Cloud coverage, 0.0–1.0: fraction of the sky the procedural cloud deck
     /// fills (see `main::update_clouds`). 0.0 = clear sky.
     pub cloud_cover: f32,
+    /// How much of [`Self::cloud_cover`] is high cloud only — a veil of cirrus
+    /// the sun still shines through. The rest is a low or middle deck, which
+    /// takes the beam and its shadows away entirely (`sky::overcast_lighting`).
+    /// 0 by default, so a slider, `--clouds` and a shot's `clouds` all mean a
+    /// deck; only the live weather knows the layers apart (`weather`).
+    pub cloud_high: f32,
     /// Rain intensity, 0.0–1.0: density of the screen-space rain streaks (see
     /// `main::update_rain`). 0.0 = dry.
     pub precipitation: f32,
@@ -1051,6 +1057,7 @@ impl Default for DevPanelState {
             cycle_seconds: 10.0,
             fog_density: 0.15,
             cloud_cover: 0.0,
+            cloud_high: 0.0,
             precipitation: 0.0,
             clouds_enabled: true,
             moon_age_days: 14.8, // full moon
