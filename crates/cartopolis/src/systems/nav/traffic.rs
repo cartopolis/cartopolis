@@ -110,10 +110,19 @@ const TRAFFIC_HIDE_ALT: f32 = 700.0;
 /// end was nearest, which at a crossroads is decided by a metre of survey
 /// accuracy: a car running down a main road would turn off it at random every
 /// time a side street happened to be noded a few centimetres closer than the
-/// continuation. Traffic mostly goes *straight on*, so the score is the cosine
-/// of the turn the car would be making, with the nearness of the join as a
-/// tie-break, and a turn sharper than [`TURN_BACK_COS`] is only taken when
+/// continuation. A turn sharper than [`TURN_BACK_COS`] is only taken when
 /// nothing else is on offer.
+///
+/// **And it is a draw, not the straightest.** From 2026-09-10 to 2026-11-17
+/// the road nearest straight on always won, so traffic never turned: a car
+/// ran down one street until it was recycled, and a crossroads had cars only
+/// going straight through it. Now each way on is weighted by
+/// [`STRAIGHT_ON_WEIGHT`] if it carries on within ~25° and by 1 if it turns,
+/// times how much traffic a road of its sort draws
+/// ([`AgentKind::importance`]) — so a main road keeps most of its traffic
+/// past each side street (four in five at a residential one), a crossroads
+/// of equals sends about half straight on, and `r`, a unit random, says
+/// which.
 fn hand_off(
     net: &DriveNetwork,
     candidates: &[LineKey],
@@ -121,8 +130,11 @@ fn hand_off(
     at: Vec2,
     travel: Vec2,
     kind: AgentKind,
+    r: f32,
 ) -> Option<(LineKey, f32)> {
-    let mut best: Option<(f32, LineKey, f32)> = None;
+    // Every way on that does not turn back, weighted; at most a handful meet
+    // at a junction.
+    let mut ways: Vec<(f32, LineKey, f32)> = Vec::new();
     let mut fallback: Option<(f32, LineKey, f32)> = None;
     for &key in candidates {
         if key == from {
@@ -156,21 +168,37 @@ fn hand_off(
             // The direction the agent would be travelling once on it.
             let (_, heading) = l.at(if dir > 0.0 { 0.0 } else { l.length() });
             let cos = travel.dot(heading * dir);
-            // Nearness only separates two roads that leave at the same angle, so
-            // it is worth a fraction of a cosine and no more.
-            let score = cos - d / HANDOFF_M * 0.05;
-            let slot = if cos >= TURN_BACK_COS {
-                &mut best
-            } else {
-                &mut fallback
-            };
-            if slot.is_none_or(|(s, ..)| score > s) {
-                *slot = Some((score, key, dir));
+            if cos >= TURN_BACK_COS {
+                let straight = if cos >= STRAIGHT_ON_COS {
+                    STRAIGHT_ON_WEIGHT
+                } else {
+                    1.0
+                };
+                ways.push((straight * kind.importance(l), key, dir));
+            } else if fallback.is_none_or(|(c, ..)| cos > c) {
+                fallback = Some((cos, key, dir));
             }
         }
     }
-    best.or(fallback).map(|(_, key, dir)| (key, dir))
+    let total: f32 = ways.iter().map(|w| w.0).sum();
+    let mut left = r.clamp(0.0, 0.999_999) * total;
+    for &(weight, key, dir) in &ways {
+        if left < weight {
+            return Some((key, dir));
+        }
+        left -= weight;
+    }
+    ways.last()
+        .or(fallback.as_ref())
+        .map(|&(_, key, dir)| (key, dir))
 }
+
+/// A way on within this of straight ahead (cosine; about 25°) counts as
+/// carrying on rather than turning.
+const STRAIGHT_ON_COS: f32 = 0.9;
+/// How much likelier carrying straight on is than each turn, at a junction
+/// of roads of one sort.
+const STRAIGHT_ON_WEIGHT: f32 = 2.5;
 
 /// How close two line ends must be for a car to drive from one onto the other.
 ///
@@ -358,6 +386,9 @@ pub struct WorldDriveLine {
     /// Whether the tile's road kind takes cars, before any closure. Kept so a
     /// closure that streams out again reopens the line.
     pub kind_drives: bool,
+    /// Whether the tile's road kind takes bikes, before a cycle track beside
+    /// it takes them off it ([`ride_the_tracks`]). `uses.cycle` is the answer.
+    pub kind_cycles: bool,
     /// Cumulative length at each point, so a car can be advanced without walking
     /// the line from the start every frame.
     pub cumulative: Vec<f32>,
@@ -550,6 +581,7 @@ impl DriveNetwork {
                     half_width: l.half_width,
                     uses: l.uses,
                     kind_drives: l.uses.drive,
+                    kind_cycles: l.uses.cycle,
                     cumulative,
                     deck,
                     on_deck: l.on_deck,
@@ -633,6 +665,76 @@ impl DriveNetwork {
     }
 }
 
+/// Take the cyclists off a street that has a cycle track of its own beside
+/// it: a Dutch rider takes the track, and riders on both drew two streams of
+/// bikes side by side, one of them among the cars.
+///
+/// A street (a line cars and bikes may both use) is beside a track when at
+/// least [`TRACK_SHARE`] of the points along it, every [`TRACK_SAMPLE_M`],
+/// have a cycle-only line's segment running the same way (within ~25°)
+/// within its half width and [`TRACK_BESIDE_M`]. Recomputed from the tile's
+/// answer (`kind_cycles`) each time, so a street whose track streams out
+/// carries bikes again. Fatbikes ride it either way.
+pub(crate) fn ride_the_tracks(net: &mut DriveNetwork) {
+    let tracks: Vec<((Vec2, Vec2), Vec<Vec2>)> = net
+        .cells
+        .values()
+        .flatten()
+        .filter(|l| l.kind_cycles && !l.kind_drives)
+        .map(|l| (l.bounds, l.points.clone()))
+        .collect();
+    for line in net.cells.values_mut().flatten() {
+        line.uses.cycle = line.kind_cycles;
+        if !(line.kind_drives && line.kind_cycles) || tracks.is_empty() {
+            continue;
+        }
+        let reach = line.half_width + TRACK_BESIDE_M;
+        let (lo, hi) = line.bounds;
+        let near: Vec<&[Vec2]> = tracks
+            .iter()
+            .filter(|((tlo, thi), _)| {
+                tlo.x <= hi.x + reach
+                    && thi.x >= lo.x - reach
+                    && tlo.y <= hi.y + reach
+                    && thi.y >= lo.y - reach
+            })
+            .map(|(_, p)| p.as_slice())
+            .collect();
+        if near.is_empty() {
+            continue;
+        }
+        let length = line.length();
+        let samples = ((length / TRACK_SAMPLE_M).floor() as usize).max(1);
+        let beside = (0..samples)
+            .filter(|k| {
+                let (p, heading) = line.at((*k as f32 + 0.5) * length / samples as f32);
+                near.iter().any(|track| {
+                    track.windows(2).any(|w| {
+                        let d = w[1] - w[0];
+                        let Some(dir) = d.try_normalize() else {
+                            return false;
+                        };
+                        let t = ((p - w[0]).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+                        dir.dot(heading).abs() >= STRAIGHT_ON_COS
+                            && p.distance(w[0] + d * t) <= reach
+                    })
+                })
+            })
+            .count();
+        if beside as f32 >= TRACK_SHARE * samples as f32 {
+            line.uses.cycle = false;
+        }
+    }
+}
+
+/// How far beyond a street's carriageway its cycle track may run and still
+/// be its own, metres: a verge, a row of trees, a parking strip.
+const TRACK_BESIDE_M: f32 = 8.0;
+/// How often along a street a track beside it is looked for, metres.
+const TRACK_SAMPLE_M: f32 = 8.0;
+/// The share of a street that must have a track beside it.
+const TRACK_SHARE: f32 = 0.6;
+
 /// Keep cars off the streets closed to them.
 ///
 /// The tile calls the Vismarkt a `residential` street like any other — its
@@ -651,6 +753,10 @@ pub fn close_car_free_lines(
     let now = (net.revision, detail.car_free_revision);
     if *seen == Some(now) {
         return;
+    }
+    // The tracks beside the streets change only with the lines themselves.
+    if seen.is_none_or(|(revision, _)| revision != now.0) {
+        ride_the_tracks(&mut net);
     }
     *seen = Some(now);
     let ways: Vec<((Vec2, Vec2), &[[f32; 2]])> = detail
@@ -2304,10 +2410,13 @@ pub fn drive_traffic(
         }
         let mut key = car.line;
         // A line closed since the agent joined it (`close_car_free_lines`) is
-        // left at once: the closure is what the street is, not news to it.
+        // left at once: the closure is what the street is, not news to it. A
+        // cyclist on a street a track has just been found beside
+        // (`ride_the_tracks`) rides it to its end instead: the bikes may use
+        // it, and vanishing would be a pop.
         let mut line = key
             .and_then(|k| net.get(k))
-            .filter(|l| kind.may_use(l.uses));
+            .filter(|l| kind.may_use(l.uses) || (kind == AgentKind::Cyclist && l.kind_cycles));
         // What this frame's advance did, for the body's lean, the brake lamps
         // and the stride.
         let mut accel_now = 0.0;
@@ -2541,7 +2650,8 @@ pub fn drive_traffic(
         if car.turn.is_none() {
             if let (Some(k), Some(l), Some((p, travel, from_y))) = (key, line, pose) {
                 if car.s > l.length() {
-                    match hand_off(&net, candidates, k, p, travel, kind) {
+                    let r = rand01(0x7A2E, i as u64, *frame);
+                    match hand_off(&net, candidates, k, p, travel, kind, r) {
                         Some((next, next_dir)) => {
                             let nl = net.get(next).expect("hand_off only offers lines it read");
                             let entry = if next_dir > 0.0 { 0.0 } else { nl.length() };
@@ -3655,8 +3765,8 @@ mod tests {
         };
         let at = Vec2::new(50.0, 0.0);
         let east = Vec2::X;
-        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Fatbike).is_some());
-        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Cyclist).is_none());
+        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Fatbike, 0.5).is_some());
+        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Cyclist, 0.5).is_none());
     }
 
     /// A rider leans into a turn, the other way to a car body, by the angle the
@@ -3984,17 +4094,66 @@ mod tests {
             cell: (9, 9),
             index: 0,
         };
-        let (key, dir) = hand_off(
-            &net,
-            &keys,
-            from,
-            Vec2::new(100.0, 0.0),
-            Vec2::X,
-            AgentKind::Car,
-        )
-        .expect("a road to go on to");
-        assert_eq!(key.index, 0, "took the side street over the continuation");
-        assert_eq!(dir, 1.0);
+        // Over the whole range of the draw: mostly straight on, whichever end
+        // is nearer — and sometimes the turn.
+        let mut straight = 0;
+        for k in 0..100 {
+            let (key, dir) = hand_off(
+                &net,
+                &keys,
+                from,
+                Vec2::new(100.0, 0.0),
+                Vec2::X,
+                AgentKind::Car,
+                k as f32 / 100.0,
+            )
+            .expect("a road to go on to");
+            if key.index == 0 {
+                straight += 1;
+                assert_eq!(dir, 1.0);
+            }
+        }
+        assert!(
+            (65..=80).contains(&straight),
+            "{straight} in 100 straight on"
+        );
+    }
+
+    /// A main road keeps most of its traffic past a residential side street.
+    #[test]
+    fn a_main_road_keeps_its_traffic() {
+        let mut net = DriveNetwork::default();
+        let mut main = line(&[[100.0, 0.0], [300.0, 0.0]], Flow::Both);
+        main.speed = 13.9;
+        let mut side = line(&[[100.0, 0.0], [100.0, 200.0]], Flow::Both);
+        side.speed = RESIDENTIAL_SPEED;
+        net.insert_cell((0, 0), 0.0, 0.0, vec![main, side]);
+        let keys: Vec<LineKey> = (0..2)
+            .map(|index| LineKey {
+                cell: (0, 0),
+                index,
+            })
+            .collect();
+        let from = LineKey {
+            cell: (9, 9),
+            index: 0,
+        };
+        let on = (0..100)
+            .filter(|k| {
+                let r = *k as f32 / 100.0;
+                hand_off(
+                    &net,
+                    &keys,
+                    from,
+                    Vec2::new(100.0, 0.0),
+                    Vec2::X,
+                    AgentKind::Car,
+                    r,
+                )
+                .is_some_and(|(key, _)| key.index == 0)
+            })
+            .count();
+        assert!((75..=85).contains(&on), "{on} in 100 stay on the main road");
     }
 
     /// …but a dead end is still a dead end. Where the only road on offer doubles
@@ -4023,6 +4182,7 @@ mod tests {
             Vec2::new(100.0, 0.0),
             Vec2::new(0.0, 1.0),
             AgentKind::Car,
+            0.5,
         );
         assert!(got.is_some(), "a car at a dead end has to go somewhere");
     }
@@ -4558,5 +4718,74 @@ mod rider_tests {
             a = toward_angle(a, STOP_CRANK, 0.1);
         }
         assert!((a - STOP_CRANK).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+
+    fn way(points: &[[f32; 2]], drive: bool, cycle: bool) -> DriveLine {
+        DriveLine {
+            points: points.to_vec(),
+            flow: Flow::Both,
+            speed: if drive { 13.9 } else { 0.0 },
+            half_width: if drive { 4.0 } else { 1.5 },
+            uses: Uses {
+                drive,
+                walk: true,
+                cycle,
+            },
+            deck: vec![f32::NAN; points.len()],
+            on_deck: false,
+            pavements: Pavements::BOTH,
+        }
+    }
+
+    /// A street with a cycle track along it loses its cyclists to the track;
+    /// one with a track only crossing it, or only along a short stretch, or
+    /// none, keeps them — and the street gets them back when the track goes.
+    #[test]
+    fn cyclists_take_the_track_beside_the_street() {
+        let mut net = DriveNetwork::default();
+        net.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            vec![
+                // A main road with a track 9 m off its centre line.
+                way(&[[0.0, 0.0], [200.0, 0.0]], true, true),
+                way(&[[0.0, 9.0], [200.0, 9.0]], false, true),
+                // A street 100 m away, crossed by a track, and one with a
+                // track beside a fifth of it.
+                way(&[[0.0, 100.0], [200.0, 100.0]], true, true),
+                way(&[[100.0, 50.0], [100.0, 150.0]], false, true),
+                way(&[[0.0, 300.0], [200.0, 300.0]], true, true),
+                way(&[[0.0, 307.0], [40.0, 307.0]], false, true),
+            ],
+        );
+        ride_the_tracks(&mut net);
+        fn cycles(net: &DriveNetwork, index: usize) -> bool {
+            net.get(LineKey {
+                cell: (0, 0),
+                index,
+            })
+            .unwrap()
+            .uses
+            .cycle
+        }
+        assert!(!cycles(&net, 0), "the main road's bikes are on its track");
+        assert!(cycles(&net, 1), "the track itself");
+        assert!(cycles(&net, 2), "a crossing track is not beside it");
+        assert!(
+            cycles(&net, 4),
+            "a short stretch of track is not the street's"
+        );
+        // The track streams out: the street carries bikes again.
+        let mut lines = vec![way(&[[0.0, 0.0], [200.0, 0.0]], true, true)];
+        lines.push(way(&[[0.0, 100.0], [200.0, 100.0]], true, true));
+        net.insert_cell((0, 0), 0.0, 0.0, lines);
+        ride_the_tracks(&mut net);
+        assert!(cycles(&net, 0));
     }
 }
