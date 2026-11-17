@@ -157,11 +157,15 @@ and one side coming back from its saved state to read what it missed.
 the other person in it, added by the first browser, a line each way with a mention and a reaction, and a reload
 that reads the history back out of IndexedDB. It is what exercises the
 `SharedWorker`, the Web Lock and the storage, which nothing else does.
+`recovery-browser.ts` is the lost phone: a recovery key made and shown once,
+both browsers gone, a fresh one reading the topic from the backup, and
+writing in it again once the other person's browser is back to add it.
 
 ```bash
 bun run build:chat-core --dev && bun run build   # in crates/atlas/web, in a build slot
 bun chat-e2e.ts --sim "$CARGO_TARGET_DIR/debug/simulator"
 bun chat-browser.ts --sim "$CARGO_TARGET_DIR/debug/simulator" --shots /tmp/chat
+bun recovery-browser.ts --sim "$CARGO_TARGET_DIR/debug/simulator" --shots /tmp/recovery
 ```
 
 `deploy-web.yml` builds the module with nightly (the CI image carries the
@@ -172,7 +176,7 @@ nothing without it.
 
 - **Joining with nobody online**: a newcomer's history comes from a device
   that is (`docs/notes/communities.md`, "History for people added later").
-- **A recovery key.** A person who loses every device loses every chat.
+- **A recovery key in the app.** The web chat keeps a backup a recovery key opens (`encrypted-chat.md`); the app neither writes nor reads one.
 - **World.** The mockups' Chat | World switch with the viewer embedded in the
   page; the viewer would then have to use this worker's connection, or it is
   a second device in the same browser.

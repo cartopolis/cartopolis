@@ -1,7 +1,7 @@
 ---
 topic: encrypted-chat
 triggers: [e2ee, cartopolis_e2ee, private_chat.rs, "src/e2ee.rs", openmls, MLS, "E2ee", "private chat", "direct message", "key package", "recovery key", V20__private_chats.sql, crates/e2ee, crates/chat, crates/simulator/Cargo.toml]
-updated: 2026-10-18
+updated: 2026-11-17
 ---
 
 # Private chats are end-to-end encrypted, and the server is only a relay
@@ -75,15 +75,49 @@ without it the wasm build stops at `getrandom`.
 - **Keys live only on the device**, in the Data namespace of `platform::storage`
   (`e2ee/<server>/<user>.bin`), preloaded on the web because IndexedDB has no
   synchronous read. Losing that blob loses every private chat on the device.
-- **History on a new device: encrypted backup unlocked by a recovery key.** Not
-  built yet. Until it is, a new device is added to its chats (below) but reads
-  only what is said after it was added.
+- **History on a new device: encrypted backup unlocked by a recovery key.**
+  Built for the web chat (next section); the app neither writes nor opens one
+  yet. Without it, a new device is added to its chats (below) and reads what a
+  member's device shares when it adds it (`communities.md`), or nothing.
 - **Web client: encrypted like the apps**, with a note that a browser runs
   whatever code the server sends it.
 - **Identity proofs are out of scope for now.** The server vouches for each
   person's full address (`name@server`, protocol 37, `web-chat.md`) at sign-in
   and nothing checks further; a key-change warning is the only
   defence against a swapped key until proofs or in-person verification exist.
+
+## Recovering chats with a recovery key (2026-11-17)
+
+A device that has a recovery key keeps a **backup** of every chat it holds:
+the newest `MAX_HISTORY` (300) messages each, with each chat's label, sealed
+(`cartopolis_chat::backup`) and stored in the picture store. The account row
+names it (`accounts.chat_backup`, V46; `GET`/`PUT /api/pictures/backup`, under
+that prefix because the public host routes it already). A new device signed in
+to an account that has one offers to open it; the key brings each chat's
+messages back in front of what the device reads itself, marked "from your
+backup", and lists the chats it is not in yet as readable, with no composer,
+until a member's device adds it (the section below).
+
+- **The key**: 120 random bits as 24 Crockford base-32 characters, shown once.
+  The backup key is HKDF-SHA256 of it and the backup ChaCha20-Poly1305 with a
+  fresh nonce each seal (`e2ee::backup_key`, `seal_with_key`). No slow hash:
+  the secret is random, never chosen, so guessing it is hopeless regardless.
+  The mockup's 12 words (`docs/mockups/chat-world/keys-and-trust.md`) would
+  need a word list in the wasm; the characters carry the same 120 bits.
+- **No MLS keys in it**, and no account key: a new device still joins each
+  chat the usual way, so contacts are not spared a new device, and a chat
+  whose every member has lost every device stays readable but can never be
+  written to again.
+- **Re-sealed a minute after a change** (`BACKUP_AFTER_MS`), by every device
+  of the account that has the key; the last write wins, and the server
+  deletes the file it replaces. Two devices of one person hold nearly the
+  same chats, so either's copy will do.
+- **The device keeps its copy of the key** (IndexedDB, `recovery|<account>`),
+  as it keeps its private keys: whoever has the device has the chats anyway.
+- **Not built**: replacing a lost key from a signed-in device (making a new
+  one on a device with no key replaces the backup, and the old key with it),
+  pictures inside the backup (their keys are there; the files stay in the
+  picture store only while it keeps them), and the app.
 
 ## Every device of every member (protocol 39)
 
