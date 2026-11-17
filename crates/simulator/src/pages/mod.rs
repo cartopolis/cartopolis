@@ -79,6 +79,25 @@ pub struct PageData {
     pub revision: Option<i64>,
     pub tree: serde_json::Value,
     pub texts: BTreeMap<String, Resolved>,
+    /// The site's menu in `lang`, which the page's bar draws.
+    pub menu: SiteMenu,
+}
+
+/// A live page in the site's top bar: `MenuItem` in `src/cms/tree.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MenuItem {
+    pub slug: String,
+    pub label: Resolved,
+}
+
+/// The site's own pages for the top bar (`docs/mockups/site-header` v2):
+/// `SiteMenu` in `src/cms/tree.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SiteMenu {
+    /// Whether the front page is live, so the bar's mark can go to it.
+    pub home: bool,
+    /// Every live page whose `Page` has a `menu` position, in that order.
+    pub pages: Vec<MenuItem>,
 }
 
 /// A language's state against the source: keys with no text, and texts made
@@ -362,6 +381,53 @@ impl PageService {
             revision,
             tree,
             texts: resolved,
+            menu: self.menu(lang),
+        }
+    }
+
+    /// The site's menu in `lang`: each live page whose `Page` has a `menu`
+    /// position, by that position, labelled with its `nav` text or else its
+    /// title. A draft's position counts only once it is published, as the rest
+    /// of the page does. A language the server does not serve gets its first.
+    #[must_use]
+    pub fn menu(&self, lang: &str) -> SiteMenu {
+        let lang = if self.languages.iter().any(|l| l == lang) {
+            lang
+        } else {
+            &self.languages[0]
+        };
+        let Ok(live) = self.live.read() else {
+            return SiteMenu {
+                home: false,
+                pages: Vec::new(),
+            };
+        };
+        let mut pages: Vec<(f64, MenuItem)> = live
+            .iter()
+            .filter(|(slug, _)| slug.as_str() != HOME)
+            .filter_map(|(slug, page)| {
+                let p = page.tree.get("p")?;
+                let at = p.get("menu")?.as_f64()?;
+                let key = ["nav", "title"]
+                    .iter()
+                    .find_map(|name| p.get(*name)?.get("t")?.as_str())?;
+                let r = resolve(&page.texts, &page.source_lang, lang, key)?;
+                Some((
+                    at,
+                    MenuItem {
+                        slug: slug.clone(),
+                        label: Resolved {
+                            text: plain(&r.text),
+                            lang: r.lang,
+                        },
+                    },
+                ))
+            })
+            .collect();
+        pages.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.slug.cmp(&b.1.slug)));
+        SiteMenu {
+            home: live.contains_key(HOME),
+            pages: pages.into_iter().map(|(_, item)| item).collect(),
         }
     }
 

@@ -47,7 +47,7 @@
     left: 0;
     position: fixed;
     right: 0;
-    top: 52px;
+    top: 88px; /* the site's bar and its path (`cms/sitebar.css`) */
     z-index: 30;
 }
 
@@ -58,149 +58,7 @@
     text-align: center;
 }
 
-/* ── Top bar ── */
-
-.home-top {
-    align-items: center;
-    background: var(--m-surface);
-    border-bottom: 1px solid var(--m-border);
-    display: flex;
-    flex: none;
-    gap: 14px;
-    height: 52px;
-    padding: 0 12px 0 14px;
-    position: relative;
-    z-index: 20;
-}
-
-.home-wordmark {
-    align-items: center;
-    display: flex;
-    flex: none;
-    gap: 8px;
-    text-decoration: none;
-}
-
-.home-wordmark img {
-    height: 26px;
-    width: 26px;
-}
-
-.home-seg {
-    background: var(--m-surface-sunken);
-    border: 1px solid var(--m-border);
-    border-radius: 10px;
-    display: flex;
-    flex: none;
-    gap: 2px;
-    padding: 3px;
-}
-
-.home-seg-item {
-    align-items: center;
-    background: none;
-    border: 0;
-    border-radius: 8px;
-    color: var(--m-text-dim);
-    cursor: pointer;
-    display: flex;
-    font: inherit;
-    font-size: 0.88rem;
-    gap: 6px;
-    padding: 5px 13px;
-    white-space: nowrap;
-}
-
-.home-seg-item:hover:not(.is-on) {
-    background: var(--m-hover);
-    color: var(--m-text-strong);
-}
-
-.home-seg-item.is-on {
-    background: var(--m-accent);
-    color: var(--m-on-accent);
-    font-weight: 600;
-}
-
-.home-seg-item.is-admin {
-    color: var(--m-warning);
-}
-
-.home-seg-item.is-admin.is-on {
-    background: var(--m-warning-soft);
-    box-shadow: inset 0 0 0 1px var(--m-warning);
-    color: var(--m-warning);
-}
-
-.home-seg-count {
-    background: var(--c-brand);
-    border-radius: 9px;
-    color: #fff;
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 0 6px;
-}
-
-.home-seg-item.is-on .home-seg-count {
-    background: var(--m-on-accent);
-    color: var(--m-accent);
-}
-
-.home-live {
-    background: var(--c-brand);
-    border-radius: 50%;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-brand) 25%, transparent);
-    height: 7px;
-    width: 7px;
-}
-
-.home-seg-item.is-on .home-live {
-    background: var(--m-on-accent);
-    box-shadow: none;
-}
-
-.home-crumbs {
-    align-items: center;
-    color: var(--m-text-dim);
-    display: flex;
-    font-size: 0.85rem;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.home-crumb {
-    background: none;
-    border: 0;
-    color: inherit;
-    font: inherit;
-    overflow: hidden;
-    padding: 0;
-    text-overflow: ellipsis;
-}
-
-button.home-crumb {
-    cursor: pointer;
-}
-
-button.home-crumb:hover {
-    color: var(--m-text-strong);
-    text-decoration: underline;
-}
-
-.home-crumb.is-last {
-    color: var(--m-text-strong);
-    font-weight: 600;
-}
-
-.home-crumb-sep {
-    color: var(--m-text-faint);
-}
-
-.home-spacer {
-    flex: 1;
-}
+/* ── The account menu, at the end of the site's bar (`cms/sitebar.css`) ── */
 
 .home-account {
     flex: none;
@@ -489,72 +347,12 @@ button.home-crumb:hover {
 
 /* ── A phone: the same levels, one screen at a time ── */
 @media (max-width: 760px) {
-    /* One quiet bar (`docs/mockups/mobile-header/`): the mark, the three
-       places as words with the open one underlined, and the account. The
-       filled switch, the gold Admin and the boxed theme switch made three
-       blocks of three colours in a phone's width. */
-    .home-top {
-        align-items: stretch;
-        gap: 0;
-        padding: 0 10px 0 14px;
-    }
-
-    .home-top > * {
-        align-self: center;
-    }
-
-    .home-wordmark {
-        margin-right: 6px;
-    }
-
-    .home-crumbs,
-    .home-wordmark .wordmark,
-    .home-live {
-        display: none;
-    }
-
-    .home-top > .home-seg {
-        align-self: stretch;
-        background: none;
-        border: 0;
-        border-radius: 0;
-        gap: 0;
-        padding: 0;
-    }
-
-    .home-seg-item,
-    .home-seg-item.is-admin {
-        border-bottom: 2.5px solid transparent;
-        border-radius: 0;
-        color: var(--m-text-dim);
-        font-size: 0.95rem;
-        font-weight: 500;
-        margin-bottom: -1px;
-        padding: 0 10px;
-    }
-
-    .home-seg-item:hover:not(.is-on) {
-        background: none;
-    }
-
-    .home-seg-item.is-on,
-    .home-seg-item.is-admin.is-on {
-        background: none;
-        border-bottom-color: var(--m-accent);
-        box-shadow: none;
-        color: var(--m-text-strong);
-        font-weight: 600;
-    }
-
-    .home-top > .m-theme-switch {
+    /* The bar is the site's (`cms/sitebar.css`); a boxed theme switch in it
+       would be a third block of colour in a phone's width. */
+    .site-account > .m-theme-switch {
         background: none;
         border-color: transparent;
         box-shadow: none;
-    }
-
-    .home-seg-item.is-on .home-seg-count {
-        background: var(--c-brand);
-        color: #fff;
     }
 
     /* Community's first screen is the rail, drawn as a list with names. */

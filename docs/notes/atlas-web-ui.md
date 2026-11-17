@@ -1,7 +1,7 @@
 ---
 topic: atlas-web-ui
 triggers: [crates/atlas/web, types.ts, web_mirror.rs, ts_mirror.rs, mock.ts, base.ts, theme.css, web_theme.rs, deploy-web.yml, deploy/build/web.sh, follow_framed_places, FRAMED_PLACE_MESSAGE, "@garage44/mithril", mithril, "bun run mock", "/admin", "/world", "cartopolis.org"]
-updated: 2026-10-17
+updated: 2026-11-17
 ---
 
 # cartopolis.org is the atlas web UI, and three seams hold it to the Rust
@@ -25,6 +25,17 @@ an account that may run something, on the chat's own sign-in, and groups the
 operator's pages into People, Content and Data. Beside them are the players'
 pages: `/register`, `/verify`, `/buildings`, and the floor-plan editor at
 `/building/{pand}` (`building-designs.md`).
+
+**One top bar for the content pages and the app** (2026-11-17,
+`docs/mockups/site-header` v2): `src/cms/sitebar.tsx`, drawn by both the
+content pages' frame and `chat.tsx`. The mark is the front page's item, the
+content pages in the menu are on the left, Community | World | Admin on the
+right, and the path under it starts at the mark on every page but the front
+page. It lives in `src/cms/` because the server renders it for the content
+pages, so it reads nothing of the browser: who is visiting is filled in after
+the takeover. The app's bar speaks the language the reader last read a
+content page in (`cartopolis-lang` in storage); the app's own words stay
+English.
 
 Caddy routes the viewer (`/viewer/`), the APK, the simulator's `/ws` and its
 *listed* `/api` paths, and atlas's `/terrain`, `/height` and `/api/pipeline`

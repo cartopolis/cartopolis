@@ -1,0 +1,386 @@
+/* The site's top bar (`sitebar.tsx`, docs/mockups/site-header v2): the same on
+   the content pages and in the app. Imported by both apps' style sheets. */
+
+.site-head {
+    flex: none;
+    position: relative;
+    z-index: 20;
+}
+
+.site-bar {
+    align-items: stretch;
+    background: var(--m-surface);
+    border-bottom: 1px solid var(--m-border);
+    display: flex;
+    gap: 4px;
+    height: 54px;
+    padding: 0 12px 0 10px;
+}
+
+.site-bar > * {
+    align-self: center;
+}
+
+/* The mark is the front page's item: underlined in the brand's orange while
+   you are there, as a word is in the accent. */
+.site-mark,
+.site-link {
+    align-items: center;
+    align-self: stretch;
+    border-bottom: 2px solid transparent;
+    border-top: 2px solid transparent;
+    display: flex;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.site-mark {
+    flex: none;
+    gap: 8px;
+    margin-right: 10px;
+    padding: 0 8px 0 4px;
+
+    & img {
+        height: 26px;
+        width: 26px;
+    }
+
+    & .wordmark {
+        color: var(--m-text-strong);
+        font-size: 1.1rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+    }
+
+    & .wordmark b {
+        color: var(--c-brand);
+        font-weight: 600;
+    }
+}
+
+.site-mark.is-on {
+    border-bottom-color: var(--c-brand);
+}
+
+.site-links {
+    align-self: stretch;
+    display: flex;
+    min-width: 0;
+}
+
+.site-link {
+    color: var(--m-text-dim);
+    font-size: 0.93rem;
+    gap: 7px;
+    padding: 0 12px;
+}
+
+.site-link:hover {
+    color: var(--m-text-strong);
+}
+
+.site-link.is-on {
+    border-bottom-color: var(--m-accent);
+    color: var(--m-text-strong);
+    font-weight: 600;
+}
+
+.site-link.is-admin {
+    color: var(--m-warning);
+}
+
+.site-link.is-admin.is-on {
+    border-bottom-color: var(--m-warning);
+}
+
+.site-gap {
+    flex: 1;
+}
+
+.site-sep {
+    align-self: center;
+    background: var(--m-border);
+    height: 22px;
+    margin: 0 8px;
+    width: 1px;
+}
+
+.site-count {
+    background: var(--c-brand);
+    border-radius: 9px;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0 6px;
+}
+
+.site-live {
+    background: var(--c-brand);
+    border-radius: 50%;
+    height: 7px;
+    width: 7px;
+}
+
+.site-langs {
+    background: var(--m-surface-sunken);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-sm);
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 2px;
+
+    & a,
+    & button {
+        background: none;
+        border: 0;
+        border-radius: calc(var(--m-radius-sm) - 2px);
+        color: var(--m-text-dim);
+        cursor: pointer;
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.15rem 0.5rem;
+        text-decoration: none;
+    }
+
+    & .is-on {
+        background: var(--m-surface-raised);
+        color: var(--m-text-strong);
+        font-weight: 600;
+    }
+}
+
+.site-account {
+    display: flex;
+    flex: none;
+    margin-left: 8px;
+}
+
+.site-signin {
+    background: var(--m-accent);
+    border-radius: var(--m-radius-sm);
+    color: var(--m-on-accent);
+    font-size: 0.88rem;
+    font-weight: 600;
+    padding: 0.4rem 0.9rem;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.site-initial {
+    background: var(--m-accent-text);
+    border-radius: 50%;
+    color: var(--m-surface);
+    display: grid;
+    font-size: 0.85rem;
+    font-weight: 600;
+    height: 30px;
+    place-items: center;
+    width: 30px;
+}
+
+/* The phone's menu: only on a narrow screen. */
+.site-more {
+    display: none;
+    flex: none;
+    position: relative;
+
+    & summary {
+        border: 1px solid var(--m-border);
+        border-radius: var(--m-radius-sm);
+        color: var(--m-text-dim);
+        cursor: pointer;
+        display: grid;
+        height: 34px;
+        list-style: none;
+        place-items: center;
+        width: 34px;
+    }
+
+    & summary::-webkit-details-marker {
+        display: none;
+    }
+
+    & svg {
+        fill: none;
+        height: 18px;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-width: 1.8;
+        width: 18px;
+    }
+
+    &[open] summary {
+        background: var(--m-accent-soft);
+    }
+}
+
+.site-more-menu {
+    background: var(--m-surface-raised);
+    border: 1px solid var(--m-border);
+    border-radius: var(--m-radius-lg);
+    box-shadow: 0 12px 30px var(--m-shadow-color, rgb(0 0 0 / 25%));
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    width: 240px;
+    z-index: 50;
+
+    & .site-langs {
+        align-self: flex-start;
+        margin: 8px 10px 4px;
+    }
+}
+
+.site-more-head {
+    color: var(--m-text-faint);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 8px 10px 2px;
+    text-transform: uppercase;
+}
+
+.site-link.site-more-item,
+.site-more-item {
+    border: 0;
+    border-radius: var(--m-radius-sm);
+    color: var(--m-text);
+    font-size: 0.95rem;
+    font-weight: 400;
+    padding: 8px 10px;
+    text-decoration: none;
+}
+
+.site-more-item.is-on {
+    background: var(--m-accent-soft);
+    color: var(--m-accent-text);
+    font-weight: 600;
+}
+
+.site-more-item.is-admin {
+    color: var(--m-warning);
+}
+
+/* The path: Home first, on every page but the front page. */
+.site-path {
+    align-items: center;
+    background: var(--m-surface-raised);
+    border-bottom: 1px solid var(--m-border);
+    color: var(--m-text-dim);
+    display: flex;
+    font-size: 0.85rem;
+    gap: 6px;
+    height: 34px;
+    overflow: hidden;
+    padding: 0 18px;
+    white-space: nowrap;
+}
+
+.site-step {
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    overflow: hidden;
+    padding: 0;
+    text-decoration: none;
+    text-overflow: ellipsis;
+}
+
+a.site-step:hover,
+button.site-step:hover {
+    color: var(--m-text-strong);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.site-step.is-last {
+    color: var(--m-text-strong);
+    font-weight: 600;
+}
+
+.site-step-home {
+    align-items: center;
+    display: flex;
+    flex: none;
+    gap: 6px;
+
+    & img {
+        height: 16px;
+        width: 16px;
+    }
+}
+
+.site-step-sep {
+    color: var(--m-text-faint);
+}
+
+/* The mark in each theme (as app.css does for the rest of the app). */
+.site-head .mark-light {
+    display: none;
+}
+
+@media (prefers-color-scheme: light) {
+    html:not([data-theme='dark']) .site-head .mark-dark {
+        display: none;
+    }
+
+    html:not([data-theme='dark']) .site-head .mark-light {
+        display: block;
+    }
+}
+
+html[data-theme='light'] .site-head .mark-dark {
+    display: none;
+}
+
+html[data-theme='light'] .site-head .mark-light {
+    display: block;
+}
+
+/* A phone (docs/mockups/mobile-header B, kept): the mark, Community and World
+   in the bar, the rest of the site map behind one button. */
+@media (max-width: 760px) {
+    .site-bar {
+        padding: 0 8px 0 6px;
+    }
+
+    .site-mark {
+        margin-right: 2px;
+    }
+
+    .site-mark .wordmark,
+    .site-pages,
+    .site-gap,
+    .site-sep,
+    .site-bar > .site-langs,
+    .site-live,
+    .site-app .is-admin {
+        display: none;
+    }
+
+    .site-app {
+        flex: 1;
+    }
+
+    .site-link {
+        font-size: 0.95rem;
+        padding: 0 10px;
+    }
+
+    .site-more {
+        display: block;
+    }
+
+    .site-path {
+        padding: 0 12px;
+    }
+
+    .site-step-home span {
+        display: none;
+    }
+}

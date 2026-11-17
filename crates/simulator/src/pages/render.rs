@@ -272,6 +272,10 @@ mod tests {
             revision: Some(1),
             tree: serde_json::json!({"c": "Page"}),
             texts: BTreeMap::new(),
+            menu: crate::pages::SiteMenu {
+                home: false,
+                pages: Vec::new(),
+            },
         }
     }
 

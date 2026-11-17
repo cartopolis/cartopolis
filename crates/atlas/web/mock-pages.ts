@@ -1,4 +1,4 @@
-import type {PageData, PageNode, Resolved} from './src/cms/tree'
+import type {PageData, PageNode, Resolved, SiteMenu} from './src/cms/tree'
 
 import {isTextRef, registry} from './src/cms/tree'
 
@@ -32,6 +32,7 @@ const PAGES: Record<string, MockPage> = {
                 'markt.link': 'Kijk op de Vismarkt',
                 'quote.by': 'een buurtbewoner uit de Oosterpoort',
                 'quote.text': 'Eindelijk zie ik waar mijn buren het over hebben.',
+                nav: 'Over',
                 title: 'Over Cartopolis',
                 'why.chat.body': 'Versleutelde gesprekken, met je buren en je buurt.',
                 'why.chat.heading': 'Samen praten',
@@ -47,6 +48,7 @@ const PAGES: Record<string, MockPage> = {
                 'hero.heading': 'Your city, shared',
                 'hero.lead': 'Talk, plan and build with your neighbours — **on the map** of your own street.',
                 'markt.link': 'Look at the Vismarkt',
+                nav: 'About',
                 title: 'About Cartopolis',
                 'why.heading': 'Why Cartopolis',
                 'why.map.body': 'Built from open data: every house is where it is.',
@@ -85,7 +87,7 @@ const PAGES: Record<string, MockPage> = {
                 },
                 {c: 'Section', ch: [{c: 'DownloadButtons'}]},
             ],
-            p: {description: t('description'), title: t('title')},
+            p: {description: t('description'), menu: 1, nav: t('nav'), title: t('title')},
         },
     },
 }
@@ -113,7 +115,23 @@ function pageData(slug: string, lang: string): PageData | null {
         else if (site?.[lang] !== undefined) texts[key] = {lang, text: site[lang]}
         else if (site?.[page.source_lang] !== undefined) texts[key] = {lang: page.source_lang, text: site[page.source_lang]}
     }
-    return {languages: LANGUAGES, lang, revision: 3, slug, source_lang: page.source_lang, texts, tree: page.tree}
+    return {languages: LANGUAGES, lang, menu: menu(lang), revision: 3, slug, source_lang: page.source_lang, texts, tree: page.tree}
+}
+
+/** The site's menu as `pages::PageService::menu` makes it: pages with a `menu` position, by it. */
+function menu(lang: string): SiteMenu {
+    const pages = Object.entries(PAGES)
+        .filter(([, page]) => typeof page.tree.p?.menu === 'number')
+        .sort(([, a], [, b]) => (a.tree.p!.menu as number) - (b.tree.p!.menu as number))
+        .map(([slug, page]) => {
+            const text = (l: string) => page.texts[l]?.nav ?? page.texts[l]?.title
+            const own = text(lang)
+            return {
+                label: own !== undefined ? {lang, text: own} : {lang: page.source_lang, text: text(page.source_lang) ?? slug},
+                slug,
+            }
+        })
+    return {home: 'home' in PAGES, pages}
 }
 
 /** Admin › Content › Pages: the list `pages::Summary` makes, from the fixtures. */
@@ -145,6 +163,11 @@ export function mockPages(req: Request, url: URL): Response | null {
     }
     if (/^\/api\/admin\/pages\/[a-z0-9-]+\/(publish|unpublish)$/.test(url.pathname) && req.method === 'POST') {
         return Response.json({ok: true})
+    }
+    if (url.pathname === '/api/pages' && req.method === 'GET') {
+        const asked = url.searchParams.get('lang') ?? LANGUAGES[0]
+        const lang = LANGUAGES.includes(asked) ? asked : LANGUAGES[0]
+        return Response.json({...menu(lang), languages: LANGUAGES})
     }
     const live = /^\/api\/pages\/([a-z0-9-]+)$/.exec(url.pathname)
     const draft = /^\/api\/admin\/pages\/([a-z0-9-]+)\/draft$/.exec(url.pathname)

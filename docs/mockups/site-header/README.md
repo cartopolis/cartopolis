@@ -28,7 +28,7 @@ Drawn in the web UI's light palette (`crates/atlas/web/src/css/theme.css`). The
 
 ![v2](v2.png)
 
-**v2 (2026-11-17), proposed.** On v1 the owner asked how the logo going to
+**v2 (2026-11-17), agreed and built the same day** (`src/cms/sitebar.tsx`). On v1 the owner asked how the logo going to
 the front page fits the navigation. v2 draws the site map first: the front page
 is the root and the logo is its link, underlined when you are there. Under it
 are two kinds of place: the site (CMS pages marked "in menu") on the left of the

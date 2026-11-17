@@ -4,7 +4,7 @@ import {ICONS, SYMBOLS} from '@/lib/icons'
 
 import {VIEW_NAMES} from './components'
 import {paragraphs, parseInline} from './markup'
-import {type PageData, pageHref, parsePath, registry, resolve, safeHref} from './tree'
+import {NO_MENU, type PageData, pageHref, parsePath, registry, resolve, safeHref} from './tree'
 
 describe('the registry', () => {
     test('every component has a view, and every view a component', () => {
@@ -88,6 +88,7 @@ describe('texts', () => {
     const data: PageData = {
         lang: 'en',
         languages: ['nl', 'en'],
+        menu: NO_MENU,
         revision: 1,
         slug: 'over',
         source_lang: 'nl',

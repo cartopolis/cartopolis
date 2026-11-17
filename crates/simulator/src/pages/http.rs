@@ -22,6 +22,7 @@ use crate::http::{internal, require, HttpState};
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
+        .route("/api/pages", get(menu))
         .route("/api/pages/{slug}", get(live))
         .route("/api/admin/pages", get(list))
         .route(
@@ -97,6 +98,18 @@ async fn live(
         Some(data) => Json(data).into_response(),
         None => refused(PageError::NotFound),
     }
+}
+
+/// The site's menu for the app's bar (`src/lib/site-menu.ts`), with the
+/// languages its switch offers. A content page carries it in its own data.
+async fn menu(State(state): State<HttpState>, Query(q): Query<LangQuery>) -> Response {
+    let menu = state.pages.menu(q.lang(&state.pages));
+    Json(json!({
+        "home": menu.home,
+        "pages": menu.pages,
+        "languages": state.pages.languages(),
+    }))
+    .into_response()
 }
 
 async fn list(State(state): State<HttpState>, headers: HeaderMap) -> Response {

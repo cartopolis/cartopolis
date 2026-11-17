@@ -47,6 +47,9 @@ import {ADMIN, COMMUNITY} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
 import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
+import {loadSiteMenu, setSiteLang, site} from '@/lib/site-menu'
+import {SiteBar, type Step} from '@/cms/sitebar'
+import {siteText} from '@/cms/tree'
 import {AdminArea, adminCrumbs} from '@/components/elements/admin/admin'
 import {Icon} from '@/lib/icons'
 import {ProviderChoices} from '@/components/elements/providers/providers'
@@ -70,7 +73,6 @@ import {Calendar, type CalendarCtx, openCalendar, todayCount} from './calendar'
 type Mode = 'community' | 'world' | 'admin'
 
 const PATHS: Record<Mode, string> = {admin: ADMIN, community: COMMUNITY, world: '/world'}
-const LABELS: Record<Mode, string> = {admin: 'Admin', community: 'Community', world: 'World'}
 
 /** Which position the address is at: `/world`, `/admin`, or Community for the rest. */
 function mode(): Mode {
@@ -810,6 +812,7 @@ export class Chat extends MithrilComponent {
     })
 
     oncreate() {
+        void loadSiteMenu()
         if ($s.signup.token) chat().signIn({token: $s.signup.token})
         // An invite link (`/go?community=…` on the viewer, or `?community=` here).
         const code = inviteCode(new URLSearchParams(location.search).get('community') ?? '')
@@ -1416,53 +1419,33 @@ export class Chat extends MithrilComponent {
         return <div class="chat home-world-rail">{this.rail()}</div>
     }
 
-    /** The top bar: the wordmark, the switch, where you are, and your account. */
+    /**
+     * The site's bar (`cms/sitebar.tsx`, `docs/mockups/site-header` v2), the same
+     * as the content pages': the mark to the front page, the site's pages, the
+     * app's places with this one underlined, the language and your account, and
+     * under it the path from Home to where you are.
+     */
     topBar(now: Mode, signedIn: boolean) {
         const c = signedIn ? chat() : null
         const unread = c
             ? c.chats.filter((x) => !c.isMuted(x.channel)).reduce((n, x) => n + x.unread, 0)
             : 0
-        const seg = (to: Mode, label: m.Children, extra = '') => (
-            <button
-                aria-pressed={now === to ? 'true' : 'false'}
-                class={`home-seg-item${now === to ? ' is-on' : ''}${extra}`}
-                onclick={() => {
-                    if (now !== to) m.route.set(PATHS[to])
-                }}
-                type="button"
-            >
-                {label}
-            </button>
-        )
-        return (
-            <header class="home-top">
-                <a
-                    class="home-wordmark"
-                    href={COMMUNITY}
-                    onclick={(e: Event) => {
-                        e.preventDefault()
-                        m.route.set(COMMUNITY)
-                    }}
-                >
-                    <img alt="" class="mark-dark" src="/icon.svg" />
-                    <img alt="" class="mark-light" src="/icon-light.svg" />
-                    <span class="wordmark">carto<b>polis</b></span>
-                </a>
-                <nav aria-label="Switch between Community, World and Admin" class="home-seg">
-                    {seg('community', <>Community{unread > 0 && <span class="home-seg-count">{unread}</span>}</>)}
-                    {seg('world', <><span class="home-live" />World</>)}
-                    {signedIn && $s.signedIn && seg('admin', 'Admin', ' is-admin')}
-                </nav>
-                <nav aria-label="Where you are" class="home-crumbs">{this.crumbs(now, signedIn)}</nav>
-                <span class="home-spacer" />
-                {this.accountMenu(signedIn)}
-            </header>
-        )
+        return SiteBar({
+            account: this.accountMenu(signedIn),
+            admin: signedIn && !!$s.signedIn,
+            here: {kind: 'app', place: now},
+            lang: site.lang,
+            languages: site.languages.map((l) => ({go: () => setSiteLang(l), lang: l})),
+            menu: site.menu,
+            path: this.crumbs(now, signedIn),
+            route: (path) => m.route.set(path),
+            unread,
+        })
     }
 
-    /** Community › Oosterpoort › # street-party › Thread, each a step back up. */
-    crumbs(now: Mode, signedIn: boolean): m.Children {
-        const parts: {label: string; go?: () => void}[] = [{label: LABELS[now], go: () => m.route.set(PATHS[now])}]
+    /** Community › Oosterpoort › # street-party › Thread, each a step back up; Home comes before them. */
+    crumbs(now: Mode, signedIn: boolean): Step[] {
+        const parts: Step[] = [{go: () => m.route.set(PATHS[now]), label: siteText(site.lang, `site.nav.${now}`)}]
         if (now === 'admin') {
             for (const label of adminCrumbs()) parts.push({label})
         } else if (signedIn) {
@@ -1474,7 +1457,7 @@ export class Chat extends MithrilComponent {
             if (community) {
                 parts.push({go: () => this.show({id: community.id, kind: 'community'}), label: community.settings.name})
             } else if (space === 'home') {
-                parts.push({go: () => this.open(null), label: 'Home'})
+                parts.push({go: () => this.open(null), label: 'People and groups'})
             } else if (space === 'calendar') {
                 parts.push({label: 'Calendar'})
             } else if (space === 'notices') {
@@ -1494,17 +1477,7 @@ export class Chat extends MithrilComponent {
                 parts.push({label: 'Invitation'})
             }
         }
-        return parts.map((p, i) => {
-            const last = i === parts.length - 1
-            return (
-                <>
-                    {i > 0 && <span class="home-crumb-sep">›</span>}
-                    {last || !p.go
-                        ? <span class={last ? 'home-crumb is-last' : 'home-crumb'}>{p.label}</span>
-                        : <button class="home-crumb" onclick={p.go} type="button">{p.label}</button>}
-                </>
-            )
-        })
+        return parts
     }
 
     /** Your account: who you are, the theme, the other ways in, and Sign out. */

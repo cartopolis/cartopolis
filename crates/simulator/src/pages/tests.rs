@@ -282,6 +282,89 @@ fn live_pages_survive_a_restart() {
     assert_eq!(again.live_data("over", "nl").unwrap().revision, Some(1));
 }
 
+/// The site's top bar (`docs/mockups/site-header` v2): live pages with a
+/// `menu` position, by it, under their `nav` word or else their title.
+#[test]
+fn the_menu_holds_live_pages_by_their_position() {
+    let s = service();
+    let page = |at: Option<u32>, nav: bool| {
+        let menu = at.map(|n| format!(" menu={{{n}}}")).unwrap_or_default();
+        let nav = if nav { " nav={$t('nav')}" } else { "" };
+        format!("<Page title={{$t('title')}} description={{$t('description')}}{menu}{nav}><Section><DownloadButtons /></Section></Page>")
+    };
+    let words = |title: &str, nav: Option<&str>| {
+        let mut pairs = vec![("title", title), ("description", "…")];
+        if let Some(n) = nav {
+            pairs.push(("nav", n));
+        }
+        texts("nl", &pairs)
+    };
+    s.put(
+        "server",
+        &page(Some(2), false),
+        None,
+        &words("Je **eigen** server", None),
+        "a",
+    )
+    .unwrap();
+    s.put(
+        "over",
+        &page(Some(1), true),
+        None,
+        &words("Over Cartopolis", Some("Over")),
+        "a",
+    )
+    .unwrap();
+    s.put(
+        "los",
+        &page(None, false),
+        None,
+        &words("Niet in het menu", None),
+        "a",
+    )
+    .unwrap();
+    s.set_texts(
+        "over",
+        "en",
+        &[("nav".to_string(), "About".to_string())].into(),
+        "a",
+    )
+    .unwrap();
+
+    // Drafts are not in it.
+    assert!(s.menu("nl").pages.is_empty());
+    for slug in ["server", "over", "los"] {
+        s.publish(slug, "a").unwrap();
+    }
+    let menu = s.menu("nl");
+    assert!(!menu.home);
+    let labels: Vec<(&str, &str)> = menu
+        .pages
+        .iter()
+        .map(|p| (p.slug.as_str(), p.label.text.as_str()))
+        .collect();
+    // By position; the title without its markup when there is no nav word.
+    assert_eq!(labels, [("over", "Over"), ("server", "Je eigen server")]);
+
+    // In English, the translation where there is one, else the source's words.
+    let en = s.menu("en");
+    assert_eq!(
+        en.pages[0].label,
+        Resolved {
+            text: "About".into(),
+            lang: "en".into()
+        }
+    );
+    assert_eq!(en.pages[1].label.lang, "nl");
+    // A language the server does not serve: its first.
+    assert_eq!(s.menu("de"), menu);
+    // Every page's data carries it, for its bar.
+    assert_eq!(s.live_data("los", "nl").unwrap().menu, menu);
+
+    s.unpublish("over").unwrap();
+    assert_eq!(s.menu("nl").pages.len(), 1);
+}
+
 #[test]
 fn plain_drops_the_markup() {
     assert_eq!(

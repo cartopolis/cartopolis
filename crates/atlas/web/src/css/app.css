@@ -2,6 +2,7 @@
 @import '@garage44/mithril/components/base.css';
 /* The client's palette, generated: after the library's tokens, which it overrides. */
 @import './theme.css';
+@import '../cms/sitebar.css';
 
 /* Each page's own rules, in a stylesheet beside the page or element it styles. */
 @import '../components/elements/account/account.css';

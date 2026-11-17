@@ -238,6 +238,13 @@ component with live data (a list of communities) waits for a public API to
 read it from. Header, footer and the language switch are the page frame, not
 components a page chooses.
 
+**A page puts itself in the site's top bar** (2026-11-17,
+`docs/mockups/site-header` v2) with two props of `Page`: `menu={1}`, its
+position, and `nav={$t('nav')}`, its word there when the title is too long.
+Both are part of the draft, so a page enters the bar when it is published and
+leaves it when it is taken down. `PageService::menu` lists them; every page's
+data carries the list, and `GET /api/pages?lang=` answers it to the app's bar.
+
 ## The operator's side
 
 Admin › Content › **Pages** (frame 4): the list with each language's state,

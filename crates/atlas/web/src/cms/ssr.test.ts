@@ -13,6 +13,13 @@ function everything(slug: string): PageData {
     return {
         lang: 'nl',
         languages: ['nl', 'en'],
+        menu: {
+            home: true,
+            pages: [
+                {label: {lang: 'nl', text: 'Over'}, slug: 'over'},
+                {label: {lang: 'nl', text: 'Je eigen server'}, slug: 'server'},
+            ],
+        },
         revision: 3,
         slug,
         source_lang: 'nl',
@@ -80,6 +87,32 @@ describe('the server render', () => {
         const html = await renderPage(data)
         expect(html).not.toContain('<script>')
         expect(html).toContain('&lt;script&gt;')
+    })
+
+    // The bar is drawn from the site map (docs/mockups/site-header v2): the
+    // mark is the front page's item, and every other page has a path from it.
+    test('draws the site bar: the menu, where you are, and the path from Home', async () => {
+        const home = await renderPage(everything('home'))
+        expect(home).toContain('href="/nl/" class="site-mark is-on"')
+        expect(home).toContain('href="/nl/over"')
+        expect(home).toContain('href="/nl/server"')
+        expect(home).toContain('href="/chat"')
+        expect(home).toContain('href="/world"')
+        expect(home).not.toContain('site-path')
+
+        const over = await renderPage(everything('over'))
+        expect(over).toContain('href="/nl/" class="site-mark"')
+        expect(over).toContain('aria-current="page" href="/nl/over" class="site-link is-on"')
+        expect(over).toMatch(/class="site-path".*Home.*›.*Over/)
+        // Signed out as far as the server knows; the browser says otherwise after the takeover.
+        expect(over).toContain('href="/chat" class="site-signin"')
+        expect(over).not.toContain('is-admin')
+    })
+
+    test('a server with no front page sends the mark to /', async () => {
+        const data = everything('over')
+        data.menu = {home: false, pages: []}
+        expect(await renderPage(data)).toContain('href="/" class="site-mark"')
     })
 
     // The browser takes the server's HTML over node for node, and Mithril

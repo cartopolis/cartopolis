@@ -3,10 +3,12 @@
   "root": "Page",
   "components": {
     "Page": {
-      "doc": "The page itself; exactly once, at the root. Its title and description are the browser tab's and the link preview's.",
+      "doc": "The page itself; exactly once, at the root. Its title and description are the browser tab's and the link preview's. menu puts the page in the site's top bar once it is published, at that position (1 first); nav is its word there when the title is too long for a bar.",
       "props": {
         "title": {"type": "text", "required": true},
-        "description": {"type": "text", "required": true}
+        "description": {"type": "text", "required": true},
+        "menu": {"type": "number"},
+        "nav": {"type": "text"}
       },
       "children": "blocks",
       "example": "<Page title={$t('title')} description={$t('description')}>\n  <Hero heading={$t('hero.heading')}><Text>{$t('hero.lead')}</Text></Hero>\n</Page>"
@@ -98,6 +100,13 @@
   "site_texts": {
     "site.nav.community": {"nl": "Community", "en": "Community"},
     "site.nav.world": {"nl": "Wereld", "en": "World"},
+    "site.nav.admin": {"nl": "Beheer", "en": "Admin"},
+    "site.nav.site": {"nl": "De site", "en": "The site"},
+    "site.nav.app": {"nl": "De app", "en": "The app"},
+    "site.home": {"nl": "Home", "en": "Home"},
+    "site.menu": {"nl": "Menu", "en": "Menu"},
+    "site.path": {"nl": "Waar je bent", "en": "Where you are"},
+    "site.signin": {"nl": "Inloggen", "en": "Sign in"},
     "site.language": {"nl": "Taal", "en": "Language"},
     "site.loading": {"nl": "Even laden…", "en": "Loading…"},
     "site.not_found": {"nl": "Deze pagina bestaat niet (meer).", "en": "This page does not exist (any more)."},

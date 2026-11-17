@@ -39,7 +39,24 @@ export interface PageData {
     tree: PageNode
     /** Every key the tree and the frame use, already resolved for `lang` with fallbacks. */
     texts: Record<string, Resolved>
+    /** The site's menu in `lang`, which the bar draws (`sitebar.tsx`). */
+    menu: SiteMenu
 }
+
+/** A content page in the site's menu (`pages::MenuItem` on the simulator). */
+export interface MenuItem {
+    slug: string
+    label: Resolved
+}
+
+/** `GET /api/pages?lang=`: the site's own pages in its top bar, for a language. */
+export interface SiteMenu {
+    /** Whether the front page is published: else the mark goes to `/`, the chat. */
+    home: boolean
+    pages: MenuItem[]
+}
+
+export const NO_MENU: SiteMenu = {home: false, pages: []}
 
 export type PropType = 'text' | 'url' | 'image' | 'enum' | 'number' | 'bool' | 'place'
 
@@ -77,6 +94,12 @@ export function isTextRef(v: unknown): v is TextRef {
 export function safeHref(href: string): boolean {
     if (href.startsWith('/')) return !href.startsWith('//') && !href.startsWith('/\\')
     return /^https:\/\/[^\s/]/.test(href) || /^mailto:[^\s]+$/.test(href)
+}
+
+/** Words of the site's own (the bar, the frame) in `lang`, before or without a page. */
+export function siteText(lang: string, key: string): string {
+    const texts = registry.site_texts[key]
+    return texts?.[lang] ?? texts?.en ?? ''
 }
 
 /** Where a text a page names comes from: the answer, else the registry's own site texts. */

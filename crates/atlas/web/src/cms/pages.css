@@ -3,6 +3,7 @@
 @import '@garage44/mithril/components.css';
 @import '@garage44/mithril/components/base.css';
 @import '../css/theme.css';
+@import './sitebar.css';
 
 @font-face {
     font-family: 'Plus Jakarta Sans';
@@ -28,64 +29,6 @@ body {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-}
-
-.cms-top {
-    display: flex;
-    align-items: center;
-    gap: 1.25rem;
-    padding: 0.85rem clamp(1rem, 4vw, 2.5rem);
-    border-bottom: 1px solid var(--m-border);
-}
-
-.wordmark {
-    color: var(--m-text-strong);
-    font-size: 1.1rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    text-decoration: none;
-
-    & b {
-        color: var(--c-brand);
-        font-weight: inherit;
-    }
-}
-
-.cms-nav {
-    display: flex;
-    gap: 1rem;
-    margin-left: auto;
-
-    & a {
-        color: var(--m-text-dim);
-        text-decoration: none;
-    }
-
-    & a:hover {
-        color: var(--m-text-strong);
-    }
-}
-
-.cms-langs {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--m-border);
-    border-radius: var(--m-radius-sm);
-    background: var(--m-surface-sunken);
-
-    & a {
-        padding: 0.15rem 0.5rem;
-        border-radius: calc(var(--m-radius-sm) - 2px);
-        color: var(--m-text-dim);
-        font-size: 0.8rem;
-        text-decoration: none;
-    }
-
-    & a.on {
-        background: var(--m-surface-raised);
-        color: var(--m-text-strong);
-    }
 }
 
 .cms-draft {
