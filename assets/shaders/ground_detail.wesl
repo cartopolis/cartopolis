@@ -46,6 +46,7 @@ import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT,
 };
 import bevy_pbr::render::mesh_view_bindings as view_bindings;
 import super::water_common::{
@@ -371,6 +372,97 @@ fn street_scale(p: vec2<f32>, laid: u32, metres_per_px: f32, sharpest_px: f32) -
     return s;
 }
 
+/// The edge of a road, where the camber sends the water and the sweeper does
+/// not reach: a gutter of dust and grit a hand or two wide, moss in it where it
+/// stays damp, the odd green tuft in a seam, and on the tarmac the net of
+/// cracks old asphalt breaks into along its edge, where the foundation gives
+/// first. Texture, not placement — nothing here claims a weed at a particular
+/// spot (`streets-that-look-lived-in.md`).
+///
+/// `seam_m` is metres to the nearest seam: the carriageway's edge on the
+/// tarmac, either edge of the kerb band on the band. `tarmac` says which, since
+/// a concrete kerb band does not crack the way asphalt does. Every lattice
+/// divides 125, so with `pav_hash`'s 80 they hold across the floating origin's
+/// jump.
+///
+/// The dust is a colour of its own laid over the surface, not a multiplier: it
+/// lightens dark tarmac and darkens the pale band, which is what dust does.
+const DUST: vec3<f32> = vec3<f32>(0.24, 0.215, 0.17);
+/// `ribbon::ROAD_CASING_M`: how wide a kerb band is.
+const KERB_BAND_M: f32 = 0.75;
+const TUFT: vec3<f32> = vec3<f32>(0.07, 0.15, 0.03);
+
+/// Asphalt's crazing: the edges of an irregular net of cells `unit` metres
+/// across, as metres to the nearest edge.
+fn craze_m(p: vec2<f32>, unit: f32) -> f32 {
+    let q = p / unit;
+    let c = floor(q);
+    var f1 = 9.0;
+    var f2 = 9.0;
+    for (var j = -1; j <= 1; j++) {
+        for (var i = -1; i <= 1; i++) {
+            let cell = c + vec2<f32>(f32(i), f32(j));
+            let h = vec2<f32>(pav_hash(cell + vec2<f32>(3.0, 7.0)), pav_hash(cell + vec2<f32>(61.0, 29.0)));
+            let d = length(cell + 0.15 + 0.7 * h - q);
+            if d < f1 {
+                f2 = f1;
+                f1 = d;
+            } else if d < f2 {
+                f2 = d;
+            }
+        }
+    }
+    return 0.5 * (f2 - f1) * unit;
+}
+
+fn gutter(look_in: PavingLook, p: vec2<f32>, seam_m: f32, tarmac: bool, metres_per_px: f32) -> PavingLook {
+    var look = look_in;
+    let k = 1.0 - pav_blur(0.5, metres_per_px);
+    if k <= 0.0 || seam_m > 1.5 {
+        return look;
+    }
+    let aa = max(metres_per_px, 0.002);
+    // How wide the dirty band is wanders along the road: swept here, silted
+    // up there.
+    let reach = 0.15 + 0.35 * pav_noise(p / 3.125 + vec2<f32>(19.0, 7.0));
+    let band = 1.0 - smoothstep(0.0, reach, seam_m);
+    let mottle = pav_noise(p / 0.25 + vec2<f32>(3.0, 59.0));
+    let dust = band * mix(0.35, 0.85, mottle) * k;
+    // Moss where the gutter stays damp: patches a metre or so long, broken up
+    // at the scale of a hand.
+    let damp = smoothstep(0.35, 0.6, pav_noise(p / 1.25 + vec2<f32>(37.0, 23.0)));
+    let clumps = smoothstep(0.3, 0.6, pav_noise(p / 0.125 + vec2<f32>(11.0, 5.0)));
+    let moss = sqrt(band) * damp * clumps * k;
+    // A tuft in the seam itself: a few centimetres of green right at the
+    // edge, every metre or two.
+    let in_seam = 1.0 - smoothstep(0.03, 0.12, seam_m);
+    let tufts = in_seam * smoothstep(0.6, 0.75, pav_noise(p / 0.625 + vec2<f32>(43.0, 67.0)))
+        * smoothstep(0.3, 0.55, mottle) * (1.0 - pav_blur(0.1, metres_per_px));
+
+    var crack = 0.0;
+    if tarmac {
+        // Crazed only within a metre or so of the edge, and only on stretches
+        // that have started to go.
+        let near = 1.0 - smoothstep(0.2, 1.2, seam_m);
+        let aged = smoothstep(0.4, 0.6, pav_noise(p / 6.25 + vec2<f32>(71.0, 31.0)));
+        let fade = near * aged * (1.0 - pav_blur(0.03, metres_per_px));
+        if fade > 0.0 {
+            let jitter = (vec2<f32>(pav_noise(p / 0.0625), pav_noise(p / 0.0625 + vec2<f32>(5.0, 9.0))) - 0.5) * 0.03;
+            let d = craze_m(p + jitter, 0.3125);
+            let width = mix(0.003, 0.008, near);
+            crack = (1.0 - smoothstep(width, width + aa, d)) * fade;
+        }
+    }
+
+    look.tone *= 1.0 - 0.6 * crack;
+    let green = max(moss * 0.8, tufts * 0.9);
+    let fill = mix(DUST, mix(MOSS, TUFT, tufts), green / max(dust + green, 1.0e-3));
+    look.fill = vec4<f32>(fill, max(dust, green));
+    look.roughness = mix(look.roughness, 1.0, dust);
+    look.tilt *= 1.0 - 0.7 * dust;
+    return look;
+}
+
 /// `paving::pattern`: 1 asphalt, 2 concrete slabs, 3 brick in herringbone,
 /// 4 concrete pavers in a stretcher bond, 5 pavement tiles, 6 stone setts,
 /// 7 grass pavers, 8 gravel and sand.
@@ -626,6 +718,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         merc = (ground.tile.xy + in.uv) / ground.tile.z;
     }
     let merc_px = length(fwidth(merc));
+    // Metres to the nearer side of a road ribbon, whose `u` runs 0→1 straight
+    // across it (`SurfaceMesh::uvs`). The ribbon's width is not passed in, so it
+    // is read off how fast `u` changes over the ground: solve the 2×2 the two
+    // screen derivatives make for `u`'s gradient in world XZ, whose length is
+    // one over the width. A kerb band's `u` also runs 0→1 across it, from the
+    // carriageway out (`ribbon::kerb_band`), over a known width; a junction
+    // stub's is 0 throughout, and gets no seam. Meaningless on anything but a
+    // road, which is the only branch that reads it.
+    var seam_m = 1.0e4;
+    @if(VERTEX_UVS_A)
+    {
+        let dx = dpdx(in.world_position.xz);
+        let dy = dpdy(in.world_position.xz);
+        let du = vec2<f32>(dpdx(in.uv.x), dpdy(in.uv.x));
+        let det = dx.x * dy.y - dx.y * dy.x;
+        let across = min(in.uv.x, 1.0 - in.uv.x);
+        if abs(det) > 1.0e-12 && (abs(du.x) + abs(du.y)) > 0.0 {
+            let g = vec2<f32>(dy.y * du.x - dx.y * du.y, dx.x * du.y - dy.x * du.x) / det;
+            seam_m = across / max(length(g), 1.0e-4);
+        }
+        if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) == 0u
+            && (abs(du.x) + abs(du.y)) > 0.0 {
+            seam_m = across * KERB_BAND_M;
+        }
+    }
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
 
@@ -733,19 +850,28 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // A road ribbon: its texture carries the markings, the wheel paths and
         // a grain coarser than the stones, so the aggregate's relief is added
         // here exactly as the surveyed asphalt beside it gets it.
-        let t = grain_tilt(in.world_position.xz, 0.025, ASPHALT_RELIEF, metres_per_px);
-        let n = normalize(pbr_input.N + vec3<f32>(t.x, 0.0, t.y));
-        pbr_input.N = n;
-        pbr_input.world_normal = n;
+        //
         // The same broad variation as the surveyed asphalt beside it, so the two
         // do not change character at the seam; no patches, which would cut
-        // across the markings at angles no repair crew would.
+        // across the markings at angles no repair crew would. Then the gutter.
         let street = street_scale(in.world_position.xz, 0u, metres_per_px, sharpest_px);
+        var edge: PavingLook;
+        edge.tone = street.tone;
+        edge.tilt = grain_tilt(in.world_position.xz, 0.025, ASPHALT_RELIEF, metres_per_px);
+        edge.roughness = pbr_input.material.perceptual_roughness * street.roughness;
+        edge.fill = vec4<f32>(0.0);
+        // A road's carriageway samples its generated texture; its kerb band is
+        // flat-coloured (`road_base_material`).
+        let tarmac = (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u;
+        edge = gutter(edge, in.world_position.xz, seam_m, tarmac, metres_per_px);
+        let n = normalize(pbr_input.N + vec3<f32>(edge.tilt.x, 0.0, edge.tilt.y));
+        pbr_input.N = n;
+        pbr_input.world_normal = n;
         pbr_input.material.base_color = vec4<f32>(
-            pbr_input.material.base_color.rgb * street.tone,
+            mix(pbr_input.material.base_color.rgb * edge.tone, edge.fill.rgb, edge.fill.a),
             pbr_input.material.base_color.a,
         );
-        pbr_input.material.perceptual_roughness *= street.roughness;
+        pbr_input.material.perceptual_roughness = edge.roughness;
     } else if detail.w < 0.0 && detail.x > 0.5 {
         // A tree's crown (`ground_detail::DETAIL_FOLIAGE`).
         let look = foliage(in.world_position.xyz, crown_px);
