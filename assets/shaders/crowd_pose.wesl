@@ -6,16 +6,16 @@
 // The body is a MakeHuman person cut down for a crowd
 // (`cartopolis_human::crowd`). Its walk is not a skeleton: every vertex's
 // position and normal were baked at each of `counts.y` poses through one walk
-// cycle, then once standing, then (riders) a turn of the cranks, then (finest
-// level only) at `counts.w` poses
+// cycle, then once standing, then (riders) a turn of the cranks and once
+// stopped with a foot down, then (finest level only) at `counts.w` poses
 // through a wave, into `poses`. A walker's `MeshTag` says where it is in its
 // cycle and how far it has slowed to a stand, so every walker wearing a body
 // shares one mesh and one draw and still steps on its own.
 //
 // A cyclist wears the same body and texture through a material of its own,
 // whose `cycle.x` starts its cycle at the riding poses — a turn of the cranks,
-// baked after the standing pose — so its phase is the cranks'. A rider never
-// stands.
+// baked after the standing pose — so its phase is the cranks', and whose
+// `cycle.y` is the stopped pose: a rider "stands" by putting a foot down.
 //
 // The tag, from bit 0:
 //   0–11   the phase through the walk cycle, 0 … 4095; waving, through the wave

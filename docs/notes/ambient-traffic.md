@@ -6,8 +6,9 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   agent_models.rs, crowd.rs, CrowdFigure, CarBody, signal_speed, signals_near, "brake lights", "walk cycle", "pedestrians", cars_barred, close_car_free_lines, "car-free", "motor_vehicle",
   cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled,
   crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
-  give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON]
-updated: 2026-11-15
+  give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON,
+  Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day"]
+updated: 2026-11-17
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -153,10 +154,12 @@ from the cause. The visibility queries are one `SystemParam` bundle now.
 
 ## What this deliberately is not
 
-No car-to-car collision, no give-way between agents, and people walk through
-each other and through the cars and ignore the lights. (Queueing came with
-headway on 2026-09-10, stopping at signals on 2026-10-19, walkers that notice
-avatars and cars and cyclists that give way to them on 2026-11-15 — see below.)
+No car-to-car collision and no give-way between vehicles at a junction.
+(Queueing came with headway on 2026-09-10, stopping at signals on 2026-10-19,
+walkers that notice avatars and cars and cyclists that give way to them on
+2026-11-15, and walkers that cross at zebras and lights, traffic that stops
+for them, walkers that step round each other and cars that stay behind a
+cyclist on 2026-11-17 — see below.)
 Every one is a simulation cost landing on every frame, and none is what the layer
 is for: the question it answers is "is this street alive", settled at a glance
 from a range where two cars overlapping for a moment is invisible. Recorded here
@@ -698,3 +701,103 @@ real rate. Limits: the avatar's walking speed is not read, so a car does not
 anticipate somebody about to step out; walkers are not given way to; a
 cyclist on a cycle track crossing a zebra's road is a different line and is
 not stopped by that zebra unless the zebra is mapped across the track too.
+
+## The street sees itself (2026-11-17)
+
+Asked "can the cyclists, walkers and cars move through the city more
+realistically?", the owner took all three proposals — traffic that notices
+itself, the small things, the hour — and added **fatbikes that do not keep
+to the rules and ride the pavements**. Five commits; what is not in them:
+
+**Walkers cross** (`Car::crossing`, `crossing_ahead`, `safe_to_cross`).
+Before, a walker changed sides only at a junction, by teleporting its
+offset through the `Turn`. Now one passing a zebra or a light across its own
+street, with a pavement on the far side, stops at the kerb 45 % of the time,
+faces the road, and looks (0.8 s at least). At a zebra it steps out once no
+vehicle is on the stripes and every one coming could stop at 2.5 m/s² — a
+braking a walker would trust, gentler than the 3 m/s² cars plan with, so a
+car that has to stop for it can. At a light it walks from a second into its
+road's red to three seconds before green (`street_detail::signal_lets_walk`;
+the pedestrian heads are not drawn per phase, so this is the walkers' rule,
+not a lamp), or while a button holds it. It gives up after 30 s. Across, its
+offset runs from its pavement to the other at 1.15× its pace, then it walks on
+the way it was going; `last_cross` keeps it from crossing the same stripes
+straight back, which a deterministic draw would otherwise do.
+
+**Vehicles stop for them** through the paths the avatars already had: a
+walker waiting at a zebra is in `zebra_speed`'s list facing across, and one on
+the road is in `yield_to`'s. Both are gathered in the occupancy pass, from
+last frame's states — so are all the vehicles' positions and speeds for
+`safe_to_cross`. That pass now reads a pose for every walker and vehicle (it
+read none for cars and walkers before): about 480 line lookups a frame with
+every pool on.
+
+**Walkers step round each other** — `make_way` with the walkers it is
+closing on added to the avatars, found through a 6 m grid. *Closing* is the
+point: a walker steps round somebody coming the other way or dawdling ahead,
+never the one beside it at its own pace, or a pavement of people walking
+together jitters sideways for ever. A standing walker makes way for nobody.
+They still overlap when two step the same way, rarely.
+
+**Cars pass cyclists or stay behind** (`pass_cyclist`). The lane offsets put
+a car and a bike in the cycle lane 0.6 m apart, centre to centre, on a
+5.5 m residential street — a car drove through every rider it caught. Now a
+car moves over by what it needs for 0.6 m of air between the bodies if that
+takes no more than a quarter of the oncoming lane (or, one-way, all but
+0.3 m); otherwise it follows, settling ~8 m behind at the bike's pace. It
+does not look for oncoming traffic before it moves over. The two tables stay
+separate (`AgentKind::index`); the car reads the cyclists' one.
+
+**Traffic turns** (`hand_off`, `STRAIGHT_ON_WEIGHT`). The 2026-09-10 fix for
+cars turning off main roads at random — take the way nearest straight on —
+overshot: nothing ever turned. It is a weighted draw now, 2.5 for carrying
+on within ~25°, 1 for each turn, times `importance`, so a main road keeps
+four in five of its cars past a residential side street.
+
+**Cyclists take the track** (`ride_the_tracks`). Shortbread maps a main
+road's cycle track as its own `cycleway`, so riders went down both. A street
+with a cycle-only line running its way within its half width + 8 m along
+60 % of it is off the cyclists' network, recomputed from `kind_cycles`
+whenever the lines change. Fatbikes ignore it, as they would.
+
+**Fatbikes** (`AgentKind::Fatbike`, `agent_models::fatbike`). Twelve, under
+the Cyclists toggle. The model is built on `BIKE_FIT`'s saddle, bottom
+bracket and grips so the riders' baked poses sit on it unchanged; the rest
+is a fatbike's (20-inch fat tyres, battery, bench seat, suspension fork,
+tall flat bar), in matte paints. They may use any cycle or walking line,
+ride one-way streets either way, at 26 km/h (18 on a footway or pavement,
+each ±15 %); on a street with a pavement 55 % ride the pavement; 70 % run
+red lights and pass zebras (`defiant`). None waits for anybody: it weaves
+(`make_way_ahead`, 11 m ahead, 1.8 m/s sideways) round walkers, riders and
+avatars, slows only when it cannot get by, and `keep_clear` keeps it out of
+them. Walkers make way for and glance at fatbikes as at avatars — too late
+to do much. The rider's feet rest on level cranks: the motor pedals.
+
+**A foot down** (`human::crowd::foot_down`, `CrowdBody::ride_stop`). A
+held rider used to balance on its pedals however long the light. Each body
+now bakes one more riding pose: slid 0.15 m forward and 0.08 m down off the
+saddle, hands on the grips, right pedal at 45° to push off from, left foot on
+the road beside the bike — solved in the bike's frame, where the road rises
+toward the lean, with the bike leaning just enough for 97 % of the leg to
+reach it (13.1° for the shipped woman). Seated, by a reckoning on paper
+rather than a solve, it took past the 0.4 rad allowed: riders slide off the
+saddle to stop. The riders' material names it as their standing pose,
+so `standing` blends the foot down with no shader change; 36 of the 40 poses.
+
+**The hour** (`systems::traffic_hours`). The pools are a fixed size, the
+busiest a street gets; a share of each is out at the scene's hour
+(`DevPanelState::time_of_day`, the sun's clock — a `--time` capture sets it)
+on a weekday or a weekend day (from `WorldClock`). The curves are a shape
+drawn by hand to how Dutch city traffic is generally known to run — two
+commuter peaks for cars and bikes, a midday-afternoon one on foot, the
+fatbikes after school and into the evening, a late slow weekend — **not
+fitted to any count**. An agent past the quota leaves the road at the end
+of a line more than 80 m from the camera (`OFF_DUTY_M`), so a thinning
+street never pops in view, and is not placed again until the hour fills.
+
+### What is not done
+
+Vehicles still do not give way to each other at a junction or look for
+oncoming traffic before passing; nobody crosses mid-block; walkers do not
+wait at a light at a junction without a mapped crossing; nobody parks or
+gets on a bike; fatbikes have no passenger, though the seat has room.
