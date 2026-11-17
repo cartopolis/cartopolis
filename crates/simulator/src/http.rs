@@ -61,8 +61,8 @@ pub struct HttpState {
     pub chat: Arc<crate::chat::ChatHub>,
     pub scripts: ScriptHandle,
     pub calls: Option<crate::calls::CallsHandle>,
-    /// The key browsers subscribe to call pushes with (`crate::vapid`); `None`
-    /// on a server without calls.
+    /// The key browsers subscribe to pushes with (`crate::vapid`); `None`
+    /// only where a test builds this state without one.
     pub vapid: Option<Arc<crate::vapid::Vapid>>,
     /// Prim create/edit/delete/script, shared with the wire so the two surfaces
     /// cannot disagree about who may do what (`crate::prims`).

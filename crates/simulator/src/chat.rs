@@ -147,6 +147,9 @@ pub struct ChatHub {
     /// one thing both the connections and the HTTP routes that change roles
     /// already share (`roles::refresh_grants`).
     grants: Mutex<HashMap<String, tokio::sync::watch::Sender<PermissionSet>>>,
+    /// Where a private message for somebody with no device connected goes to
+    /// wake their closed app (`crate::push`); unset in tests that start none.
+    wake: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<crate::push::Ring>>,
 }
 
 /// Lock the hub, surviving poisoning. `connected_ids` runs inside the tick loop,
@@ -216,6 +219,42 @@ impl ChatHub {
             }
             c.enqueue(*id, Lane::Text, frame.clone());
         }
+    }
+
+    /// Wake pushes go to `push` from now on (`crate::push::spawn`).
+    pub fn set_wake(&self, push: tokio::sync::mpsc::UnboundedSender<crate::push::Ring>) {
+        let _ = self.wake.set(push);
+    }
+
+    /// A message was written in a private chat or topic: wake the closed apps
+    /// of those of `accounts` with no private-chat device connected here, who
+    /// therefore did not get it from [`Self::deliver_private`]. `from` is the
+    /// writer's `accounts.id` (empty for somebody elsewhere), `from_name` what
+    /// blocks are kept against. Commits are not messages and wake nobody.
+    pub fn wake_for_message(&self, accounts: &[String], from: &str, from_name: &str) {
+        let Some(wake) = self.wake.get() else { return };
+        let offline: Vec<String> = {
+            let clients = locked(&self.clients);
+            accounts
+                .iter()
+                .filter(|a| *a != from)
+                .filter(|a| {
+                    !clients
+                        .values()
+                        .any(|c| c.device.is_some() && &c.account == *a)
+                })
+                .cloned()
+                .collect()
+        };
+        if offline.is_empty() {
+            return;
+        }
+        let _ = wake.send(crate::push::Ring {
+            kind: crate::push::Kind::Message,
+            caller: from.to_owned(),
+            caller_name: from_name.to_owned(),
+            members: offline,
+        });
     }
 
     /// Deliver a frame to **one** connected private-chat device of any of
@@ -507,6 +546,31 @@ mod tests {
 
         hub.set_blocked(1, "loud", true);
         hub.deliver_all("loud", &Bytes::from_static(b"again"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A message wakes only the members it could not reach: not the writer,
+    /// not somebody with a chat device connected — but somebody connected
+    /// without one (a page that is not the chat) is woken.
+    #[test]
+    fn a_message_wakes_only_members_with_no_device_here() {
+        let hub = ChatHub::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        hub.set_wake(tx);
+        let _ann = hub.register(1, "ann", []);
+        hub.set_device(1, uuid::Uuid::from_u128(1));
+        let _bob = hub.register(2, "bob", []);
+        hub.set_device(2, uuid::Uuid::from_u128(2));
+        let _cy = hub.register(3, "cy", []);
+        let members: Vec<String> = ["ann", "bob", "cy", "dee"].map(String::from).to_vec();
+
+        hub.wake_for_message(&members, "ann", "ann");
+        let ring = rx.try_recv().unwrap();
+        assert_eq!(ring.kind, crate::push::Kind::Message);
+        assert_eq!(ring.members, ["cy", "dee"]);
+
+        // Everybody there: nothing is sent at all.
+        hub.wake_for_message(&members[..2], "ann", "ann");
         assert!(rx.try_recv().is_err());
     }
 

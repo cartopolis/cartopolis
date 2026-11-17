@@ -1,5 +1,6 @@
-// UnifiedPush registration: where the simulator wakes this phone for a call
-// while the app is closed (protocol 29, docs/notes/calls.md).
+// UnifiedPush registration: where the simulator wakes this phone for a call or
+// a message while the app is closed (protocol 29, docs/notes/calls.md,
+// docs/notes/message-wake-ups.md).
 //
 // UnifiedPush rather than Firebase for the reason ConnectionService gives: no
 // Google Play services. The person installs a distributor app of their choice
@@ -75,7 +76,7 @@ final class Push {
         intent.setPackage(chosen);
         intent.putExtra("token", token);
         intent.putExtra("application", activity.getPackageName());
-        intent.putExtra("message", "Incoming calls");
+        intent.putExtra("message", "Calls and messages");
         activity.sendBroadcast(intent);
 
         // Somebody who installed a distributor wants to be rung, and from API 33

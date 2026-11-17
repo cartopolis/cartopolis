@@ -538,6 +538,10 @@ pub fn deliver_here(
     if let Ok(frame) = encode_app_frame(msg) {
         chat.deliver_private(accounts, sender, commit, &Bytes::from(frame));
     }
+    // The writer is elsewhere, so has no account here to leave out.
+    if !commit {
+        chat.wake_for_message(accounts, "", sender);
+    }
 }
 
 #[cfg(test)]

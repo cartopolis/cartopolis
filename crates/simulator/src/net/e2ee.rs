@@ -579,6 +579,12 @@ pub(super) async fn on_send<T: FrameTransport>(
             })?);
             ctx.chat
                 .deliver_private(&members, &ctx.display_name, commit, &frame);
+            // Whoever has no device connected is woken, if their app or page can
+            // be (`crate::push`).
+            if !commit {
+                ctx.chat
+                    .wake_for_message(&members, &ctx.principal_key, &ctx.display_name);
+            }
             for inv in invites {
                 let frame = Bytes::from(encode_app_frame(&NetMessage::E2eeInvite {
                     group: inv.group,

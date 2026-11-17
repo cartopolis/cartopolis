@@ -212,3 +212,7 @@ does not exist as a case. Everything above makes a *connected* client reachable
 while its screen is off, which is a different thing from delivering to one that
 is gone. That is the next piece, and it is a server-side feature with no Android
 in it at all.
+
+Since then private chats keep a sealed log on the server (`encrypted-chat.md`),
+and a closed app is woken for a new line in one through UnifiedPush
+(`message-wake-ups.md`) — without this service, and without holding anything.

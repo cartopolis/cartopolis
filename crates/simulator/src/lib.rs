@@ -149,12 +149,11 @@ pub async fn serve_with(
     let mut calls_addr = None;
     let mut calls_task = None;
     // The key browsers subscribe to pushes with (`vapid`), kept beside the
-    // database. Only when calls are on: a push rings a call, and a server
-    // without calls has nothing to ring a browser for.
-    let vapid = match config.calls_listen {
-        Some(_) => Some(Arc::new(load_vapid(&config)?)),
-        None => None,
-    };
+    // database, and the task that wakes closed apps and pages (`push`): for a
+    // call when calls are on, and for a private message always.
+    let vapid = Some(Arc::new(load_vapid(&config)?));
+    let ring = push::spawn(conn.clone(), vapid.clone());
+    chat.set_wake(ring.clone());
     let calls = match config.calls_listen {
         Some(ref listen) => {
             let public = config
@@ -163,8 +162,6 @@ pub async fn serve_with(
                 .map(str::parse::<SocketAddr>)
                 .transpose()
                 .context("calls_public_addr must be IP:port")?;
-            // Wakes the phones of a chat's members when a call starts in it.
-            let ring = push::spawn(conn.clone(), vapid.clone());
             let (handle, bound, task) = calls::spawn(
                 listen,
                 public,

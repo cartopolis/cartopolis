@@ -1,5 +1,6 @@
-//! Waking a phone whose app is closed when somebody calls (protocol 29,
-//! `docs/notes/calls.md`).
+//! Waking a phone or browser whose app is closed when somebody calls
+//! (protocol 29, `docs/notes/calls.md`) or writes in one of its private chats
+//! (`docs/notes/message-wake-ups.md`).
 //!
 //! A connected device hears a call ring through `CallRoster`. A closed app
 //! hears nothing, so each device may register a **UnifiedPush** endpoint
@@ -11,14 +12,22 @@
 //! A **browser** registers the same way, its push service's address marked
 //! with [`WEB_PREFIX`] (the web chat's `src/lib/web-push.ts`). Its push service
 //! — Google's, Mozilla's, Apple's — takes only a push signed with the key the
-//! page subscribed with (`crate::vapid`), so that one is signed and carries no
-//! body at all.
+//! page subscribed with (`crate::vapid`), so that one is signed.
 //!
-//! **The push carries nothing.** Not who is calling, not which chat — the
-//! distributor's server relays it and has no business knowing. A wake-up is
-//! all the phone needs, because the app learns the rest over its own
-//! connection. (UnifiedPush over Firebase is not used and would not change
-//! that: the push is a wake-up whichever way it travels.)
+//! **A message wakes too, but only a device that says it can tell one from a
+//! call** — an app or page older than this shows every push as "Incoming
+//! call". A phone says so with [`NOTICES_PREFIX`]; a browser by giving its
+//! subscription's keys after the address (`webpush:<url>#<p256dh>.<auth>`),
+//! which it needs anyway, because a browser's push can carry a word only
+//! encrypted to it ([`seal`], RFC 8291).
+//!
+//! **The push says which of the two it is, and nothing more.** Not who is
+//! calling or writing, not which chat — the distributor's server relays it and
+//! has no business knowing. A wake-up is all the phone needs, because the app
+//! learns the rest over its own connection. To a browser that word is
+//! encrypted; to a phone's distributor (the person's own choice, and one they
+//! can run themselves) it is plain, so the distributor learns "a call" from
+//! "a message", as it could from their rhythm anyway.
 //!
 //! **The address is a stranger's choice, and this server sits inside a
 //! private network** — nominatim, overpass and Forgejo are one hop away. So a
@@ -34,6 +43,8 @@ use std::time::{Duration, Instant};
 
 use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use base64::Engine as _;
 use tokio::sync::mpsc;
 
 use crate::db::{self, SharedConn};
@@ -47,18 +58,47 @@ pub const MAX_ENDPOINT_LEN: usize = 1024;
 /// started again rings once, not three times.
 const QUIET: Duration = Duration::from_secs(20);
 
+/// One message wake-up per account per this long. A busy chat wakes a closed
+/// phone once, not at every line: the notice it shows stands until it is
+/// opened, and a second push would only post the same notice again.
+const MESSAGE_QUIET: Duration = Duration::from_secs(120);
+
 /// How long a distributor gets to take the push.
 const TIMEOUT: Duration = Duration::from_secs(8);
 
-/// A call has started in `group`: wake everybody else in it.
+/// What a push wakes a device for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// A call has started in one of its chats.
+    Call,
+    /// Somebody wrote in one of its private chats or topics.
+    Message,
+}
+
+impl Kind {
+    /// The word the push carries, which the receivers (`PushReceiver.java`,
+    /// the web chat's `sw.js`) match on. A phone's call push stays the `1` it
+    /// always was.
+    fn word(self, web: bool) -> &'static [u8] {
+        match (self, web) {
+            (Kind::Call, false) => b"1",
+            (Kind::Call, true) => b"call",
+            (Kind::Message, _) => b"message",
+        }
+    }
+}
+
+/// Something happened in a chat: wake the other members' closed apps.
 #[derive(Debug, Clone)]
 pub struct Ring {
-    /// `accounts.id` of the person who started it — their own devices are
-    /// not rung.
+    pub kind: Kind,
+    /// `accounts.id` of the person who started the call or wrote — their own
+    /// devices are not woken. Empty for somebody elsewhere.
     pub caller: String,
     /// Their username, for the block check.
     pub caller_name: String,
-    /// Every member account of the chat (`accounts.id`).
+    /// The member accounts to wake (`accounts.id`): for a call every member of
+    /// the chat, for a message those with no device connected.
     pub members: Vec<String>,
 }
 
@@ -71,12 +111,79 @@ pub struct Ring {
 /// which is the right answer from a server that could not sign the push.
 pub const WEB_PREFIX: &str = "webpush:";
 
+/// What a phone's UnifiedPush address is registered as when its app tells a
+/// message wake-up from a call (`systems::push`). An app older than that
+/// registers the bare address and is woken for calls only, because it shows
+/// any push as "Incoming call".
+pub const NOTICES_PREFIX: &str = "notices:";
+
+/// What a registered endpoint says about the device behind it.
+#[derive(Debug, PartialEq, Eq)]
+struct Target<'a> {
+    /// Where the push is posted.
+    url: &'a str,
+    /// A browser: every push signed (`vapid`).
+    web: bool,
+    /// A browser's subscription keys, base64url (RFC 8291's `p256dh` and
+    /// `auth`), which it gives once it tells a message from a call.
+    keys: Option<(&'a str, &'a str)>,
+    /// Whether the device may be woken for a message.
+    notices: bool,
+}
+
+fn target(endpoint: &str) -> Target<'_> {
+    if let Some(web) = endpoint.strip_prefix(WEB_PREFIX) {
+        let (url, keys) = match web.split_once('#') {
+            Some((url, keys)) => (url, keys.split_once('.')),
+            None => (web, None),
+        };
+        return Target {
+            url,
+            web: true,
+            notices: keys.is_some(),
+            keys,
+        };
+    }
+    match endpoint.strip_prefix(NOTICES_PREFIX) {
+        Some(url) => Target {
+            url,
+            web: false,
+            keys: None,
+            notices: true,
+        },
+        None => Target {
+            url: endpoint,
+            web: false,
+            keys: None,
+            notices: false,
+        },
+    }
+}
+
+/// The address a registration posts to, whichever way it is written: one
+/// device registers one address, and a newer app or page writes it differently
+/// from an older one.
+pub fn address(endpoint: &str) -> &str {
+    target(endpoint).url
+}
+
 /// Why an endpoint is refused, in words for the log.
 pub fn check_endpoint(endpoint: &str) -> Result<(), &'static str> {
     if endpoint.len() > MAX_ENDPOINT_LEN {
         return Err("too long");
     }
-    let url = endpoint.strip_prefix(WEB_PREFIX).unwrap_or(endpoint);
+    let t = target(endpoint);
+    if t.web && endpoint.contains('#') {
+        let Some((p256dh, auth)) = t.keys else {
+            return Err("keys not as p256dh.auth");
+        };
+        let p256dh = B64.decode(p256dh).map_err(|_| "keys not base64url")?;
+        let auth = B64.decode(auth).map_err(|_| "keys not base64url")?;
+        if p256dh.len() != 65 || auth.len() != 16 {
+            return Err("keys of the wrong length");
+        }
+    }
+    let url = t.url;
     let Some(rest) = url.strip_prefix("https://") else {
         return Err("not https");
     };
@@ -162,35 +269,110 @@ enum Sent {
     Failed,
 }
 
-fn post(agent: &ureq::Agent, endpoint: &str, vapid: Option<&Vapid>) -> Sent {
+/// Encrypt `plaintext` to a browser's subscription (RFC 8291, `aes128gcm` of
+/// RFC 8188, one record): `ua_public` and `auth` are the subscription's
+/// `p256dh` and `auth` keys, `as_secret` a key made for this one push, `salt`
+/// sixteen fresh random bytes. `None` when the subscription's key is not a
+/// P-256 point.
+fn seal(
+    ua_public: &[u8],
+    auth: &[u8],
+    plaintext: &[u8],
+    as_secret: &p256::SecretKey,
+    salt: &[u8; 16],
+) -> Option<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use hkdf::Hkdf;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use sha2::Sha256;
+
+    let ua = p256::PublicKey::from_sec1_bytes(ua_public).ok()?;
+    let as_public = as_secret.public_key().to_encoded_point(false);
+    let shared = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua.as_affine());
+    let mut key_info = b"WebPush: info\0".to_vec();
+    key_info.extend_from_slice(ua_public);
+    key_info.extend_from_slice(as_public.as_bytes());
+    let mut ikm = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes())
+        .expand(&key_info, &mut ikm)
+        .ok()?;
+    let prk = Hkdf::<Sha256>::new(Some(salt), &ikm);
+    let mut cek = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+        .ok()?;
+    prk.expand(b"Content-Encoding: nonce\0", &mut nonce).ok()?;
+    // The last (and only) record ends in its delimiter, 2, and no padding.
+    let mut record = plaintext.to_vec();
+    record.push(2);
+    let sealed = aes_gcm::Aes128Gcm::new_from_slice(&cek)
+        .ok()?
+        .encrypt(aes_gcm::Nonce::from_slice(&nonce), record.as_slice())
+        .ok()?;
+    let mut body = salt.to_vec();
+    body.extend_from_slice(&4096u32.to_be_bytes());
+    body.push(as_public.as_bytes().len() as u8);
+    body.extend_from_slice(as_public.as_bytes());
+    body.extend_from_slice(&sealed);
+    Some(body)
+}
+
+/// `word` encrypted to the browser whose keys `keys` are.
+fn seal_for(keys: (&str, &str), word: &[u8]) -> Option<Vec<u8>> {
+    let ua_public = B64.decode(keys.0).ok()?;
+    let auth = B64.decode(keys.1).ok()?;
+    let mut salt = [0u8; 16];
+    getrandom::getrandom(&mut salt).ok()?;
+    let mut secret = [0u8; 32];
+    getrandom::getrandom(&mut secret).ok()?;
+    let as_secret = p256::SecretKey::from_slice(&secret).ok()?;
+    seal(&ua_public, &auth, word, &as_secret, &salt)
+}
+
+fn post(agent: &ureq::Agent, endpoint: &str, kind: Kind, vapid: Option<&Vapid>) -> Sent {
     // RFC 8030's headers, which UnifiedPush distributors and browsers' push
     // services both honour: a call that cannot be delivered within a minute is
-    // not worth delivering at all.
-    let result = match endpoint.strip_prefix(WEB_PREFIX) {
-        // A browser: signed, and with no body at all. A payload would have to
-        // be encrypted to the browser (RFC 8291), and there is nothing to say
-        // that the page does not learn over its own connection.
-        Some(url) => {
-            let now_s = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
-            let Some(auth) = vapid.and_then(|v| v.authorization(url, now_s)) else {
-                return Sent::Failed;
-            };
-            agent
-                .post(url)
-                .set("TTL", "60")
-                .set("Urgency", "high")
-                .set("Authorization", &auth)
-                .send_bytes(&[])
+    // not worth delivering at all. A message can wait a day for a phone that
+    // is off, and need not wake one that is dozing.
+    let (ttl, urgency) = match kind {
+        Kind::Call => ("60", "high"),
+        Kind::Message => ("86400", "normal"),
+    };
+    let t = target(endpoint);
+    let result = if t.web {
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let Some(auth) = vapid.and_then(|v| v.authorization(t.url, now_s)) else {
+            return Sent::Failed;
+        };
+        let request = agent
+            .post(t.url)
+            .set("TTL", ttl)
+            .set("Urgency", urgency)
+            .set("Authorization", &auth);
+        match t.keys {
+            // A page that gave its keys is told which it is, encrypted to it.
+            Some(keys) => {
+                let Some(body) = seal_for(keys, kind.word(true)) else {
+                    return Sent::Failed;
+                };
+                request
+                    .set("Content-Encoding", "aes128gcm")
+                    .set("Content-Type", "application/octet-stream")
+                    .send_bytes(&body)
+            }
+            // An older page: no body at all, which it shows as a call.
+            None => request.send_bytes(&[]),
         }
-        None => agent
-            .post(endpoint)
-            .set("TTL", "60")
-            .set("Urgency", "high")
+    } else {
+        agent
+            .post(t.url)
+            .set("TTL", ttl)
+            .set("Urgency", urgency)
             .set("Content-Type", "application/octet-stream")
-            .send_bytes(b"1"),
+            .send_bytes(kind.word(false))
     };
     match result {
         Ok(_) => Sent::Taken,
@@ -202,8 +384,10 @@ fn post(agent: &ureq::Agent, endpoint: &str, vapid: Option<&Vapid>) -> Sent {
     }
 }
 
-/// The endpoints a call start wakes: every member's but the caller's own, and
-/// nobody's who blocked the caller — the roster does not ring them either.
+/// The endpoints a ring wakes: every member's but the caller's own, and
+/// nobody's who blocked the caller — the roster does not ring them either, nor
+/// does a blocked sender's message reach them. A message wakes only the
+/// devices that can tell it from a call.
 fn endpoints_for(c: &rusqlite::Connection, ring: &Ring) -> Vec<String> {
     let mut out = Vec::new();
     for account in ring.members.iter().filter(|a| **a != ring.caller) {
@@ -214,7 +398,12 @@ fn endpoints_for(c: &rusqlite::Connection, ring: &Ring) -> Vec<String> {
         {
             continue;
         }
-        out.extend(db::push_endpoints(c, account).unwrap_or_default());
+        out.extend(
+            db::push_endpoints(c, account)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| ring.kind == Kind::Call || target(e).notices),
+        );
     }
     out
 }
@@ -228,17 +417,37 @@ pub fn spawn(conn: SharedConn, vapid: Option<Arc<Vapid>>) -> mpsc::UnboundedSend
 
 async fn run(conn: SharedConn, vapid: Option<Arc<Vapid>>, mut rx: mpsc::UnboundedReceiver<Ring>) {
     let mut last: HashMap<String, Instant> = HashMap::new();
-    while let Some(ring) = rx.recv().await {
+    let mut written_to: HashMap<String, Instant> = HashMap::new();
+    while let Some(mut ring) = rx.recv().await {
+        let kind = ring.kind;
+        // A message wakes each account once a while, before any database work:
+        // a busy topic sends one of these per line.
+        if kind == Kind::Message {
+            let now = Instant::now();
+            written_to.retain(|_, at| now.duration_since(*at) < MESSAGE_QUIET);
+            ring.members.retain(|a| !written_to.contains_key(a));
+            for a in &ring.members {
+                written_to.insert(a.clone(), now);
+            }
+            if ring.members.is_empty() {
+                continue;
+            }
+        }
         let found = db::call(&conn, move |c| endpoints_for(c, &ring)).await;
         let Ok(endpoints) = found else { continue };
         let now = Instant::now();
         last.retain(|_, at| now.duration_since(*at) < QUIET);
+        // The per-endpoint quiet is a call's: a message must not hold back
+        // the ring of a call started a moment after it.
         let due: Vec<String> = endpoints
             .into_iter()
-            .filter(|e| !last.contains_key(e) && check_endpoint(e).is_ok())
+            .filter(|e| kind == Kind::Message || !last.contains_key(e))
+            .filter(|e| check_endpoint(e).is_ok())
             .collect();
-        for e in &due {
-            last.insert(e.clone(), now);
+        if kind == Kind::Call {
+            for e in &due {
+                last.insert(e.clone(), now);
+            }
         }
         if due.is_empty() {
             continue;
@@ -248,7 +457,7 @@ async fn run(conn: SharedConn, vapid: Option<Arc<Vapid>>, mut rx: mpsc::Unbounde
             let agent = agent();
             due.into_iter()
                 .map(|e| {
-                    let sent = post(&agent, &e, vapid.as_deref());
+                    let sent = post(&agent, &e, kind, vapid.as_deref());
                     (e, sent)
                 })
                 .collect::<Vec<_>>()
@@ -256,7 +465,7 @@ async fn run(conn: SharedConn, vapid: Option<Arc<Vapid>>, mut rx: mpsc::Unbounde
         .await
         .unwrap_or_default();
         let taken = results.iter().filter(|(_, s)| *s == Sent::Taken).count();
-        tracing::info!(taken, of = results.len(), "rang closed apps for a call");
+        tracing::info!(taken, of = results.len(), ?kind, "woke closed apps");
         for (endpoint, sent) in results {
             if sent == Sent::Gone {
                 let _ = db::call(&conn, move |c| db::drop_push_endpoint(c, &endpoint)).await;
@@ -314,6 +523,7 @@ mod tests {
         }
         db::set_block(&c, "cy", "Ann", true).unwrap();
         let ring = Ring {
+            kind: Kind::Call,
             caller: "ann".into(),
             caller_name: "ann".into(),
             members: vec!["ann".into(), "bob".into(), "cy".into()],
@@ -326,6 +536,76 @@ mod tests {
         assert!(db::push_endpoints(&c, "bob").unwrap().is_empty());
         db::remove_push_endpoint(&c, "bob", "https://push.example/cy").unwrap();
         assert_eq!(db::push_endpoints(&c, "cy").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_message_wakes_only_devices_that_tell_it_from_a_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = db::open_and_migrate(dir.path().join("w.db").to_str().unwrap()).unwrap();
+        let keys = format!("#{}.{}", "A".repeat(87), "A".repeat(22));
+        let new_phone = format!("{NOTICES_PREFIX}https://push.example/bob-phone");
+        let new_page = format!("{WEB_PREFIX}https://fcm.example/bob-page{keys}");
+        for endpoint in [
+            "https://push.example/bob-old-phone",
+            "webpush:https://fcm.example/bob-old-page",
+            new_phone.as_str(),
+            new_page.as_str(),
+        ] {
+            assert!(check_endpoint(endpoint).is_ok(), "{endpoint}");
+            db::set_push_endpoint(&c, "bob", endpoint, 1).unwrap();
+        }
+        let mut ring = Ring {
+            kind: Kind::Message,
+            caller: "ann".into(),
+            caller_name: "ann".into(),
+            members: vec!["ann".into(), "bob".into()],
+        };
+        let mut woken = endpoints_for(&c, &ring);
+        woken.sort();
+        assert_eq!(woken, vec![new_phone.clone(), new_page.clone()]);
+        // A call still rings every one of them.
+        ring.kind = Kind::Call;
+        assert_eq!(endpoints_for(&c, &ring).len(), 4);
+        // Each is posted to its bare address.
+        assert_eq!(address(&new_phone), "https://push.example/bob-phone");
+        assert_eq!(address(&new_page), "https://fcm.example/bob-page");
+        // Keys that are not a P-256 point and a 16-byte secret are refused.
+        assert!(check_endpoint("webpush:https://fcm.example/x#abc.def").is_err());
+        assert!(check_endpoint("webpush:https://fcm.example/x#nodot").is_err());
+
+        // A device that registers its address anew, now telling messages from
+        // calls, is not left registered twice.
+        db::set_push_endpoint(&c, "dee", "https://push.example/dee", 1).unwrap();
+        db::set_push_endpoint(&c, "dee", "webpush:https://fcm.example/dee", 1).unwrap();
+        let phone = format!("{NOTICES_PREFIX}https://push.example/dee");
+        let page = format!("{WEB_PREFIX}https://fcm.example/dee{keys}");
+        db::set_push_endpoint(&c, "dee", &phone, 2).unwrap();
+        db::set_push_endpoint(&c, "dee", &page, 2).unwrap();
+        assert_eq!(db::push_endpoints(&c, "dee").unwrap(), vec![phone, page]);
+    }
+
+    /// RFC 8291's own example (appendix A): the same keys, salt and text give
+    /// the same bytes, so a browser can open what this seals.
+    #[test]
+    fn a_word_to_a_browser_is_sealed_as_rfc_8291_says() {
+        let d = |s: &str| B64.decode(s).unwrap();
+        let as_secret =
+            p256::SecretKey::from_slice(&d("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
+        let ua_public = d("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4");
+        let auth = d("BTBZMqHH6r4Tts7J_aSIgg");
+        let salt: [u8; 16] = d("DGv6ra1nlYgDCS1FRnbzlw").try_into().unwrap();
+        let body = seal(
+            &ua_public,
+            &auth,
+            b"When I grow up, I want to be a watermelon",
+            &as_secret,
+            &salt,
+        )
+        .unwrap();
+        assert_eq!(
+            B64.encode(body),
+            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+        );
     }
 
     /// A real browser push service takes the signed, empty push. By hand, as
@@ -341,7 +621,12 @@ mod tests {
             crate::vapid::hex_decode(&std::env::var("PUSH_TEST_KEY").expect("PUSH_TEST_KEY"))
                 .expect("hex");
         let vapid = Vapid::from_secret(&secret, "https://cartopolis.org").unwrap();
-        let sent = post(&agent(), &format!("{WEB_PREFIX}{endpoint}"), Some(&vapid));
+        let sent = post(
+            &agent(),
+            &format!("{WEB_PREFIX}{endpoint}"),
+            Kind::Call,
+            Some(&vapid),
+        );
         assert_eq!(sent, Sent::Taken);
     }
 

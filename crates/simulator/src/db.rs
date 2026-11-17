@@ -1419,7 +1419,10 @@ mod tests {
 // Push endpoints (V23): where to wake a device whose app is closed.
 // ---------------------------------------------------------------------------
 
-/// Record `endpoint` as `account`'s, moving it from anyone who had it.
+/// Record `endpoint` as `account`'s, moving it from anyone who had it, and
+/// forget the same address written another way: an app or page that learned
+/// to tell a message from a call registers its address anew
+/// (`crate::push::address`), and the old form would wake it twice.
 pub fn set_push_endpoint(
     conn: &Connection,
     account: &str,
@@ -1430,6 +1433,20 @@ pub fn set_push_endpoint(
         "INSERT INTO push_endpoints (endpoint, account, updated_ms) VALUES (?1, ?2, ?3)
          ON CONFLICT(endpoint) DO UPDATE SET account = excluded.account, updated_ms = excluded.updated_ms",
         rusqlite::params![endpoint, account, now_ms],
+    )?;
+    let url = crate::push::address(endpoint);
+    let web = format!("{}{url}", crate::push::WEB_PREFIX);
+    let keyed = format!("{web}#");
+    conn.execute(
+        "DELETE FROM push_endpoints WHERE endpoint != ?1
+         AND (endpoint IN (?2, ?3, ?4) OR substr(endpoint, 1, length(?5)) = ?5)",
+        rusqlite::params![
+            endpoint,
+            url,
+            format!("{}{url}", crate::push::NOTICES_PREFIX),
+            web,
+            keyed
+        ],
     )?;
     Ok(())
 }

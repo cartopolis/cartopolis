@@ -201,8 +201,9 @@ origin, so it must not change once anybody follows anything.
 - **Following a person elsewhere from your own account.** There is no
   personal timeline for their posts to land in; a community follows sources,
   people do not.
-- **Notices on a phone that is closed.** The push channel (`push.rs`) carries
-  only call wake-ups; notices are read when the app or page asks.
+- **Notices on a phone that is closed.** The push channel (`push.rs`) wakes a
+  closed app for calls and private messages (`message-wake-ups.md`), not for
+  notices; they are read when the app or page asks.
 - **A post's language** (`contentMap`) is not sent: nothing here knows it.
 - **Video and audio from elsewhere** are dropped; only pictures are copied.
 - **A forwarded report to Lemmy** goes out as this server's `Flag`; Lemmy may

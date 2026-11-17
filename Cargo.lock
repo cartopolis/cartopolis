@@ -2821,6 +2821,7 @@ dependencies = [
 name = "cartopolis_simulator"
 version = "1.0.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "argon2",
  "axum",
@@ -2838,6 +2839,7 @@ dependencies = [
  "getrandom 0.2.17",
  "glam 0.33.12",
  "gltf",
+ "hkdf 0.12.4",
  "httpdate",
  "hyper-util",
  "image",

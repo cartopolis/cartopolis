@@ -1,14 +1,16 @@
 // What the UnifiedPush distributor tells us (see Push.java): a new endpoint to
-// keep, an endpoint taken away, or a message — which for this app only ever
-// means "somebody started a call in one of your chats".
+// keep, an endpoint taken away, or a message — which for this app means
+// "somebody started a call in one of your chats" or "somebody wrote in one of
+// them" (docs/notes/message-wake-ups.md).
 //
-// ## Why the message is not read
+// ## Why the message says so little
 //
-// The simulator sends a wake-up with nothing in it (`simulator::push`): who is
-// calling and from which chat never passes through the distributor's server.
-// So this does not decode anything, it shows "Incoming call" and lets the app,
-// once opened, show who — the roster reaches it over its own connection the
-// moment it signs in. That also means this runs with no native code loaded,
+// The simulator sends a wake-up with one word in it (`simulator::push`):
+// "message", or anything else for a call. Who is calling or writing, and in
+// which chat, never passes through the distributor's server. So this shows
+// "Incoming call" or "New message" and lets the app, once opened, show who —
+// the roster and the chats reach it over its own connection the moment it
+// signs in. That also means this runs with no native code loaded,
 // which is the situation it exists for: the app is closed.
 //
 // A broadcast without our token is not from our distributor and is ignored:
@@ -28,12 +30,17 @@ import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.RingtoneManager;
 
+import java.nio.charset.StandardCharsets;
+
 public final class PushReceiver extends BroadcastReceiver {
     private static final String CHANNEL_ID = "calls";
     /** Distinct from ConnectionService's 1. */
     static final int NOTIFICATION_ID = 2;
     /** How long it rings before giving up: about as long as a call waits. */
     private static final long RING_MS = 45_000;
+    private static final String MESSAGES_CHANNEL_ID = "messages";
+    /** Distinct from the service's 1 and a call's 2. */
+    static final int MESSAGE_NOTIFICATION_ID = 3;
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -54,14 +61,57 @@ public final class PushReceiver extends BroadcastReceiver {
                 prefs.edit().remove(Push.KEY_ENDPOINT).apply();
                 break;
             case "org.unifiedpush.android.connector.MESSAGE":
-                // On screen, the app is already ringing from the roster.
-                if (!MainActivity.onScreen) {
+                // On screen, the app is already ringing from the roster, or
+                // showing the chat.
+                if (MainActivity.onScreen) {
+                    break;
+                }
+                if (isMessage(intent)) {
+                    tell(context);
+                } else {
                     ring(context);
                 }
                 break;
             default:
                 break;
         }
+    }
+
+    /** Whether the push is a message wake-up: the word "message". A call's is
+     *  "1", and so is every push from a server older than message wake-ups. */
+    private static boolean isMessage(Intent intent) {
+        byte[] bytes = intent.getByteArrayExtra("bytesMessage");
+        String word = bytes != null
+                ? new String(bytes, StandardCharsets.UTF_8)
+                : intent.getStringExtra("message");
+        return "message".equals(word);
+    }
+
+    /** One notice for however many lines: a later push posts it again
+     *  without a sound, until it is opened or swiped away. */
+    private static void tell(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                MESSAGES_CHANNEL_ID, "Messages", NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription("Somebody wrote to you in one of your chats while the app was closed.");
+        manager.createNotificationChannel(channel);
+
+        Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        Notification.Builder builder = new Notification.Builder(context, MESSAGES_CHANNEL_ID)
+                .setContentTitle("New message")
+                .setContentText("Somebody wrote to you. Open Cartopolis to read it.")
+                .setSmallIcon(android.R.drawable.sym_action_chat)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true);
+        if (launch != null) {
+            builder.setContentIntent(PendingIntent.getActivity(context, 0, launch,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+        }
+        manager.notify(MESSAGE_NOTIFICATION_ID, builder.build());
     }
 
     private static void ring(Context context) {

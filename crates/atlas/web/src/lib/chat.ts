@@ -120,7 +120,7 @@ export class ChatClient {
         this.send({type: 'sign_out'})
     }
 
-    /** Rings this browser for a call while the page is closed (`web-push.ts`). */
+    /** Wakes this browser for a call or a message while the page is closed (`web-push.ts`). */
     readonly push = new WebPush((endpoint) => this.send({endpoint, type: 'push_endpoint'}))
 
     /** Show a chat: its history arrives, and it counts as read. */

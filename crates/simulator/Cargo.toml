@@ -105,8 +105,13 @@ matroska-demuxer = "0.8"
 # already in the tree — `openmls_rust_crypto` builds p256 with ecdsa, and
 # getrandom 0.2 is under half the crypto here — so these are names, not new
 # dependencies.
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "ecdh", "std"] }
 getrandom = "0.2"
+# Encrypting the one word a browser's push carries (`push::seal`, RFC 8291:
+# ECDH, HKDF-SHA-256, AES-128-GCM). Both already in the tree, at these versions,
+# under the MLS crypto and the calls.
+hkdf = "0.12"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 # Signing and checking ActivityPub requests (`fediverse::signing`): RSA with
 # SHA-256 is the one key type every fediverse server verifies. Pure Rust, so no
 # OpenSSL, which this workspace avoids everywhere (see `rustls` above); the

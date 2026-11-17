@@ -1,13 +1,15 @@
 /**
- * Ringing this browser for a call while the chat page is closed
- * (`docs/notes/calls.md`, "Ringing a closed browser").
+ * Waking this browser for a call or a private message while the chat page is
+ * closed (`docs/notes/calls.md`, "Ringing a closed browser", and
+ * `docs/notes/message-wake-ups.md`).
  *
  * The browser's own push service carries it — Google's for Chrome and Edge,
  * Mozilla's for Firefox, Apple's for Safari — and wakes `sw.js`, which shows
- * "Incoming call"; opening it opens this page, which connects and rings as it
- * always does. The push is **empty**, exactly as the app's is: not who is
- * calling, not which chat. What the push service learns is that this browser
- * got a push from this server at that moment.
+ * "Incoming call" or "New message"; opening it opens this page, which connects
+ * and rings or shows the chat as it always does. The push carries one word,
+ * encrypted to this browser: which of the two it is. Not who, not which chat.
+ * What the push service learns is that this browser got a push from this
+ * server at that moment.
  *
  * Only with notifications allowed (the page asks on a click, as it does for
  * messages), and only while signed in: signing out takes the address back and
@@ -36,6 +38,13 @@ export function fromBase64Url(text: string): Uint8Array<ArrayBuffer> {
     return out
 }
 
+/** `bytes` as base64url without padding, as the server reads a subscription's keys. */
+export function toBase64Url(bytes: ArrayBuffer): string {
+    let raw = ''
+    for (const b of new Uint8Array(bytes)) raw += String.fromCharCode(b)
+    return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 function sameKey(a: ArrayBuffer | null | undefined, b: Uint8Array): boolean {
     if (!a) return false
     const x = new Uint8Array(a)
@@ -61,7 +70,7 @@ export class WebPush {
         if (!webPushSupported() || Notification.permission !== 'granted') return
         try {
             const reply = await fetch('/api/push/key')
-            // A server without calls has no key, and nothing to ring.
+            // A server that wakes nothing has no key.
             if (!reply.ok) return
             const {key} = (await reply.json()) as {key: string}
             const serverKey = fromBase64Url(key)
@@ -77,7 +86,13 @@ export class WebPush {
                 applicationServerKey: serverKey,
                 userVisibleOnly: true,
             })
-            this.registered = WEB_PREFIX + subscription.endpoint
+            // The subscription's keys after the address say this page tells a
+            // message from a call, and let the server encrypt which it is to
+            // this browser alone (`simulator::push::seal`).
+            const p256dh = subscription.getKey('p256dh')
+            const auth = subscription.getKey('auth')
+            const keys = p256dh && auth ? `#${toBase64Url(p256dh)}.${toBase64Url(auth)}` : ''
+            this.registered = WEB_PREFIX + subscription.endpoint + keys
             this.send(this.registered)
         } catch (e) {
             console.warn('web push not set up:', e)

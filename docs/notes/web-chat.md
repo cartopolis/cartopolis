@@ -181,7 +181,8 @@ nothing without it.
   page; the viewer would then have to use this worker's connection, or it is
   a second device in the same browser.
 - **Search** (on the device, over its own history), **pictures and files**, and
-  **notifications when no tab is open** (Web Push).
+  notifications when no tab is open for anything but a call or a private
+  message (Web Push, `message-wake-ups.md`).
 - **The app knows nothing of workspaces**: a channel it is in shows as an
   ordinary group chat, and replies show as plain lines.
 - **The chat is drawn in the site's component library and its tokens**

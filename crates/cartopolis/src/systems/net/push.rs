@@ -1,12 +1,13 @@
 //! Telling the simulator where to wake this phone when its app is closed
-//! (protocol 29, `docs/notes/calls.md`).
+//! (protocol 29, `docs/notes/calls.md`, `docs/notes/message-wake-ups.md`).
 //!
 //! The endpoint comes from the phone's UnifiedPush distributor (ntfy, say),
 //! through `Push.java` and `PushReceiver.java`, and waits in the app's
 //! preferences (`platform::android::push_endpoint`). This hands it to the
 //! server once per connection, and again whenever the distributor gives a new
-//! one. Nothing more: the push the server sends is a content-free wake-up, and
-//! the ringing itself is the roster this client already shows once connected.
+//! one. Nothing more: the push the server sends says only "a call" or "a
+//! message" (`PushReceiver.java` shows which), and the ringing itself is the
+//! roster this client already shows once connected.
 
 use bevy::prelude::*;
 use cartopolis_core::NetMessage;
@@ -17,6 +18,10 @@ use crate::resources::OnlineSession;
 /// one out rarely (install, re-registration), so this is about noticing, not
 /// about speed.
 const LOOK_EVERY_S: f32 = 10.0;
+
+/// In front of the address, it tells the server this app shows a message
+/// wake-up as one rather than as "Incoming call" (`simulator::push::NOTICES_PREFIX`).
+const NOTICES_PREFIX: &str = "notices:";
 
 /// Send the endpoint when there is one the server has not been told on this
 /// connection.
@@ -41,7 +46,8 @@ pub fn send_push_endpoint(
         return;
     }
     *next_look = now + LOOK_EVERY_S;
-    let endpoint = crate::platform::android::push_endpoint();
+    let endpoint =
+        crate::platform::android::push_endpoint().map(|e| format!("{NOTICES_PREFIX}{e}"));
     if endpoint.is_some() && endpoint != *sent {
         online.send(
             "push endpoint",

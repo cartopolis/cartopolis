@@ -777,6 +777,7 @@ impl State {
         if first {
             if let Some(ring) = &self.ring {
                 let _ = ring.send(crate::push::Ring {
+                    kind: crate::push::Kind::Call,
                     caller: joiner.account.clone(),
                     caller_name: joiner.username.clone(),
                     members: joiner.members.clone(),
