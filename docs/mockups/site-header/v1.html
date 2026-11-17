@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>One top bar for the content pages and the app — v1</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs>
+  <symbol id="theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+</defs></svg>
+
+<h1>One top bar for the content pages and the app</h1>
+<p class="lede">cartopolis.org has two top bars today: the content pages (<code>/nl/…</code>, drawn by <code>src/cms/frame.tsx</code>) and the app
+(<code>/chat</code>, <code>/world</code>, <code>/admin</code>, <code>chat.tsx</code> <code>topBar</code>). They look different, link differently, and
+neither leads to everything. The proposal: <b>one bar, the same on every page</b>, with the app's places and the site's pages side by side,
+and what is particular to the app (where you are in a community) on a thin second line under it, only inside the app.</p>
+
+<h2>Now <small>captured from cartopolis.org, 2026-11-17, 1440 px wide</small></h2>
+<div class="label">A content page, /nl/</div>
+<div class="shot"><img src="now-page.png"></div>
+<div class="label">The app, /chat, signed out</div>
+<div class="shot"><img src="now-app.png"></div>
+<ul class="problems">
+  <li><span class="n">1</span><span><b>No way back from the app to the site.</b> The app's logo goes to <code>/chat</code>, not to the front page; "Over" and "Je eigen server" are linked from nowhere in the app.</span></li>
+  <li><span class="n">2</span><span><b>The site's own pages are not in its menu.</b> The content bar lists only Community and Wereld; Over and Je eigen server are reachable only through a link inside a page's text.</span></li>
+  <li><span class="n">3</span><span><b>Two looks for one place.</b> Logo with or without the mark, plain links on the right against a filled switch on the left, so the same "Community" moves and changes shape when you click it.</span></li>
+  <li><span class="n">4</span><span><b>Each bar lacks what the other has.</b> Only the content pages switch language; only the app switches theme, shows who is signed in and offers Admin. On a content page you cannot tell you are signed in.</span></li>
+  <li><span class="n">5</span><span><b>The breadcrumb repeats the switch.</b> Signed out, the app's bar says "Community" twice, side by side.</span></li>
+  <li><span class="n">6</span><span><b>Two languages in one site.</b> The content bar says "Wereld", the app's says "World", for the same link.</span></li>
+</ul>
+
+<h2>Proposal: the bar <small>the same component on content pages and in the app</small></h2>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav">
+      <a>Community</a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a>
+      <span class="sep"></span>
+      <a>Over</a><a>Je eigen server</a>
+    </nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+</div>
+<div class="anat">
+  <div style="width:180px"><b>The mark → front page</b>always <code>/{lang}/</code>, from every page, so the app has a way home (1)</div>
+  <div style="width:330px"><b>The app's places</b>Community, Wereld, and Beheer in gold for an account that may run something; the open one underlined (as the phone bar, <code>mobile-header</code> B) (3)</div>
+  <div style="width:260px"><b>The site's pages <span class="new">new</span></b>the content pages marked "in menu", in their order, from the CMS (2)</div>
+  <div style="width:290px"><b>Language</b>on every page; in the app it sets the bar's words and the front-page link (6)</div>
+  <div style="width:300px"><b>Account</b>the avatar, its menu with the theme and Sign out; signed out, "Inloggen" (4)</div>
+</div>
+
+<h2>Five places, one bar</h2>
+
+<div class="cap"><b>1 · The front page, signed out</b> — <code>/nl/</code>. Nothing is underlined: the mark is where you are. "Inloggen" goes to <code>/chat</code>'s sign-in card and comes back here.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Community</a><a><span class="live"></span>Wereld</a><span class="sep"></span><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="iconbtn"><svg><use href="#theme"/></svg></span>
+    <span class="btn">Inloggen</span>
+  </div>
+  <div class="body map"><div class="hero"><h3>Praten en samenwerken, op de kaart van je eigen stad</h3><p>Cartopolis is een vrij alternatief voor gemeenschappen…</p></div></div>
+</div>
+
+<div class="cap"><b>2 · A content page, signed in as an admin</b> — <code>/nl/over</code>. The page shows you are signed in, and Beheer is one click away.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span><a class="on">Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="body"><div class="hero" style="padding-top:30px"><h3>Over Cartopolis</h3><p>Een vrij alternatief voor gemeenschappen om te praten en samen te werken.</p></div></div>
+</div>
+
+<div class="cap"><b>3 · Community, in a thread</b> — <code>/chat</code>. The breadcrumb leaves the bar for a thin second line that only the app has, so the bar stays the same everywhere and never says "Community" twice (5).</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span>Oosterpoort</span><span class="s">›</span><span># straatfeest</span><span class="s">›</span><span class="last">Thread</span></div>
+  <div class="chatbody"><div class="rail"><i></i><i class="on"></i><i></i></div><div class="side"><div># algemeen</div><div class="on"># straatfeest</div><div># buurtmoestuin</div></div><div class="pane">Anna: Zaterdag om 14:00 bij het pleintje?<br>Bas: Ik neem de partytent mee.</div></div>
+</div>
+
+<div class="cap"><b>4 · World</b> — <code>/world</code>. The same bar; the second line names the place the camera is at.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a class="on"><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="last">Oosterpoort</span></div>
+  <div class="body world"></div>
+</div>
+
+<div class="cap"><b>5 · Beheer</b> — <code>/admin</code>. Underlined in gold; the area and page on the second line.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin on">Beheer</a><span class="sep"></span><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span>Content</span><span class="s">›</span><span class="last">Pagina's</span></div>
+  <div class="adminbody"><div class="rail"><i></i><i class="on"></i><i></i></div><div class="side"><div class="on">Pagina's</div><div>Bibliotheek</div><div>Fediverse</div></div><div class="pane">Over · Je eigen server · Home</div></div>
+</div>
+
+<h2>On a phone <small>the bar decided in mobile-header (B), with the rest behind one button</small></h2>
+<div class="phones">
+  <div>
+    <div class="phone">
+      <div class="bar">
+        <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"></span>
+        <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a>Wereld</a></nav>
+        <span class="grow"></span>
+        <span class="iconbtn"><svg><use href="#menu"/></svg></span>
+      </div>
+      <div class="crumbs" style="padding:0 16px"><span>Oosterpoort</span><span class="s">›</span><span class="last"># straatfeest</span></div>
+    </div>
+    <div class="pcap">The two places you use every day stay in the bar; the mark goes to the front page.</div>
+  </div>
+  <div>
+    <div class="phone">
+      <div class="bar">
+        <span class="brand"><img src="../../../assets/icon/cartopolis-light.svg"></span>
+        <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a>Wereld</a></nav>
+        <span class="grow"></span>
+        <span class="iconbtn" style="background:var(--accent-soft)"><svg><use href="#menu"/></svg></span>
+      </div>
+      <div class="sheet">
+        <div class="h">Cartopolis</div>
+        <div>Over</div><div>Je eigen server</div>
+        <hr>
+        <div style="color:var(--gold)">Beheer</div>
+        <hr>
+        <div>Taal: <b>NL</b> · EN</div>
+        <div>Thema: automatisch</div>
+        <div>Jeroen — Uitloggen</div>
+      </div>
+    </div>
+    <div class="pcap">The button holds the site's pages, Beheer, language, theme and the account: the same things as the wide bar, in the same order.</div>
+  </div>
+</div>
+
+<h2>Where the site's links come from <span class="new">new</span></h2>
+<p class="note">A page chooses to be in the menu, and its place there, as part of the page: a column in Admin › Content › Pages and a field
+the MCP <code>put_page</code> takes. The menu's label is the page's own title, or a short <code>$t('nav')</code> text when the title is too long
+for a bar ("Praten en samenwerken op de kaart…" is not a menu word). <code>home</code> is never in it: the mark is home.</p>
+<div class="table">
+  <div class="r h"><span>Page</span><span>Title</span><span class="newcol">In menu</span><span class="newcol">Menu label</span></div>
+  <div class="r"><span>home</span><span>Praten en samenwerken op de kaart…</span><span>— (the mark)</span><span></span></div>
+  <div class="r"><span>over</span><span>Over Cartopolis</span><span><i class="tog"></i> 1</span><span>Over</span></div>
+  <div class="r"><span>server</span><span>Je eigen server</span><span><i class="tog"></i> 2</span><span>Je eigen server</span></div>
+</div>
+
+</body></html>
