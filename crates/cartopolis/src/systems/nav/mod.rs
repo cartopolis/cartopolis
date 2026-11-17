@@ -19,6 +19,8 @@ pub mod place_link;
 pub mod precise_tracker;
 pub mod route_ahead;
 pub mod traffic;
+// How much of each traffic pool is out at the scene's hour.
+pub mod traffic_hours;
 // The walkers drawn as MakeHuman people, cut down for a crowd.
 pub mod crowd;
 // The walkers make way for avatars, look at them and wave back.

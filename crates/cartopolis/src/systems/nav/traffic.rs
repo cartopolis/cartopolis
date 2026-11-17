@@ -193,6 +193,12 @@ fn hand_off(
         .map(|&(_, key, dir)| (key, dir))
 }
 
+/// How far from the camera an agent past its pool's quota for the hour
+/// (`traffic_hours`) must be before it leaves the road at the end of a line,
+/// metres. Nearer, it carries on: an agent vanishing at a junction in view
+/// is a pop, and a thinning street is not worth one.
+const OFF_DUTY_M: f32 = 80.0;
+
 /// A way on within this of straight ahead (cosine; about 25°) counts as
 /// carrying on rather than turning.
 const STRAIGHT_ON_COS: f32 = 0.9;
@@ -1090,6 +1096,9 @@ pub struct Car {
     /// How far a rider held still has put its foot down, 0 … 1
     /// ([`foot_down`]).
     foot_down: f32,
+    /// Its place in its own pool, from 0: the first so many of a pool are
+    /// out at an hour (`traffic_hours`), the rest stay home.
+    ordinal: u16,
 }
 
 /// A walker crossing the street it walks beside, at a zebra or at a light:
@@ -1497,6 +1506,7 @@ pub fn setup_traffic(
             crossing: None,
             last_cross: None,
             foot_down: 0.0,
+            ordinal: i as u16,
         }
     };
 
@@ -1785,6 +1795,10 @@ pub struct CrowdReact<'w, 's> {
     /// `CARTO_TRAFFIC_HERE` hook's state.
     buttons: Res<'w, crate::systems::give_way::SignalButtons>,
     traffic_here: Local<'s, TrafficHere>,
+    /// The scene's hour (the sun's clock) and the day of the week, for how
+    /// much of each pool is out (`systems::traffic_hours`).
+    dev: Option<Res<'w, crate::resources::DevPanelState>>,
+    clock: Option<Res<'w, crate::systems::transit_live::WorldClock>>,
 }
 
 /// `CARTO_TRAFFIC_HERE=1`: cars sent at the avatar, so a capture can show
@@ -2169,7 +2183,26 @@ pub fn drive_traffic(
         mut here,
         buttons,
         mut traffic_here,
+        dev,
+        clock,
     } = react;
+    // How many of each pool are out at this hour (`traffic_hours`): an agent
+    // past its pool's quota is let go when it next runs out of road out of
+    // the camera's sight, and not placed again until the hour fills.
+    let quota: [usize; 4] = {
+        use crate::systems::traffic_hours::{out_of, share, weekday};
+        let hour = dev.as_ref().map_or(12.0, |d| d.time_of_day);
+        let day = clock
+            .as_ref()
+            .map_or(2, |c| weekday(c.now_unix, c.local_offset_secs.unwrap_or(0)));
+        [
+            (AgentKind::Car, MAX_CARS),
+            (AgentKind::Walker, MAX_WALKERS),
+            (AgentKind::Cyclist, MAX_CYCLISTS),
+            (AgentKind::Fatbike, MAX_FATBIKES),
+        ]
+        .map(|(kind, size)| out_of(size, share(kind, hour, day)))
+    };
     // What a walker makes way for and looks at: every avatar, and every
     // fatbike — which it sees too late to do much about.
     let walker_sees: Vec<Vec2> = if show_people {
@@ -2361,6 +2394,7 @@ pub fn drive_traffic(
             continue;
         }
         let walker = kind == AgentKind::Walker;
+        let on_duty = usize::from(car.ordinal) < quota[kind.index()];
         // How long this walker's body waves for; 0 for one that cannot.
         let wave_secs = dressed
             .as_ref()
@@ -2649,7 +2683,13 @@ pub fn drive_traffic(
         // a `Turn` — see its note for why the hand-off cannot simply be a swap.
         if car.turn.is_none() {
             if let (Some(k), Some(l), Some((p, travel, from_y))) = (key, line, pose) {
-                if car.s > l.length() {
+                // Past its pool's quota for the hour, and out of the way of
+                // the camera: it goes home here rather than on.
+                let off_duty = !on_duty && p.distance(cam) > OFF_DUTY_M;
+                if car.s > l.length() && off_duty {
+                    key = None;
+                    line = None;
+                } else if car.s > l.length() {
                     let r = rand01(0x7A2E, i as u64, *frame);
                     match hand_off(&net, candidates, k, p, travel, kind, r) {
                         Some((next, next_dir)) => {
@@ -2701,6 +2741,12 @@ pub fn drive_traffic(
         }
 
         // ── Recycling ────────────────────────────────────────────────────────
+        if line.is_none() && !on_duty {
+            // Not out at this hour: it waits, unseen, until the hour fills.
+            car.line = None;
+            *vis = Visibility::Hidden;
+            continue;
+        }
         if line.is_none() {
             match place_agent(
                 &net, candidates, weights, cam, kind, occupied, i as u64, *frame,
@@ -4375,6 +4421,7 @@ mod tests {
             crossing: None,
             last_cross: None,
             foot_down: 0.0,
+            ordinal: 0,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -4406,6 +4453,7 @@ mod tests {
             crossing: None,
             last_cross: None,
             foot_down: 0.0,
+            ordinal: 0,
         }
     }
 
@@ -4624,6 +4672,7 @@ mod crossing_tests {
             crossing: None,
             last_cross: None,
             foot_down: 0.0,
+            ordinal: 0,
         }
     }
 
