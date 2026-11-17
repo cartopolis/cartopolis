@@ -651,7 +651,7 @@ pub fn sub_point(anchor_lat: f64, anchor_lng: f64, dir_bevy: Vec3) -> (f64, f64)
 
 /// Bevy-local metres (x = East, y = Up, z = South) of a geodetic point, in the
 /// anchor's ENU frame. ENU is (E, N, U); Bevy is (E, U, −N).
-fn geodetic_to_local(frame: &TangentFrame, lat: f64, lng: f64, height: f64) -> Vec3 {
+pub(crate) fn geodetic_to_local(frame: &TangentFrame, lat: f64, lng: f64, height: f64) -> Vec3 {
     let enu = frame.geodetic_to_local(lat, lng, height);
     Vec3::new(enu.x as f32, enu.z as f32, -enu.y as f32)
 }

@@ -14,10 +14,12 @@
 //! `atlas areas` writes them, fetched and decoded off the frame loop when a
 //! layer is opened. The layer files are shipped (`assets/scenarios/`).
 //!
-//! **Painted, not meshed**, as the place names are (`place_names`'s module
-//! note): an area's state has to read from a buurt's height to a continent's,
-//! so it is drawn in screen space over whatever tier the map is in, projected
-//! through [`place_pins::place_delta`] so the flat map and the globe agree.
+//! **Meshed by the GPU, answered here.** The areas are `systems::lens_areas`:
+//! each board meshed once for the frame the map is in and coloured by a texel
+//! an area, so a moving map costs the CPU nothing for them. What is painted
+//! here, projected through [`place_pins::place_delta`] so the flat map and the
+//! globe agree, is only what answers: the outline of the area being read, its
+//! card, and a scenario's tracks.
 //!
 //! The frame says how real it is (v4-whole): published figures and replays in
 //! green, an exercise striped yellow, Live red and from an official source only.
@@ -49,13 +51,9 @@ use cartopolis_scenario::ladder::Rung;
 use cartopolis_scenario::region::When;
 use cartopolis_scenario::time::Time as Clock;
 use cartopolis_scenario::{track, Confidence, Frame, Mode, Play, Scenario};
-use std::collections::HashMap;
 
 /// How far ahead a track's path and cone are drawn.
 const AHEAD: Clock = Clock(150 * 60);
-
-/// Triangulated areas kept at most; past it the cache starts again.
-const MAX_FILLS: usize = 6_000;
 
 /// A scenario file shipped with the client.
 struct Shipped {
@@ -153,13 +151,8 @@ struct Open {
     playing: bool,
     speed: f64,
     frame: Frame,
-    /// Triangles per (area set, area), made when an area first shows.
-    fills: HashMap<(usize, usize), (Vec<LonLat>, Vec<u32>)>,
     /// The track whose card is open.
     selected: Option<usize>,
-    /// The colour each area is drawn in now, eased towards its state's, so a
-    /// year played or a figure switched flows over rather than snapping.
-    colours: HashMap<(usize, usize), egui::Rgba>,
     /// The band picked on the scale: every other band fades back.
     focus: Option<usize>,
     /// The band under the pointer on the scale, last frame: a preview of the
@@ -183,11 +176,40 @@ impl Open {
             .find(|r| r.area == Some(a))
             .map(|r| r.state)
     }
-}
 
-/// How fast a drawn colour closes on its state's: most of the way in a
-/// fifth of a second.
-const EASE_PER_S: f32 = 12.0;
+    /// The colour each area of the open figure's board is going to, as
+    /// `lens_areas` eases and draws it: its band's, and how strongly — a band
+    /// singled out on the scale leaves the rest as a hint of where they are,
+    /// and a state already passed reads fainter.
+    fn targets(&self, set: &AreaSet) -> Vec<[f32; 4]> {
+        let mut out = vec![[0.0; 4]; set.areas.len()];
+        let Some(places) = self.frame.regions.get(self.layer) else {
+            return out;
+        };
+        let layer = &self.play.scenario.region_states[self.layer];
+        let singled = self.singled();
+        for p in places {
+            let (Some(a), Some(state)) = (p.area, layer.states.get(p.state)) else {
+                continue;
+            };
+            let alpha = match singled {
+                Some(band) if band != p.state => 0.08,
+                _ if state.when == Some(When::Passed) => 0.30,
+                _ => 0.70,
+            };
+            let [r, g, b] = state.colour.0;
+            if let Some(t) = out.get_mut(a) {
+                *t = [
+                    f32::from(r) / 255.0,
+                    f32::from(g) / 255.0,
+                    f32::from(b) / 255.0,
+                    alpha,
+                ];
+            }
+        }
+        out
+    }
+}
 
 /// A layer whose areas are still on their way.
 struct Loading {
@@ -348,6 +370,22 @@ impl ScenarioView {
 }
 
 /// One area set, fetched from our host and decoded off the frame loop.
+
+    /// What `lens_areas` draws this frame: the open lens's boards, the one
+    /// the scale picked, and its areas' colours.
+    pub(crate) fn lens_paint(&self) -> Option<crate::systems::lens_areas::LensPaint<'_>> {
+        let o = self.open.as_ref()?;
+        let set = o.play.layer_areas(o.layer);
+        let active = set.and_then(|s| o.play.areas.iter().position(|a| std::ptr::eq(&**a, s)));
+        let [r, g, b, a] = ink::AREA_EDGE.to_srgba_unmultiplied();
+        Some(crate::systems::lens_areas::LensPaint {
+            lens: file_of(o),
+            sets: &o.play.areas,
+            active,
+            targets: set.map(|s| o.targets(s)).unwrap_or_default(),
+            edge: [r, g, b, a].map(|c| f32::from(c) / 255.0),
+        })
+    }
 async fn fetch_areas(name: String) -> Result<AreaSet, String> {
     let base = crate::systems::osm_buildings::tdbag_url();
     let url = format!("{}/areas/{name}.bin", base.trim_end_matches('/'));
@@ -441,9 +479,7 @@ pub fn drive_scenario(
                         playing: false,
                         speed,
                         frame,
-                        fills: HashMap::new(),
                         selected: None,
-                        colours: HashMap::new(),
                         // `CARTO_LENS_BAND=2` singles out a band, for a capture.
                         focus: crate::env_value("CARTO_LENS_BAND").and_then(|b| b.parse().ok()),
                         peek: None,
@@ -506,6 +542,43 @@ impl Projector<'_> {
     /// A line through the points, broken where one does not project.
     fn runs(&self, pts: &[LonLat]) -> Vec<Vec<egui::Pos2>> {
         let mut out = vec![Vec::new()];
+    /// The place on the ground a screen point looks at: on the sphere in
+    /// space, else on the flat map's plane (its curve is left out; the
+    /// pointer's area is read from a height where it is nothing).
+    fn ground(&self, at: egui::Pos2) -> Option<LonLat> {
+        let ray = self
+            .cam
+            .viewport_to_world(&self.view, Vec2::new(at.x, at.y) * self.ui_scale)
+            .ok()?;
+        let (o, d) = (ray.origin.as_dvec3(), ray.direction.as_vec3().as_dvec3());
+        if self.in_space {
+            let c = self.globe.center_local.as_dvec3() - self.cam_world;
+            let r = f64::from(self.globe.radius);
+            let oc = o - c;
+            let b = oc.dot(d);
+            let disc = b * b - (oc.length_squared() - r * r);
+            let t = -b - disc.max(0.0).sqrt();
+            if disc < 0.0 || t <= 0.0 {
+                return None;
+            }
+            let dir = (o + d * t - c).normalize().as_vec3();
+            let (lat, lng) =
+                crate::systems::globe::sub_point(self.globe.anchor_lat, self.globe.anchor_lng, dir);
+            return Some([lng, lat]);
+        }
+        let height = self.cam_world.y + o.y;
+        if d.y > -1e-6 || height <= 0.0 {
+            return None;
+        }
+        let t = height / -d.y;
+        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+            self.anchor,
+            self.cam_world.x + o.x + d.x * t,
+            self.cam_world.z + o.z + d.z * t,
+        );
+        Some([lng, lat])
+    }
+
         for p in pts {
             match self.screen(*p) {
                 Some(s) => out.last_mut().into_iter().for_each(|r| r.push(s)),
@@ -524,15 +597,6 @@ impl Projector<'_> {
 fn rgb(c: cartopolis_scenario::region::Rgb, alpha: f32) -> egui::Color32 {
     let [r, g, b] = c.0;
     egui::Color32::from_rgba_unmultiplied(r, g, b, (alpha * 255.0) as u8)
-}
-
-/// The ground a view can see, as a box of degrees round the camera: a tilted
-/// view sees a few heights out, and an area wholly outside is not projected.
-fn view_box(lat: f64, lng: f64, alt_m: f64) -> [f64; 4] {
-    let r_km = (alt_m * 4.0 / 1000.0).max(20.0);
-    let dlat = r_km / 110.574;
-    let dlng = r_km / (111.320 * lat.to_radians().cos().max(0.05));
-    [lng - dlng, lat - dlat, lng + dlng, lat + dlat]
 }
 
 /// Paint the open layer's region states, and any tracks, over the map.
@@ -560,11 +624,6 @@ pub fn render_scenario_map(
     let alt = globe.altitude_m(cell, tf);
     let (cam_lat, cam_lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
     let in_space = globe.in_space(cell, tf);
-    let seen = if in_space {
-        [-180.0, -90.0, 180.0, 90.0]
-    } else {
-        view_box(cam_lat, cam_lng, alt)
-    };
     let map_rect = place_pins::map_area(&mut egui, &keyboard, &route);
     let ui_scale = egui.ui_scale();
     let ctx = egui.ctx_mut().clone();
@@ -619,12 +678,11 @@ pub fn render_scenario_map(
             ctx.viewport_rect().y_range(),
         ));
 
-    // Region states, under everything else.
-    if o.fills.len() > MAX_FILLS {
-        o.fills.clear();
-    }
-    if o.colours.len() > MAX_FILLS {
-        o.colours.clear();
+    // The areas themselves are the GPU's (`systems::lens_areas`); what is
+    // left here is what answers the pointer. A colour still easing there
+    // keeps the frames coming.
+    if crate::systems::lens_areas::easing() {
+        ctx.request_repaint();
     }
     // The pointer, where it rests on the bare map: a finger has no hover, and
     // over a disc or a card the map is not what it points at.
@@ -635,86 +693,19 @@ pub fn render_scenario_map(
                 .layer_id_at(at)
                 .is_none_or(|l| l.order == egui::Order::Background)
     });
-    let ease = 1.0 - (-EASE_PER_S * ctx.input(|i| i.stable_dt).min(0.1)).exp();
-    let mut easing = false;
-    let singled = o.singled();
     let li = o.layer;
     if let (Some(places), Some(set)) = (o.frame.regions.get(li), o.play.layer_areas(li)) {
-        let set_key = o
-            .play
-            .areas
-            .iter()
-            .position(|a| a.name == set.name)
-            .unwrap_or(0);
         let layer = &o.play.scenario.region_states[li];
         // The area under the pointer, and its band.
-        let mut hovered: Option<(usize, usize)> = None;
-        for p in places {
-            let Some(a) = p.area else { continue };
-            let area = &set.areas[a];
-            let b = area.bbox;
-            if b[2] < seen[0] || b[0] > seen[2] || b[3] < seen[1] || b[1] > seen[3] {
-                continue;
-            }
-            let state = &layer.states[p.state];
-            let passed = state.when == Some(When::Passed);
-            let alpha = match singled {
-                // A band picked on the scale: the rest stay as a hint of
-                // where they are, no more.
-                Some(band) if band != p.state => 0.08,
-                _ if passed => 0.30,
-                _ => 0.70,
-            };
-            let target = egui::Rgba::from(rgb(state.colour, alpha));
-            // A new area fades in from nothing, so a finer board arriving
-            // on a zoom comes up rather than popping.
-            let drawn = o
-                .colours
-                .entry((set_key, a))
-                .or_insert(egui::Rgba::TRANSPARENT);
-            *drawn = eased(*drawn, target, ease, &mut easing);
-            let fill = egui::Color32::from(*drawn);
-            let (verts, idx) = o
-                .fills
-                .entry((set_key, a))
-                .or_insert_with(|| area.triangles());
-            let screen: Vec<Option<egui::Pos2>> = verts.iter().map(|v| proj.screen(*v)).collect();
-            let mut mesh = egui::Mesh::default();
-            let mut at: HashMap<u32, u32> = HashMap::new();
-            for tri in idx.chunks_exact(3) {
-                let Some(pts) = tri
+        let hovered = pointer
+            .and_then(|at| proj.ground(at))
+            .and_then(|p| set.area_at(p))
+            .and_then(|a| {
+                places
                     .iter()
-                    .map(|&i| screen[i as usize])
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    continue;
-                };
-                if hovered.is_none() && pointer.is_some_and(|q| in_triangle(q, &pts)) {
-                    hovered = Some((a, p.state));
-                }
-                let mut ids = [0u32; 3];
-                for (k, (&i, pos)) in tri.iter().zip(pts).enumerate() {
-                    ids[k] = *at.entry(i).or_insert_with(|| {
-                        mesh.colored_vertex(pos, fill);
-                        mesh.vertices.len() as u32 - 1
-                    });
-                }
-                mesh.add_triangle(ids[0], ids[1], ids[2]);
-            }
-            if !mesh.is_empty() {
-                painter.add(egui::Shape::mesh(mesh));
-            }
-            for ring in area.polygons.iter().flatten() {
-                let mut closed = ring.clone();
-                closed.extend(ring.first().copied());
-                for run in proj.runs(&closed) {
-                    painter.add(egui::Shape::line(
-                        run,
-                        egui::Stroke::new(0.8, ink::AREA_EDGE),
-                    ));
-                }
-            }
-        }
+                    .find(|p| p.area == Some(a))
+                    .map(|p| (a, p.state))
+            });
         // The place being read stands out: the one under the pointer, else
         // the one under the crosshair, whose figure the key gives.
         let marked = hovered
@@ -747,9 +738,6 @@ pub fn render_scenario_map(
                 set.rung,
             );
         }
-    }
-    if easing {
-        ctx.request_repaint();
     }
 
     // Tracks: the cone, the path behind and ahead, the times along it, where
@@ -865,30 +853,9 @@ pub fn render_scenario_map(
     }
 }
 
-/// A drawn colour a step closer to its target, `ease` of the way; `moving`
-/// is raised while it is still visibly short of it.
-fn eased(now: egui::Rgba, target: egui::Rgba, ease: f32, moving: &mut bool) -> egui::Rgba {
-    let (a, b) = (now.to_array(), target.to_array());
-    if a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.004) {
-        return target;
-    }
-    *moving = true;
-    let c: [f32; 4] = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * ease);
-    egui::Rgba::from_rgba_premultiplied(c[0], c[1], c[2], c[3])
-}
-
 /// Between two chrome tones, `t` of the way, for a hover that eases in.
 fn lerp_colour(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     a.lerp_to_gamma(b, t.clamp(0.0, 1.0))
-}
-
-/// Whether a point lies in a screen triangle, either winding.
-fn in_triangle(q: egui::Pos2, t: &[egui::Pos2]) -> bool {
-    let side = |a: egui::Pos2, b: egui::Pos2| (b - a).x * (q - a).y - (b - a).y * (q - a).x;
-    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
-    let neg = d0 < 0.0 || d1 < 0.0 || d2 < 0.0;
-    let pos = d0 > 0.0 || d1 > 0.0 || d2 > 0.0;
-    !(neg && pos)
 }
 
 /// The card beside the pointer over an area: its name, the figure there and
@@ -1000,7 +967,7 @@ const SHEET_SHARE: f32 = 0.55;
 const SHELF_SHARE: f32 = 0.8;
 /// What the parts above and below a scrolling body cost, roughly: only where
 /// the body starts to scroll depends on it.
-const HEADER_PTS: f32 = 96.0;
+const HEADER_PTS: f32 = 132.0;
 /// The body never shrinks below this, however short the viewport.
 const BODY_MIN_PTS: f32 = 120.0;
 /// What the open figure's key costs at the head of the figures: its line,

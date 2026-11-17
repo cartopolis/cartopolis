@@ -45,6 +45,8 @@ pub mod drawn_ground;
 pub mod load_control;
 // Only the kerbs near the camera go into the shadow maps.
 pub mod kerb_shadows;
+// A lens's areas, meshed once and coloured by a texel an area.
+pub mod lens_areas;
 pub mod lod22;
 pub mod lod22_facade;
 pub mod lod3;

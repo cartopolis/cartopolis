@@ -16,6 +16,7 @@ pub mod globe_ocean;
 pub mod grass;
 pub mod ground_detail;
 pub mod label_sign;
+pub mod lens;
 pub mod particles;
 pub mod road_depth;
 pub mod satellites;
@@ -73,6 +74,7 @@ impl Plugin for MaterialsPlugin {
             // The street names on the road: one material and one atlas for the
             // whole sign pool (`systems::street_labels`, `systems::label_atlas`).
             .add_plugins(MaterialPlugin::<label_sign::LabelSignMaterial>::default())
+            .add_plugins(MaterialPlugin::<lens::LensAreaMaterial>::default())
             .add_plugins(MaterialPlugin::<globe_ocean::GlobeSurfaceMaterial>::default());
     }
 }

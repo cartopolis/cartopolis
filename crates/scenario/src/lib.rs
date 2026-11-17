@@ -243,7 +243,9 @@ const MIN_VISIBLE_PX: f64 = 3.0;
 /// A scenario with its boards, ready to answer what is true at any time.
 pub struct Play {
     pub scenario: Scenario,
-    pub areas: Vec<AreaSet>,
+    /// Shared, so a client can hand a board to a worker (to mesh it) without
+    /// copying its outlines.
+    pub areas: Vec<std::sync::Arc<AreaSet>>,
     /// Per area set, how wide its typical area is, km: the median of its
     /// areas' box widths, for [`Play::set_scale`].
     typical_km: Vec<f64>,
@@ -341,7 +343,7 @@ impl Play {
         let typical_km = areas.iter().map(typical_km).collect();
         Ok(Play {
             scenario,
-            areas,
+            areas: areas.into_iter().map(std::sync::Arc::new).collect(),
             typical_km,
             layers,
         })
@@ -400,7 +402,7 @@ impl Play {
     #[must_use]
     pub fn layer_areas(&self, layer: usize) -> Option<&AreaSet> {
         let j = self.layers.get(layer)?;
-        j.active.map(|a| &self.areas[j.sets[a]])
+        j.active.map(|a| &*self.areas[j.sets[a]])
     }
 
     /// The state of everything at `t`.
@@ -428,7 +430,7 @@ impl Play {
             .iter()
             .zip(&self.layers)
             .map(|(layer, j)| {
-                let set = j.active.map(|a| &self.areas[j.sets[a]]);
+                let set = j.active.map(|a| &*self.areas[j.sets[a]]);
                 let mut out = Vec::new();
                 // Track stays were worked out on the layer's first board.
                 if let (Some(visits), Some(set), Some(0)) = (&j.visits, set, j.active) {
