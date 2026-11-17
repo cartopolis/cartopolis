@@ -776,12 +776,6 @@ impl AgentKind {
         matches!(self, Self::Car | Self::Cyclist | Self::Fatbike)
     }
 
-    /// Whether this kind rides a bike: posed on one, its cranks and wheels
-    /// turned, leaning into a turn.
-    fn rides(self) -> bool {
-        matches!(self, Self::Cyclist | Self::Fatbike)
-    }
-
     /// Whether this kind may travel a line against its one-way flow. A
     /// pavement is two-way whatever the carriageway beside it does — and a
     /// fatbike does not care.
@@ -982,7 +976,45 @@ pub struct Car {
     /// A fatbike rider who runs red lights and does not stop at zebras
     /// ([`FATBIKE_DEFIANT_SHARE`]). Fixed for the agent's life.
     defiant: bool,
+    /// A walker crossing its street, or waiting at the kerb to.
+    crossing: Option<Crossing>,
+    /// Where it last crossed, so it does not turn round at the far kerb and
+    /// cross the same stripes back.
+    last_cross: Option<Vec2>,
 }
+
+/// A walker crossing the street it walks beside, at a zebra or at a light:
+/// it stops at the kerb, faces the road, looks, and walks straight across to
+/// the other pavement, then on the way it was going (`Car::crossing`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Crossing {
+    /// The zebra or the stop line, world XZ.
+    at: Vec2,
+    /// The phase group of the traffic it crosses, at a light; `None` at a
+    /// zebra, where the cars stop for it.
+    signal: Option<u8>,
+    /// Seconds at the kerb so far.
+    waited: f32,
+    /// How far across, 0 at the kerb it left … 1 at the other; `None` while
+    /// it waits.
+    progress: Option<f32>,
+}
+
+/// The share of walkers passing a zebra or a crossing at a light who cross
+/// there, when the far side has a pavement.
+const CROSS_SHARE: f32 = 0.45;
+/// The least a walker stands at the kerb, looking, before it steps out.
+const CROSS_LOOK_S: f32 = 0.8;
+/// Past this it gives up waiting and walks on.
+const CROSS_GIVE_UP_S: f32 = 30.0;
+/// Its pace across, as a share of its walking pace: people step out briskly.
+const CROSS_PACE: f32 = 1.15;
+/// How far ahead of a walker a crossing is taken up, metres: it slows to a
+/// stop at about the stripes.
+const CROSS_AHEAD_M: (f32, f32) = (0.3, 2.2);
+/// The hardest a walker trusts a vehicle to brake for it, m/s²: one that
+/// would need more is let by first.
+const CROSS_TRUST_BRAKE: f32 = 2.5;
 
 /// The child entities an agent drives besides its own transform.
 #[derive(Clone, Copy)]
@@ -1021,6 +1053,13 @@ impl Car {
     fn offset(&self, kind: AgentKind, line: &WorldDriveLine) -> f32 {
         if let Some(pinned) = self.pinned {
             return pinned;
+        }
+        if let Some(Crossing {
+            progress: Some(p), ..
+        }) = self.crossing
+        {
+            // Straight across, from its own pavement to the other.
+            return (kind.offset(line) + self.lateral) * self.side * (1.0 - 2.0 * p);
         }
         if kind == AgentKind::Walker && !line.uses.drive {
             let keep = (self.lateral + WALK_SPREAD_M) / (2.0 * WALK_SPREAD_M);
@@ -1076,6 +1115,151 @@ impl Car {
         }
         if !line.pavements.on(self.side * dir) && line.pavements.on(-self.side * dir) {
             self.side = -self.side;
+        }
+    }
+}
+
+/// The zebra or light a walker at `p`, going `travel` beside a street
+/// `half_width` either side of its centre line, has just ahead of it, across
+/// that street: where it is, and the phase group of the traffic it holds
+/// (`None` for a zebra). Each signal is (stop line, group, held by a
+/// button), as `drive_traffic` lists them.
+fn crossing_ahead(
+    p: Vec2,
+    travel: Vec2,
+    half_width: f32,
+    zebras: &[crate::systems::street_detail::ZebraPoint],
+    signals: &[(Vec2, u8, bool)],
+) -> Option<(Vec2, Option<u8>)> {
+    let reach = half_width + PAVEMENT_CLEARANCE_M + 2.0;
+    let near = |at: Vec2| {
+        let rel = at - p;
+        let ahead = rel.dot(travel);
+        let lateral = (rel.x * travel.y - rel.y * travel.x).abs();
+        (CROSS_AHEAD_M.0..=CROSS_AHEAD_M.1).contains(&ahead) && lateral <= reach
+    };
+    if let Some(z) = zebras
+        .iter()
+        .find(|z| z.road.dot(travel).abs() > 0.8 && near(z.at))
+    {
+        return Some((z.at, None));
+    }
+    let group = crate::systems::street_detail::signal_group(travel);
+    signals
+        .iter()
+        .find(|(at, g, _)| *g == group && near(*at))
+        .map(|&(at, g, _)| (at, Some(g)))
+}
+
+/// Whether a walker may step out at `at`: no vehicle is on the crossing, and
+/// every one coming can stop short of it at a braking a walker would trust
+/// ([`CROSS_TRUST_BRAKE`]). Vehicles are (where, which way, how fast);
+/// `reach` is how far either side of a vehicle's path the crossing counts.
+fn safe_to_cross(at: Vec2, vehicles: &[(Vec2, Vec2, f32)], reach: f32) -> bool {
+    vehicles.iter().all(|&(p, travel, speed)| {
+        let rel = at - p;
+        let ahead = rel.dot(travel);
+        let lateral = (rel.x * travel.y - rel.y * travel.x).abs();
+        if lateral > reach || !(-3.0..=45.0).contains(&ahead) {
+            return true;
+        }
+        if ahead.abs() < 3.0 {
+            // On the crossing, or its nose over it.
+            return false;
+        }
+        speed < 0.8 || speed * speed / (2.0 * CROSS_TRUST_BRAKE) < ahead - 3.0
+    })
+}
+
+/// How fast a car moves over to pass a cyclist, and back, m/s sideways.
+const CAR_SWERVE_RATE: f32 = 1.0;
+
+/// How far behind a car's centre a cyclist still counts as being passed, and
+/// how far ahead one is seen to be caught up with, metres.
+const PASS_BEHIND_M: f32 = 4.0;
+const PASS_AHEAD_M: f32 = 18.0;
+/// The room a driver leaves a cyclist, side to side, beyond the two bodies.
+const PASS_CLEARANCE_M: f32 = 0.6;
+/// How far over the centre line of a two-way street a car will go to pass,
+/// as a share of the half width.
+const PASS_INTO_ONCOMING: f32 = 0.25;
+/// A car following a cyclist it cannot pass keeps this far back, centre to
+/// centre, before it slows to nothing; it settles about 8 m behind one at a
+/// cyclist's pace.
+const PASS_FOLLOW_M: f32 = 4.5;
+
+/// How a car on `l` gets past a cyclist `gap` metres ahead of its centre in
+/// the same lane (negative: beside it): how far to move over, metres right
+/// of its lane (so negative, toward the middle), and the speed it may keep
+/// of `want`.
+///
+/// Until 2026-11-17 the two kept their lane offsets and a car drove
+/// *through* a rider wherever the street was too narrow for both side by
+/// side, which is most Dutch residential streets. Now a car moves over when
+/// it can do so without taking more than [`PASS_INTO_ONCOMING`] of the other
+/// lane (or, on a one-way street, all but 0.3 m of it), and otherwise stays
+/// behind the bike until the street changes.
+fn pass_cyclist(l: &WorldDriveLine, gap: f32, want: f32) -> (f32, f32) {
+    use crate::systems::give_way::{BIKE_BODY, CAR_BODY};
+    let lane = AgentKind::Car.offset(l);
+    let apart = AgentKind::Cyclist.offset(l) - lane;
+    let need = CAR_BODY.half_width + BIKE_BODY.half_width + PASS_CLEARANCE_M - apart;
+    if need <= 0.0 {
+        return (0.0, want);
+    }
+    let furthest = if l.flow == Flow::Both {
+        -l.half_width * PASS_INTO_ONCOMING
+    } else {
+        -l.half_width + 0.3
+    };
+    if lane - need - CAR_BODY.half_width >= furthest {
+        return (-need, want);
+    }
+    if gap <= 0.0 {
+        return (0.0, want);
+    }
+    (0.0, want.min(((gap - PASS_FOLLOW_M) * 1.2).max(0.0)))
+}
+
+/// The side of the squares the walkers are binned in to find each other.
+/// Larger than a walker's lookahead (`crowd_react::LOOKAHEAD_M` is 6 m), so
+/// the square it is in and the eight round it hold everybody it could meet.
+const WALK_CELL_M: f32 = 6.0;
+
+fn walk_cell(p: Vec2) -> (i32, i32) {
+    (
+        (p.x / WALK_CELL_M).floor() as i32,
+        (p.y / WALK_CELL_M).floor() as i32,
+    )
+}
+
+/// The other walkers that walker `me`, at `p` moving at `vel`, is closing
+/// on, appended to `out`: those in its square and the eight round it whose
+/// own velocity leaves it gaining on them along its way by more than a
+/// quarter of a metre a second — so it steps round somebody coming the other
+/// way or dawdling ahead, and not round the one walking beside it at its
+/// own pace.
+fn closing_walkers(
+    grid: &HashMap<(i32, i32), Vec<(usize, Vec2, Vec2)>>,
+    me: usize,
+    p: Vec2,
+    vel: Vec2,
+    out: &mut Vec<Vec2>,
+) {
+    let Some(travel) = vel.try_normalize() else {
+        return;
+    };
+    let (cx, cz) = walk_cell(p);
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            let Some(cell) = grid.get(&(cx + dx, cz + dz)) else {
+                continue;
+            };
+            for &(i, at, v) in cell {
+                if i != me && (vel - v).dot(travel) > 0.25 {
+                    out.push(at);
+                }
+            }
         }
     }
 }
@@ -1201,6 +1385,8 @@ pub fn setup_traffic(
             pinned: None,
             pavement: false,
             defiant: kind == AgentKind::Fatbike && r(15) < FATBIKE_DEFIANT_SHARE,
+            crossing: None,
+            last_cross: None,
         }
     };
 
@@ -1791,30 +1977,71 @@ pub fn drive_traffic(
     // Where the walkers and the riders are, for the fatbikes weaving through
     // them; and where the fatbikes are, for the walkers making way. Only
     // while there are both, from the same read-only pass.
+    //
+    // The same pass notes where the walkers are, for each other and for the
+    // fatbikes; who is crossing a street or waiting at a zebra, for the
+    // traffic to stop for; and where every vehicle is and how fast, for a
+    // walker deciding whether to step out.
     let weaving = show_cyclists && show_people;
     let mut walkers_at: Vec<Vec2> = Vec::new();
+    // Walkers by 5 m square: (pool index, where, velocity).
+    let mut walker_grid: HashMap<(i32, i32), Vec<(usize, Vec2, Vec2)>> = HashMap::new();
     let mut riders_at: Vec<Vec2> = Vec::new();
     let mut fatbikes_at: Vec<Vec2> = Vec::new();
-    for (car, &kind, ..) in cars.iter() {
+    let mut vehicles: Vec<(Vec2, Vec2, f32)> = Vec::new();
+    let mut crossers: Vec<Vec2> = Vec::new();
+    let mut kerb_waiters: Vec<(Vec2, Vec2)> = Vec::new();
+    for (i, (car, &kind, ..)) in cars.iter().enumerate() {
         if !showing(kind) {
             continue;
         }
-        if let Some(key) = car.line {
-            occupied[kind.index()]
-                .entry((key, lane_key(car.dir)))
-                .or_default()
-                .push(car.s);
-            let list = match kind {
-                AgentKind::Walker if weaving => Some(&mut walkers_at),
-                AgentKind::Cyclist => Some(&mut riders_at),
-                AgentKind::Fatbike if weaving => Some(&mut fatbikes_at),
-                _ => None,
-            };
-            if let Some(list) = list {
-                if let Some((p, travel, _)) = pose_of(car, net.get(key), kind) {
-                    list.push(p + right_of(travel) * car.react.shift);
+        let Some(key) = car.line else {
+            continue;
+        };
+        occupied[kind.index()]
+            .entry((key, lane_key(car.dir)))
+            .or_default()
+            .push(car.s);
+        let wanted = match kind {
+            AgentKind::Walker => show_people,
+            AgentKind::Car => show_people,
+            AgentKind::Cyclist | AgentKind::Fatbike => true,
+        };
+        if !wanted {
+            continue;
+        }
+        let Some((p, travel, _)) = pose_of(car, net.get(key), kind) else {
+            continue;
+        };
+        let p = p + right_of(travel) * car.react.shift;
+        match kind {
+            AgentKind::Walker => {
+                walkers_at.push(p);
+                walker_grid
+                    .entry(walk_cell(p))
+                    .or_default()
+                    .push((i, p, travel * car.speed));
+                match car.crossing {
+                    Some(Crossing {
+                        progress: Some(_), ..
+                    }) => crossers.push(p),
+                    Some(Crossing { signal: None, .. }) => {
+                        kerb_waiters.push((p, right_of(travel) * -car.side));
+                    }
+                    _ => {}
                 }
             }
+            AgentKind::Cyclist => {
+                riders_at.push(p);
+                vehicles.push((p, travel, car.speed));
+            }
+            AgentKind::Fatbike => {
+                if weaving {
+                    fatbikes_at.push(p);
+                }
+                vehicles.push((p, travel, car.speed));
+            }
+            AgentKind::Car => vehicles.push((p, travel, car.speed)),
         }
     }
 
@@ -1923,8 +2150,10 @@ pub fn drive_traffic(
     // street-detail layer off, which is right: a car stops only at a light that
     // is on the screen to be red.
     //
-    // Each with whether a pressed button holds it red (`give_way`).
-    let signals: Vec<(Vec2, u8, bool)> = if show_cars || show_cyclists {
+    // Each with whether a pressed button holds it red (`give_way`). The
+    // walkers cross at the same lights.
+    let any_pool = show_cars || show_cyclists || show_people;
+    let signals: Vec<(Vec2, u8, bool)> = if any_pool {
         detail
             .signals_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
             .map(|s| (s.at, s.group, buttons.holds(s.at, s.group, elapsed)))
@@ -1934,15 +2163,18 @@ pub fn drive_traffic(
     };
     // The zebras, and the avatars with the way each faces, for the cars and
     // cyclists that give way (`give_way`) — every avatar, whether or not the
-    // people layer is on.
-    let zebras: Vec<crate::systems::street_detail::ZebraPoint> = if show_cars || show_cyclists {
+    // people layer is on — and the walkers waiting at one or on the road.
+    let zebras: Vec<crate::systems::street_detail::ZebraPoint> = if any_pool {
         detail
             .zebras_near(cam, AgentKind::Car.recycle_radius() + SIGNAL_LOOKAHEAD_M)
             .collect()
     } else {
         Vec::new()
     };
-    let avatars: &[Vec2] = &people.at;
+    // Whom a vehicle gives way to on its path: the avatars, and the walkers
+    // crossing in front of it.
+    let avatars: Vec<Vec2> = people.at.iter().chain(&crossers).copied().collect();
+    let avatars: &[Vec2] = &avatars;
     let avatars_facing: Vec<(Vec2, Vec2)> = if zebras.is_empty() {
         Vec::new()
     } else {
@@ -1951,6 +2183,9 @@ pub fn drive_traffic(
             .iter()
             .copied()
             .zip(people.facing.iter().copied())
+            .chain(kerb_waiters.iter().copied())
+            // On the stripes, the way a walker faces does not matter.
+            .chain(crossers.iter().map(|&p| (p, Vec2::X)))
             .collect()
     };
 
@@ -1980,6 +2215,8 @@ pub fn drive_traffic(
         && elapsed - traffic_here.reported >= 1.0;
     // (distance to the avatar, speed) of the nearest car sent, this frame.
     let mut nearest_sent: Option<(f32, f32)> = None;
+    // Who a walker makes way for this frame; one buffer, refilled per walker.
+    let mut near: Vec<Vec2> = Vec::new();
 
     for (i, (mut car, &kind, mut tf, mut cell, dressed, mut vis)) in cars.iter_mut().enumerate() {
         if !showing(kind) {
@@ -1991,6 +2228,22 @@ pub fn drive_traffic(
             AgentKind::Walker => (&paths, &path_weights),
             AgentKind::Cyclist => (&lanes, &lane_weights),
             AgentKind::Fatbike => (&rides, &ride_weights),
+        };
+        // A car with a cyclist close ahead in its lane: how far ahead, from
+        // the cyclists' own table (`AgentKind::index`), read before this
+        // kind's table is borrowed to write.
+        let bike_ahead = if kind == AgentKind::Car {
+            car.line
+                .and_then(|k| occupied[AgentKind::Cyclist.index()].get(&(k, lane_key(car.dir))))
+                .and_then(|riders| {
+                    riders
+                        .iter()
+                        .map(|o| o - car.s)
+                        .filter(|d| (-PASS_BEHIND_M..PASS_AHEAD_M).contains(d))
+                        .min_by(f32::total_cmp)
+                })
+        } else {
+            None
         };
         let occupied = &mut occupied[kind.index()];
         if candidates.is_empty() {
@@ -2009,6 +2262,7 @@ pub fn drive_traffic(
                 car.dir = dir;
                 car.s = s;
                 car.pinned = Some(offset);
+                car.crossing = None;
                 car.turn = None;
                 car.heading = Vec2::ZERO;
                 car.speed = WALK_SPEED * car.speed_scale;
@@ -2057,6 +2311,9 @@ pub fn drive_traffic(
         let mut stepped = 0.0;
         // Where a walker means to step to, metres right of its path.
         let mut shift_to = 0.0;
+        // A walker's pace across the street it is crossing, m/s; its along
+        // speed is zero meanwhile.
+        let mut cross_speed = 0.0;
         // A vehicle giving way to somebody close in front: brake hard, and
         // the most its centre may move this frame (`give_way::Yield`).
         let mut hard_brake = false;
@@ -2088,6 +2345,11 @@ pub fn drive_traffic(
                     want = want.min(t.speed_limit());
                 }
                 want = want.min(headway_speed(occupied, k, car.dir, car.s, want));
+                if let Some(gap) = bike_ahead {
+                    let (shift, keep_to) = pass_cyclist(l, gap, want);
+                    shift_to = shift;
+                    want = keep_to;
+                }
                 if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
                     let reach = l.half_width + 1.0;
                     // A defiant fatbike rides through red, and past a zebra.
@@ -2147,13 +2409,74 @@ pub fn drive_traffic(
                     }
                 }
             } else if walker {
-                // Make way for whoever is on its line, slowing if it must; and
-                // stop to answer a wave.
-                if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
-                    let (to, keep) = react_to::make_way(p, travel, car.react.shift, people_at);
+                if let Some(mut c) = car.crossing {
+                    // At the kerb, or on the road: it does not walk on.
+                    want = 0.0;
+                    match c.progress {
+                        None => {
+                            c.waited += dt;
+                            let lights = c.signal.is_none_or(|g| {
+                                crate::systems::street_detail::signal_lets_walk(elapsed, g)
+                                    || signals.iter().any(|s| s.0 == c.at && s.2)
+                            });
+                            let go = c.waited >= CROSS_LOOK_S
+                                && lights
+                                && safe_to_cross(c.at, &vehicles, l.half_width + 1.0);
+                            if go {
+                                c.progress = Some(0.0);
+                            }
+                            car.crossing = (go || c.waited < CROSS_GIVE_UP_S).then_some(c);
+                        }
+                        Some(p) => {
+                            let width = 2.0 * (kind.offset(l) + car.lateral).max(1.0);
+                            cross_speed = WALK_SPEED * CROSS_PACE * car.speed_scale;
+                            let p = p + cross_speed * dt / width;
+                            if p >= 1.0 {
+                                car.side = -car.side;
+                                car.crossing = None;
+                                car.last_cross = Some(c.at);
+                            } else {
+                                c.progress = Some(p);
+                                car.crossing = Some(c);
+                            }
+                        }
+                    }
+                } else if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
+                    // Make way for whoever is on its line — the avatars, the
+                    // fatbikes, and the walkers it is closing on — slowing if
+                    // it must.
+                    near.clear();
+                    near.extend_from_slice(people_at);
+                    closing_walkers(&walker_grid, i, p, travel * car.speed, &mut near);
+                    let (to, keep) = react_to::make_way(p, travel, car.react.shift, &near);
                     shift_to = to;
                     want *= keep;
+                    // A zebra or a light just ahead, across its street, with
+                    // a pavement on the far side: some cross there.
+                    let crossable = l.uses.drive
+                        && car.pinned.is_none()
+                        && car.react.wave.is_none()
+                        && l.pavements.on(-car.side * car.dir);
+                    if crossable {
+                        if let Some((at, signal)) =
+                            crossing_ahead(p, travel, l.half_width, &zebras, &signals)
+                        {
+                            let fresh = car.last_cross.is_none_or(|q| q.distance(at) > 8.0);
+                            let spot =
+                                ((at.x * 4.0) as i64 as u64) ^ ((at.y * 4.0) as i64 as u64) << 20;
+                            if fresh && rand01(0xC205, i as u64, spot) < CROSS_SHARE {
+                                car.crossing = Some(Crossing {
+                                    at,
+                                    signal,
+                                    waited: 0.0,
+                                    progress: None,
+                                });
+                                want = 0.0;
+                            }
+                        }
+                    }
                 }
+                // Stop to answer a wave.
                 if matches!(
                     wave_step,
                     Some(react_to::WaveStep::Stopping | react_to::WaveStep::Waving { .. })
@@ -2182,7 +2505,8 @@ pub fn drive_traffic(
 
             // Inside a junction the progress is the turn's, not the line's.
             let step = car.speed * dt;
-            stepped = step;
+            // The stride counts the walk across a street too.
+            stepped = step + cross_speed * dt;
             car.signal_grace = (car.signal_grace - step).max(0.0);
             let mut done = false;
             if let Some(t) = car.turn.as_mut() {
@@ -2293,6 +2617,8 @@ pub fn drive_traffic(
                     car.tilt = Vec2::ZERO;
                     car.signal_grace = 0.0;
                     car.react.reset();
+                    car.crossing = None;
+                    car.last_cross = None;
                     shift_to = 0.0;
                     accel_now = 0.0;
                     held = false;
@@ -2350,6 +2676,18 @@ pub fn drive_traffic(
                     facing_rate = Some(3.0);
                 }
             }
+            // Waiting at the kerb or on the way over: facing across, toward
+            // the far pavement.
+            if car.crossing.is_some() {
+                aim = right_of(travel) * -car.side;
+                facing_rate = Some(3.0);
+            }
+        } else if kind == AgentKind::Car {
+            // Moved over to pass a cyclist, and back.
+            let (eased, _) =
+                react_to::ease_shift_at(car.react.shift, shift_to, dt, CAR_SWERVE_RATE);
+            car.react.shift = eased;
+            pos += right_of(travel) * eased;
         } else if kind == AgentKind::Fatbike {
             // The swerve, quicker than a walker's step, and never through
             // anybody.
@@ -2495,7 +2833,8 @@ pub fn drive_traffic(
                     (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
                 }
                 // Slowing to a stop eases from the stride into standing.
-                let standing = 1.0 - (car.speed / (WALK_SPEED * 0.5)).clamp(0.0, 1.0);
+                let standing =
+                    1.0 - ((car.speed + cross_speed) / (WALK_SPEED * 0.5)).clamp(0.0, 1.0);
                 let pose = match car.react.wave.map(|w| w.step(wave_secs)) {
                     Some(react_to::WaveStep::Waving { progress, blend }) => {
                         crowd::BodyPose::Wave { progress, blend }
@@ -2900,18 +3239,23 @@ fn place_agent(
         let Some(line) = net.get(key) else {
             continue;
         };
-        let dir = match (kind, line.flow) {
-            // A pavement is two-way whatever the carriageway beside it does —
-            // which is what somebody walking up a one-way street is doing.
-            (k, f) if k.ignores_oneway() || f == Flow::Both => {
+        // A pavement is two-way whatever the carriageway beside it does —
+        // which is what somebody walking up a one-way street is doing.
+        let flow = if kind.ignores_oneway() {
+            Flow::Both
+        } else {
+            line.flow
+        };
+        let dir = match flow {
+            Flow::Both => {
                 if rand01(0xB1D1, agent, seed) < 0.5 {
                     1.0
                 } else {
                     -1.0
                 }
             }
-            (_, Flow::Forward) => 1.0,
-            (_, Flow::Backward) => -1.0,
+            Flow::Forward => 1.0,
+            Flow::Backward => -1.0,
         };
         // Around the point on this line nearest the camera, so the agent lands
         // in the neighbourhood the pool is sized for rather than anywhere along
@@ -3819,6 +4163,10 @@ mod tests {
             parts: AgentParts::Walker,
             react: Default::default(),
             pinned: None,
+            pavement: false,
+            defiant: false,
+            crossing: None,
+            last_cross: None,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -3847,6 +4195,8 @@ mod tests {
             pinned: None,
             pavement: false,
             defiant: false,
+            crossing: None,
+            last_cross: None,
         }
     }
 
@@ -3895,5 +4245,231 @@ mod tests {
                 assert!(p.y.abs() <= 1.2, "off the path at {p}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod crossing_tests {
+    use super::*;
+    use crate::systems::street_detail::ZebraPoint;
+
+    fn street(half_width: f32, flow: Flow) -> DriveNetwork {
+        let mut net = DriveNetwork::default();
+        net.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            vec![DriveLine {
+                points: vec![[0.0, 0.0], [100.0, 0.0]],
+                flow,
+                speed: 8.0,
+                half_width,
+                uses: Uses {
+                    drive: true,
+                    walk: true,
+                    cycle: true,
+                },
+                deck: vec![f32::NAN; 2],
+                on_deck: false,
+                pavements: Pavements::BOTH,
+            }],
+        );
+        net
+    }
+
+    const KEY: LineKey = LineKey {
+        cell: (0, 0),
+        index: 0,
+    };
+
+    /// A walker on the pavement takes up the zebra just ahead across its own
+    /// street, and not one behind it, nor one across the side street.
+    #[test]
+    fn a_walker_finds_the_crossing_just_ahead() {
+        let hw = 3.0;
+        // On the right-hand pavement going east.
+        let p = Vec2::new(40.0, hw + PAVEMENT_CLEARANCE_M);
+        let across = |x: f32| ZebraPoint {
+            at: Vec2::new(x, 0.0),
+            road: Vec2::X,
+            half_width: hw,
+        };
+        assert_eq!(
+            crossing_ahead(p, Vec2::X, hw, &[across(41.5)], &[]),
+            Some((Vec2::new(41.5, 0.0), None))
+        );
+        assert_eq!(
+            crossing_ahead(p, Vec2::X, hw, &[across(38.0)], &[]),
+            None,
+            "behind"
+        );
+        assert_eq!(
+            crossing_ahead(p, Vec2::X, hw, &[across(50.0)], &[]),
+            None,
+            "not yet"
+        );
+        let side_street = ZebraPoint {
+            at: Vec2::new(41.0, 12.0),
+            road: Vec2::Y,
+            half_width: hw,
+        };
+        assert_eq!(crossing_ahead(p, Vec2::X, hw, &[side_street], &[]), None);
+        // A light on this street's traffic (east–west is group 1), not the
+        // cross street's.
+        let lights = [
+            (Vec2::new(41.0, 0.0), 0, false),
+            (Vec2::new(41.2, 0.5), 1, false),
+        ];
+        assert_eq!(
+            crossing_ahead(p, Vec2::X, hw, &[], &lights),
+            Some((Vec2::new(41.2, 0.5), Some(1)))
+        );
+    }
+
+    /// A walker steps out only when nothing is on the crossing and every
+    /// vehicle coming could stop for it.
+    #[test]
+    fn a_walker_waits_for_a_gap() {
+        let at = Vec2::new(50.0, 0.0);
+        let east = Vec2::X;
+        assert!(safe_to_cross(at, &[], 4.0));
+        // 40 m off at 8 m/s stops in under 13 m: it will stop.
+        assert!(safe_to_cross(at, &[(Vec2::new(10.0, 1.3), east, 8.0)], 4.0));
+        // 15 m off at 12 m/s would need 29 m.
+        assert!(!safe_to_cross(
+            at,
+            &[(Vec2::new(35.0, 1.3), east, 12.0)],
+            4.0
+        ));
+        // Waiting on the stripes, or with its nose over them.
+        assert!(!safe_to_cross(
+            at,
+            &[(Vec2::new(49.0, 1.3), east, 0.0)],
+            4.0
+        ));
+        // Past it, going away; or on another road altogether.
+        assert!(safe_to_cross(
+            at,
+            &[(Vec2::new(60.0, 1.3), east, 12.0)],
+            4.0
+        ));
+        assert!(safe_to_cross(
+            at,
+            &[(Vec2::new(40.0, 30.0), east, 12.0)],
+            4.0
+        ));
+        // A queue held at the zebra, standing.
+        assert!(safe_to_cross(at, &[(Vec2::new(44.0, 1.3), east, 0.0)], 4.0));
+    }
+
+    /// Across, a walker goes straight over from its own pavement to the
+    /// other, through the middle of the road.
+    #[test]
+    fn a_crossing_walks_from_kerb_to_kerb() {
+        let net = street(3.0, Flow::Both);
+        let l = net.get(KEY).unwrap();
+        let mut w = tests_walker();
+        let start = w.offset(AgentKind::Walker, l);
+        assert!(start > l.half_width, "on the pavement: {start}");
+        for (p, want) in [(0.0, start), (0.5, 0.0), (1.0, -start)] {
+            w.crossing = Some(Crossing {
+                at: Vec2::new(50.0, 0.0),
+                signal: None,
+                waited: 1.0,
+                progress: Some(p),
+            });
+            let got = w.offset(AgentKind::Walker, l);
+            assert!((got - want).abs() < 1e-4, "at {p}: {got} not {want}");
+        }
+        // Waiting, it is still on its pavement.
+        w.crossing = Some(Crossing {
+            at: Vec2::new(50.0, 0.0),
+            signal: None,
+            waited: 0.0,
+            progress: None,
+        });
+        assert_eq!(w.offset(AgentKind::Walker, l), start);
+    }
+
+    fn tests_walker() -> Car {
+        Car {
+            line: Some(KEY),
+            s: 50.0,
+            dir: 1.0,
+            speed_scale: 1.0,
+            speed: 1.0,
+            heading: Vec2::ZERO,
+            turn: None,
+            side: 1.0,
+            lateral: 0.0,
+            phase: 0.0,
+            tilt: Vec2::ZERO,
+            roll: 0.0,
+            signal_grace: 0.0,
+            braking: false,
+            parts: AgentParts::Walker,
+            react: Default::default(),
+            pinned: None,
+            pavement: false,
+            defiant: false,
+            crossing: None,
+            last_cross: None,
+        }
+    }
+
+    /// A car passes a cyclist where it can without taking the oncoming lane,
+    /// and stays behind it where it cannot.
+    #[test]
+    fn a_car_passes_a_cyclist_only_with_room() {
+        // A narrow two-way residential street: it follows.
+        let narrow = street(2.75, Flow::Both);
+        let l = narrow.get(KEY).unwrap();
+        let (shift, keep) = pass_cyclist(l, 10.0, 8.0);
+        assert_eq!(shift, 0.0);
+        assert!(keep < 8.0 && keep > CYCLE_SPEED, "closing gently: {keep}");
+        let (_, keep) = pass_cyclist(l, 8.3, 8.0);
+        assert!(
+            (keep - CYCLE_SPEED).abs() < 0.1,
+            "settles at the bike's pace: {keep}"
+        );
+        assert_eq!(pass_cyclist(l, 4.0, 8.0).1, 0.0, "never into it");
+        // The same width one-way: it moves over and keeps its speed.
+        let oneway = street(2.75, Flow::Forward);
+        let l = oneway.get(KEY).unwrap();
+        let (shift, keep) = pass_cyclist(l, 10.0, 8.0);
+        assert!(shift < 0.0 && keep == 8.0, "{shift} {keep}");
+        let lane = AgentKind::Car.offset(l) + shift;
+        let bike = AgentKind::Cyclist.offset(l);
+        assert!(bike - lane >= 0.95 + 0.35 + PASS_CLEARANCE_M - 1e-4);
+        // A wide two-way street: room enough in its own lane, or nearly.
+        let wide = street(5.0, Flow::Both);
+        let l = wide.get(KEY).unwrap();
+        let (shift, keep) = pass_cyclist(l, 10.0, 12.0);
+        assert!(shift <= 0.0 && keep == 12.0);
+    }
+
+    /// A walker steps round the one coming the other way and the one it is
+    /// catching up, not round the one beside it at its pace, nor itself.
+    #[test]
+    fn walkers_make_way_for_the_walkers_they_meet() {
+        let mut grid: HashMap<(i32, i32), Vec<(usize, Vec2, Vec2)>> = HashMap::new();
+        let me = Vec2::new(10.0, 10.0);
+        let v = Vec2::new(1.25, 0.0);
+        for (i, at, vel) in [
+            (0, me, v),
+            (1, Vec2::new(14.0, 10.2), -v),
+            (2, Vec2::new(13.0, 10.0), v * 0.5),
+            (3, Vec2::new(10.5, 10.6), v),
+        ] {
+            grid.entry(walk_cell(at)).or_default().push((i, at, vel));
+        }
+        let mut out = Vec::new();
+        closing_walkers(&grid, 0, me, v, &mut out);
+        out.sort_by(|a, b| a.x.total_cmp(&b.x));
+        assert_eq!(out, vec![Vec2::new(13.0, 10.0), Vec2::new(14.0, 10.2)]);
+        // Standing, it makes way for nobody: the others go round it.
+        out.clear();
+        closing_walkers(&grid, 0, me, Vec2::ZERO, &mut out);
+        assert!(out.is_empty());
     }
 }

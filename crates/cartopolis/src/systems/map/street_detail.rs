@@ -2291,6 +2291,17 @@ pub(crate) fn signal_says_stop(elapsed: f32, group: u8) -> bool {
     signal_phase(elapsed % SIGNAL_CYCLE_S, group) != 2
 }
 
+/// Whether somebody on foot may start across the road whose traffic is
+/// group `group`: from a second into its red to three seconds before its
+/// green, so nobody steps out under an amber or is still on the road when
+/// the cars move off. The pedestrian heads are not drawn per phase, so
+/// this is the walkers' rule, not a lamp.
+pub(crate) fn signal_lets_walk(elapsed: f32, group: u8) -> bool {
+    let half = SIGNAL_CYCLE_S / 2.0;
+    let local = (elapsed % SIGNAL_CYCLE_S + f32::from(group) * half) % SIGNAL_CYCLE_S;
+    (13.0..SIGNAL_CYCLE_S - 3.0).contains(&local)
+}
+
 /// Which lamp of a group is lit at `t` seconds into the cycle: the group's half
 /// is green 0–9 s, amber 9–12 s, red for the rest (the other group mirrors at
 /// half-cycle offset).
@@ -2674,6 +2685,28 @@ mod tests {
             let a = signal_phase(t as f32, 0);
             let b = signal_phase(t as f32, 1);
             assert!(!(a == 2 && b == 2), "both green at t={t}");
+        }
+    }
+
+    /// Somebody may start across a road only while its cars are held red,
+    /// and not in the last seconds before they get green.
+    #[test]
+    fn walkers_cross_only_on_the_cars_red() {
+        for group in [0, 1] {
+            let mut walking = 0;
+            for k in 0..240 {
+                let t = k as f32 * 0.1;
+                if signal_lets_walk(t, group) {
+                    walking += 1;
+                    assert!(signal_says_stop(t, group), "cars stopped at t={t}");
+                    assert!(signal_says_stop(t + 2.9, group), "still red at t={t}+2.9");
+                    assert!(
+                        signal_phase(t % SIGNAL_CYCLE_S, group) == 0,
+                        "red, not amber"
+                    );
+                }
+            }
+            assert!(walking > 60, "a walk phase of {walking} tenths");
         }
     }
 
