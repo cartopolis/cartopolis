@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>One top bar, drawn from one site map — v2</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs>
+  <symbol id="theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+</defs></svg>
+
+<h1>One top bar, drawn from one site map</h1>
+<p class="lede">v1 put every link in one bar but did not say how they relate, so the logo going to the front page looked like an exception.
+v2 starts from the site's structure. <b>The front page is the root, and the logo is its link</b>: the first item in the bar, underlined when
+you are there, and the first step of the path under the bar on every other page. Below the root there are two kinds of place:
+<b>the site</b> (pages about Cartopolis, from the CMS) on the left of the bar, and <b>the app</b> (things you do) on the right.
+Everything deeper than that is on the second line, which always starts at the logo.</p>
+
+<h2>1 · The structure <small>every page of cartopolis.org has one place in it</small></h2>
+<div class="tree">
+  <div class="node root"><img src="../../../assets/icon/cartopolis-light.svg"><span><b>Home</b><small>/nl/ · the logo</small></span></div>
+  <div class="stem"></div>
+  <div style="display:flex; gap:60px; align-items:flex-start; position:relative; width:1300px">
+    <div style="position:absolute; top:0; left:310px; right:310px; height:2px; background:var(--faint)"></div>
+    <div style="display:flex; flex-direction:column; align-items:center; padding-top:22px; position:relative; width:620px">
+      <div style="position:absolute; top:0; left:50%; width:2px; height:22px; background:var(--faint)"></div>
+      <div class="group site"><span class="gl">The site · left of the bar · CMS pages</span>
+        <div class="br" style="margin-top:0"><div class="node site">Over<small>/nl/over</small></div></div>
+        <div class="br" style="margin-top:0"><div class="node site">Je eigen server<small>/nl/server</small></div></div>
+        <div class="br" style="margin-top:0"><div class="node site" style="border-style:dashed; color:var(--faint)">next page<small>"in menu" in the CMS</small></div></div>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; padding-top:22px; position:relative; width:620px">
+      <div style="position:absolute; top:0; left:50%; width:2px; height:22px; background:var(--faint)"></div>
+      <div class="group app"><span class="gl">The app · right of the bar</span>
+        <div class="br" style="margin-top:0"><div class="node app">Community<small>/chat</small></div>
+          <div class="kids"><div class="d"></div><div class="node l2">Oosterpoort</div><div class="d"></div><div class="node l2"># straatfeest</div><div class="d"></div><div class="node l2">Thread</div></div></div>
+        <div class="br" style="margin-top:0"><div class="node app">Wereld<small>/world</small></div>
+          <div class="kids"><div class="d"></div><div class="node l2">a place</div></div></div>
+        <div class="br" style="margin-top:0"><div class="node adm">Beheer<small>/admin · admins only</small></div>
+          <div class="kids"><div class="d"></div><div class="node l2">Mensen · Content · Data</div><div class="d"></div><div class="node l2">Pagina's</div></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="legend"><span><b>Top row</b> → the bar, one item each</span><span><b>Everything below it</b> → the second line, the path from Home</span><span><b>Home</b> → the logo, never a word in the menu</span></div>
+</div>
+
+<h2>2 · The bar, read as the structure</h2>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg">Home</span><span class="s">›</span><span>…</span></div>
+</div>
+<div class="anat">
+  <div style="width:200px"><b>Home</b>the root: the logo, underlined in orange when you are on the front page</div>
+  <div style="width:250px"><b>The site <span class="new">new</span></b>the CMS pages marked "in menu", in their order</div>
+  <div style="width:370px"><b>(space)</b>the gap is the boundary: reading about Cartopolis on the left, using it on the right</div>
+  <div style="width:300px"><b>The app</b>Community, Wereld, and Beheer in gold for an admin</div>
+  <div style="width:290px"><b>You</b>language, then the account (theme and Sign out in its menu); signed out, "Inloggen"</div>
+</div>
+<p class="note" style="margin-top:14px">The second line is the path from Home to where you are. Every page has one except Home itself, so clicking the
+logo is always the same as clicking the first step of the path.</p>
+
+<h2>3 · Every place, one bar</h2>
+
+<div class="cap"><b>Home</b>, signed out: <code>/nl/</code>. The logo is underlined because it is the page you are on. There is no second line, since you are at the root.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home on"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a>Community</a><a><span class="live"></span>Wereld</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="iconbtn"><svg><use href="#theme"/></svg></span>
+    <span class="btn">Inloggen</span>
+  </div>
+  <div class="body map"><div class="hero"><h3>Praten en samenwerken, op de kaart van je eigen stad</h3><p>Cartopolis is een vrij alternatief voor gemeenschappen…</p></div></div>
+</div>
+
+<div class="cap"><b>A site page</b>, signed in: <code>/nl/over</code>.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a class="on">Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg">Home</span><span class="s">›</span><span class="last">Over</span></div>
+  <div class="body" style="height:110px"><div class="hero" style="padding-top:22px"><h3>Over Cartopolis</h3></div></div>
+</div>
+
+<div class="cap"><b>Community</b>, in a thread: <code>/chat</code>. The path runs from Home through Community, so the app is visibly part of the same site. Today the path starts at "Community".</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg">Home</span><span class="s">›</span><span>Community</span><span class="s">›</span><span>Oosterpoort</span><span class="s">›</span><span># straatfeest</span><span class="s">›</span><span class="last">Thread</span></div>
+  <div class="chatbody"><div class="rail"><i></i><i class="on"></i><i></i></div><div class="side"><div># algemeen</div><div class="on"># straatfeest</div><div># buurtmoestuin</div></div><div class="pane">Anna: Zaterdag om 14:00 bij het pleintje?<br>Bas: Ik neem de partytent mee.</div></div>
+</div>
+
+<div class="cap"><b>Wereld</b>: <code>/world</code>.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a class="on"><span class="live"></span>Wereld</a><a class="admin">Beheer</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg">Home</span><span class="s">›</span><span>Wereld</span><span class="s">›</span><span class="last">Oosterpoort</span></div>
+  <div class="body world" style="height:110px"></div>
+</div>
+
+<div class="cap"><b>Beheer</b>: <code>/admin</code>, where the CMS pages are managed. The pages it lists are the ones in the bar's left half.</div>
+<div class="frame">
+  <div class="bar">
+    <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"><span class="wm">carto<b>polis</b></span></span>
+    <nav class="nav"><a>Over</a><a>Je eigen server</a></nav>
+    <span class="grow"></span>
+    <nav class="nav"><a>Community <span class="badge">3</span></a><a><span class="live"></span>Wereld</a><a class="admin on">Beheer</a><span class="sep"></span></nav>
+    <span class="langs"><span class="on">NL</span><span>EN</span></span>
+    <span class="av">J</span>
+  </div>
+  <div class="crumbs"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg">Home</span><span class="s">›</span><span>Beheer</span><span class="s">›</span><span>Content</span><span class="s">›</span><span class="last">Pagina's</span></div>
+  <div class="adminbody" style="height:120px"><div class="rail"><i></i><i class="on"></i><i></i></div><div class="side"><div class="on">Pagina's</div><div>Bibliotheek</div><div>Fediverse</div></div><div class="pane">Home · Over · Je eigen server</div></div>
+</div>
+
+<h2>4 · On a phone <small>the same structure, folded</small></h2>
+<div class="phones">
+  <div>
+    <div class="phone">
+      <div class="bar">
+        <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"></span>
+        <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a>Wereld</a></nav>
+        <span class="grow"></span>
+        <span class="iconbtn"><svg><use href="#menu"/></svg></span>
+      </div>
+      <div class="crumbs" style="padding:0 14px"><span class="home"><img src="../../../assets/icon/cartopolis-light.svg"></span><span class="s">›</span><span>Oosterpoort</span><span class="s">›</span><span class="last"># straatfeest</span></div>
+    </div>
+    <div class="pcap">The logo (Home) and the two app places you use every day stay in the bar. The path keeps only its last steps, still starting at the logo.</div>
+  </div>
+  <div>
+    <div class="phone">
+      <div class="bar">
+        <span class="brand home"><img src="../../../assets/icon/cartopolis-light.svg"></span>
+        <nav class="nav"><a class="on">Community <span class="badge">3</span></a><a>Wereld</a></nav>
+        <span class="grow"></span>
+        <span class="iconbtn" style="background:var(--accent-soft)"><svg><use href="#menu"/></svg></span>
+      </div>
+      <div class="sheet">
+        <div class="h">The site</div>
+        <div>Home</div><div>Over</div><div>Je eigen server</div>
+        <hr>
+        <div class="h">The app</div>
+        <div class="on">Community</div><div>Wereld</div>
+        <div style="color:var(--gold)">Beheer</div>
+        <hr>
+        <div>Taal: <b>NL</b> · EN</div>
+        <div>Jeroen · thema · uitloggen</div>
+      </div>
+    </div>
+    <div class="pcap">The menu is the structure from (1) written out: the site, then the app, then you. Home is a word here, because a phone menu has room for it.</div>
+  </div>
+</div>
+
+<h2>5 · Where the site's half comes from <span class="new">new</span></h2>
+<p class="note">A CMS page chooses whether it is in the menu, and where. That is a column in Beheer › Content › Pagina's and a field that MCP's
+<code>put_page</code> takes. The label is a short <code>$t('nav')</code> text, so it can be translated like any other text. <code>home</code> is
+the logo and is never one of the words.</p>
+<div class="table">
+  <div class="r h"><span>Page</span><span>Title</span><span class="newcol">In menu</span><span class="newcol">Menu label</span></div>
+  <div class="r"><span>home</span><span>Praten en samenwerken op de kaart…</span><span>the logo</span><span></span></div>
+  <div class="r"><span>over</span><span>Over Cartopolis</span><span><i class="tog"></i> 1</span><span>Over</span></div>
+  <div class="r"><span>server</span><span>Je eigen server</span><span><i class="tog"></i> 2</span><span>Je eigen server</span></div>
+</div>
+
+</body></html>
