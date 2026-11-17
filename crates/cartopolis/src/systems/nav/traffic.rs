@@ -145,7 +145,8 @@ fn hand_off(
             // the carriageway beside it does, which is what somebody walking the
             // wrong way up a one-way street is doing every day.
             let allowed = match (kind, l.flow) {
-                (AgentKind::Walker, _) | (_, Flow::Both) => true,
+                (k, _) if k.ignores_oneway() => true,
+                (_, Flow::Both) => true,
                 (_, Flow::Forward) => dir > 0.0,
                 (_, Flow::Backward) => dir < 0.0,
             };
@@ -715,6 +716,11 @@ pub enum AgentKind {
     /// (`cartopolis_human::crowd::Ride`), on the cycle tracks and the streets
     /// bikes share with cars (`cartopolis_geo::traffic::cycle_ok`).
     Cyclist,
+    /// An electric fatbike, ridden fast and not by the rules: on the cycle
+    /// tracks and the streets, and on the pavements and footpaths too, either
+    /// way up a one-way street, weaving through whoever is in the way, and
+    /// most of them through a red light. Shown with the cyclists.
+    Fatbike,
 }
 
 impl AgentKind {
@@ -724,6 +730,7 @@ impl AgentKind {
             Self::Car => 0,
             Self::Walker => 1,
             Self::Cyclist => 2,
+            Self::Fatbike => 3,
         }
     }
 
@@ -732,17 +739,21 @@ impl AgentKind {
             Self::Car => uses.drive,
             Self::Walker => uses.walk,
             Self::Cyclist => uses.cycle,
+            Self::Fatbike => uses.cycle || uses.walk,
         }
     }
 
     /// Pace in m/s. A car takes its road's speed; a walker and a cyclist keep
     /// their own, because a pavement has no speed limit and nobody pedals
-    /// faster down a main road.
+    /// faster down a main road. A fatbike is quickest where there is room,
+    /// and not much slower where there is none.
     fn speed(self, line: &WorldDriveLine) -> f32 {
         match self {
             Self::Car => line.speed,
             Self::Walker => WALK_SPEED,
             Self::Cyclist => CYCLE_SPEED,
+            Self::Fatbike if line.uses.cycle => FATBIKE_SPEED,
+            Self::Fatbike => FATBIKE_FOOTWAY_SPEED,
         }
     }
 
@@ -753,15 +764,29 @@ impl AgentKind {
             Self::Car => (CAR_ACCEL, CAR_BRAKE),
             Self::Walker => (WALK_ACCEL, WALK_ACCEL),
             Self::Cyclist => (CYCLE_ACCEL, CYCLE_BRAKE),
+            Self::Fatbike => (FATBIKE_ACCEL, FATBIKE_BRAKE),
         }
     }
 
     /// Whether this kind slows for the bend ahead, for whatever of its own kind
     /// is in front of it, and for a red light. All three are about vehicles on
     /// a carriageway or a cycle track; a person on a pavement neither corners
-    /// nor queues.
+    /// nor queues. (A fatbike that runs reds says so in [`Car::defiant`].)
     fn drives(self) -> bool {
-        matches!(self, Self::Car | Self::Cyclist)
+        matches!(self, Self::Car | Self::Cyclist | Self::Fatbike)
+    }
+
+    /// Whether this kind rides a bike: posed on one, its cranks and wheels
+    /// turned, leaning into a turn.
+    fn rides(self) -> bool {
+        matches!(self, Self::Cyclist | Self::Fatbike)
+    }
+
+    /// Whether this kind may travel a line against its one-way flow. A
+    /// pavement is two-way whatever the carriageway beside it does — and a
+    /// fatbike does not care.
+    fn ignores_oneway(self) -> bool {
+        matches!(self, Self::Walker | Self::Fatbike)
     }
 
     /// How much traffic of this kind a line of this sort carries, relative to a
@@ -781,6 +806,8 @@ impl AgentKind {
             Self::Walker => 1.0,
             Self::Cyclist if !line.uses.drive => CYCLE_TRACK_SHARE,
             Self::Cyclist => 1.0,
+            Self::Fatbike if line.uses.cycle && !line.uses.drive => CYCLE_TRACK_SHARE,
+            Self::Fatbike => 1.0,
         }
     }
 
@@ -789,7 +816,7 @@ impl AgentKind {
         match self {
             Self::Car => SPAWN_GAP_M,
             Self::Walker => SPAWN_GAP_M * 0.2,
-            Self::Cyclist => SPAWN_GAP_M * 0.75,
+            Self::Cyclist | Self::Fatbike => SPAWN_GAP_M * 0.75,
         }
     }
 
@@ -806,7 +833,7 @@ impl AgentKind {
         match self {
             Self::Car => PLACE_RADIUS_M,
             Self::Walker => PLACE_RADIUS_M * 0.45,
-            Self::Cyclist => PLACE_RADIUS_M * 0.6,
+            Self::Cyclist | Self::Fatbike => PLACE_RADIUS_M * 0.6,
         }
     }
 
@@ -827,18 +854,42 @@ impl AgentKind {
     /// A cyclist on a street keeps to the edge of the carriageway, where a
     /// Dutch street paints its cycle lane, with the cars between it and the
     /// middle; on a cycle track, to the right-hand half of it, which is two-way
-    /// unless the track is one-way.
+    /// unless the track is one-way. A fatbike in the road rides where a
+    /// cyclist does; on a footway, to its right of the middle. (On a
+    /// pavement it is where a walker is: [`Car::offset`].)
     fn offset(self, line: &WorldDriveLine) -> f32 {
         match self {
             Self::Car => line.half_width * LANE_FRACTION,
             Self::Walker => line.half_width + PAVEMENT_CLEARANCE_M,
-            Self::Cyclist if line.uses.drive => {
+            Self::Cyclist | Self::Fatbike if line.uses.drive => {
                 (line.half_width - CYCLE_KERB_M).max(line.half_width * LANE_FRACTION + 0.6)
             }
             Self::Cyclist => line.half_width * 0.4,
+            Self::Fatbike if line.uses.cycle => line.half_width * 0.4,
+            Self::Fatbike => line.half_width * 0.3,
         }
     }
 }
+
+/// A fatbike's pace where it has room, m/s: 26 km/h, past the 25 an e-bike's
+/// motor is meant to stop helping at (each rider ±15 %, so some well past).
+const FATBIKE_SPEED: f32 = 7.2;
+/// On a footpath, or a pavement among the walkers, m/s: still three times
+/// their pace.
+const FATBIKE_FOOTWAY_SPEED: f32 = 5.0;
+/// A motor pulls away harder than legs; the brakes are a bike's.
+const FATBIKE_ACCEL: f32 = 2.2;
+const FATBIKE_BRAKE: f32 = 3.5;
+/// The share of fatbikes that ride the pavement of a street that has one,
+/// rather than the cycle lane.
+const FATBIKE_PAVEMENT_SHARE: f32 = 0.55;
+/// The share of fatbike riders that run red lights and do not stop at
+/// zebras. They all still stop for somebody right in their path.
+const FATBIKE_DEFIANT_SHARE: f32 = 0.7;
+/// How far ahead a fatbike starts weaving round somebody in its way, and
+/// how fast it swerves sideways (m/s): a second and a half at its pace.
+const FATBIKE_WEAVE_AHEAD_M: f32 = 11.0;
+const FATBIKE_SWERVE_RATE: f32 = 1.8;
 
 /// A person's pace, m/s. A stroll rather than the avatar's purposeful walk —
 /// ambient people are not going anywhere in particular.
@@ -925,6 +976,12 @@ pub struct Car {
     /// An offset right of its travel that `CARTO_CROWD_HERE` set to aim it
     /// at the avatar, until its next line.
     pinned: Option<f32>,
+    /// A fatbike riding this street's pavement rather than its cycle lane,
+    /// chosen per line ([`Car::choose_way`]); the pavement is on `side`.
+    pavement: bool,
+    /// A fatbike rider who runs red lights and does not stop at zebras
+    /// ([`FATBIKE_DEFIANT_SHARE`]). Fixed for the agent's life.
+    defiant: bool,
 }
 
 /// The child entities an agent drives besides its own transform.
@@ -969,7 +1026,45 @@ impl Car {
             let keep = (self.lateral + WALK_SPREAD_M) / (2.0 * WALK_SPREAD_M);
             return self.side * line.half_width * 0.5 * keep.clamp(0.0, 1.0);
         }
+        if kind == AgentKind::Fatbike && self.pavement && line.uses.drive {
+            // Among the walkers, a little nearer the kerb than they keep.
+            return self.side * (line.half_width + PAVEMENT_CLEARANCE_M - 0.3);
+        }
         (kind.offset(line) + self.lateral) * self.side
+    }
+
+    /// Where a fatbike about to ride `line` in direction `dir` rides it: the
+    /// pavement, on whichever side has one, [`FATBIKE_PAVEMENT_SHARE`] of
+    /// the time on a street that has a pavement at all — else the cycle lane
+    /// on its own right. `r` is a unit random for the choice, `r_side` for
+    /// which pavement when there are two. Anything else is left alone.
+    fn choose_way(
+        &mut self,
+        kind: AgentKind,
+        line: &WorldDriveLine,
+        dir: f32,
+        r: f32,
+        r_side: f32,
+    ) {
+        if kind != AgentKind::Fatbike {
+            return;
+        }
+        self.pavement = false;
+        self.side = 1.0;
+        if !line.uses.drive || r >= FATBIKE_PAVEMENT_SHARE {
+            return;
+        }
+        // `side` is right (+1) or left (−1) of its travel; the pavements are
+        // right and left of the line's own order.
+        let mine = line.pavements.on(dir);
+        let other = line.pavements.on(-dir);
+        self.side = match (mine, other) {
+            (true, true) if r_side < 0.3 => -1.0,
+            (true, _) => 1.0,
+            (false, true) => -1.0,
+            (false, false) => return,
+        };
+        self.pavement = true;
     }
 
     /// Put a walker about to travel `line` in direction `dir` on a side of it
@@ -1104,6 +1199,8 @@ pub fn setup_traffic(
             parts,
             react: Default::default(),
             pinned: None,
+            pavement: false,
+            defiant: kind == AgentKind::Fatbike && r(15) < FATBIKE_DEFIANT_SHARE,
         }
     };
 
@@ -1271,7 +1368,100 @@ pub fn setup_traffic(
             .id();
         commands.entity(bike).insert(ChildOf(rider));
     }
+
+    // The fatbikes: the same rider on the same fit, on the fatbike's meshes —
+    // four more, uploaded here once like the rest — in their own paints.
+    use cartopolis_geo::agent_models::{fatbike, FATBIKE_FRONT_AXLE, FATBIKE_REAR_AXLE};
+    let fat = fatbike();
+    let [frame, bike_trim, crank_mesh, wheel] = [
+        meshes.add(model_mesh_to_bevy(&fat.frame)),
+        meshes.add(model_mesh_to_bevy(&fat.trim)),
+        meshes.add(model_mesh_to_bevy(&fat.crank)),
+        meshes.add(model_mesh_to_bevy(&fat.wheel)),
+    ];
+    let fat_paints: Vec<Handle<StandardMaterial>> = FATBIKE_PAINTS
+        .iter()
+        .map(|&rgb| {
+            let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(r, g, b),
+                // Matte, as most of them are sold.
+                perceptual_roughness: 0.75,
+                reflectance: 0.35,
+                ..default()
+            })
+        })
+        .collect();
+    for i in 0..MAX_FATBIKES {
+        use crate::systems::crowd::{CrowdFigure, COAT_COLOURS, TROUSER_COLOURS};
+        let r = |stream: u64| rand01(0xFA7B, i as u64, stream);
+        let part = |commands: &mut Commands, mesh: Handle<Mesh>, at: [f32; 3]| {
+            commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(trim.clone()),
+                    Transform::from_translation(Vec3::from_array(at)),
+                    BikePart,
+                ))
+                .id()
+        };
+        let crank = part(&mut commands, crank_mesh.clone(), BIKE_FIT.bottom_bracket);
+        let wheels = [
+            part(&mut commands, wheel.clone(), FATBIKE_REAR_AXLE),
+            part(&mut commands, wheel.clone(), FATBIKE_FRONT_AXLE),
+        ];
+        let fittings = part(&mut commands, bike_trim.clone(), [0.0; 3]);
+        let bike = commands
+            .spawn((
+                Mesh3d(frame.clone()),
+                MeshMaterial3d(fat_paints[i % fat_paints.len()].clone()),
+                Transform::default(),
+                BikePart,
+            ))
+            .add_children(&[crank, wheels[0], wheels[1], fittings])
+            .id();
+        let height = 0.96 + r(14) * 0.08;
+        let rider = commands
+            .spawn((
+                Visibility::Hidden,
+                Transform::from_scale(Vec3::splat(height)),
+                GridCell::default(),
+                ChildOf(root),
+                HideInSpace,
+                AgentKind::Fatbike,
+                agent(
+                    AgentKind::Fatbike,
+                    i,
+                    0xFA7B,
+                    AgentParts::Cyclist {
+                        bike,
+                        crank,
+                        wheels,
+                    },
+                ),
+                CrowdFigure {
+                    // Past the cyclists' seeds.
+                    seed: (MAX_WALKERS + MAX_CYCLISTS + i) as u32,
+                    top: ((i * 3 + 4) % COAT_COLOURS.len()) as u8,
+                    bottom: ((i * 5 + 2) % TROUSER_COLOURS.len()) as u8,
+                    near: false,
+                    riding: true,
+                },
+            ))
+            .id();
+        commands.entity(bike).insert(ChildOf(rider));
+    }
 }
+
+/// How many fatbikes exist. A handful against the cyclists' seventy: a few
+/// in view at a time is how they are met in a Dutch town, and each is loud.
+pub const MAX_FATBIKES: usize = 12;
+
+/// Fatbike frames: matte black for most, then the greys, the army green and
+/// the sand they are sold in, and one white.
+const FATBIKE_PAINTS: &[u32] = &[
+    0x1A_1A_1B, 0x1A_1A_1B, 0x1A_1A_1B, 0x4A_4D_51, 0x4B_53_3A, 0xB5_A4_80, 0x1A_1A_1B, 0xE4_E4_E2,
+];
 
 /// How many cyclists exist, on the same fixed-pool terms as the cars.
 ///
@@ -1525,7 +1715,7 @@ pub fn drive_traffic(
     let showing = |kind: AgentKind| match kind {
         AgentKind::Car => show_cars,
         AgentKind::Walker => show_people,
-        AgentKind::Cyclist => show_cyclists,
+        AgentKind::Cyclist | AgentKind::Fatbike => show_cyclists,
     };
     let (Some((cam_cell, cam_tf)), Ok(grid)) = (camera.get(), grids.single()) else {
         return;
@@ -1567,7 +1757,13 @@ pub fn drive_traffic(
     } else {
         Vec::new()
     };
-    if roads.is_empty() && paths.is_empty() && lanes.is_empty() {
+    // Everything a fatbike will ride: the cyclists' lines and the walkers'.
+    let rides = if show_cyclists {
+        net.near(cam, AgentKind::Fatbike.place_radius(), AgentKind::Fatbike)
+    } else {
+        Vec::new()
+    };
+    if roads.is_empty() && paths.is_empty() && lanes.is_empty() && rides.is_empty() {
         return;
     }
     // How much of the pool each candidate deserves — see `weigh`. Built once per
@@ -1575,6 +1771,7 @@ pub fn drive_traffic(
     let road_weights = weigh(&net, &roads, AgentKind::Car);
     let path_weights = weigh(&net, &paths, AgentKind::Walker);
     let lane_weights = weigh(&net, &lanes, AgentKind::Cyclist);
+    let ride_weights = weigh(&net, &rides, AgentKind::Fatbike);
 
     // Where every placed agent is, keyed by its line **and** the direction it is
     // travelling, as the distance it has run along that line. Two things read
@@ -1590,7 +1787,14 @@ pub fn drive_traffic(
     //
     // It is a read-only pass over the same query — one hash insert per placed
     // agent, no allocation per frame beyond the maps themselves.
-    let mut occupied: [HashMap<(LineKey, i8), Vec<f32>>; 3] = Default::default();
+    let mut occupied: [HashMap<(LineKey, i8), Vec<f32>>; 4] = Default::default();
+    // Where the walkers and the riders are, for the fatbikes weaving through
+    // them; and where the fatbikes are, for the walkers making way. Only
+    // while there are both, from the same read-only pass.
+    let weaving = show_cyclists && show_people;
+    let mut walkers_at: Vec<Vec2> = Vec::new();
+    let mut riders_at: Vec<Vec2> = Vec::new();
+    let mut fatbikes_at: Vec<Vec2> = Vec::new();
     for (car, &kind, ..) in cars.iter() {
         if !showing(kind) {
             continue;
@@ -1600,6 +1804,17 @@ pub fn drive_traffic(
                 .entry((key, lane_key(car.dir)))
                 .or_default()
                 .push(car.s);
+            let list = match kind {
+                AgentKind::Walker if weaving => Some(&mut walkers_at),
+                AgentKind::Cyclist => Some(&mut riders_at),
+                AgentKind::Fatbike if weaving => Some(&mut fatbikes_at),
+                _ => None,
+            };
+            if let Some(list) = list {
+                if let Some((p, travel, _)) = pose_of(car, net.get(key), kind) {
+                    list.push(p + right_of(travel) * car.react.shift);
+                }
+            }
         }
     }
 
@@ -1618,7 +1833,27 @@ pub fn drive_traffic(
         buttons,
         mut traffic_here,
     } = react;
-    let people_at: &[Vec2] = if show_people { &people.at } else { &[] };
+    // What a walker makes way for and looks at: every avatar, and every
+    // fatbike — which it sees too late to do much about.
+    let walker_sees: Vec<Vec2> = if show_people {
+        people.at.iter().chain(&fatbikes_at).copied().collect()
+    } else {
+        Vec::new()
+    };
+    let people_at: &[Vec2] = &walker_sees;
+    // What a fatbike weaves round: the walkers on its pavement or footpath,
+    // the riders in its lane, and the avatars.
+    let fatbike_dodges: Vec<Vec2> = if show_cyclists {
+        people
+            .at
+            .iter()
+            .chain(&walkers_at)
+            .chain(&riders_at)
+            .copied()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut answering: [Option<(usize, f32, Vec2)>; 4] = [None; 4];
     if show_people {
         let first_wave = people.waves_seen.wrapping_sub(people.waves.len() as u32);
@@ -1755,6 +1990,7 @@ pub fn drive_traffic(
             AgentKind::Car => (&roads, &road_weights),
             AgentKind::Walker => (&paths, &path_weights),
             AgentKind::Cyclist => (&lanes, &lane_weights),
+            AgentKind::Fatbike => (&rides, &ride_weights),
         };
         let occupied = &mut occupied[kind.index()];
         if candidates.is_empty() {
@@ -1854,11 +2090,14 @@ pub fn drive_traffic(
                 want = want.min(headway_speed(occupied, k, car.dir, car.s, want));
                 if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
                     let reach = l.half_width + 1.0;
-                    let mut grace = car.signal_grace;
-                    want = want.min(signal_speed(
-                        &signals, elapsed, p, travel, car.speed, reach, &mut grace,
-                    ));
-                    car.signal_grace = grace;
+                    // A defiant fatbike rides through red, and past a zebra.
+                    if !car.defiant {
+                        let mut grace = car.signal_grace;
+                        want = want.min(signal_speed(
+                            &signals, elapsed, p, travel, car.speed, reach, &mut grace,
+                        ));
+                        car.signal_grace = grace;
+                    }
                     // Give way to the avatars: on its path, and at a zebra
                     // (`give_way`).
                     let body = if kind == AgentKind::Car {
@@ -1866,19 +2105,36 @@ pub fn drive_traffic(
                     } else {
                         give_way::BIKE_BODY
                     };
-                    let near = give_way::YIELD_LOOKAHEAD_M + body.nose + 2.0;
-                    let y = give_way::yield_to(
-                        avatars
-                            .iter()
-                            .filter(|a| a.distance_squared(p) < near * near)
-                            .map(|&a| on_path(&car, kind, l, p, travel, a)),
-                        car.speed,
-                        body,
-                    );
-                    want = want.min(y.limit);
-                    hard_brake = y.hard;
-                    room = y.room;
-                    if !zebras.is_empty() {
+                    if kind == AgentKind::Fatbike {
+                        // A fatbike does not wait for anybody: it swerves
+                        // round them, and slows only when it cannot.
+                        let (to, keep) = react_to::make_way_ahead(
+                            p,
+                            travel,
+                            car.react.shift,
+                            &fatbike_dodges,
+                            FATBIKE_WEAVE_AHEAD_M,
+                        );
+                        shift_to = to;
+                        want *= keep;
+                        if car.pavement {
+                            want = want.min(FATBIKE_FOOTWAY_SPEED * car.speed_scale);
+                        }
+                    } else {
+                        let near = give_way::YIELD_LOOKAHEAD_M + body.nose + 2.0;
+                        let y = give_way::yield_to(
+                            avatars
+                                .iter()
+                                .filter(|a| a.distance_squared(p) < near * near)
+                                .map(|&a| on_path(&car, kind, l, p, travel, a)),
+                            car.speed,
+                            body,
+                        );
+                        want = want.min(y.limit);
+                        hard_brake = y.hard;
+                        room = y.room;
+                    }
+                    if !zebras.is_empty() && !car.defiant {
                         want = want.min(give_way::zebra_speed(
                             &zebras,
                             &avatars_facing,
@@ -1965,6 +2221,13 @@ pub fn drive_traffic(
                             let to_dir = heading * next_dir;
                             car.pinned = None;
                             car.keep_to_pavement(kind, nl, next_dir);
+                            car.choose_way(
+                                kind,
+                                nl,
+                                next_dir,
+                                rand01(0xFA7E, i as u64, *frame),
+                                rand01(0xFA7F, i as u64, *frame),
+                            );
                             let to = centre + right_of(to_dir) * car.offset(kind, nl);
                             // The corner is not in the data: two centre lines
                             // meet at a *point*, and how far the vehicle swings
@@ -2008,6 +2271,13 @@ pub fn drive_traffic(
                     let l = net.get(k).expect("place_agent only offers lines it read");
                     car.pinned = None;
                     car.keep_to_pavement(kind, l, dir);
+                    car.choose_way(
+                        kind,
+                        l,
+                        dir,
+                        rand01(0xFA7E, i as u64, *frame),
+                        rand01(0xFA7F, i as u64, *frame),
+                    );
                     car.line = Some(k);
                     car.dir = dir;
                     car.s = s;
@@ -2080,6 +2350,16 @@ pub fn drive_traffic(
                     facing_rate = Some(3.0);
                 }
             }
+        } else if kind == AgentKind::Fatbike {
+            // The swerve, quicker than a walker's step, and never through
+            // anybody.
+            let (eased, sideways) =
+                react_to::ease_shift_at(car.react.shift, shift_to, dt, FATBIKE_SWERVE_RATE);
+            let shift = react_to::keep_clear(pos, travel, eased, &fatbike_dodges);
+            car.react.shift = shift;
+            pos += right_of(travel) * shift;
+            let ahead = travel * car.speed.max(1.0) + right_of(travel) * sideways;
+            aim = ahead.try_normalize().unwrap_or(travel);
         }
 
         // ── Draw ─────────────────────────────────────────────────────────────
@@ -2256,13 +2536,21 @@ pub fn drive_traffic(
                 // development, so the feet keep pace with the road; slowing for a
                 // corner or a light, the rider stops pedalling and coasts.
                 let ride_scale = scale * tf.scale.y;
-                if accel_now > -0.3 && !held {
+                let fat = kind == AgentKind::Fatbike;
+                if fat {
+                    // The motor does the work: the feet rest on level cranks.
+                    car.phase = std::f32::consts::FRAC_PI_2;
+                } else if accel_now > -0.3 && !held {
                     car.phase = (car.phase
                         + stepped / (fit.development * ride_scale) * std::f32::consts::TAU)
                         % std::f32::consts::TAU;
                 }
-                car.roll =
-                    (car.roll + stepped / (fit.wheel_r * ride_scale)) % std::f32::consts::TAU;
+                let wheel_r = if fat {
+                    cartopolis_geo::agent_models::FATBIKE_WHEEL_R
+                } else {
+                    fit.wheel_r
+                };
+                car.roll = (car.roll + stepped / (wheel_r * ride_scale)) % std::f32::consts::TAU;
                 if let Ok(mut t) = bike_parts.get_mut(bike) {
                     if t.scale.x != scale {
                         t.scale = Vec3::splat(scale);
@@ -2615,7 +2903,7 @@ fn place_agent(
         let dir = match (kind, line.flow) {
             // A pavement is two-way whatever the carriageway beside it does —
             // which is what somebody walking up a one-way street is doing.
-            (AgentKind::Walker, _) | (_, Flow::Both) => {
+            (k, f) if k.ignores_oneway() || f == Flow::Both => {
                 if rand01(0xB1D1, agent, seed) < 0.5 {
                     1.0
                 } else {
@@ -2904,6 +3192,80 @@ mod tests {
             AgentKind::Cyclist.offset(track) < track.half_width,
             "on a track, on it"
         );
+        // A fatbike rides all of that and the footpath too — never the
+        // motorway — and is quicker than a cyclist everywhere.
+        let mut fat: Vec<usize> = net
+            .near(Vec2::new(50.0, 30.0), 80.0, AgentKind::Fatbike)
+            .iter()
+            .map(|k| k.index)
+            .collect();
+        fat.sort_unstable();
+        assert_eq!(fat, vec![1, 2, 3], "the footway, the track and the street");
+        let footway = net.get(key(1)).unwrap();
+        assert!(AgentKind::Fatbike.speed(street) > CYCLE_SPEED);
+        assert!(AgentKind::Fatbike.speed(footway) > CYCLE_SPEED);
+        assert!(AgentKind::Fatbike.speed(footway) < AgentKind::Fatbike.speed(street));
+    }
+
+    /// A fatbike rides a street's pavement or its cycle lane; on the pavement
+    /// it is out among the walkers, beyond the kerb, on whichever side has
+    /// one. It may ride a one-way street either way.
+    #[test]
+    fn a_fatbike_takes_the_pavement_or_the_lane() {
+        let mut net = DriveNetwork::default();
+        let mut street = line(&[[0.0, 0.0], [100.0, 0.0]], Flow::Forward);
+        street.pavements = Pavements {
+            right: false,
+            left: true,
+        };
+        net.insert_cell((0, 0), 0.0, 0.0, vec![street]);
+        let key = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let l = net.get(key).unwrap();
+        let mut bike = walker_on(key, 1.0, 0.0);
+        // Riding the line's own way, its right is the line's right: no
+        // pavement there, so the pavement it takes is on its left.
+        bike.choose_way(AgentKind::Fatbike, l, 1.0, 0.0, 0.9);
+        assert!(bike.pavement);
+        assert_eq!(bike.side, -1.0);
+        let out = bike.offset(AgentKind::Fatbike, l);
+        assert!(out < -l.half_width, "beyond the left kerb: {out}");
+        // Against the one-way flow, the line's left is its right.
+        bike.choose_way(AgentKind::Fatbike, l, -1.0, 0.0, 0.9);
+        assert!(bike.pavement);
+        assert_eq!(bike.side, 1.0);
+        // Most of the rest of the time, the lane.
+        bike.choose_way(AgentKind::Fatbike, l, 1.0, 0.9, 0.0);
+        assert!(!bike.pavement);
+        let lane = bike.offset(AgentKind::Fatbike, l);
+        assert!(lane > 0.0 && lane < l.half_width, "in the lane: {lane}");
+        // A cyclist is never moved.
+        let mut cyclist = walker_on(key, 1.0, 0.0);
+        cyclist.choose_way(AgentKind::Cyclist, l, 1.0, 0.0, 0.0);
+        assert!(!cyclist.pavement);
+        // Off the end of a one-way street's exit, the fatbike may ride it
+        // back; a cyclist may not.
+        let mut other = DriveNetwork::default();
+        other.insert_cell(
+            (0, 0),
+            0.0,
+            0.0,
+            vec![
+                line(&[[0.0, 0.0], [50.0, 0.0]], Flow::Both),
+                line(&[[100.0, 0.0], [50.0, 0.0]], Flow::Forward),
+            ],
+        );
+        let keys = other.near(Vec2::new(50.0, 0.0), 80.0, AgentKind::Fatbike);
+        let first = LineKey {
+            cell: (0, 0),
+            index: 0,
+        };
+        let at = Vec2::new(50.0, 0.0);
+        let east = Vec2::X;
+        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Fatbike).is_some());
+        assert!(hand_off(&other, &keys, first, at, east, AgentKind::Cyclist).is_none());
     }
 
     /// A rider leans into a turn, the other way to a car body, by the angle the
@@ -3483,6 +3845,8 @@ mod tests {
             parts: AgentParts::Walker,
             react: Default::default(),
             pinned: None,
+            pavement: false,
+            defiant: false,
         }
     }
 

@@ -893,8 +893,20 @@ pub fn bicycle(step_through: bool) -> BikeModel {
     trim.cuboid([0.0, 0.72, 0.53], [0.03, 0.025, 0.03], lin(HEADLAMP));
     trim.cuboid([0.0, 0.62, -0.81], [0.03, 0.02, 0.008], lin(TAIL_LAMP));
 
-    // The cranks, about the axle: the right one (at `-x`: the bike faces `+z`)
-    // up, the left one down.
+    BikeModel {
+        frame,
+        trim,
+        crank: bike_crank(),
+        wheel: bike_wheel(f.wheel_r, 0.035, 0.022, 12),
+    }
+}
+
+/// Both cranks and pedals about the axle: the right one (at `-x`: the bike
+/// faces `+z`) up, the left one down. The same on every bike, so the riders'
+/// baked feet find their pedals on all of them.
+fn bike_crank() -> ModelMesh {
+    let f = BIKE_FIT;
+    let steel = lin(BIKE_STEEL);
     let mut crank = ModelMesh::default();
     let arm = 0.012;
     crank.tube([-0.10, 0.0, 0.0], [0.10, 0.0, 0.0], 0.012, 5, steel);
@@ -907,18 +919,22 @@ pub fn bicycle(step_through: bool) -> BikeModel {
             lin(BIKE_RACK),
         );
     }
+    crank
+}
 
-    // A wheel about its axle: tyre, rim, hub, spokes.
+/// A wheel about its axle: tyre (`r` to the tread, `tyre` deep, `half_w`
+/// either side of the middle), rim, hub and `spokes` spokes.
+fn bike_wheel(r: f32, tyre: f32, half_w: f32, spokes: usize) -> ModelMesh {
+    let steel = lin(BIKE_STEEL);
     let mut wheel = ModelMesh::default();
     let o = [0.0, 0.0, 0.0];
-    wheel.hoop(o, f.wheel_r, 0.035, 0.022, 28, lin(BIKE_TYRE));
-    wheel.hoop(o, f.wheel_r - 0.035, 0.015, 0.012, 28, lin(BIKE_RIM));
+    wheel.hoop(o, r, tyre, half_w, 28, lin(BIKE_TYRE));
+    wheel.hoop(o, r - tyre, 0.015, half_w * 0.55, 28, lin(BIKE_RIM));
     wheel.tube([-0.05, 0.0, 0.0], [0.05, 0.0, 0.0], 0.022, 6, steel);
-    let spokes = 12;
     for k in 0..spokes {
         let a = k as f32 / spokes as f32 * std::f32::consts::TAU;
         let x = if k % 2 == 0 { 0.035 } else { -0.035 };
-        let rim = f.wheel_r - 0.05;
+        let rim = r - tyre - 0.015;
         wheel.tube(
             [x, 0.0, 0.0],
             [0.0, rim * a.sin(), rim * a.cos()],
@@ -927,12 +943,133 @@ pub fn bicycle(step_through: bool) -> BikeModel {
             steel,
         );
     }
+    wheel
+}
+
+/// A fatbike's wheels: a 20-inch rim on a four-inch tyre, to the tread.
+pub const FATBIKE_WHEEL_R: f32 = 0.31;
+
+/// The fatbike's two axles, on the ground at [`FATBIKE_WHEEL_R`].
+pub const FATBIKE_REAR_AXLE: [f32; 3] = [0.0, FATBIKE_WHEEL_R, -0.58];
+pub const FATBIKE_FRONT_AXLE: [f32; 3] = [0.0, FATBIKE_WHEEL_R, 0.64];
+
+/// The electric fatbike that rides the Dutch pavements: small wheels on fat
+/// tyres, a low frame round a big battery, a long bench seat over the back
+/// wheel, a suspension fork and a tall bar.
+///
+/// **Its rider is a city bike's.** The saddle, the bottom bracket and the
+/// grips are [`BIKE_FIT`]'s, so the poses baked for the city bike
+/// (`cartopolis_human::crowd::ride_poses`) seat a rider on this one too; what
+/// differs is everything the rider does not touch. The crank and the wheel
+/// meshes have their origin on their axles, as the city bike's do: the wheels
+/// are [`FATBIKE_REAR_AXLE`] and [`FATBIKE_FRONT_AXLE`].
+#[must_use]
+pub fn fatbike() -> BikeModel {
+    let f = BIKE_FIT;
+    let paint = WHITE;
+    let (bb, ra, fa) = (f.bottom_bracket, FATBIKE_REAR_AXLE, FATBIKE_FRONT_AXLE);
+    let mut frame = ModelMesh::default();
+    let mut trim = ModelMesh::default();
+    let main = 0.03;
+
+    // The head tube, raked; the low main beam down from it to under the seat,
+    // and up to the seat's front.
+    let (head_lo, head_hi) = ([0.0, 0.70, 0.50], [0.0, 0.96, 0.42]);
+    frame.tube(head_lo, head_hi, 0.03, 6, paint);
+    let low = [0.0, 0.36, 0.02];
+    let seat_node = [0.0, 0.80, -0.26];
+    frame.tube(head_lo, low, main, 6, paint);
+    frame.tube(low, bb, main, 6, paint);
+    frame.tube(low, seat_node, main, 6, paint);
+    // The rear swing arm, wide for the fat tyre, and a shock from the seat.
+    for x in [-0.085, 0.085] {
+        frame.tube([x * 0.5, bb[1], bb[2]], [x, ra[1], ra[2]], 0.014, 5, paint);
+        frame.tube([x * 0.5, 0.78, -0.30], [x, ra[1], ra[2]], 0.012, 5, paint);
+    }
+    // Fat mudguards close over both tyres.
+    frame.band(
+        ra,
+        FATBIKE_WHEEL_R + 0.02,
+        0.065,
+        0.25,
+        std::f32::consts::PI + 0.1,
+        14,
+        paint,
+    );
+    frame.band(
+        fa,
+        FATBIKE_WHEEL_R + 0.02,
+        0.065,
+        0.2,
+        std::f32::consts::PI - 0.4,
+        12,
+        paint,
+    );
+
+    // The battery under the seat's nose, the suspension fork's stanchions either side of the tyre.
+    let dark = lin(BIKE_RACK);
+    trim.cuboid([0.0, 0.56, -0.08], [0.065, 0.13, 0.17], lin(0x2B_2D_31));
+    let crown = [0.0, 0.70, 0.52];
+    for x in [-0.085, 0.085] {
+        trim.tube(
+            [x, crown[1], crown[2]],
+            [x, 0.48, 0.59],
+            0.026,
+            6,
+            lin(0x3A_3C_40),
+        );
+        trim.tube(
+            [x, 0.48, 0.59],
+            [x, fa[1], fa[2]],
+            0.018,
+            5,
+            lin(BIKE_STEEL),
+        );
+    }
+    trim.tube(
+        [-0.085, crown[1], crown[2]],
+        [0.085, crown[1], crown[2]],
+        0.02,
+        5,
+        dark,
+    );
+
+    // The long bench seat, its front where the fit puts the saddle, and a
+    // passenger's footpegs under its tail.
+    let s = f.saddle;
+    trim.cuboid(
+        [0.0, s[1] - 0.045, s[2] - 0.17],
+        [0.095, 0.045, 0.30],
+        lin(BIKE_SADDLE),
+    );
+    trim.cuboid([0.0, 0.83, -0.50], [0.07, 0.02, 0.20], dark);
+    for x in [-0.12, 0.12] {
+        trim.cuboid([x, 0.42, -0.35], [0.04, 0.01, 0.015], dark);
+    }
+    // A tall stem and a wide flat bar, grips on its ends.
+    let g = f.grip;
+    let bar_mid = [0.0, g[1] + 0.02, g[2] + 0.04];
+    trim.tube(head_hi, bar_mid, 0.016, 5, dark);
+    for side in [-1.0f32, 1.0] {
+        let end = [side * (g[0] - 0.05), g[1], g[2] + 0.02];
+        trim.tube(bar_mid, end, 0.012, 5, dark);
+        trim.tube(
+            end,
+            [side * (g[0] + 0.06), g[1], g[2]],
+            0.018,
+            5,
+            lin(BIKE_TYRE),
+        );
+    }
+    // The big round headlamp on the bar, and the rear lamp under the seat.
+    trim.cuboid([0.0, 0.92, 0.55], [0.06, 0.05, 0.03], lin(HEADLAMP));
+    trim.cuboid([0.0, 0.78, -0.71], [0.05, 0.02, 0.01], lin(TAIL_LAMP));
 
     BikeModel {
         frame,
         trim,
-        crank,
-        wheel,
+        crank: bike_crank(),
+        wheel: bike_wheel(FATBIKE_WHEEL_R, 0.10, 0.052, 16),
     }
 }
 
@@ -1378,6 +1515,70 @@ mod tests {
                 "crank reach {reach}"
             );
         }
+    }
+
+    /// A fatbike stands on its fat tyres, is a little longer than a city bike,
+    /// and seats its rider where the city bike does: the riders' poses are
+    /// baked once, for both.
+    #[test]
+    fn a_fatbike_stands_on_fat_tyres_and_seats_a_city_rider() {
+        let b = fatbike();
+        for part in [&b.frame, &b.trim, &b.crank, &b.wheel] {
+            assert!(!part.indices.is_empty());
+            closed_enough(part);
+        }
+        let f = BIKE_FIT;
+        let low = b
+            .wheel
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::MAX, f32::min);
+        assert!((low + FATBIKE_WHEEL_R).abs() < 0.01, "tyre bottom {low}");
+        assert!((FATBIKE_REAR_AXLE[1] - FATBIKE_WHEEL_R).abs() < 1e-3);
+        assert!((FATBIKE_FRONT_AXLE[1] - FATBIKE_WHEEL_R).abs() < 1e-3);
+        let tyre = b
+            .wheel
+            .positions
+            .iter()
+            .map(|p| p[0].abs())
+            .fold(0.0f32, f32::max);
+        assert!(tyre > 0.045, "a fat tyre: {tyre} m either side");
+        let length = FATBIKE_FRONT_AXLE[2] - FATBIKE_REAR_AXLE[2] + 2.0 * FATBIKE_WHEEL_R;
+        assert!((1.7..=2.0).contains(&length), "{length} m long");
+        for p in b.frame.positions.iter().chain(&b.trim.positions) {
+            assert!(p[1] > 0.0 && p[1] < 1.2, "{p:?}");
+        }
+        // The bench is the top of the back half, at the city bike's saddle:
+        // its corners are fore and aft of the fit's point, not on it.
+        let at_saddle = b
+            .trim
+            .positions
+            .iter()
+            .filter(|p| p[2] < 0.0)
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max);
+        let bench = b
+            .trim
+            .positions
+            .iter()
+            .filter(|p| (p[1] - at_saddle).abs() < 1e-3)
+            .map(|p| p[2]);
+        let (aft, fore) = bench.fold((f32::MAX, f32::MIN), |(a, b), z| (a.min(z), b.max(z)));
+        assert!(
+            aft < f.saddle[2] && fore > f.saddle[2],
+            "the bench spans the saddle"
+        );
+        assert!((at_saddle - f.saddle[1]).abs() < 0.02, "seat {at_saddle}");
+        // The grips are where the city bike's are, either side.
+        let grip = b
+            .trim
+            .positions
+            .iter()
+            .filter(|p| (p[1] - f.grip[1]).abs() < 0.03 && (p[2] - f.grip[2]).abs() < 0.08)
+            .map(|p| p[0].abs())
+            .fold(0.0f32, f32::max);
+        assert!(grip > f.grip[0], "the bar reaches the grips: {grip}");
     }
 
     #[test]

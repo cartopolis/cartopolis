@@ -60,13 +60,27 @@ fn right_of(travel: Vec2) -> Vec2 {
 /// on a collision course close in slows, to a stop at touching distance.
 #[must_use]
 pub fn make_way(p: Vec2, travel: Vec2, shift: f32, people: &[Vec2]) -> (f32, f32) {
+    make_way_ahead(p, travel, shift, people, LOOKAHEAD_M)
+}
+
+/// [`make_way`] for something that looks `lookahead` metres ahead rather
+/// than a walker's [`LOOKAHEAD_M`]: a fatbike weaving through the people on
+/// a pavement (`traffic`) has to start its swerve three times as far out.
+#[must_use]
+pub fn make_way_ahead(
+    p: Vec2,
+    travel: Vec2,
+    shift: f32,
+    people: &[Vec2],
+    lookahead: f32,
+) -> (f32, f32) {
     let right = right_of(travel);
     let mut want = 0.0_f32;
     let mut keep = 1.0_f32;
     for &o in people {
         let d = o - p;
         let ahead = d.dot(travel);
-        if !(-BEHIND_M..=LOOKAHEAD_M).contains(&ahead) {
+        if !(-BEHIND_M..=lookahead).contains(&ahead) {
             continue;
         }
         let side = d.dot(right);
@@ -81,8 +95,9 @@ pub fn make_way(p: Vec2, travel: Vec2, shift: f32, people: &[Vec2]) -> (f32, f32
         } else {
             right_of_them
         };
-        // Full from two metres ahead to 0.8 m past, eased either side.
-        let ease_in = 1.0 - smoothstep(2.0, LOOKAHEAD_M, ahead);
+        // Full from a third of the lookahead (two metres, for a walker) to
+        // 0.8 m past, eased either side.
+        let ease_in = 1.0 - smoothstep(lookahead / 3.0, lookahead, ahead);
         let ease_out = 1.0 - smoothstep(0.8, BEHIND_M, -ahead);
         let w = ease_in.min(ease_out);
         if (target * w).abs() > want.abs() {
@@ -107,7 +122,14 @@ pub fn make_way(p: Vec2, travel: Vec2, shift: f32, people: &[Vec2]) -> (f32, f32
 /// [`SHIFT_RATE`] sideways. Returns the new shift and the sideways speed.
 #[must_use]
 pub fn ease_shift(shift: f32, want: f32, dt: f32) -> (f32, f32) {
-    let v = ((want - shift) * SHIFT_GAIN).clamp(-SHIFT_RATE, SHIFT_RATE);
+    ease_shift_at(shift, want, dt, SHIFT_RATE)
+}
+
+/// [`ease_shift`] at most `rate` m/s sideways, for something quicker than
+/// a walker to swerve.
+#[must_use]
+pub fn ease_shift_at(shift: f32, want: f32, dt: f32, rate: f32) -> (f32, f32) {
+    let v = ((want - shift) * SHIFT_GAIN * (rate / SHIFT_RATE)).clamp(-rate, rate);
     let next = shift + v * dt;
     // Never step past what was asked.
     let next = if (want - shift) * (want - next) < 0.0 {

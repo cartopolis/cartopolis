@@ -495,7 +495,8 @@ pub struct DataLayers {
     pub people_enabled: bool,
     /// Feature toggle (under Life): the ambient cyclists (`systems::traffic`'s
     /// [`AgentKind::Cyclist`](crate::systems::traffic::AgentKind) pool) on the
-    /// cycle tracks and in the streets' cycle lanes. Its own row on the terms
+    /// cycle tracks and in the streets' cycle lanes, and the fatbikes
+    /// (`AgentKind::Fatbike`) on those and the pavements. Its own row on the terms
     /// the people have one: a separate pool, and one somebody judging a street
     /// wants apart from the others.
     pub cyclists_enabled: bool,
