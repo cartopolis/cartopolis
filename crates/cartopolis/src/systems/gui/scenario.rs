@@ -32,7 +32,10 @@
 //! left otherwise, clear of the right-hand panels. The figures in it are radio
 //! rows that show their value under the crosshair, so one is picked by reading,
 //! not by trying. A lens that is on needs no sheet (v3): the disc is lit, and
-//! a pick, the ✕ or a drag on the map puts the sheet away. It writes `DataLayers::scenario` (`"<file>/<layer>"`), which
+//! the ✕ or a drag on the map puts the sheet away, leaving a key strip — the
+//! figure and its scale — that raises it again. A pick keeps the sheet up, and
+//! its three views (figures, this place, all lenses) are one control under its
+//! header. It writes `DataLayers::scenario` (`"<file>/<layer>"`), which
 //! is what persists; for a capture, `CARTO_SCENARIO=cbs-2024/share_65_plus` and
 //! `CARTO_LENS=figures|place|shelf`.
 
@@ -367,9 +370,6 @@ impl ScenarioView {
             .or(self.loading.as_ref().map(|l| l.key.as_str()))
             .or(self.error.as_ref().map(|e| e.0.as_str()))
     }
-}
-
-/// One area set, fetched from our host and decoded off the frame loop.
 
     /// What `lens_areas` draws this frame: the open lens's boards, the one
     /// the scale picked, and its areas' colours.
@@ -386,6 +386,9 @@ impl ScenarioView {
             edge: [r, g, b, a].map(|c| f32::from(c) / 255.0),
         })
     }
+}
+
+/// One area set, fetched from our host and decoded off the frame loop.
 async fn fetch_areas(name: String) -> Result<AreaSet, String> {
     let base = crate::systems::osm_buildings::tdbag_url();
     let url = format!("{}/areas/{name}.bin", base.trim_end_matches('/'));
@@ -539,9 +542,6 @@ impl Projector<'_> {
         Some(egui::pos2(s.x / self.ui_scale, s.y / self.ui_scale))
     }
 
-    /// A line through the points, broken where one does not project.
-    fn runs(&self, pts: &[LonLat]) -> Vec<Vec<egui::Pos2>> {
-        let mut out = vec![Vec::new()];
     /// The place on the ground a screen point looks at: on the sphere in
     /// space, else on the flat map's plane (its curve is left out; the
     /// pointer's area is read from a height where it is nothing).
@@ -579,6 +579,9 @@ impl Projector<'_> {
         Some([lng, lat])
     }
 
+    /// A line through the points, broken where one does not project.
+    fn runs(&self, pts: &[LonLat]) -> Vec<Vec<egui::Pos2>> {
+        let mut out = vec![Vec::new()];
         for p in pts {
             match self.screen(*p) {
                 Some(s) => out.last_mut().into_iter().for_each(|r| r.push(s)),
@@ -1043,15 +1046,16 @@ pub fn render_scenario_chrome(
     let shape = shape(viewport, egui.compact());
     // The dock's own reasons to stand aside, and on the bottom edge the
     // other things that live there: hidden, never closed.
-    let hidden = shown == Sheet::Hidden
-        || driver.active
+    let hidden = driver.active
         || menu.open
         || (egui.compact() && !right_panel.is(crate::resources::RightPanel::None))
         || (shape == Shape::Sheet
             && (keyboard.is_open()
                 || right_panel.is(crate::resources::RightPanel::Route)
                 || place_card.place.is_some()));
-    if hidden {
+    // With its sheet put away, a lens that is on keeps only its key strip.
+    let strip = shown == Sheet::Hidden;
+    if hidden || (strip && view.open.is_none()) {
         ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
         if peeked.is_some() {
             ctx.request_repaint();
@@ -1059,8 +1063,8 @@ pub fn render_scenario_chrome(
         return;
     }
     // A drag that starts on the map is someone looking at the map: the
-    // sheet goes, the lens staying on.
-    if egui.map_dragged() {
+    // sheet goes, the lens staying on — and its key strip with it.
+    if !strip && egui.map_dragged() {
         view.sheet = Sheet::Hidden;
         ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
         return;
@@ -1074,6 +1078,42 @@ pub fn render_scenario_chrome(
     let frame = theme::overlay_frame();
     let inset = frame.inner_margin.sum().x + 2.0 * frame.stroke.width;
     let bottom = crate::systems::dock::reserved_bottom() + theme::OSD_MARGIN;
+    if strip {
+        let Some(o) = view.open.as_mut() else { return };
+        let (area, width) = match shape {
+            Shape::Sheet => (
+                egui::Area::new(egui::Id::new("lens_strip"))
+                    .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom)),
+                (viewport.x - 2.0 * theme::OSD_MARGIN - inset).min(STRIP_MAX_W),
+            ),
+            Shape::Column => (
+                egui::Area::new(egui::Id::new("lens_strip")).anchor(
+                    egui::Align2::LEFT_TOP,
+                    egui::vec2(
+                        theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP,
+                        crate::systems::dock::reserved_top(),
+                    ),
+                ),
+                STRIP_MAX_W - inset,
+            ),
+        };
+        let mut raise = false;
+        let shown_area = area.order(egui::Order::Foreground).show(&ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.set_width(width);
+                raise = key_strip(ui, o, here);
+            });
+        });
+        let rect = shown_area.response.rect;
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(RECT_ID), (rect, shape == Shape::Sheet)));
+        if o.peek != peeked {
+            ctx.request_repaint();
+        }
+        if raise {
+            view.sheet = Sheet::Figures;
+        }
+        return;
+    }
     let (area, width, body_h) = match shape {
         Shape::Sheet => {
             let share = if shown == Sheet::Shelf {
@@ -1137,11 +1177,10 @@ pub fn render_scenario_chrome(
         ctx.request_repaint();
     }
 
-    // A pick is made to be seen: a lens off the shelf or a figure from the
-    // list hides the sheet, over the map it changed. The lit disc raises it.
-    if asked.open.is_some() {
-        asked.sheet = Some(Sheet::Hidden);
-    }
+    // A pick keeps the sheet up: the map above it changes, and the next
+    // figure is one tap away rather than behind the disc again (asked
+    // 2026-11-17: "hard to navigate"). A lens off the shelf opens on its
+    // figures.
     if let Some(key) = asked.open {
         if layers.scenario.as_deref() != Some(key.as_str()) {
             layers.scenario = Some(key);
@@ -1508,6 +1547,69 @@ fn key_body(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>, asked: &mut A
     }
 }
 
+/// Widest the key strip gets: a name and a scale need no more.
+const STRIP_MAX_W: f32 = 340.0;
+
+/// A lens that is on with its sheet put away keeps its key over the map
+/// (asked 2026-11-17: with the sheet closed nothing said what the colours
+/// meant). The figure's name and year as a row that raises the sheet, and
+/// its scale, whose bands still single theirs out. True when the row was
+/// tapped.
+fn key_strip(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) -> bool {
+    let mut title = o.play.scenario.region_states[o.layer].label.clone();
+    if let Some(w) = when_label(o) {
+        title = format!("{title} · {w}");
+    }
+    let (r, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), theme::close_button_size()),
+        egui::Sense::click(),
+    );
+    let resp = theme::named(ui, resp, "Show the lens");
+    let hot = motion::toggle(ui.ctx(), resp.id.with("hot"), resp.hovered(), 0.12);
+    let chevron_w = 22.0;
+    let p = ui.painter();
+    let g = p.layout_no_wrap(
+        title,
+        egui::FontId::proportional(theme::SIZE_SUB),
+        theme::p().cream,
+    );
+    p.with_clip_rect(r.with_max_x(r.right() - chevron_w))
+        .galley(
+            egui::pos2(r.left(), r.center().y - g.size().y * 0.5),
+            g,
+            theme::p().cream,
+        );
+    p.text(
+        egui::pos2(r.right() - 2.0 + 2.0 * hot, r.center().y),
+        egui::Align2::RIGHT_CENTER,
+        crate::systems::icons::CHEVRON_RIGHT,
+        egui::FontId::proportional(theme::SIZE_TITLE),
+        lerp_colour(theme::p().text_dim, theme::p().cream, hot),
+    );
+    legend(ui, o, here);
+    resp.on_hover_text("Figures, this place and other lenses")
+        .clicked()
+}
+
+/// Where the sheet is: its three views as one control under the header, so
+/// each is one tap from the others and the one you are in is lit. With no
+/// lens open there is only the shelf, and no control.
+fn tabs(ui: &mut egui::Ui, now: Sheet, asked: &mut Asked) {
+    let mut at = now;
+    if theme::segmented(
+        ui,
+        &mut at,
+        &[
+            (Sheet::Figures, "Figures"),
+            (Sheet::Place, "This place"),
+            (Sheet::Shelf, "All lenses"),
+        ],
+    ) {
+        asked.sheet = Some(at);
+    }
+    ui.add_space(4.0);
+}
+
 /// The place under the crosshair and the open figure's value there, as a row
 /// that opens the place's card.
 fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::Response> {
@@ -1731,6 +1833,7 @@ fn figures_body(
     asked: &mut Asked,
 ) {
     lens_header(ui, o, asked);
+    tabs(ui, Sheet::Figures, asked);
     key_body(ui, o, here, asked);
     ui.add_space(4.0);
     egui::ScrollArea::vertical()
@@ -1775,9 +1878,6 @@ fn figures_body(
                 ui.label(egui::RichText::new(s).size(theme::SIZE_SUB));
             }
         });
-        if theme::action_button(ui, "All lenses").clicked() {
-            asked.sheet = Some(Sheet::Shelf);
-        }
         if theme::action_button(ui, "Lens off").clicked() {
             asked.close = true;
         }
@@ -1812,12 +1912,13 @@ fn place_body(
             .truncate(),
         );
         if theme::close_button(ui)
-            .on_hover_text("Back to the figures")
+            .on_hover_text("Hide; the lens stays on")
             .clicked()
         {
-            asked.sheet = Some(Sheet::Figures);
+            asked.sheet = Some(Sheet::Hidden);
         }
     });
+    tabs(ui, Sheet::Place, asked);
     let Some((p, set, a)) = found else {
         dim(
             ui,
@@ -1968,6 +2069,9 @@ fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mu
             asked.sheet = Some(Sheet::Hidden);
         }
     });
+    if open_key.is_some() {
+        tabs(ui, Sheet::Shelf, asked);
+    }
     dim(
         ui,
         "Figures about places, read over the map. One lens at a time.",
