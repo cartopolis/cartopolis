@@ -1016,6 +1016,10 @@ pub struct DevPanelState {
     /// fields before it consults coverage, so there is no cheap value to set
     /// either source to. Hiding the shell is the only thing that removes the cost.
     pub clouds_enabled: bool,
+    /// Whether the low deck casts its shadows on the ground and the buildings
+    /// (`cloud_field::sun_shadow`) — Settings ▸ World ▸ Weather. A cost per
+    /// ground and building pixel, so it is a setting of its own.
+    pub cloud_shadows: bool,
     /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
     /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
     pub moon_age_days: f32,
@@ -1060,6 +1064,7 @@ impl Default for DevPanelState {
             cloud_high: 0.0,
             precipitation: 0.0,
             clouds_enabled: true,
+            cloud_shadows: true,
             moon_age_days: 14.8, // full moon
             // Overwritten from the real date on frame 1 by `apply_sun_mode`; this
             // default is the equinox (0°), only ever seen before the first update.

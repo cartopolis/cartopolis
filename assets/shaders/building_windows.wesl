@@ -51,6 +51,8 @@ import bevy_pbr::render::{
     pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
 };
 import super::ground_bounce;
+import super::cloud_field as cf;
+import bevy_pbr::render::mesh_view_bindings as view_bindings;
 
 // x: column pitch (m). y: floor pitch (m). z: window width (m). w: window height (m).
 // → `facade.lattice`, in `Facade` below.
@@ -102,6 +104,8 @@ struct Facade {
     ghost_ring: array<vec4<f32>, 16>,
 }
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> facade: Facade;
+// The cloud deck, for the clouds' shadows (`cloud_field::sun_shadow`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var<storage, read> clouds: cf::Deck;
 
 /// Ring points this shader can hold. A BAG outline simplified at 10 cm is about
 /// nine points; anything longer is simplified again on the CPU before it is sent,
@@ -1656,6 +1660,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     pbr_input.material.base_color = alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
+
+    // The clouds' shadows: the sun alone, as on the ground beside the walls.
+    // Built field by field — a whole struct load from a bound buffer is what
+    // the Adreno 840 reads wrong (`cloud_field.wesl`'s `Deck`).
+    pbr_input.directional_shadow_factor *= cf::sun_shadow(
+        cf::Deck(
+            clouds.shape,
+            clouds.motion,
+            clouds.sun_dir,
+            clouds.sun_color,
+            clouds.sky_color,
+            clouds.place,
+            clouds.haze_color,
+            clouds.light,
+        ),
+        in.world_position.xyz - view_bindings::view.world_position.xyz,
+    );
 
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {

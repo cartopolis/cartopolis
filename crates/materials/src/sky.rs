@@ -238,7 +238,8 @@ pub struct CloudMaterial {
     /// `sun_color`, so sunset clouds match the sky around them. y: 1 on the phone
     /// tier (`CLOUDS_LOW`), for the water that mirrors the deck — the shell
     /// itself reads its shader def. z: the strength of the skylight falling on
-    /// the deck's top (`cloud_field.wesl`'s `SKY_ABOVE_TINT` is its colour). w: unused.
+    /// the deck's top (`cloud_field.wesl`'s `SKY_ABOVE_TINT` is its colour). w: how dark the deck's shadows on the
+    /// ground are, 0 none and 1 full (`cloud_field.wesl`'s `sun_shadow`).
     pub params3: Vec4,
 }
 

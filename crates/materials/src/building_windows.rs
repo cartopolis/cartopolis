@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 /// The LoD2.2 buildings' material: the same `StandardMaterial` the lane always
@@ -150,6 +151,11 @@ pub struct BuildingWindows {
     /// ring is 32 floats and there is one material; paying for it once a frame is
     /// cheaper than any arrangement that makes the shader solve it.
     pub ghost_ring: [Vec4; GHOST_RING_VEC4S],
+    /// The cloud deck ([`CLOUD_FIELD_BUFFER`](crate::sky::CLOUD_FIELD_BUFFER)),
+    /// for the clouds' shadows on the walls and roofs (`cloud_field::sun_shadow`)
+    /// — the one buffer the ground's materials bind for theirs.
+    #[storage(102, read_only, visibility(fragment))]
+    pub clouds: Handle<ShaderBuffer>,
     /// Always compile the [`BuildingKey::cutaway`] variant: set on the material
     /// the scaffold netting and site fences are drawn with, whose holes are
     /// `discard`s. Every other building material compiles it only while
@@ -212,6 +218,9 @@ impl Default for BuildingWindows {
             ghost: Vec4::ZERO,
             ghost_bounds: Vec4::ZERO,
             ghost_ring: [Vec4::ZERO; GHOST_RING_VEC4S],
+            // Never `Handle::default()`, which names no asset: a material whose
+            // storage buffer does not exist never prepares, and draws nothing.
+            clouds: crate::sky::CLOUD_FIELD_BUFFER,
             screen_door: false,
         }
     }

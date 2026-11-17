@@ -777,3 +777,55 @@ fn mirrored(
     rgb = mix(deck.haze_color.rgb, rgb, exp(-x * x));
     return vec4<f32>(rgb, clamp(alpha, 0.0, 1.0));
 }
+
+// ─── The deck's shadow on the ground ─────────────────────────────────────────
+//
+// How much of the sun reaches a point through the low deck: 1 in the open, down
+// to `1 − CLOUD_SHADOW_DEPTH` under a cloud's core. A caller multiplies the
+// directional light's shadow by it (`PbrInput::directional_shadow_factor`), so it
+// takes the sun alone — the sky's light and the reflections stay, as they do
+// under a real cloud — and only where the sun has a shadow to cast at all.
+//
+// The ray goes from the point toward the sun up to the deck's base, and the deck
+// is read there as the shell draws it: the same field, the same warp on the full
+// tier, the same threshold — so the patch of shade is under the cloud in front
+// of the sun. Fewer octaves than the shell's: a cloud's shadow is soft-edged a
+// few tens of metres wide (the sun is half a degree across, the deck a kilometre
+// up), and `CLOUD_SHADOW_PENUMBRA_M` widens the edge to that.
+
+// Sunlight a cloud's core still lets through: forward scattering and the
+// light round its edges. Under a real cumulus the ground loses most of its sun,
+// not all of it.
+const CLOUD_SHADOW_DEPTH: f32 = 0.85;
+// Octaves of the field read for the shadow; finer ones are below its penumbra.
+const CLOUD_SHADOW_OCTAVES: i32 = 4;
+// Half-width of a shadow's soft edge, in field units about the threshold.
+const CLOUD_SHADOW_EDGE: f32 = 0.015;
+
+// `offset` is the point relative to the camera in render space (the deck is a
+// plane `shape.w` above the camera); `sun` the direction to the sun.
+fn sun_shadow(deck: Deck, offset: vec3<f32>) -> f32 {
+    let cover = deck.shape.x;
+    let sun = normalize(deck.sun_dir.xyz);
+    let fade = deck.light.w * deck.sun_color.a * deck.motion.w * (1.0 - deck.motion.z)
+        * smoothstep(0.02, 0.08, sun.y);
+    if cover <= 0.0 || fade <= 0.0 {
+        return 1.0;
+    }
+    let cheap = deck.light.y > 0.5;
+    let octaves = low_octaves(cheap);
+    let detail = f32(CLOUD_SHADOW_OCTAVES - 1) / f32(octaves);
+    let hit = mirror_hit(deck.shape.w, offset, sun);
+    var uv = low_uv(hit, deck.place.xy, deck.motion.xy);
+    if !cheap {
+        uv = warp(uv, deck.shape.z, detail);
+    }
+    let v = relief_field(uv, octaves, detail, EVOLVE_DETAIL * deck.shape.z, 0.0);
+    let thresh = low_threshold(cover, cheap);
+    // A cloud or not, with a soft edge: `low_threshold` is calibrated so the
+    // share of the field above it is the cover, and a wide ramp under an
+    // exponential (as the shell's opacity has) put nearly every point half in
+    // shade — the first captures came out dull all over, with no patches.
+    let opacity = smoothstep(thresh - CLOUD_SHADOW_EDGE, thresh + CLOUD_SHADOW_EDGE, v);
+    return 1.0 - CLOUD_SHADOW_DEPTH * opacity * fade;
+}

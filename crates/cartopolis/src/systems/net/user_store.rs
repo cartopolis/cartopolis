@@ -241,6 +241,10 @@ pub struct SkyPrefs {
     /// silently take the sky away from everybody who upgraded.
     #[serde(default = "default_true")]
     pub clouds: bool,
+    /// Whether the clouds cast shadows (Settings ▸ World ▸ Weather);
+    /// `default_true` for the reason `clouds` above gives.
+    #[serde(default = "default_true")]
+    pub cloud_shadows: bool,
 }
 
 /// Snapshot of the Layers panel's toggles (see [`crate::systems::data_layers::
@@ -1289,6 +1293,7 @@ pub fn restore_sky_prefs(
     // No CLI arm: `--clouds` seeds *coverage*, which is a different question, and
     // the scripted way to take the shells out of a frame is `CARTO_NO_CLOUDS`.
     dev.clouds_enabled = p.clouds;
+    dev.cloud_shadows = p.cloud_shadows;
 }
 
 pub fn autosave_user_store(
@@ -1421,6 +1426,7 @@ mod tests {
             cloud_cover: 0.5,
             precipitation: 0.0,
             clouds: true,
+            cloud_shadows: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         assert!(

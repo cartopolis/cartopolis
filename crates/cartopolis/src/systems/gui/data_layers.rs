@@ -805,6 +805,7 @@ impl DataLayers {
             // field further in — quitting mid-drive would hand back "the user
             // turned clouds off" as a preference they never set.
             clouds: dev.clouds_enabled,
+            cloud_shadows: dev.cloud_shadows,
         }
     }
 

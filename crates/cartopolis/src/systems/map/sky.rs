@@ -692,6 +692,15 @@ pub(crate) fn overcast(dev: &DevPanelState) -> f32 {
     dev.cloud_cover.max(dev.precipitation * 0.9).clamp(0.0, 1.0)
 }
 
+/// Whether the clouds cast shadows on the ground (`cloud_field::sun_shadow`).
+/// `CARTO_NO_CLOUD_SHADOWS=1` takes them away, for the A/B.
+pub(crate) fn cloud_shadows_enabled() -> bool {
+    !matches!(
+        std::env::var("CARTO_NO_CLOUD_SHADOWS").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 /// How much of the sky is a deck the sun cannot shine through, 0 to
 /// [`overcast`]: the cover less what is high cloud only, and rain, which falls
 /// from a deck.
@@ -2140,7 +2149,13 @@ pub(crate) fn update_clouds(
             // the sky after sunset stays bright, and the fade turned every
             // cloud in it black (2026-11-07); the blue is what greys them.
             haze.dot(LUMINANCE) * CLOUD_SKY_ABOVE_GAIN,
-            0.0,
+            // The deck's shadows on the ground (`cloud_field::sun_shadow`).
+            // None from a deck that is not drawn: a shadow under an empty sky.
+            if dev.cloud_shadows && !disabled && cloud_shadows_enabled() {
+                1.0
+            } else {
+                0.0
+            },
         );
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
         // The haze colour's alpha was documented "unused" and is the deck's sky

@@ -830,6 +830,40 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             mix(pbr_input.material.reflectance, vec3<f32>(water_body.w), water);
     }
 
+    // The clouds' shadows (`cloud_field::sun_shadow`): the sun alone, through
+    // the deck this material already binds for its water's mirror. Built field
+    // by field, never as a whole struct load — see the mirror below for why.
+    {
+        @if(BINDLESS)
+        let deck_slot = ground_indices[slot].clouds;
+        @if(BINDLESS)
+        let shadow_deck = cf::Deck(
+            ground_clouds[deck_slot].shape,
+            ground_clouds[deck_slot].motion,
+            ground_clouds[deck_slot].sun_dir,
+            ground_clouds[deck_slot].sun_color,
+            ground_clouds[deck_slot].sky_color,
+            ground_clouds[deck_slot].place,
+            ground_clouds[deck_slot].haze_color,
+            ground_clouds[deck_slot].light,
+        );
+        @else
+        let shadow_deck = cf::Deck(
+            clouds_single.shape,
+            clouds_single.motion,
+            clouds_single.sun_dir,
+            clouds_single.sun_color,
+            clouds_single.sky_color,
+            clouds_single.place,
+            clouds_single.haze_color,
+            clouds_single.light,
+        );
+        pbr_input.directional_shadow_factor *= cf::sun_shadow(
+            shadow_deck,
+            in.world_position.xyz - view_bindings::view.world_position.xyz,
+        );
+    }
+
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
     // From far, the painted map in its own colours, whatever the sun's angle.

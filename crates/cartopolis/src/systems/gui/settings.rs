@@ -1726,6 +1726,13 @@ fn world_tab(
              orbit the cloud shell covers the whole screen."
         },
     );
+    ui.add_enabled_ui(!clouds_forced_off && dev.clouds_enabled, |ui| {
+        ui.checkbox(&mut dev.cloud_shadows, "Cloud shadows");
+    });
+    pending(
+        ui,
+        "The clouds' shadows drift over the streets and the roofs. Costs a          little on every pixel of ground and building; none under a clear sky          or a closed deck, where there is nothing to cast them.",
+    );
 
     ui.add_enabled_ui(!*weather_live, |ui| {
         ui.add(
