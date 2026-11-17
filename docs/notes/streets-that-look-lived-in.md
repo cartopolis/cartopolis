@@ -1,7 +1,7 @@
 ---
 topic: map
-triggers: ["soul problem", "lived in", "sterile", "too clean", "square", weathering, wear, kerb, kerbs, gardens, "bike rack", fietsenrek, "street furniture", paving_edges.rs, gardens.rs, "real data"]
-updated: 2026-10-07
+triggers: ["soul problem", "lived in", "sterile", "too clean", "square", weathering, wear, kerb, kerbs, gardens, "bike rack", fietsenrek, "street furniture", paving_edges.rs, gardens.rs, "real data", gutter, moss]
+updated: 2026-11-17
 ---
 
 # Streets that look lived in — from real data only
@@ -25,6 +25,7 @@ placement is.
 |---|---|---|
 | Kerbstone band + 10 cm stone along pavement↔carriageway | BGT surface boundaries (a partition) | `geo::paving_edges`, `LineKind::Kerb` |
 | Worn soil/moss edge where paving meets surveyed green | BGT boundaries | `paving_edges`, `flat_fill::Shade` |
+| Dirty gutter on road ribbons: dust, moss and green in the seams of the carriageway and its kerb band, crazed tarmac near the edge (2026-11-17) | texture only, no data | `ground_detail.wesl` `gutter` |
 | Gardens split planted/hard | BGT `erf` + PDOK infrared photo | `atlas pipeline/gardens.rs`, [gardens-from-the-infrared-photo.md](gardens-from-the-infrared-photo.md) |
 | Grass blades on surveyed green | BGT verges/grass + garden split | `turf::GrassArea::add_surveyed` |
 | Bike racks, litter bins, waste points, public toilets | BGT `straatmeubilair`, `bak` | `atlas pipeline/bgt.rs`, `FurnitureKind::{BikeRack,Toilet}` |

@@ -390,7 +390,9 @@ fn street_scale(p: vec2<f32>, laid: u32, metres_per_px: f32, sharpest_px: f32) -
 const DUST: vec3<f32> = vec3<f32>(0.24, 0.215, 0.17);
 /// `ribbon::ROAD_CASING_M`: how wide a kerb band is.
 const KERB_BAND_M: f32 = 0.75;
-const TUFT: vec3<f32> = vec3<f32>(0.07, 0.15, 0.03);
+const TUFT: vec3<f32> = vec3<f32>(0.07, 0.16, 0.025);
+/// Greener than the moss in a joint (`MOSS`): a gutter stays wet for days.
+const GUTTER_MOSS: vec3<f32> = vec3<f32>(0.08, 0.15, 0.04);
 
 /// Asphalt's crazing: the edges of an irregular net of cells `unit` metres
 /// across, as metres to the nearest edge.
@@ -430,33 +432,33 @@ fn gutter(look_in: PavingLook, p: vec2<f32>, seam_m: f32, tarmac: bool, metres_p
     let dust = band * mix(0.35, 0.85, mottle) * k;
     // Moss where the gutter stays damp: patches a metre or so long, broken up
     // at the scale of a hand.
-    let damp = smoothstep(0.35, 0.6, pav_noise(p / 1.25 + vec2<f32>(37.0, 23.0)));
-    let clumps = smoothstep(0.3, 0.6, pav_noise(p / 0.125 + vec2<f32>(11.0, 5.0)));
+    let damp = smoothstep(0.25, 0.5, pav_noise(p / 1.25 + vec2<f32>(37.0, 23.0)));
+    let clumps = smoothstep(0.25, 0.55, pav_noise(p / 0.125 + vec2<f32>(11.0, 5.0)));
     let moss = sqrt(band) * damp * clumps * k;
     // A tuft in the seam itself: a few centimetres of green right at the
     // edge, every metre or two.
     let in_seam = 1.0 - smoothstep(0.03, 0.12, seam_m);
-    let tufts = in_seam * smoothstep(0.6, 0.75, pav_noise(p / 0.625 + vec2<f32>(43.0, 67.0)))
+    let tufts = in_seam * smoothstep(0.5, 0.68, pav_noise(p / 0.625 + vec2<f32>(43.0, 67.0)))
         * smoothstep(0.3, 0.55, mottle) * (1.0 - pav_blur(0.1, metres_per_px));
 
     var crack = 0.0;
     if tarmac {
         // Crazed only within a metre or so of the edge, and only on stretches
         // that have started to go.
-        let near = 1.0 - smoothstep(0.2, 1.2, seam_m);
-        let aged = smoothstep(0.4, 0.6, pav_noise(p / 6.25 + vec2<f32>(71.0, 31.0)));
+        let near = 1.0 - smoothstep(0.3, 1.5, seam_m);
+        let aged = smoothstep(0.35, 0.55, pav_noise(p / 6.25 + vec2<f32>(71.0, 31.0)));
         let fade = near * aged * (1.0 - pav_blur(0.03, metres_per_px));
         if fade > 0.0 {
-            let jitter = (vec2<f32>(pav_noise(p / 0.0625), pav_noise(p / 0.0625 + vec2<f32>(5.0, 9.0))) - 0.5) * 0.03;
-            let d = craze_m(p + jitter, 0.3125);
-            let width = mix(0.003, 0.008, near);
+            let jitter = (vec2<f32>(pav_noise(p / 0.0625), pav_noise(p / 0.0625 + vec2<f32>(5.0, 9.0))) - 0.5) * 0.05;
+            let d = craze_m(p + jitter, 0.625);
+            let width = mix(0.005, 0.012, near);
             crack = (1.0 - smoothstep(width, width + aa, d)) * fade;
         }
     }
 
-    look.tone *= 1.0 - 0.6 * crack;
-    let green = max(moss * 0.8, tufts * 0.9);
-    let fill = mix(DUST, mix(MOSS, TUFT, tufts), green / max(dust + green, 1.0e-3));
+    look.tone *= 1.0 - 0.7 * crack;
+    let green = max(moss * 0.9, tufts);
+    let fill = mix(DUST, mix(GUTTER_MOSS, TUFT, tufts), green / max(dust + green, 1.0e-3));
     look.fill = vec4<f32>(fill, max(dust, green));
     look.roughness = mix(look.roughness, 1.0, dust);
     look.tilt *= 1.0 - 0.7 * dust;
