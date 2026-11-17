@@ -163,8 +163,9 @@ const GRONINGEN: Register = Register {
             geometry: "GEOM",
             attributes: &["FRACTIE"],
             yields: Yields::Props {
-                // The fraction is a colour, not a form: a bottle bank and a paper
-                // bank are the same six boxes.
+                // The fraction is a colour, not a form: every one is an
+                // underground container's intake column, and only its front
+                // panel says what goes in.
                 kind: |f| {
                     Some((
                         FurnitureKind::Recycling,
@@ -268,9 +269,9 @@ const GRONINGEN: Register = Register {
     ],
 };
 
-/// What a Dutch waste fraction is painted, in sRGB: the colours the lids are
-/// here. `RESTAFVAL`, by far the commonest, keeps the painted steel every
-/// container was drawn in before, and so does a fraction nobody named.
+/// What a Dutch waste fraction is painted, in sRGB: the colour of the column's
+/// front panel. `RESTAFVAL`, by far the commonest, is the steel grey the city's
+/// household-waste columns have, and so is a fraction nobody named.
 fn fraction_colour(fraction: &str) -> u32 {
     match fraction {
         "PAPIER" => 0x3E_5E_8C,

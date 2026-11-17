@@ -222,8 +222,9 @@ cell it streamed.
 ## The fraction is a colour, not a kind
 
 The container layer is the case that shaped how attributes are carried. Glass,
-paper, textile and household waste differ by **colour, not by form** — a bottle
-bank and a paper bank are the same six boxes — so four kinds would have meant
+paper, textile and household waste differ by **colour, not by form** — all four
+are underground containers whose intake column is the only thing above the
+street, and the fraction shows on the column's front panel — so four kinds would have meant
 four meshes and four entries in the furniture table for one object.
 
 `FurnitureInstance::paint` already existed for exactly this: a per-instance sRGB
@@ -231,9 +232,19 @@ body colour on a shared mesh and material, added so a car park's worth of cars
 would not all be one grey. `nav_marks` already paints from a register's own
 colour vocabulary rather than from the furniture table's tones, which is the same
 footing these colours sit on. Two changes made it reach containers: the recycling
-form's body tone became `Paint`, and `furniture::default_paint` returns the
-painted steel that body used to be — so an *unpainted* container, which is every
-one that comes from OpenStreetMap, looks exactly as it did.
+form's front panel is `Paint`, and `furniture::default_paint` returns steel
+grey — so an *unpainted* container, which is every one that comes from
+OpenStreetMap, looks like a household-waste column.
+
+**The form is the underground kind (2026-11-17).** It was a 1.5 × 1.4 m painted
+block — a village bottle bank — and the owner, seeing a green one behind a car
+from street level, called it unrealistic. The city's own photographs
+(milieudienst.groningen.nl, "Ondergrondse containers") show an anthracite column
+about 1.15 m tall with a pale front panel and intake drum, on a 1.6 m steel plate
+that lids the pit; the register has no above/below-ground attribute (only
+`FRACTIE` and `CONTAINER_TYPE`, which repeat each other), and Groningen collects
+all four fractions underground, so `form::RECYCLING` is that column for every
+container.
 
 **Household waste keeps the steel**, which matters because it is 1,277 of the
 1,962: the commonest container in the city does not change appearance at all, and

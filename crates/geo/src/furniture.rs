@@ -986,13 +986,27 @@ mod form {
         part([0.0, 0.40, 0.0], [0.18, 0.40, 0.18], Metal),
         part([0.0, 0.84, 0.0], [0.21, 0.04, 0.21], Roof),
     ];
-    /// The body is `Paint` rather than `Metal` because a bottle bank's colour is
-    /// what says *what goes in it*, and a register that knows the fraction can
-    /// say so — see [`super::default_paint`], which keeps an instance that does
-    /// not know looking exactly like the painted steel it was.
-    pub const RECYCLING: [Part; 2] = [
-        part([0.0, 0.70, 0.0], [0.75, 0.70, 0.65], Paint),
-        part([0.0, 1.44, 0.0], [0.78, 0.05, 0.68], Roof),
+    /// An **underground** container: what stands on the street is only its
+    /// intake column, on the steel plate that lids the pit. Groningen's register
+    /// (1,968 of them) is all of this kind — the city collects household waste,
+    /// paper, glass and textile underground — and so are most Dutch city
+    /// centres'; a 1.4 m painted bottle bank, which this form used to be, is a
+    /// thing of village car parks.
+    ///
+    /// Measured off the city's own photographs (milieudienst.groningen.nl,
+    /// "Ondergrondse containers") and a supplier's column (93 × 70 × 61.5 cm on
+    /// a 1.6 × 1.6 m top plate for a 5 m³ pit): an anthracite column, a pale
+    /// front panel with the intake drum above it, facing the path.
+    ///
+    /// The front panel is `Paint` because the fraction is what it says — see
+    /// [`super::default_paint`], which keeps an instance that does not know in
+    /// the grey of the household-waste columns.
+    pub const RECYCLING: [Part; 5] = [
+        part([0.0, 0.015, 0.0], [0.80, 0.015, 0.80], Metal),
+        part([0.0, 0.58, -0.05], [0.35, 0.55, 0.25], Tyre),
+        part([0.0, 0.48, 0.22], [0.26, 0.42, 0.04], Paint),
+        part([0.0, 1.02, 0.12], [0.26, 0.12, 0.12], Roof),
+        part([0.0, 1.145, -0.05], [0.36, 0.015, 0.26], Tyre),
     ];
     pub const SHELTER: [Part; 7] = [
         part([0.0, 2.36, 0.0], [1.70, 0.06, 0.90], Roof),
@@ -1305,9 +1319,9 @@ pub fn place_surveyed(
 ///
 /// Only [`Tone::Paint`] parts read it, so for every other form this is the
 /// no-tint value it always was. [`FurnitureKind::Recycling`] is the exception:
-/// its body became `Paint` so a register that knows the fraction can colour it,
-/// and this is the painted steel it looked like before that — an unpainted bottle
-/// bank must not change appearance just because it *could* now be coloured.
+/// its front panel is `Paint` so a register that knows the fraction can colour
+/// it, and an instance that does not know — every one from OpenStreetMap — gets
+/// the steel grey of the household-waste column, the commonest there is.
 #[must_use]
 pub fn default_paint(kind: FurnitureKind) -> u32 {
     match kind {
