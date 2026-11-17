@@ -51,6 +51,11 @@ export interface Chat {
     messages: Message[]
     /** The highest `seq` the person has seen in this chat. */
     readSeq: number
+    /**
+     * Brought back from the chat backup: what the chat was called and whether
+     * it is a group, so it can be listed before this device is in it.
+     */
+    restored?: {group: boolean; label: string}
 }
 
 /** Most messages kept per chat. Older ones fall off the front. */

@@ -19,11 +19,12 @@ import type {
     CommunitySettings,
     CommunityView,
     Credential,
+    Recovery,
     Role,
     Update,
 } from '../worker/protocol.ts'
 
-export type {ChatEvent, ChatSummary, CommunityListing, CommunityPlace, CommunitySettings, CommunityView, Message, Role}
+export type {ChatEvent, ChatSummary, CommunityListing, CommunityPlace, CommunitySettings, CommunityView, Message, Recovery, Role}
 
 interface Port {
     postMessage(message: Command): void
@@ -47,6 +48,12 @@ export class ChatClient {
     directory: CommunityListing[] = []
     /** Which contacts are signed in, by full address; one who hides it is absent. */
     online: Record<string, boolean> = {}
+    /** Where this account's chat backup stands, as this device sees it. */
+    recovery: Recovery = 'unknown'
+    /** A recovery key just made here, until the person says they have kept it. */
+    recoveryKey: string | null = null
+    /** What the last restore brought back. */
+    restored: {chats: number; messages: number} | null = null
     /** The last thing the worker or the server refused, for the page to show. */
     notice: string | null = null
     /** Histories of the chats this page has opened, by channel key. */
@@ -128,6 +135,16 @@ export class ChatClient {
 
     startGroup(name: string, members: string[]): void {
         this.send({members, name, type: 'start_group'})
+    }
+
+    /** Make a recovery key; it arrives once, in `recoveryKey`. */
+    setUpRecovery(): void {
+        this.send({type: 'recovery_setup'})
+    }
+
+    /** Bring back the chats' history from the backup, with the key the person typed. */
+    restore(key: string): void {
+        this.send({key, type: 'recovery_restore'})
     }
 
     sendText(channel: string, body: string, parent: number | null = null): void {
@@ -319,6 +336,10 @@ export class ChatClient {
                 this.communities = update.communities
                 this.directory = update.directory
                 this.online = update.online
+                this.recovery = update.recovery
+                break
+            case 'recovery_key':
+                this.recoveryKey = update.key
                 break
             case 'history':
                 this.histories.set(update.channel, update.messages)
@@ -336,6 +357,7 @@ export class ChatClient {
             this.notice = event.kind === 'notice' ? event.text : event.message
         }
         if (event.kind === 'refused') this.notice = event.message
+        if (event.kind === 'restored') this.restored = {chats: event.chats, messages: event.messages}
         if (event.kind === 'invite') this.invite = {code: event.code, id: event.id}
         if (event.kind === 'line' && event.from !== this.address) {
             if (event.channel === this.current && !document.hidden) {

@@ -211,7 +211,7 @@ class StandInPort {
     }
 
     private state(): void {
-        this.post({address: ME, chats: summaries(), communities, directory: [], online: ONLINE, status: 'connected', type: 'state', username: 'annekedijkstra'})
+        this.post({address: ME, chats: summaries(), communities, directory: [], online: ONLINE, recovery: 'on', status: 'connected', type: 'state', username: 'annekedijkstra'})
     }
 
     private history(channel: string): void {

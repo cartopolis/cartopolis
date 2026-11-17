@@ -13,6 +13,8 @@
 //! it. **Nothing here may depend on `bevy`.** The keys themselves are
 //! `cartopolis_e2ee`'s; this is what to send and when.
 
+pub mod backup;
+
 use std::collections::BTreeMap;
 
 use cartopolis_core::address;

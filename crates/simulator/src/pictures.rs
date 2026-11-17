@@ -103,6 +103,7 @@ pub fn routes() -> Router<HttpState> {
             post(upload).layer(axum::extract::DefaultBodyLimit::max(MAX_PICTURE_BYTES)),
         )
         .route("/api/pictures/mine", axum::routing::put(set_mine))
+        .route("/api/pictures/backup", get(my_backup).put(set_backup))
         .route("/api/pictures/people", get(people))
         .route("/api/pictures/{hash}", get(download))
 }
@@ -150,6 +151,82 @@ async fn set_mine(
     })?;
     tracing::info!(%username, picture = ?body.picture, "profile picture set");
     Ok(Json(serde_json::json!({ "picture": body.picture })))
+}
+
+#[derive(serde::Deserialize)]
+struct SetBackup {
+    /// A hash in this store, or `null` to keep none.
+    backup: Option<String>,
+}
+
+/// The caller's chat backup, `{backup: hash | null}`: where a new device of
+/// theirs finds it (`cartopolis_chat::backup`). Only its owner is told.
+async fn my_backup(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, _) = require_session(&state, &headers)?;
+    let backup = crate::http::with_db(&state, move |c| {
+        let hash: Option<String> = c.query_row(
+            "SELECT chat_backup FROM accounts WHERE id = ?1",
+            [principal.to_string()],
+            |r| r.get(0),
+        )?;
+        Ok(hash)
+    })?;
+    Ok(Json(serde_json::json!({ "backup": backup })))
+}
+
+/// Name the caller's chat backup, uploaded first like any picture. The one it
+/// replaces is deleted from the store: a backup is sealed with a fresh nonce
+/// each time, so no other file can share its hash, and nothing but this
+/// account's row names it.
+async fn set_backup(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<SetBackup>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (principal, username) = require_session(&state, &headers)?;
+    let dir = state.config.asset_dir.clone();
+    if let Some(hash) = &body.backup {
+        let (dir, h) = (dir.clone(), hash.clone());
+        let held = tokio::task::spawn_blocking(move || {
+            assets::is_hash(&h) && picture_path(&dir, &h).is_file()
+        })
+        .await
+        .map_err(|e| internal(anyhow::anyhow!("picture check panicked: {e}")))?;
+        if !held {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "upload the backup first; that one is not in the store".into(),
+            ));
+        }
+    }
+    let backup = body.backup.clone();
+    let replaced = crate::http::with_db(&state, move |c| {
+        let id = principal.to_string();
+        let old: Option<String> = c.query_row(
+            "SELECT chat_backup FROM accounts WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )?;
+        c.execute(
+            "UPDATE accounts SET chat_backup = ?1 WHERE id = ?2",
+            rusqlite::params![backup, id],
+        )?;
+        Ok(old.filter(|o| Some(o) != backup.as_ref()))
+    })?;
+    if let Some(old) = replaced.filter(|h| assets::is_hash(h)) {
+        let path = picture_path(&dir, &old);
+        if let Err(e) = tokio::task::spawn_blocking(move || fs::remove_file(path))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("backup removal panicked: {e}")))?
+        {
+            tracing::warn!(error = %e, %old, "could not remove a replaced chat backup");
+        }
+    }
+    tracing::info!(%username, backup = ?body.backup, "chat backup set");
+    Ok(Json(serde_json::json!({ "backup": body.backup })))
 }
 
 #[derive(serde::Deserialize)]

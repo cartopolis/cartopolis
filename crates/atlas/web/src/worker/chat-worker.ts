@@ -15,7 +15,15 @@
  * back three things: the state (chats, communities, who is signed in), a chat's
  * history when they open it, and every event as it happens.
  */
-import init, {ChatCore, open_history, pack_history} from './pkg/cartopolis_web_chat.js'
+import init, {
+    ChatCore,
+    check_recovery_key,
+    new_recovery_key,
+    open_backup,
+    open_history,
+    pack_backup,
+    pack_history,
+} from './pkg/cartopolis_web_chat.js'
 import {ChatConnection, type ChatCoreModule} from './connection.ts'
 import {
     apply,
@@ -39,6 +47,7 @@ import type {
     CommunityListing,
     CommunityView,
     Credential,
+    Recovery,
     Update,
 } from './protocol.ts'
 
@@ -86,6 +95,132 @@ const sentEarly = new Map<number, number>()
 /** Events are handled one at a time, in order, like the connection's steps. */
 let events: Promise<void> = Promise.resolve()
 
+/**
+ * The chat backup (`cartopolis_chat::backup`): every chat's newest messages,
+ * sealed under the recovery key and kept in the picture store, so a new
+ * device given the key reads what was said before it existed. This device's
+ * copy of the key, once it has one, is what lets it keep the backup current.
+ */
+let recoveryKey: string | null = null
+let recovery: Recovery = 'unknown'
+/** How long after a change the backup is sealed again, in ms. */
+const BACKUP_AFTER_MS = 60_000
+let backupTimer: ReturnType<typeof setTimeout> | null = null
+function recoveryStoreKey(account: string): string {
+    return `recovery|${account}`
+}
+
+/** What the server says this account keeps: a backup's hash, or none. */
+async function backupHash(): Promise<string | null> {
+    const r = await fetch('/api/pictures/backup', {headers: {Authorization: `Bearer ${session}`}})
+    if (!r.ok) throw new Error(`the server answered ${r.status}`)
+    return ((await r.json()) as {backup: string | null}).backup
+}
+
+/** On signing in: whether this device keeps the backup, or could open one. */
+async function loadRecovery(account: string): Promise<void> {
+    const saved = await store.get(recoveryStoreKey(account)).catch(() => undefined)
+    recoveryKey = saved ? new TextDecoder().decode(saved) : null
+    if (recoveryKey) {
+        recovery = 'on'
+        scheduleBackup()
+        return
+    }
+    try {
+        recovery = (await backupHash()) ? 'locked' : 'none'
+    } catch {
+        recovery = 'unknown'
+    }
+}
+
+function scheduleBackup(): void {
+    if (recoveryKey) backupTimer ??= setTimeout(() => void writeBackup(), BACKUP_AFTER_MS)
+}
+
+/** Seal every chat this device holds and make it the account's backup. */
+async function writeBackup(): Promise<void> {
+    backupTimer = null
+    const key = recoveryKey
+    if (!key || !session) return
+    const labels = new Map<string, {group: boolean; label: string}>(
+        (conn?.chats() ?? []).map((c) => [c.channel, {group: c.group, label: c.label}]),
+    )
+    const chats = [...histories].map(([channel, c]) => ({
+        channel,
+        items: shareable(c),
+        ...(labels.get(channel) ?? c.restored ?? {group: false, label: ''}),
+    }))
+    try {
+        const sealed = pack_backup(key, JSON.stringify(chats))
+        const auth = {Authorization: `Bearer ${session}`}
+        const r = await fetch('/api/pictures', {body: sealed as Uint8Array<ArrayBuffer>, headers: auth, method: 'POST'})
+        if (!r.ok) throw new Error(`the picture store answered ${r.status}`)
+        const {hash} = (await r.json()) as {hash: string}
+        const named = await fetch('/api/pictures/backup', {
+            body: JSON.stringify({backup: hash}),
+            headers: {...auth, 'Content-Type': 'application/json'},
+            method: 'PUT',
+        })
+        if (!named.ok) throw new Error(`the server answered ${named.status}`)
+    } catch (e) {
+        // Tried again with the next change; the last backup still stands.
+        post({event: {kind: 'error', message: `could not update the chat backup: ${(e as Error).message}`}, type: 'event'})
+    }
+}
+
+/** Make a recovery key, keep the backup it opens, and show the key once. */
+async function setUpRecovery(to: Port): Promise<void> {
+    if (!me) return
+    const account = me
+    const key = new_recovery_key()
+    await store.put(recoveryStoreKey(account), new TextEncoder().encode(key))
+    recoveryKey = key
+    recovery = 'on'
+    post({key, type: 'recovery_key'}, to)
+    state()
+    await writeBackup()
+}
+
+/** Open the account's backup with the key the person typed, and put it in front. */
+async function restore(typed: string): Promise<void> {
+    if (!me || !session) return
+    const account = me
+    const fail = (message: string) => post({event: {kind: 'error', message}, type: 'event'})
+    const wrong = check_recovery_key(typed)
+    if (wrong) return fail(wrong)
+    try {
+        const hash = await backupHash()
+        if (!hash) return fail('There is no backup of your chats on this server.')
+        const r = await fetch(`/api/pictures/${hash}`, {headers: {Authorization: `Bearer ${session}`}})
+        if (!r.ok) throw new Error(`the picture store answered ${r.status}`)
+        const opened = JSON.parse(open_backup(typed, new Uint8Array(await r.arrayBuffer()))) as {
+            channel: string
+            group: boolean
+            items: Parameters<typeof mergeShared>[1]
+            label: string
+        }[]
+        let chats = 0
+        let messages = 0
+        for (const b of opened) {
+            const c = chat(b.channel)
+            c.restored = {group: b.group, label: b.label}
+            const before = c.messages.length
+            if (mergeShared(c, b.items, account)) {
+                chats++
+                messages += c.messages.length - before
+                history(b.channel)
+            }
+            changed(b.channel)
+        }
+        await store.put(recoveryStoreKey(account), new TextEncoder().encode(typed))
+        recoveryKey = typed
+        recovery = 'on'
+        onEvent({chats, kind: 'restored', messages})
+    } catch (e) {
+        fail((e as Error).message)
+    }
+}
+
 function post(update: Update, to?: Port): void {
     if (to) {
         to.postMessage(update)
@@ -118,6 +253,7 @@ async function save(): Promise<void> {
         const c = histories.get(channel)
         if (c) await store.putHistory(account, channel, c).catch(() => changed(channel))
     }
+    scheduleBackup()
 }
 
 function preview(c: Chat): {lastAtMs: number; preview: string} {
@@ -132,7 +268,23 @@ function preview(c: Chat): {lastAtMs: number; preview: string} {
 function summaries(): ChatSummary[] {
     if (!conn) return []
     const who = me
-    return conn.chats().map((c) => {
+    const joined = conn.chats()
+    const held = new Set(joined.map((c) => c.channel))
+    // Chats brought back from the backup that this device is not in yet:
+    // readable, and listed, until a member's device adds it.
+    const waiting = [...histories]
+        .filter(([channel, h]) => h.restored && !held.has(channel))
+        .map(([channel, h]) => ({
+            ...preview(h),
+            channel,
+            group: h.restored!.group,
+            label: h.restored!.label,
+            mentioned: false,
+            people: h.restored!.group ? [] : [h.restored!.label],
+            unread: 0,
+            waiting: true,
+        }))
+    return [...joined.map((c) => {
         const h = histories.get(c.channel) ?? emptyChat()
         const unseen = who ? unread(h, who) : 0
         return {
@@ -143,7 +295,7 @@ function summaries(): ChatSummary[] {
             ),
             unread: unseen,
         }
-    })
+    }), ...waiting]
 }
 
 function state(to?: Port): void {
@@ -156,6 +308,7 @@ function state(to?: Port): void {
         communities,
         directory,
         online,
+        recovery,
     }, to)
 }
 
@@ -173,6 +326,7 @@ async function handle(event: ChatEvent): Promise<void> {
             for (const [channel, c] of await store.histories(event.address).catch(() => new Map<string, Chat>())) {
                 histories.set(channel, c)
             }
+            await loadRecovery(event.address)
             break
         case 'line':
         case 'reaction':
@@ -299,6 +453,10 @@ function signOut(): void {
     directory = []
     online = {}
     histories.clear()
+    if (backupTimer) clearTimeout(backupTimer)
+    backupTimer = null
+    recoveryKey = null
+    recovery = 'unknown'
     release?.()
     release = null
     state()
@@ -367,6 +525,8 @@ async function run(command: Command, from: Port): Promise<void> {
         history(command.channel, from)
         return
     }
+    if (command.type === 'recovery_setup') return setUpRecovery(from)
+    if (command.type === 'recovery_restore') return restore(command.key)
     if (command.type === 'histories') {
         for (const channel of histories.keys()) history(channel, from)
         return

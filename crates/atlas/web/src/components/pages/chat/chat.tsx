@@ -100,6 +100,9 @@ export function standInClient(stand: ChatClient): void {
 /** The reactions offered on a message, in this order. */
 const QUICK = ['👍', '❤️', '😂', '🎉', '👀', '✅']
 
+/** Where "set up a recovery key later" is kept: a choice about this browser. */
+const RECOVERY_LATER_KEY = 'cartopolis.chat.recovery-later'
+
 /** The reasons a report can give, as the server names them. */
 const REASONS = [
     {label: 'Spam or a scam', value: 'spam'},
@@ -898,6 +901,89 @@ export class Chat extends MithrilComponent {
         )
     }
 
+    /** What the person typed as their recovery key. */
+    recoveryInput = ''
+    /** Set up later: asked again in this browser only when it forgets. */
+    recoveryLater = typeof localStorage !== 'undefined' && localStorage.getItem(RECOVERY_LATER_KEY) === '1'
+
+    /**
+     * The chat backup (`cartopolis_chat::backup`): the key shown once when it
+     * is made, the way to bring the history back on a new device, and the
+     * offer to set one up for whoever has none.
+     */
+    recoveryBanner() {
+        const c = chat()
+        if (c.recoveryKey) {
+            return (
+                <div class="chat-reminder chat-recovery" role="status">
+                    {Icon('key')}
+                    <span>
+                        Your recovery key: <code class="chat-recovery-key">{c.recoveryKey}</code>
+                        <br />
+                        Keep it in a password manager or on paper. With it, a new phone or browser brings back your chats.
+                        Lose it and every device, and nobody can bring them back, not even this server.
+                    </span>
+                    <button class="chat-mcard-btn is-primary" onclick={() => (c.recoveryKey = null)} type="button">
+                        I've kept it
+                    </button>
+                </div>
+            )
+        }
+        if (c.restored) {
+            const {chats, messages} = c.restored
+            return (
+                <div class="chat-reminder" role="status">
+                    {Icon('refresh')}
+                    <span>
+                        Brought back {messages} {messages === 1 ? 'message' : 'messages'} in {chats} {chats === 1 ? 'chat' : 'chats'} from
+                        your backup. A chat you are not back in yet opens as soon as somebody in it is online.
+                    </span>
+                    <button aria-label="Dismiss" class="chat-mcard-btn" onclick={() => (c.restored = null)} title="Dismiss" type="button">
+                        {Icon('close')}
+                    </button>
+                </div>
+            )
+        }
+        if (c.recovery === 'locked') {
+            const restore = () => {
+                c.notice = null
+                c.restore(this.recoveryInput)
+                this.recoveryInput = ''
+            }
+            return (
+                <div class="chat-reminder chat-recovery" role="status">
+                    {Icon('key')}
+                    <span>
+                        Your chats have a backup. Enter your recovery key to bring back what was said before this device.
+                        <FieldText label="Recovery key" model={bind(this, 'recoveryInput')} placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" />
+                    </span>
+                    <button class="chat-mcard-btn is-primary" disabled={!this.recoveryInput.trim()} onclick={restore} type="button">
+                        Bring back
+                    </button>
+                </div>
+            )
+        }
+        if (c.recovery === 'none' && !this.recoveryLater && c.chats.length > 0) {
+            const later = () => {
+                this.recoveryLater = true
+                localStorage.setItem(RECOVERY_LATER_KEY, '1')
+            }
+            return (
+                <div class="chat-reminder" role="status">
+                    {Icon('key')}
+                    <span>Lose this device and you lose these chats. A recovery key keeps a backup that only you can open.</span>
+                    <button class="chat-mcard-btn is-primary" onclick={() => c.setUpRecovery()} type="button">
+                        Set up
+                    </button>
+                    <button class="chat-mcard-btn" onclick={later} type="button">
+                        Not now
+                    </button>
+                </div>
+            )
+        }
+        return null
+    }
+
     onupdate() {
         // Signed in on this page since the last draw: start the chat too.
         if ($s.signup.token && chat().status === 'signed_out') chat().signIn({token: $s.signup.token})
@@ -1238,6 +1324,7 @@ export class Chat extends MithrilComponent {
                 <main class="chat-main">
                     {inCall && this.callBar()}
                     {this.reminderBanner()}
+                    {this.recoveryBanner()}
                     {pane.kind === 'chat' && this.channelView(pane.channel)}
                     {pane.kind === 'calendar' && Calendar(this.calendarCtx())}
                     {pane.kind === 'notices' && Notices(this.postsCtx(), (community, post) => {
@@ -3127,6 +3214,8 @@ export class Chat extends MithrilComponent {
                 </div>
                 {topic?.topic.archived
                     ? <p class="chat-empty">This topic is archived: its history stays, and it takes no new messages.</p>
+                    : sum?.waiting || (topic && !topic.topic.joined)
+                    ? <p class="chat-empty">From your backup. You can write here again as soon as somebody in this chat is online to add this device.</p>
                     : this.composer(channel, null, topic ? `Message # ${topic.topic.name}` : `Message ${title}`)}
             </>
         )
@@ -3550,19 +3639,24 @@ export class Chat extends MithrilComponent {
                     {Tabs(id, community.topics.length)}
                     {tabOf(id) === 'posts' ? Posts(community, me ?? '', this.postsCtx()) : <>
                     <p class="chat-hint">Members only, end-to-end encrypted. Never on the fediverse.</p>
-                    {community.topics.map((t) => (
+                    {community.topics.map((t) => {
+                        // Brought back from the backup: readable before this device is added.
+                        const readable = t.joined || (c.histories.get(t.channel)?.length ?? 0) > 0
+                        return (
                         <div class="chat-topic-row" key={t.channel}>
                             <button
                                 class="chat-card"
-                                disabled={!t.joined}
-                                onclick={() => t.joined && this.open(t.channel)}
+                                disabled={!readable}
+                                onclick={() => readable && this.open(t.channel)}
                                 type="button"
                             >
                             <span class="chat-hash is-big">#</span>
                             <span class="chat-card-text">
                                 <b>{t.name}</b>
                                 <span class="chat-sub">
-                                    {t.archived ? 'Archived: its history stays, nothing new' : t.joined ? 'Open' : 'Being added…'}
+                                    {t.archived
+                                        ? 'Archived: its history stays, nothing new'
+                                        : t.joined ? 'Open' : readable ? 'From your backup · being added…' : 'Being added…'}
                                 </span>
                             </span>
                             </button>
@@ -3576,7 +3670,8 @@ export class Chat extends MithrilComponent {
                                 </Button>
                             )}
                         </div>
-                    ))}
+                        )
+                    })}
                     {(mod || settings.members_start_topics) && (
                         <form
                             class="chat-inline"
@@ -3727,7 +3822,9 @@ export class Chat extends MithrilComponent {
                 toldShared = true
                 out.push(
                     <div class="chat-day" key="shared">
-                        Earlier messages, shared by {shown(msg.sharedBy, me)} when you joined
+                        {msg.sharedBy === me
+                            ? 'Earlier messages, from your backup'
+                            : <>Earlier messages, shared by {shown(msg.sharedBy, me)} when you joined</>}
                     </div>,
                 )
             }

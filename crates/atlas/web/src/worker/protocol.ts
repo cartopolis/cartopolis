@@ -159,6 +159,8 @@ export type ChatEvent =
         kind: 'shared_history'
         picture: {hash: string; height: number; key: string; nonce: string; width: number}
     }
+    /** Not the engine's: a backup opened with the recovery key was put in front. */
+    | {chats: number; kind: 'restored'; messages: number}
     /** Not the engine's: the connection reporting on itself. */
     | {kind: 'disconnected'}
     | {kind: 'error'; message: string}
@@ -178,6 +180,8 @@ export interface ChatSummary {
     lastAtMs: number
     /** The last message, for the list's preview line. */
     preview: string
+    /** Brought back from the chat backup, and this device is not in it yet. */
+    waiting?: boolean
 }
 
 /** Page → worker. */
@@ -238,6 +242,17 @@ export type Command =
     | {channel: string; type: 'open'}
     /** Send every chat's history, read or not (the calendar gathers plans from all of them). */
     | {type: 'histories'}
+    /** Make a recovery key and start keeping the backup it opens. */
+    | {type: 'recovery_setup'}
+    /** Open the backup with a recovery key the person typed. */
+    | {key: string; type: 'recovery_restore'}
+
+/**
+ * Where this account's chat backup stands, as this device sees it:
+ * not known yet, none kept, one kept that this device has no key for, or
+ * this device keeps it up to date.
+ */
+export type Recovery = 'locked' | 'none' | 'on' | 'unknown'
 
 /** Worker → page. */
 export type Update =
@@ -253,6 +268,9 @@ export type Update =
         directory: CommunityListing[]
         /** Which contacts are signed in, by full address; one who hides it is absent. */
         online: Record<string, boolean>
+        recovery: Recovery
     }
     | {channel: string; messages: Message[]; type: 'history'}
+    /** A recovery key just made, for the page that asked: shown once, never again. */
+    | {key: string; type: 'recovery_key'}
     | {id: number; keys: {epoch: number; index: number; key: string} | null; type: 'call_keys'}

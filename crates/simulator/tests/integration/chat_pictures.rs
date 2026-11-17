@@ -261,3 +261,68 @@ async fn a_person_sets_their_picture_and_another_reads_it_by_name() {
     let (_, body) = get(people("alice"), Some(bob)).await;
     assert!(read(body)["pictures"]["alice"].is_null());
 }
+
+/// A chat backup is a picture its owner names: a new device of theirs finds it
+/// by asking, nobody else is told, and the one it replaces leaves the store.
+#[tokio::test]
+async fn a_chat_backup_is_found_by_its_owner_only_and_replaces_the_last() {
+    let (s, _dir) = server().await;
+    let http = format!("http://{}", s.http_addr.unwrap());
+    let (_a, alice) = token(&s, "alice").await;
+    let (_b, bob) = token(&s, "bob").await;
+    let backup = |token: String| get(format!("{http}/api/pictures/backup"), Some(token));
+    let read = |(status, bytes): (u16, Vec<u8>)| {
+        assert_eq!(status, 200);
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["backup"].clone()
+    };
+    assert_eq!(read(backup(alice.clone()).await), serde_json::Value::Null);
+
+    // Naming something not in the store is refused.
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/backup"),
+        Some(alice.clone()),
+        serde_json::json!({"backup": "0".repeat(64)}),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let (_, first) = post(
+        format!("{http}/api/pictures"),
+        Some(alice.clone()),
+        vec![1; 300],
+    )
+    .await;
+    let first = first["hash"].as_str().unwrap().to_string();
+    let (status, _) = put_json(
+        format!("{http}/api/pictures/backup"),
+        Some(alice.clone()),
+        serde_json::json!({ "backup": first }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(read(backup(alice.clone()).await), first.as_str());
+    assert_eq!(
+        read(backup(bob.clone()).await),
+        serde_json::Value::Null,
+        "only its owner is told"
+    );
+
+    let (_, second) = post(
+        format!("{http}/api/pictures"),
+        Some(alice.clone()),
+        vec![2; 300],
+    )
+    .await;
+    let second = second["hash"].as_str().unwrap().to_string();
+    put_json(
+        format!("{http}/api/pictures/backup"),
+        Some(alice.clone()),
+        serde_json::json!({ "backup": second }),
+    )
+    .await;
+    assert_eq!(read(backup(alice.clone()).await), second.as_str());
+    let (status, _) = get(format!("{http}/api/pictures/{first}"), Some(alice.clone())).await;
+    assert_eq!(status, 404, "the backup it replaced is gone");
+    let (status, _) = get(format!("{http}/api/pictures/backup"), None).await;
+    assert_eq!(status, 401);
+}

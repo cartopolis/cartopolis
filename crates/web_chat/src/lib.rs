@@ -132,14 +132,11 @@ impl PackedHistory {
     }
 }
 
-/// Seal a chat's history for somebody just added (`history_wanted`). `items`
-/// is a JSON array of `{seq, from, body, sent_at_ms, parent, point, picture}`,
-/// oldest first; the newest `cartopolis_chat::MAX_HISTORY` are kept.
-#[wasm_bindgen]
-pub fn pack_history(items: &str) -> Result<PackedHistory, Error> {
-    let list: Vec<Value> = serde_json::from_str(items).map_err(js_err)?;
+/// History items from the JSON array the worker keeps them as:
+/// `{seq, from, body, sent_at_ms, parent, point, picture}`, oldest first.
+fn items_of(list: &[Value]) -> Result<Vec<HistoryItem>, Error> {
     let mut out = Vec::new();
-    for v in &list {
+    for v in list {
         out.push(HistoryItem {
             seq: v.get("seq").and_then(Value::as_u64).unwrap_or(0),
             from: v
@@ -161,7 +158,36 @@ pub fn pack_history(items: &str) -> Result<PackedHistory, Error> {
             },
         });
     }
-    let (sealed, count) = cartopolis_chat::pack_history(&out).map_err(js_err)?;
+    Ok(out)
+}
+
+/// The same JSON array [`items_of`] reads.
+fn items_json(items: Vec<HistoryItem>) -> Value {
+    Value::Array(
+        items
+            .into_iter()
+            .map(|i| {
+                json!({
+                    "seq": i.seq,
+                    "from": i.from,
+                    "body": i.body,
+                    "sent_at_ms": i.sent_at_ms,
+                    "parent": i.parent,
+                    "point": i.point,
+                    "picture": i.picture.as_ref().map(picture_json),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Seal a chat's history for somebody just added (`history_wanted`). `items`
+/// is a JSON array of `{seq, from, body, sent_at_ms, parent, point, picture}`,
+/// oldest first; the newest `cartopolis_chat::MAX_HISTORY` are kept.
+#[wasm_bindgen]
+pub fn pack_history(items: &str) -> Result<PackedHistory, Error> {
+    let list: Vec<Value> = serde_json::from_str(items).map_err(js_err)?;
+    let (sealed, count) = cartopolis_chat::pack_history(&items_of(&list)?).map_err(js_err)?;
     Ok(PackedHistory {
         key: hex(&sealed.key),
         nonce: hex(&sealed.nonce),
@@ -182,19 +208,52 @@ pub fn open_history(sealed: &[u8], hash: &str, key: &str, nonce: &str) -> Result
         height: 0,
     };
     let items = cartopolis_chat::open_history(sealed, &picture).map_err(js_err)?;
-    let list: Vec<Value> = items
+    Ok(items_json(items).to_string())
+}
+
+/// A new recovery key, as the person is shown it
+/// (`cartopolis_chat::backup`).
+#[wasm_bindgen]
+pub fn new_recovery_key() -> Result<String, Error> {
+    cartopolis_chat::backup::new_recovery_key().map_err(js_err)
+}
+
+/// Whether `text` reads as a recovery key; the reason if not.
+#[wasm_bindgen]
+pub fn check_recovery_key(text: &str) -> Option<String> {
+    cartopolis_chat::backup::parse_recovery_key(text).err()
+}
+
+/// Seal every chat for the backup. `chats` is a JSON array of
+/// `{channel, label, group, items}`, `items` as [`pack_history`] takes them.
+#[wasm_bindgen]
+pub fn pack_backup(recovery_key: &str, chats: &str) -> Result<Vec<u8>, Error> {
+    let list: Vec<Value> = serde_json::from_str(chats).map_err(js_err)?;
+    let mut out = Vec::new();
+    for c in &list {
+        let text = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let items = c
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        out.push(cartopolis_chat::backup::BackupChat {
+            channel: text("channel"),
+            label: text("label"),
+            group: c.get("group").and_then(Value::as_bool).unwrap_or(false),
+            items: items_of(&items)?,
+        });
+    }
+    cartopolis_chat::backup::seal_backup(recovery_key, &out).map_err(js_err)
+}
+
+/// Open a backup, as the JSON array [`pack_backup`] takes.
+#[wasm_bindgen]
+pub fn open_backup(recovery_key: &str, sealed: &[u8]) -> Result<String, Error> {
+    let chats = cartopolis_chat::backup::open_backup(recovery_key, sealed).map_err(js_err)?;
+    let list: Vec<Value> = chats
         .into_iter()
-        .map(|i| {
-            json!({
-                "seq": i.seq,
-                "from": i.from,
-                "body": i.body,
-                "sent_at_ms": i.sent_at_ms,
-                "parent": i.parent,
-                "point": i.point,
-                "picture": i.picture.as_ref().map(picture_json),
-            })
-        })
+        .map(|c| json!({"channel": c.channel, "label": c.label, "group": c.group, "items": items_json(c.items)}))
         .collect();
     Ok(Value::Array(list).to_string())
 }

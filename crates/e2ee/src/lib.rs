@@ -296,6 +296,57 @@ pub fn open_attachment(sealed: &[u8], key: &[u8; 32], nonce: &[u8; 12]) -> Resul
         .map_err(|e| Error::Decode(format!("attachment does not open: {e:?}")))
 }
 
+/// `N` bytes from the same random source the keys come from.
+pub fn random_bytes<const N: usize>() -> Result<[u8; N], Error> {
+    OpenMlsRustCrypto::default()
+        .rand()
+        .random_array()
+        .map_err(mls)
+}
+
+/// The key a person's chat backup is sealed under, from the secret their
+/// recovery key spells. HKDF-SHA256, not a slow password hash: the secret is
+/// random and long enough that guessing it is hopeless however fast each
+/// guess is, which a chosen password would not be.
+pub fn backup_key(secret: &[u8]) -> Result<[u8; 32], Error> {
+    let provider = OpenMlsRustCrypto::default();
+    let crypto = provider.crypto();
+    let prk = crypto
+        .hkdf_extract(HashType::Sha2_256, b"cartopolis recovery key", secret)
+        .map_err(mls)?;
+    let okm = crypto
+        .hkdf_expand(HashType::Sha2_256, prk.as_slice(), b"chat backup v1", 32)
+        .map_err(mls)?;
+    okm.as_slice()
+        .try_into()
+        .map_err(|_| Error::Decode("a short backup key".into()))
+}
+
+/// Seal `plain` under a key that is used again (a backup, re-sealed each time
+/// it changes): a fresh random nonce each time, kept in front of the
+/// ciphertext, since one key with a repeated nonce would give it away.
+pub fn seal_with_key(key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, Error> {
+    let nonce: [u8; 12] = random_bytes()?;
+    let sealed = OpenMlsRustCrypto::default()
+        .crypto()
+        .aead_encrypt(AeadType::ChaCha20Poly1305, key, plain, &nonce, &[])
+        .map_err(mls)?;
+    let mut out = nonce.to_vec();
+    out.extend(sealed);
+    Ok(out)
+}
+
+/// Open what [`seal_with_key`] sealed. Fails if the key is not the one.
+pub fn open_with_key(key: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, Error> {
+    let (nonce, body) = sealed
+        .split_at_checked(12)
+        .ok_or_else(|| Error::Decode("too short to be sealed".into()))?;
+    OpenMlsRustCrypto::default()
+        .crypto()
+        .aead_decrypt(AeadType::ChaCha20Poly1305, key, body, nonce, &[])
+        .map_err(|e| Error::Decode(format!("does not open with that key: {e:?}")))
+}
+
 impl Payload {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {

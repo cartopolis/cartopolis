@@ -88,11 +88,14 @@ export class Browser {
 
     constructor(readonly name: string) {}
 
-    async launch(url: string): Promise<void> {
+    /** Its user-data directory: launch another with it to reopen the same browser. */
+    profile = ''
+
+    async launch(url: string, profile?: string): Promise<void> {
         const port = freePort()
-        const profile = mkdtempSync(path.join(tmpdir(), `chat-${this.name}-`))
+        this.profile = profile ?? mkdtempSync(path.join(tmpdir(), `chat-${this.name}-`))
         procs.push(Bun.spawn([chromium, '--headless=new', '--no-sandbox', '--disable-gpu',
-            `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--window-size=1400,860',
+            `--remote-debugging-port=${port}`, `--user-data-dir=${this.profile}`, '--window-size=1400,860',
             // A camera and microphone that need no hardware and no permission prompt.
             '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
             'about:blank'], {stderr: 'ignore', stdout: 'ignore'}))
