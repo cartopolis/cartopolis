@@ -95,6 +95,10 @@ const AVATAR_TAG: u128 = 1 << 127;
 /// metres: `f32` keeps millimetres well beyond it.
 const REORIGIN_M: f32 = 4_000.0;
 
+/// The furthest an agent moves in one frame by driving, metres; further is a
+/// teleport (`place`). A car at 30 m/s covers 3 m in a tenth of a second.
+const TELEPORT_M: f32 = 3.0;
+
 /// How fast a knocked body loses its speed, per second: a car skids to a
 /// stop in a couple of seconds, a person stumbles to one sooner.
 const VEHICLE_DAMPING: f32 = 1.4;
@@ -271,9 +275,14 @@ impl TrafficPhysics {
             return;
         };
         let pose = Pose::from_parts(rv(local), rq(yaw(facing)));
-        if !rb.is_enabled() {
+        let jumped = (rb.translation() - rv(local)).length() > TELEPORT_M;
+        if !rb.is_enabled() || jumped {
+            // Put there, not driven there: a kinematic body moved to its
+            // next pose sweeps everything between, and an agent recycled
+            // across the ring would collide with half the town on the way.
             rb.set_enabled(true);
             rb.set_position(pose, true);
+            rb.set_linvel(RVec::ZERO, false);
         } else if rb.is_kinematic() {
             rb.set_next_kinematic_position(pose);
         }

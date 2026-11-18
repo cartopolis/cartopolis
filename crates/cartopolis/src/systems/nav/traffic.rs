@@ -1107,7 +1107,15 @@ pub struct Car {
     /// Seconds it has been held back by somebody it gave way to at a
     /// crossing (`give_way_to`); past [`CROSSING_PATIENCE_S`] it goes.
     waited: f32,
+    /// Seconds since it was put on the road. A body put down on top of
+    /// another has not collided with it ([`SETTLE_IN_S`]).
+    driven: f32,
 }
+
+/// How long a newly placed agent cannot collide: placement keeps clear of
+/// its own kind on its own line only, and one dropped across another's
+/// path drives out of it rather than crashing into it.
+const SETTLE_IN_S: f32 = 1.0;
 
 /// An agent in a collision (`traffic_physics::TrafficPhysics::knock`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1128,10 +1136,15 @@ const CRASH_HOLD_S: f32 = 3.0;
 const CRASH_RECOVER_S: f32 = 1.5;
 /// The closing speed two bodies must meet at to collide, m/s: below it they
 /// only brush, as a car does a cyclist it is passing too close.
-const CRASH_CLOSING: f32 = 1.2;
+const CRASH_CLOSING: f32 = 2.5;
 /// How long a vehicle gives way at a crossing before it goes anyway: two
 /// that give way to each other would otherwise wait for ever.
 const CROSSING_PATIENCE_S: f32 = 6.0;
+/// The same for the one with the right of way: it goes first.
+const PRIORITY_PATIENCE_S: f32 = 2.0;
+/// How far apart across their way two oncoming bodies must be to pass
+/// rather than meet head on, metres: a little under two car half widths.
+const ONCOMING_BRUSH_M: f32 = 1.2;
 
 /// A walker crossing the street it walks beside, at a zebra or at a light:
 /// it stops at the kerb, faces the road, looks, and walks straight across to
@@ -1324,13 +1337,14 @@ fn safe_to_cross(at: Vec2, vehicles: &[(Vec2, Vec2, f32)], reach: f32) -> bool {
 /// What a vehicle does about the body its sweep ahead ran into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Way {
-    /// Carry on: it has the right of way, or the other will pass clear.
+    /// Carry on: the other will pass clear of it.
     Go,
     /// Stop short of it: somebody on foot, or a vehicle going its way.
     Wait,
-    /// Give way at a crossing, to a vehicle coming from its right — for
-    /// [`CROSSING_PATIENCE_S`] at most.
-    Cross,
+    /// Stop short of a vehicle crossing its path, for a while: `true` when
+    /// this one has the right of way and so loses patience first
+    /// ([`CROSSING_PATIENCE_S`]).
+    Cross(bool),
 }
 
 /// Who gives way when a vehicle of `kind` at `at` going `travel` would run
@@ -1343,9 +1357,12 @@ enum Way {
 ///   for only if it is in this one's lane (within half a metre across):
 ///   on a narrow street two oncoming cars brush past, they do not stop nose
 ///   to nose for ever.
-/// - Paths that cross: **right before left**, the Dutch rule at a junction
-///   with no signs — a vehicle gives way to one coming from its right, and
-///   goes before one from its left. A defiant fatbike gives way to nobody.
+/// - A vehicle across its path is waited for whoever has the right of way:
+///   nobody drives into a car already in the junction. **Right before
+///   left**, the Dutch rule where there are no signs, decides who goes first
+///   when two wait for each other: the one with the other on its left (its
+///   right of way) runs out of patience sooner. A defiant fatbike gives way
+///   to nobody.
 fn gives_way(
     kind: AgentKind,
     defiant: bool,
@@ -1379,11 +1396,7 @@ fn gives_way(
     if defiant {
         return Way::Go;
     }
-    if rel.dot(right_of(travel)) > 0.0 {
-        Way::Cross
-    } else {
-        Way::Go
-    }
+    Way::Cross(rel.dot(right_of(travel)) <= 0.0)
 }
 
 /// The fastest a vehicle may go to stop [`LOOK_AHEAD_GAP_M`] short of a body
@@ -1396,9 +1409,12 @@ fn stop_within(gap: f32) -> f32 {
 /// and the most it sweeps, metres: a straight sweep runs off the road at a
 /// bend, so it is kept short of where that would find the pavement.
 const LOOK_AHEAD_MARGIN_M: f32 = 3.0;
-const LOOK_AHEAD_MAX_M: f32 = 20.0;
+const LOOK_AHEAD_MAX_M: f32 = 35.0;
 /// The room a vehicle leaves before whoever it stops for, metres.
 const LOOK_AHEAD_GAP_M: f32 = 1.0;
+/// The least room a vehicle keeps to whoever it stops for, however late it
+/// saw them: its step is cut short there.
+const LOOK_AHEAD_CLEAR_M: f32 = 0.2;
 
 /// How fast a car moves over to pass a cyclist, and back, m/s sideways.
 const CAR_SWERVE_RATE: f32 = 1.0;
@@ -1621,6 +1637,7 @@ pub fn setup_traffic(
             body: None,
             crash: None,
             waited: 0.0,
+            driven: 0.0,
         }
     };
 
@@ -2581,6 +2598,7 @@ pub fn drive_traffic(
             .body
             .get_or_insert_with(|| physics.agent_body(entity.to_bits(), kind));
         let knocked = car.crash.is_some_and(|c| !c.recovering);
+        car.driven += time.delta_secs();
         if knocked {
             car.speed = 0.0;
         }
@@ -2700,8 +2718,14 @@ pub fn drive_traffic(
                         p.y,
                     );
                     let mut crossing = false;
-                    if let Some((gap, tag)) =
-                        physics.look_ahead(handle, kind, feet, travel, ahead_m)
+                    // Through a junction, toward where the turn comes out:
+                    // straight along the curve's tangent it sweeps the
+                    // corner and misses whoever waits round it.
+                    let sweep = car
+                        .turn
+                        .and_then(|t| (t.to + t.to_dir * 4.0 - p).try_normalize())
+                        .unwrap_or(travel);
+                    if let Some((gap, tag)) = physics.look_ahead(handle, kind, feet, sweep, ahead_m)
                     {
                         let other = if TrafficPhysics::is_avatar(tag) {
                             Some(None)
@@ -2710,17 +2734,32 @@ pub fn drive_traffic(
                                 .map(|&(k, at, heading)| Some((k, at, heading)))
                         };
                         if let Some(other) = other {
-                            match gives_way(kind, car.defiant, p, travel, other) {
-                                Way::Go => {}
-                                Way::Wait => {
-                                    want = want.min(stop_within(gap));
-                                }
-                                Way::Cross => {
+                            let stop = match gives_way(kind, car.defiant, p, travel, other) {
+                                Way::Go => false,
+                                Way::Wait => true,
+                                Way::Cross(first) => {
                                     crossing = true;
-                                    if car.waited < CROSSING_PATIENCE_S {
-                                        want = want.min(stop_within(gap));
-                                    }
+                                    let patience = if first {
+                                        PRIORITY_PATIENCE_S
+                                    } else {
+                                        CROSSING_PATIENCE_S
+                                    };
+                                    car.waited < patience
                                 }
+                            };
+                            if stop {
+                                want = want.min(stop_within(gap));
+                                // Seen late — it pulled out, or came round a
+                                // bend — it brakes as hard as it must, and
+                                // never drives on into it: a collision is the
+                                // other one moving into its way, not this one
+                                // failing to stop.
+                                if car.speed * car.speed / (2.0 * give_way::YIELD_BRAKE)
+                                    > gap - LOOK_AHEAD_GAP_M
+                                {
+                                    hard_brake = true;
+                                }
+                                room = room.min((gap - LOOK_AHEAD_CLEAR_M).max(0.0));
                             }
                         }
                     }
@@ -2952,6 +2991,7 @@ pub fn drive_traffic(
                     car.last_cross = None;
                     car.foot_down = 0.0;
                     car.waited = 0.0;
+                    car.driven = 0.0;
                     if car.crash.take().is_some() {
                         physics.settle(handle);
                     }
@@ -3368,12 +3408,26 @@ pub fn collide_traffic(
                 car.heading * car.speed,
                 BodyKind::Agent(kind),
                 car.crash.is_some(),
+                car.driven < SETTLE_IN_S,
+                car.body.and_then(|h| physics.pose(h)).map(|p| p.0),
             ),
-            None => (Vec2::ZERO, BodyKind::Avatar, false),
+            None => (Vec2::ZERO, BodyKind::Avatar, false, false, None),
         };
         let (a, b) = (state(ea), state(eb));
-        if a.1.on_foot() && b.1.on_foot() {
+        // Two on foot only bump; one just put down, or still in a collision
+        // or getting going after one, is not hit again.
+        if (a.1.on_foot() && b.1.on_foot()) || a.2 || b.2 || a.3 || b.3 {
             continue;
+        }
+        // Two going opposite ways and more than [`ONCOMING_BRUSH_M`] apart
+        // across their way pass each other: on a narrow street their boxes
+        // graze at the corners, which is not a head-on collision.
+        if let (Some(pa), Some(pb), Some(dir)) = (a.4, b.4, a.0.try_normalize()) {
+            let oncoming = b.0.try_normalize().is_some_and(|d| d.dot(dir) < -0.7);
+            let rel = pb - pa;
+            if oncoming && (rel.x * dir.y - rel.y * dir.x).abs() > ONCOMING_BRUSH_M {
+                continue;
+            }
         }
         let rel = a.0 - b.0;
         let closing = if t.normal == Vec2::ZERO {
@@ -3385,10 +3439,13 @@ pub fn collide_traffic(
             continue;
         }
         info!(
-            "traffic collision: {:?} and {:?} at {closing:.1} m/s",
-            a.1, b.1
+            "traffic collision: {:?} and {:?} at {closing:.1} m/s (headings {:.2}, normal across the first {:.2})",
+            a.1,
+            b.1,
+            a.0.normalize_or_zero().dot(b.0.normalize_or_zero()),
+            t.normal.dot(a.0.normalize_or_zero().perp()).abs()
         );
-        for (e, (velocity, kind, already)) in [(ea, a), (eb, b)] {
+        for (e, (velocity, kind, already, _, _)) in [(ea, a), (eb, b)] {
             let Some(e) = e else { continue };
             if already {
                 continue;
@@ -4702,6 +4759,7 @@ mod tests {
             body: None,
             crash: None,
             waited: 0.0,
+            driven: 0.0,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -4737,6 +4795,7 @@ mod tests {
             body: None,
             crash: None,
             waited: 0.0,
+            driven: 0.0,
         }
     }
 
@@ -4959,6 +5018,7 @@ mod crossing_tests {
             body: None,
             crash: None,
             waited: 0.0,
+            driven: 0.0,
         }
     }
 
@@ -5131,7 +5191,8 @@ mod way_tests {
 
     const NORTH: Vec2 = Vec2::new(0.0, -1.0);
 
-    /// Right before left at a crossing; people are waited for, except by a
+    /// A vehicle across the way is waited for, the one from the left (right
+    /// before left) with less patience; people are waited for, except by a
     /// fatbike; the one ahead is followed; an oncoming one in the next lane
     /// is passed.
     #[test]
@@ -5141,8 +5202,14 @@ mod way_tests {
         // Going north, `right_of` is east (+x).
         let from_right = Some((car, Vec2::new(8.0, -8.0), Vec2::new(-1.0, 0.0)));
         let from_left = Some((car, Vec2::new(-8.0, -8.0), Vec2::new(1.0, 0.0)));
-        assert_eq!(gives_way(car, false, at, NORTH, from_right), Way::Cross);
-        assert_eq!(gives_way(car, false, at, NORTH, from_left), Way::Go);
+        assert_eq!(
+            gives_way(car, false, at, NORTH, from_right),
+            Way::Cross(false)
+        );
+        assert_eq!(
+            gives_way(car, false, at, NORTH, from_left),
+            Way::Cross(true)
+        );
         assert_eq!(
             gives_way(AgentKind::Fatbike, true, at, NORTH, from_right),
             Way::Go
