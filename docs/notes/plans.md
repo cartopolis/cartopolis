@@ -1,7 +1,7 @@
 ---
 topic: plans
-triggers: [plans.rs, plans_watch, FollowPlans, PlansFollow, plans_follow, crates/atlas/src/plans.rs, systems::plans, "/plans/groningen.json", plans_refresh, CARTO_PLANS_URL, bekendmakingen, Gemeenteblad, gemeenteraad, raadsinformatie]
-updated: 2026-11-17
+triggers: [plans.rs, plans_watch, UITVOERINGPROGRAMMA, maintenance programme, WorkKind, FollowPlans, PlansFollow, plans_follow, crates/atlas/src/plans.rs, systems::plans, "/plans/groningen.json", plans_refresh, CARTO_PLANS_URL, bekendmakingen, Gemeenteblad, gemeenteraad, raadsinformatie]
+updated: 2026-11-18
 ---
 
 # Plans: notices and council business on the map
@@ -94,6 +94,38 @@ Not done: the browser is never woken for a plan (the web page follows no
 places, and `sw.js` shows any word but "message" as a call); the notice's own
 card has no Follow button (v1 screen 2), only *Plans here*; and a followed
 place has no name — the chip names the notice's place instead.
+
+## Works: the maintenance programme (built 2026-11-18)
+
+The feed's `works` is Gemeente Groningen's maintenance programme for the
+year: five WFS layers on the city's GeoServer, `prog-sbh:UITVOERINGPROGRAMMA_*`
+— roads 568, street-light cables 99, trees 36, sewers 22, bridges and quays
+4, all for 2026 when read. A feature carries **only** a measure in Dutch, a
+year and the programme's name: no dates, closures, detours or contacts, and
+the card says so. The design is the mockups' v3.
+
+- **Read like the registers** (`municipal-registers.md`): `srsName=EPSG:28992`
+  or the coordinates come back in Web Mercator, and a page short of its own
+  `numberMatched` fails. The columns are `MAATREGEL`/`JAAR` on four layers and
+  lowercase on the bridges layer. A failed read keeps the last copy
+  (`plans/works.json`) and never holds the notices back.
+- **Named by street**: a gazetteer name in the measure ("Relinen Korreweg
+  fase 3") first, else the street most of its sampled vertices' nearest
+  addresses are on (atlas's geocoder, `Searcher::street_near`). Linked to the
+  council by those names, as notices are.
+- **A work's id is `{programme}-{objectid}`**, `riolering_mjp_2026-7`. Next
+  year's programme is new ids, which is what lets following report it. If the
+  city renumbers a year's layer, every follower near a renumbered work is
+  woken once; not seen yet.
+- **Near is any part of it**, not its pin (`Work::distance_m`): a street's
+  repaving is a kilometre long. *Plans here* and following both use it.
+- **The server's first read of works wakes nobody** (the `works:read` row in
+  `plans_seen`); notices had been read for weeks before works existed, so the
+  notices' own first-read rule would have woken every follower near any of
+  729 works. The app does show existing works near a followed place once, as
+  news, on the first feed that has them.
+- The map shows works of this year and later; a year's programme leaves the
+  map on 1 January whether or not the next is out.
 
 ## Not built yet
 

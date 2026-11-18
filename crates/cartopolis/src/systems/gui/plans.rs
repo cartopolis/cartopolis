@@ -14,10 +14,13 @@
 //! findable from the street and from a few kilometres up, and so it is a dot
 //! of fixed screen size over the map. An orange dot's response period still
 //! runs; a grey one is history. A council item is a blue square on the place
-//! its title names.
+//! its title names. A work in the city's maintenance programme is a yellow
+//! square at its pin over the outline of where it happens — solid on the
+//! street, dashed under it, rings on its trees (the design's v3).
 //!
 //! **What is drawn** is chosen in the tile's ⋯: the kinds of notice, whether
-//! the council is shown, and how far back ([`Period`]). With the layer off
+//! the council and the works are shown, and how far back the notices go
+//! ([`Period`]; works are per year). With the layer off
 //! nothing is fetched or drawn, and the map ring's *Plans here* still answers
 //! for one spot — it loads the feed for that.
 //!
@@ -33,8 +36,8 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::GridCell;
 use cartopolis_core::plans::{
-    civil_date, days_between, metres, near_followed, notice_url, Notice, NoticeKind, PlansFeed,
-    NEAR_M as HERE_M,
+    civil_date, days_between, metres, near_followed, notice_url, work_near_followed, Notice,
+    NoticeKind, PlansFeed, Work, WorkKind, NEAR_M as HERE_M,
 };
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -80,6 +83,13 @@ const COUNCIL_R: f32 = 9.0;
 const ALSO_HERE_M: f64 = 40.0;
 /// Width of the card: fixed, as the place card's is.
 const CARD_WIDTH: f32 = 330.0;
+/// The works' colour: not something to respond to, so not the notices'
+/// orange, but something that will happen in the street (the design's v3).
+pub const WORK: egui::Color32 = egui::Color32::from_rgb(0xF5, 0xC5, 0x18);
+/// A work's square marker's half-size, points.
+const WORK_R: f32 = 9.0;
+/// At most this many works a frame.
+const MAX_WORKS: usize = 200;
 
 /// How far back the layer looks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -183,10 +193,25 @@ pub struct PlansFollow {
     /// `[lat, lng]`, in the order they were followed.
     #[serde(default)]
     pub places: Vec<[f64; 2]>,
-    /// Notices near a followed place that were there when it was followed or
-    /// have been shown since, by id.
+    /// Notices and works near a followed place that were there when it was
+    /// followed or have been shown since, by id.
     #[serde(default)]
     pub seen: Vec<String>,
+}
+
+/// Every notice and work near `place`, by id.
+fn ids_near(place: [f64; 2], feed: &PlansFeed) -> impl Iterator<Item = String> + '_ {
+    let notices = feed
+        .notices
+        .iter()
+        .filter(move |n| near_followed(place, n))
+        .map(|n| n.id.clone());
+    let works = feed
+        .works
+        .iter()
+        .filter(move |w| work_near_followed(place, w))
+        .map(|w| w.id.clone());
+    notices.chain(works)
 }
 
 /// Most places one device follows; the server keeps as many.
@@ -218,20 +243,21 @@ impl PlansFollow {
         let place = [at.0, at.1];
         self.places.push(place);
         if let Some(feed) = feed {
-            let near = feed.notices.iter().filter(|n| near_followed(place, n));
-            self.seen.extend(near.map(|n| n.id.clone()));
+            self.seen.extend(ids_near(place, feed));
         }
     }
 
-    /// Notices near a followed place not shown yet, newest first: the index
-    /// in the feed and the place it is near.
+    /// Notices and works near a followed place not shown yet — the notices
+    /// newest first, then the works — as the card each opens and the place it
+    /// is near.
     #[must_use]
-    pub fn news(&self, feed: &PlansFeed) -> Vec<(usize, [f64; 2])> {
+    pub fn news(&self, feed: &PlansFeed) -> Vec<(Card, [f64; 2])> {
         if self.places.is_empty() {
             return Vec::new();
         }
         let seen: std::collections::HashSet<&str> = self.seen.iter().map(String::as_str).collect();
-        feed.notices
+        let notices = feed
+            .notices
             .iter()
             .enumerate()
             .filter(|(_, n)| !seen.contains(n.id.as_str()))
@@ -239,18 +265,32 @@ impl PlansFollow {
                 self.places
                     .iter()
                     .find(|p| near_followed(**p, n))
-                    .map(|p| (i, *p))
-            })
-            .collect()
+                    .map(|p| (Card::Notice(i), *p))
+            });
+        let works = feed
+            .works
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| !seen.contains(w.id.as_str()))
+            .filter_map(|(i, w)| {
+                self.places
+                    .iter()
+                    .find(|p| work_near_followed(**p, w))
+                    .map(|p| (Card::Work(i), *p))
+            });
+        notices.chain(works).collect()
     }
 
-    /// Count everything near `place` as shown, and forget shown notices the
-    /// feed no longer holds, so the list does not grow for ever.
+    /// Count everything near `place` as shown, and forget shown notices and
+    /// works the feed no longer holds, so the list does not grow for ever.
     pub fn mark_seen(&mut self, place: [f64; 2], feed: &PlansFeed) {
-        let near = feed.notices.iter().filter(|n| near_followed(place, n));
-        self.seen.extend(near.map(|n| n.id.clone()));
-        let ids: std::collections::HashSet<&str> =
-            feed.notices.iter().map(|n| n.id.as_str()).collect();
+        self.seen.extend(ids_near(place, feed));
+        let ids: std::collections::HashSet<&str> = feed
+            .notices
+            .iter()
+            .map(|n| n.id.as_str())
+            .chain(feed.works.iter().map(|w| w.id.as_str()))
+            .collect();
         self.seen.retain(|id| ids.contains(id.as_str()));
         self.seen.sort();
         self.seen.dedup();
@@ -264,6 +304,8 @@ pub enum Card {
     Notice(usize),
     /// A council item, by its index in the feed.
     Council(usize),
+    /// A work in the maintenance programme, by its index in the feed.
+    Work(usize),
     /// Everything published around a spot.
     Here { lat: f64, lng: f64 },
 }
@@ -282,13 +324,15 @@ pub struct Plans {
     /// business, once the feed is in: `--ui plansnotice`, the one card a
     /// scripted run cannot reach by tapping.
     pub open_nearest: Option<(f64, f64)>,
-    /// Dots drawn last frame, and how many of them still open: the chip.
-    shown: (usize, usize),
+    /// Dots drawn last frame, how many of them still open, and works: the
+    /// chip.
+    shown: (usize, usize, usize),
     /// An agent asked about notices (`mcp::world`): read the feed as if the
     /// layer were on, without drawing it on the person's map.
     pub agent_wants: bool,
-    /// Notices near a followed place not shown yet ([`PlansFollow::news`]).
-    news: Vec<(usize, [f64; 2])>,
+    /// Notices and works near a followed place not shown yet
+    /// ([`PlansFollow::news`]).
+    news: Vec<(Card, [f64; 2])>,
 }
 
 impl Plans {
@@ -390,6 +434,7 @@ pub fn drive_plans(
                 tracing::info!(
                     notices = feed.notices.len(),
                     council = feed.council.len(),
+                    works = feed.works.len(),
                     "plans feed loaded"
                 );
                 plans.feed = Some(Arc::new(feed));
@@ -399,7 +444,10 @@ pub fn drive_plans(
             None => plans.failed_at = Some(Instant::now()),
         }
         // A card pointing into a feed that was replaced points at something else.
-        if matches!(plans.card, Some(Card::Notice(_) | Card::Council(_))) {
+        if matches!(
+            plans.card,
+            Some(Card::Notice(_) | Card::Council(_) | Card::Work(_))
+        ) {
             plans.card = None;
         }
     }
@@ -510,7 +558,7 @@ pub fn render_plans(
     right_panel: Res<crate::resources::RightPanel>,
 ) {
     let mut anchored = WorldAnchored::new(egui.ctx(), "plans");
-    plans.shown = (0, 0);
+    plans.shown = (0, 0, 0);
     if !dl.plans_enabled || driver.active {
         return;
     }
@@ -543,13 +591,39 @@ pub fn render_plans(
     let today = civil_date(now);
     let since = dl.plans_period.since(now);
     let mut tapped: Option<Card> = None;
-    let (mut drawn, mut open) = (0usize, 0usize);
+    let (mut drawn, mut open, mut works) = (0usize, 0usize, 0usize);
     if !high {
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("plans_areas"),
         ));
         let painter = painter.with_clip_rect(map_rect);
+        // The works first, under the notices' dots: this year's and later.
+        if dl.plans_works {
+            for (i, w) in feed.works.iter().enumerate() {
+                if works >= MAX_WORKS {
+                    break;
+                }
+                if !current(w, &today) {
+                    continue;
+                }
+                let Some(pin) = project(w.lat, w.lng) else {
+                    continue;
+                };
+                if !map_rect.contains(pin) {
+                    continue;
+                }
+                works += 1;
+                work_shape(&painter, w, &project);
+                if !crate::systems::place_pins::clear_of_chrome(&ctx, pin) {
+                    continue;
+                }
+                anchored.at(pin);
+                if work_square(&ctx, map_rect, i, pin, w) {
+                    tapped = Some(Card::Work(i));
+                }
+            }
+        }
         // Newest first, as the feed is: when the cap bites, the old go.
         for (i, n) in feed.notices.iter().enumerate() {
             if drawn >= MAX_DOTS {
@@ -613,13 +687,13 @@ pub fn render_plans(
             }
         }
     }
-    plans.shown = (drawn, open);
+    plans.shown = (drawn, open, works);
     if let Some(card) = tapped {
         plans.card = Some(card);
     }
     if right_panel.is(crate::resources::RightPanel::None) {
         let top = crate::systems::dock::reserved_top() + theme::OSD_MARGIN + 52.0;
-        if chip(&ctx, top, drawn, open, high) {
+        if chip(&ctx, top, (drawn, open, works), high) {
             dl.plans_enabled = false;
         }
     }
@@ -717,9 +791,174 @@ fn council_square(
         .clicked()
 }
 
-/// The chip at the top while the layer is on: how many notices are drawn and
-/// how many still open. Its ✕ turns the layer off; whether it was pressed.
-fn chip(ctx: &egui::Context, top: f32, drawn: usize, open: usize, high: bool) -> bool {
+/// Whether a work is planned for this year or later, `today` being
+/// `YYYY-MM-DD`: the programme is per year and leaves the map when its year
+/// has passed.
+fn current(w: &Work, today: &str) -> bool {
+    today
+        .get(..4)
+        .and_then(|y| y.parse::<u16>().ok())
+        .is_none_or(|year| w.year >= year)
+}
+
+/// A work's shape on the map, in the works' colour, styled by where it
+/// happens: solid on the street, dashed under it, rings on its trees.
+fn work_shape(
+    painter: &egui::Painter,
+    w: &Work,
+    project: &impl Fn(f64, f64) -> Option<egui::Pos2>,
+) {
+    let stroke = egui::Stroke::new(2.0, WORK);
+    let path = |pts: &[[f64; 2]], closed: bool| -> Option<Vec<egui::Pos2>> {
+        let mut out: Vec<egui::Pos2> = pts
+            .iter()
+            .map(|p| project(p[0], p[1]))
+            .collect::<Option<_>>()?;
+        if closed && !out.is_empty() {
+            out.push(out[0]);
+        }
+        Some(out)
+    };
+    let draw = |pts: Vec<egui::Pos2>| {
+        if w.kind.underground() {
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 7.0, 4.0));
+        } else {
+            painter.add(egui::Shape::line(pts, stroke));
+        }
+    };
+    for ring in &w.areas {
+        if let Some(pts) = path(ring, true) {
+            draw(pts);
+        }
+    }
+    for line in &w.lines {
+        if let Some(pts) = path(line, false) {
+            draw(pts);
+        }
+    }
+    for p in &w.points {
+        if let Some(at) = project(p[0], p[1]) {
+            painter.circle_stroke(at, 4.0, stroke);
+        }
+    }
+}
+
+/// The glyph a kind of work is marked with.
+fn work_icon(kind: WorkKind) -> &'static str {
+    match kind {
+        WorkKind::Road => icons::ROAD,
+        WorkKind::Sewer => icons::PLUMBING,
+        WorkKind::Trees => icons::GRASS,
+        WorkKind::Lighting | WorkKind::Structure => icons::BUILD,
+    }
+}
+
+/// What a kind of work is called on a card.
+fn work_label(kind: WorkKind) -> &'static str {
+    match kind {
+        WorkKind::Road => "road",
+        WorkKind::Sewer => "sewer",
+        WorkKind::Trees => "trees",
+        WorkKind::Lighting => "street-light cables",
+        WorkKind::Structure => "bridges and quays",
+    }
+}
+
+/// One plain sentence for the programme's commonest measures, by a word in
+/// its Dutch; `None` for one it does not know, which is then shown alone.
+fn gloss(measure: &str) -> Option<&'static str> {
+    let m = measure.to_lowercase();
+    let known: [(&str, &str); 10] = [
+        (
+            "huisaansluiting",
+            "The pipes from the houses to the sewer are replaced.",
+        ),
+        (
+            "relin",
+            "A new lining is pulled through the old pipe, so the street is mostly not dug open.",
+        ),
+        (
+            "hwa",
+            "A separate pipe for rainwater (HWA), so it no longer runs into the sewer.",
+        ),
+        (
+            "wadi",
+            "A wadi: a low green strip that holds rainwater until it soaks away.",
+        ),
+        (
+            "wortelopdruk",
+            "Paving lifted by tree roots is levelled, and the roots given room.",
+        ),
+        (
+            "boomstructuur",
+            "The trees along the street are replaced or added to.",
+        ),
+        (
+            "herstraten",
+            "The bricks or tiles are taken up and laid again on a level bed.",
+        ),
+        ("asfalt", "A new top layer of asphalt."),
+        (
+            "bijdrage project",
+            "The roads programme's share in a larger project here.",
+        ),
+        (
+            "kabel",
+            "The cable that feeds the street lights is replaced.",
+        ),
+    ];
+    known
+        .iter()
+        .find(|(word, _)| m.contains(word))
+        .map(|(_, line)| *line)
+}
+
+/// A work's square marker at its pin; whether it was tapped.
+fn work_square(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    i: usize,
+    at: egui::Pos2,
+    w: &Work,
+) -> bool {
+    let side = 2.0 * WORK_R + 6.0;
+    egui::Area::new(egui::Id::new(("plan_work", i)))
+        .fixed_pos(at)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(map_rect);
+            let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+            let resp = theme::named(ui, resp, &w.measure);
+            let r = if resp.hovered() { WORK_R * 1.2 } else { WORK_R };
+            let rect = egui::Rect::from_center_size(at, egui::vec2(2.0 * r, 2.0 * r));
+            let p = ui.painter();
+            p.rect(
+                rect,
+                egui::CornerRadius::same(5),
+                WORK,
+                egui::Stroke::new(2.0, theme::DARK.ink),
+                egui::StrokeKind::Middle,
+            );
+            p.text(
+                at,
+                egui::Align2::CENTER_CENTER,
+                work_icon(w.kind),
+                egui::FontId::proportional(r * 1.3),
+                theme::DARK.ink,
+            );
+            resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(format!("Works {}: {}", w.year, w.measure))
+        })
+        .inner
+        .clicked()
+}
+
+/// The chip at the top while the layer is on: how many notices are drawn,
+/// how many still open, and how many works. Its ✕ turns the layer off;
+/// whether it was pressed.
+fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool) -> bool {
+    let (drawn, open, works) = counts;
     let mut off = false;
     egui::Area::new(egui::Id::new("plans_chip"))
         .order(egui::Order::Middle)
@@ -756,6 +995,14 @@ fn chip(ctx: &egui::Context, top: f32, drawn: usize, open: usize, high: bool) ->
                                 egui::RichText::new(format!("{open} still open"))
                                     .size(theme::SIZE_SUB)
                                     .color(theme::BRAND),
+                            );
+                        }
+                        if !high && works > 0 {
+                            let what = if works == 1 { "work" } else { "works" };
+                            ui.label(
+                                egui::RichText::new(format!("{works} {what} planned"))
+                                    .size(theme::SIZE_SUB)
+                                    .color(WORK),
                             );
                         }
                         off = crate::systems::chats::circle_button(
@@ -976,6 +1223,9 @@ pub fn render_plans_card(
                                         theme::COUNCIL_LIGHT,
                                     )
                                 }),
+                                (Card::Work(i), Some(f)) => f.works.get(i).map(|w| {
+                                    (format!("Works · {} · {}", work_label(w.kind), w.year), WORK)
+                                }),
                                 (Card::Here { .. }, _) => {
                                     Some(("Plans here".to_string(), theme::p().text_dim))
                                 }
@@ -1003,6 +1253,11 @@ pub fn render_plans_card(
                     }
                     Card::Council(i) => {
                         if let Some(go) = council_body(ui, feed, i, &today) {
+                            next = Some(Some(go));
+                        }
+                    }
+                    Card::Work(i) => {
+                        if let Some(go) = work_body(ui, feed, i, &today) {
                             next = Some(Some(go));
                         }
                     }
@@ -1090,6 +1345,104 @@ fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Op
             }
         }
     }
+    go
+}
+
+/// A row naming a work, with its square; whether it was tapped.
+fn work_row(ui: &mut egui::Ui, w: &Work) -> bool {
+    ui.horizontal(|ui| {
+        let (sq, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
+        ui.painter().rect_filled(
+            egui::Rect::from_center_size(sq.center(), egui::vec2(10.0, 10.0)),
+            3,
+            WORK,
+        );
+        let mut text = format!("{} · {}", w.year, w.measure);
+        if !w.place.is_empty() {
+            text.push_str(&format!(" · {}", w.place));
+        }
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).size(theme::SIZE_SUB))
+                .truncate()
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    })
+    .inner
+}
+
+/// A work: the programme's own words, a plain sentence for the measure, what
+/// the programme does not say, the council business naming its street, and
+/// the other works on that street. The card to go to, if a row was tapped.
+fn work_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Option<Card> {
+    let w = feed.works.get(i)?;
+    let mut go = None;
+    ui.label(
+        egui::RichText::new(format!("“{}”", w.measure))
+            .size(theme::SIZE_BODY)
+            .color(theme::p().cream),
+    );
+    if !w.place.is_empty() {
+        ui.label(
+            egui::RichText::new(&w.place)
+                .size(theme::SIZE_SUB)
+                .color(theme::p().text_dim),
+        );
+    }
+    if let Some(line) = gloss(&w.measure) {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(line)
+                .size(theme::SIZE_SUB)
+                .color(theme::p().text),
+        );
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "Planned for {}. The programme names the year only: no dates, closures or detours.",
+            w.year
+        ))
+        .size(theme::SIZE_SUB)
+        .color(WORK),
+    );
+    if !w.council.is_empty() {
+        section(ui, "In the council · matched by place name");
+        for &c in &w.council {
+            if let Some(item) = feed.council.get(c as usize) {
+                if council_row(ui, item) {
+                    go = Some(Card::Council(c as usize));
+                }
+            }
+        }
+    }
+    if !w.place.is_empty() {
+        let also: Vec<(usize, &Work)> = feed
+            .works
+            .iter()
+            .enumerate()
+            .filter(|(j, o)| *j != i && o.place == w.place && current(o, today))
+            .take(4)
+            .collect();
+        if !also.is_empty() {
+            section(ui, &format!("Also planned on {}", w.place));
+            for (j, o) in also {
+                if work_row(ui, o) {
+                    go = Some(Card::Work(j));
+                }
+            }
+        }
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "Gemeente Groningen · maintenance programme {}",
+            w.year
+        ))
+        .size(theme::SIZE_TINY)
+        .color(theme::p().text_dim),
+    );
     go
 }
 
@@ -1196,7 +1549,7 @@ fn follow_row(
     if followed.is_some() || pressed {
         ui.label(
             egui::RichText::new(format!(
-                "New notices within {HERE_M:.0} m are shown at the top of the map, and wake the phone app when it is closed."
+                "New notices, and works new to the city's programme, within {HERE_M:.0} m are shown at the top of the map, and wake the phone app when it is closed."
             ))
             .size(theme::SIZE_TINY)
             .color(theme::p().text_dim),
@@ -1225,7 +1578,24 @@ pub fn render_plans_news(
         return;
     };
     let (first, place) = plans.news[0];
-    let Some(newest) = feed.notices.get(first) else {
+    let line = match first {
+        Card::Notice(i) => feed.notices.get(i).map(|n| {
+            let mut line = format!("{}: {}", kind_label(n.kind), n.title);
+            if !n.place.is_empty() {
+                line.push_str(&format!(" · {}", n.place));
+            }
+            line
+        }),
+        Card::Work(i) => feed.works.get(i).map(|w| {
+            let mut line = format!("Works {}: {}", w.year, w.measure);
+            if !w.place.is_empty() {
+                line.push_str(&format!(" · {}", w.place));
+            }
+            line
+        }),
+        _ => None,
+    };
+    let Some(line) = line else {
         return;
     };
     let count = plans.news.len();
@@ -1265,10 +1635,6 @@ pub fn render_plans_news(
                                     .size(theme::SIZE_SUB)
                                     .color(theme::p().cream),
                             );
-                            let mut line = format!("{}: {}", kind_label(newest.kind), newest.title);
-                            if !newest.place.is_empty() {
-                                line.push_str(&format!(" · {}", newest.place));
-                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(line)
@@ -1295,7 +1661,7 @@ pub fn render_plans_news(
         store.data.plans_follow.mark_seen(place, &feed);
         store.dirty = true;
         plans.news.retain(|(_, p)| *p != place);
-        plans.card = Some(Card::Notice(first));
+        plans.card = Some(first);
     }
 }
 
@@ -1337,6 +1703,21 @@ fn here_body(
     for (j, n) in near.iter().take(6) {
         if notice_row(ui, n, today) {
             go = Some(Card::Notice(*j));
+        }
+    }
+    let works: Vec<(usize, &Work)> = feed
+        .works
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| current(w, today) && w.distance_m(at) <= HERE_M)
+        .take(4)
+        .collect();
+    if !works.is_empty() {
+        section(ui, "Works planned here");
+        for (j, w) in works {
+            if work_row(ui, w) {
+                go = Some(Card::Work(j));
+            }
         }
     }
     if near.len() > 6 && !dl.plans_enabled {
@@ -1461,13 +1842,35 @@ mod tests {
             .insert(0, notice("gmb-2", zwanestraat.0 + 0.000_36, zwanestraat.1));
         feed.notices.insert(0, notice("gmb-3", 53.2169, 6.5626));
         let news = follow.news(&feed);
-        assert_eq!(news, vec![(1, [zwanestraat.0, zwanestraat.1])]);
+        let place = [zwanestraat.0, zwanestraat.1];
+        assert_eq!(news, vec![(Card::Notice(1), place)]);
+
+        // A work reaching within 100 m is news too, after the notices.
+        feed.works.push(Work {
+            id: "wegen_mjp_2027-1".into(),
+            kind: WorkKind::Road,
+            measure: "Herstraten".into(),
+            year: 2027,
+            place: "Zwanestraat".into(),
+            lat: 53.2200,
+            lng: zwanestraat.1,
+            areas: vec![],
+            lines: vec![vec![
+                [53.2200, zwanestraat.1],
+                [zwanestraat.0 + 0.000_6, zwanestraat.1],
+            ]],
+            points: vec![],
+            council: vec![],
+        });
+        let news = follow.news(&feed);
+        assert_eq!(news, vec![(Card::Notice(1), place), (Card::Work(0), place)]);
 
         // Shown, it is not news any more, and only ids still in the feed are kept.
         follow.seen.push("gmb-gone".into());
         follow.mark_seen(news[0].1, &feed);
         assert!(follow.news(&feed).is_empty());
         assert!(!follow.seen.contains(&"gmb-gone".to_string()));
+        assert!(follow.seen.contains(&"wegen_mjp_2027-1".to_string()));
 
         // Stopping is a second tap.
         follow.toggle(zwanestraat, Some(&feed));

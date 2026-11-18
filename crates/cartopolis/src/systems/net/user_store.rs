@@ -396,6 +396,9 @@ pub struct LayerPrefs {
     /// Whether the council's squares are drawn. On by default, as designed.
     #[serde(default = "yes")]
     pub plans_council: bool,
+    /// Whether the maintenance programme's works are drawn. On by default.
+    #[serde(default = "yes")]
+    pub plans_works: bool,
     /// How far back the layer looks, by `plans::Period::key`; empty is the
     /// default.
     #[serde(default)]

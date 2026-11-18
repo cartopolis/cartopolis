@@ -588,6 +588,8 @@ pub struct DataLayers {
     pub plans_kinds: [bool; crate::systems::plans::KINDS.len()],
     /// Whether the council's squares are drawn.
     pub plans_council: bool,
+    /// Whether the maintenance programme's works are drawn.
+    pub plans_works: bool,
     /// How far back the layer looks.
     pub plans_period: crate::systems::plans::Period,
     /// The Layers panel's open category. View state, not a preference.
@@ -749,6 +751,7 @@ impl DataLayers {
             plans: self.plans_enabled,
             plans_kinds: crate::systems::plans::kinds_to_prefs(&self.plans_kinds),
             plans_council: self.plans_council,
+            plans_works: self.plans_works,
             plans_period: self.plans_period.key().to_string(),
             vehicles,
             overlays: LAYER_DEFS
@@ -851,6 +854,7 @@ impl DataLayers {
         self.plans_enabled = p.plans;
         self.plans_kinds = crate::systems::plans::kinds_from_prefs(&p.plans_kinds);
         self.plans_council = p.plans_council;
+        self.plans_works = p.plans_works;
         self.plans_period = crate::systems::plans::Period::from_key(&p.plans_period);
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
@@ -950,6 +954,7 @@ impl Default for DataLayers {
             plans_enabled: false,
             plans_kinds: crate::systems::plans::default_kinds(),
             plans_council: true,
+            plans_works: true,
             plans_period: crate::systems::plans::Period::default(),
             category: crate::systems::layer_tiles::LayerCategory::default(),
             open_tile: None,
@@ -2823,6 +2828,12 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
                     theme::COUNCIL_LIGHT,
                     "Council",
                 );
+                crate::systems::layer_tiles::swatch_chip(
+                    ui,
+                    &mut dl.plans_works,
+                    crate::systems::plans::WORK,
+                    "Works",
+                );
             });
             ui.add_space(6.0);
             let options: Vec<(Period, &str)> =
@@ -2832,9 +2843,10 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
-                "Orange: you can still respond. Gemeente Groningen's official notices \
-                 and council agendas; council items are placed by the street names \
-                 in their titles.",
+                "Orange: you can still respond. Yellow: works the city plans this \
+                 year. Gemeente Groningen's official notices, council agendas and \
+                 maintenance programme; council items are placed by the street \
+                 names in their titles.",
             )
             .size(theme::SIZE_SUB)
             .color(theme::p().text_dim),
@@ -3054,6 +3066,7 @@ pub fn render_data_layers_panel(
         dl.plans_enabled = fresh.plans_enabled;
         dl.plans_kinds = fresh.plans_kinds;
         dl.plans_council = fresh.plans_council;
+        dl.plans_works = fresh.plans_works;
         dl.plans_period = fresh.plans_period;
     }
     if about {

@@ -1431,13 +1431,46 @@ fn notices(
         .filter(|(d, n)| *d <= radius && (!open_only || n.open_on(&today)))
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let year: u16 = today.get(..4).and_then(|y| y.parse().ok()).unwrap_or(0);
+    let mut works: Vec<(f64, &cartopolis_core::plans::Work)> = feed
+        .works
+        .iter()
+        .filter(|w| w.year >= year)
+        .map(|w| (w.distance_m(at), w))
+        .filter(|(d, _)| *d <= radius)
+        .collect();
+    works.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let work_lines: Vec<String> = works
+        .iter()
+        .take(10)
+        .map(|(d, w)| format!("{} ({}, {d:.0} m): {}", w.place, w.year, w.measure))
+        .collect();
+    let work_data: Vec<Value> = works
+        .iter()
+        .take(20)
+        .map(|(d, w)| {
+            json!({
+                "id": w.id, "year": w.year, "measure": w.measure, "place": w.place,
+                "lat": w.lat, "lng": w.lng, "distance_m": d,
+            })
+        })
+        .collect();
+    let works_text = if works.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n{} works planned within {radius:.0} m (the city's maintenance programme), nearest first:\n{}",
+            works.len(),
+            work_lines.join("\n")
+        )
+    };
     if near.is_empty() {
         return Some(AgentReply::ok(
             format!(
-                "No {}notices within {radius:.0} m.",
+                "No {}notices within {radius:.0} m.{works_text}",
                 if open_only { "open " } else { "" }
             ),
-            json!({"notices": []}),
+            json!({"notices": [], "works": work_data}),
         ));
     }
     let lines: Vec<String> = near
@@ -1470,12 +1503,12 @@ fn notices(
         .collect();
     Some(AgentReply::ok(
         format!(
-            "{} {}notices within {radius:.0} m, nearest first:\n{}",
+            "{} {}notices within {radius:.0} m, nearest first:\n{}{works_text}",
             near.len(),
             if open_only { "open " } else { "" },
             lines.join("\n")
         ),
-        json!({"notices": data}),
+        json!({"notices": data, "works": work_data}),
     ))
 }
 
