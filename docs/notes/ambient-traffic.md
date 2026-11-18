@@ -8,7 +8,7 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
   give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON,
   Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day",
-  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier, deviation, MAX_CORRECTION, CARTO_TRAFFIC_OVERLAPS, CARTO_KNOCK_RIDER, fallen, "falls", path_conflict, model_size, "jerky", "stuck"]
+  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier, deviation, MAX_CORRECTION, CARTO_TRAFFIC_OVERLAPS, CARTO_KNOCK_RIDER, fallen, "falls", path_conflict, model_size, "jerky", "stuck", Idm, follow_speed, "car following", LANE_SLACK_M, unseen_m, RECKLESS_SHARE, CARTO_RECKLESS_SHARE, "reckless"]
 updated: 2026-11-18
 ---
 
@@ -911,3 +911,34 @@ camera with what holds it (`why`):
 The floating figure in the earlier films was the capture's own avatar,
 in fly mode, its clips not on the movie clock: film traffic from a free
 camera (`--shot-mode free --look-at`), not `--shot-mode avatar`.
+
+### Practice from traffic simulation, and misbehaviour (2026-11-18)
+
+Asked to look up how traffic simulation is done well: microscopic
+simulators (SUMO, traffic-simulation.de) split it into a **car-following
+law**, a **lane-changing** model and an **intersection** model. What was
+taken:
+
+- **Following is the IDM** (Intelligent Driver Model, Treiber, Hennecke &
+  Helbing 2000; `Idm`, `follow_speed`): standing gap `s0` 2 m, time gap `T`
+  1.2 s for a car — the urban values; motorway calibrations use 1.5 s, driving
+  schools teach 1.8 s, and aggressive drivers run under 1 s. A bike 1 m and
+  0.8 s, a fatbike 0.8 m and 0.6 s, a reckless driver 1 m and 0.6 s. The old
+  rule slowed linearly between 24 m and 7 m centre to centre at any speed.
+- **Intersections**: the conflict-point check (`path_conflict`) and right
+  before left above stand in for SUMO's right-of-way model; the drawn signals
+  keep their own cycle.
+- **Lane keeping**: a body pushed off its lane may stray 0.3 m (a walker
+  1 m), then is steered back by velocity, not moved — moving it put it back
+  inside whoever pushed it (`nothing_drives_through_anything` caught that).
+  No lane changing: one lane each way.
+- **Appearing**: simulators insert vehicles at the edge of the network, out
+  of view. Here, once a pool has filled, an agent is put down only behind the
+  camera or past 80 % of its placing radius (`unseen_m`).
+
+**Misbehaviour, asked for** ("cyclists who do not stop, now and then a car
+that drives too fast and hits a pedestrian"): 15 % of cyclists and 70 % of
+fatbikes ride `defiant`; 3 % of drivers are reckless (`RECKLESS_SHARE`) —
+35 % over the limit, through red and zebras, no stopping for people in the
+way, an avatar excepted. A walker hit by anything on wheels falls as a rider
+does. `CARTO_RECKLESS_SHARE=<0..1>` raises the share for a capture.
