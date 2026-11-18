@@ -63,6 +63,7 @@ use cartopolis_geo::traffic::{DriveLine, Flow, Pavements, Uses, PAVEMENT_CLEARAN
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, AnchoredCamera};
 use crate::systems::give_way;
+use crate::systems::traffic_physics::{BodyKind, TrafficPhysics};
 
 /// How many cars exist. Fixed for the life of the process.
 ///
@@ -819,7 +820,7 @@ struct LineKey {
 /// What an agent is. The steering is the same for all three — what differs is
 /// which lines they may use, how fast they go, and where across the road they
 /// sit.
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
     Car,
     /// A person on foot.
@@ -1099,7 +1100,38 @@ pub struct Car {
     /// Its place in its own pool, from 0: the first so many of a pool are
     /// out at an hour (`traffic_hours`), the rest stay home.
     ordinal: u16,
+    /// Its Rapier body (`traffic_physics`), made the first frame it drives.
+    body: Option<rapier3d::prelude::RigidBodyHandle>,
+    /// In a collision, or getting going again after one ([`Crash`]).
+    crash: Option<Crash>,
+    /// Seconds it has been held back by somebody it gave way to at a
+    /// crossing (`give_way_to`); past [`CROSSING_PATIENCE_S`] it goes.
+    waited: f32,
 }
+
+/// An agent in a collision (`traffic_physics::TrafficPhysics::knock`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Crash {
+    /// Seconds since it began, or since it began getting going again.
+    t: f32,
+    /// Getting going again: easing from where the collision left it, `at`
+    /// facing `facing`, back onto its line.
+    recovering: bool,
+    at: Vec2,
+    facing: Vec2,
+}
+
+/// How long a collision holds the two still before they get going: the
+/// shove, the slide to a stop, a moment.
+const CRASH_HOLD_S: f32 = 3.0;
+/// How long an agent takes to ease back onto its line after one.
+const CRASH_RECOVER_S: f32 = 1.5;
+/// The closing speed two bodies must meet at to collide, m/s: below it they
+/// only brush, as a car does a cyclist it is passing too close.
+const CRASH_CLOSING: f32 = 1.2;
+/// How long a vehicle gives way at a crossing before it goes anyway: two
+/// that give way to each other would otherwise wait for ever.
+const CROSSING_PATIENCE_S: f32 = 6.0;
 
 /// A walker crossing the street it walks beside, at a zebra or at a light:
 /// it stops at the kerb, faces the road, looks, and walks straight across to
@@ -1288,6 +1320,85 @@ fn safe_to_cross(at: Vec2, vehicles: &[(Vec2, Vec2, f32)], reach: f32) -> bool {
         speed < 0.8 || speed * speed / (2.0 * CROSS_TRUST_BRAKE) < ahead - 3.0
     })
 }
+
+/// What a vehicle does about the body its sweep ahead ran into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Way {
+    /// Carry on: it has the right of way, or the other will pass clear.
+    Go,
+    /// Stop short of it: somebody on foot, or a vehicle going its way.
+    Wait,
+    /// Give way at a crossing, to a vehicle coming from its right — for
+    /// [`CROSSING_PATIENCE_S`] at most.
+    Cross,
+}
+
+/// Who gives way when a vehicle of `kind` at `at` going `travel` would run
+/// into `other`: an avatar (`None`), or an agent of its kind where it is and
+/// which way it goes.
+///
+/// - Somebody on foot is waited for — except by a fatbike, which weaves
+///   round them (`make_way_ahead`).
+/// - A vehicle going the same way is followed; one coming head-on is waited
+///   for only if it is in this one's lane (within half a metre across):
+///   on a narrow street two oncoming cars brush past, they do not stop nose
+///   to nose for ever.
+/// - Paths that cross: **right before left**, the Dutch rule at a junction
+///   with no signs — a vehicle gives way to one coming from its right, and
+///   goes before one from its left. A defiant fatbike gives way to nobody.
+fn gives_way(
+    kind: AgentKind,
+    defiant: bool,
+    at: Vec2,
+    travel: Vec2,
+    other: Option<(AgentKind, Vec2, Vec2)>,
+) -> Way {
+    let Some((other_kind, other_at, heading)) = other else {
+        return if kind == AgentKind::Fatbike {
+            Way::Go
+        } else {
+            Way::Wait
+        };
+    };
+    if other_kind == AgentKind::Walker {
+        return if kind == AgentKind::Fatbike {
+            Way::Go
+        } else {
+            Way::Wait
+        };
+    }
+    let rel = other_at - at;
+    let along = heading.dot(travel);
+    if along > 0.7 {
+        return Way::Wait;
+    }
+    if along < -0.7 {
+        let across = (rel.x * travel.y - rel.y * travel.x).abs();
+        return if across < 0.5 { Way::Wait } else { Way::Go };
+    }
+    if defiant {
+        return Way::Go;
+    }
+    if rel.dot(right_of(travel)) > 0.0 {
+        Way::Cross
+    } else {
+        Way::Go
+    }
+}
+
+/// The fastest a vehicle may go to stop [`LOOK_AHEAD_GAP_M`] short of a body
+/// `gap` metres ahead of its own footprint, braking at the give-way rate.
+fn stop_within(gap: f32) -> f32 {
+    (2.0 * give_way::YIELD_BRAKE * (gap - LOOK_AHEAD_GAP_M).max(0.0)).sqrt()
+}
+
+/// How far ahead of its stopping distance a vehicle sweeps its footprint,
+/// and the most it sweeps, metres: a straight sweep runs off the road at a
+/// bend, so it is kept short of where that would find the pavement.
+const LOOK_AHEAD_MARGIN_M: f32 = 3.0;
+const LOOK_AHEAD_MAX_M: f32 = 20.0;
+/// The room a vehicle leaves before whoever it stops for, metres.
+const LOOK_AHEAD_GAP_M: f32 = 1.0;
 
 /// How fast a car moves over to pass a cyclist, and back, m/s sideways.
 const CAR_SWERVE_RATE: f32 = 1.0;
@@ -1507,6 +1618,9 @@ pub fn setup_traffic(
             last_cross: None,
             foot_down: 0.0,
             ordinal: i as u16,
+            body: None,
+            crash: None,
+            waited: 0.0,
         }
     };
 
@@ -1798,6 +1912,8 @@ pub struct CrowdReact<'w, 's> {
     /// The scene's hour (the sun's clock) and the day of the week, for how
     /// much of each pool is out (`systems::traffic_hours`).
     dev: Option<Res<'w, crate::resources::DevPanelState>>,
+    /// The traffic's Rapier bodies (`systems::traffic_physics`).
+    physics: ResMut<'w, crate::systems::traffic_physics::TrafficPhysics>,
     clock: Option<Res<'w, crate::systems::transit_live::WorldClock>>,
 }
 
@@ -1986,6 +2102,8 @@ pub fn drive_traffic(
         (
             &mut Car,
             &AgentKind,
+            // Its Rapier body's tag (`traffic_physics`).
+            Entity,
             &mut Transform,
             &mut GridCell,
             // A walker's body, once `crowd::dress_walkers` has put it on.
@@ -2115,7 +2233,10 @@ pub fn drive_traffic(
     let mut vehicles: Vec<(Vec2, Vec2, f32)> = Vec::new();
     let mut crossers: Vec<Vec2> = Vec::new();
     let mut kerb_waiters: Vec<(Vec2, Vec2)> = Vec::new();
-    for (i, (car, &kind, ..)) in cars.iter().enumerate() {
+    // Every agent placed, by its Rapier tag: what it is, where, which way —
+    // for deciding who gives way to the body a shape cast runs into.
+    let mut seen: HashMap<u64, (AgentKind, Vec2, Vec2)> = HashMap::new();
+    for (i, (car, &kind, entity, ..)) in cars.iter().enumerate() {
         if !showing(kind) {
             continue;
         }
@@ -2126,18 +2247,11 @@ pub fn drive_traffic(
             .entry((key, lane_key(car.dir)))
             .or_default()
             .push(car.s);
-        let wanted = match kind {
-            AgentKind::Walker => show_people,
-            AgentKind::Car => show_people,
-            AgentKind::Cyclist | AgentKind::Fatbike => true,
-        };
-        if !wanted {
-            continue;
-        }
         let Some((p, travel, _)) = pose_of(car, net.get(key), kind) else {
             continue;
         };
         let p = p + right_of(travel) * car.react.shift;
+        seen.insert(entity.to_bits(), (kind, p, travel));
         match kind {
             AgentKind::Walker => {
                 walkers_at.push(p);
@@ -2185,7 +2299,15 @@ pub fn drive_traffic(
         mut traffic_here,
         dev,
         clock,
+        mut physics,
     } = react;
+    // The avatars stand in the traffic's world as bodies it can run into.
+    let avatar_feet: Vec<Vec3> = people
+        .at
+        .iter()
+        .map(|a| Vec3::new(a.x, terrain.ground_at(a.x, a.y), a.y))
+        .collect();
+    physics.set_avatars(&avatar_feet);
     // How many of each pool are out at this hour (`traffic_hours`): an agent
     // past its pool's quota is let go when it next runs out of road out of
     // the camera's sight, and not placed again until the hour fills.
@@ -2361,7 +2483,9 @@ pub fn drive_traffic(
     // Who a walker makes way for this frame; one buffer, refilled per walker.
     let mut near: Vec<Vec2> = Vec::new();
 
-    for (i, (mut car, &kind, mut tf, mut cell, dressed, mut vis)) in cars.iter_mut().enumerate() {
+    for (i, (mut car, &kind, entity, mut tf, mut cell, dressed, mut vis)) in
+        cars.iter_mut().enumerate()
+    {
         if !showing(kind) {
             *vis = Visibility::Hidden;
             continue;
@@ -2451,6 +2575,15 @@ pub fn drive_traffic(
         let mut line = key
             .and_then(|k| net.get(k))
             .filter(|l| kind.may_use(l.uses) || (kind == AgentKind::Cyclist && l.kind_cycles));
+        // Its Rapier body, and whether a collision has it (`collide_traffic`):
+        // then Rapier moves it, not its line.
+        let handle = *car
+            .body
+            .get_or_insert_with(|| physics.agent_body(entity.to_bits(), kind));
+        let knocked = car.crash.is_some_and(|c| !c.recovering);
+        if knocked {
+            car.speed = 0.0;
+        }
         // What this frame's advance did, for the body's lean, the brake lamps
         // and the stride.
         let mut accel_now = 0.0;
@@ -2475,7 +2608,7 @@ pub fn drive_traffic(
         // in front allows — so a car pulls away from a junction, slows into a
         // corner and sits behind a slower one instead of stepping between three
         // constants as it changes road.
-        if let (Some(k), Some(l)) = (key, line) {
+        if let (Some(k), Some(l), false) = (key, line, knocked) {
             let along = if car.dir > 0.0 {
                 car.s
             } else {
@@ -2554,6 +2687,44 @@ pub fn drive_traffic(
                             body,
                         ));
                     }
+                    // Whoever its own footprint would run into, of any kind,
+                    // on any line: Rapier sweeps it ahead along its way.
+                    let ahead_m = (car.speed * car.speed / (2.0 * give_way::YIELD_BRAKE)
+                        + LOOK_AHEAD_MARGIN_M)
+                        .min(LOOK_AHEAD_MAX_M);
+                    let feet = Vec3::new(
+                        p.x,
+                        physics
+                            .height(handle)
+                            .unwrap_or_else(|| terrain.ground_at(p.x, p.y)),
+                        p.y,
+                    );
+                    let mut crossing = false;
+                    if let Some((gap, tag)) =
+                        physics.look_ahead(handle, kind, feet, travel, ahead_m)
+                    {
+                        let other = if TrafficPhysics::is_avatar(tag) {
+                            Some(None)
+                        } else {
+                            seen.get(&(tag as u64))
+                                .map(|&(k, at, heading)| Some((k, at, heading)))
+                        };
+                        if let Some(other) = other {
+                            match gives_way(kind, car.defiant, p, travel, other) {
+                                Way::Go => {}
+                                Way::Wait => {
+                                    want = want.min(stop_within(gap));
+                                }
+                                Way::Cross => {
+                                    crossing = true;
+                                    if car.waited < CROSSING_PATIENCE_S {
+                                        want = want.min(stop_within(gap));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    car.waited = if crossing { car.waited + dt } else { 0.0 };
                 }
             } else if walker {
                 if let Some(mut c) = car.crossing {
@@ -2780,6 +2951,10 @@ pub fn drive_traffic(
                     car.crossing = None;
                     car.last_cross = None;
                     car.foot_down = 0.0;
+                    car.waited = 0.0;
+                    if car.crash.take().is_some() {
+                        physics.settle(handle);
+                    }
                     shift_to = 0.0;
                     accel_now = 0.0;
                     held = false;
@@ -2861,6 +3036,38 @@ pub fn drive_traffic(
             aim = ahead.try_normalize().unwrap_or(travel);
         }
 
+        // ── A collision ──────────────────────────────────────────────────────
+        //
+        // Knocked loose, it is where Rapier has it, facing the way the shove
+        // turned it, until it has slid to a stop and stood a moment; then it
+        // eases back onto its line from there.
+        if let Some(mut c) = car.crash {
+            facing_rate = Some(1.0e3);
+            if c.recovering {
+                c.t += dt;
+                let w = (c.t / CRASH_RECOVER_S).clamp(0.0, 1.0);
+                let w = w * w * (3.0 - 2.0 * w);
+                pos = c.at.lerp(pos, w);
+                aim = c.facing.lerp(aim, w).try_normalize().unwrap_or(aim);
+            } else {
+                physics.keep(handle);
+                held = true;
+                if let Some((at, facing, speed)) = physics.pose(handle) {
+                    pos = at;
+                    aim = facing;
+                    c.at = at;
+                    c.facing = facing;
+                    c.t += dt;
+                    if c.t >= CRASH_HOLD_S && speed < 0.3 {
+                        physics.settle(handle);
+                        c.recovering = true;
+                        c.t = 0.0;
+                    }
+                }
+            }
+            car.crash = (!c.recovering || c.t < CRASH_RECOVER_S).then_some(c);
+        }
+
         // ── Draw ─────────────────────────────────────────────────────────────
         //
         // The drawn heading is not the path's tangent but a rate-limited chase
@@ -2934,6 +3141,10 @@ pub fn drive_traffic(
             None if deck.is_finite() => deck + CAR_RIDE_HEIGHT,
             None => ground + lift + CAR_RIDE_HEIGHT,
         };
+        // Its body where it is drawn — unless Rapier is moving it.
+        if !car.crash.is_some_and(|c| !c.recovering) {
+            physics.place(handle, Vec3::new(pos.x, y, pos.y), facing);
+        }
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;
@@ -3128,6 +3339,72 @@ pub fn drive_traffic(
                  avatar, at {v:.2} m/s"
             ),
             None => info!("CARTO_TRAFFIC_HERE: t {elapsed:.1} s: no sent car on the road"),
+        }
+    }
+}
+
+/// Step the traffic's Rapier world, and make a collision of every pair that
+/// began touching at more than [`CRASH_CLOSING`] — two people on foot only
+/// ever bump. Both are knocked loose with the velocities they had, and
+/// Rapier shoves them apart by their masses: a car barely checks, the bike
+/// it hit is thrown aside. An avatar takes part but is not moved: where it
+/// is, the server says.
+pub fn collide_traffic(
+    time: Res<crate::systems::anim_clock::AnimClock>,
+    mut physics: ResMut<TrafficPhysics>,
+    mut cars: Query<(&mut Car, &AgentKind)>,
+) {
+    let touches = physics.step(time.delta_secs());
+    for t in touches {
+        let entity = |tag: u128| {
+            (!TrafficPhysics::is_avatar(tag))
+                .then(|| Entity::try_from_bits(tag as u64))
+                .flatten()
+        };
+        let (ea, eb) = (entity(t.a), entity(t.b));
+        // Velocity, what it is, and whether a collision already has it.
+        let state = |e: Option<Entity>| match e.and_then(|e| cars.get(e).ok()) {
+            Some((car, &kind)) => (
+                car.heading * car.speed,
+                BodyKind::Agent(kind),
+                car.crash.is_some(),
+            ),
+            None => (Vec2::ZERO, BodyKind::Avatar, false),
+        };
+        let (a, b) = (state(ea), state(eb));
+        if a.1.on_foot() && b.1.on_foot() {
+            continue;
+        }
+        let rel = a.0 - b.0;
+        let closing = if t.normal == Vec2::ZERO {
+            rel.length()
+        } else {
+            rel.dot(t.normal).abs()
+        };
+        if closing < CRASH_CLOSING {
+            continue;
+        }
+        info!(
+            "traffic collision: {:?} and {:?} at {closing:.1} m/s",
+            a.1, b.1
+        );
+        for (e, (velocity, kind, already)) in [(ea, a), (eb, b)] {
+            let Some(e) = e else { continue };
+            if already {
+                continue;
+            }
+            let Ok((mut car, _)) = cars.get_mut(e) else {
+                continue;
+            };
+            let Some(handle) = car.body else { continue };
+            physics.knock(handle, kind, velocity);
+            car.speed = 0.0;
+            car.crash = Some(Crash {
+                t: 0.0,
+                recovering: false,
+                at: Vec2::ZERO,
+                facing: car.heading,
+            });
         }
     }
 }
@@ -4422,6 +4699,9 @@ mod tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            body: None,
+            crash: None,
+            waited: 0.0,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -4454,6 +4734,9 @@ mod tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            body: None,
+            crash: None,
+            waited: 0.0,
         }
     }
 
@@ -4673,6 +4956,9 @@ mod crossing_tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            body: None,
+            crash: None,
+            waited: 0.0,
         }
     }
 
@@ -4836,5 +5122,55 @@ mod track_tests {
         net.insert_cell((0, 0), 0.0, 0.0, lines);
         ride_the_tracks(&mut net);
         assert!(cycles(&net, 0));
+    }
+}
+
+#[cfg(test)]
+mod way_tests {
+    use super::*;
+
+    const NORTH: Vec2 = Vec2::new(0.0, -1.0);
+
+    /// Right before left at a crossing; people are waited for, except by a
+    /// fatbike; the one ahead is followed; an oncoming one in the next lane
+    /// is passed.
+    #[test]
+    fn who_gives_way() {
+        let at = Vec2::ZERO;
+        let car = AgentKind::Car;
+        // Going north, `right_of` is east (+x).
+        let from_right = Some((car, Vec2::new(8.0, -8.0), Vec2::new(-1.0, 0.0)));
+        let from_left = Some((car, Vec2::new(-8.0, -8.0), Vec2::new(1.0, 0.0)));
+        assert_eq!(gives_way(car, false, at, NORTH, from_right), Way::Cross);
+        assert_eq!(gives_way(car, false, at, NORTH, from_left), Way::Go);
+        assert_eq!(
+            gives_way(AgentKind::Fatbike, true, at, NORTH, from_right),
+            Way::Go
+        );
+        let walker = Some((AgentKind::Walker, Vec2::new(0.0, -5.0), Vec2::X));
+        assert_eq!(gives_way(car, false, at, NORTH, walker), Way::Wait);
+        assert_eq!(
+            gives_way(car, false, at, NORTH, None),
+            Way::Wait,
+            "an avatar"
+        );
+        assert_eq!(
+            gives_way(AgentKind::Fatbike, false, at, NORTH, walker),
+            Way::Go
+        );
+        let ahead = Some((AgentKind::Cyclist, Vec2::new(0.0, -6.0), NORTH));
+        assert_eq!(gives_way(car, false, at, NORTH, ahead), Way::Wait);
+        let oncoming = Some((car, Vec2::new(-1.6, -10.0), -NORTH));
+        assert_eq!(gives_way(car, false, at, NORTH, oncoming), Way::Go);
+        let head_on = Some((car, Vec2::new(0.2, -10.0), -NORTH));
+        assert_eq!(gives_way(car, false, at, NORTH, head_on), Way::Wait);
+    }
+
+    #[test]
+    fn a_stop_ends_short_of_the_other() {
+        assert_eq!(stop_within(LOOK_AHEAD_GAP_M), 0.0);
+        assert_eq!(stop_within(0.0), 0.0);
+        let v = stop_within(LOOK_AHEAD_GAP_M + 10.0);
+        assert!((v * v / (2.0 * give_way::YIELD_BRAKE) - 10.0).abs() < 1e-3);
     }
 }

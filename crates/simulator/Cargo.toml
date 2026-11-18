@@ -56,8 +56,9 @@ lettre = { version = "0.11", default-features = false, features = [
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 glam.workspace = true
 # Physical prims (`physics.rs`, docs/notes/physical-prims.md). Pure Rust, so it
-# adds no C toolchain to any lane; the simulator is the only crate that links
-# it, because the server is the one authority over where a physical prim is.
+# adds no C toolchain to any lane. The simulator is the one authority over
+# where a physical prim is; the client links it too, but only for the ambient
+# traffic it invents itself (`systems::traffic_physics`), never for prims.
 # `simd8`: the contact solver works on eight constraints at once (the `wide`
 # crate, stable Rust). It costs only cross-platform bit-determinism, which a
 # server-authoritative step does not need.

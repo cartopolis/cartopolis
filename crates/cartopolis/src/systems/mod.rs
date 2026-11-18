@@ -84,8 +84,8 @@ pub use map::{
 };
 pub use nav::{
     crowd, crowd_react, crows, driver, geo_nav, give_way, gnss_receiver, locate, meetup,
-    navigation, place_link, route_ahead, traffic, traffic_hours, transit_live, transit_vehicles,
-    walk_guide,
+    navigation, place_link, route_ahead, traffic, traffic_hours, traffic_physics, transit_live,
+    transit_vehicles, walk_guide,
 };
 pub use nav::{high_precision, precise_tracker};
 #[cfg(target_os = "android")]

@@ -36,6 +36,7 @@ impl Plugin for NavPlugin {
             .init_resource::<systems::crowd::Crowd>()
             .init_resource::<systems::crowd_react::CrowdPeople>()
             .init_resource::<systems::give_way::SignalButtons>()
+            .init_resource::<systems::traffic_physics::TrafficPhysics>()
             .init_asset::<systems::crowd::CrowdSwatch>()
             .init_asset_loader::<systems::crowd::CrowdSwatchLoader>();
 
@@ -260,6 +261,9 @@ impl Plugin for NavPlugin {
                     .after(systems::traffic::close_car_free_lines)
                     .after(systems::crowd_react::gather_people)
                     .after(systems::give_way::press_buttons),
+                // The traffic's Rapier step, on the bodies it just placed:
+                // collisions (`systems::traffic_physics`).
+                systems::traffic::collide_traffic.after(systems::traffic::drive_traffic),
                 // After it, because a passing walker can flush a feeding crow.
                 systems::crows::drive_crows.after(systems::traffic::drive_traffic),
             )

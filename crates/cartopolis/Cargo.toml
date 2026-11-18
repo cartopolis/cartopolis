@@ -120,6 +120,12 @@ perf = [
 scalar-fallback = []
 
 [dependencies]
+# The ambient traffic's bodies (`systems::traffic_physics`): what it looks for
+# ahead of it and what happens when two collide. Already built for the
+# simulator, with the same features so the two share one artifact; pure Rust,
+# so every lane (web, Android) takes it as it is. Not for prims: the server
+# alone moves those (`docs/notes/physical-prims.md`).
+rapier3d = { version = "0.36", features = ["simd8"] }
 anyhow.workspace = true
 bevy.workspace = true
 bevy_image.workspace = true
