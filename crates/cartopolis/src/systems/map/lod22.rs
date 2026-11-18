@@ -266,6 +266,7 @@ fn push_doorway(
     face: &crate::systems::building_windows::WallFace,
     at: Vec2,
     base: f32,
+    foot: f32,
     origin: Vec2,
     era: u8,
     uses: u16,
@@ -417,7 +418,8 @@ fn push_doorway(
         Vec3::Y,
         [plain; 4],
     );
-    // A step, a little wider than the surround.
+    // A step, a little wider than the surround, standing on the pavement
+    // however far below the base that is (`foot`).
     let (sw, sd, sh) = (ow + 0.1, STEP_DEPTH_M, STEP_HEIGHT_M);
     buf.quad_facing_uv(
         [
@@ -432,8 +434,8 @@ fn push_doorway(
     );
     buf.quad_facing_uv(
         [
-            p(-sw, 0.0, sd),
-            p(sw, 0.0, sd),
+            p(-sw, foot, sd),
+            p(sw, foot, sd),
             p(sw, sh, sd),
             p(-sw, sh, sd),
         ],
@@ -443,7 +445,7 @@ fn push_doorway(
     );
     for (u, facing) in [(-sw, -t3), (sw, t3)] {
         buf.quad_facing_uv(
-            [p(u, 0.0, 0.0), p(u, 0.0, sd), p(u, sh, sd), p(u, sh, 0.0)],
+            [p(u, foot, 0.0), p(u, foot, sd), p(u, sh, sd), p(u, sh, 0.0)],
             step,
             facing,
             [plain; 4],
@@ -458,6 +460,24 @@ const SURROUND_M: f32 = 0.11;
 /// The front step.
 const STEP_DEPTH_M: f32 = 0.32;
 const STEP_HEIGHT_M: f32 = 0.16;
+
+/// A shell vertex this close to its base is on the ground: a wall's foot, or
+/// the floor.
+const ON_BASE_M: f32 = 0.05;
+/// How far a wall's foot goes below the lowest ground under it. The paving is
+/// drawn on its own grade and layer, a few centimetres either side of the
+/// field, and the field is only sampled at the corners.
+const FOOT_BELOW_M: f32 = 0.3;
+/// The deepest a wall's foot goes below its base. A corner standing over a
+/// canal or a cutting reads ground metres down, and a facade does not follow it.
+const FOOT_MAX_M: f32 = 3.0;
+
+/// Where a wall stops, in metres relative to `base` (zero or below): under the
+/// lowest of `grounds` by [`FOOT_BELOW_M`], never deeper than [`FOOT_MAX_M`].
+fn wall_foot(base: f32, grounds: impl IntoIterator<Item = f32>) -> f32 {
+    let low = grounds.into_iter().fold(base, f32::min);
+    (low - FOOT_BELOW_M - base).clamp(-FOOT_MAX_M, 0.0)
+}
 
 /// The point on a ring nearest `p`, and the **outward** normal of the edge it
 /// lies on.
@@ -2357,6 +2377,12 @@ fn build_lod22_from_body(
         let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
         // …and the facade shader measures its walls from that foot.
         buf.set_ground(base);
+        // The median leaves half the corners standing on ground *below* the
+        // base, so on any fall across the footprint — a street lower than the
+        // gardens behind it — the walls stopped short of the pavement and the
+        // passers-by's feet showed under them. The walls run on down past the
+        // lowest corner instead; the floor and the roof stay where they are.
+        let foot = wall_foot(base, world_xz.iter().map(|w| ground.at(w.x, w.y)));
         let local: Vec<Vec3> =
             b.p.iter()
                 .zip(&world_xz)
@@ -2422,6 +2448,7 @@ fn build_lod22_from_body(
                     face,
                     at,
                     base,
+                    wall_foot(base, [ground.at(at.x, at.y)]),
                     Vec2::new(ox, oz),
                     era,
                     fact.map_or(0, |f| f.uses),
@@ -2430,7 +2457,17 @@ fn build_lod22_from_body(
             }
         }
         for (ti, &(i, j, k, is_roof)) in b.t.iter().enumerate() {
-            let (a, bb, c) = (local[i], local[j], local[k]);
+            let (mut a, mut bb, mut c) = (local[i], local[j], local[k]);
+            // A wall's foot goes down to `foot`; a triangle with every corner on
+            // the base is the floor, which stays put.
+            let on_base = |ix: usize| b.p[ix].2 <= ON_BASE_M;
+            if is_roof != 1 && !(on_base(i) && on_base(j) && on_base(k)) {
+                for (v, ix) in [(&mut a, i), (&mut bb, j), (&mut c, k)] {
+                    if on_base(ix) {
+                        v.y = base + foot;
+                    }
+                }
+            }
             if is_roof == 1 {
                 let n = (bb - a).cross(c - a).normalize_or_zero();
                 let color = if n.y.abs() > FLAT_ROOF_NORMAL_Y {
@@ -2992,6 +3029,17 @@ fn parse_lod22_json(text: &str) -> Result<cartopolis_geo::lod22_cell::Cell, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A footprint standing across a fall: the walls go below the lowest corner,
+    /// on level ground a little below the base, and never further than the cap.
+    #[test]
+    fn wall_foot_reaches_the_lowest_corner() {
+        let (base, low) = (1.2, 0.8);
+        let foot = wall_foot(base, [1.4, 1.2, low, 1.3]);
+        assert!(base + foot <= low - FOOT_BELOW_M + 1e-4, "{foot}");
+        assert!((wall_foot(0.0, [0.0; 4]) + FOOT_BELOW_M).abs() < 1e-6);
+        assert_eq!(wall_foot(5.0, [-20.0]), -FOOT_MAX_M);
+    }
 
     /// A square, wound both ways. The register does not promise a winding, and a
     /// door placed on the *inward* normal is drawn inside its own building, where
