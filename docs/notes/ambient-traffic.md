@@ -7,8 +7,9 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   cyclists, Cyclist, bicycle, BikePart, BIKE_FIT, bike_lean, cycle_ok, "riding poses", Ride, ride_poses, cyclists_enabled,
   crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
   give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON,
-  Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day"]
-updated: 2026-11-17
+  Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day",
+  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier]
+updated: 2026-11-18
 ---
 
 # Cars and people that move, off the streets layer we already parse
@@ -801,3 +802,50 @@ Vehicles still do not give way to each other at a junction or look for
 oncoming traffic before passing; nobody crosses mid-block; walkers do not
 wait at a light at a junction without a mapped crossing; nobody parks or
 gets on a bike; fatbikes have no passenger, though the seat has room.
+
+## Bodies and collisions: Rapier in the client (2026-11-18)
+
+Shown the street that sees itself, the owner asked that nothing pass
+through anything — "that should be a collision; we have a physics engine
+for that". Offered steering-only avoidance (which is what a physics engine
+would only *detect* for us) and a physics engine in the app, the owner
+chose the engine. `systems::traffic_physics` is it.
+
+**Rapier, not Avian, and not the simulator's world.** Rapier was already in
+the tree (`physical-prims.md`), pure Rust, and is linked with the
+simulator's features so the two share an artifact. Avian is Bevy's ECS and
+would fight `big_space`: its bodies live in `Transform`s, which here are
+cell-local and jump a whole cell. The traffic is invented per client, so the
+server's prim world cannot see it, and this one sees no prims.
+
+**One world near the camera.** Metres from an origin set by the first body,
+moved (bodies and all) once the camera is 4 km off. No gravity: bodies stand
+at the heights the traffic draws them at — a car on a bridge and a walker
+under it do not meet — and a knocked one is locked to its height and
+upright. No map geometry, as for the prims.
+
+**Kinematic while driving; Rapier only answers.** `drive_traffic` places each
+agent's body every frame (`place`); `collide_traffic`, after it, steps the
+world. Before that, each vehicle sweeps its own box ahead (`look_ahead`) by
+its stopping distance + 3 m, at most 20 m: a straight sweep leaves the road
+at a bend, and longer found pavements. What it hits decides `gives_way`:
+
+- somebody on foot or an avatar: stop 1 m short — a fatbike weaves instead;
+- a vehicle going its way: follow; one oncoming within 0.5 m of its lane:
+  stop; one oncoming further over: carry on and brush past (cars are 1.64 m
+  wide here, narrower than drawn, so two on a narrow street rarely touch);
+- crossing paths: **right before left**, with 6 s of patience
+  (`CROSSING_PATIENCE_S`) — two that each have the other on their right
+  would otherwise wait for ever. A defiant fatbike gives way to nobody.
+
+**Dynamic when they collide.** A pair beginning to touch at more than
+1.2 m/s along the contact normal (`CRASH_CLOSING`) is a collision; slower is
+a brush, and two people on foot never collide. Both become dynamic with the
+velocity they had, Rapier shoves them apart by mass (car 1200 kg, bike
+95–110, person 75), friction stops them, and after 3 s they are kinematic
+again and ease back to their lines over 1.5 s. An avatar's body is kinematic
+always: where an avatar is, the server says. Each collision is logged
+(`traffic collision: …`), which is how a capture counts them.
+
+**Not done.** No damage, no hazard lights, nobody gets out; a person hit is
+shoved, not knocked over; vehicles do not swerve, only brake.

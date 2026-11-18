@@ -21,7 +21,9 @@ Avian is the more natural fit inside Bevy and was ruled out because it *is*
 Bevy's ECS — the simulator has no Bevy and must not grow one. Jolt (and PhysX)
 are C++ behind `cc`, the toolchain cost that already kept Opus out of the
 voice codec. Rapier is pure Rust and Bevy-free. `bevy_rapier` is not used: the
-client simulates nothing.
+client simulates no prims. (Since 2026-11-18 it runs a Rapier world of its
+own for the ambient traffic it invents — `ambient-traffic.md` — which knows
+nothing of prims, as this one knows nothing of the traffic.)
 
 **The server decides; no client predicts.** A ball everybody kicks has to be one
 ball. Ownership-by-whoever-touched-it (the usual social-VR answer, which would
