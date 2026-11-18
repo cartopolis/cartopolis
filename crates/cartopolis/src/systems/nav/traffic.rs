@@ -1138,11 +1138,43 @@ struct Crash {
     recovering: bool,
     at: Vec2,
     facing: Vec2,
+    /// A rider knocked off its bike: the side it falls to, `+1` its right,
+    /// `-1` its left; 0 for anybody who stays on their feet or wheels.
+    fall: f32,
+}
+
+/// How far over a rider in `crash` lies, signed by the side it fell to:
+/// eased down over [`FALL_S`], held, and eased back up over [`RISE_S`] as it
+/// gets going again. 0 for one that did not fall.
+fn fallen(crash: Option<Crash>) -> f32 {
+    let Some(c) = crash.filter(|c| c.fall != 0.0) else {
+        return 0.0;
+    };
+    let ease = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let over = if c.recovering {
+        1.0 - ease(c.t / RISE_S)
+    } else {
+        ease(c.t / FALL_S)
+    };
+    over * c.fall
 }
 
 /// How long a collision holds the two still before they get going: the
 /// shove, the slide to a stop, a moment.
 const CRASH_HOLD_S: f32 = 3.0;
+/// How long a rider who fell lies there before getting up, seconds.
+const FALLEN_HOLD_S: f32 = 5.0;
+/// Seconds to go down, and to get up and back on.
+const FALL_S: f32 = 0.45;
+const RISE_S: f32 = 1.2;
+/// How far a fallen bike and rider lie over, radians: on its side, the
+/// pedal and the bar holding it a little off flat.
+const FALL_ANGLE: f32 = 1.35;
+/// The closing speed at which a rider goes down whatever it hit, m/s.
+const FALL_CLOSING: f32 = 5.0;
 /// How long an agent takes to ease back onto its line after one.
 const CRASH_RECOVER_S: f32 = 1.5;
 /// The closing speed two bodies must meet at to collide, m/s: below it they
@@ -3154,7 +3186,12 @@ pub fn drive_traffic(
                     c.at = at;
                     c.facing = facing;
                     c.t += dt;
-                    if c.t >= CRASH_HOLD_S && speed < 0.3 {
+                    let hold = if c.fall != 0.0 {
+                        FALLEN_HOLD_S
+                    } else {
+                        CRASH_HOLD_S
+                    };
+                    if c.t >= hold && speed < 0.3 {
                         physics.settle(handle);
                         c.recovering = true;
                         c.t = 0.0;
@@ -3343,7 +3380,13 @@ pub fn drive_traffic(
                 let stop_lean = body.and_then(|b| b.stop_lean);
                 car.foot_down = foot_down(car.foot_down, held && stop_lean.is_some(), dt);
                 let leaning = stop_lean.unwrap_or(0.0) * car.foot_down;
-                tf.rotation *= Quat::from_rotation_z(car.tilt.y - leaning);
+                // Knocked off: bike and rider go over onto their side about
+                // the line the wheels stand on, lie there, and get back up.
+                let down = fallen(car.crash);
+                if down != 0.0 {
+                    car.tilt.y = 0.0;
+                }
+                tf.rotation *= Quat::from_rotation_z(car.tilt.y - leaning + down * FALL_ANGLE);
                 let Some((mut figure, mut mesh, mut material, mut tag)) = dressed else {
                     vis.set_if_neq(Visibility::Hidden);
                     continue;
@@ -3459,8 +3502,56 @@ pub fn collide_traffic(
     mut physics: ResMut<TrafficPhysics>,
     mut cars: Query<(&mut Car, &AgentKind)>,
     mut report: Local<(Option<bool>, f32)>,
+    people: Res<crate::systems::crowd_react::CrowdPeople>,
+    mut knock_every: Local<Option<f32>>,
+    mut knock_next: Local<f32>,
 ) {
     let touches = physics.step(time.delta_secs());
+    // `CARTO_KNOCK_RIDER=<s>`: every that many seconds of the moving world's
+    // clock, the rider nearest the avatar (within 30 m) is knocked off as a
+    // car would knock it, so a capture can show a fall without waiting for
+    // one. A capture's hook, not something a session runs.
+    let every = *knock_every.get_or_insert_with(|| {
+        std::env::var("CARTO_KNOCK_RIDER")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|s| *s > 0.0)
+            .unwrap_or(0.0)
+    });
+    if every > 0.0 && time.elapsed_secs() >= *knock_next {
+        if let Some(&avatar) = people.at.first() {
+            let nearest = cars
+                .iter()
+                .filter(|(c, k)| {
+                    matches!(k, AgentKind::Cyclist | AgentKind::Fatbike) && c.crash.is_none()
+                })
+                .filter_map(|(c, _)| {
+                    let h = c.body?;
+                    let (at, ..) = physics.pose(h)?;
+                    Some((h, at.distance(avatar)))
+                })
+                .filter(|(_, d)| *d < 30.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(h, _)| h);
+            if let Some(h) = nearest {
+                if let Some((mut car, &kind)) = cars.iter_mut().find(|(c, _)| c.body == Some(h)) {
+                    let push = right_of(car.heading) * 2.0 + car.heading * car.speed * 0.5;
+                    physics.knock(h, BodyKind::Agent(kind), push);
+                    car.speed = 0.0;
+                    car.foot_down = 0.0;
+                    car.crash = Some(Crash {
+                        t: 0.0,
+                        recovering: false,
+                        at: Vec2::ZERO,
+                        facing: car.heading,
+                        fall: 1.0,
+                    });
+                    info!("CARTO_KNOCK_RIDER: a {kind:?} knocked off");
+                    *knock_next = time.elapsed_secs() + every;
+                }
+            }
+        }
+    }
     // Two deep inside each other that did not collide were put down so —
     // two of a pool dropped on one spot, or handed onto one line at once —
     // and their ways keep them there, so Rapier's push never wins. The later
@@ -3596,7 +3687,9 @@ pub fn collide_traffic(
             a.0.normalize_or_zero().dot(b.0.normalize_or_zero()),
             t.normal.dot(a.0.normalize_or_zero().perp()).abs()
         );
-        for (e, (velocity, kind, already, _, _)) in [(ea, a), (eb, b)] {
+        for (e, (velocity, kind, already, _, at), (_, other, _, _, other_at)) in
+            [(ea, a, b), (eb, b, a)]
+        {
             let Some(e) = e else { continue };
             if already {
                 continue;
@@ -3607,11 +3700,33 @@ pub fn collide_traffic(
             let Some(handle) = car.body else { continue };
             physics.knock(handle, kind, velocity);
             car.speed = 0.0;
+            // A rider hit by a car, or hitting anything hard, goes down,
+            // away from what hit it.
+            let rider = matches!(
+                kind,
+                BodyKind::Agent(AgentKind::Cyclist | AgentKind::Fatbike)
+            );
+            let fall =
+                if rider && (other == BodyKind::Agent(AgentKind::Car) || closing > FALL_CLOSING) {
+                    let side = match (at, other_at) {
+                        (Some(me), Some(them)) => (them - me).dot(right_of(car.heading)),
+                        _ => 0.0,
+                    };
+                    if side > 0.0 {
+                        -1.0
+                    } else {
+                        1.0
+                    }
+                } else {
+                    0.0
+                };
+            car.foot_down = 0.0;
             car.crash = Some(Crash {
                 t: 0.0,
                 recovering: false,
                 at: Vec2::ZERO,
                 facing: car.heading,
+                fall,
             });
         }
     }
@@ -5414,5 +5529,36 @@ mod way_tests {
         assert_eq!(stop_within(0.0), 0.0);
         let v = stop_within(LOOK_AHEAD_GAP_M + 10.0);
         assert!((v * v / (2.0 * give_way::YIELD_BRAKE) - 10.0).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod fall_tests {
+    use super::*;
+
+    /// A rider knocked off goes over to its side, lies there, and comes
+    /// back up as it gets going; one that stays up never tips.
+    #[test]
+    fn a_knocked_rider_goes_down_and_gets_up() {
+        let crash = |t, recovering, fall| {
+            Some(Crash {
+                t,
+                recovering,
+                at: Vec2::ZERO,
+                facing: Vec2::Y,
+                fall,
+            })
+        };
+        assert_eq!(fallen(None), 0.0);
+        assert_eq!(fallen(crash(1.0, false, 0.0)), 0.0);
+        assert_eq!(fallen(crash(0.0, false, 1.0)), 0.0);
+        assert!(
+            (fallen(crash(FALL_S, false, -1.0)) + 1.0).abs() < 1e-6,
+            "down on its left"
+        );
+        assert_eq!(fallen(crash(FALLEN_HOLD_S, false, 1.0)), 1.0);
+        let rising = fallen(crash(RISE_S * 0.5, true, 1.0));
+        assert!(rising > 0.0 && rising < 1.0, "{rising}");
+        assert_eq!(fallen(crash(RISE_S, true, 1.0)), 0.0);
     }
 }
