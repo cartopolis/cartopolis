@@ -8,7 +8,7 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
   give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON,
   Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day",
-  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier, deviation, MAX_CORRECTION, CARTO_TRAFFIC_OVERLAPS, CARTO_KNOCK_RIDER, fallen, "falls"]
+  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier, deviation, MAX_CORRECTION, CARTO_TRAFFIC_OVERLAPS, CARTO_KNOCK_RIDER, fallen, "falls", path_conflict, model_size, "jerky", "stuck"]
 updated: 2026-11-18
 ---
 
@@ -883,3 +883,31 @@ away from what hit it (0.45 s, about the wheels' contact line), lies 5 s,
 and gets up over 1.2 s (`fallen`). Walkers are shoved, not knocked over: the
 crowd has no fall pose. `CARTO_KNOCK_RIDER=<s>` knocks the rider nearest the
 avatar off every that many seconds, for a capture.
+
+### Smooth, and no jams (2026-11-18, later)
+
+"Jerky, unnatural; avatars float." Four causes, each measured on 10 s at
+15 fps from a free camera over the Oostersingel zebra (53.22099, 6.57448,
+12 m) with `CARTO_TRAFFIC_OVERLAPS=1`, which also logs per kind how much the
+drawn step changes frame to frame and every vehicle standing 3 s near the
+camera with what holds it (`why`):
+
+- **Rapier stepped less than the frame.** At most 1/20 s while the traffic
+  moved on by the whole frame; at 5 fps or on a slow phone every body fell
+  behind its way and was pulled back. Now the frame in steps of ≤ 1/30 s.
+- **Drawn as way + push.** Jumped up to 2 m when the two disagreed; drawn
+  where the last step left the body now (`place` says when it was put
+  rather than driven, and then the way is drawn).
+- **One box for every car.** A cyclist stood inside a drawn van Rapier
+  thought clear of it; each car's box is its model's bounds (`model_size`).
+- **Collisions made the jams.** Two knocked bodies stood 3–5 s with a queue
+  behind; most were a car's nose into somebody *crossing* its path, which
+  the sweep ahead cannot see in time. `path_conflict` looks where every two
+  straight paths meet within 4 s: the later waits, together right before
+  left, always for somebody on foot. 13 collisions in the 10 s became 5–8
+  (over the whole ring, ~350 agents); the stuck report near the camera
+  shows only a zebra and a person in the way.
+
+The floating figure in the earlier films was the capture's own avatar,
+in fly mode, its clips not on the movie clock: film traffic from a free
+camera (`--shot-mode free --look-at`), not `--shot-mode avatar`.
