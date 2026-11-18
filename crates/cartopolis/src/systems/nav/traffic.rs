@@ -63,7 +63,7 @@ use cartopolis_geo::traffic::{DriveLine, Flow, Pavements, Uses, PAVEMENT_CLEARAN
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, AnchoredCamera};
 use crate::systems::give_way;
-use crate::systems::traffic_physics::{BodyKind, TrafficPhysics};
+use crate::systems::traffic_physics::{BodyKind, Size, TrafficPhysics};
 
 /// How many cars exist. Fixed for the life of the process.
 ///
@@ -1100,6 +1100,8 @@ pub struct Car {
     /// Its place in its own pool, from 0: the first so many of a pool are
     /// out at an hour (`traffic_hours`), the rest stay home.
     ordinal: u16,
+    /// Its Rapier body's box, from its model; `None` for its kind's.
+    size: Option<Size>,
     /// Its Rapier body (`traffic_physics`), made the first frame it drives.
     body: Option<rapier3d::prelude::RigidBodyHandle>,
     /// In a collision, or getting going again after one ([`Crash`]).
@@ -1114,8 +1116,6 @@ pub struct Car {
     /// smoothness count of `CARTO_TRAFFIC_OVERLAPS`).
     drawn: Vec2,
     drawn_step: Vec2,
-    /// The push it is drawn with: `TrafficPhysics::deviation`, eased.
-    shown_push: Vec2,
 }
 
 /// How long a newly placed agent cannot collide: placement keeps clear of
@@ -1125,9 +1125,6 @@ const SETTLE_IN_S: f32 = 1.0;
 /// How far a body may fall behind where its way has it before the way
 /// waits for it, metres (`traffic_physics::deviation`).
 const HELD_BACK_M: f32 = 0.5;
-/// How quickly what Rapier pushed an agent by shows in where it is drawn,
-/// seconds.
-const PUSH_EASE_S: f32 = 0.2;
 /// How many agents may be put on the road in one frame. Each is checked
 /// against the bodies Rapier has stepped, so the first frame of a fresh
 /// ring — every pool empty — would otherwise put hundreds down blind, on
@@ -1640,7 +1637,8 @@ pub fn setup_traffic(
         on: tail_on,
     });
 
-    let bodies: Vec<(CarBody, [Handle<Mesh>; 3])> = CarBody::ALL
+    // Each body with the box its Rapier body is: the drawn body's bounds.
+    let bodies: Vec<(CarBody, [Handle<Mesh>; 3], Size)> = CarBody::ALL
         .iter()
         .map(|&b| {
             let m = b.build();
@@ -1651,6 +1649,7 @@ pub fn setup_traffic(
                     meshes.add(model_mesh_to_bevy(&m.trim)),
                     meshes.add(model_mesh_to_bevy(&m.tail)),
                 ],
+                model_size(&m.body),
             )
         })
         .collect();
@@ -1686,24 +1685,24 @@ pub fn setup_traffic(
             last_cross: None,
             foot_down: 0.0,
             ordinal: i as u16,
+            size: None,
             body: None,
             crash: None,
             waited: 0.0,
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
-            shown_push: Vec2::ZERO,
         }
     };
 
     for i in 0..MAX_CARS {
-        let (body, [body_mesh, trim_mesh, tail_mesh]) = {
+        let (body, [body_mesh, trim_mesh, tail_mesh], size) = {
             let b = CarBody::for_index(i);
-            let (_, m) = bodies
+            let (_, m, size) = bodies
                 .iter()
-                .find(|(k, _)| *k == b)
+                .find(|(k, ..)| *k == b)
                 .expect("every body is built");
-            (b, m.clone())
+            (b, m.clone(), *size)
         };
         let paint = if body.fleet_white() && rand01(0x0CA2, i as u64, 3) < 0.7 {
             white_paint.clone()
@@ -1736,7 +1735,10 @@ pub fn setup_traffic(
                 ChildOf(root),
                 HideInSpace,
                 AgentKind::Car,
-                agent(AgentKind::Car, i, 0x0CA2, AgentParts::Car { tail }),
+                Car {
+                    size: Some(size),
+                    ..agent(AgentKind::Car, i, 0x0CA2, AgentParts::Car { tail })
+                },
             ))
             .id();
         commands.entity(trim_part).insert(ChildOf(car));
@@ -2683,9 +2685,10 @@ pub fn drive_traffic(
             .filter(|l| kind.may_use(l.uses) || (kind == AgentKind::Cyclist && l.kind_cycles));
         // Its Rapier body, and whether a collision has it (`collide_traffic`):
         // then Rapier moves it, not its line.
+        let size = car.size;
         let handle = *car
             .body
-            .get_or_insert_with(|| physics.agent_body(entity.to_bits(), kind));
+            .get_or_insert_with(|| physics.agent_body(entity.to_bits(), kind, size));
         let knocked = car.crash.is_some_and(|c| !c.recovering);
         car.driven += time.delta_secs();
         if knocked {
@@ -2695,7 +2698,7 @@ pub fn drive_traffic(
         // held back from where its way had it (`traffic_physics::deviation`).
         // Held back, its way waits for it — the path does not run on ahead of
         // a body that something stands in front of.
-        let mut push = if knocked {
+        let push = if knocked {
             Vec2::ZERO
         } else {
             physics.deviation(handle).unwrap_or(Vec2::ZERO)
@@ -2706,8 +2709,6 @@ pub fn drive_traffic(
                 Some(t) => t.t = (t.t - held_back / t.len.max(0.5)).max(0.0),
                 None => car.s = (car.s - held_back).max(0.0),
             }
-            // The way has come back to it by that much.
-            push += car.heading * held_back;
             if let Some((_, _, moving)) = physics.pose(handle) {
                 car.speed = car.speed.min(moving);
             }
@@ -3078,12 +3079,14 @@ pub fn drive_traffic(
         if line.is_none() {
             // A spot is free when the agent's body stood there would be
             // inside nobody else's (`traffic_physics::is_clear`).
+            let size = car.size;
             let free = |l: &WorldDriveLine, along: f32, dir: f32| {
                 let (centre, heading) = l.at(along);
                 let travel = heading * dir;
                 let p = centre + right_of(travel) * kind.offset(l);
                 physics.is_clear(
                     kind,
+                    size,
                     Vec3::new(p.x, terrain.ground_at(p.x, p.y), p.y),
                     travel,
                 )
@@ -3121,7 +3124,6 @@ pub fn drive_traffic(
                     car.last_cross = None;
                     car.foot_down = 0.0;
                     placed_now += 1;
-                    car.shown_push = Vec2::ZERO;
                     car.drawn = Vec2::ZERO;
                     car.waited = 0.0;
                     car.driven = 0.0;
@@ -3323,19 +3325,20 @@ pub fn drive_traffic(
         // has it loose — and drawn where Rapier let it get to: pushed aside
         // by somebody, or held back.
         if !car.crash.is_some_and(|c| !c.recovering) {
-            physics.place(
+            // Where the last step left it: a body moves continuously, so this
+            // is drawn without the shake that its way plus a push had, and is
+            // never somewhere the solver would not let it be.
+            let body_at = physics.pose(handle).map(|p| p.0);
+            let put = physics.place(
                 handle,
                 Vec3::new(pos.x, y, pos.y),
                 facing,
                 facing * car.speed,
                 dt,
             );
-            // Eased, not taken outright: the solver's push changes from step to
-            // step as two bodies touch and part, and drawn raw it shook.
-            let ease = 1.0 - (-dt / PUSH_EASE_S).exp();
-            let shown = car.shown_push + (push - car.shown_push) * ease;
-            car.shown_push = shown;
-            pos += shown;
+            if let (false, Some(at)) = (put, body_at) {
+                pos = at;
+            }
         }
         // `CARTO_TRAFFIC_OVERLAPS`'s smoothness count: how much the drawn
         // step changes frame to frame, for whoever is near the camera.
@@ -5126,13 +5129,13 @@ mod tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            size: None,
             body: None,
             crash: None,
             waited: 0.0,
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
-            shown_push: Vec2::ZERO,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -5165,13 +5168,13 @@ mod tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            size: None,
             body: None,
             crash: None,
             waited: 0.0,
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
-            shown_push: Vec2::ZERO,
         }
     }
 
@@ -5391,13 +5394,13 @@ mod crossing_tests {
             last_cross: None,
             foot_down: 0.0,
             ordinal: 0,
+            size: None,
             body: None,
             crash: None,
             waited: 0.0,
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
-            shown_push: Vec2::ZERO,
         }
     }
 
@@ -5664,4 +5667,24 @@ pub struct Jitter {
     max: [f32; 4],
     n: [u32; 4],
     reported: f32,
+}
+
+/// The Rapier box for an agent drawn as `mesh`: its bounds across, up and
+/// along, and how far their middle is ahead of the model's origin.
+fn model_size(mesh: &cartopolis_geo::agent_models::ModelMesh) -> Size {
+    let (lo, hi) = mesh.positions.iter().fold(
+        (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+        |(lo, hi), p| {
+            let p = Vec3::from_array(*p);
+            (lo.min(p), hi.max(p))
+        },
+    );
+    Size {
+        half: Vec3::new(
+            lo.x.abs().max(hi.x.abs()),
+            (hi.y * 0.5).max(0.3),
+            (hi.z - lo.z) * 0.5,
+        ),
+        centre_z: (hi.z + lo.z) * 0.5,
+    }
 }

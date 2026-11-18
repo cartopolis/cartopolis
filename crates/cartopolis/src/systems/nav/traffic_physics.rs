@@ -78,10 +78,30 @@ impl BodyKind {
             Self::Agent(AgentKind::Walker) | Self::Avatar => 75.0,
         }
     }
+}
 
-    fn shape(self) -> Box<dyn Shape> {
-        let h = self.half();
-        if self.on_foot() {
+/// A body's box: half its width, height and length, and how far its middle
+/// is ahead of the point the traffic puts it at (a car's origin is between
+/// its wheels, not under its middle).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Size {
+    pub half: Vec3,
+    pub centre_z: f32,
+}
+
+impl Size {
+    /// The size a body of `kind` has when its model gives none.
+    #[must_use]
+    pub fn of(kind: BodyKind) -> Self {
+        Self {
+            half: kind.half(),
+            centre_z: 0.0,
+        }
+    }
+
+    fn shape(self, kind: BodyKind) -> Box<dyn Shape> {
+        let h = self.half;
+        if kind.on_foot() {
             Box::new(Capsule::new_y(h.y - h.x, h.x))
         } else {
             Box::new(Cuboid::new(RVec::new(h.x, h.y, h.z)))
@@ -190,6 +210,8 @@ pub struct TrafficPhysics {
     targets: HashMap<RigidBodyHandle, Vec3>,
     /// The bodies a collision has loose (`knock`): Rapier alone moves them.
     knocked: HashSet<RigidBodyHandle>,
+    /// Each body's size, for the sweep ahead of it.
+    sizes: HashMap<RigidBodyHandle, Size>,
     touches: Touches,
 }
 
@@ -204,6 +226,7 @@ impl Default for TrafficPhysics {
             avatars: Vec::new(),
             targets: HashMap::new(),
             knocked: HashSet::new(),
+            sizes: HashMap::new(),
             touches: Touches::default(),
         }
     }
@@ -229,8 +252,8 @@ impl TrafficPhysics {
     /// anything — the solver pushes bodies apart. Held to its height and
     /// upright, and turned by the traffic, not by what it touches. An
     /// avatar's is kinematic: where an avatar is, the server says.
-    fn insert(&mut self, kind: BodyKind, tag: u128) -> RigidBodyHandle {
-        let h = kind.half();
+    fn insert(&mut self, kind: BodyKind, tag: u128, size: Size) -> RigidBodyHandle {
+        let h = size.half;
         let body = if kind == BodyKind::Avatar {
             RigidBodyBuilder::kinematic_position_based()
         } else {
@@ -248,7 +271,7 @@ impl TrafficPhysics {
             ColliderBuilder::cuboid(h.x, h.y, h.z)
         }
         // Half its height up, so the body stands on the point it is put at.
-        .translation(RVec::new(0.0, h.y, 0.0))
+        .translation(RVec::new(0.0, h.y, size.centre_z))
         .mass(kind.mass())
         .friction(0.6)
         .restitution(0.15)
@@ -257,12 +280,24 @@ impl TrafficPhysics {
         .active_collision_types(ActiveCollisionTypes::all())
         .build();
         self.world.insert_collider(collider, Some(handle));
+        self.sizes.insert(handle, size);
         handle
     }
 
-    /// A body for the agent `entity_bits` of `kind`.
-    pub fn agent_body(&mut self, entity_bits: u64, kind: AgentKind) -> RigidBodyHandle {
-        let h = self.insert(BodyKind::Agent(kind), u128::from(entity_bits));
+    /// A body for the agent `entity_bits` of `kind`, the size of the model it
+    /// is drawn as (`size`), or its kind's if none is given.
+    pub fn agent_body(
+        &mut self,
+        entity_bits: u64,
+        kind: AgentKind,
+        size: Option<Size>,
+    ) -> RigidBodyHandle {
+        let kind = BodyKind::Agent(kind);
+        let h = self.insert(
+            kind,
+            u128::from(entity_bits),
+            size.unwrap_or(Size::of(kind)),
+        );
         self.agents.push((h, false));
         h
     }
@@ -313,7 +348,9 @@ impl TrafficPhysics {
     /// set to arrive there by the next step — no more than
     /// [`MAX_CORRECTION`] off its own velocity, so one pushed aside eases
     /// back rather than shoving its way home — and Rapier decides whether
-    /// it gets there: whatever is in the way stops it.
+    /// it gets there: whatever is in the way stops it. Whether it was put
+    /// there outright instead (switched on, or its way jumped), when where
+    /// the last step left it means nothing.
     pub fn place(
         &mut self,
         body: RigidBodyHandle,
@@ -321,7 +358,7 @@ impl TrafficPhysics {
         facing: Vec2,
         velocity: Vec2,
         dt: f32,
-    ) {
+    ) -> bool {
         let local = self.local(at);
         if let Some(e) = self.agents.iter_mut().find(|e| e.0 == body) {
             e.1 = true;
@@ -333,10 +370,10 @@ impl TrafficPhysics {
             Vec2::new(before.x - local.x, before.z - local.z).length() > TELEPORT_M
         });
         if self.knocked.contains(&body) {
-            return;
+            return false;
         }
         let Some(rb) = self.world.bodies.get_mut(body) else {
-            return;
+            return true;
         };
         let rot = rq(yaw(facing));
         let cur = rb.translation();
@@ -346,7 +383,7 @@ impl TrafficPhysics {
             rb.set_enabled(true);
             rb.set_position(Pose::from_parts(rv(local), rot), true);
             rb.set_linvel(RVec::new(velocity.x, 0.0, velocity.y), true);
-            return;
+            return true;
         }
         // At its height (the road rises and falls; the body is held to it),
         // facing its way.
@@ -361,6 +398,7 @@ impl TrafficPhysics {
         };
         let v = velocity + (want - velocity).clamp_length_max(MAX_CORRECTION);
         rb.set_linvel(RVec::new(v.x, 0.0, v.y), true);
+        false
     }
 
     /// How far a body is from where it was last meant to be, on the ground:
@@ -453,7 +491,7 @@ impl TrafficPhysics {
     pub fn set_avatars(&mut self, at: &[Vec3]) {
         while self.avatars.len() < at.len() {
             let tag = AVATAR_TAG | self.avatars.len() as u128;
-            let h = self.insert(BodyKind::Avatar, tag);
+            let h = self.insert(BodyKind::Avatar, tag, Size::of(BodyKind::Avatar));
             self.avatars.push(h);
         }
         for i in 0..self.avatars.len() {
@@ -495,22 +533,32 @@ impl TrafficPhysics {
         travel: Vec2,
         dist: f32,
     ) -> Option<(f32, u128)> {
-        self.sweep(BodyKind::Agent(kind), Some(body), at, travel, dist, true)
+        let size = self.sizes.get(&body).copied();
+        self.sweep(
+            BodyKind::Agent(kind),
+            size,
+            Some(body),
+            at,
+            travel,
+            dist,
+            true,
+        )
     }
 
     /// Whether a body of `kind` stood at `at` facing `facing` would be
     /// inside any other: where an agent may not be put down.
     #[must_use]
-    pub fn is_clear(&self, kind: AgentKind, at: Vec3, facing: Vec2) -> bool {
+    pub fn is_clear(&self, kind: AgentKind, size: Option<Size>, at: Vec3, facing: Vec2) -> bool {
         self.origin.is_none()
             || self
-                .sweep(BodyKind::Agent(kind), None, at, facing, 0.0, false)
+                .sweep(BodyKind::Agent(kind), size, None, at, facing, 0.0, false)
                 .is_none()
     }
 
     fn sweep(
         &self,
         me: BodyKind,
+        size: Option<Size>,
         body: Option<RigidBodyHandle>,
         at: Vec3,
         travel: Vec2,
@@ -519,8 +567,11 @@ impl TrafficPhysics {
     ) -> Option<(f32, u128)> {
         let origin = self.origin?;
         let local = at - Vec3::new(origin.x, 0.0, origin.y);
-        let pose = Pose::from_parts(rv(local + Vec3::Y * me.half().y), rq(yaw(travel)));
-        let shape = me.shape();
+        let size = size.unwrap_or(Size::of(me));
+        let turn = yaw(travel);
+        let centre = local + Vec3::Y * size.half.y + turn * Vec3::Z * size.centre_z;
+        let pose = Pose::from_parts(rv(centre), rq(turn));
+        let shape = size.shape(me);
         let options = ShapeCastOptions {
             max_time_of_impact: dist,
             target_distance: 0.0,
@@ -611,12 +662,12 @@ mod tests {
     #[test]
     fn a_car_sees_what_it_would_run_into() {
         let mut p = TrafficPhysics::default();
-        let me = p.agent_body(1, AgentKind::Car);
-        let crossing = p.agent_body(2, AgentKind::Car);
-        let beside = p.agent_body(3, AgentKind::Car);
-        p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        p.place(crossing, at(0.0, 20.0), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
-        p.place(beside, at(4.0, 8.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let me = p.agent_body(1, AgentKind::Car, None);
+        let crossing = p.agent_body(2, AgentKind::Car, None);
+        let beside = p.agent_body(3, AgentKind::Car, None);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(crossing, at(0.0, 20.0), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(beside, at(4.0, 8.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let (gap, tag) = p
             .look_ahead(me, AgentKind::Car, at(0.0, 0.0), Vec2::Y, 30.0)
@@ -634,17 +685,17 @@ mod tests {
     #[test]
     fn a_collision_shoves_by_mass_and_comes_to_rest() {
         let mut p = TrafficPhysics::default();
-        let car = p.agent_body(1, AgentKind::Car);
-        let bike = p.agent_body(2, AgentKind::Cyclist);
+        let car = p.agent_body(1, AgentKind::Car, None);
+        let bike = p.agent_body(2, AgentKind::Cyclist, None);
         let (mut zc, zb) = (0.0f32, 4.0f32);
-        p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
-        p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
+        let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let mut touched = None;
         for _ in 0..120 {
             zc += 8.0 / 60.0;
-            p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
-            p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
+            let _ = p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
+            let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
             let t = p.step(1.0 / 60.0);
             if let Some(t) = t.first() {
                 touched = Some(*t);
@@ -680,12 +731,12 @@ mod tests {
     #[test]
     fn a_hidden_agent_is_in_nobodys_way() {
         let mut p = TrafficPhysics::default();
-        let me = p.agent_body(1, AgentKind::Car);
-        let gone = p.agent_body(2, AgentKind::Car);
-        p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        p.place(gone, at(0.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let me = p.agent_body(1, AgentKind::Car, None);
+        let gone = p.agent_body(2, AgentKind::Car, None);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(gone, at(0.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
-        p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         assert!(p
             .look_ahead(me, AgentKind::Car, at(0.0, 0.0), Vec2::Y, 20.0)
@@ -696,8 +747,8 @@ mod tests {
     #[test]
     fn an_avatar_is_in_the_way() {
         let mut p = TrafficPhysics::default();
-        let me = p.agent_body(1, AgentKind::Cyclist);
-        p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let me = p.agent_body(1, AgentKind::Cyclist, None);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.set_avatars(&[at(0.2, 6.0)]);
         p.step(1.0 / 60.0);
         let (_, tag) = p
@@ -710,12 +761,12 @@ mod tests {
     #[test]
     fn the_frame_moves_with_the_camera() {
         let mut p = TrafficPhysics::default();
-        let a = p.agent_body(1, AgentKind::Car);
-        p.place(a, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let a = p.agent_body(1, AgentKind::Car, None);
+        let _ = p.place(a, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
-        let b = p.agent_body(2, AgentKind::Car);
-        p.place(a, at(9_000.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        p.place(b, at(9_000.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let b = p.agent_body(2, AgentKind::Car, None);
+        let _ = p.place(a, at(9_000.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(b, at(9_000.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let (pos, ..) = p.pose(a).unwrap();
         assert!((pos - Vec2::new(9_000.0, 0.0)).length() < 0.01, "{pos}");
@@ -735,8 +786,8 @@ mod driven_tests {
     #[test]
     fn nothing_drives_through_anything() {
         let mut p = TrafficPhysics::default();
-        let car = p.agent_body(1, AgentKind::Car);
-        let bike = p.agent_body(2, AgentKind::Cyclist);
+        let car = p.agent_body(1, AgentKind::Car, None);
+        let bike = p.agent_body(2, AgentKind::Cyclist, None);
         let dt = 1.0 / 60.0;
         let mut zc = 0.0f32;
         p.place(
@@ -746,7 +797,7 @@ mod driven_tests {
             Vec2::new(0.0, 1.5),
             dt,
         );
-        p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
+        let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
         for _ in 0..600 {
             zc += 1.5 * dt;
             p.place(
@@ -756,7 +807,7 @@ mod driven_tests {
                 Vec2::new(0.0, 1.5),
                 dt,
             );
-            p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
+            let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
             p.step(dt);
             let deepest = p.overlaps(0.0).iter().map(|o| o.2).fold(0.0f32, f32::max);
             assert!(deepest < 0.1, "{deepest} m inside each other");
