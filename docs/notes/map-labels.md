@@ -1,7 +1,7 @@
 ---
 topic: rendering
 triggers: [street_labels.rs, vector_tiles/labels.rs, systems::street_labels, "street names", "labels", "place_labels", "text on the map", fontdue, HEIGHT_BANDS, GroundLayer::StreetLabel]
-updated: 2026-11-01
+updated: 2026-11-18
 ---
 
 # Text on the map lies on the ground, and is not baked into the tiles
@@ -79,3 +79,23 @@ building in front of it hides it, and it does not move.
 Adding the other label layers is the same machinery with a different anchor
 (`place_labels` is points, not lines), though a *place* name is arguably the case
 where the overlay argument does win — a city is not a surface you can write on.
+
+## At street level the names stand up
+
+Lying flat, a name is unreadable from a walker's 1.7 m: the road is seen almost
+edge-on, so the 3.5 m band's letters are a few pixels tall and turned sideways
+(reported 2026-11-18 from the phone in Nieuwstad). Below `UPRIGHT_BELOW_M` (15 m
+of camera height **over the ground under it** — `altitude_m` is over the sphere,
+so the terrain field is subtracted) the same quad is turned a quarter about its
+baseline into a 1 m board, its lower edge 0.35 m up, set `UPRIGHT_SIDE_M` (2.5 m)
+off the centre line to the far side from the camera and facing back at it
+(`stand_aside`). On the centre line it would be edge-on to whoever walks down the
+street — the same failure as lying flat. Selection shrinks to 300 m and a name
+repeats every 90 m, since a board is legible for a street or two.
+
+It is a step like the size bands (`Band`), not a tilt that follows the camera,
+so nothing re-places during a descent. Two other designs were drawn
+(`docs/mockups/street-names/`): a blue street-name plate on the corner building
+of each junction, and a "you are in" chip under the search bar. The owner chose
+the standing name. Known cost: a board stands in the street and a walker passes
+through it.

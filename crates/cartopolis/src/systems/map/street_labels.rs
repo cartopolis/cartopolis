@@ -84,6 +84,86 @@ const HEIGHT_BANDS: [(f32, f32); 5] = [
     (f32::MAX, 28.0),
 ];
 
+/// Camera height above the ground under it below which the names **stand up**.
+///
+/// Lying flat, a name is read through the road's foreshortening, and from a
+/// walker's 1.7 m the road is seen almost edge-on: the 3.5 m band's letters are a
+/// few pixels tall and run sideways across the frame — a white smear on the
+/// pavers (asked 2026-11-18, `docs/mockups/street-names/`). Below this the quad
+/// is turned upright on its baseline, a low board standing at the street's side.
+/// A step, like the size bands, so nothing re-places during a descent.
+const UPRIGHT_BELOW_M: f32 = 15.0;
+
+/// Height of a standing name's quad, halo margin included. About knee to chest
+/// height: readable from across the street, low enough not to wall it off.
+const UPRIGHT_HEIGHT_M: f32 = 1.0;
+
+/// Gap between a standing name's lower edge and the ground.
+const UPRIGHT_LIFT_M: f32 = 0.35;
+
+/// How far a standing name is set off its street's centre line, to the far side
+/// from the camera. On the centre line it is edge-on to whoever walks down the
+/// street, which is the view it is for; set aside, it is seen at an angle and
+/// faces the walker. Less than half of a narrow inner-city street, so it stays on
+/// the paving rather than inside the façades.
+const UPRIGHT_SIDE_M: f32 = 2.5;
+
+/// Selection radius for standing names. A board in the street is only legible
+/// for a street or two, and 900 m of them would stand in every open square.
+const UPRIGHT_SELECT_M: f32 = 300.0;
+
+/// Same-name gap for standing names: a walker passes a block in a minute, and
+/// the next board along the same street should be there by then.
+const UPRIGHT_SAME_NAME_GAP_M: f32 = 90.0;
+
+/// How the names are written for the current camera height: the size, and whether
+/// they lie on the road or stand beside it. A change of it re-places the layer.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Band {
+    height_m: f32,
+    upright: bool,
+}
+
+impl Band {
+    fn for_view(alt: f32, above_ground: f32) -> Self {
+        if above_ground < UPRIGHT_BELOW_M {
+            Self {
+                height_m: UPRIGHT_HEIGHT_M,
+                upright: true,
+            }
+        } else {
+            Self {
+                height_m: label_height(alt),
+                upright: false,
+            }
+        }
+    }
+
+    fn select_m(self) -> f32 {
+        if self.upright {
+            UPRIGHT_SELECT_M
+        } else {
+            SELECT_RADIUS_M
+        }
+    }
+
+    fn same_name_gap_m(self) -> f32 {
+        if self.upright {
+            UPRIGHT_SAME_NAME_GAP_M
+        } else {
+            SAME_NAME_GAP_M
+        }
+    }
+
+    #[cfg(test)]
+    fn flat(height_m: f32) -> Self {
+        Self {
+            height_m,
+            upright: false,
+        }
+    }
+}
+
 /// Ground radius around the view centre that labels are chosen for.
 ///
 /// Selection is world-space, so without this the pool spreads itself over the
@@ -374,7 +454,7 @@ struct PlacedState {
     /// flat plane — the same contract the surfaces, both building streamers and the
     /// route line carry (see `docs/notes/terrain-relief.md`).
     terrain_revision: u32,
-    height_m: f32,
+    band: Band,
     /// Camera heading the labels were oriented for.
     yaw: f32,
     /// Ground point the selection disc was centred on.
@@ -441,22 +521,25 @@ pub fn update_street_labels(
         return;
     }
 
-    let height_m = label_height(alt);
-    // The camera's screen-right on the ground: which way round a name has to be
-    // written to read left-to-right from where the camera is now.
-    let right = cam_tf.right();
-    let cam_right = Vec2::new(right.x, right.z).normalize_or_zero();
-    let cam_yaw = cam_right.y.atan2(cam_right.x);
+    // `alt` is over the sphere; what decides standing up is the camera's height
+    // over the ground it is above, which the terrain field holds.
     let edge = f64::from(WORLD_CELL_EDGE);
     let cam_ground = Vec2::new(
         (cam_cell.x as f64 * edge + f64::from(cam_tf.translation.x)) as f32,
         (cam_cell.z as f64 * edge + f64::from(cam_tf.translation.z)) as f32,
     );
+    let band = Band::for_view(alt, alt - terrain.at(cam_ground.x, cam_ground.y));
+    let height_m = band.height_m;
+    // The camera's screen-right on the ground: which way round a name has to be
+    // written to read left-to-right from where the camera is now.
+    let right = cam_tf.right();
+    let cam_right = Vec2::new(right.x, right.z).normalize_or_zero();
+    let cam_yaw = cam_right.y.atan2(cam_right.x);
     let view_at = ground_focus(cam_ground, alt, cam_tf.forward().as_vec3());
     let want = PlacedState {
         revision: store.revision,
         terrain_revision: terrain.revision,
-        height_m,
+        band,
         yaw: cam_yaw,
         at: view_at,
         complete: true,
@@ -466,7 +549,7 @@ pub fn update_street_labels(
         let moved = p.at.distance(view_at) > MOVE_REPLACE_M;
         if p.revision == want.revision
             && p.terrain_revision == want.terrain_revision
-            && p.height_m == want.height_m
+            && p.band == want.band
             && !turned
             && !moved
             && p.complete
@@ -503,7 +586,7 @@ pub fn update_street_labels(
             signs.extents.insert(name.to_string(), e);
             e
         },
-        height_m,
+        band,
         cam_right,
         view_at,
     );
@@ -653,8 +736,13 @@ pub fn update_street_labels(
         // the *highest* of the two ends and the centre rather than the centre
         // alone: on a slope the ends are what a centre sample would bury, and
         // [`LABEL_Y`] is only half a metre of clearance to lose.
-        let half = p.dir * p.width_m * 0.5;
-        let ends = [p.centre - half, p.centre, p.centre + half];
+        let (centre, dir) = if band.upright {
+            stand_aside(p.centre, p.dir, cam_ground)
+        } else {
+            (p.centre, p.dir)
+        };
+        let half = dir * p.width_m * 0.5;
+        let ends = [centre - half, centre, centre + half];
         // A contributor that measured its own ground wins outright: the field is
         // 25 m per sample and a flood defence's crest is narrower than that, so
         // sampling it here would bury the name inside the embankment.
@@ -663,15 +751,29 @@ pub fn update_street_labels(
                 .map(|s| terrain.at(s.x, s.y))
                 .fold(f32::MIN, f32::max)
         });
-        let world = Vec3::new(p.centre.x, ground + LABEL_Y, p.centre.y);
+        let lift = if band.upright {
+            UPRIGHT_LIFT_M + height_m * 0.5
+        } else {
+            LABEL_Y
+        };
+        let world = Vec3::new(centre.x, ground + lift, centre.y);
         let (grid_cell, local) = grid.translation_to_grid(world.as_dvec3());
         cell.set_if_neq(grid_cell);
         // `dir` is where the baseline runs in world XZ; a yaw rotation sends the
         // quad's +X there. The sign on the Z term is the usual one: a yaw turns
         // +X towards −Z.
+        let yaw = Quat::from_rotation_y((-dir.y).atan2(dir.x));
+        // Standing: a quarter turn about the baseline first, which sends the
+        // quad's −Z (the top of the letters) up and its face (+Y) to +Z — the
+        // side the yaw then turns towards the camera.
+        let rotation = if band.upright {
+            yaw * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+        } else {
+            yaw
+        };
         tf.set_if_neq(Transform {
             translation: local,
-            rotation: Quat::from_rotation_y((-p.dir.y).atan2(p.dir.x)),
+            rotation,
             scale: Vec3::new(p.width_m, 1.0, height_m),
         });
         vis.set_if_neq(Visibility::Visible);
@@ -680,12 +782,31 @@ pub fn update_street_labels(
     tracing::debug!(
         alt,
         height_m,
+        upright = band.upright,
         chosen = chosen.len(),
         cached = signs.rasters.len(),
         complete,
         "street labels placed"
     );
     signs.placed = Some(PlacedState { complete, ..want });
+}
+
+/// Where a standing name goes, and which way its baseline runs: set
+/// [`UPRIGHT_SIDE_M`] off the centre line to the side away from the camera, and
+/// turned so its face looks back across the street at it.
+///
+/// The face is the yaw's +Z, which is `(-dir.y, dir.x)` on the ground; `dir`
+/// arrives flipped to read left-to-right on screen, which already puts that face
+/// towards the camera for a street crossing the view. For a street running
+/// *along* the view that flip is a coin toss, so the camera's own side of the
+/// street decides — unless it is so close to the centre line that the side
+/// would flip back and forth as it walks, where the screen rule stands.
+fn stand_aside(centre: Vec2, dir: Vec2, cam_ground: Vec2) -> (Vec2, Vec2) {
+    let face = Vec2::new(-dir.y, dir.x);
+    let side = face.dot(cam_ground - centre);
+    let dir = if side < -1.0 { -dir } else { dir };
+    let face = Vec2::new(-dir.y, dir.x);
+    (centre - face * UPRIGHT_SIDE_M, dir)
 }
 
 /// Texture height in metres for an altitude — see [`HEIGHT_BANDS`].
@@ -729,13 +850,14 @@ fn angle_delta(a: f32, b: f32) -> f32 {
 fn choose_labels<'a>(
     store: &'a StreetLabelStore,
     extent: &mut dyn FnMut(&str) -> (u32, u32),
-    height_m: f32,
+    band: Band,
     cam_right: Vec2,
     view_at: Vec2,
 ) -> Vec<Placement<'a>> {
+    let (height_m, select_m) = (band.height_m, band.select_m());
     let mut candidates: Vec<Placement<'a>> = Vec::new();
     for line in store.lines() {
-        if line.points[0].distance(view_at) > SELECT_RADIUS_M + line.length {
+        if line.points[0].distance(view_at) > select_m + line.length {
             continue; // nowhere near the view; cheap enough to test per line
         }
         let (tw, th) = extent(&line.name);
@@ -746,7 +868,7 @@ fn choose_labels<'a>(
         let Some((centre, mut dir)) = place_along(&line.points, width_m) else {
             continue;
         };
-        if centre.distance(view_at) > SELECT_RADIUS_M {
+        if centre.distance(view_at) > select_m {
             continue;
         }
         // Read left-to-right from where the camera is. With no camera basis (a
@@ -793,7 +915,7 @@ fn choose_labels<'a>(
         let bounds = footprint(&cand, height_m);
         let clash = placed.iter().any(|(r, name, at)| {
             !r.intersect(bounds).is_empty()
-                || (*name == cand.name && at.distance(cand.centre) < SAME_NAME_GAP_M)
+                || (*name == cand.name && at.distance(cand.centre) < band.same_name_gap_m())
         });
         if clash {
             continue;
@@ -1206,8 +1328,20 @@ mod tests {
             vec![Vec2::new(0.0, 0.0), Vec2::new(300.0, 0.0)],
         )]);
         let font = font();
-        let east = choose_labels(&store, &mut measure(&font), 5.0, Vec2::X, Vec2::ZERO);
-        let west = choose_labels(&store, &mut measure(&font), 5.0, -Vec2::X, Vec2::ZERO);
+        let east = choose_labels(
+            &store,
+            &mut measure(&font),
+            Band::flat(5.0),
+            Vec2::X,
+            Vec2::ZERO,
+        );
+        let west = choose_labels(
+            &store,
+            &mut measure(&font),
+            Band::flat(5.0),
+            -Vec2::X,
+            Vec2::ZERO,
+        );
         assert_eq!(east.len(), 1);
         assert_eq!(east[0].centre, west[0].centre, "the name stays on its spot");
         assert_eq!(
@@ -1228,11 +1362,25 @@ mod tests {
             vec![Vec2::ZERO, Vec2::new(40.0, 0.0)],
         )]);
         assert!(
-            choose_labels(&short, &mut measure(&font), 14.0, Vec2::X, Vec2::ZERO).is_empty(),
+            choose_labels(
+                &short,
+                &mut measure(&font),
+                Band::flat(14.0),
+                Vec2::X,
+                Vec2::ZERO
+            )
+            .is_empty(),
             "a 40 m street cannot carry an 18-character name at 14 m tall"
         );
         assert_eq!(
-            choose_labels(&short, &mut measure(&font), 3.4, Vec2::X, Vec2::ZERO).len(),
+            choose_labels(
+                &short,
+                &mut measure(&font),
+                Band::flat(3.4),
+                Vec2::X,
+                Vec2::ZERO
+            )
+            .len(),
             1,
             "at the street-level size it can"
         );
@@ -1252,7 +1400,13 @@ mod tests {
         );
         b.rank = 4;
         let store = store_with(vec![a, b]);
-        let chosen = choose_labels(&store, &mut measure(&font()), 8.0, Vec2::X, Vec2::ZERO);
+        let chosen = choose_labels(
+            &store,
+            &mut measure(&font()),
+            Band::flat(8.0),
+            Vec2::X,
+            Vec2::ZERO,
+        );
         assert_eq!(chosen.len(), 1, "both were written over each other");
         assert_eq!(chosen[0].name, "Grote Markt", "the bigger road wins");
     }
@@ -1271,7 +1425,13 @@ mod tests {
             vec![Vec2::new(0.0, 400.0), Vec2::new(300.0, 400.0)],
         );
         let store = store_with(vec![a, b, far]);
-        let chosen = choose_labels(&store, &mut measure(&font()), 5.0, Vec2::X, Vec2::ZERO);
+        let chosen = choose_labels(
+            &store,
+            &mut measure(&font()),
+            Band::flat(5.0),
+            Vec2::X,
+            Vec2::ZERO,
+        );
         assert_eq!(chosen.len(), 2, "near repeat dropped, far one kept");
         assert!(
             chosen[0].centre.distance(chosen[1].centre) >= SAME_NAME_GAP_M,
@@ -1308,6 +1468,36 @@ mod tests {
             .collect();
         assert!(heights.windows(2).all(|w| w[1] > w[0]), "{heights:?}");
         assert_eq!(label_height(60.0), label_height(119.0), "inside one band");
+    }
+
+    /// A walker's camera stands the names up; a camera over the roofs lays them
+    /// down — by height over the ground under it, not over the sphere.
+    #[test]
+    fn names_stand_up_at_street_level() {
+        assert!(Band::for_view(1.7, 1.7).upright, "first person");
+        assert!(
+            Band::for_view(41.7, 1.7).upright,
+            "on a 40 m hill, still walking"
+        );
+        assert!(!Band::for_view(40.0, 40.0).upright, "over the roofs");
+        assert_eq!(Band::for_view(40.0, 40.0).height_m, label_height(40.0));
+    }
+
+    /// A standing name goes to the far side of its street and faces back at the
+    /// camera, whichever way round the street was drawn.
+    #[test]
+    fn a_standing_name_faces_the_camera_from_across_the_street() {
+        // A street running north–south (+z is south), the camera 3 m east of it.
+        let cam = Vec2::new(3.0, 0.0);
+        for dir in [Vec2::Y, -Vec2::Y] {
+            let (at, dir) = stand_aside(Vec2::new(0.0, -20.0), dir, cam);
+            assert!(
+                at.x < 0.0,
+                "set off to the west, away from the camera: {at}"
+            );
+            let face = Vec2::new(-dir.y, dir.x);
+            assert!(face.dot(cam - at) > 0.0, "facing the camera");
+        }
     }
 
     /// The fast halo is the disc it replaced, pixel for pixel — on a real name and

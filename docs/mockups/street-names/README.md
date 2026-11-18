@@ -18,4 +18,5 @@ Three ways drawn over a capture from the person's phone in Nieuwstad: **A** a
 dark-blue street-name plate on the corner building of each junction, in the
 world; **B** the road name tilting upright along the kerb as the camera comes
 down; **C** a chip under the search bar naming the street the avatar is in.
-Proposed: A + C, with the road name fading out at eye height. Not decided yet.
+Proposed: A + C, with the road name fading out at eye height. **Chosen
+2026-11-18: B**, built in `systems::street_labels` (`map-labels.md`).
