@@ -274,21 +274,69 @@ const TURN_RATE_PER_MS: f32 = 0.12;
 /// floor governs city speeds and the rate above it governs fast roads.
 const TURN_RATE_FLOOR: f32 = 1.4;
 
-/// The gap a car keeps to the one in front of it, and the gap at which it has
-/// stopped entirely.
-///
-/// This is **not** the queueing simulation the module note rules out: there is
-/// still no give-way, no signal obedience and no collision test. It is one
-/// lookup in the occupancy map [`drive_traffic`] already builds for placement,
-/// against the nearest agent *on the same line travelling the same way* — the
-/// only pair that can visibly drive through each other, since two cars on one
-/// street at different speeds converge and then overlap for as long as it takes
-/// one of them to be recycled. Walkers are exempt: at 1.25 m/s two of them
-/// passing through each other is not what anybody is looking at, and a pavement
-/// where nobody can overtake is worse than one where they do.
-const HEADWAY_M: f32 = 24.0;
-/// See [`HEADWAY_M`]. A car's own length and a little more.
-const MIN_HEADWAY_M: f32 = 7.0;
+/// How one vehicle follows another: the Intelligent Driver Model (Treiber,
+/// Hennecke & Helbing 2000), the car-following law most microscopic traffic
+/// simulators use or offer. `s0` is the gap kept standing (bumper to
+/// bumper), `t` the time gap kept moving, `a` the comfortable acceleration and
+/// `b` the comfortable braking. The car values are the urban ones the
+/// literature calibrates at signalised junctions (a shorter time gap and a
+/// quicker start than on a motorway); a bike's are a bike's; a reckless driver
+/// follows closer.
+#[derive(Clone, Copy, Debug)]
+struct Idm {
+    s0: f32,
+    t: f32,
+    a: f32,
+    b: f32,
+}
+
+impl Idm {
+    fn of(kind: AgentKind, reckless: bool) -> Self {
+        match kind {
+            AgentKind::Car if reckless => Self {
+                s0: 1.0,
+                t: 0.6,
+                a: 2.5,
+                b: 3.0,
+            },
+            AgentKind::Car => Self {
+                s0: 2.0,
+                t: 1.2,
+                a: 1.5,
+                b: 2.0,
+            },
+            AgentKind::Cyclist => Self {
+                s0: 1.0,
+                t: 0.8,
+                a: 1.0,
+                b: 1.5,
+            },
+            AgentKind::Fatbike => Self {
+                s0: 0.8,
+                t: 0.6,
+                a: 2.0,
+                b: 2.5,
+            },
+            AgentKind::Walker => Self {
+                s0: 0.5,
+                t: 0.5,
+                a: 1.0,
+                b: 1.4,
+            },
+        }
+    }
+
+    /// The acceleration at `v` m/s toward `v0`, `gap` metres behind a leader
+    /// going `dv` m/s slower (bumper to bumper; `None` for a free road).
+    fn accel(self, v: f32, v0: f32, leader: Option<(f32, f32)>) -> f32 {
+        let free = 1.0 - (v / v0.max(0.1)).powi(4);
+        let Some((gap, dv)) = leader else {
+            return self.a * free;
+        };
+        let want = self.s0 + (v * self.t + v * dv / (2.0 * (self.a * self.b).sqrt())).max(0.0);
+        self.a * (free - (want / gap.max(0.05)).powi(2))
+    }
+}
 
 /// How much road an agent needs to itself when it is recycled.
 ///
@@ -1139,6 +1187,11 @@ const SETTLE_IN_S: f32 = 1.0;
 /// How far a body may fall behind where its way has it before the way
 /// waits for it, metres (`traffic_physics::deviation`).
 const HELD_BACK_M: f32 = 0.5;
+/// How far Rapier may push a vehicle sideways off its lane, and a walker off
+/// its line, metres (`TrafficPhysics::place`): a car stays on its side of
+/// the road, somebody on foot steps aside further.
+const LANE_SLACK_M: f32 = 0.3;
+const WALKER_SLACK_M: f32 = 1.0;
 /// How many agents may be put on the road in one frame. Each is checked
 /// against the bodies Rapier has stepped, so the first frame of a fresh
 /// ring — every pool empty — would otherwise put hundreds down blind, on
@@ -2261,6 +2314,11 @@ pub fn drive_traffic(
     };
     // The camera's absolute world XZ, which is the frame the network is in.
     let cam = anchored_xz(cam_cell, cam_tf.translation);
+    // Which way the camera looks on the ground; zero looking straight down.
+    let cam_ahead = {
+        let f = cam_tf.forward();
+        Vec2::new(f.x, f.z).normalize_or_zero()
+    };
     // The altitude, not `cam_tf.translation.y`: that is the height inside the
     // camera's 10 km grid cell, which wraps, so above the first cell the layer
     // came back on — and stayed on to the space tier, simulated and drawn.
@@ -2327,6 +2385,11 @@ pub fn drive_traffic(
     // It is a read-only pass over the same query — one hash insert per placed
     // agent, no allocation per frame beyond the maps themselves.
     let mut occupied: [HashMap<(LineKey, i8), Vec<f32>>; 4] = Default::default();
+    // The same, with each one's speed: whom a vehicle follows, and how fast
+    // it goes (`follow_speed`).
+    let mut leaders: [HashMap<(LineKey, i8), Vec<(f32, f32)>>; 4] = Default::default();
+    // How many of each pool are on the road.
+    let mut placed_count = [0usize; 4];
     // Where the walkers and the riders are, for the fatbikes weaving through
     // them; and where the fatbikes are, for the walkers making way. Only
     // while there are both, from the same read-only pass.
@@ -2362,6 +2425,11 @@ pub fn drive_traffic(
             .entry((key, lane_key(car.dir)))
             .or_default()
             .push(car.s);
+        leaders[kind.index()]
+            .entry((key, lane_key(car.dir)))
+            .or_default()
+            .push((car.s, car.speed));
+        placed_count[kind.index()] += 1;
         let Some((p, travel, _)) = pose_of(car, net.get(key), kind) else {
             continue;
         };
@@ -2812,7 +2880,19 @@ pub fn drive_traffic(
                     want = want.min(t.speed_limit());
                 }
                 note(want, "turn", f32::NAN, &mut why);
-                want = want.min(headway_speed(occupied, k, car.dir, car.s, want));
+                let (follow, hard) = follow_speed(
+                    &leaders[kind.index()],
+                    k,
+                    car.dir,
+                    car.s,
+                    car.speed,
+                    want,
+                    2.0 * reach_of(kind),
+                    Idm::of(kind, car.defiant),
+                    dt,
+                );
+                want = want.min(follow);
+                hard_brake |= hard;
                 note(want, "headway", f32::NAN, &mut why);
                 if let Some(gap) = bike_ahead {
                     let (shift, keep_to) = pass_cyclist(l, gap, want);
@@ -2868,7 +2948,7 @@ pub fn drive_traffic(
                         );
                         want = want.min(y.limit);
                         note(want, "person in path", f32::NAN, &mut why);
-                        hard_brake = y.hard;
+                        hard_brake |= y.hard;
                         room = y.room;
                     }
                     if !zebras.is_empty() && !car.defiant {
@@ -3179,10 +3259,21 @@ pub fn drive_traffic(
             // A spot is free when the agent's body stood there would be
             // inside nobody else's (`traffic_physics::is_clear`).
             let size = car.size;
+            // And, once the pool has filled, out of sight: behind the camera or
+            // far off (`unseen_m`), so nobody appears from nowhere in view.
+            let filling = placed_count[kind.index()] * 2 < quota[kind.index()];
             let free = |l: &WorldDriveLine, along: f32, dir: f32| {
                 let (centre, heading) = l.at(along);
                 let travel = heading * dir;
                 let p = centre + right_of(travel) * kind.offset(l);
+                let rel = p - cam;
+                let near = rel.length() < unseen_m(kind);
+                if !filling
+                    && near
+                    && (cam_ahead == Vec2::ZERO || rel.dot(cam_ahead) > -0.3 * rel.length())
+                {
+                    return false;
+                }
                 physics.is_clear(
                     kind,
                     size,
@@ -3435,6 +3526,7 @@ pub fn drive_traffic(
                 Vec3::new(pos.x, y, pos.y),
                 facing,
                 facing * car.speed,
+                if walker { WALKER_SLACK_M } else { LANE_SLACK_M },
                 dt,
             );
             if let (false, Some(at)) = (put, body_at) {
@@ -4150,27 +4242,35 @@ fn rotate_toward(from: Vec2, to: Vec2, max_rad: f32) -> Vec2 {
         .unwrap_or(to)
 }
 
-/// What speed the agent in front leaves this one. See [`HEADWAY_M`].
-fn headway_speed(
-    occupied: &HashMap<(LineKey, i8), Vec<f32>>,
+/// The speed the vehicle in front leaves this one this frame, by the IDM
+/// ([`Idm`]): the nearest of its kind ahead on its line going its way, from
+/// `leaders` (each: distance along, speed). `v` is its speed, `v0` the most
+/// it would do, `length` the two bodies' half lengths together; and whether
+/// that is harder braking than its own.
+#[allow(clippy::too_many_arguments)]
+fn follow_speed(
+    leaders: &HashMap<(LineKey, i8), Vec<(f32, f32)>>,
     key: LineKey,
     dir: f32,
     s: f32,
-    want: f32,
-) -> f32 {
-    let Some(others) = occupied.get(&(key, lane_key(dir))) else {
-        return want;
-    };
-    let gap = others
-        .iter()
-        .copied()
-        .filter(|o| *o > s + 1e-3)
-        .fold(f32::MAX, f32::min)
-        - s;
-    if gap >= HEADWAY_M {
-        return want;
+    v: f32,
+    v0: f32,
+    length: f32,
+    idm: Idm,
+    dt: f32,
+) -> (f32, bool) {
+    let lead = leaders.get(&(key, lane_key(dir))).and_then(|others| {
+        others
+            .iter()
+            .filter(|(o, _)| *o > s + 1e-3)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    });
+    let leader = lead.map(|&(o, lv)| (o - s - length, v - lv));
+    let a = idm.accel(v, v0, leader);
+    if a >= 0.0 {
+        return (v0, false);
     }
-    want * ((gap - MIN_HEADWAY_M) / (HEADWAY_M - MIN_HEADWAY_M)).clamp(0.0, 1.0)
+    ((v + a * dt.max(1.0 / 60.0)).max(0.0), a < -idm.b * 1.5)
 }
 
 /// The road a residential street runs at, m/s — the unit
@@ -4921,36 +5021,62 @@ mod tests {
         assert!(placed.len() > 6, "hardly anything was placed");
     }
 
-    /// A car keeps its distance from the one in front. Both ends matter: with
-    /// nobody ahead nothing changes at all, and at contact the speed is zero
-    /// rather than merely reduced.
+    /// A car follows the one in front by the IDM: it keeps about its time gap
+    /// behind one at its own speed, brakes for one stopped ahead in time to
+    /// stand its standing gap short of it, and a leader is not held up by
+    /// the car behind it, nor by one going the other way.
     #[test]
-    fn a_car_slows_for_the_one_in_front() {
+    fn a_car_keeps_its_distance() {
         let key = LineKey {
             cell: (0, 0),
             index: 0,
         };
-        let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
-        // The car itself, at 100 m, and one 10 m in front of it.
-        occupied.insert((key, 1), vec![100.0, 110.0]);
-        assert!(
-            headway_speed(&occupied, key, 1.0, 100.0, 14.0) < 14.0,
-            "a car 10 m behind another is not doing the speed limit"
-        );
+        let idm = Idm::of(AgentKind::Car, false);
+        let length = 2.0 * reach_of(AgentKind::Car);
+        let mut leaders: HashMap<(LineKey, i8), Vec<(f32, f32)>> = HashMap::new();
+        leaders.insert((key, 1), vec![(110.0, 0.0)]);
+        // The leader is not held up.
         assert_eq!(
-            headway_speed(&occupied, key, 1.0, 110.0, 14.0),
-            14.0,
-            "the leader is not held up by the car behind it"
+            follow_speed(&leaders, key, 1.0, 110.0, 10.0, 14.0, length, idm, 0.05).0,
+            14.0
         );
-        // Bumper to bumper.
-        occupied.insert((key, 1), vec![100.0, 100.0 + MIN_HEADWAY_M]);
-        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 0.0);
-        // Clear road.
-        occupied.insert((key, 1), vec![100.0, 100.0 + HEADWAY_M + 1.0]);
-        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 14.0);
-        // And a car coming the other way on the same line is not in the way.
-        occupied.insert((key, -1), vec![100.5]);
-        assert_eq!(headway_speed(&occupied, key, 1.0, 100.0, 14.0), 14.0);
+        // Driving at 10 m/s at a car stopped 60 m ahead: it ends up standing
+        // its standing gap behind it, and never inside it.
+        let (mut s, mut v) = (50.0f32, 10.0f32);
+        leaders.insert((key, 1), vec![(110.0, 0.0), (s, v)]);
+        for _ in 0..1200 {
+            let (want, _) = follow_speed(&leaders, key, 1.0, s, v, 14.0, length, idm, 0.05);
+            v += (want - v).clamp(-CAR_BRAKE * 0.05, CAR_ACCEL * 0.05);
+            v = v.max(0.0);
+            s += v * 0.05;
+            assert!(110.0 - s - length > 0.5, "into it at {s}");
+        }
+        let gap = 110.0 - s - length;
+        assert!(
+            (gap - idm.s0).abs() < 0.6 && v < 0.1,
+            "stood {gap} m back at {v}"
+        );
+        // Following one at its own 10 m/s, it settles at about its time gap.
+        let (mut s, mut v, mut lead) = (0.0f32, 10.0f32, 60.0f32);
+        for _ in 0..2400 {
+            leaders.insert((key, 1), vec![(lead, 10.0)]);
+            let (want, _) = follow_speed(&leaders, key, 1.0, s, v, 14.0, length, idm, 0.05);
+            v += (want.min(14.0) - v).clamp(-CAR_BRAKE * 0.05, CAR_ACCEL * 0.05);
+            s += v * 0.05;
+            lead += 10.0 * 0.05;
+        }
+        let gap = lead - s - length;
+        assert!(
+            (gap - (idm.s0 + 10.0 * idm.t)).abs() < 4.0,
+            "follows {gap} m back"
+        );
+        // One coming the other way on the same line is not in the way.
+        leaders.insert((key, -1), vec![(100.5, 10.0)]);
+        leaders.remove(&(key, 1));
+        assert_eq!(
+            follow_speed(&leaders, key, 1.0, 100.0, 10.0, 14.0, length, idm, 0.05).0,
+            14.0
+        );
     }
 
     /// At a junction a car goes **straight on** unless it is choosing to turn.
@@ -5968,4 +6094,11 @@ mod conflict_tests {
         );
         assert_eq!(path_conflict(car, beside, false), None);
     }
+}
+
+/// Within this of the camera, an agent of `kind` is put on the road only
+/// behind it (once the pool has filled), metres: the ring's own edge is
+/// further out, and appearing there, small and far, is not seen as appearing.
+fn unseen_m(kind: AgentKind) -> f32 {
+    kind.place_radius() * 0.8
 }

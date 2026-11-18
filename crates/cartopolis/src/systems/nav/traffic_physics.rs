@@ -130,6 +130,11 @@ const MAX_CORRECTION: f32 = 1.5;
 const MAX_STEP_S: f32 = 1.0 / 30.0;
 const MAX_STEPS: f32 = 8.0;
 
+/// How hard a body pushed off its lane beyond its slack is steered back:
+/// per metre beyond, per second, and the most, m/s.
+const LANE_GAIN: f32 = 6.0;
+const LANE_RETURN: f32 = 4.0;
+
 /// What a driven agent body may not do: leave its height, or tip or turn
 /// by itself (the traffic turns it).
 const DRIVEN_LOCKS: LockedAxes =
@@ -344,7 +349,8 @@ impl TrafficPhysics {
 
     /// Drive an agent's body toward where the traffic means it to be this
     /// frame: `at` its world point on the ground, `facing` its heading there,
-    /// `velocity` how it moves along its way, `dt` the frame. Its speed is
+    /// `velocity` how it moves along its way, `slack` the most it may be off
+    /// its lane sideways, `dt` the frame. Its speed is
     /// set to arrive there by the next step — no more than
     /// [`MAX_CORRECTION`] off its own velocity, so one pushed aside eases
     /// back rather than shoving its way home — and Rapier decides whether
@@ -357,6 +363,7 @@ impl TrafficPhysics {
         at: Vec3,
         facing: Vec2,
         velocity: Vec2,
+        slack: f32,
         dt: f32,
     ) -> bool {
         let local = self.local(at);
@@ -386,7 +393,15 @@ impl TrafficPhysics {
             return true;
         }
         // At its height (the road rises and falls; the body is held to it),
-        // facing its way.
+        // facing its way, and no further off its lane than `slack`: a car
+        // shoved by a bike stays on its side of the road, it does not drift
+        // across it and back.
+        let right = Vec2::new(-facing.y, facing.x);
+        let off = Vec2::new(cur.x - local.x, cur.z - local.z);
+        let across = off.dot(right);
+        // Beyond it, steered back hard — by speed, not by being moved, so
+        // the solver still keeps it out of whoever pushed it.
+        let beyond = across - across.clamp(-slack, slack);
         rb.set_position(
             Pose::from_parts(RVec::new(cur.x, local.y, cur.z), rot),
             true,
@@ -396,7 +411,8 @@ impl TrafficPhysics {
         } else {
             velocity
         };
-        let v = velocity + (want - velocity).clamp_length_max(MAX_CORRECTION);
+        let v = velocity + (want - velocity).clamp_length_max(MAX_CORRECTION)
+            - right * (beyond * LANE_GAIN).clamp(-LANE_RETURN, LANE_RETURN);
         rb.set_linvel(RVec::new(v.x, 0.0, v.y), true);
         false
     }
@@ -665,9 +681,16 @@ mod tests {
         let me = p.agent_body(1, AgentKind::Car, None);
         let crossing = p.agent_body(2, AgentKind::Car, None);
         let beside = p.agent_body(3, AgentKind::Car, None);
-        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        let _ = p.place(crossing, at(0.0, 20.0), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
-        let _ = p.place(beside, at(4.0, 8.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
+        let _ = p.place(
+            crossing,
+            at(0.0, 20.0),
+            Vec2::X,
+            Vec2::ZERO,
+            1.0,
+            1.0 / 60.0,
+        );
+        let _ = p.place(beside, at(4.0, 8.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let (gap, tag) = p
             .look_ahead(me, AgentKind::Car, at(0.0, 0.0), Vec2::Y, 30.0)
@@ -688,14 +711,28 @@ mod tests {
         let car = p.agent_body(1, AgentKind::Car, None);
         let bike = p.agent_body(2, AgentKind::Cyclist, None);
         let (mut zc, zb) = (0.0f32, 4.0f32);
-        let _ = p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
-        let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(
+            car,
+            at(0.0, zc),
+            Vec2::Y,
+            Vec2::new(0.0, 8.0),
+            1.0,
+            1.0 / 60.0,
+        );
+        let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let mut touched = None;
         for _ in 0..120 {
             zc += 8.0 / 60.0;
-            let _ = p.place(car, at(0.0, zc), Vec2::Y, Vec2::new(0.0, 8.0), 1.0 / 60.0);
-            let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0 / 60.0);
+            let _ = p.place(
+                car,
+                at(0.0, zc),
+                Vec2::Y,
+                Vec2::new(0.0, 8.0),
+                1.0,
+                1.0 / 60.0,
+            );
+            let _ = p.place(bike, at(0.0, zb), Vec2::X, Vec2::ZERO, 1.0, 1.0 / 60.0);
             let t = p.step(1.0 / 60.0);
             if let Some(t) = t.first() {
                 touched = Some(*t);
@@ -733,10 +770,10 @@ mod tests {
         let mut p = TrafficPhysics::default();
         let me = p.agent_body(1, AgentKind::Car, None);
         let gone = p.agent_body(2, AgentKind::Car, None);
-        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        let _ = p.place(gone, at(0.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
+        let _ = p.place(gone, at(0.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
-        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         assert!(p
             .look_ahead(me, AgentKind::Car, at(0.0, 0.0), Vec2::Y, 20.0)
@@ -748,7 +785,7 @@ mod tests {
     fn an_avatar_is_in_the_way() {
         let mut p = TrafficPhysics::default();
         let me = p.agent_body(1, AgentKind::Cyclist, None);
-        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(me, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.set_avatars(&[at(0.2, 6.0)]);
         p.step(1.0 / 60.0);
         let (_, tag) = p
@@ -762,11 +799,11 @@ mod tests {
     fn the_frame_moves_with_the_camera() {
         let mut p = TrafficPhysics::default();
         let a = p.agent_body(1, AgentKind::Car, None);
-        let _ = p.place(a, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(a, at(0.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let b = p.agent_body(2, AgentKind::Car, None);
-        let _ = p.place(a, at(9_000.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
-        let _ = p.place(b, at(9_000.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0 / 60.0);
+        let _ = p.place(a, at(9_000.0, 0.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
+        let _ = p.place(b, at(9_000.0, 10.0), Vec2::Y, Vec2::ZERO, 1.0, 1.0 / 60.0);
         p.step(1.0 / 60.0);
         let (pos, ..) = p.pose(a).unwrap();
         assert!((pos - Vec2::new(9_000.0, 0.0)).length() < 0.01, "{pos}");
@@ -789,25 +826,28 @@ mod driven_tests {
         let car = p.agent_body(1, AgentKind::Car, None);
         let bike = p.agent_body(2, AgentKind::Cyclist, None);
         let dt = 1.0 / 60.0;
+        const LANE: f32 = 0.3;
         let mut zc = 0.0f32;
-        p.place(
+        let _ = p.place(
             car,
             Vec3::new(0.0, 0.0, zc),
             Vec2::Y,
             Vec2::new(0.0, 1.5),
+            LANE,
             dt,
         );
-        let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
+        let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, 1.0, dt);
         for _ in 0..600 {
             zc += 1.5 * dt;
-            p.place(
+            let _ = p.place(
                 car,
                 Vec3::new(0.0, 0.0, zc),
                 Vec2::Y,
                 Vec2::new(0.0, 1.5),
+                LANE,
                 dt,
             );
-            let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, dt);
+            let _ = p.place(bike, Vec3::new(0.0, 0.0, 6.0), Vec2::X, Vec2::ZERO, 1.0, dt);
             p.step(dt);
             let deepest = p.overlaps(0.0).iter().map(|o| o.2).fold(0.0f32, f32::max);
             assert!(deepest < 0.1, "{deepest} m inside each other");
