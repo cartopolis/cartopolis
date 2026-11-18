@@ -4,7 +4,7 @@
 //! (the client's `systems::plans` draws it; `cartopolis_core::plans` is the
 //! shape, `docs/notes/plans.md` the sources and what was measured on them).
 //!
-//! Three open sources, none of them asking for a key:
+//! Four open sources, none of them asking for a key:
 //!
 //! - **The notices**: KOOP's repository of official publications, the
 //!   Gemeenteblad's records for the last [`NOTICE_DAYS`] days. 96 % carry a
@@ -16,6 +16,9 @@
 //! - **The names**: PDOK's location server, every street, neighbourhood and
 //!   district in the municipality with its centroid — the gazetteer a council
 //!   item's title is matched against, because council items carry no place.
+//! - **The works**: the city's maintenance programme for the year on its own
+//!   GeoServer ([`PROGRAMMES`]), each work a measure, a year and a shape, named
+//!   by its street through the geocoder ([`name_works`]).
 //!
 //! **Why a mirror rather than each client asking.** The notices take six pages
 //! of XML a year and the matching needs all three sources at once; done here it
@@ -32,10 +35,13 @@ use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use cartopolis_core::plans::{
-    council_key, short_title, CouncilDocument, CouncilItem, CouncilPlace, CouncilStep, Notice,
-    NoticeKind, PlansFeed,
+    council_key, metres, short_title, CouncilDocument, CouncilItem, CouncilPlace, CouncilStep,
+    Notice, NoticeKind, PlansFeed, Work, WorkKind,
 };
 use serde::Deserialize;
+
+use crate::geocoder::Geocoder;
+use crate::pipeline::rd::rd_to_lat_lng;
 
 /// The municipality as KOOP names it in `dt.creator`.
 pub const MUNICIPALITY: &str = "Groningen";
@@ -76,6 +82,23 @@ pub const MIN_NOTICES: usize = 200;
 const MAX_AREA_POINTS: usize = 64;
 /// Council items listed on one notice.
 const MAX_COUNCIL_PER_NOTICE: usize = 3;
+/// The city's GeoServer, where the maintenance programme is published
+/// (`docs/notes/municipal-registers.md` has its traps).
+const GEOSERVER: &str = "https://maps.groningen.nl/geoserver/ows";
+/// The maintenance programme's layers, one per kind of work: 729 works for
+/// 2026, read 2026-11-18.
+const PROGRAMMES: &[(&str, WorkKind)] = &[
+    ("prog-sbh:UITVOERINGPROGRAMMA_WEGEN", WorkKind::Road),
+    ("prog-sbh:UITVOERINGPROGRAMMA_RIOLERING", WorkKind::Sewer),
+    ("prog-sbh:UITVOERINGPROGRAMMA_BOMEN", WorkKind::Trees),
+    ("prog-sbh:UITVOERINGPROGRAMMA_KABELSOVL", WorkKind::Lighting),
+    (
+        "prog-sbh:UITVOERINGPROGRAMMA_KUNSTWERKEN_LIJN",
+        WorkKind::Structure,
+    ),
+];
+/// Vertices of a work asked for their street, at most.
+const STREET_SAMPLES: usize = 16;
 
 /// Council bodies whose agendas are about the business itself. The agenda
 /// committee, the presidium and the clerk's meetings list the same items again
@@ -502,13 +525,163 @@ pub fn council_items(meetings: &[Meeting], names: &[PlaceName]) -> Vec<CouncilIt
     out
 }
 
+// ---------------------------------------------------------------- the works
+
+/// One programme's features as the GeoServer answers them (`srsName` RD), as
+/// works with their shapes in `[lat, lng]`. A page short of its own
+/// `numberMatched`, or one not in RD, fails rather than thinning the year.
+pub fn parse_works(kind: WorkKind, doc: &serde_json::Value) -> Result<Vec<Work>, String> {
+    let features = doc["features"]
+        .as_array()
+        .ok_or("no features in the answer")?;
+    if let Some(matched) = doc["numberMatched"].as_u64() {
+        if matched as usize != features.len() {
+            return Err(format!("{} of {matched} features answered", features.len()));
+        }
+    }
+    let mut out = Vec::new();
+    for f in features {
+        // Each layer spells its columns its own way: MAATREGEL or maatregel.
+        let prop = |key: &str| -> Option<&serde_json::Value> {
+            f["properties"]
+                .as_object()?
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| v)
+        };
+        let text = |key: &str| -> Option<String> {
+            prop(key).and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.trim().to_string()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+        };
+        let (Some(measure), Some(year), Some(programme), Some(number)) = (
+            text("maatregel").filter(|m| !m.is_empty()),
+            text("jaar").and_then(|y| y.parse::<u16>().ok()),
+            text("programma"),
+            text("objectid"),
+        ) else {
+            continue;
+        };
+        let g = &f["geometry"];
+        let (mut areas, mut lines, mut points) = (Vec::new(), Vec::new(), Vec::new());
+        let ring = |v: &serde_json::Value| -> Result<Vec<[f64; 2]>, String> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .map(|p| {
+                    let (x, y) = (p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0));
+                    if !(0.0..300_000.0).contains(&x) || !(289_000.0..629_000.0).contains(&y) {
+                        return Err(format!("({x}, {y}) is not RD"));
+                    }
+                    let (lat, lng) = rd_to_lat_lng(x, y);
+                    Ok([r6(lat), r6(lng)])
+                })
+                .collect()
+        };
+        let c = &g["coordinates"];
+        match g["type"].as_str().unwrap_or("") {
+            "Polygon" => areas.push(thin(ring(&c[0])?)),
+            "MultiPolygon" => {
+                for poly in c.as_array().into_iter().flatten() {
+                    areas.push(thin(ring(&poly[0])?));
+                }
+            }
+            "LineString" => lines.push(thin(ring(c)?)),
+            "MultiLineString" => {
+                for l in c.as_array().into_iter().flatten() {
+                    lines.push(thin(ring(l)?));
+                }
+            }
+            "Point" => points.extend(ring(&serde_json::json!([c]))?),
+            "MultiPoint" => points.extend(ring(c)?),
+            _ => continue,
+        }
+        let all: Vec<[f64; 2]> = areas
+            .iter()
+            .chain(&lines)
+            .flatten()
+            .chain(&points)
+            .copied()
+            .collect();
+        // The vertex nearest the middle: on the shape, which the middle of an
+        // L-shaped street need not be.
+        let Some(mid) = middle(&all) else {
+            continue;
+        };
+        let pin = all
+            .iter()
+            .min_by(|a, b| {
+                metres((mid[0], mid[1]), (a[0], a[1]))
+                    .total_cmp(&metres((mid[0], mid[1]), (b[0], b[1])))
+            })
+            .copied()
+            .unwrap_or(mid);
+        out.push(Work {
+            id: format!("{programme}-{number}"),
+            kind,
+            measure,
+            year,
+            place: String::new(),
+            lat: pin[0],
+            lng: pin[1],
+            areas,
+            lines,
+            points,
+            council: Vec::new(),
+        });
+    }
+    Ok(out)
+}
+
+/// Name each work by its street: a gazetteer name in its own words first
+/// ("Relinen Korreweg fase 3"), else the street most of its vertices are
+/// nearest to, as `street` answers for a point.
+pub fn name_works(
+    works: &mut [Work],
+    names: &[PlaceName],
+    street: impl Fn(f64, f64) -> Option<String>,
+) {
+    for w in works {
+        if let Some(p) = names_in(&w.measure, names).first() {
+            w.place = p.name.clone();
+            continue;
+        }
+        let all: Vec<&[f64; 2]> = w
+            .areas
+            .iter()
+            .chain(&w.lines)
+            .flatten()
+            .chain(&w.points)
+            .collect();
+        let step = (all.len() / STREET_SAMPLES).max(1);
+        let mut votes: HashMap<String, usize> = HashMap::new();
+        for p in all.iter().step_by(step) {
+            if let Some(s) = street(p[0], p[1]) {
+                *votes.entry(s).or_default() += 1;
+            }
+        }
+        if let Some((s, _)) = votes
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        {
+            w.place = s;
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the feed
+
 /// The feed: notices classified, trimmed and linked to the council items that
-/// name a place their title or place names, newest first.
+/// name a place their title or place names, newest first; the works linked
+/// the same way by their measure and street.
 #[must_use]
 pub fn build_feed(
     raw: Vec<RawNotice>,
     meetings: &[Meeting],
     names: &[PlaceName],
+    mut works: Vec<Work>,
     built_unix: u64,
 ) -> PlansFeed {
     let council = council_items(meetings, names);
@@ -548,18 +721,35 @@ pub fn build_feed(
         })
         .collect();
     notices.sort_by(|a, b| b.date.cmp(&a.date).then(a.id.cmp(&b.id)));
+    for w in &mut works {
+        let words = format!("{} {}", w.measure, w.place);
+        let mut linked: Vec<u32> = names_in(&words, names)
+            .iter()
+            .flat_map(|n| by_name.get(n.name.as_str()).cloned().unwrap_or_default())
+            .collect();
+        linked.sort_unstable();
+        linked.dedup();
+        linked.truncate(MAX_COUNCIL_PER_NOTICE);
+        w.council = linked;
+    }
+    works.sort_by(|a, b| a.id.cmp(&b.id));
     let mut bbox = [90.0, 180.0, -90.0, -180.0];
-    for n in &notices {
-        bbox[0] = f64::min(bbox[0], n.lat);
-        bbox[1] = f64::min(bbox[1], n.lng);
-        bbox[2] = f64::max(bbox[2], n.lat);
-        bbox[3] = f64::max(bbox[3], n.lng);
+    let pins = notices
+        .iter()
+        .map(|n| (n.lat, n.lng))
+        .chain(works.iter().map(|w| (w.lat, w.lng)));
+    for (lat, lng) in pins {
+        bbox[0] = f64::min(bbox[0], lat);
+        bbox[1] = f64::min(bbox[1], lng);
+        bbox[2] = f64::max(bbox[2], lat);
+        bbox[3] = f64::max(bbox[3], lng);
     }
     PlansFeed {
         municipality: MUNICIPALITY.to_string(),
         built_unix,
         notices,
         council,
+        works,
         bbox,
     }
 }
@@ -630,6 +820,28 @@ fn fetch_meetings(agent: &ureq::Agent, from: u64, to: u64) -> Result<Vec<Meeting
     serde_json::from_str(&body).map_err(|e| format!("council meetings: {e}"))
 }
 
+/// Every programme's works, all of them or an error.
+fn fetch_works(agent: &ureq::Agent) -> Result<Vec<Work>, String> {
+    let mut out = Vec::new();
+    for (layer, kind) in PROGRAMMES {
+        let url = format!(
+            "{GEOSERVER}?service=WFS&version=2.0.0&request=GetFeature\
+             &outputFormat=application/json&srsName=EPSG:28992&typeNames={}",
+            encode(layer)
+        );
+        let body = read_body(
+            agent
+                .get(&url)
+                .call()
+                .map_err(|e| format!("{layer}: {e}"))?,
+        )?;
+        let doc: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("{layer}: {e}"))?;
+        out.extend(parse_works(*kind, &doc).map_err(|e| format!("{layer}: {e}"))?);
+    }
+    Ok(out)
+}
+
 /// Every street, neighbourhood and district of the municipality.
 fn fetch_gazetteer(agent: &ureq::Agent) -> Result<Vec<PlaceName>, String> {
     let mut docs = Vec::new();
@@ -675,6 +887,9 @@ pub struct PlansMirror {
     dir: PathBuf,
     refresh: bool,
     current: RwLock<Option<Copy>>,
+    /// Names a work by its street; without it a work is named only by the
+    /// streets in its own words.
+    geocoder: Option<Arc<Geocoder>>,
 }
 
 impl PlansMirror {
@@ -698,7 +913,15 @@ impl PlansMirror {
             dir,
             refresh,
             current: RwLock::new(current),
+            geocoder: None,
         }
+    }
+
+    /// Name works by the street the geocoder's addresses put them on.
+    #[must_use]
+    pub fn with_geocoder(mut self, geocoder: Arc<Geocoder>) -> Self {
+        self.geocoder = Some(geocoder);
+        self
     }
 
     fn due_in(&self) -> Duration {
@@ -772,6 +995,26 @@ impl PlansMirror {
         }
     }
 
+    /// The maintenance programme: fetched, else the last copy read. A
+    /// programme the city does not answer is no reason to hold back the
+    /// notices.
+    fn works(&self, agent: &ureq::Agent) -> Vec<Work> {
+        match fetch_works(agent) {
+            Ok(w) if !w.is_empty() => {
+                if let Ok(body) = serde_json::to_vec(&w) {
+                    let _ = self.write("works.json", &body);
+                }
+                w
+            }
+            other => {
+                if let Err(error) = other {
+                    tracing::warn!(%error, "works programme fetch failed; using the last copy");
+                }
+                self.read("works.json").unwrap_or_default()
+            }
+        }
+    }
+
     /// Build once and, if it holds enough notices, keep it. Blocking.
     fn refresh_blocking(&self) -> Result<(usize, usize), String> {
         let agent = agent();
@@ -786,10 +1029,18 @@ impl PlansMirror {
         }
         let names = self.names(&agent)?;
         let meetings = self.meetings(&agent);
+        let mut works = self.works(&agent);
+        let searcher = self.geocoder.as_ref().and_then(|g| g.searcher());
+        name_works(&mut works, &names, |lat, lng| {
+            searcher
+                .as_ref()?
+                .street_near(lat as f32, lng as f32)
+                .map(str::to_string)
+        });
         let built_unix = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let feed = build_feed(raw, &meetings, &names, built_unix);
+        let feed = build_feed(raw, &meetings, &names, works, built_unix);
         let counts = (feed.notices.len(), feed.council.len());
         self.store(&feed)?;
         Ok(counts)
@@ -975,7 +1226,7 @@ mod tests {
         let mut m = meetings();
         m[1].items[0].title = "Groot onderhoud Vismarkt en Akerkhof".into();
         n.retain(|p| p.name != "Grote Markt");
-        let feed = build_feed(parse_sru(SRU_ANSWER), &m, &n, 0);
+        let feed = build_feed(parse_sru(SRU_ANSWER), &m, &n, Vec::new(), 0);
         assert_eq!(feed.notices.len(), 2);
         assert_eq!(feed.notices[0].id, "gmb-2026-501719", "newest first");
         assert_eq!(feed.notices[0].kind, NoticeKind::Application);
@@ -1058,12 +1309,98 @@ mod tests {
         assert!(notices >= MIN_NOTICES);
     }
 
+    /// Two of the sewer programme's features as the GeoServer answered them
+    /// on 2026-11-18, cut to a few vertices, and one tree spot in the
+    /// lowercase spelling the bridges layer uses.
+    fn works_answer() -> serde_json::Value {
+        serde_json::json!({
+            "numberMatched": 2,
+            "features": [
+                {"geometry": {"type": "Polygon", "coordinates": [[
+                    [233700.0, 583000.0], [233900.0, 583000.0],
+                    [233900.0, 583100.0], [233700.0, 583100.0], [233700.0, 583000.0]
+                ]]},
+                 "properties": {"MAATREGEL": "Relinen Korreweg fase 3", "JAAR": "2026",
+                                "PROGRAMMA": "riolering_mjp_2026", "OBJECTID": 7}},
+                {"geometry": {"type": "MultiPoint", "coordinates": [[233870.0, 582947.0]]},
+                 "properties": {"maatregel": "Voorbereiden vervangen boomstructuur",
+                                "jaar": "2026", "programma": "bomen_mjp_2026", "objectid": 3}}
+            ]
+        })
+    }
+
+    #[test]
+    fn works_are_read_in_lat_lng_with_a_pin_on_them() {
+        let w = parse_works(WorkKind::Sewer, &works_answer()).unwrap();
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[0].id, "riolering_mjp_2026-7");
+        assert_eq!(w[0].year, 2026);
+        assert_eq!(w[0].measure, "Relinen Korreweg fase 3");
+        assert_eq!(w[0].areas.len(), 1);
+        // RD 233800, 583050 is on the Korreweg, about 53.230 N 6.577 E.
+        let [lat, lng] = w[0].areas[0][0];
+        assert!(
+            (lat - 53.229).abs() < 0.01 && (lng - 6.575).abs() < 0.01,
+            "{lat} {lng}"
+        );
+        assert!(
+            w[0].areas[0].contains(&[w[0].lat, w[0].lng]),
+            "pinned on a vertex"
+        );
+        assert_eq!(w[1].id, "bomen_mjp_2026-3", "lowercase columns read too");
+        assert_eq!(w[1].points.len(), 1);
+    }
+
+    #[test]
+    fn a_short_or_foreign_works_answer_fails() {
+        let mut short = works_answer();
+        short["numberMatched"] = 3.into();
+        assert!(parse_works(WorkKind::Sewer, &short).is_err());
+        let mut mercator = works_answer();
+        mercator["features"][1]["geometry"]["coordinates"][0] =
+            serde_json::json!([735_000.0, 7_020_000.0]);
+        assert!(parse_works(WorkKind::Sewer, &mercator).is_err());
+    }
+
+    #[test]
+    fn a_work_is_named_by_its_words_then_its_street_and_linked_to_the_council() {
+        let mut works = parse_works(WorkKind::Sewer, &works_answer()).unwrap();
+        let mut n = names();
+        n.push(PlaceName {
+            name: "Korreweg".into(),
+            lat: 53.231,
+            lng: 6.570,
+        });
+        name_works(&mut works, &n, |_, _| Some("C.H. Petersstraat".to_string()));
+        assert_eq!(works[0].place, "Korreweg", "its own words first");
+        assert_eq!(works[1].place, "C.H. Petersstraat", "else its street");
+        let mut m = meetings();
+        m[1].items[0].title = "Kredietaanvraag fietsstraat Korreweg".into();
+        let feed = build_feed(parse_sru(SRU_ANSWER), &m, &n, works, 0);
+        let relining = feed
+            .works
+            .iter()
+            .find(|w| w.id.starts_with("riolering"))
+            .unwrap();
+        assert_eq!(relining.council.len(), 1);
+        assert_eq!(
+            feed.council[relining.council[0] as usize].title,
+            "Kredietaanvraag fietsstraat Korreweg"
+        );
+    }
+
     #[test]
     fn a_small_feed_is_not_loaded_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         let mirror = PlansMirror::new(dir.path(), false);
         mirror
-            .store(&build_feed(parse_sru(SRU_ANSWER), &[], &names(), 0))
+            .store(&build_feed(
+                parse_sru(SRU_ANSWER),
+                &[],
+                &names(),
+                Vec::new(),
+                0,
+            ))
             .unwrap();
         assert!(PlansMirror::new(dir.path(), false)
             .current

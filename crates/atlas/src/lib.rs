@@ -58,6 +58,13 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             &config.site_dir,
         )),
     };
+    let geocoder = {
+        let g = Arc::new(geocoder::Geocoder::new(&config.data_dir));
+        // Read the index now, not on the first search: 200 MB takes seconds.
+        let warm = g.clone();
+        tokio::task::spawn_blocking(move || warm.searcher());
+        g
+    };
     let state = http::AtlasState {
         terrain: Arc::new(terrain),
         heights: Arc::new(terrain::HeightPatches::new(
@@ -74,20 +81,14 @@ pub async fn run(config: config::AtlasConfig) -> anyhow::Result<()> {
             mirror
         },
         plans: {
-            let mirror = Arc::new(plans::PlansMirror::new(
-                &config.data_dir,
-                config.plans_refresh,
-            ));
+            let mirror = Arc::new(
+                plans::PlansMirror::new(&config.data_dir, config.plans_refresh)
+                    .with_geocoder(geocoder.clone()),
+            );
             mirror.spawn_refresh();
             mirror
         },
-        geocoder: {
-            let g = Arc::new(geocoder::Geocoder::new(&config.data_dir));
-            // Read the index now, not on the first search: 200 MB takes seconds.
-            let warm = g.clone();
-            tokio::task::spawn_blocking(move || warm.searcher());
-            g
-        },
+        geocoder,
     };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, data_dir = %config.data_dir.display(), "atlas serving");

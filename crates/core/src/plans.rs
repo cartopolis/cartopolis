@@ -200,6 +200,130 @@ impl CouncilItem {
     }
 }
 
+/// Which of the municipality's maintenance programmes a work is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkKind {
+    /// Repaving, asphalt, footpaths: the street surface.
+    Road,
+    /// Sewers and the water under the street.
+    Sewer,
+    /// Street trees: root damage, replanting.
+    Trees,
+    /// The cables under the street lighting.
+    Lighting,
+    /// Bridges, quays and their railings.
+    Structure,
+}
+
+impl WorkKind {
+    /// Whether it happens under the street, which is how it is drawn.
+    #[must_use]
+    pub fn underground(self) -> bool {
+        matches!(self, Self::Sewer | Self::Lighting)
+    }
+}
+
+/// One item of the municipality's maintenance programme for a year: a street
+/// to repave, a sewer to reline, trees to replace. The programme says what and
+/// which year, nothing more — no dates, closures or contacts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Work {
+    /// The programme's name and the item's number in it,
+    /// `riolering_mjp_2026-3`: the next year's programme is new items.
+    pub id: String,
+    pub kind: WorkKind,
+    /// What is done, in the programme's own Dutch: "Relinen Korreweg fase 3".
+    pub measure: String,
+    /// The year it is planned for.
+    pub year: u16,
+    /// The street it is on, as near as atlas could tell; may be empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub place: String,
+    /// The point to pin it at.
+    pub lat: f64,
+    pub lng: f64,
+    /// Outer rings of `[lat, lng]`, for a work on an area.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<Vec<[f64; 2]>>,
+    /// Lines of `[lat, lng]`: a cable, a quay wall.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<Vec<[f64; 2]>>,
+    /// Single spots: the trees it touches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<[f64; 2]>,
+    /// Indices into [`PlansFeed::council`] of the council items that name its
+    /// street, most recent first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub council: Vec<u32>,
+}
+
+impl Work {
+    /// Metres from `(lat, lng)` to the nearest part of the work: zero inside
+    /// one of its areas.
+    #[must_use]
+    pub fn distance_m(&self, at: (f64, f64)) -> f64 {
+        let mut best = metres(at, (self.lat, self.lng));
+        for ring in &self.areas {
+            if inside(at, ring) {
+                return 0.0;
+            }
+            best = best.min(polyline_m(at, ring, true));
+        }
+        for line in &self.lines {
+            best = best.min(polyline_m(at, line, false));
+        }
+        for p in &self.points {
+            best = best.min(metres(at, (p[0], p[1])));
+        }
+        best
+    }
+}
+
+/// Whether `at` lies inside `ring` (`[lat, lng]`), by crossings.
+fn inside(at: (f64, f64), ring: &[[f64; 2]]) -> bool {
+    let (y, x) = at;
+    let mut odd = false;
+    let mut j = ring.len().wrapping_sub(1);
+    for i in 0..ring.len() {
+        let (yi, xi) = (ring[i][0], ring[i][1]);
+        let (yj, xj) = (ring[j][0], ring[j][1]);
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            odd = !odd;
+        }
+        j = i;
+    }
+    odd
+}
+
+/// Metres from `at` to the nearest segment of `line`, closed into a ring when
+/// asked. Flat at city scale, as [`metres`] is.
+fn polyline_m(at: (f64, f64), line: &[[f64; 2]], closed: bool) -> f64 {
+    let ky = 111_320.0;
+    let kx = 111_320.0 * at.0.to_radians().cos();
+    let xy = |p: [f64; 2]| ((p[1] - at.1) * kx, (p[0] - at.0) * ky);
+    let n = line.len();
+    let segments = if closed { n } else { n.saturating_sub(1) };
+    let mut best = f64::INFINITY;
+    for i in 0..segments {
+        let (ax, ay) = xy(line[i]);
+        let (bx, by) = xy(line[(i + 1) % n]);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (-(ax * dx + ay * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        best = best.min((ax + t * dx).hypot(ay + t * dy));
+    }
+    if n == 1 {
+        let (ax, ay) = xy(line[0]);
+        best = ax.hypot(ay);
+    }
+    best
+}
+
 /// Everything the layer draws for one municipality.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PlansFeed {
@@ -209,6 +333,10 @@ pub struct PlansFeed {
     /// Newest first.
     pub notices: Vec<Notice>,
     pub council: Vec<CouncilItem>,
+    /// The maintenance programme, every year it holds. Missing from a feed
+    /// built before 2026-11-18.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub works: Vec<Work>,
     /// `[south, west, north, east]` of every notice: where the layer has
     /// anything to say.
     pub bbox: [f64; 4],
@@ -240,6 +368,13 @@ pub fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
 #[must_use]
 pub fn near_followed(place: [f64; 2], n: &Notice) -> bool {
     metres((place[0], place[1]), (n.lat, n.lng)) <= NEAR_M
+}
+
+/// Whether a work reaches within [`NEAR_M`] of a followed place: any part of
+/// it, not its pin, because a street's repaving is a kilometre long.
+#[must_use]
+pub fn work_near_followed(place: [f64; 2], w: &Work) -> bool {
+    w.distance_m((place[0], place[1])) <= NEAR_M
 }
 
 /// `YYYY-MM-DD` for `unix_secs` seconds since the epoch, UTC — the form every
@@ -408,6 +543,51 @@ mod tests {
         assert_eq!(days_between("2026-03-01", "2026-02-28"), Some(-1));
         assert_eq!(days_between("2024-02-28", "2024-03-01"), Some(2));
         assert_eq!(days_between("x", "2026-01-01"), None);
+    }
+
+    #[test]
+    fn a_work_is_near_by_any_part_of_it() {
+        // A street-long band, 0.01° of longitude (~670 m) east–west.
+        let w = Work {
+            id: "wegen_mjp_2026-1".into(),
+            kind: WorkKind::Road,
+            measure: "Herstraten".into(),
+            year: 2026,
+            place: String::new(),
+            lat: 53.2300,
+            lng: 6.5750,
+            areas: vec![vec![
+                [53.2299, 6.5700],
+                [53.2299, 6.5800],
+                [53.2301, 6.5800],
+                [53.2301, 6.5700],
+            ]],
+            lines: vec![],
+            points: vec![],
+            council: vec![],
+        };
+        // Inside it, far from its pin.
+        assert_eq!(w.distance_m((53.2300, 6.5705)), 0.0);
+        assert!(work_near_followed([53.2300, 6.5705], &w));
+        // 50 m north of its western end: near, though 300 m from the pin.
+        assert!(work_near_followed([53.23055, 6.5705], &w));
+        // 200 m north: not.
+        assert!(!work_near_followed([53.2319, 6.5705], &w));
+        // Trees are their points.
+        let t = Work {
+            areas: vec![],
+            points: vec![[53.2400, 6.5600]],
+            ..w
+        };
+        assert!(work_near_followed([53.2405, 6.5600], &t));
+        assert!(!work_near_followed([53.2300, 6.5705], &t));
+    }
+
+    #[test]
+    fn a_feed_without_works_still_reads() {
+        let old = r#"{"municipality":"Groningen","built_unix":1,"notices":[],"council":[],"bbox":[0,0,0,0]}"#;
+        let feed: PlansFeed = serde_json::from_str(old).unwrap();
+        assert!(feed.works.is_empty());
     }
 
     #[test]

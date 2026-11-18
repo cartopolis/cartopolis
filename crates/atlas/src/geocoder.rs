@@ -442,6 +442,28 @@ impl Searcher {
             .collect()
     }
 
+    /// The street of the nearest house number within [`REVERSE_ADDRESS_M`] of
+    /// a point, without the number: what a work in the plans feed is named by
+    /// (`plans::street_of`).
+    #[must_use]
+    pub fn street_near(&self, lat: f32, lon: f32) -> Option<&str> {
+        let (cy, cx) = cell(lat, lon);
+        let mut best: Option<(f32, u32)> = None;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for &(si, ni) in self.grid.get(&(cy + dy, cx + dx)).into_iter().flatten() {
+                    let n = &self.index.streets[si as usize].numbers[ni as usize];
+                    let d = metres((lat, lon), (n.lat, n.lon));
+                    if best.is_none_or(|b| d < b.0) {
+                        best = Some((d, si));
+                    }
+                }
+            }
+        }
+        best.filter(|b| b.0 <= REVERSE_ADDRESS_M)
+            .map(|(_, si)| self.index.streets[si as usize].name.as_str())
+    }
+
     /// The address at a point: the nearest house number within
     /// [`REVERSE_ADDRESS_M`], else the nearest town.
     #[must_use]
@@ -988,6 +1010,9 @@ mod tests {
         assert_eq!(hit.name, "Grote Markt 1");
         let far = s.reverse(53.25, 6.60).unwrap();
         assert_eq!(far.name, "Groningen");
+        // The street alone, and nothing where no house is near.
+        assert_eq!(s.street_near(53.21921, 6.56671), Some("Grote Markt"));
+        assert_eq!(s.street_near(53.25, 6.60), None);
     }
 
     #[test]

@@ -13,11 +13,15 @@
 //! is marked without waking anybody. A notice dated more than [`RECENT_DAYS`]
 //! back is old news even when this server has not seen it — a feed rebuilt
 //! over a longer period, say — and wakes nobody either.
+//!
+//! **Works** in the city's maintenance programme wake the same way, by any
+//! part of the work within [`NEAR_M`], when new to the programme — next year's
+//! — with their own first read marked silently ([`WORKS_READ`]).
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use cartopolis_core::plans::{civil_date, near_followed, PlansFeed, NEAR_M};
+use cartopolis_core::plans::{civil_date, near_followed, work_near_followed, PlansFeed, NEAR_M};
 use rusqlite::Connection;
 use tokio::sync::mpsc;
 
@@ -111,36 +115,86 @@ fn read_feed(url: &str) -> Result<PlansFeed, String> {
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
-/// Mark the feed's unchecked notices as checked, and answer the accounts that
-/// follow a spot near one of them published on or after `since`
-/// (`YYYY-MM-DD`). Nobody on a server's first read.
+/// Mark the feed's unchecked notices and works as checked, and answer the
+/// accounts that follow a spot near a new one: a notice published on or after
+/// `since` (`YYYY-MM-DD`), or a work new to the programme. Nobody on a
+/// server's first read of either.
 pub fn check(c: &mut Connection, feed: &PlansFeed, since: &str) -> anyhow::Result<Vec<String>> {
     let ids: Vec<&str> = feed.notices.iter().map(|n| n.id.as_str()).collect();
     let (unseen, checked_before) = db::unseen_notices(c, &ids)?;
+    let mut new_notices = Vec::new();
+    if !unseen.is_empty() {
+        db::mark_notices_seen(c, &unseen)?;
+        if checked_before {
+            let unseen: BTreeSet<&str> = unseen.iter().map(String::as_str).collect();
+            new_notices = feed
+                .notices
+                .iter()
+                .filter(|n| unseen.contains(n.id.as_str()) && n.date.as_str() >= since)
+                .collect();
+        } else {
+            tracing::info!(
+                notices = unseen.len(),
+                "plans feed read for the first time; nobody woken for these"
+            );
+        }
+    }
+    let new_works = new_works(c, feed)?;
+    if new_notices.is_empty() && new_works.is_empty() {
+        return Ok(Vec::new());
+    }
+    let accounts: BTreeSet<String> = db::plan_follows(c)?
+        .into_iter()
+        .filter(|(_, lat, lng)| {
+            new_notices.iter().any(|n| near_followed([*lat, *lng], n))
+                || new_works
+                    .iter()
+                    .any(|w| work_near_followed([*lat, *lng], w))
+        })
+        .map(|(account, _, _)| account)
+        .collect();
+    tracing::debug!(
+        notices = new_notices.len(),
+        works = new_works.len(),
+        near_m = NEAR_M,
+        "plans checked"
+    );
+    Ok(accounts.into_iter().collect())
+}
+
+/// Marked once the maintenance programme has been read, so the first read
+/// wakes nobody while next year's programme does: works carry no date to tell
+/// old from new by.
+const WORKS_READ: &str = "works:read";
+
+/// The feed's works not checked before, now marked; none on the first read.
+fn new_works<'f>(
+    c: &mut Connection,
+    feed: &'f PlansFeed,
+) -> anyhow::Result<Vec<&'f cartopolis_core::plans::Work>> {
+    if feed.works.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ids: Vec<&str> = feed.works.iter().map(|w| w.id.as_str()).collect();
+    ids.push(WORKS_READ);
+    let (unseen, _) = db::unseen_notices(c, &ids)?;
     if unseen.is_empty() {
         return Ok(Vec::new());
     }
     db::mark_notices_seen(c, &unseen)?;
-    if !checked_before {
+    if unseen.iter().any(|id| id == WORKS_READ) {
         tracing::info!(
-            notices = unseen.len(),
-            "plans feed read for the first time; nobody woken for these"
+            works = unseen.len() - 1,
+            "works programme read for the first time; nobody woken for these"
         );
         return Ok(Vec::new());
     }
     let unseen: BTreeSet<&str> = unseen.iter().map(String::as_str).collect();
-    let new: Vec<_> = feed
-        .notices
+    Ok(feed
+        .works
         .iter()
-        .filter(|n| unseen.contains(n.id.as_str()) && n.date.as_str() >= since)
-        .collect();
-    let accounts: BTreeSet<String> = db::plan_follows(c)?
-        .into_iter()
-        .filter(|(_, lat, lng)| new.iter().any(|n| near_followed([*lat, *lng], n)))
-        .map(|(account, _, _)| account)
-        .collect();
-    tracing::debug!(new = new.len(), near_m = NEAR_M, "plans checked");
-    Ok(accounts.into_iter().collect())
+        .filter(|w| unseen.contains(w.id.as_str()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -205,6 +259,45 @@ mod tests {
             .notices
             .insert(0, notice("gmb-3", "2026-11-18", 53.2185, 6.5640));
         assert!(check(&mut c, &fourth, "2026-11-03").unwrap().is_empty());
+    }
+
+    fn work(id: &str, lat: f64, lng: f64) -> cartopolis_core::plans::Work {
+        cartopolis_core::plans::Work {
+            id: id.into(),
+            kind: cartopolis_core::plans::WorkKind::Sewer,
+            measure: "Relinen".into(),
+            year: 2027,
+            place: String::new(),
+            lat,
+            lng,
+            areas: Vec::new(),
+            lines: Vec::new(),
+            points: vec![[lat, lng]],
+            council: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_work_wakes_who_follows_near_it_but_the_first_programme_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = db::open_and_migrate(dir.path().join("w.db").to_str().unwrap()).unwrap();
+        db::set_plan_follows(&mut c, "ann", &[[53.2300, 6.5750]]).unwrap();
+        // Notices were read before works existed in the feed.
+        let mut f = feed(vec![notice("gmb-1", "2026-11-02", 53.0, 6.0)]);
+        assert!(check(&mut c, &f, "2026-11-03").unwrap().is_empty());
+
+        // The first programme read, with a work on Ann's spot, wakes nobody.
+        f.works = vec![work("riolering_mjp_2026-1", 53.2300, 6.5750)];
+        assert!(check(&mut c, &f, "2026-11-03").unwrap().is_empty());
+
+        // Next year's work 50 m off wakes Ann, once.
+        f.works.push(work("riolering_mjp_2027-1", 53.23045, 6.5750));
+        assert_eq!(check(&mut c, &f, "2026-11-03").unwrap(), vec!["ann"]);
+        assert!(check(&mut c, &f, "2026-11-03").unwrap().is_empty());
+
+        // One 400 m off wakes nobody.
+        f.works.push(work("riolering_mjp_2027-2", 53.2336, 6.5750));
+        assert!(check(&mut c, &f, "2026-11-03").unwrap().is_empty());
     }
 
     #[test]
