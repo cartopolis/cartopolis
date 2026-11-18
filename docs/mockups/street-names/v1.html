@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  body { width:1880px; }
+  .phone { background-image:url(street-now.jpg); }
+  .note { position:absolute; z-index:30; font-size:11px; color:#fff; background:rgba(253,96,18,.92); padding:2px 7px; border-radius:6px; white-space:nowrap; }
+  .ring { position:absolute; z-index:29; border:2px solid var(--brand); border-radius:10px; }
+  /* the façade on the left recedes to the vanishing point at (454,294) */
+  .scene { position:absolute; inset:0; perspective:300px; perspective-origin:454px 294px; z-index:10; pointer-events:none; }
+  .plane { position:absolute; top:0; width:900px; height:844px; transform-origin:0 0; transform:rotateY(90deg); }
+  /* a Dutch street-name plate: white letters on dark blue, white rim */
+  .plate { position:absolute; background:#1d3f8f; color:#fff; border:2px solid #fff; outline:1.5px solid #1d3f8f;
+    border-radius:3px; font:22px/1 Jakarta; padding:5px 10px 6px; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,.35); }
+  .stand { position:absolute; color:#F3F7F9; font:44px/1 Jakarta; letter-spacing:1px; white-space:nowrap;
+    text-shadow:0 0 6px rgba(15,20,22,.85), 0 0 2px rgba(15,20,22,.9); }
+  .chip { position:absolute; top:62px; left:50%; transform:translateX(-50%); z-index:12; display:flex; align-items:center; gap:7px;
+    background:rgba(20,26,28,.92); border:1px solid var(--gline); border-radius:18px; padding:5px 13px 5px 6px; color:var(--cream); font-size:14px; white-space:nowrap; }
+  .chip .sg { background:#1d3f8f; border:1.5px solid #fff; border-radius:3px; width:22px; height:14px; }
+  .chip small { color:var(--dim); font:11.5px JakartaR; }
+  .zoom { position:absolute; z-index:31; width:150px; height:150px; border-radius:50%; overflow:hidden; border:3px solid var(--brand);
+    background:url(street-now.jpg) no-repeat; box-shadow:0 6px 16px rgba(0,0,0,.5); }
+  .rec { margin-top:40px; background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:18px 22px; max-width:1500px; }
+  .rec h3 { color:var(--cream); font-size:17px; margin-bottom:6px; }
+  .rec p { color:var(--dim); font:14.5px/1.5 JakartaR; }
+  .rec b { color:var(--text); font-family:Jakarta; font-weight:inherit; }
+</style>
+</head>
+<body>
+
+<h1>Street names — <b>readable when you walk</b> <span class="new">v1</span></h1>
+<p class="lede">
+Asked 2026-11-18: walking as the avatar, the street names cannot be read. Today a name is laid
+<b>flat in the road</b> (<code>systems::street_labels</code>), which reads well from above and not at all
+from 1.7 m: at eye height the road is seen almost edge-on, so the letters are squashed to a few pixels
+tall and turned sideways. Three ways to show the name at street level, all <b>new</b>. The name on the
+ground stays for every view from above.
+</p>
+
+<div class="row">
+  <!-- now -->
+  <div>
+    <div class="phone"></div>
+    <div class="cap"><h3><span>0</span>Now</h3><ul>
+      <li>The name lies in the road, read along the street. From eye height it is a <b>white smear</b> across the pavers.</li>
+      <li>Placed for the camera's heading, so it is sideways to you whenever you look down the street — which is how you walk.</li>
+    </ul></div>
+  </div>
+
+  <!-- A: plate on the corner -->
+  <div>
+    <div class="phone">
+      <div class="scene"><div class="plane" style="left:178px">
+        <div class="plate" style="left:-34px; top:232px">Nieuwstad</div>
+      </div></div>
+      <div class="zoom" style="left:212px; top:150px; background-size:780px 1688px; background-position:-200px -380px; display:none"></div>
+      <div class="note" style="top:300px; left:150px">plate on the corner, ~3 m up <span class="new" style="background:#fff3;color:#fff">new</span></div>
+      <div class="note" style="top:420px; left:40px">name in the road fades out below ~10 m</div>
+    </div>
+    <div class="cap"><h3><span>A</span>A street-name plate on the corner <span class="new">new</span></h3><ul>
+      <li>Where a real one hangs: on the <b>corner building of every junction</b>, ~3 m up, facing the street it names — the dark-blue Dutch plate. Both ends of each block.</li>
+      <li>Still <b>in the world</b>: it holds still, takes the perspective of the wall, and a building in front hides it — the rule street names follow today.</li>
+      <li>Drawn a little larger than life (about 1.5×) so a phone reads it from 20–30 m.</li>
+      <li>Shown only when the camera is low (the same height at which the road name fades).</li>
+    </ul></div>
+  </div>
+
+  <!-- B: name stands up -->
+  <div>
+    <div class="phone">
+      <div class="scene"><div class="plane" style="left:244px">
+        <div class="stand" style="left:-60px; top:312px; font-size:60px">Nieuwstad</div>
+      </div></div>
+      <div class="note" style="top:230px; left:120px">the road name stands up</div>
+    </div>
+    <div class="cap"><h3><span>B</span>The road name stands up <span class="new">new</span></h3><ul>
+      <li>As the camera comes down, the flat name <b>tilts upright</b> along the kerb, about 1 m tall, so it faces you at an angle instead of edge-on.</li>
+      <li>Same label, same placement, no new data — one rotation tied to camera height.</li>
+      <li>But at street level it is a <b>large word standing in the street</b>: you walk through it, and it covers what is behind it. Closer to the sticker-on-glass look the old screen labels were dropped for.</li>
+    </ul></div>
+  </div>
+
+  <!-- C: the chip -->
+  <div>
+    <div class="phone">
+      <div class="chip"><span class="sg"></span>Nieuwstad <small>· Binnenstad</small></div>
+      <div class="note" style="top:100px; left:110px">the street you are in</div>
+    </div>
+    <div class="cap"><h3><span>C</span>"You are in" under the search bar <span class="new">new</span></h3><ul>
+      <li>One chip with the <b>street the avatar stands in</b>, and its neighbourhood. Changes as you cross into the next street.</li>
+      <li>About <b>you</b>, not about the street, so it may be an overlay — like the position line in a navigation app. Only when walking, at street level.</li>
+      <li>Tap it: the street's card (what is on it, its history, who is near).</li>
+      <li>Does not tell you the names of the side streets you pass — A does.</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="rec">
+  <h3>Proposed: A + C</h3>
+  <p>
+  <b>Plates on the corners</b> for the streets around you, as in a real town, and <b>one chip</b> for the street you are in,
+  so the name is there even mid-block. The name in the road stays for the view from above and fades out once the camera is
+  low enough that it can no longer be read. B is the cheapest to build, but at eye height it puts a word in the way of the
+  street itself.
+  </p>
+</div>
+
+</body></html>
