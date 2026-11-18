@@ -74,8 +74,15 @@ const LOCAL_STREETS_TILE_M: f32 = 8_000.0;
 const NO_STREETS_TILE_M: f32 = 150_000.0;
 
 /// Ground edge over which a painted tile draws the borders between countries
-/// wider and opaque: from about z7, the tiles the globe is made of.
-const BOLD_BORDER_TILE_M: f32 = 150_000.0;
+/// wide, opaque and near white: from about z10. The tile tree shows every
+/// tile at about the same texels per pixel, so one width reads alike across
+/// the view; at 150 km the finer tiles under the camera kept a thin cream
+/// line beside the bold ones further out.
+const BOLD_BORDER_TILE_M: f32 = 40_000.0;
+
+/// Ground edge over which a painted tile leaves out provinces and borders at
+/// sea: from about z7, where shrunk they were a grey haze over the land.
+const PROVINCE_LINES_TILE_M: f32 = 150_000.0;
 
 /// Ground edge over which only motorways, trunk and primary roads are drawn.
 const MAJOR_ONLY_TILE_M: f32 = 60_000.0;
@@ -361,9 +368,7 @@ pub(super) fn paint(
             .iter()
             .partition(|f| num_of(f, "admin_level") == Some(2.0) && !bool_of(f, "maritime"));
         let far = c.source_m > BOLD_BORDER_TILE_M;
-        // Provinces and borders at sea only below the globe: shrunk on it they
-        // were a grey haze over the land.
-        if !far {
+        if c.source_m <= PROVINCE_LINES_TILE_M {
             stroke(
                 pixmap,
                 &mut paint,
@@ -378,16 +383,21 @@ pub(super) fn paint(
         // From orbit a 1.6 px cream line was lost in the land cover (asked
         // 2026-11-18, "more information in the ground"): the globe shows its
         // tiles shrunk three or four times over, so a coarse tile draws it
-        // wider, and opaque. A dark casing under it read as a smudge once
-        // shrunk ("vague, not pretty"), so it is one clean line.
+        // wider, opaque and near white. A dark casing under it read as a
+        // smudge once shrunk ("vague, not pretty"), and a 2.8 px cream line
+        // was still "not clear", so it is one bright line.
         stroke(
             pixmap,
             &mut paint,
             &country,
             &t,
-            palette::painted::NEIGHBOUR_BORDER,
+            if far {
+                palette::painted::NEIGHBOUR_BORDER_FAR
+            } else {
+                palette::painted::NEIGHBOUR_BORDER
+            },
             if far { 1.0 } else { 0.9 },
-            if far { 2.8 } else { 1.6 } * c.wf,
+            if far { 3.8 } else { 1.6 } * c.wf,
             None,
         );
     }

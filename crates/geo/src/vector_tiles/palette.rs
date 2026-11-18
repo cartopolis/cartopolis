@@ -205,6 +205,9 @@ pub mod painted {
     pub const RAIL_CASING: u32 = 0x3B_34_30;
     /// A border between two other countries: the mockup's cream.
     pub const NEIGHBOUR_BORDER: u32 = 0xD9_CB_B0;
+    /// The same border on the globe's tiles: near white, since shrunk three or
+    /// four times over the cream averaged into the land ("not clear").
+    pub const NEIGHBOUR_BORDER_FAR: u32 = 0xF4_EF_E2;
     /// Roof tones, picked per building by a hash of its outline: Dutch tile red,
     /// brown, and two slate greys. OSM has a roof colour for few buildings.
     pub const ROOFS: [u32; 4] = [0x8A_5C_4A, 0x76_62_58, 0x80_7C_7A, 0x68_64_66];

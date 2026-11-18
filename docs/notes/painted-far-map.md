@@ -128,9 +128,13 @@ Groningen 96,111,83, Europe from 3,500 km 105,120,98 (mac-1, June noon).
 
 **Borders in the ground from orbit** (asked the same day, "information in the
 ground layer"): the globe shows a coarse tile shrunk three or four times over,
-so the 1.6 px cream line vanished. Tiles over 150 km (`BOLD_BORDER_TILE_M`)
-draw it 2.8 px and opaque, and leave out provinces and borders at sea, which
-were a grey haze there. A dark casing under it was tried and read as a smudge
+so the 1.6 px cream line vanished. Tiles over 40 km (`BOLD_BORDER_TILE_M`)
+draw it 3.8 px, opaque and near white (`NEIGHBOUR_BORDER_FAR`): the tile tree
+shows every tile at about the same texels per pixel, so one width reads alike
+across the view, where a 150 km threshold left the finer tiles under the camera
+thin and cream beside bold ones further out. Tiles over 150 km
+(`PROVINCE_LINES_TILE_M`) leave out provinces and borders at sea, a grey haze
+there. 2.8 px cream was still "not clear". A dark casing under it was tried and read as a smudge
 once shrunk ("vague, not pretty"). `render_revision` now measures the
 synthetic border at a globe tile's size too.
 
