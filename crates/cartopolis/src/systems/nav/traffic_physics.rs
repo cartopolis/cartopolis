@@ -105,6 +105,11 @@ const TELEPORT_M: f32 = 3.0;
 /// car held up does not ram.
 const MAX_CORRECTION: f32 = 1.5;
 
+/// The longest step Rapier takes, seconds, and the most steps in a frame:
+/// a frame of a slow phone, or of a 5 fps capture, is several.
+const MAX_STEP_S: f32 = 1.0 / 30.0;
+const MAX_STEPS: f32 = 8.0;
+
 /// What a driven agent body may not do: leave its height, or tip or turn
 /// by itself (the traffic turns it).
 const DRIVEN_LOCKS: LockedAxes =
@@ -577,8 +582,14 @@ impl TrafficPhysics {
         if dt <= 0.0 {
             return Vec::new();
         }
-        self.world.integration_parameters.dt = dt.min(1.0 / 20.0);
-        self.world.step_with_events(&(), &self.touches);
+        // The whole frame, in steps of at most `MAX_STEP_S`: the traffic
+        // moved its ways on by all of `dt`, and a world stepped by less left
+        // every body behind its way each frame — pulled back, a stutter.
+        let steps = (dt / MAX_STEP_S).ceil().clamp(1.0, MAX_STEPS) as usize;
+        self.world.integration_parameters.dt = dt / steps as f32;
+        for _ in 0..steps {
+            self.world.step_with_events(&(), &self.touches);
+        }
         self.touches
             .0
             .lock()

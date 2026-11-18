@@ -1110,6 +1110,10 @@ pub struct Car {
     /// Seconds since it was put on the road. A body put down on top of
     /// another has not collided with it ([`SETTLE_IN_S`]).
     driven: f32,
+    /// Where it was drawn last frame, and the step that took it there (the
+    /// smoothness count of `CARTO_TRAFFIC_OVERLAPS`).
+    drawn: Vec2,
+    drawn_step: Vec2,
 }
 
 /// How long a newly placed agent cannot collide: placement keeps clear of
@@ -1681,6 +1685,8 @@ pub fn setup_traffic(
             crash: None,
             waited: 0.0,
             driven: 0.0,
+            drawn: Vec2::ZERO,
+            drawn_step: Vec2::ZERO,
         }
     };
 
@@ -1974,6 +1980,8 @@ pub struct CrowdReact<'w, 's> {
     dev: Option<Res<'w, crate::resources::DevPanelState>>,
     /// The traffic's Rapier bodies (`systems::traffic_physics`).
     physics: ResMut<'w, crate::systems::traffic_physics::TrafficPhysics>,
+    /// The smoothness count (`Jitter`).
+    jitter: Local<'s, Jitter>,
     clock: Option<Res<'w, crate::systems::transit_live::WorldClock>>,
 }
 
@@ -2360,7 +2368,36 @@ pub fn drive_traffic(
         dev,
         clock,
         mut physics,
+        mut jitter,
     } = react;
+    if !jitter.checked {
+        jitter.checked = true;
+        jitter.on = crate::debug_switches::env_flag("CARTO_TRAFFIC_OVERLAPS");
+    }
+    if jitter.on && elapsed >= jitter.reported + 1.0 {
+        let line = [
+            AgentKind::Car,
+            AgentKind::Walker,
+            AgentKind::Cyclist,
+            AgentKind::Fatbike,
+        ]
+        .iter()
+        .map(|k| {
+            let i = k.index();
+            let mean = jitter.sum[i] / jitter.n[i].max(1) as f32;
+            format!(
+                "{k:?} mean {mean:.2} max {:.1} (n {})",
+                jitter.max[i], jitter.n[i]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+        info!("traffic jitter m/s²: {line}");
+        jitter.sum = [0.0; 4];
+        jitter.max = [0.0; 4];
+        jitter.n = [0; 4];
+        jitter.reported = elapsed;
+    }
     // The avatars stand in the traffic's world as bodies it can run into.
     let avatar_feet: Vec<Vec3> = people
         .at
@@ -3287,6 +3324,20 @@ pub fn drive_traffic(
             );
             pos += push;
         }
+        // `CARTO_TRAFFIC_OVERLAPS`'s smoothness count: how much the drawn
+        // step changes frame to frame, for whoever is near the camera.
+        if jitter.on && dt > 0.0 && pos.distance(cam) < 60.0 && car.drawn != Vec2::ZERO {
+            let step = pos - car.drawn;
+            if step.length() < 3.0 {
+                let j = (step - car.drawn_step).length() / dt;
+                let k = kind.index();
+                jitter.sum[k] += j;
+                jitter.max[k] = jitter.max[k].max(j);
+                jitter.n[k] += 1;
+            }
+            car.drawn_step = step;
+        }
+        car.drawn = pos;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;
@@ -5050,6 +5101,8 @@ mod tests {
             crash: None,
             waited: 0.0,
             driven: 0.0,
+            drawn: Vec2::ZERO,
+            drawn_step: Vec2::ZERO,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -5086,6 +5139,8 @@ mod tests {
             crash: None,
             waited: 0.0,
             driven: 0.0,
+            drawn: Vec2::ZERO,
+            drawn_step: Vec2::ZERO,
         }
     }
 
@@ -5309,6 +5364,8 @@ mod crossing_tests {
             crash: None,
             waited: 0.0,
             driven: 0.0,
+            drawn: Vec2::ZERO,
+            drawn_step: Vec2::ZERO,
         }
     }
 
@@ -5561,4 +5618,18 @@ mod fall_tests {
         assert!(rising > 0.0 && rising < 1.0, "{rising}");
         assert_eq!(fallen(crash(RISE_S, true, 1.0)), 0.0);
     }
+}
+
+/// `CARTO_TRAFFIC_OVERLAPS=1`'s smoothness count: per kind, the sum, the most
+/// and the number of frame-to-frame changes in the drawn step of agents near
+/// the camera, m/s² — a smooth mover's is its acceleration, a stutter's is
+/// far more. Logged and cleared once a second.
+#[derive(Default)]
+pub struct Jitter {
+    on: bool,
+    checked: bool,
+    sum: [f32; 4],
+    max: [f32; 4],
+    n: [u32; 4],
+    reported: f32,
 }
