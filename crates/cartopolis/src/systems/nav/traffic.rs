@@ -1116,6 +1116,10 @@ pub struct Car {
     /// smoothness count of `CARTO_TRAFFIC_OVERLAPS`).
     drawn: Vec2,
     drawn_step: Vec2,
+    /// What held it back most this frame, and the gap to it if a sweep found
+    /// it; and how long it has stood near the camera (the stuck report).
+    why: (&'static str, f32),
+    stuck: f32,
 }
 
 /// How long a newly placed agent cannot collide: placement keeps clear of
@@ -1692,6 +1696,8 @@ pub fn setup_traffic(
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            why: ("free", f32::NAN),
+            stuck: 0.0,
         }
     };
 
@@ -2312,6 +2318,10 @@ pub fn drive_traffic(
     // Every agent placed, by its Rapier tag: what it is, where, which way —
     // for deciding who gives way to the body a shape cast runs into.
     let mut seen: HashMap<u64, (AgentKind, Vec2, Vec2)> = HashMap::new();
+    // Every vehicle, and every walker crossing a street, by 20 m square:
+    // (tag, kind, where, velocity) — for whoever might cross its path
+    // (`path_conflict`).
+    let mut movers: HashMap<(i32, i32), Vec<(u64, AgentKind, Vec2, Vec2)>> = HashMap::new();
     for (i, (car, &kind, entity, ..)) in cars.iter().enumerate() {
         if !showing(kind) {
             continue;
@@ -2328,6 +2338,14 @@ pub fn drive_traffic(
         };
         let p = p + right_of(travel) * car.react.shift;
         seen.insert(entity.to_bits(), (kind, p, travel));
+        if kind != AgentKind::Walker || car.crossing.is_some() {
+            movers.entry(mover_cell(p)).or_default().push((
+                entity.to_bits(),
+                kind,
+                p,
+                travel * car.speed,
+            ));
+        }
         match kind {
             AgentKind::Walker => {
                 walkers_at.push(p);
@@ -2744,20 +2762,34 @@ pub fn drive_traffic(
                 l.length() - car.s
             };
             let mut want = kind.speed(l) * car.speed_scale;
+            // What holds it back most, for `CARTO_TRAFFIC_OVERLAPS`'s stuck report.
+            let mut why = ("free", f32::NAN);
+            let mut last = want;
+            let mut note =
+                |want: f32, name: &'static str, gap: f32, why: &mut (&'static str, f32)| {
+                    if want < last - 1e-4 {
+                        *why = (name, gap);
+                    }
+                    last = want;
+                };
             if kind.drives() {
                 want = want.min(corner_speed(l.min_turn_radius(
                     along,
                     CORNER_LOOKAHEAD_M,
                     car.dir,
                 )));
+                note(want, "bend", f32::NAN, &mut why);
                 if let Some(t) = &car.turn {
                     want = want.min(t.speed_limit());
                 }
+                note(want, "turn", f32::NAN, &mut why);
                 want = want.min(headway_speed(occupied, k, car.dir, car.s, want));
+                note(want, "headway", f32::NAN, &mut why);
                 if let Some(gap) = bike_ahead {
                     let (shift, keep_to) = pass_cyclist(l, gap, want);
                     shift_to = shift;
                     want = keep_to;
+                    note(want, "cyclist ahead", gap, &mut why);
                 }
                 if let Some((p, travel, _)) = pose_of(&car, Some(l), kind) {
                     let reach = l.half_width + 1.0;
@@ -2768,6 +2800,7 @@ pub fn drive_traffic(
                             &signals, elapsed, p, travel, car.speed, reach, &mut grace,
                         ));
                         car.signal_grace = grace;
+                        note(want, "signal", f32::NAN, &mut why);
                     }
                     // Give way to the avatars: on its path, and at a zebra
                     // (`give_way`).
@@ -2802,6 +2835,7 @@ pub fn drive_traffic(
                             body,
                         );
                         want = want.min(y.limit);
+                        note(want, "person in path", f32::NAN, &mut why);
                         hard_brake = y.hard;
                         room = y.room;
                     }
@@ -2815,6 +2849,7 @@ pub fn drive_traffic(
                             reach,
                             body,
                         ));
+                        note(want, "zebra", f32::NAN, &mut why);
                     }
                     // Whoever its own footprint would run into, of any kind,
                     // on any line: Rapier sweeps it ahead along its way.
@@ -2860,6 +2895,7 @@ pub fn drive_traffic(
                             };
                             if stop {
                                 want = want.min(stop_within(gap));
+                                note(want, other_name(other), gap, &mut why);
                                 // Seen late — it pulled out, or came round a
                                 // bend — it brakes as hard as it must, and
                                 // never drives on into it: a collision is the
@@ -2871,6 +2907,36 @@ pub fn drive_traffic(
                                     hard_brake = true;
                                 }
                                 room = room.min((gap - LOOK_AHEAD_CLEAR_M).max(0.0));
+                            }
+                        }
+                    }
+                    // Whoever is coming toward the point where their paths
+                    // cross: the one who would get there second waits short
+                    // of it, the one with the other on its right if they
+                    // would get there together, and always for somebody on
+                    // foot. The sweep sees only what is already in its way;
+                    // this sees the cyclist about to cut across it.
+                    if !car.defiant {
+                        let mine = (p, travel * car.speed.max(0.5), reach_of(kind));
+                        let me_tag = entity.to_bits();
+                        let (cx, cz) = mover_cell(p);
+                        for dx in -1..=1 {
+                            for dz in -1..=1 {
+                                let Some(cell) = movers.get(&(cx + dx, cz + dz)) else {
+                                    continue;
+                                };
+                                for &(tag, other_kind, at, vel) in cell {
+                                    if tag == me_tag {
+                                        continue;
+                                    }
+                                    let theirs = (at, vel, reach_of(other_kind));
+                                    if let Some(short) =
+                                        path_conflict(mine, theirs, other_kind == AgentKind::Walker)
+                                    {
+                                        want = want.min(stop_within(short));
+                                        note(want, "crossing path", short, &mut why);
+                                    }
+                                }
                             }
                         }
                     }
@@ -2952,6 +3018,7 @@ pub fn drive_traffic(
                     want = 0.0;
                 }
             }
+            car.why = why;
             let (accel, brake) = kind.accel();
             let rate = if want > car.speed {
                 accel
@@ -3238,7 +3305,9 @@ pub fn drive_traffic(
                     } else {
                         CRASH_HOLD_S
                     };
-                    if c.t >= hold && speed < 0.3 {
+                    // At rest — or pinned against something that keeps it
+                    // sliding — it gets going again.
+                    if c.t >= hold && (speed < 0.3 || c.t >= hold + 2.0) {
                         physics.settle(handle);
                         c.recovering = true;
                         c.t = 0.0;
@@ -3370,6 +3439,25 @@ pub fn drive_traffic(
             };
         }
         car.drawn = pos;
+        // The stuck report: a vehicle standing near the camera, and why.
+        if jitter.on && kind.drives() && pos.distance(cam) < 60.0 {
+            if car.speed < 0.2 {
+                car.stuck += dt;
+                let s = car.stuck;
+                if s >= 3.0 && (s - dt) % 3.0 > s % 3.0 {
+                    info!(
+                        "traffic stuck: {kind:?} {s:.0} s, held by {} (gap {:.1}), turn {}, crash {}, waited {:.1}",
+                        car.why.0,
+                        car.why.1,
+                        car.turn.is_some(),
+                        car.crash.is_some(),
+                        car.waited
+                    );
+                }
+            } else {
+                car.stuck = 0.0;
+            }
+        }
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
         tf.translation = local;
@@ -5136,6 +5224,8 @@ mod tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            why: ("free", f32::NAN),
+            stuck: 0.0,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -5175,6 +5265,8 @@ mod tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            why: ("free", f32::NAN),
+            stuck: 0.0,
         }
     }
 
@@ -5401,6 +5493,8 @@ mod crossing_tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            why: ("free", f32::NAN),
+            stuck: 0.0,
         }
     }
 
@@ -5686,5 +5780,151 @@ fn model_size(mesh: &cartopolis_geo::agent_models::ModelMesh) -> Size {
             (hi.z - lo.z) * 0.5,
         ),
         centre_z: (hi.z + lo.z) * 0.5,
+    }
+}
+
+/// A name for what a vehicle's sweep ahead found, for the stuck report.
+fn other_name(other: Option<(AgentKind, Vec2, Vec2)>) -> &'static str {
+    match other.map(|o| o.0) {
+        None => "avatar ahead",
+        Some(AgentKind::Car) => "car ahead",
+        Some(AgentKind::Walker) => "walker ahead",
+        Some(AgentKind::Cyclist) => "cyclist ahead",
+        Some(AgentKind::Fatbike) => "fatbike ahead",
+    }
+}
+
+/// The side of the squares the vehicles are binned in to find who might
+/// cross their path, metres: a car at town speed covers it in two seconds.
+const MOVER_CELL_M: f32 = 20.0;
+
+fn mover_cell(p: Vec2) -> (i32, i32) {
+    (
+        (p.x / MOVER_CELL_M).floor() as i32,
+        (p.y / MOVER_CELL_M).floor() as i32,
+    )
+}
+
+/// How far from its centre a kind takes up room on its path, metres: half a
+/// car's length, a bike's, a person's shoulders.
+fn reach_of(kind: AgentKind) -> f32 {
+    match kind {
+        AgentKind::Car => 2.4,
+        AgentKind::Cyclist | AgentKind::Fatbike => 1.0,
+        AgentKind::Walker => 0.4,
+    }
+}
+
+/// How long ahead two paths are looked at for meeting, seconds.
+const CONFLICT_HORIZON_S: f32 = 4.0;
+/// Within this of each other, two arriving at a crossing point arrive
+/// together, seconds: the right-before-left rule decides.
+const CONFLICT_TIE_S: f32 = 0.6;
+
+/// Whether `me` (where, velocity, reach) must wait for `them` where their
+/// straight paths cross, and if so how far it may still go: the distance to
+/// the crossing point less both reaches and a metre.
+///
+/// They conflict when both would be at the crossing point within
+/// [`CONFLICT_HORIZON_S`], at times closer than it takes the two to clear
+/// it. The later one waits; arriving together, the one with the other on
+/// its right; and a vehicle always waits for somebody on foot (`on_foot`).
+/// Paths that run alongside (within ~25°) never conflict here — the sweep
+/// ahead and the headway see to those.
+fn path_conflict(me: (Vec2, Vec2, f32), them: (Vec2, Vec2, f32), on_foot: bool) -> Option<f32> {
+    let (p, v, r) = me;
+    let (q, w, s) = them;
+    let (speed, their_speed) = (v.length(), w.length());
+    if speed < 0.3 || their_speed < 0.3 {
+        return None;
+    }
+    let (d, e) = (v / speed, w / their_speed);
+    let cross = d.x * e.y - d.y * e.x;
+    if cross.abs() < 0.42 {
+        return None;
+    }
+    // Where the two straight paths meet: p + d·a = q + e·b.
+    let rel = q - p;
+    let a = (rel.x * e.y - rel.y * e.x) / cross;
+    let b = (rel.x * d.y - rel.y * d.x) / cross;
+    // Past it, or already on it: it clears the point rather than stopping
+    // in the middle.
+    if a < r + s || b < -s {
+        return None;
+    }
+    let (t_me, t_them) = (a / speed, b / their_speed);
+    if t_me > CONFLICT_HORIZON_S || t_them > CONFLICT_HORIZON_S {
+        return None;
+    }
+    // Each takes this long to clear the point once it gets there.
+    let clear = (r + s + 1.0) / speed.min(their_speed);
+    if (t_me - t_them).abs() > clear {
+        return None;
+    }
+    let second = if on_foot {
+        true
+    } else if (t_me - t_them).abs() < CONFLICT_TIE_S {
+        rel.dot(Vec2::new(-d.y, d.x)) > 0.0
+    } else {
+        t_me > t_them
+    };
+    second.then(|| (a - r - s - 1.0).max(0.0))
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+
+    const NORTH: Vec2 = Vec2::new(0.0, -1.0);
+    const WEST: Vec2 = Vec2::new(-1.0, 0.0);
+
+    /// Two coming to one crossing point: the later waits; together, the one
+    /// with the other on its right; a vehicle always waits for somebody on
+    /// foot; paths alongside never conflict here.
+    #[test]
+    fn the_second_to_a_crossing_waits() {
+        // A car 30 m south of the point going north at 10 m/s, a cyclist 12 m
+        // east of it going west at 4 m/s: both there in 3 s.
+        let car = (Vec2::new(0.0, 30.0), NORTH * 10.0, reach_of(AgentKind::Car));
+        let bike = (
+            Vec2::new(12.0, 0.0),
+            WEST * 4.0,
+            reach_of(AgentKind::Cyclist),
+        );
+        let short = path_conflict(car, bike, false).expect("the bike is on its right");
+        assert!((short - (30.0 - 2.4 - 1.0 - 1.0)).abs() < 1e-3, "{short}");
+        assert_eq!(
+            path_conflict(bike, car, false),
+            None,
+            "the car is on its left"
+        );
+        // The bike a second ahead of the car, not long enough to be clear of
+        // the point: the car waits, the bike goes.
+        let early = (
+            Vec2::new(4.0, 0.0),
+            WEST * 4.0,
+            reach_of(AgentKind::Cyclist),
+        );
+        let late = (Vec2::new(0.0, 20.0), NORTH * 10.0, reach_of(AgentKind::Car));
+        assert!(path_conflict(late, early, false).is_some());
+        assert_eq!(path_conflict(early, late, false), None);
+        // Far apart in time: no conflict.
+        let far = (Vec2::new(0.0, 80.0), NORTH * 10.0, reach_of(AgentKind::Car));
+        assert_eq!(path_conflict(far, bike, false), None);
+        // Somebody on foot, even from the left.
+        let walker = (
+            Vec2::new(-4.0, 0.0),
+            -WEST * 1.3,
+            reach_of(AgentKind::Walker),
+        );
+        let slow = (Vec2::new(0.0, 9.0), NORTH * 3.0, reach_of(AgentKind::Car));
+        assert!(path_conflict(slow, walker, true).is_some());
+        // Alongside.
+        let beside = (
+            Vec2::new(2.0, 20.0),
+            NORTH * 4.0,
+            reach_of(AgentKind::Cyclist),
+        );
+        assert_eq!(path_conflict(car, beside, false), None);
     }
 }
