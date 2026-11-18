@@ -150,21 +150,29 @@ pub const VEHICLE_TYRE: u32 = 0x4A_47_45;
 /// ground's own texture, and it is drawn as one: land use told apart by colour,
 /// roads by rank, buildings with a shadow from their height (`painted.rs`).
 ///
-/// These are the mockup's screen colours. The tile is still an albedo lit by
-/// the sun, so the shots decide the last few levels, not this table.
+/// The built-up tones and the roads are the mockup's screen colours. The land
+/// was too, until it read as a poster from orbit beside the close-up of a city
+/// (asked 2026-11-18, "too much colour; compare it with a close-up of the
+/// city"): it is now the near map's own aerial-measured tones ([`super::GRASS`],
+/// [`super::FOREST_CANOPIED`]) with the kinds still told apart by a step of
+/// value or warmth, so the map from 20 km to orbit has the colours the street
+/// has. The tile is still an albedo lit by the sun, so the shots decide the
+/// last few levels, not this table.
 pub mod painted {
     /// Land nothing more is known about.
-    pub const PAPER: u32 = 0x7F_8F_60;
-    pub const GRASS: u32 = 0x6F_8A_55;
-    pub const PARK: u32 = 0x62_80_4F;
-    pub const FOREST: u32 = 0x3E_5A_3C;
-    pub const SCRUB: u32 = 0x7B_85_59;
-    pub const FARMLAND: u32 = 0x97_92_62;
-    pub const MARSH: u32 = 0x5F_7C_6E;
+    pub const PAPER: u32 = 0x6E_76_52;
+    pub const GRASS: u32 = super::GRASS;
+    pub const PARK: u32 = 0x4E_6A_42;
+    pub const FOREST: u32 = 0x3E_54_32;
+    pub const SCRUB: u32 = 0x5E_68_44;
+    /// Cropland: an olive a step warmer than grass, where the mockup's ochre
+    /// made Europe yellow from orbit.
+    pub const FARMLAND: u32 = 0x76_78_4E;
+    pub const MARSH: u32 = 0x52_66_4E;
     /// Desert, dunes and beaches: a warm tan, as the Sahara is in satellite true
     /// colour. The mockup's cream (`#CDC29C`) read as blank paper from orbit
     /// (asked 2026-11-11).
-    pub const SAND: u32 = 0xC6_AC_7E;
+    pub const SAND: u32 = 0xB8_A2_7A;
     pub const ICE: u32 = 0xEE_F1_F4;
     /// Housing: a warm grey.
     pub const RESIDENTIAL: u32 = 0x95_8D_82;

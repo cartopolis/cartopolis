@@ -118,16 +118,21 @@ exposure (eye adaptation near the ground, the fixed day exposure in space: 0.6
 stop), and `ORBIT_DIM`. Now the fall runs over the band towards the terminator
 only, the map light from orbit has its own exposure (`MAP_EV100`), and
 `ORBIT_DIM` darkens bright albedos only, the desert. 700 → 2,800 km went from
-157,167,101 → 88,103,51 to 152,165,99 → 134,147,77 at `ORBIT_SAT` 1.0; the
+157,167,101 → 88,103,51 to 152,165,99 → 134,147,77 at full saturation; the
 strategy map below 300 km is unchanged (50 km over Groningen: identical mean).
-That read too saturated from orbit ("it has to look realistic"), so the grey
-deepens again from orbit, `ORBIT_SAT` 0.65 against the strategy map's 0.8.
+That read as too much colour beside the close-up of a city (the close-up
+differs ~10 between its channels, the far map ~48), so the land from 20 km up
+takes the near map's aerial-measured tones (`palette::painted`, farmland an
+olive instead of the mockup's ochre) and `GRADE_SAT` goes 0.8 → 0.55: 50 km over
+Groningen 96,111,83, Europe from 3,500 km 105,120,98 (mac-1, June noon).
 
 **Borders in the ground from orbit** (asked the same day, "information in the
 ground layer"): the globe shows a coarse tile shrunk three or four times over,
 so the 1.6 px cream line vanished. Tiles over 150 km (`BOLD_BORDER_TILE_M`)
-draw it 3.4 px over a 7 px dark casing at 0.35; `render_revision` now measures
-the synthetic border at a globe tile's size too.
+draw it 2.8 px and opaque, and leave out provinces and borders at sea, which
+were a grey haze there. A dark casing under it was tried and read as a smudge
+once shrunk ("vague, not pretty"). `render_revision` now measures the
+synthetic border at a globe tile's size too.
 
 ## Place names
 

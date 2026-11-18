@@ -27,7 +27,7 @@
 /// The basemap renderer's revision. Part of every stored tile's key.
 ///
 /// Update it to what `the_revision_names_what_the_renderer_draws` prints.
-pub const RENDER_REVISION: u64 = 0x3bff_b921_10f1_002f;
+pub const RENDER_REVISION: u64 = 0x78e4_d7f1_218d_bae8;
 
 /// FNV-1a, 64 bit: written out rather than `DefaultHasher`, whose output Rust
 /// does not promise to keep between releases — a toolchain update would

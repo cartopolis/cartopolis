@@ -35,15 +35,12 @@ const GAIN: f32 = 1.5;
 //
 // From orbit that grade went too far (asked 2026-11-18): Europe from 3,500 km
 // came out dark olive, a different map from the green and yellow one at 700 km.
-// The person wanted it more saturated, closer to the street-level detail. So
-// from orbit the grey is set apart from the strategy map's (`ORBIT_SAT`;
-// at 1.0 it read too saturated, "it has to look realistic") and the darkening bites
-// only on the bright albedos, desert and bare rock (`ORBIT_DIM_LUMA`): with
-// the map light's own exposure (`exposure`) a cropland and forest mosaic
-// keeps the colours it has at 700 km, and the Sahara, all of it on the
-// tonemapper's shoulder, read 246,196,121 at 12,000 km before this.
-const GRADE_SAT: f32 = 0.8;
-const ORBIT_SAT: f32 = 0.65;
+// So from orbit the darkening bites only on the bright albedos, desert and
+// bare rock (`ORBIT_DIM_LUMA`): with the map light's own exposure
+// (`exposure`) a cropland and forest mosaic keeps the colours it has at
+// 700 km, and the Sahara, all of it on the tonemapper's shoulder, read
+// 246,196,121 at 12,000 km before this.
+const GRADE_SAT: f32 = 0.55;
 const NEAR_DIM: f32 = 0.9;
 const ORBIT: vec2<f32> = vec2<f32>(300000.0, 2000000.0);
 const ORBIT_DIM: f32 = 0.7;
@@ -62,8 +59,7 @@ fn grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
     let o = smoothstep(ORBIT.x, ORBIT.y, distance);
     let y = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
     let warm = mix(vec3<f32>(1.0), mix(ORBIT_WARM, vec3<f32>(1.0), smoothstep(0.45, 0.75, y)), o);
-    let sat = mix(GRADE_SAT, ORBIT_SAT, o);
-    let grey = mix(albedo, max(mix(vec3<f32>(y), albedo, sat), vec3<f32>(0.0)), k);
+    let grey = mix(albedo, mix(vec3<f32>(y), albedo, GRADE_SAT), k);
     let bright = smoothstep(ORBIT_DIM_LUMA.x, ORBIT_DIM_LUMA.y, y)
         * (1.0 - smoothstep(ORBIT_DIM_LUMA.z, ORBIT_DIM_LUMA.w, y));
     let orbit_dim = mix(1.0, ORBIT_DIM, bright);

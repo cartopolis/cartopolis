@@ -74,7 +74,7 @@ const LOCAL_STREETS_TILE_M: f32 = 8_000.0;
 const NO_STREETS_TILE_M: f32 = 150_000.0;
 
 /// Ground edge over which a painted tile draws the borders between countries
-/// bold, with a casing: from about z7, the tiles the globe is made of.
+/// wider and opaque: from about z7, the tiles the globe is made of.
 const BOLD_BORDER_TILE_M: f32 = 150_000.0;
 
 /// Ground edge over which only motorways, trunk and primary roads are drawn.
@@ -360,42 +360,34 @@ pub(super) fn paint(
             .features(meta)
             .iter()
             .partition(|f| num_of(f, "admin_level") == Some(2.0) && !bool_of(f, "maritime"));
-        stroke(
-            pixmap,
-            &mut paint,
-            &other,
-            &t,
-            palette::BOUNDARY,
-            0.7,
-            1.2 * c.wf,
-            None,
-        );
-        // From orbit a 1.6 px cream line was lost in the land cover (asked
-        // 2026-11-18, "more information in the ground"): the globe shows its
-        // tiles shrunk three or four times over, so a coarse tile draws it
-        // wider, over a soft dark casing that reads on sand and forest alike,
-        // as an atlas draws a border.
         let far = c.source_m > BOLD_BORDER_TILE_M;
-        if far {
+        // Provinces and borders at sea only below the globe: shrunk on it they
+        // were a grey haze over the land.
+        if !far {
             stroke(
                 pixmap,
                 &mut paint,
-                &country,
+                &other,
                 &t,
-                palette::painted::SHADOW,
-                0.35,
-                7.0 * c.wf,
+                palette::BOUNDARY,
+                0.7,
+                1.2 * c.wf,
                 None,
             );
         }
+        // From orbit a 1.6 px cream line was lost in the land cover (asked
+        // 2026-11-18, "more information in the ground"): the globe shows its
+        // tiles shrunk three or four times over, so a coarse tile draws it
+        // wider, and opaque. A dark casing under it read as a smudge once
+        // shrunk ("vague, not pretty"), so it is one clean line.
         stroke(
             pixmap,
             &mut paint,
             &country,
             &t,
             palette::painted::NEIGHBOUR_BORDER,
-            0.9,
-            if far { 3.4 } else { 1.6 } * c.wf,
+            if far { 1.0 } else { 0.9 },
+            if far { 2.8 } else { 1.6 } * c.wf,
             None,
         );
     }
