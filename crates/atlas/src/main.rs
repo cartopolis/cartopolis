@@ -66,6 +66,15 @@ enum Command {
         #[arg(long, default_value_t = cartopolis_atlas::ocean_depth::DEFAULT_ZOOM)]
         zoom: u32,
     },
+    /// The world's countries the globe names, with their populations
+    /// (`countries`), from Natural Earth; written once and committed.
+    Countries {
+        /// A Natural Earth admin-0 GeoJSON file or URL instead of its own.
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long, default_value = "assets/globe/countries.tsv")]
+        out: PathBuf,
+    },
     /// Rebuild a landmark from measurements and photographs
     /// (`landmark`, `docs/notes/landmark-kit.md`).
     Landmark {
@@ -367,6 +376,13 @@ fn main() -> anyhow::Result<()> {
         eprintln!(
             "{}",
             cartopolis_atlas::ocean_depth::write(*zoom, out).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
+    if let Some(Command::Countries { from, out }) = &cli.command {
+        eprintln!(
+            "{}",
+            cartopolis_atlas::countries::write(from.as_deref(), out)?
         );
         return Ok(());
     }

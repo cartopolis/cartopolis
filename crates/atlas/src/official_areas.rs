@@ -54,7 +54,7 @@ const WFS_PAGE: usize = 1000;
 const CBS_ATTRIBUTION: &str =
     "Figures: CBS, Kerncijfers wijken en buurten 2024 · areas: CBS, Kadaster, via PDOK";
 
-fn read_source(from: &str) -> anyhow::Result<Value> {
+pub(crate) fn read_source(from: &str) -> anyhow::Result<Value> {
     let mut text = String::new();
     if from.starts_with("http://") || from.starts_with("https://") {
         ureq::get(from)

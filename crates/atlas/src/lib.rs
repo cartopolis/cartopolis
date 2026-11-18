@@ -10,6 +10,7 @@ pub mod api;
 pub mod areas;
 pub mod auth;
 pub mod config;
+pub mod countries;
 pub mod coverage;
 pub mod designs;
 pub mod geocoder;

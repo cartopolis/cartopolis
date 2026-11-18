@@ -298,6 +298,8 @@ mod tests {
 /// a city keeps its name when there is room for nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlaceKind {
+    /// Not from the tiles: the globe's country names (`countries`).
+    Country,
     City,
     Town,
     Station,
