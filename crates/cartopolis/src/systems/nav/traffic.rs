@@ -993,6 +993,16 @@ const FATBIKE_PAVEMENT_SHARE: f32 = 0.55;
 /// The share of fatbike riders that run red lights and do not stop at
 /// zebras. They all still stop for somebody right in their path.
 const FATBIKE_DEFIANT_SHARE: f32 = 0.7;
+/// The share of ordinary cyclists who do the same: through red, past the
+/// zebra, across whoever has the right of way.
+const CYCLIST_DEFIANT_SHARE: f32 = 0.15;
+/// The share of drivers who drive too fast and give way to nobody on foot:
+/// through red and zebras, past people crossing, braking only for what is
+/// in front of them that is not a person — an avatar excepted. They are
+/// the ones who knock walkers down (`collide_traffic`).
+const RECKLESS_SHARE: f32 = 0.03;
+/// How much faster than the road a reckless driver goes.
+const RECKLESS_SPEED: f32 = 1.35;
 /// How far ahead a fatbike starts weaving round somebody in its way, and
 /// how fast it swerves sideways (m/s): a second and a half at its pace.
 const FATBIKE_WEAVE_AHEAD_M: f32 = 11.0;
@@ -1185,6 +1195,8 @@ const RISE_S: f32 = 1.2;
 const FALL_ANGLE: f32 = 1.35;
 /// The closing speed at which a rider goes down whatever it hit, m/s.
 const FALL_CLOSING: f32 = 5.0;
+/// How far over a person knocked down lies, radians: flat.
+const PERSON_FALL_ANGLE: f32 = 1.5;
 /// How long an agent takes to ease back onto its line after one.
 const CRASH_RECOVER_S: f32 = 1.5;
 /// The closing speed two bodies must meet at to collide, m/s: below it they
@@ -1431,7 +1443,7 @@ fn gives_way(
         };
     };
     if other_kind == AgentKind::Walker {
-        return if kind == AgentKind::Fatbike {
+        return if kind == AgentKind::Fatbike || defiant {
             Way::Go
         } else {
             Way::Wait
@@ -1658,6 +1670,12 @@ pub fn setup_traffic(
         })
         .collect();
 
+    // `CARTO_RECKLESS_SHARE=<0..1>`: more reckless drivers than [`RECKLESS_SHARE`],
+    // so a capture can show one hitting somebody without waiting an hour.
+    let reckless = std::env::var("CARTO_RECKLESS_SHARE")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(RECKLESS_SHARE);
     let agent = |kind: AgentKind, i: usize, seed: u64, parts: AgentParts| {
         let walker = kind == AgentKind::Walker;
         let r = |stream: u64| rand01(seed, i as u64, stream);
@@ -1665,7 +1683,12 @@ pub fn setup_traffic(
             line: None,
             s: 0.0,
             dir: 1.0,
-            speed_scale: 0.85 + r(7) * 0.3,
+            speed_scale: (0.85 + r(7) * 0.3)
+                * if kind == AgentKind::Car && r(15) < reckless {
+                    RECKLESS_SPEED
+                } else {
+                    1.0
+                },
             speed: 0.0,
             heading: Vec2::ZERO,
             turn: None,
@@ -1684,7 +1707,13 @@ pub fn setup_traffic(
             react: Default::default(),
             pinned: None,
             pavement: false,
-            defiant: kind == AgentKind::Fatbike && r(15) < FATBIKE_DEFIANT_SHARE,
+            defiant: r(15)
+                < match kind {
+                    AgentKind::Fatbike => FATBIKE_DEFIANT_SHARE,
+                    AgentKind::Cyclist => CYCLIST_DEFIANT_SHARE,
+                    AgentKind::Car => reckless,
+                    AgentKind::Walker => 0.0,
+                },
             crossing: None,
             last_cross: None,
             foot_down: 0.0,
@@ -2826,8 +2855,11 @@ pub fn drive_traffic(
                         }
                     } else {
                         let near = give_way::YIELD_LOOKAHEAD_M + body.nose + 2.0;
+                        // A reckless driver gives way to nobody crossing; it
+                        // still brakes for an avatar.
+                        let people_in_way: &[Vec2] = if car.defiant { &people.at } else { avatars };
                         let y = give_way::yield_to(
-                            avatars
+                            people_in_way
                                 .iter()
                                 .filter(|a| a.distance_squared(p) < near * near)
                                 .map(|&a| on_path(&car, kind, l, p, travel, a)),
@@ -3496,6 +3528,12 @@ pub fn drive_traffic(
                 }
             }
             AgentParts::Walker => {
+                // Knocked down: over onto its side about its feet, a little
+                // further than a bike, which its pedal and bar hold up.
+                let down = fallen(car.crash);
+                if down != 0.0 {
+                    tf.rotation *= Quat::from_rotation_z(down * PERSON_FALL_ANGLE);
+                }
                 use crate::systems::crowd;
                 // Its body is not made yet: it walks, unseen.
                 let Some((mut figure, mut mesh, mut material, mut tag)) = dressed else {
@@ -3877,20 +3915,23 @@ pub fn collide_traffic(
                 kind,
                 BodyKind::Agent(AgentKind::Cyclist | AgentKind::Fatbike)
             );
-            let fall =
-                if rider && (other == BodyKind::Agent(AgentKind::Car) || closing > FALL_CLOSING) {
-                    let side = match (at, other_at) {
-                        (Some(me), Some(them)) => (them - me).dot(right_of(car.heading)),
-                        _ => 0.0,
-                    };
-                    if side > 0.0 {
-                        -1.0
-                    } else {
-                        1.0
-                    }
-                } else {
-                    0.0
+            // Somebody on foot hit by anything on wheels goes down too.
+            let walker_hit = kind == BodyKind::Agent(AgentKind::Walker) && !other.on_foot();
+            let fall = if walker_hit
+                || (rider && (other == BodyKind::Agent(AgentKind::Car) || closing > FALL_CLOSING))
+            {
+                let side = match (at, other_at) {
+                    (Some(me), Some(them)) => (them - me).dot(right_of(car.heading)),
+                    _ => 0.0,
                 };
+                if side > 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            } else {
+                0.0
+            };
             car.foot_down = 0.0;
             car.crash = Some(Crash {
                 t: 0.0,
