@@ -346,15 +346,6 @@ impl TrafficPhysics {
         }
     }
 
-    /// Whether a body is knocked loose (dynamic).
-    #[must_use]
-    pub fn knocked(&self, body: RigidBodyHandle) -> bool {
-        self.world
-            .bodies
-            .get(body)
-            .is_some_and(|rb| rb.is_dynamic())
-    }
-
     /// Stand a body at each avatar: `at` their world points on the ground.
     /// They push and are never pushed — where an avatar is, the server says.
     pub fn set_avatars(&mut self, at: &[Vec3]) {
@@ -524,7 +515,7 @@ mod tests {
         let rb = p.world.bodies.get(bike).unwrap();
         assert!(rb.translation().y.abs() < 1e-3);
         p.settle(bike);
-        assert!(!p.knocked(bike));
+        assert!(!p.world.bodies.get(bike).unwrap().is_dynamic());
     }
 
     /// A body nobody placed is switched off and is in nobody's way.
