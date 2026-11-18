@@ -8,7 +8,7 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
   crowd_react.rs, crowd_pose.wesl, make_way, keep_clear, WaveBack, CrowdPeople, CARTO_CROWD_HERE, CARTO_AVATAR_WAVE, "head turn", "wave back",
   give_way.rs, "systems::give_way", yield_to, zebra_speed, zebra_priority, SignalButtons, ButtonPhase, button_operated, "push button", "zebra crossing", "give way", CARTO_TRAFFIC_HERE, CARTO_PRESS_BUTTON,
   Fatbike, fatbike, FATBIKE_WHEEL_R, choose_way, defiant, make_way_ahead, Crossing, crossing_ahead, safe_to_cross, signal_lets_walk, closing_walkers, pass_cyclist, hand_off, STRAIGHT_ON_WEIGHT, ride_the_tracks, kind_cycles, foot_down, ride_stop, traffic_hours.rs, "systems::traffic_hours", OFF_DUTY_M, "rush hour", "time of day",
-  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier]
+  traffic_physics.rs, "systems::traffic_physics", TrafficPhysics, look_ahead, gives_way, collide_traffic, "collision", CRASH_CLOSING, CROSSING_PATIENCE_S, rapier, deviation, MAX_CORRECTION, CARTO_TRAFFIC_OVERLAPS, CARTO_KNOCK_RIDER, fallen, "falls"]
 updated: 2026-11-18
 ---
 
@@ -849,3 +849,37 @@ always: where an avatar is, the server says. Each collision is logged
 
 **Not done.** No damage, no hazard lights, nobody gets out; a person hit is
 shoved, not knocked over; vehicles do not swerve, only brake.
+
+### Dynamic, not kinematic (2026-11-18, the same day)
+
+The owner still saw cyclists ride through cars. With kinematic bodies Rapier
+only *reported* touches; nothing pushed two apart, and every give-way rule
+added to keep them apart made a deadlock elsewhere (two oncoming in each
+other waited nose to nose for ever). Measured with `CARTO_TRAFFIC_OVERLAPS=1`
+(pairs deeper than 0.2 m, once a second, over the whole ring) on 20 s at the
+Oostersingel zebra: 20–45 a second.
+
+Every agent body is **dynamic** now. `place` sets it moving to arrive where
+its way puts it by the next step, at most `MAX_CORRECTION` (1.5 m/s) off its
+own velocity; Rapier's solver decides where it gets, and the agent is drawn
+there (`deviation`). Held back more than 0.5 m, its way waits for it. Three
+traps, each one of the measured causes:
+
+- **A jump is the way moving, not the body being far from it.** A bike
+  shoved 3 m off its spot was "teleported" back — inside the car.
+- **Rapier's shape cast drops a hit it starts inside** unless
+  `stop_at_penetration` is set; a car already touching the one ahead saw
+  nothing and drove on. With it set, only a body whose centre is ahead counts.
+- **Put down blind.** Placement checks the bodies Rapier has stepped, so a
+  fresh ring put hundreds down in one frame on top of each other: at most 24
+  a frame now, and two still found 0.6 m inside each other without a
+  collision have the later put down again elsewhere (a pop, rare).
+
+After: 16 in the first second while the ring fills, then 0–2.
+
+**Riders fall** (asked for: "a cyclist that hits a car falls"). A rider in a
+collision with a car, or with anything above 5 m/s, goes over onto its side
+away from what hit it (0.45 s, about the wheels' contact line), lies 5 s,
+and gets up over 1.2 s (`fallen`). Walkers are shoved, not knocked over: the
+crowd has no fall pose. `CARTO_KNOCK_RIDER=<s>` knocks the rider nearest the
+avatar off every that many seconds, for a capture.
