@@ -418,8 +418,8 @@ fn push_doorway(
         Vec3::Y,
         [plain; 4],
     );
-    // A step, a little wider than the surround, standing on the pavement
-    // however far below the base that is (`foot`).
+    // A step, a little wider than the surround, its sides and front
+    // running on into the ground to `foot`, so a slope under it shows no gap.
     let (sw, sd, sh) = (ow + 0.1, STEP_DEPTH_M, STEP_HEIGHT_M);
     buf.quad_facing_uv(
         [
@@ -477,6 +477,14 @@ const FOOT_MAX_M: f32 = 3.0;
 fn wall_foot(base: f32, grounds: impl IntoIterator<Item = f32>) -> f32 {
     let low = grounds.into_iter().fold(base, f32::min);
     (low - FOOT_BELOW_M - base).clamp(-FOOT_MAX_M, 0.0)
+}
+
+/// Where a door stands: on the ground just outside it, not on the building's
+/// base, which is the median over the whole footprint and can be a metre above
+/// the pavement on the low side (or below it on the high one). Held within
+/// [`FOOT_MAX_M`] of the base, for a door over a quay.
+fn door_ground(base: f32, outside: f32) -> f32 {
+    base + (outside - base).clamp(-FOOT_MAX_M, FOOT_MAX_M)
 }
 
 /// The point on a ring nearest `p`, and the **outward** normal of the edge it
@@ -2354,8 +2362,15 @@ fn build_lod22_from_body(
                 };
                 let side = Vec2::new(-normal.y, normal.x) * DOOR_WIDTH_M * 0.5;
                 let out = normal * DOOR_PROUD_M;
+                let sill = door_ground(
+                    base,
+                    ground.at(at.x + normal.x * 0.5, at.y + normal.y * 0.5),
+                )
+                // Never up: this panel has no UV of its own, so the window shader
+                // paints panes on any of it above `FIRST_SILL_M` over the base.
+                .min(base);
                 let foot =
-                    |p: Vec2, y: f32| Vec3::new(p.x + out.x - ox, y + base, p.y + out.y - oz);
+                    |p: Vec2, y: f32| Vec3::new(p.x + out.x - ox, y + sill, p.y + out.y - oz);
                 let (l, r) = (at - side, at + side);
                 buf.quad_facing(
                     foot(l, 0.0),
@@ -2447,8 +2462,11 @@ fn build_lod22_from_body(
                     &mut buf,
                     face,
                     at,
-                    base,
-                    wall_foot(base, [ground.at(at.x, at.y)]),
+                    door_ground(base, {
+                        let o = at + face.outward * 0.5;
+                        ground.at(o.x, o.y)
+                    }),
+                    -FOOT_BELOW_M,
                     Vec2::new(ox, oz),
                     era,
                     fact.map_or(0, |f| f.uses),
