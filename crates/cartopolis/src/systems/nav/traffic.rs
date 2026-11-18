@@ -1114,6 +1114,8 @@ pub struct Car {
     /// smoothness count of `CARTO_TRAFFIC_OVERLAPS`).
     drawn: Vec2,
     drawn_step: Vec2,
+    /// The push it is drawn with: `TrafficPhysics::deviation`, eased.
+    shown_push: Vec2,
 }
 
 /// How long a newly placed agent cannot collide: placement keeps clear of
@@ -1123,6 +1125,9 @@ const SETTLE_IN_S: f32 = 1.0;
 /// How far a body may fall behind where its way has it before the way
 /// waits for it, metres (`traffic_physics::deviation`).
 const HELD_BACK_M: f32 = 0.5;
+/// How quickly what Rapier pushed an agent by shows in where it is drawn,
+/// seconds.
+const PUSH_EASE_S: f32 = 0.2;
 /// How many agents may be put on the road in one frame. Each is checked
 /// against the bodies Rapier has stepped, so the first frame of a fresh
 /// ring — every pool empty — would otherwise put hundreds down blind, on
@@ -1687,6 +1692,7 @@ pub fn setup_traffic(
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            shown_push: Vec2::ZERO,
         }
     };
 
@@ -3115,6 +3121,8 @@ pub fn drive_traffic(
                     car.last_cross = None;
                     car.foot_down = 0.0;
                     placed_now += 1;
+                    car.shown_push = Vec2::ZERO;
+                    car.drawn = Vec2::ZERO;
                     car.waited = 0.0;
                     car.driven = 0.0;
                     if car.crash.take().is_some() {
@@ -3322,7 +3330,12 @@ pub fn drive_traffic(
                 facing * car.speed,
                 dt,
             );
-            pos += push;
+            // Eased, not taken outright: the solver's push changes from step to
+            // step as two bodies touch and part, and drawn raw it shook.
+            let ease = 1.0 - (-dt / PUSH_EASE_S).exp();
+            let shown = car.shown_push + (push - car.shown_push) * ease;
+            car.shown_push = shown;
+            pos += shown;
         }
         // `CARTO_TRAFFIC_OVERLAPS`'s smoothness count: how much the drawn
         // step changes frame to frame, for whoever is near the camera.
@@ -3334,8 +3347,24 @@ pub fn drive_traffic(
                 jitter.sum[k] += j;
                 jitter.max[k] = jitter.max[k].max(j);
                 jitter.n[k] += 1;
+                if j > 30.0 {
+                    info!(
+                        "traffic jump: {kind:?} {j:.0} m/s² dt {dt:.3} step {:.2} was {:.2} speed {:.1} turn {} crash {:?} push {:.2} held {held}",
+                        step.length(),
+                        car.drawn_step.length(),
+                        car.speed,
+                        car.turn.is_some(),
+                        car.crash.map(|c| (c.recovering, c.t)),
+                        push.length()
+                    );
+                }
             }
-            car.drawn_step = step;
+            // A step of 3 m or more is a teleport, not motion.
+            car.drawn_step = if step.length() < 3.0 {
+                step
+            } else {
+                Vec2::ZERO
+            };
         }
         car.drawn = pos;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
@@ -5103,6 +5132,7 @@ mod tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            shown_push: Vec2::ZERO,
         };
         let (right, ..) = pose_of(&walker(1.0), l, AgentKind::Walker).unwrap();
         let (left, ..) = pose_of(&walker(-1.0), l, AgentKind::Walker).unwrap();
@@ -5141,6 +5171,7 @@ mod tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            shown_push: Vec2::ZERO,
         }
     }
 
@@ -5366,6 +5397,7 @@ mod crossing_tests {
             driven: 0.0,
             drawn: Vec2::ZERO,
             drawn_step: Vec2::ZERO,
+            shown_push: Vec2::ZERO,
         }
     }
 
