@@ -77,7 +77,7 @@ pub use map::{
     lod22, lod22_facade, lod3, map_geometry, map_stream, mesh_format, model_assets, municipal,
     nav_marks, osm_buildings, particles, placeholder_models, render_features, render_scale,
     rendering, road_depth, roof_colours, satellites, scaffolding, sewers, sky, sky_bake, sky_dome,
-    stream_ledger, stream_watch, street_detail, street_furniture, street_labels, sun_rays,
+    stream_ledger, stream_watch, street_detail, street_furniture, street_labels, sun_cascades, sun_rays,
     surveyed, tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tree_models,
     tunnels, underground, vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };

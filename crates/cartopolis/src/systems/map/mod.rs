@@ -56,6 +56,8 @@ pub mod map_stream;
 pub mod mesh_format;
 pub mod model_assets;
 pub mod sun_rays;
+// The sun's shadow cascades, sized for a lens that does not breathe.
+pub mod sun_cascades;
 // The fetching half of the navigation marks (`cartopolis_geo::nav_marks` is the
 // pure one). Named for the layer rather than for Rijkswaterstaat, the way
 // `surveyed` and `crops` are.

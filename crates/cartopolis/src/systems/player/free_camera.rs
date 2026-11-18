@@ -430,11 +430,15 @@ const CAMERA_DIP_RECOVERY: f32 = 7.0;
 // ── Speed-coupled field of view ──────────────────────────────────────────────
 /// Bevy's default perspective FOV (radians) — the resting value for the follow
 /// camera, which widens from here with speed.
-const FOLLOW_FOV_BASE: f32 = std::f32::consts::FRAC_PI_4;
+pub(crate) const FOLLOW_FOV_BASE: f32 = std::f32::consts::FRAC_PI_4;
 /// How much wider the view gets at a full sprint (radians, ~7°). The oldest trick
 /// there is for making speed felt rather than merely measured; kept small because
 /// the map is a map, and a wide-angle city bends.
-const FOLLOW_FOV_SPRINT_GAIN: f32 = 0.12;
+///
+/// The sun's shadow cascades are sized for the widest of this range, not for the
+/// lens of the moment (`systems::sun_cascades`): bevy sizes them from the FOV, so a
+/// breathing lens re-scaled every shadow on screen while walking.
+pub(crate) const FOLLOW_FOV_SPRINT_GAIN: f32 = 0.12;
 /// The FOV lags the speed deliberately — arriving with the acceleration would make
 /// it read as a lens fault rather than as effort.
 const FOLLOW_FOV_RATE: f32 = 4.0;

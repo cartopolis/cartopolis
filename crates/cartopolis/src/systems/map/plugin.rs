@@ -185,6 +185,14 @@ impl Plugin for MapPlugin {
         app.add_systems(First, systems::stream_ledger::open_frame);
         // `CARTO_DBG_HIDE`: a bisecting switch that hides whole layers by name.
         app.add_systems(PostUpdate, systems::map_geometry::debug_hide_layers);
+        // Overwrites bevy's cascade fit for the main camera, so after it and
+        // before the light frusta and the caster culling read it.
+        app.add_systems(
+            PostUpdate,
+            systems::sun_cascades::steady_sun_cascades
+                .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                .before(bevy::light::SimulationLightSystems::UpdateLightFrusta),
+        );
         // The upload meter's other consumer: the ring that streamers reach with,
         // steered by the residency the meter measures rather than fixed by the tier
         // alone (`systems::load_control`). After `measure_uploads` in the same
