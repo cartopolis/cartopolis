@@ -1,10 +1,34 @@
 ---
 topic: plans-and-decisions
 triggers: [bekendmakingen, gemeenteblad, raadsinformatie, council decisions, permits, Plans layer, data_layers.rs]
-updated: 2026-10-30
+updated: 2026-11-18
 ---
 
 # Plans and decisions on the map
+
+## v3 — works the city plans, proposed 2026-11-18
+
+![v3](v3-works.png)
+
+Gemeente Groningen's maintenance programme for the year (roads, sewers,
+trees, street-light cables, bridges and quays: 729 items for 2026, five WFS
+layers `prog-sbh:UITVOERINGPROGRAMMA_*` on `maps.groningen.nl/geoserver`)
+as one more kind in the Plans layer, *Works this year*. Works are drawn in
+their own yellow, styled by where they happen (hatched street surface, dashed
+underground, rings on trees), with one square marker each; the notices keep
+their dots. A tapped work shows the city's words, a plain sentence for the
+kind of measure, that only the year is known, the council decision it is
+part of (matched by name), and the other works on the same street.
+
+Drawn at Korreweg with real data read 2026-11-18: the 2026 programme, the
+live Plans feed's notices from 18 Aug to 18 Nov inside the frame, PDOK's
+current aerial (`korreweg.jpg`, Actueel_orthoHR, RD 233705–234095 ×
+582680–583524), and the council's "Kredietaanvraag fietsstraat Korreweg"
+(decided 2025-02-26). The programme carries no dates, closures or contacts;
+the card says so.
+
+Not decided yet: whether to build it, and whether following a place should
+also report works when next year's programme is published.
 
 ## v2 — Plans as a layer of its own, proposed 2026-10-30
 
