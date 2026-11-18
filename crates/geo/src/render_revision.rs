@@ -27,7 +27,7 @@
 /// The basemap renderer's revision. Part of every stored tile's key.
 ///
 /// Update it to what `the_revision_names_what_the_renderer_draws` prints.
-pub const RENDER_REVISION: u64 = 0xf8f4_d4bf_4c51_8712;
+pub const RENDER_REVISION: u64 = 0x3bff_b921_10f1_002f;
 
 /// FNV-1a, 64 bit: written out rather than `DefaultHasher`, whose output Rust
 /// does not promise to keep between releases — a toolchain update would
@@ -141,6 +141,19 @@ fn measure() -> u64 {
         SubTile::WHOLE,
         256,
         Z10_TILE_M,
+        &underlay,
+        &[],
+        &Survey::default(),
+        &FarDetail::default(),
+    )
+    .expect("a synthetic tile draws");
+    h.write(&pixels);
+    // And as the globe's coarse tiles draw it, bold over a casing.
+    let pixels = render_mvt_detailed(
+        &border,
+        SubTile::WHOLE,
+        256,
+        Z10_TILE_M * 64.0,
         &underlay,
         &[],
         &Survey::default(),

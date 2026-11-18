@@ -53,9 +53,14 @@ const COUNTRY_MIN_ALTITUDE_M: f64 = MAX_ALTITUDE_M;
 
 /// The camera height a country whose `min_label` is 0 would be named from;
 /// each zoom of `min_label` halves it, as a web map halves its scale. Russia
-/// and France (1.7) are named from ~25,000 km, the Netherlands (4) from
-/// 5,000 km, Luxembourg (5.7) from 1,500 km.
-const COUNTRY_SCALE_M: f64 = 80_000_000.0;
+/// and France (1.7) are named from ~18,500 km, the Netherlands (4) from
+/// 3,750 km, Luxembourg (5.7) from 1,150 km. At 80,000 km the whole globe
+/// carried some 25 names and looked odd (asked 2026-11-18); now about a dozen.
+const COUNTRY_SCALE_M: f64 = 60_000_000.0;
+
+/// How far past the sunset line, as the cosine of the sun's angle, a
+/// country is still named: a little into the dusk, where the city lights are.
+const NIGHT_MARGIN: f32 = -0.1;
 
 /// One zoom of tiles names are read from: the zoom, and the camera heights it is
 /// kept between. Shortbread carries towns from z10, districts at z12 and
@@ -101,6 +106,24 @@ fn countries() -> &'static [Place] {
             })
             .collect()
     })
+}
+
+/// Whether ground whose outward normal is `normal` is on the globe's lit side
+/// as it is drawn (`globe::update_globe_night`): a name over the night side
+/// floated in the black. With the light set to Dark, which is night all round,
+/// and with the night side switched off, everything is lit.
+fn sunlit(night: &crate::systems::globe::GlobeNight, normal: Vec3) -> bool {
+    // `terminator.w` is the light setting: 1 Light, whose line is where the
+    // real sun sets; 2 Dark; 0 the clock, whose night is `night`.
+    let mode = night.terminator.w.round() as i32;
+    let sun = if mode == 1 {
+        night.terminator.truncate()
+    } else if mode == 0 && night.night.w > 0.0 {
+        night.night.truncate()
+    } else {
+        return true;
+    };
+    normal.dot(sun) > NIGHT_MARGIN
 }
 
 /// The highest camera a country is named from.
@@ -280,6 +303,7 @@ pub fn render_place_names(
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut lenses: ResMut<crate::systems::scenario::ScenarioView>,
+    night: Res<crate::systems::globe::GlobeNight>,
 ) {
     if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
         nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(
@@ -334,7 +358,9 @@ pub fn render_place_names(
     let mut towns: Vec<&str> = Vec::new();
     for tile in sources {
         for p in tile {
-            if p.kind == PlaceKind::Country && p.min_label > min_label {
+            if p.kind == PlaceKind::Country
+                && (p.min_label > min_label || !sunlit(&night, globe.direction_local(p.lat, p.lng)))
+            {
                 continue;
             }
             if !seen.insert((p.name.as_str(), p.kind)) {
@@ -690,9 +716,9 @@ mod tests {
     fn big_countries_are_named_from_further_out() {
         // France from the whole hemisphere, the Netherlands over Europe,
         // Luxembourg only over the Low Countries.
-        assert!(country_ceiling_m(1.7) > 20_000_000.0);
-        assert!((4_000_000.0..6_000_000.0).contains(&country_ceiling_m(4.0)));
-        assert!(country_ceiling_m(5.7) < 2_000_000.0);
+        assert!(country_ceiling_m(1.7) > 15_000_000.0);
+        assert!((3_500_000.0..4_000_000.0).contains(&country_ceiling_m(4.0)));
+        assert!(country_ceiling_m(5.7) < 1_500_000.0);
         let nl = countries()
             .iter()
             .find(|c| c.name == "Netherlands")

@@ -1,6 +1,6 @@
 ---
 topic: painted-far-map
-triggers: [painted.rs, countries.rs, countries.tsv, "atlas countries", MAP_EV100, DAY_FALL, map_light.wesl, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
+triggers: [painted.rs, render_revision.rs, BOLD_BORDER_TILE_M, countries.rs, countries.tsv, "atlas countries", MAP_EV100, DAY_FALL, map_light.wesl, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
 updated: 2026-11-18
 ---
 
@@ -118,9 +118,16 @@ exposure (eye adaptation near the ground, the fixed day exposure in space: 0.6
 stop), and `ORBIT_DIM`. Now the fall runs over the band towards the terminator
 only, the map light from orbit has its own exposure (`MAP_EV100`), and
 `ORBIT_DIM` darkens bright albedos only, the desert. 700 → 2,800 km went from
-157,167,101 → 88,103,51 to 152,165,99 → 134,147,77; the Sahara from 12,000 km
-reads 220,172,97; the strategy map below 300 km is unchanged (50 km over
-Groningen: identical mean).
+157,167,101 → 88,103,51 to 152,165,99 → 134,147,77 at `ORBIT_SAT` 1.0; the
+strategy map below 300 km is unchanged (50 km over Groningen: identical mean).
+That read too saturated from orbit ("it has to look realistic"), so the grey
+deepens again from orbit, `ORBIT_SAT` 0.65 against the strategy map's 0.8.
+
+**Borders in the ground from orbit** (asked the same day, "information in the
+ground layer"): the globe shows a coarse tile shrunk three or four times over,
+so the 1.6 px cream line vanished. Tiles over 150 km (`BOLD_BORDER_TILE_M`)
+draw it 3.4 px over a 7 px dark casing at 0.35; `render_revision` now measures
+the synthetic border at a globe tile's size too.
 
 ## Place names
 
@@ -138,8 +145,10 @@ Earth's admin-0 label point, population estimate and `MIN_LABEL`, written by
 `atlas countries` to `assets/globe/countries.tsv` and embedded
 (`cartopolis_geo::countries`), because the tiles carry neither a country's
 population nor a good point for its name. A country is named once the camera
-is under 80,000 km / 2^`MIN_LABEL` (France ~25,000 km, the Netherlands 5,000
-km, Luxembourg 1,500 km), in the town banner a size up without the dot. Names
+is under 60,000 km / 2^`MIN_LABEL` (France ~18,500 km, the Netherlands 3,750
+km, Luxembourg 1,150 km; at 80,000 km the whole globe carried ~25 names and
+looked odd), and only on the lit side as the globe draws it (`sunlit`): over
+the night side a name floated in the black, in the town banner a size up without the dot. Names
 are English, as the rest of the interface is; Natural Earth carries `NAME_NL`
 and the other languages should the app get a language setting.
 

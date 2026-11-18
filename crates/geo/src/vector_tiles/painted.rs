@@ -73,6 +73,10 @@ const LOCAL_STREETS_TILE_M: f32 = 8_000.0;
 /// land cover, water and the names on it.
 const NO_STREETS_TILE_M: f32 = 150_000.0;
 
+/// Ground edge over which a painted tile draws the borders between countries
+/// bold, with a casing: from about z7, the tiles the globe is made of.
+const BOLD_BORDER_TILE_M: f32 = 150_000.0;
+
 /// Ground edge over which only motorways, trunk and primary roads are drawn.
 const MAJOR_ONLY_TILE_M: f32 = 60_000.0;
 
@@ -366,6 +370,24 @@ pub(super) fn paint(
             1.2 * c.wf,
             None,
         );
+        // From orbit a 1.6 px cream line was lost in the land cover (asked
+        // 2026-11-18, "more information in the ground"): the globe shows its
+        // tiles shrunk three or four times over, so a coarse tile draws it
+        // wider, over a soft dark casing that reads on sand and forest alike,
+        // as an atlas draws a border.
+        let far = c.source_m > BOLD_BORDER_TILE_M;
+        if far {
+            stroke(
+                pixmap,
+                &mut paint,
+                &country,
+                &t,
+                palette::painted::SHADOW,
+                0.35,
+                7.0 * c.wf,
+                None,
+            );
+        }
         stroke(
             pixmap,
             &mut paint,
@@ -373,7 +395,7 @@ pub(super) fn paint(
             &t,
             palette::painted::NEIGHBOUR_BORDER,
             0.9,
-            1.6 * c.wf,
+            if far { 3.4 } else { 1.6 } * c.wf,
             None,
         );
     }

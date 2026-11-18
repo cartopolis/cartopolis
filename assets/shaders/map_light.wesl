@@ -36,13 +36,14 @@ const GAIN: f32 = 1.5;
 // From orbit that grade went too far (asked 2026-11-18): Europe from 3,500 km
 // came out dark olive, a different map from the green and yellow one at 700 km.
 // The person wanted it more saturated, closer to the street-level detail. So
-// from orbit the grey is lifted again (`ORBIT_SAT`) and the darkening bites
+// from orbit the grey is set apart from the strategy map's (`ORBIT_SAT`;
+// at 1.0 it read too saturated, "it has to look realistic") and the darkening bites
 // only on the bright albedos, desert and bare rock (`ORBIT_DIM_LUMA`): with
 // the map light's own exposure (`exposure`) a cropland and forest mosaic
 // keeps the colours it has at 700 km, and the Sahara, all of it on the
 // tonemapper's shoulder, read 246,196,121 at 12,000 km before this.
 const GRADE_SAT: f32 = 0.8;
-const ORBIT_SAT: f32 = 1.0;
+const ORBIT_SAT: f32 = 0.65;
 const NEAR_DIM: f32 = 0.9;
 const ORBIT: vec2<f32> = vec2<f32>(300000.0, 2000000.0);
 const ORBIT_DIM: f32 = 0.7;
