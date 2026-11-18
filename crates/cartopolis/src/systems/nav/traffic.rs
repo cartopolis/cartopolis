@@ -1116,6 +1116,17 @@ pub struct Car {
 /// its own kind on its own line only, and one dropped across another's
 /// path drives out of it rather than crashing into it.
 const SETTLE_IN_S: f32 = 1.0;
+/// How far a body may fall behind where its way has it before the way
+/// waits for it, metres (`traffic_physics::deviation`).
+const HELD_BACK_M: f32 = 0.5;
+/// How many agents may be put on the road in one frame. Each is checked
+/// against the bodies Rapier has stepped, so the first frame of a fresh
+/// ring — every pool empty — would otherwise put hundreds down blind, on
+/// top of each other; at this rate the ring fills in a few frames.
+const PLACE_PER_FRAME: usize = 24;
+/// How deep two agents must be inside each other, not in a collision, for
+/// the later to be put down again elsewhere, metres (`collide_traffic`).
+const RETIRE_DEPTH_M: f32 = 0.6;
 
 /// An agent in a collision (`traffic_physics::TrafficPhysics::knock`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2324,6 +2335,7 @@ pub fn drive_traffic(
         .iter()
         .map(|a| Vec3::new(a.x, terrain.ground_at(a.x, a.y), a.y))
         .collect();
+    physics.anchor(cam);
     physics.set_avatars(&avatar_feet);
     // How many of each pool are out at this hour (`traffic_hours`): an agent
     // past its pool's quota is let go when it next runs out of road out of
@@ -2499,6 +2511,8 @@ pub fn drive_traffic(
     let mut nearest_sent: Option<(f32, f32)> = None;
     // Who a walker makes way for this frame; one buffer, refilled per walker.
     let mut near: Vec<Vec2> = Vec::new();
+    // Agents put on the road this frame.
+    let mut placed_now = 0usize;
 
     for (i, (mut car, &kind, entity, mut tf, mut cell, dressed, mut vis)) in
         cars.iter_mut().enumerate()
@@ -2601,6 +2615,27 @@ pub fn drive_traffic(
         car.driven += time.delta_secs();
         if knocked {
             car.speed = 0.0;
+        }
+        // What Rapier made of it last step: how far it was pushed aside or
+        // held back from where its way had it (`traffic_physics::deviation`).
+        // Held back, its way waits for it — the path does not run on ahead of
+        // a body that something stands in front of.
+        let mut push = if knocked {
+            Vec2::ZERO
+        } else {
+            physics.deviation(handle).unwrap_or(Vec2::ZERO)
+        };
+        let held_back = -push.dot(car.heading) - HELD_BACK_M;
+        if held_back > 0.0 {
+            match car.turn.as_mut() {
+                Some(t) => t.t = (t.t - held_back / t.len.max(0.5)).max(0.0),
+                None => car.s = (car.s - held_back).max(0.0),
+            }
+            // The way has come back to it by that much.
+            push += car.heading * held_back;
+            if let Some((_, _, moving)) = physics.pose(handle) {
+                car.speed = car.speed.min(moving);
+            }
         }
         // What this frame's advance did, for the body's lean, the brake lamps
         // and the stride.
@@ -2951,6 +2986,14 @@ pub fn drive_traffic(
         }
 
         // ── Recycling ────────────────────────────────────────────────────────
+        // Past this frame's placements, it waits for the next: an agent put
+        // down is checked against the bodies Rapier knows, which are only
+        // those of earlier frames (`PLACE_PER_FRAME`).
+        if line.is_none() && placed_now >= PLACE_PER_FRAME {
+            car.line = None;
+            *vis = Visibility::Hidden;
+            continue;
+        }
         if line.is_none() && !on_duty {
             // Not out at this hour: it waits, unseen, until the hour fills.
             car.line = None;
@@ -2958,8 +3001,20 @@ pub fn drive_traffic(
             continue;
         }
         if line.is_none() {
+            // A spot is free when the agent's body stood there would be
+            // inside nobody else's (`traffic_physics::is_clear`).
+            let free = |l: &WorldDriveLine, along: f32, dir: f32| {
+                let (centre, heading) = l.at(along);
+                let travel = heading * dir;
+                let p = centre + right_of(travel) * kind.offset(l);
+                physics.is_clear(
+                    kind,
+                    Vec3::new(p.x, terrain.ground_at(p.x, p.y), p.y),
+                    travel,
+                )
+            };
             match place_agent(
-                &net, candidates, weights, cam, kind, occupied, i as u64, *frame,
+                &net, candidates, weights, cam, kind, occupied, i as u64, *frame, &free,
             ) {
                 Some((k, dir, s)) => {
                     let l = net.get(k).expect("place_agent only offers lines it read");
@@ -2990,6 +3045,7 @@ pub fn drive_traffic(
                     car.crossing = None;
                     car.last_cross = None;
                     car.foot_down = 0.0;
+                    placed_now += 1;
                     car.waited = 0.0;
                     car.driven = 0.0;
                     if car.crash.take().is_some() {
@@ -3181,9 +3237,18 @@ pub fn drive_traffic(
             None if deck.is_finite() => deck + CAR_RIDE_HEIGHT,
             None => ground + lift + CAR_RIDE_HEIGHT,
         };
-        // Its body where it is drawn — unless Rapier is moving it.
+        // Its body driven toward where its way puts it — unless a collision
+        // has it loose — and drawn where Rapier let it get to: pushed aside
+        // by somebody, or held back.
         if !car.crash.is_some_and(|c| !c.recovering) {
-            physics.place(handle, Vec3::new(pos.x, y, pos.y), facing);
+            physics.place(
+                handle,
+                Vec3::new(pos.x, y, pos.y),
+                facing,
+                facing * car.speed,
+                dt,
+            );
+            pos += push;
         }
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
         *cell = grid_cell;
@@ -3393,8 +3458,94 @@ pub fn collide_traffic(
     time: Res<crate::systems::anim_clock::AnimClock>,
     mut physics: ResMut<TrafficPhysics>,
     mut cars: Query<(&mut Car, &AgentKind)>,
+    mut report: Local<(Option<bool>, f32)>,
 ) {
     let touches = physics.step(time.delta_secs());
+    // Two deep inside each other that did not collide were put down so —
+    // two of a pool dropped on one spot, or handed onto one line at once —
+    // and their ways keep them there, so Rapier's push never wins. The later
+    // of the two is taken off the road and put down again where it is clear.
+    for (ta, tb, _) in physics.overlaps(RETIRE_DEPTH_M) {
+        if TrafficPhysics::is_avatar(ta) || TrafficPhysics::is_avatar(tb) {
+            continue;
+        }
+        let Some(later) = Entity::try_from_bits(ta.max(tb) as u64) else {
+            continue;
+        };
+        let Some(other) = Entity::try_from_bits(ta.min(tb) as u64) else {
+            continue;
+        };
+        let walkers = [later, other]
+            .iter()
+            .all(|e| cars.get(*e).is_ok_and(|(_, k)| *k == AgentKind::Walker));
+        let crashed = [later, other]
+            .iter()
+            .any(|e| cars.get(*e).is_ok_and(|(c, _)| c.crash.is_some()));
+        if walkers || crashed {
+            continue;
+        }
+        if let Ok((mut car, _)) = cars.get_mut(later) {
+            car.line = None;
+            car.turn = None;
+        }
+    }
+    // `CARTO_TRAFFIC_OVERLAPS=1`: once a second of the moving world's clock,
+    // how many pairs are drawn inside each other (deeper than 0.2 m, not two
+    // walkers, not in a collision), and how the first few stand: a capture's
+    // measure of whatever still passes through something.
+    let elapsed = time.elapsed_secs();
+    if *report
+        .0
+        .get_or_insert_with(|| crate::debug_switches::env_flag("CARTO_TRAFFIC_OVERLAPS"))
+        && elapsed >= report.1 + 1.0
+    {
+        report.1 = elapsed;
+        let found = |tag: u128| {
+            (!TrafficPhysics::is_avatar(tag))
+                .then(|| Entity::try_from_bits(tag as u64))
+                .flatten()
+                .and_then(|e| cars.get(e).ok())
+        };
+        let mut n = 0;
+        let mut seen = Vec::new();
+        for (ta, tb, depth) in physics.overlaps(0.2) {
+            let (Some((a, ka)), Some((b, kb))) = (found(ta), found(tb)) else {
+                continue;
+            };
+            if (*ka == AgentKind::Walker && *kb == AgentKind::Walker)
+                || a.crash.is_some()
+                || b.crash.is_some()
+            {
+                continue;
+            }
+            n += 1;
+            if seen.len() < 6 {
+                let pa = a.body.and_then(|h| physics.pose(h));
+                let pb = b.body.and_then(|h| physics.pose(h));
+                let (along, across) = match (pa, pb) {
+                    (Some(pa), Some(pb)) => {
+                        let rel = pb.0 - pa.0;
+                        (rel.dot(pa.1), rel.dot(right_of(pa.1)))
+                    }
+                    _ => (f32::NAN, f32::NAN),
+                };
+                seen.push(format!(
+                    "{ka:?}@{:.1}{} / {kb:?}@{:.1}{} {depth:.2} m deep, headings {:.2}, \
+                     b {along:.1} m ahead {across:.1} m right, same line {}",
+                    a.speed,
+                    if a.turn.is_some() { " turning" } else { "" },
+                    b.speed,
+                    if b.turn.is_some() { " turning" } else { "" },
+                    a.heading.dot(b.heading),
+                    a.line.is_some() && a.line == b.line,
+                ));
+            }
+        }
+        info!("traffic overlaps: {n} at {elapsed:.1} s");
+        for s in seen {
+            info!("traffic overlap: {s}");
+        }
+    }
     for t in touches {
         let entity = |tag: u128| {
             (!TrafficPhysics::is_avatar(tag))
@@ -3766,6 +3917,7 @@ fn place_agent(
     occupied: &HashMap<(LineKey, i8), Vec<f32>>,
     agent: u64,
     frame: u64,
+    free: &dyn Fn(&WorldDriveLine, f32, f32) -> bool,
 ) -> Option<(LineKey, f32, f32)> {
     let mut fallback = None;
     for attempt in 0..PLACE_ATTEMPTS {
@@ -3817,13 +3969,19 @@ fn place_agent(
         let clear = occupied
             .get(&(key, lane_key(dir)))
             .is_none_or(|v| v.iter().all(|o| (o - s).abs() > kind.spawn_gap()));
-        if clear {
+        // Never inside another body, of any kind: two put down on one spot
+        // are drawn through each other until one drives off.
+        let free = free(line, along, dir);
+        if clear && free {
             return Some((key, dir, s));
         }
-        fallback.get_or_insert((key, dir, s));
+        if free {
+            fallback.get_or_insert((key, dir, s));
+        }
     }
-    // Every draw was taken. Somewhere occupied beats nowhere: an agent with no
-    // line is hidden, and a hidden agent is one the pool has lost.
+    // Every draw was near one of its own kind. Close behind another beats
+    // nowhere: an agent with no line is hidden, and a hidden agent is one the
+    // pool has lost. Inside another does not: it waits for the next frame.
     fallback
 }
 
@@ -4370,9 +4528,18 @@ mod tests {
         let occupied = HashMap::new();
         let l = net.get(keys[0]).expect("one road");
         for agent in 0..50u64 {
-            let (key, dir, s) =
-                place_agent(&net, &keys, &cum, cam, AgentKind::Car, &occupied, agent, 3)
-                    .expect("a spot");
+            let (key, dir, s) = place_agent(
+                &net,
+                &keys,
+                &cum,
+                cam,
+                AgentKind::Car,
+                &occupied,
+                agent,
+                3,
+                &|_, _, _| true,
+            )
+            .expect("a spot");
             let along = if dir > 0.0 { s } else { l.length() - s };
             let (p, _) = net.get(key).expect("placed line").at(along);
             assert!(
@@ -4399,9 +4566,17 @@ mod tests {
         let mut occupied: HashMap<(LineKey, i8), Vec<f32>> = HashMap::new();
         let mut placed: Vec<(i8, f32)> = Vec::new();
         for agent in 0..12u64 {
-            let Some((k, dir, s)) =
-                place_agent(&net, &keys, &cum, cam, AgentKind::Car, &occupied, agent, 11)
-            else {
+            let Some((k, dir, s)) = place_agent(
+                &net,
+                &keys,
+                &cum,
+                cam,
+                AgentKind::Car,
+                &occupied,
+                agent,
+                11,
+                &|_, _, _| true,
+            ) else {
                 continue;
             };
             for (d, o) in &placed {
