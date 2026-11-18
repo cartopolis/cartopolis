@@ -32,10 +32,23 @@ const GAIN: f32 = 1.5;
 // over `ORBIT` metres of camera distance, where satellite true colour (Blue
 // Marble, Google Earth's globe) has the forests nearly black-green and the
 // deserts a warm tan. On distance, so the two tiers grade alike where they meet.
+//
+// From orbit that grade went too far (asked 2026-11-18): Europe from 3,500 km
+// came out dark olive, a different map from the green and yellow one at 700 km.
+// The person wanted it more saturated, closer to the street-level detail. So
+// from orbit the grey is lifted again (`ORBIT_SAT`) and the darkening bites
+// only on the bright albedos, desert and bare rock (`ORBIT_DIM_LUMA`): with
+// the map light's own exposure (`exposure`) a cropland and forest mosaic
+// keeps the colours it has at 700 km, and the Sahara, all of it on the
+// tonemapper's shoulder, read 246,196,121 at 12,000 km before this.
 const GRADE_SAT: f32 = 0.8;
+const ORBIT_SAT: f32 = 1.0;
 const NEAR_DIM: f32 = 0.9;
 const ORBIT: vec2<f32> = vec2<f32>(300000.0, 2000000.0);
-const ORBIT_DIM: f32 = 0.75;
+const ORBIT_DIM: f32 = 0.7;
+// The albedo luminances `ORBIT_DIM` comes in over, and goes out over again
+// for snow and ice, which it would turn grey.
+const ORBIT_DIM_LUMA: vec4<f32> = vec4<f32>(0.25, 0.4, 0.6, 0.8);
 // The air between orbit and the ground adds blue (`globe::SPACE_ATMOSPHERE_DENSITY`)
 // that a grey cannot take back: the Congo came out teal. So from orbit the
 // albedo is warmed against it, by taking blue out — except snow and ice, which
@@ -48,8 +61,12 @@ fn grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
     let o = smoothstep(ORBIT.x, ORBIT.y, distance);
     let y = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
     let warm = mix(vec3<f32>(1.0), mix(ORBIT_WARM, vec3<f32>(1.0), smoothstep(0.45, 0.75, y)), o);
-    let grey = mix(albedo, mix(vec3<f32>(y), albedo, GRADE_SAT), k);
-    return grey * mix(1.0, mix(NEAR_DIM, ORBIT_DIM, o), k) * warm;
+    let sat = mix(GRADE_SAT, ORBIT_SAT, o);
+    let grey = mix(albedo, max(mix(vec3<f32>(y), albedo, sat), vec3<f32>(0.0)), k);
+    let bright = smoothstep(ORBIT_DIM_LUMA.x, ORBIT_DIM_LUMA.y, y)
+        * (1.0 - smoothstep(ORBIT_DIM_LUMA.z, ORBIT_DIM_LUMA.w, y));
+    let orbit_dim = mix(1.0, ORBIT_DIM, bright);
+    return grey * mix(1.0, mix(NEAR_DIM, orbit_dim, o), k) * warm;
 }
 
 // How much of a light reaches ground whose normal makes `ndl` with it, for a
@@ -59,16 +76,37 @@ fn grade(albedo: vec3<f32>, distance: f32) -> vec3<f32> {
 // out of it; Google Earth's globe and every photograph from space fall off
 // across the whole day side, light under the sun to dark at the terminator
 // (asked 2026-11-12, "dat verloop van donker naar licht is ook mooi"). So it
-// eases towards a fall over the whole day side, `(n·l)` to the `DAY_FALL`
-// power with a little light carried past the terminator: half way down the
-// sky (n·l 0.5) is 0.54 of the light, 0.07 of it at the terminator. At 0.7 the
-// fall was there (mac-2, 14,000 km: central Africa 114 → 85) but too faint to
-// see on a phone.
-const DAY_FALL: f32 = 1.0;
+// eased towards a fall over the whole day side, `(n·l)` to a power.
+//
+// That fall made a low sun a different map (asked
+// 2026-11-18): on a November noon all of Europe stands at n·l ~0.35, and
+// with the power at 1.0 the same ground near Osnabrück measured 157,167,101
+// from 700 km and 88,103,51 from 2,800 km (mac-2). So the fall now runs over
+// the band towards the terminator only (`DAY_FALL`, in n·l): full light where
+// the sun is over ~30° up, easing to dark at the terminator, which the
+// globe's shoulder still shows as the gradient asked for.
+const DAY_FALL: vec2<f32> = vec2<f32>(-0.08, 0.5);
 fn daylight(ndl: f32, distance: f32) -> f32 {
     let up = smoothstep(-0.05, 0.15, ndl);
-    let fall = pow(clamp((ndl + 0.08) / 1.08, 0.0, 1.0), DAY_FALL);
+    let fall = smoothstep(DAY_FALL.x, DAY_FALL.y, ndl);
     return mix(up, fall, smoothstep(ORBIT.x, ORBIT.y, distance));
+}
+
+// The exposure the map light is seen at. The camera's own follows the eye's
+// adaptation near the ground and holds the day exposure from orbit
+// (`sky::DAY_EXPOSURE_EV100`), 0.6 stop apart on a November noon: through
+// it the map came out a third darker from 2,800 km than from 700 km over the
+// same ground (asked 2026-11-18). So from orbit (`ORBIT`) the map light is
+// seen at one exposure of its own, `MAP_EV100`: about what the eye adapts to
+// under a low sun, which is what the flat map below was being seen at. Below
+// 300 km the camera's own is kept, so the strategy map still follows the
+// hour as before. Measured on mac-2 over the same ground, 700 → 2,800 km:
+// 152,165,99 → 134,147,77; the Sahara from 12,000 km 220,172,97. The night
+// side's city lights keep the camera's, which they were tuned against.
+const MAP_EV100: f32 = 13.0;
+fn exposure(distance: f32) -> f32 {
+    let fixed = 1.0 / (1.2 * exp2(MAP_EV100));
+    return mix(view.exposure, fixed, smoothstep(ORBIT.x, ORBIT.y, distance));
 }
 
 // `lit` (as `apply_pbr_lighting` returned it) with the map light mixed in, for a
@@ -90,7 +128,8 @@ fn apply(
         let l = lights.directional_lights[i];
         light += l.color.rgb * daylight(dot(n, l.direction_to_light.xyz), distance);
     }
-    let flat = (pow(grade(albedo, distance), vec3<f32>(CURVE)) * light * GAIN / 3.14159265 + emissive) * view.exposure;
+    let flat = pow(grade(albedo, distance), vec3<f32>(CURVE)) * light * GAIN / 3.14159265 * exposure(distance)
+        + emissive * view.exposure;
     return vec4<f32>(mix(lit.rgb, flat, k), lit.a);
 }
 
@@ -227,14 +266,14 @@ fn sea_sheen(
     }
     // The sky in the water, lit as the land is, so the night side stays dark.
     let grazing = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
-    let sky_lit = pow(SKY, vec3<f32>(CURVE)) * sky * GAIN / 3.14159265 * view.exposure;
+    let sky_lit = pow(SKY, vec3<f32>(CURVE)) * sky * GAIN / 3.14159265 * exposure(distance);
     sea = mix(sea, sky_lit, grazing * SKY_PEAK * k);
     if cover <= 0.0 {
         return vec4<f32>(sea, lit.a);
     }
     // The sheen lit as the map lights the land, in the lights' own colours, so
     // a low red sun lays a red sheen.
-    let sheen = pow(SHEEN, vec3<f32>(CURVE)) * (paint / cover) * GAIN / 3.14159265 * view.exposure;
+    let sheen = pow(SHEEN, vec3<f32>(CURVE)) * (paint / cover) * GAIN / 3.14159265 * exposure(distance);
     let glow = clamp(cover * SHEEN_PEAK * (1.0 + MOTTLE_GLOW * wander), 0.0, 1.0);
     return vec4<f32>(mix(sea, sheen, glow * k), lit.a);
 }
