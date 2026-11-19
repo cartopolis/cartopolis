@@ -3622,7 +3622,13 @@ pub fn hold_scripted_design_room(
     mut room: ResMut<crate::systems::design_room::DesignRoom>,
     map_anchor: Res<crate::resources::MapAnchor>,
     camera: crate::grid::AnchoredCamera,
-    mut seeded: Query<(Entity, &ScriptedDesignPart, &mut crate::components::PrimGeo)>,
+    mut seeded: Query<(
+        Entity,
+        &ScriptedDesignPart,
+        &mut crate::components::PrimGeo,
+        Has<crate::components::PrimMesh>,
+        Has<crate::components::Selected>,
+    )>,
 ) {
     let panels = harness.ui_for(progress.index);
     if !panels.iter().any(|u| u == "designroom") {
@@ -3633,6 +3639,15 @@ pub fn hold_scripted_design_room(
             room.spot = None;
         }
         return;
+    }
+    // The awning selected, once it has a mesh to tint, so a capture shows the
+    // measurements along a selected part (`design_room::render_design_room_measures`).
+    for (entity, part, _, meshed, selected) in &seeded {
+        if crate::systems::design_room::DEMO_STALL[part.0].0 == "Awning" && meshed && !selected {
+            commands
+                .entity(entity)
+                .try_insert(crate::components::Selected);
+        }
     }
     let Some(anchor) = map_anchor.geo else { return };
     let Some((cell, cam)) = camera.get() else {
@@ -3664,7 +3679,7 @@ pub fn hold_scripted_design_room(
         )
     };
     if !seeded.is_empty() {
-        for (_, part, mut geo) in &mut seeded {
+        for (_, part, mut geo, ..) in &mut seeded {
             let (latitude, longitude) = part_at(part.0);
             geo.latitude = latitude;
             geo.longitude = longitude;

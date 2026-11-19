@@ -403,7 +403,7 @@ pub fn handle_gizmo_interaction(
     // In the design room a drag snaps, as Blender's does with snapping on:
     // a move to whole steps of [`SNAP_M`], a turn to [`SNAP_DEG`], a size to
     // tenths. The street keeps the free drag it always had.
-    let snap = room.spot.is_some();
+    let snap = room.spot.is_some() && !room.no_snap;
     let step = |v: f32, by: f32| if snap { (v / by).round() * by } else { v };
 
     let Ok((mut transform, _, prim, cell)) = selected_query.single_mut() else {

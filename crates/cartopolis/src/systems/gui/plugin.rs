@@ -175,6 +175,15 @@ impl Plugin for GuiPlugin {
                     systems::design_room::render_design_room_scripts
                         .after(systems::design_room::render_design_room_outliner)
                         .in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_tools
+                        .after(systems::design_room::render_design_room_outliner)
+                        .in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_views
+                        .after(systems::design_room::render_design_room_outliner)
+                        .in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_measures
+                        .after(systems::design_room::render_design_room_outliner)
+                        .in_set(ClientPhase::Present),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),

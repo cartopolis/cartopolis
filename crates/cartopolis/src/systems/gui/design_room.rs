@@ -107,6 +107,9 @@ pub struct DesignRoom {
     /// Read only where the agent tools are (`mcp`): the web build has none.
     #[cfg_attr(not(mcp), allow(dead_code))]
     pub ai_paused: bool,
+    /// The tool column's magnet, off: a handle drag in the room moves freely
+    /// instead of in 10 cm and 15° steps (`gizmo::SNAP_M`).
+    pub no_snap: bool,
     /// What the scripts in the room said and did, newest last (the Scripts
     /// panel's log).
     pub script_log: Vec<ScriptLogLine>,
@@ -508,18 +511,21 @@ pub fn layer_design_room(
             ));
         };
     // The floor and its grid, drawn per pixel (`design_floor.wesl`).
-    commands.spawn((
-        RoomPiece,
-        Mesh3d(meshes.add(floor_mesh())),
-        MeshMaterial3d(floors.add(DesignFloorMaterial {
-            params: Vec4::new(ROOM_WHITE, GRID_FADE_FROM_M, GRID_FADE_TO_M, 0.0),
-        })),
-        Transform::from_translation(local),
-        cell,
-        ChildOf(root),
-        layer.clone(),
-        bevy::light::NotShadowCaster,
-    ));
+    let floor = commands
+        .spawn((
+            RoomPiece,
+            Mesh3d(meshes.add(floor_mesh())),
+            MeshMaterial3d(floors.add(DesignFloorMaterial {
+                params: Vec4::new(ROOM_WHITE, GRID_FADE_FROM_M, GRID_FADE_TO_M, 0.0),
+            })),
+            Transform::from_translation(local),
+            cell,
+            ChildOf(root),
+            layer.clone(),
+            bevy::light::NotShadowCaster,
+        ))
+        .id();
+    spawn_figure(&mut commands, floor, &mut meshes, &mut materials);
     piece(&mut commands, meshes.add(walls_mesh()), walls);
 }
 
@@ -1167,7 +1173,7 @@ pub fn render_design_room_outliner(
         "design_room_outliner",
         egui::Align2::LEFT_TOP,
         // Under the way out.
-        egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        egui::vec2(theme::OSD_MARGIN + TOOL_COLUMN_W, theme::OSD_MARGIN + 56.0),
         Some(width),
         |ui| {
             title_row(ui, icons::LAYERS, "Outliner", &note);
@@ -1488,7 +1494,7 @@ pub fn render_design_room_scripts(
         egui.ctx(),
         "design_room_scripts",
         egui::Align2::RIGHT_TOP,
-        egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + NAV_GIZMO_H),
         Some(width),
         |ui| {
             title_row(ui, icons::SCRIPT, "Scripts", &note);
@@ -1583,6 +1589,354 @@ pub fn render_design_room_scripts(
     if let Some(id) = open {
         editor.open(id);
         *right_panel = crate::resources::RightPanel::Script;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tools, views, the figure and the measurements (v4's editor)
+// ---------------------------------------------------------------------------
+
+/// Width the tool column takes at the left edge, outliner beside it.
+const TOOL_COLUMN_W: f32 = 64.0;
+
+/// Height the navigation gizmo's panel takes at the top right; Scripts is
+/// below it.
+const NAV_GIZMO_H: f32 = 220.0;
+
+/// The figure for scale: a person this tall, standing west of the spot.
+const FIGURE_HEIGHT_M: f32 = 1.75;
+const FIGURE_AT: Vec3 = Vec3::new(-2.6, 0.0, 0.6);
+
+/// Marks the figure's root, for the measurement beside it.
+#[derive(Component)]
+pub struct ScaleFigure;
+
+/// The tool column at the left: move, turn and size (G, R, S, the handles'
+/// three modes), duplicate (Shift-D) and the snapping magnet. A key on a
+/// desktop and a button on a phone, one each.
+pub fn render_design_room_tools(
+    egui: EguiMut,
+    mut room: ResMut<DesignRoom>,
+    mut gizmo: ResMut<crate::systems::gizmo::GizmoState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+    selected: Query<SelectedPart, With<crate::components::Selected>>,
+) {
+    use crate::systems::gizmo::GizmoMode;
+    if room.spot.is_none() {
+        return;
+    }
+    let chosen = selected.single().ok();
+    let mut mode = gizmo.mode;
+    let mut snap = !room.no_snap;
+    let mut duplicate = false;
+    room_panel(
+        egui.ctx(),
+        "design_room_tools",
+        egui::Align2::LEFT_TOP,
+        egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        Some(TOOL_COLUMN_W - 26.0),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let tool = |ui: &mut egui::Ui, on: bool, key: &str, label: &str, tip: &str| {
+                let fill = if on {
+                    theme::p().accent
+                } else {
+                    theme::p().surface_raised
+                };
+                let ink = if on {
+                    theme::p().on_accent
+                } else {
+                    theme::p().text
+                };
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(38.0, 44.0), egui::Sense::click());
+                let resp = theme::named(ui, resp, tip);
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::same(10), fill);
+                ui.painter().text(
+                    rect.center() - egui::vec2(0.0, 6.0),
+                    egui::Align2::CENTER_CENTER,
+                    key,
+                    egui::FontId::proportional(16.0),
+                    ink,
+                );
+                ui.painter().text(
+                    rect.center() + egui::vec2(0.0, 11.0),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(9.0),
+                    ink,
+                );
+                resp.on_hover_text(tip).clicked()
+            };
+            if tool(
+                ui,
+                mode == GizmoMode::Translate,
+                "G",
+                "move",
+                "move the selected part (G)",
+            ) {
+                mode = GizmoMode::Translate;
+            }
+            if tool(
+                ui,
+                mode == GizmoMode::Rotate,
+                "R",
+                "turn",
+                "turn the selected part (R)",
+            ) {
+                mode = GizmoMode::Rotate;
+            }
+            if tool(
+                ui,
+                mode == GizmoMode::Scale,
+                "S",
+                "size",
+                "size the selected part (S)",
+            ) {
+                mode = GizmoMode::Scale;
+            }
+            ui.separator();
+            if tool(
+                ui,
+                false,
+                "D",
+                "copy",
+                "a copy of the selected part, a metre east (Shift-D)",
+            ) {
+                duplicate = true;
+            }
+            if tool(
+                ui,
+                snap,
+                icons::FOLLOW,
+                "snap",
+                "handles move in 10 cm and turn in 15° steps",
+            ) {
+                snap = !snap;
+            }
+        },
+    );
+    if mode != gizmo.mode {
+        gizmo.mode = mode;
+    }
+    if snap == room.no_snap {
+        room.no_snap = !snap;
+    }
+    if duplicate {
+        if let (Some(session), Some(part)) = (online.as_ref(), chosen) {
+            session.send("duplicate", duplicate_message(part));
+        }
+    }
+}
+
+/// The navigation gizmo at the top right: the three axes as the camera sees
+/// them (red X east, green Y up, blue Z south), and the views to jump to —
+/// Top, Front (looking north), Side (looking west) and back to the 3D view.
+pub fn render_design_room_views(
+    egui: EguiMut,
+    room: Res<DesignRoom>,
+    mut camera: ResMut<crate::resources::CameraState>,
+) {
+    if room.spot.is_none() {
+        return;
+    }
+    let (yaw, pitch) = (camera.orbit_yaw, camera.orbit_pitch);
+    let mut want: Option<(f32, f32)> = None;
+    room_panel(
+        egui.ctx(),
+        "design_room_views",
+        egui::Align2::RIGHT_TOP,
+        egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
+        Some(150.0),
+        |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(150.0, 104.0), egui::Sense::hover());
+            let c = rect.center();
+            let painter = ui.painter();
+            painter.circle_filled(c, 48.0, theme::p().surface_raised);
+            // The camera's basis, from the orbit angles (`free_camera`):
+            // yaw 0 stands south of the spot looking north.
+            let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());
+            let right = Vec3::new(cy, 0.0, -sy);
+            let forward = -Vec3::new(sy * cp, sp, cy * cp);
+            let up = right.cross(forward);
+            let mut axes = [
+                (Vec3::X, "X", egui::Color32::from_rgb(229, 72, 77)),
+                (Vec3::Y, "Y", egui::Color32::from_rgb(48, 164, 108)),
+                (Vec3::Z, "Z", egui::Color32::from_rgb(62, 142, 208)),
+            ];
+            // The farthest first, so the nearest is drawn over it.
+            axes.sort_by(|a, b| a.0.dot(forward).total_cmp(&b.0.dot(forward)).reverse());
+            for (dir, name, colour) in axes {
+                let tip = c + egui::vec2(dir.dot(right), -dir.dot(up)) * 38.0;
+                painter.line_segment([c, tip], egui::Stroke::new(3.0, colour));
+                painter.circle_filled(tip, 9.0, colour);
+                painter.text(
+                    tip,
+                    egui::Align2::CENTER_CENTER,
+                    name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                for (label, view) in [
+                    ("Top", (0.0, 1.55)),
+                    ("Front", (0.0, 0.12)),
+                    ("Side", (std::f32::consts::FRAC_PI_2, 0.12)),
+                    ("3D", (0.6, ARRIVE_PITCH_RAD)),
+                ] {
+                    if theme::chip(ui, label, false).clicked() {
+                        want = Some(view);
+                    }
+                }
+            });
+        },
+    );
+    if let Some((y, p)) = want {
+        camera.orbit_yaw = y;
+        camera.orbit_pitch = p;
+    }
+}
+
+/// The figure for scale: a grey person of [`FIGURE_HEIGHT_M`] standing west of
+/// the spot, built from capsules and a sphere, on the room's layer. A child
+/// of the floor, so it goes with the room.
+fn spawn_figure(
+    commands: &mut Commands,
+    floor: Entity,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    let h = FIGURE_HEIGHT_M;
+    let grey = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.33, 0.39, 0.42),
+        unlit: true,
+        fog_enabled: false,
+        ..default()
+    });
+    let layer = RenderLayers::layer(DESIGN_LAYER);
+    // (radius, length, centre, ) for the body's capsules, in metres.
+    let limbs: [(f32, f32, Vec3); 5] = [
+        (0.065, h * 0.42, Vec3::new(-0.09, h * 0.24, 0.0)),
+        (0.065, h * 0.42, Vec3::new(0.09, h * 0.24, 0.0)),
+        (0.15, h * 0.22, Vec3::new(0.0, h * 0.62, 0.0)),
+        (0.05, h * 0.3, Vec3::new(-0.24, h * 0.6, 0.0)),
+        (0.05, h * 0.3, Vec3::new(0.24, h * 0.6, 0.0)),
+    ];
+    commands.entity(floor).with_children(|parent| {
+        parent
+            .spawn((
+                ScaleFigure,
+                Transform::from_translation(FIGURE_AT),
+                Visibility::default(),
+                layer.clone(),
+            ))
+            .with_children(|body| {
+                for (radius, length, centre) in limbs {
+                    body.spawn((
+                        Mesh3d(meshes.add(Capsule3d::new(radius, length).mesh().build())),
+                        MeshMaterial3d(grey.clone()),
+                        Transform::from_translation(centre),
+                        layer.clone(),
+                        bevy::light::NotShadowCaster,
+                    ));
+                }
+                body.spawn((
+                    Mesh3d(meshes.add(Sphere::new(0.11).mesh().build())),
+                    MeshMaterial3d(grey.clone()),
+                    Transform::from_xyz(0.0, h - 0.11, 0.0),
+                    layer.clone(),
+                    bevy::light::NotShadowCaster,
+                ));
+            });
+    });
+}
+
+/// Measurements over the room: the figure's height beside it, and the
+/// selected part's width and height along its edges — orange lines with end
+/// ticks and the length on a white plate, as the v4 sheet draws them. Painted
+/// under the panels (a background layer), so a panel is never covered.
+#[allow(clippy::type_complexity)]
+pub fn render_design_room_measures(
+    egui: EguiMut,
+    room: Res<DesignRoom>,
+    camera: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
+    figure: Query<&GlobalTransform, With<ScaleFigure>>,
+    selected: Query<
+        (&GlobalTransform, &Transform),
+        (With<crate::components::Selected>, With<Prim>),
+    >,
+) {
+    if room.spot.is_none() {
+        return;
+    }
+    let Ok((cam, cam_gt)) = camera.single() else {
+        return;
+    };
+    let to_ui = |p: Vec3| {
+        cam.world_to_viewport(cam_gt, p)
+            .ok()
+            .map(|v| egui.window_to_ui(v))
+    };
+    let painter = egui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("design_room_measures"),
+    ));
+    let ink = egui::Color32::from_rgb(253, 96, 18);
+    let measure = |a: Vec3, b: Vec3, metres: f32, painter: &egui::Painter| {
+        let (Some(pa), Some(pb)) = (to_ui(a), to_ui(b)) else {
+            return;
+        };
+        let stroke = egui::Stroke::new(1.6, ink);
+        painter.line_segment([pa, pb], stroke);
+        let along = (pb - pa).normalized();
+        let tick = egui::vec2(-along.y, along.x) * 6.0;
+        for p in [pa, pb] {
+            painter.line_segment([p - tick, p + tick], stroke);
+        }
+        let mid = pa + (pb - pa) * 0.5;
+        let text = format!("{metres:.2} m");
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), ink);
+        let plate = egui::Rect::from_center_size(mid, galley.size() + egui::vec2(10.0, 4.0));
+        painter.rect_filled(plate, egui::CornerRadius::same(5), egui::Color32::WHITE);
+        painter.rect_stroke(
+            plate,
+            egui::CornerRadius::same(5),
+            egui::Stroke::new(1.0, ink.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(plate.min + egui::vec2(5.0, 2.0), galley, ink);
+    };
+    if let Ok(fig) = figure.single() {
+        let base = fig.translation() + Vec3::new(-0.45, 0.0, 0.0);
+        measure(
+            base,
+            base + Vec3::Y * FIGURE_HEIGHT_M,
+            FIGURE_HEIGHT_M,
+            &painter,
+        );
+    }
+    if let Ok((gt, tf)) = selected.single() {
+        // The part's front-bottom edge and a vertical one, on the side that
+        // faces the camera.
+        let local_cam = gt.affine().inverse().transform_point3(cam_gt.translation());
+        let z = if local_cam.z >= 0.0 { 0.5 } else { -0.5 };
+        let x = if local_cam.x >= 0.0 { 0.5 } else { -0.5 };
+        let at = |l: Vec3| gt.transform_point(l);
+        let s = tf.scale.abs();
+        measure(
+            at(Vec3::new(-0.5, -0.5, z)),
+            at(Vec3::new(0.5, -0.5, z)),
+            s.x,
+            &painter,
+        );
+        measure(
+            at(Vec3::new(x, -0.5, z)),
+            at(Vec3::new(x, 0.5, z)),
+            s.y,
+            &painter,
+        );
     }
 }
 

@@ -164,6 +164,21 @@ Seen working on 2026-11-19: an agent built a stall whose lantern's script
 blinks every second; the panel showed it `working` with `lit` / `dark` lines,
 and the lantern glowed as it changed.
 
+## Tools, views and measurements
+
+As on the v4 sheet: a **tool column** at the left (G move, R turn, S size — the
+handles' three modes — D copy, and a snapping magnet that `gizmo` reads as
+`DesignRoom::no_snap`); a **navigation gizmo** at the top right drawing the
+three axes as the orbit camera sees them, with Top, Front (looking north),
+Side (looking west) and 3D, which set `orbit_yaw` / `orbit_pitch` (yaw 0 stands
+south of the spot); a grey **figure** of 1.75 m standing west of the spot, a
+child of the floor; and **measurements** painted under the panels — the
+figure's height, and the selected part's width and height along the edges that
+face the camera, in orange with the length on a white plate.
+
+Still perspective throughout: Top is a camera looking straight down, not an
+orthographic view.
+
 ## Not built yet, from v3
 
 - No `group` field on the wire: a placed copy is separate objects again.
