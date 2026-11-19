@@ -282,6 +282,9 @@ pub struct PrimSeed {
     pub position: Vec3,
     pub shape: String,
     pub geo: GeoAnchor,
+    /// Make it a draft only its owner is sent (protocol 51). Ignored for an
+    /// actor with no account: a draft nobody owns would be seen by nobody.
+    pub draft: bool,
 }
 
 /// The one way prims are made, changed, scripted and deleted. Cheap to clone.
@@ -545,6 +548,46 @@ impl PrimService {
         Ok(prim)
     }
 
+    /// Place a draft from the design room (protocol 51): it stops being its
+    /// owner's alone and is sent to everybody within reach. Only the owner may;
+    /// a prim that is not a draft is answered with itself, unchanged.
+    pub async fn place_draft(&self, actor: &Actor, prim_id: i64) -> Result<PrimDto, PrimError> {
+        let _writer = self.writer.lock().await;
+        {
+            let w = self.world.read().await;
+            let prim = editable(&w, actor, prim_id)?;
+            if !prim.draft {
+                return Ok(prim);
+            }
+        }
+        let written = db::call(&self.conn, move |c| {
+            db::set_prim_draft(c, prim_id, false)?;
+            db::select_prim_by_id(c, prim_id)
+        })
+        .await;
+        let prim = match written {
+            Ok(Ok(Some(prim))) => prim,
+            Ok(Ok(None)) => return Err(PrimError::NotFound(prim_id)),
+            Ok(Err(e)) | Err(e) => {
+                return Err(PrimError::Storage(format!("set_prim_draft failed: {e:#}")))
+            }
+        };
+        let prim = {
+            let mut w = self.world.write().await;
+            if !w.replace_prim(prim) {
+                return Err(PrimError::NotFound(prim_id));
+            }
+            w.prim(prim_id)
+                .cloned()
+                .ok_or(PrimError::NotFound(prim_id))?
+        };
+        self.broadcast(
+            &NetMessage::PrimUpsert { prim: prim.clone() },
+            actor.principal.as_deref(),
+        );
+        Ok(prim)
+    }
+
     /// Delete a prim: its row, its script, its place in the world, and every
     /// client's copy.
     ///
@@ -728,6 +771,9 @@ impl PrimService {
                 },
                 frame,
                 by: by.map(str::to_string),
+                // A draft is its maker's alone, and only its maker (or an admin
+                // acting as them) ever changes one, so the asker is the account.
+                only_for: prim.draft.then(|| by.unwrap_or_default().to_string()),
             },
             NetMessage::PrimRemoved { id } => Outbound::Removed { id: *id, frame },
             _ => Outbound::Frame(frame),
@@ -743,15 +789,29 @@ impl PrimService {
 /// The prim, if it exists and the actor may change it — existence first.
 fn editable(w: &SimWorld, actor: &Actor, prim_id: i64) -> Result<PrimDto, PrimError> {
     let prim = w.prim(prim_id).ok_or(PrimError::NotFound(prim_id))?;
+    hidden(w, actor, prim)?;
     if !actor.may_edit(w, prim_id) {
         return Err(refusal(w, actor, prim_id, "change prims"));
     }
     Ok(prim.clone())
 }
 
+/// A draft is "not found" to everybody but its owner, admins included: a
+/// refusal would send the true prim back (`refuse_and_correct`), and the draft
+/// with it.
+fn hidden(w: &SimWorld, actor: &Actor, prim: &PrimDto) -> Result<(), PrimError> {
+    let owner = actor.principal.as_deref().unwrap_or_default();
+    if w.sees(prim.id, owner) {
+        Ok(())
+    } else {
+        Err(PrimError::NotFound(prim.id))
+    }
+}
+
 /// The prim, if it exists and the actor may write its script.
 fn scriptable(w: &SimWorld, actor: &Actor, prim_id: i64) -> Result<PrimDto, PrimError> {
     let prim = w.prim(prim_id).ok_or(PrimError::NotFound(prim_id))?;
+    hidden(w, actor, prim)?;
     if !actor.may_script(w, prim_id) {
         return Err(refusal(w, actor, prim_id, "write scripts"));
     }
@@ -792,12 +852,16 @@ where
     if models == ModelCheck::Required {
         check_model(&tx, fields.model.as_deref())?;
     }
-    let prim = fields
+    let mut prim = fields
         .write(&tx, base.id)
         .map_err(|e| PrimError::Storage(format!("update_prim failed: {e:#}")))?
         .ok_or_else(|| {
             PrimError::Storage(format!("prim {} vanished while it was created", base.id))
         })?;
+    if seed.draft && owner.is_some() {
+        db::set_prim_draft(&tx, prim.id, true).map_err(storage)?;
+        prim.draft = true;
+    }
     tx.commit().map_err(|e| storage(anyhow::Error::from(e)))?;
     if let Some(owner) = owner {
         if let Err(e) = db::set_prim_owner(c, prim.id, owner) {

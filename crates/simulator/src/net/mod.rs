@@ -725,7 +725,13 @@ async fn deliver<T: FrameTransport>(ctx: &mut ConnCtx<T>, item: Outbound) -> any
             place,
             frame,
             by,
-        } => reach::on_thing(ctx, id, place, frame, by.as_deref()).await?,
+            only_for,
+        } => match only_for {
+            // A draft: to its maker's connections, wherever they stand.
+            Some(owner) if owner != ctx.principal_key => {}
+            Some(_) => reach::on_draft(ctx, id, frame).await?,
+            None => reach::on_thing(ctx, id, place, frame, by.as_deref()).await?,
+        },
         Outbound::Tick(table) => {
             if ctx.presence_active {
                 reach::on_tick(ctx, &table).await?;
@@ -1273,11 +1279,13 @@ async fn dispatch<T: FrameTransport>(
             geo,
             particles,
             model,
+            draft,
         } => {
             let seed = PrimSeed {
                 position,
                 shape,
                 geo,
+                draft,
             };
             let fields = PrimFields {
                 position,
@@ -1756,6 +1764,8 @@ pub async fn tick_loop(
                     place,
                     frame: Bytes::from(bytes),
                     by: None,
+                    // Scripts do not run on drafts (`SimWorld::script_views`).
+                    only_for: None,
                 }),
                 Err(e) => tracing::error!("script prim upsert encode: {e}"),
             }
@@ -1984,6 +1994,7 @@ mod tests {
                 latitude: 0.0,
                 longitude: 0.0,
             },
+            draft: false,
         }
     }
 

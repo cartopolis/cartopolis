@@ -266,6 +266,9 @@ pub enum Outbound {
         place: Place,
         frame: Bytes,
         by: Option<String>,
+        /// A draft (`PrimDto::draft`): only this account's connections are sent
+        /// it, wherever they stand, and nobody else's.
+        only_for: Option<String>,
     },
     /// This tick's world, for each connection to take its reach from.
     Tick(Arc<TickTable>),

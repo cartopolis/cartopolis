@@ -94,6 +94,9 @@ pub struct DesignRoom {
     pub busy: bool,
     /// The prims within [`PARTS_RADIUS_M`] of the spot, counted each frame.
     pub parts: Vec<i64>,
+    /// Those of [`Self::parts`] that are still drafts: only this account sees
+    /// them, until the bar's Place puts them in the street.
+    pub drafts: Vec<i64>,
     /// Counts each way in and out; each one whites the screen out and fades
     /// it back ([`draw_veil`]). The second is the one the veil has started.
     flash: u32,
@@ -115,6 +118,7 @@ impl DesignRoom {
     pub fn close(&mut self) {
         self.spot = None;
         self.parts.clear();
+        self.drafts.clear();
         self.flash += 1;
     }
 }
@@ -173,12 +177,35 @@ fn save_design(inbox: Inbox, name: String, spot: (f64, f64), prim_ids: Vec<i64>)
 }
 
 fn place_design(inbox: Inbox, id: i64, name: String, spot: (f64, f64)) {
-    let body = serde_json::json!({ "latitude": spot.0, "longitude": spot.1 }).to_string();
+    // Into the room as drafts, like everything else built there.
+    let body =
+        serde_json::json!({ "latitude": spot.0, "longitude": spot.1, "draft": true }).to_string();
     IoTaskPool::get()
         .spawn(async move {
             let path = format!("/api/inventory/designs/{id}/place");
             let reply = match model_assets::api_post(&path, Some(body)).await {
-                Ok(_) => Reply::Done(format!("Placed a copy of \u{201c}{name}\u{201d} here.")),
+                Ok(_) => Reply::Done(format!(
+                    "Put a copy of \u{201c}{name}\u{201d} here, as a draft."
+                )),
+                Err(e) => Reply::Failed(e),
+            };
+            push(&inbox, reply);
+        })
+        .detach();
+}
+
+fn place_drafts(inbox: Inbox, prim_ids: Vec<i64>) {
+    let count = prim_ids.len();
+    let body = serde_json::json!({ "prim_ids": prim_ids }).to_string();
+    IoTaskPool::get()
+        .spawn(async move {
+            let reply = match model_assets::api_post("/api/inventory/drafts/place", Some(body))
+                .await
+            {
+                Ok(_) => Reply::Done(match count {
+                    1 => "Placed: it stands in the street for everybody now.".to_string(),
+                    n => format!("Placed {n} objects: they stand in the street for everybody now."),
+                }),
                 Err(e) => Reply::Failed(e),
             };
             push(&inbox, reply);
@@ -206,7 +233,7 @@ pub fn drive_design_room(
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     online: Option<Res<crate::resources::OnlineSession>>,
-    prims: Query<(&Prim, &PrimGeo)>,
+    prims: Query<(&Prim, &PrimGeo, Has<Draft>)>,
 ) {
     use crate::systems::geo_nav::{CameraPose, Teleport};
     if let Some((lat, lng)) = menu.design_here.take() {
@@ -232,13 +259,18 @@ pub fn drive_design_room(
     let Some(spot) = room.spot else {
         return;
     };
-    let parts: Vec<i64> = prims
+    let here: Vec<(i64, bool)> = prims
         .iter()
-        .filter(|(_, g)| metres_between(spot, (g.latitude, g.longitude)) <= PARTS_RADIUS_M)
-        .map(|(p, _)| p.id)
+        .filter(|(_, g, _)| metres_between(spot, (g.latitude, g.longitude)) <= PARTS_RADIUS_M)
+        .map(|(p, _, draft)| (p.id, draft))
         .collect();
+    let parts: Vec<i64> = here.iter().map(|(id, _)| *id).collect();
+    let drafts: Vec<i64> = here.iter().filter(|(_, d)| *d).map(|(id, _)| *id).collect();
     if parts != room.parts {
         room.parts = parts;
+    }
+    if drafts != room.drafts {
+        room.drafts = drafts;
     }
     if online.is_some() && model_assets::have_endpoint() && !room.loaded {
         room.loaded = true;
@@ -281,16 +313,13 @@ pub fn layer_design_room(
     bigspace: Query<Entity, With<BigSpace>>,
     camera: Query<(Entity, Has<RenderLayers>), With<FreeCamera>>,
     lights: Query<(Entity, Has<RenderLayers>), With<DirectionalLight>>,
-    prims: Query<Entity, With<Prim>>,
-    children: Query<&Children>,
-    layered: Query<(), With<RenderLayers>>,
     mut pieces: Query<(Entity, &mut Transform, &mut GridCell), With<RoomPiece>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let (Some((lat, lng)), Some(anchor)) = (room.spot, map_anchor.geo) else {
-        // Closed: everything back on layer 0, the room gone. Prims keep their
-        // two layers, which layer 0 alone still draws.
+        // Closed: the camera and the lights back on layer 0, the room gone.
+        // Prims keep their layers ([`layer_prims`]), which layer 0 alone draws.
         for (entity, has) in camera.iter().chain(lights.iter()) {
             if has {
                 commands.entity(entity).try_remove::<RenderLayers>();
@@ -316,19 +345,6 @@ pub fn layer_design_room(
                 .try_insert(RenderLayers::layer(DESIGN_LAYER));
         }
     }
-    // Every prim and what hangs off it (a model's scene, an emitter), on both
-    // layers: drawn in the room and in the street alike.
-    let both = RenderLayers::from_layers(&[0, DESIGN_LAYER]);
-    let mut stack: Vec<Entity> = prims.iter().collect();
-    while let Some(entity) = stack.pop() {
-        if layered.get(entity).is_err() {
-            commands.entity(entity).try_insert(both.clone());
-        }
-        if let Ok(kids) = children.get(entity) {
-            stack.extend(kids.iter());
-        }
-    }
-
     // Where the room stands: the spot in the anchored frame, on the ground.
     let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
     let y = f64::from(terrain.ground_at(wx as f32, wz as f32));
@@ -543,6 +559,48 @@ fn shadow_mesh() -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// A design-room draft (`PrimDto::draft`, protocol 51): only its maker is sent
+/// it, and it is drawn in the room alone, never in the street, until placed.
+#[derive(Component)]
+pub struct Draft;
+
+/// Every prim and what hangs off it (a model's scene, an emitter) on the
+/// layers it is drawn in: a [`Draft`] in the room alone, anything else in the
+/// street and the room alike. A subtree is walked only when its root is on the
+/// wrong layers or its children changed, so a still world costs one compare a
+/// prim.
+#[allow(clippy::type_complexity)]
+pub fn layer_prims(
+    mut commands: Commands,
+    prims: Query<(Entity, Has<Draft>, Option<Ref<Children>>), With<Prim>>,
+    children: Query<&Children>,
+    layers: Query<&RenderLayers>,
+    own: Query<(), With<ContactShadow>>,
+) {
+    let room_only = RenderLayers::layer(DESIGN_LAYER);
+    let both = RenderLayers::from_layers(&[0, DESIGN_LAYER]);
+    for (root, draft, kids) in &prims {
+        let want = if draft { &room_only } else { &both };
+        let right = layers.get(root).ok() == Some(want);
+        if right && !kids.is_some_and(|k| k.is_changed()) {
+            continue;
+        }
+        let mut stack = vec![root];
+        while let Some(entity) = stack.pop() {
+            // A contact shadow keeps the room's layer whatever its part is.
+            if own.contains(entity) {
+                continue;
+            }
+            if layers.get(entity).ok() != Some(want) {
+                commands.entity(entity).try_insert(want.clone());
+            }
+            if let Ok(k) = children.get(entity) {
+                stack.extend(k.iter());
+            }
+        }
+    }
+}
+
 /// Draw the editing handles (`systems::gizmo`, bevy gizmos) on both layers, so
 /// a part can be moved in the room as in the street. Once, at startup.
 pub fn let_gizmos_into_the_room(store: Option<ResMut<bevy::gizmos::config::GizmoConfigStore>>) {
@@ -656,6 +714,8 @@ pub fn render_design_room_bar(
 
     let mut name = std::mem::take(&mut room.name);
     let parts = room.parts.len();
+    let drafts = room.drafts.len();
+    let mut place_all = false;
     let designs = room.designs.clone();
     let status = room.status.clone();
     let busy = room.busy;
@@ -674,7 +734,7 @@ pub fn render_design_room_bar(
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::close_button(ui)
-                            .on_hover_text("leave the room; what you built stays standing")
+                            .on_hover_text("back to the map; drafts wait here for you, placed objects stay standing")
                             .clicked()
                         {
                             leave = true;
@@ -721,6 +781,26 @@ pub fn render_design_room_bar(
                         save = true;
                     }
                 });
+                if drafts > 0 {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let what = if drafts == 1 {
+                            "1 object is a draft: only you see it.".to_string()
+                        } else {
+                            format!("{drafts} objects are drafts: only you see them.")
+                        };
+                        ui.label(egui::RichText::new(what).color(theme::p().text_dim));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled(!busy, egui::Button::new("Place in the street"))
+                                .on_hover_text("put the drafts here in the world, for everybody")
+                                .clicked()
+                            {
+                                place_all = true;
+                            }
+                        });
+                    });
+                }
                 if !designs.is_empty() {
                     ui.add_space(6.0);
                     ui.label(
@@ -778,6 +858,10 @@ pub fn render_design_room_bar(
     if leave {
         room.close();
         return;
+    }
+    if place_all {
+        room.busy = true;
+        place_drafts(room.inbox.clone(), room.drafts.clone());
     }
     if add_part {
         if let Some(anchor) = map_anchor.geo {

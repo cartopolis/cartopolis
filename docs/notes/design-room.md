@@ -1,5 +1,5 @@
 ---
-triggers: [design_room.rs, systems::design_room, designs.rs, "/api/inventory/designs", V48__designs.sql, DESIGN_LAYER, RenderLayers, "Design here", designroom]
+triggers: [design_room.rs, systems::design_room, designs.rs, "/api/inventory/designs", "/api/inventory/drafts", V48__designs.sql, V49__prim_draft.sql, DESIGN_LAYER, RenderLayers, "Design here", designroom, draft, PrimDto::draft, place_draft, only_for, SimWorld::sees]
 updated: 2026-11-19
 ---
 
@@ -58,12 +58,41 @@ grid's greys are low (0.35–0.66 of the white) for the same reason. The patch i
 placed against the room's flat floor, not the part's own ground: the two differ
 by centimetres even on the Grote Markt.
 
+## Drafts: built unseen, placed as one act (protocol 51)
+
+What the room builds is a **draft** (`PrimDto::draft`, `V49__prim_draft.sql`):
+the edit dialog sends `CreatePrim { draft: true }` while the room is open, and a
+kept design placed into the room comes in as drafts too. The bar's **Place in
+the street** (`POST /api/inventory/drafts/place`, `PrimService::place_draft`)
+clears the flag on all of them in one request, and only then does anybody else
+hear of them.
+
+Where a draft is kept from others, each one a place that would otherwise leak:
+
+- **Sending.** A change goes out as `Outbound::Thing { only_for: Some(owner) }`,
+  which `net::deliver` gives to the owner's connections alone, wherever they
+  stand; the reach pass (`net::reach::on_tick`) skips drafts it may not show
+  (`SimWorld::sees`) and never takes one *out* of its maker's reach — the room
+  can be opened anywhere on the map, further than the 500 m an avatar's reach
+  covers.
+- **Refusals.** `prims::hidden` answers "not found" for somebody else's draft,
+  admins included: a refusal is followed by the true prim
+  (`refuse_and_correct`), which would have carried the draft to them.
+- **Touch, hands, carrying, physics, sensors.** A draft is not touched by
+  others, senses no hands, cannot be carried, is neither a body nor a collider,
+  and its script sees nobody (`script_views`).
+
+Not kept from others yet: what a script **on** a draft says, sounds or prints
+(`say`, tones, sounds, the console go out by radius or to everybody). A script
+is rare on a draft today; the v4 sheet wants scripts in the room, and that is
+when these need the owner filter too.
+
+On the client a draft carries `design_room::Draft` and is drawn on the room's
+layer alone (`layer_prims`), so its maker sees it in the room and not in the
+street.
+
 ## Not built yet, from v3
 
-- Parts are live prims: others see them appear as they are built, and leaving
-  the room leaves them standing. v3's "place it back as one act" needs drafts
-  held apart from the world (server-side, per the mockup), which is the next
-  piece.
 - No `group` field on the wire: a placed copy is separate objects again.
 - No Eye level / From the street views, no avatar for scale, no "designing"
   presence, no Share or Move to the server library (`library_publish`).

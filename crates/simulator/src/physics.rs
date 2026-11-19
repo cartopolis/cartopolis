@@ -677,7 +677,9 @@ impl Physics {
 
     fn sync_bodies(&mut self, prims: &[PrimDto], dt: f32) {
         let mut live: HashSet<i64> = HashSet::new();
-        for p in prims.iter().filter(|p| p.physical) {
+        // A draft (`PrimDto::draft`) is in the design room, not the street:
+        // nothing falls, collides or is pushed there.
+        for p in prims.iter().filter(|p| p.physical && !p.draft) {
             live.insert(p.id);
             let key = ZoneKey::of(p.geo);
             self.zones.entry(key).or_insert_with(|| Zone::new(key));
@@ -808,7 +810,7 @@ impl Physics {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             let near: Vec<&PrimDto> = prims
                 .iter()
-                .filter(|p| !p.physical && key.reaches(p.geo))
+                .filter(|p| !p.physical && !p.draft && key.reaches(p.geo))
                 .collect();
             for p in &near {
                 p.id.hash(&mut hasher);
@@ -1047,6 +1049,7 @@ mod tests {
             physical,
             hand_range: 0.0,
             tone: None,
+            draft: false,
         }
     }
 

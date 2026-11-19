@@ -115,6 +115,7 @@ async fn make(
             geo,
             particles: None,
             model: None,
+            draft: false,
         },
     )
     .await;

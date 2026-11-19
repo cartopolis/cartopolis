@@ -71,6 +71,7 @@ pub enum ClientRequest {
         geo: GeoAnchor,
         particles: Option<ParticleEffect>,
         model: Option<String>,
+        draft: bool,
     },
     UpdatePrim {
         request_id: u32,
@@ -395,6 +396,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 geo,
                 particles,
                 model,
+                draft,
             } => Self::CreatePrim {
                 request_id,
                 name,
@@ -409,6 +411,7 @@ impl TryFrom<NetMessage> for ClientRequest {
                 geo,
                 particles,
                 model,
+                draft,
             },
             NetMessage::UpdatePrim {
                 request_id,

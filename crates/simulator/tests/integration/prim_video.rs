@@ -172,6 +172,7 @@ fn create(name: &str) -> NetMessage {
         },
         particles: None,
         model: None,
+        draft: false,
     }
 }
 

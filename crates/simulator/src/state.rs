@@ -900,7 +900,11 @@ impl SimWorld {
         if av.seated.is_some() {
             return Err(GrabRefusal::Seated);
         }
-        let p = self.prim(prim_id).ok_or(GrabRefusal::NoSuchPrim)?;
+        // Nobody carries a draft: it is in its maker's design room.
+        let p = self
+            .prim(prim_id)
+            .filter(|p| !p.draft)
+            .ok_or(GrabRefusal::NoSuchPrim)?;
         if !p.physical {
             return Err(GrabRefusal::NotPhysical);
         }
@@ -1127,7 +1131,7 @@ impl SimWorld {
     #[must_use]
     pub fn hand_in_range(&self, pose: &HandPose) -> bool {
         self.prim(pose.prim_id).is_some_and(|p| {
-            p.hand_range > 0.0 && pose.distance() <= p.hand_range + HAND_RANGE_SLACK_M
+            !p.draft && p.hand_range > 0.0 && pose.distance() <= p.hand_range + HAND_RANGE_SLACK_M
         })
     }
 
@@ -1178,7 +1182,8 @@ impl SimWorld {
         let scripts_used = self
             .prims
             .iter()
-            .filter(|p| self.scripted.contains(&p.id))
+            // A draft senses nobody: it is in the design room, not the street.
+            .filter(|p| self.scripted.contains(&p.id) && !p.draft)
             .count() as u32;
         CapacityUsage {
             prims_used: self.prims.len() as u32,
@@ -1220,6 +1225,15 @@ impl SimWorld {
     #[must_use]
     pub fn owns(&self, prim_id: i64, principal: &str) -> bool {
         !principal.is_empty() && self.owners.get(&prim_id).is_some_and(|o| o == principal)
+    }
+
+    /// May `principal` know this prim exists? Everybody, unless it is a draft
+    /// from the design room (`PrimDto::draft`), which is its owner's alone until
+    /// it is placed. A prim that is not there is seen by nobody.
+    #[must_use]
+    pub fn sees(&self, prim_id: i64, principal: &str) -> bool {
+        self.prim(prim_id)
+            .is_some_and(|p| !p.draft || self.owns(prim_id, principal))
     }
 
     /// Record that a prim gained or lost a script, after the script budget has

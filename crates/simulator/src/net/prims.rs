@@ -267,7 +267,13 @@ pub(super) async fn on_touch<T: FrameTransport>(
     ctx.gates.last_touch = Instant::now();
     // Only a prim that has a script gets an event; a touch on plain geometry is
     // not an error, it is simply nothing happening.
-    if ctx.world.read().await.is_scripted(prim_id) {
+    let touchable = {
+        let w = ctx.world.read().await;
+        // A draft is its maker's alone (protocol 51): nobody else can touch
+        // what they were never sent.
+        w.is_scripted(prim_id) && w.sees(prim_id, &ctx.principal_key)
+    };
+    if touchable {
         ctx.scripts.event(
             prim_id,
             crate::scripting::ScriptEvent::Touch {

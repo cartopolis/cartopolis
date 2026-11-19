@@ -5201,6 +5201,7 @@ fn prim_messages(w: &AgentWorld, id: i64) -> Option<(NetMessage, NetMessage, Bui
         geo: anchor(),
         particles: prim.particles,
         model: prim.model.clone(),
+        draft: false,
     };
     let item = BuildItem {
         name: prim.name.clone(),
@@ -5831,6 +5832,7 @@ fn create_message(i: usize, spec: Value) -> Result<(NetMessage, BuildItem), Stri
         },
         particles: None,
         model,
+        draft: false,
     };
     Ok((
         message,

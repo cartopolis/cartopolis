@@ -49,6 +49,7 @@ pub fn routes() -> Router<HttpState> {
         )
         .route("/api/inventory/designs/{id}", delete(delete_design))
         .route("/api/inventory/designs/{id}/place", post(place_design))
+        .route("/api/inventory/drafts/place", post(place_drafts))
 }
 
 /// One design, as the inventory lists it. The document stays on the server.
@@ -76,6 +77,9 @@ struct SaveBody {
 struct PlaceBody {
     latitude: f64,
     longitude: f64,
+    /// Place the copy as a design-room draft only the caller is sent.
+    #[serde(default)]
+    draft: bool,
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -252,12 +256,45 @@ async fn place_design(
             spec.latitude = Some(lat);
             spec.longitude = Some(lng);
         }
+        spec.draft = Some(body.draft);
         let prim = create(&state, &builder, &spec).await?;
         store_script(&state, &builder, prim.id, spec.script.as_deref()).await?;
         created.push(prim.id);
     }
     tracing::info!(username = %access.username, id, parts = created.len(), "design placed");
     Ok(Json(json!({ "placed": created })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaceDraftsBody {
+    prim_ids: Vec<i64>,
+}
+
+/// `POST /api/inventory/drafts/place` — the design room's Place: the caller's
+/// drafts among these ids stop being theirs alone and stand in the street for
+/// everybody, in one request. Answers the ids that were placed; an id that is
+/// not the caller's draft is skipped rather than failing the rest.
+async fn place_drafts(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<PlaceDraftsBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let access = crate::http::require_access(&state, &headers)?;
+    if body.prim_ids.len() > MAX_DESIGN_PARTS * 4 {
+        return Err(bad("too many objects in one placing"));
+    }
+    let perms = crate::http::access_permissions(&state, &access)?;
+    let actor = Actor::with_permissions(access.principal.to_string(), perms);
+    let mut placed = Vec::new();
+    for id in body.prim_ids {
+        match state.prims.place_draft(&actor, id).await {
+            Ok(prim) if !prim.draft => placed.push(id),
+            Ok(_) => {}
+            Err(e) => tracing::debug!(id, "not placed: {e}"),
+        }
+    }
+    tracing::info!(username = %access.username, count = placed.len(), "drafts placed");
+    Ok(Json(json!({ "placed": placed })))
 }
 
 /// `DELETE /api/inventory/designs/{id}` — forget a design. What was placed

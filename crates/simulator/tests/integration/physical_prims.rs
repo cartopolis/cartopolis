@@ -142,6 +142,7 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
             geo: PITCH,
             particles: None,
             model: None,
+            draft: false,
         },
     )
     .await;

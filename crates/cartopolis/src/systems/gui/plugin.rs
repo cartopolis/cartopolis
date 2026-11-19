@@ -166,6 +166,7 @@ impl Plugin for GuiPlugin {
                         .after(systems::ui::render_context_menu)
                         .in_set(ClientPhase::Input),
                     systems::design_room::layer_design_room.in_set(ClientPhase::Present),
+                    systems::design_room::layer_prims.in_set(ClientPhase::Present),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),

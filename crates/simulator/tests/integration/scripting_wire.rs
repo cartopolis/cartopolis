@@ -151,6 +151,7 @@ async fn create_prim(c: &mut Client) -> i64 {
             },
             particles: None,
             model: None,
+            draft: false,
         },
     )
     .await;

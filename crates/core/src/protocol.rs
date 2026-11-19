@@ -245,6 +245,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "following a place for new plans — FollowPlans gives the server the spots this account follows, which it checks the municipality's new notices against and wakes a closed phone for with the push word \"plan\"; a phone says it knows that word by registering its address with the \"plans:\" prefix (docs/notes/plans.md)",
     },
+    ProtocolRevision {
+        version: 51,
+        adr: "",
+        summary: "drafts from the design room — PrimDto.draft and CreatePrim.draft: a prim created as a draft is sent only to its owner's connections, is not touched, carried or collided with by anyone else and runs no script until it is placed (POST /api/inventory/drafts/place), which clears the flag and sends it to everyone within reach (docs/notes/design-room.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -733,6 +738,11 @@ pub struct PrimDto {
     /// [`NetMessage::PrimTone`].
     #[serde(default)]
     pub tone: Option<ToneSpec>,
+    /// A draft from the design room (protocol 51, `docs/notes/design-room.md`):
+    /// sent only to its owner's connections, touched, carried and collided
+    /// with by nobody else, its script not run, until it is placed.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 /// A video on a prim: which clip, and when it started, so everybody near it
@@ -1333,6 +1343,10 @@ pub enum NetMessage {
         /// A stored model asset to draw instead of `shape` (protocol v22).
         #[serde(default)]
         model: Option<String>,
+        /// Make it a draft only its maker sees (protocol 51): what the design
+        /// room builds, until it is placed.
+        #[serde(default)]
+        draft: bool,
     },
     /// ADR-017: client sends updated prim state (position, rotation, scale, color, texture, name).
     UpdatePrim {
@@ -3547,6 +3561,7 @@ mod tests {
             color: [0.5, 0.5, 0.5],
             texture_id: None,
             model: None,
+            draft: false,
             shape: "box".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
@@ -3939,6 +3954,7 @@ mod tests {
             physical: true,
             hand_range: 2.0,
             tone: Some(crate::tone::ToneSpec::default()),
+            draft: true,
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

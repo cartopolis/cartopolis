@@ -77,7 +77,7 @@ const PRIM_COLUMNS: &str = "id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles, model, video, physical, \
+     latitude, longitude, particles, model, video, physical, draft, \
      EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// How many columns [`PRIM_COLUMNS`] selects.
@@ -155,7 +155,7 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(43)?,
+        scripted: row.get(44)?,
         // Protocol v28. A column that will not parse is no video, and a
         // warning — the `particles` rule, for the same reason.
         video: row.get::<_, Option<String>>(41)?.and_then(|json| {
@@ -176,6 +176,8 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // again in `on_start`.
         hand_range: 0.0,
         tone: None,
+        // Protocol 51 (`V49__prim_draft.sql`).
+        draft: row.get(43)?,
     })
 }
 
@@ -583,6 +585,15 @@ pub fn set_prim_owner(conn: &Connection, prim_id: i64, owner: &str) -> anyhow::R
     conn.execute(
         "UPDATE prims SET owner = ?2 WHERE id = ?1",
         rusqlite::params![prim_id, owner],
+    )?;
+    Ok(())
+}
+
+/// Make a prim a draft from the design room, or place it (`V49__prim_draft.sql`).
+pub fn set_prim_draft(conn: &Connection, prim_id: i64, draft: bool) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE prims SET draft = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, draft],
     )?;
     Ok(())
 }
@@ -1024,7 +1035,10 @@ pub fn erase_account_traces(
 pub const DELETED_ACCOUNT_NAME: &str = "[deleted]";
 
 /// Helper: retrieve a prim by id (internal use)  (ADR-017 Phase 2)
-fn select_prim_by_id(conn: &Connection, prim_id: i64) -> anyhow::Result<Option<PrimDto>> {
+pub(crate) fn select_prim_by_id(
+    conn: &Connection,
+    prim_id: i64,
+) -> anyhow::Result<Option<PrimDto>> {
     let sql = format!("SELECT {PRIM_COLUMNS} FROM prims WHERE id = ?1");
     let mut stmt = conn.prepare(&sql)?;
     let prim = stmt

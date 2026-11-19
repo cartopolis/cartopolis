@@ -690,6 +690,7 @@ mod virtual_player {
                     },
                     particles: None,
                     model: None,
+                    draft: false,
                 },
             )
             .await;

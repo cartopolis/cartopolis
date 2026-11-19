@@ -59,7 +59,14 @@ pub(super) async fn on_tick<T: FrameTransport>(
     ctx.framed.feed(Bytes::from(frame)).await?;
 
     let now: HashSet<i64> = table.things_within(place, radius).collect();
-    let gone: Vec<i64> = ctx.reach.things.difference(&now).copied().collect();
+    let mut gone: Vec<i64> = ctx.reach.things.difference(&now).copied().collect();
+    if !gone.is_empty() {
+        // A draft stays with its maker wherever their avatar stands: it is in
+        // the design room, which may be opened anywhere on the map, not in the
+        // street. Only the maker's connections ever hold one.
+        let w = ctx.world.read().await;
+        gone.retain(|id| !w.prim(*id).is_some_and(|p| p.draft));
+    }
     for id in gone {
         ctx.reach.things.remove(&id);
         ctx.feed(&NetMessage::PrimOutOfReach { id }).await?;
@@ -73,7 +80,12 @@ pub(super) async fn on_tick<T: FrameTransport>(
         // table was taken is simply not here, and not in the next table either.
         let prims: Vec<PrimDto> = {
             let w = ctx.world.read().await;
-            new.iter().filter_map(|id| w.prim(*id).cloned()).collect()
+            // A draft is in the table like any thing, and only its maker's
+            // connections are told of it.
+            new.iter()
+                .filter(|id| w.sees(**id, &ctx.principal_key))
+                .filter_map(|id| w.prim(*id).cloned())
+                .collect()
         };
         for prim in prims {
             ctx.reach.things.insert(prim.id);
@@ -104,5 +116,18 @@ pub(super) async fn on_thing<T: FrameTransport>(
     } else if ctx.reach.things.remove(&id) {
         ctx.feed(&NetMessage::PrimOutOfReach { id }).await?;
     }
+    Ok(())
+}
+
+/// A draft of this connection's account (protocol 51): sent wherever the
+/// connection stands, and held as within reach so the reach pass neither sends
+/// it again nor takes it away.
+pub(super) async fn on_draft<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    id: i64,
+    frame: Bytes,
+) -> anyhow::Result<()> {
+    ctx.reach.things.insert(id);
+    ctx.framed.feed(frame).await?;
     Ok(())
 }

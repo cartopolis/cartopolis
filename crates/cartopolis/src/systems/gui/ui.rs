@@ -2138,6 +2138,7 @@ pub fn send_prim_mutations(
     online: Option<Res<OnlineSession>>,
     map_anchor: Res<crate::resources::MapAnchor>,
     mut edit_dialog: ResMut<EditDialogState>,
+    room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     // The dialog's Physical box: sent the moment it is ticked, answered by the
     // server's `PrimUpsert` (or a refusal, which the next upsert corrects).
@@ -2197,6 +2198,9 @@ pub fn send_prim_mutations(
                     // made here starts without one.
                     particles: None,
                     model: dialog_state.model.clone(),
+                    // Built in the design room: a draft only its maker sees until
+                    // the room's Place puts it in the street (protocol 51).
+                    draft: room.spot.is_some(),
                 },
             );
             tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");

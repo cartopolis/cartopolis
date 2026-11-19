@@ -218,6 +218,11 @@ pub struct PrimSpec {
     /// Whether the simulator's physics moves it (`docs/notes/physical-prims.md`).
     /// Absent on a create is `false`; on a patch it leaves the flag alone.
     pub physical: Option<bool>,
+    /// Create it as a design-room draft only its owner is sent (protocol 51).
+    /// Create only, and never written into a document: an export is of what
+    /// stands, and placing a design says itself whether its copy is a draft.
+    #[serde(default, skip_serializing)]
+    pub draft: Option<bool>,
 }
 
 impl PrimSpec {
@@ -264,6 +269,7 @@ impl PrimSpec {
             particles: Some(p.particles.as_ref().map(ParticleSpec::of)),
             script,
             physical: Some(p.physical),
+            draft: None,
         }
     }
 }
@@ -433,6 +439,7 @@ pub(crate) async fn create(
         position: Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
         shape,
         geo,
+        draft: spec.draft.unwrap_or(false),
     };
     let physical = spec.physical;
     let spec = spec.clone();

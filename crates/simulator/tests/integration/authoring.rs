@@ -213,6 +213,7 @@ async fn build(c: &mut Client, name: &str, lat: f64, lng: f64) -> i64 {
         },
         particles: None,
         model: None,
+        draft: false,
     };
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
@@ -1579,6 +1580,7 @@ async fn narrowing_the_player_role_stops_everyone_building() {
         },
         particles: None,
         model: None,
+        draft: false,
     };
     walker
         .send(Bytes::from(encode_app_frame(&msg).unwrap()))
@@ -1829,4 +1831,104 @@ async fn a_design_is_kept_and_placed_again_somewhere_else() {
     )
     .await;
     assert_eq!(doc["prims"].as_array().unwrap().len(), 4, "{doc}");
+}
+
+/// Frames for a while, so a test can say what did *not* arrive.
+async fn recv_for(c: &mut Client, how_long: Duration) -> Vec<NetMessage> {
+    let deadline = tokio::time::Instant::now() + how_long;
+    let mut seen = Vec::new();
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, c.next()).await {
+        seen.push(decode_app_frame(&frame).unwrap());
+    }
+    seen
+}
+
+/// A design-room draft (protocol 51) is its maker's alone: somebody standing
+/// right beside it is never sent it, cannot touch it and cannot read it back
+/// through a refused edit, until the maker places it — and then they are.
+#[tokio::test]
+async fn a_draft_is_seen_by_its_maker_only_until_it_is_placed() {
+    let (handle, _dir) = server().await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+    let addr = handle.local_addr.to_string();
+
+    // Somebody standing at the spot, so it is within their reach.
+    let mut other = connect(&addr, "meddler", "meddlerpw").await;
+    stand_at(&mut other, LAT, LNG).await;
+    let mut c = connect(&addr, "walker", "walkerpw").await;
+    stand_at(&mut c, LAT, LNG).await;
+
+    let msg = NetMessage::CreatePrim {
+        request_id: 1,
+        name: "Stall draft".into(),
+        position: glam::Vec3::new(0.0, 0.5, 0.0),
+        rotation: glam::Vec3::ZERO,
+        scale: glam::Vec3::ONE,
+        color: [0.5, 0.5, 0.5],
+        texture_id: None,
+        shape: "box".into(),
+        surface: cartopolis_core::PrimSurface::default(),
+        geometry: cartopolis_core::PrimGeometry::default(),
+        geo: GeoAnchor {
+            latitude: LAT,
+            longitude: LNG,
+        },
+        particles: None,
+        model: None,
+        draft: true,
+    };
+    c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
+        .await
+        .unwrap();
+    let id = recv_until(&mut c, "the maker's own draft", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.name == "Stall draft" => {
+            assert!(prim.draft, "it arrives marked as a draft");
+            Some(prim.id)
+        }
+        _ => None,
+    })
+    .await;
+
+    // Several ticks: the reach pass would have sent it by now if it were public.
+    let seen = recv_for(&mut other, Duration::from_millis(800)).await;
+    assert!(
+        !seen
+            .iter()
+            .any(|m| matches!(m, NetMessage::PrimUpsert { prim } if prim.id == id)),
+        "somebody else was sent the draft"
+    );
+
+    // An edit by them is "not found", not a refusal carrying the true prim.
+    let edit = NetMessage::DeletePrim {
+        request_id: 7,
+        prim_id: id,
+    };
+    other
+        .send(Bytes::from(encode_app_frame(&edit).unwrap()))
+        .await
+        .unwrap();
+    let seen = recv_for(&mut other, Duration::from_millis(500)).await;
+    assert!(
+        !seen
+            .iter()
+            .any(|m| matches!(m, NetMessage::PrimUpsert { prim } if prim.id == id)),
+        "a refused edit sent the draft back"
+    );
+
+    // The maker places it, and now the other is sent it.
+    let (status, placed) = api(
+        "POST",
+        format!("{}/api/inventory/drafts/place", base(&handle)),
+        Some(walker),
+        Some(serde_json::json!({ "prim_ids": [id] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{placed}");
+    assert_eq!(placed["placed"], serde_json::json!([id]));
+    let public = recv_until(&mut other, "the placed prim", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.id == id => Some(prim),
+        _ => None,
+    })
+    .await;
+    assert!(!public.draft, "placed, it is no longer a draft");
 }
