@@ -3,7 +3,7 @@
 Notable changes, newest first. Written from the Conventional Commit log — `git
 log` is the record, this is the summary a person can read — and versioned by
 [Semantic Versioning](https://semver.org/), with the wire protocol tracked
-separately in `PROTOCOL_HISTORY` (`crates/core/src/protocol.rs`) because a client
+separately in `PROTOCOL_HISTORY` (`crates/core/src/protocol/history.rs`) because a client
 and a sim can be different versions of this file and must not be different
 versions of that one.
 

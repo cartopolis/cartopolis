@@ -194,7 +194,7 @@ verify_sim() {
     # Read the source from `main` over the API, not from a checkout: this runs
     # where the repository-write token lives, which is deliberately not a place
     # with a writable clone in it.
-    want=$(api "$API/repos/$REPO/raw/crates/core/src/protocol.rs?ref=main" \
+    want=$(api "$API/repos/$REPO/raw/crates/core/src/protocol/history.rs?ref=main" \
         | grep -oE 'version: [0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
     step "verifying the running simulator (expecting protocol $want)"
     while [ "$waited" -lt 180 ]; do
