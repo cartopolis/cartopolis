@@ -223,6 +223,10 @@ pub struct PrimSpec {
     /// stands, and placing a design says itself whether its copy is a draft.
     #[serde(default, skip_serializing)]
     pub draft: Option<bool>,
+    /// The groups it is in, outermost first (protocol 51). Carried by an export
+    /// and a design; a design placed again gets fresh group ids for its copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<cartopolis_core::GroupLevel>>,
 }
 
 impl PrimSpec {
@@ -270,6 +274,7 @@ impl PrimSpec {
             script,
             physical: Some(p.physical),
             draft: None,
+            groups: (!p.groups.is_empty()).then(|| p.groups.clone()),
         }
     }
 }
@@ -442,6 +447,7 @@ pub(crate) async fn create(
         draft: spec.draft.unwrap_or(false),
     };
     let physical = spec.physical;
+    let groups = spec.groups.clone().unwrap_or_default();
     let spec = spec.clone();
     let created = state
         .prims
@@ -455,6 +461,19 @@ pub(crate) async fn create(
         .map_err(|e| bad(e.to_string()))?;
     // Physics has its own write (an edit must not be able to switch it), so it
     // is a second step — after the prim exists, under the same actor.
+    let mut created = created;
+    // Groups are their own write, as physics is (`PrimService::set_groups`).
+    if !groups.is_empty() {
+        if let Some(p) = state
+            .prims
+            .set_groups(actor, vec![(created.id, groups)])
+            .await
+            .map_err(|e| bad(e.to_string()))?
+            .pop()
+        {
+            created = p;
+        }
+    }
     if physical == Some(true) {
         return state
             .prims

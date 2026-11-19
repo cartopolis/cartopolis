@@ -3707,6 +3707,23 @@ pub fn hold_scripted_design_room(
                 longitude,
             },
             ScriptedDesignPart(i),
+            // The stall as one group, its posts a group inside it, so the
+            // outliner has a tree to draw.
+            crate::systems::design_room::Groups({
+                let stall = cartopolis_core::GroupLevel {
+                    id: -1,
+                    name: "Market stall".into(),
+                };
+                let frame = cartopolis_core::GroupLevel {
+                    id: -2,
+                    name: "Frame".into(),
+                };
+                if *name == "Post" {
+                    vec![stall, frame]
+                } else {
+                    vec![stall]
+                }
+            }),
             Transform::from_xyz(0.0, *up, 0.0).with_scale(Vec3::from_array(*size)),
         ));
     }

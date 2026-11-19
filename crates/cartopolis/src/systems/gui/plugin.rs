@@ -173,6 +173,9 @@ impl Plugin for GuiPlugin {
                     systems::design_room::render_design_room_bar
                         .after(systems::place_pins::render_place_pins)
                         .in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_outliner
+                        .after(systems::design_room::render_design_room_bar)
+                        .in_set(ClientPhase::Present),
                 ),
             );
 

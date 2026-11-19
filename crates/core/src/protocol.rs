@@ -248,7 +248,7 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
     ProtocolRevision {
         version: 51,
         adr: "",
-        summary: "drafts from the design room — PrimDto.draft and CreatePrim.draft: a prim created as a draft is sent only to its owner's connections, is not touched, carried or collided with by anyone else and runs no script until it is placed (POST /api/inventory/drafts/place), which clears the flag and sends it to everyone within reach (docs/notes/design-room.md)",
+        summary: "drafts from the design room — PrimDto.draft and CreatePrim.draft: a prim created as a draft is sent only to its owner's connections, is not touched, carried or collided with by anyone else and its script senses nobody until it is placed (POST /api/inventory/drafts/place), which clears the flag and sends it to everyone within reach; and groups — PrimDto.groups is the chain of groups a prim is in, outermost first, set over HTTP (/api/inventory/groups) and sent in its PrimUpsert (docs/notes/design-room.md)",
     },
 ];
 
@@ -743,6 +743,20 @@ pub struct PrimDto {
     /// with by nobody else, its script not run, until it is placed.
     #[serde(default)]
     pub draft: bool,
+    /// The groups this prim is in, outermost first (protocol 51): "Market
+    /// stall", then "Frame". Empty for a prim in no group. Each prim carries its
+    /// whole chain, so a client can draw the tree from the prims alone; a group
+    /// holds only its owner's prims.
+    #[serde(default)]
+    pub groups: Vec<GroupLevel>,
+}
+
+/// One group a prim is in: an id the server gave it, unique on this server,
+/// and the name its owner gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupLevel {
+    pub id: i64,
+    pub name: String,
 }
 
 /// A video on a prim: which clip, and when it started, so everybody near it
@@ -3955,6 +3969,10 @@ mod tests {
             hand_range: 2.0,
             tone: Some(crate::tone::ToneSpec::default()),
             draft: true,
+            groups: vec![GroupLevel {
+                id: 7,
+                name: "Market stall".into(),
+            }],
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

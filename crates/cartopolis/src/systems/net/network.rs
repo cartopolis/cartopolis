@@ -961,6 +961,9 @@ pub fn apply_network_snapshot(
                 for (entity, mut p, mut tf) in prim_entities.iter_mut() {
                     if p.id == prim.id {
                         update_prim_from_dto(&mut commands, entity, &mut p, &mut tf, &prim);
+                        commands
+                            .entity(entity)
+                            .try_insert(crate::systems::design_room::Groups(prim.groups.clone()));
                         // A draft placed, or (never today) a prim made a draft.
                         if prim.draft {
                             commands
@@ -1511,6 +1514,7 @@ pub(crate) fn spawn_prim_from_dto(commands: &mut Commands, p: PrimDto) {
     let tone = crate::components::SoundingTone(p.tone.map(cartopolis_core::ToneSpec::sanitized));
     let hands = crate::components::SensesHands(p.hand_range);
     let mut prim = commands.spawn((prim_from_dto(&p), transform_from_dto(&p), geo, tone, hands));
+    prim.insert(crate::systems::design_room::Groups(p.groups.clone()));
     // Drawn in the design room only, never in the street (protocol 51).
     if p.draft {
         prim.insert(crate::systems::design_room::Draft);

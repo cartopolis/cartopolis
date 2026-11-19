@@ -24,10 +24,12 @@ use crate::http::{internal, ApiError, ApiResult, HttpState};
 use crate::prims::Actor;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
+use cartopolis_core::GroupLevel;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 
 /// Most parts one design may hold. The mockup's answer to "how big can a design
 /// be?" — a bound per design, so one placement cannot flood a square.
@@ -50,6 +52,11 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/inventory/designs/{id}", delete(delete_design))
         .route("/api/inventory/designs/{id}/place", post(place_design))
         .route("/api/inventory/drafts/place", post(place_drafts))
+        .route("/api/inventory/groups", post(make_group))
+        .route(
+            "/api/inventory/groups/{id}",
+            patch(rename_group).delete(dissolve_group),
+        )
 }
 
 /// One design, as the inventory lists it. The document stays on the server.
@@ -245,6 +252,9 @@ async fn place_design(
     let perms = crate::http::access_permissions(&state, &access)?;
     let builder = Actor::with_permissions(owner, perms);
     let mut created = Vec::new();
+    // A copy is its own group, not a second home for the original's: every
+    // group id in the design gets a fresh one, the same for all its parts.
+    let mut fresh: HashMap<i64, i64> = HashMap::new();
     for spec in &doc.prims {
         let mut spec = spec.clone();
         if let (Some(lat), Some(lng)) = (spec.latitude, spec.longitude) {
@@ -257,6 +267,11 @@ async fn place_design(
             spec.longitude = Some(lng);
         }
         spec.draft = Some(body.draft);
+        if let Some(groups) = spec.groups.as_mut() {
+            for g in groups.iter_mut() {
+                g.id = *fresh.entry(g.id).or_insert_with(new_group_id);
+            }
+        }
         let prim = create(&state, &builder, &spec).await?;
         store_script(&state, &builder, prim.id, spec.script.as_deref()).await?;
         created.push(prim.id);
@@ -295,6 +310,201 @@ async fn place_drafts(
     }
     tracing::info!(username = %access.username, count = placed.len(), "drafts placed");
     Ok(Json(json!({ "placed": placed })))
+}
+
+// ---------------------------------------------------------------------------
+// Groups: a chain on each prim, outermost first (`PrimDto::groups`)
+// ---------------------------------------------------------------------------
+
+/// A fresh group id: positive, and unlikely ever to meet another on this
+/// server — a group is a chain written on its prims, not a row to number.
+fn new_group_id() -> i64 {
+    (uuid::Uuid::new_v4().as_u64_pair().0 >> 1) as i64
+}
+
+fn check_group_name(name: &str) -> ApiResult<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(bad("a group needs a name"));
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(bad(format!(
+            "a name is at most {MAX_NAME_CHARS} characters"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+/// Where each prim's chain goes when `selected` are grouped as `new`.
+///
+/// The new group goes in at the depth where the selection's chains part: the
+/// groups every selected prim is already in stay outside it, and the groups
+/// below that point that lie *wholly* inside the selection move inside it, so
+/// grouping two groups nests them. A group only partly selected is left behind
+/// by the selected prims — otherwise it would stand in two places in the tree.
+/// `members` is every prim of each group, selected or not.
+#[must_use]
+pub fn grouped(
+    selected: &[(i64, Vec<GroupLevel>)],
+    members: &HashMap<i64, HashSet<i64>>,
+    new: &GroupLevel,
+) -> Vec<(i64, Vec<GroupLevel>)> {
+    let Some((_, first)) = selected.first() else {
+        return Vec::new();
+    };
+    let mut common = first.len();
+    for (_, chain) in selected {
+        common = common.min(
+            chain
+                .iter()
+                .zip(first)
+                .take_while(|(a, b)| a.id == b.id)
+                .count(),
+        );
+    }
+    let ids: HashSet<i64> = selected.iter().map(|(id, _)| *id).collect();
+    selected
+        .iter()
+        .map(|(id, chain)| {
+            let mut next = chain[..common].to_vec();
+            next.push(new.clone());
+            next.extend(
+                chain[common..]
+                    .iter()
+                    .filter(|g| members.get(&g.id).is_some_and(|m| m.is_subset(&ids)))
+                    .cloned(),
+            );
+            (*id, next)
+        })
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupBody {
+    name: String,
+    prim_ids: Vec<i64>,
+}
+
+/// `POST /api/inventory/groups` — group the caller's prims under a new name
+/// (Ctrl-G in the design room). Answers the new group.
+async fn make_group(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<GroupBody>,
+) -> ApiResult<Json<GroupLevel>> {
+    let access = crate::http::require_access(&state, &headers)?;
+    let name = check_group_name(&body.name)?;
+    if body.prim_ids.is_empty() {
+        return Err(bad("nothing to group"));
+    }
+    let owner = access.principal.to_string();
+    let wanted: HashSet<i64> = body.prim_ids.iter().copied().collect();
+    let (selected, members) = {
+        let w = state.world.read().await;
+        let mut selected = Vec::new();
+        let mut members: HashMap<i64, HashSet<i64>> = HashMap::new();
+        for p in w.prims() {
+            if !w.owns(p.id, &owner) {
+                continue;
+            }
+            for g in &p.groups {
+                members.entry(g.id).or_default().insert(p.id);
+            }
+            if wanted.contains(&p.id) {
+                selected.push((p.id, p.groups.clone()));
+            }
+        }
+        (selected, members)
+    };
+    if selected.len() != wanted.len() {
+        return Err(bad("only your own objects can be grouped"));
+    }
+    let new = GroupLevel {
+        id: new_group_id(),
+        name,
+    };
+    let changes = grouped(&selected, &members, &new);
+    let perms = crate::http::access_permissions(&state, &access)?;
+    let actor = Actor::with_permissions(owner, perms);
+    state
+        .prims
+        .set_groups(&actor, changes)
+        .await
+        .map_err(|e| bad(e.to_string()))?;
+    Ok(Json(new))
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameBody {
+    name: String,
+}
+
+/// The caller's prims in group `id`, and what each chain becomes under `f`.
+async fn regroup(
+    state: &HttpState,
+    access: &crate::auth::Access,
+    id: i64,
+    f: impl Fn(&[GroupLevel]) -> Vec<GroupLevel>,
+) -> ApiResult<StatusCode> {
+    let owner = access.principal.to_string();
+    let changes: Vec<(i64, Vec<GroupLevel>)> = {
+        let w = state.world.read().await;
+        w.prims()
+            .iter()
+            .filter(|p| w.owns(p.id, &owner) && p.groups.iter().any(|g| g.id == id))
+            .map(|p| (p.id, f(&p.groups)))
+            .collect()
+    };
+    if changes.is_empty() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no such group".into()));
+    }
+    let perms = crate::http::access_permissions(state, access)?;
+    let actor = Actor::with_permissions(owner, perms);
+    state
+        .prims
+        .set_groups(&actor, changes)
+        .await
+        .map_err(|e| bad(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/inventory/groups/{id}` — rename a group.
+async fn rename_group(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<RenameBody>,
+) -> ApiResult<StatusCode> {
+    let access = crate::http::require_access(&state, &headers)?;
+    let name = check_group_name(&body.name)?;
+    regroup(&state, &access, id, |chain| {
+        chain
+            .iter()
+            .map(|g| GroupLevel {
+                id: g.id,
+                name: if g.id == id {
+                    name.clone()
+                } else {
+                    g.name.clone()
+                },
+            })
+            .collect()
+    })
+    .await
+}
+
+/// `DELETE /api/inventory/groups/{id}` — ungroup (Alt-G): the group goes, what
+/// was in it stays in the groups around it.
+async fn dissolve_group(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    let access = crate::http::require_access(&state, &headers)?;
+    regroup(&state, &access, id, |chain| {
+        chain.iter().filter(|g| g.id != id).cloned().collect()
+    })
+    .await
 }
 
 /// `DELETE /api/inventory/designs/{id}` — forget a design. What was placed
@@ -337,6 +547,59 @@ mod tests {
         let east = (lng - to.1) * METRES_PER_DEGREE * to.0.to_radians().cos();
         assert!((north - 2.0).abs() < 1e-6, "north {north}");
         assert!((east - 3.0).abs() < 1e-6, "east {east}");
+    }
+
+    fn g(id: i64, name: &str) -> GroupLevel {
+        GroupLevel {
+            id,
+            name: name.into(),
+        }
+    }
+
+    fn members(of: &[(i64, &[i64])]) -> HashMap<i64, HashSet<i64>> {
+        of.iter()
+            .map(|(id, m)| (*id, m.iter().copied().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn loose_parts_go_straight_into_the_new_group() {
+        let new = g(9, "Stall");
+        let out = grouped(&[(1, vec![]), (2, vec![])], &members(&[]), &new);
+        assert_eq!(out, vec![(1, vec![new.clone()]), (2, vec![new])]);
+    }
+
+    #[test]
+    fn grouping_two_groups_nests_them() {
+        let (frame, roof) = (g(1, "Frame"), g(2, "Roof"));
+        let new = g(9, "Stall");
+        let sel = [
+            (10, vec![frame.clone()]),
+            (11, vec![frame.clone()]),
+            (12, vec![roof.clone()]),
+        ];
+        let out = grouped(&sel, &members(&[(1, &[10, 11]), (2, &[12])]), &new);
+        assert_eq!(out[0].1, vec![new.clone(), frame]);
+        assert_eq!(out[2].1, vec![new, roof]);
+    }
+
+    #[test]
+    fn a_group_inside_a_shared_one_stays_inside_it() {
+        let stall = g(1, "Stall");
+        let new = g(9, "Frame");
+        let sel = [(10, vec![stall.clone()]), (11, vec![stall.clone()])];
+        let out = grouped(&sel, &members(&[(1, &[10, 11, 12])]), &new);
+        assert_eq!(out[0].1, vec![stall, new]);
+    }
+
+    #[test]
+    fn a_partly_selected_group_is_left_behind() {
+        let frame = g(1, "Frame");
+        let new = g(9, "Two posts");
+        let sel = [(10, vec![frame.clone()]), (20, vec![])];
+        let out = grouped(&sel, &members(&[(1, &[10, 11])]), &new);
+        assert_eq!(out[0].1, vec![new.clone()], "post 11 is still in Frame");
+        assert_eq!(out[1].1, vec![new]);
     }
 
     #[test]

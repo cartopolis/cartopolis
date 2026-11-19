@@ -1050,6 +1050,7 @@ mod tests {
             hand_range: 0.0,
             tone: None,
             draft: false,
+            groups: Vec::new(),
         }
     }
 

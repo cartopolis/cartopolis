@@ -97,6 +97,12 @@ pub struct DesignRoom {
     /// Those of [`Self::parts`] that are still drafts: only this account sees
     /// them, until the bar's Place puts them in the street.
     pub drafts: Vec<i64>,
+    /// The parts as the outliner lists them: name and group chain, by id.
+    pub tree: Vec<PartRow>,
+    /// What is ticked in the outliner, for Group.
+    pub picked: std::collections::BTreeSet<i64>,
+    /// The name a new group gets, as typed in the outliner.
+    pub group_name: String,
     /// Counts each way in and out; each one whites the screen out and fades
     /// it back ([`draw_veil`]). The second is the one the veil has started.
     flash: u32,
@@ -119,9 +125,25 @@ impl DesignRoom {
         self.spot = None;
         self.parts.clear();
         self.drafts.clear();
+        self.tree.clear();
+        self.picked.clear();
         self.flash += 1;
     }
 }
+
+/// One part in the outliner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartRow {
+    pub id: i64,
+    pub name: String,
+    pub groups: Vec<cartopolis_core::GroupLevel>,
+    pub draft: bool,
+}
+
+/// The groups a prim is in, outermost first (`PrimDto::groups`, protocol 51),
+/// kept beside the prim by `network` for the outliner.
+#[derive(Component, Debug, Clone, Default)]
+pub struct Groups(pub Vec<cartopolis_core::GroupLevel>);
 
 /// The room's own pieces: floor, grid and walls.
 #[derive(Component)]
@@ -213,6 +235,32 @@ fn place_drafts(inbox: Inbox, prim_ids: Vec<i64>) {
         .detach();
 }
 
+fn make_group(inbox: Inbox, name: String, prim_ids: Vec<i64>) {
+    let body = serde_json::json!({ "name": name, "prim_ids": prim_ids }).to_string();
+    IoTaskPool::get()
+        .spawn(async move {
+            let reply = match model_assets::api_post("/api/inventory/groups", Some(body)).await {
+                Ok(_) => Reply::Done(format!("Grouped as \u{201c}{name}\u{201d}.")),
+                Err(e) => Reply::Failed(e),
+            };
+            push(&inbox, reply);
+        })
+        .detach();
+}
+
+fn ungroup(inbox: Inbox, id: i64, name: String) {
+    IoTaskPool::get()
+        .spawn(async move {
+            let path = format!("/api/inventory/groups/{id}");
+            let reply = match model_assets::api_delete(&path).await {
+                Ok(()) => Reply::Done(format!("Ungrouped \u{201c}{name}\u{201d}.")),
+                Err(e) => Reply::Failed(e),
+            };
+            push(&inbox, reply);
+        })
+        .detach();
+}
+
 fn forget_design(inbox: Inbox, id: i64, name: String) {
     IoTaskPool::get()
         .spawn(async move {
@@ -233,7 +281,7 @@ pub fn drive_design_room(
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     online: Option<Res<crate::resources::OnlineSession>>,
-    prims: Query<(&Prim, &PrimGeo, Has<Draft>)>,
+    prims: Query<(&Prim, &PrimGeo, Has<Draft>, Option<&Groups>)>,
 ) {
     use crate::systems::geo_nav::{CameraPose, Teleport};
     if let Some((lat, lng)) = menu.design_here.take() {
@@ -259,13 +307,31 @@ pub fn drive_design_room(
     let Some(spot) = room.spot else {
         return;
     };
-    let here: Vec<(i64, bool)> = prims
+    let mut tree: Vec<PartRow> = prims
         .iter()
-        .filter(|(_, g, _)| metres_between(spot, (g.latitude, g.longitude)) <= PARTS_RADIUS_M)
-        .map(|(p, _, draft)| (p.id, draft))
+        .filter(|(_, g, ..)| metres_between(spot, (g.latitude, g.longitude)) <= PARTS_RADIUS_M)
+        .map(|(p, _, draft, groups)| PartRow {
+            id: p.id,
+            name: p.name.clone(),
+            groups: groups.map(|g| g.0.clone()).unwrap_or_default(),
+            draft,
+        })
         .collect();
-    let parts: Vec<i64> = here.iter().map(|(id, _)| *id).collect();
-    let drafts: Vec<i64> = here.iter().filter(|(_, d)| *d).map(|(id, _)| *id).collect();
+    // Grouped parts together, in their groups' order, then by name.
+    tree.sort_by(|a, b| {
+        let key = |r: &PartRow| r.groups.iter().map(|g| g.name.clone()).collect::<Vec<_>>();
+        key(a)
+            .cmp(&key(b))
+            .then(a.name.cmp(&b.name))
+            .then(a.id.cmp(&b.id))
+    });
+    let parts: Vec<i64> = tree.iter().map(|r| r.id).collect();
+    let drafts: Vec<i64> = tree.iter().filter(|r| r.draft).map(|r| r.id).collect();
+    if tree != room.tree {
+        let ids: std::collections::BTreeSet<i64> = parts.iter().copied().collect();
+        room.picked.retain(|id| ids.contains(id));
+        room.tree = tree;
+    }
     if parts != room.parts {
         room.parts = parts;
     }
@@ -891,6 +957,162 @@ pub fn render_design_room_bar(
         room.busy = true;
         forget_design(room.inbox.clone(), id, name);
     }
+}
+
+/// The outliner, on the left while the room is open: the parts in their
+/// groups, a tick box on each to choose what Group takes, and Ungroup on each
+/// group (v4's Outliner, `docs/mockups/design-room/v4-editor.png`).
+pub fn render_design_room_outliner(
+    egui: EguiMut,
+    mut room: ResMut<DesignRoom>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+) {
+    if room.spot.is_none() || room.tree.is_empty() {
+        return;
+    }
+    let signed_in = online.is_some() && model_assets::have_endpoint();
+    let tree = room.tree.clone();
+    let mut picked = std::mem::take(&mut room.picked);
+    let mut group_name = std::mem::take(&mut room.group_name);
+    let busy = room.busy;
+    let mut make: Option<(String, Vec<i64>)> = None;
+    let mut dissolve: Option<(i64, String)> = None;
+    let width = 270.0_f32.min(egui.viewport_pts().x * 0.45);
+
+    egui::Area::new(egui::Id::new("design_room_outliner"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN),
+        )
+        .show(egui.ctx(), |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                ui.set_width(width);
+                ui.label(
+                    egui::RichText::new("Outliner")
+                        .size(theme::SIZE_TITLE)
+                        .strong()
+                        .color(theme::p().accent_text),
+                );
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        let mut previous: &[cartopolis_core::GroupLevel] = &[];
+                        for row in &tree {
+                            let shared = row
+                                .groups
+                                .iter()
+                                .zip(previous)
+                                .take_while(|(a, b)| a.id == b.id)
+                                .count();
+                            // A header for each group this row enters.
+                            for (depth, g) in row.groups.iter().enumerate().skip(shared) {
+                                let members: Vec<i64> = tree
+                                    .iter()
+                                    .filter(|r| r.groups.iter().any(|x| x.id == g.id))
+                                    .map(|r| r.id)
+                                    .collect();
+                                ui.horizontal(|ui| {
+                                    ui.add_space(depth as f32 * 14.0);
+                                    let mut all = members.iter().all(|id| picked.contains(id));
+                                    if ui.checkbox(&mut all, "").changed() {
+                                        for id in &members {
+                                            if all {
+                                                picked.insert(*id);
+                                            } else {
+                                                picked.remove(id);
+                                            }
+                                        }
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(format!("▾ {}", g.name))
+                                            .strong()
+                                            .color(theme::p().accent_text),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(members.len().to_string())
+                                            .small()
+                                            .color(theme::p().text_dim),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if signed_in
+                                                && ui
+                                                    .add_enabled(
+                                                        !busy,
+                                                        egui::Button::new("Ungroup"),
+                                                    )
+                                                    .on_hover_text(
+                                                        "dissolve this group; its parts stay in \
+                                                     the groups around it",
+                                                    )
+                                                    .clicked()
+                                            {
+                                                dissolve = Some((g.id, g.name.clone()));
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+                            ui.horizontal(|ui| {
+                                ui.add_space(row.groups.len() as f32 * 14.0);
+                                let mut on = picked.contains(&row.id);
+                                if ui.checkbox(&mut on, &row.name).changed() {
+                                    if on {
+                                        picked.insert(row.id);
+                                    } else {
+                                        picked.remove(&row.id);
+                                    }
+                                }
+                                if row.draft {
+                                    ui.label(
+                                        egui::RichText::new("draft")
+                                            .small()
+                                            .color(theme::p().text_dim),
+                                    );
+                                }
+                            });
+                            previous = &row.groups;
+                        }
+                    });
+                if signed_in {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut group_name)
+                                .hint_text("Group name")
+                                .desired_width(ui.available_width() - 70.0),
+                        );
+                        let ready = picked.len() >= 1 && !group_name.trim().is_empty() && !busy;
+                        if ui
+                            .add_enabled(ready, egui::Button::new("Group"))
+                            .on_hover_text("put the ticked parts in a new group (Ctrl-G)")
+                            .clicked()
+                        {
+                            make = Some((
+                                group_name.trim().to_string(),
+                                picked.iter().copied().collect(),
+                            ));
+                        }
+                    });
+                }
+            });
+        });
+
+    if let Some((name, ids)) = make {
+        room.busy = true;
+        make_group(room.inbox.clone(), name, ids);
+        picked.clear();
+        group_name.clear();
+    }
+    if let Some((id, name)) = dissolve {
+        room.busy = true;
+        ungroup(room.inbox.clone(), id, name);
+    }
+    room.picked = picked;
+    room.group_name = group_name;
 }
 
 /// The objects of a market stall, as `(name, shape, colour, east, up, north,

@@ -77,7 +77,7 @@ const PRIM_COLUMNS: &str = "id, name, shape, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
      texture_rotation, offset_u, offset_v, \
-     latitude, longitude, particles, model, video, physical, draft, \
+     latitude, longitude, particles, model, video, physical, draft, groups, \
      EXISTS (SELECT 1 FROM prim_scripts s WHERE s.prim_id = prims.id)";
 
 /// How many columns [`PRIM_COLUMNS`] selects.
@@ -155,7 +155,7 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // still updates its in-memory copy so the next snapshot is current
         // without a re-read — the database is what it falls back to being right
         // from.
-        scripted: row.get(44)?,
+        scripted: row.get(45)?,
         // Protocol v28. A column that will not parse is no video, and a
         // warning — the `particles` rule, for the same reason.
         video: row.get::<_, Option<String>>(41)?.and_then(|json| {
@@ -176,8 +176,9 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
         // again in `on_start`.
         hand_range: 0.0,
         tone: None,
-        // Protocol 51 (`V49__prim_draft.sql`).
+        // Protocol 51 (`V49__prim_draft_and_groups.sql`).
         draft: row.get(43)?,
+        groups: parse_groups(&row.get::<_, String>(44)?),
     })
 }
 
@@ -589,7 +590,30 @@ pub fn set_prim_owner(conn: &Connection, prim_id: i64, owner: &str) -> anyhow::R
     Ok(())
 }
 
-/// Make a prim a draft from the design room, or place it (`V49__prim_draft.sql`).
+/// Decode the `groups` column (`V49__prim_draft_and_groups.sql`). A column that
+/// will not parse is no groups and a warning, as `particles` is: one bad row
+/// must not stop the world loading.
+fn parse_groups(json: &str) -> Vec<cartopolis_core::GroupLevel> {
+    serde_json::from_str(json).unwrap_or_else(|e| {
+        tracing::warn!("prim groups column is not a group list ({e}); ignoring it");
+        Vec::new()
+    })
+}
+
+/// Write the groups a prim is in, outermost first.
+pub fn set_prim_groups(
+    conn: &Connection,
+    prim_id: i64,
+    groups: &[cartopolis_core::GroupLevel],
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE prims SET groups = ?2 WHERE id = ?1",
+        rusqlite::params![prim_id, serde_json::to_string(groups)?],
+    )?;
+    Ok(())
+}
+
+/// Make a prim a draft from the design room, or place it (`V49__prim_draft_and_groups.sql`).
 pub fn set_prim_draft(conn: &Connection, prim_id: i64, draft: bool) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE prims SET draft = ?2 WHERE id = ?1",

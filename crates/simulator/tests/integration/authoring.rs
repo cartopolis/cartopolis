@@ -1932,3 +1932,90 @@ async fn a_draft_is_seen_by_its_maker_only_until_it_is_placed() {
     .await;
     assert!(!public.draft, "placed, it is no longer a draft");
 }
+
+/// Groups (protocol 51): grouping two parts and then all three nests the
+/// first group in the second, renaming and ungrouping rewrite only the group
+/// they name, nobody groups another's parts, and a design keeps its groups.
+#[tokio::test]
+async fn groups_nest_rename_and_ungroup() {
+    let (handle, _dir) = server().await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+    let meddler = session(&handle, "meddler", "meddlerpw").await;
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let a = build(&mut c, "Post A", LAT, LNG).await;
+    let b = build(&mut c, "Post B", LAT, LNG).await;
+    let roof = build(&mut c, "Roof", LAT, LNG).await;
+    let groups = format!("{}/api/inventory/groups", base(&handle));
+
+    let (status, frame) = api(
+        "POST",
+        groups.clone(),
+        Some(walker.clone()),
+        Some(serde_json::json!({ "name": "Frame", "prim_ids": [a, b] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{frame}");
+    let (status, _) = api(
+        "POST",
+        groups.clone(),
+        Some(meddler),
+        Some(serde_json::json!({ "name": "Mine now", "prim_ids": [a] })),
+    )
+    .await;
+    assert_eq!(status, 400, "somebody else's parts are not theirs to group");
+    let (status, stall) = api(
+        "POST",
+        groups.clone(),
+        Some(walker.clone()),
+        Some(serde_json::json!({ "name": "Stall", "prim_ids": [a, b, roof] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{stall}");
+
+    let chains = |doc: &serde_json::Value| -> std::collections::HashMap<String, Vec<String>> {
+        doc["prims"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let names = p["groups"]
+                    .as_array()
+                    .map(|g| {
+                        g.iter()
+                            .map(|l| l["name"].as_str().unwrap().to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (p["name"].as_str().unwrap().to_string(), names)
+            })
+            .collect()
+    };
+    let export = format!("{}/api/content/export", base(&handle));
+    let (_, doc) = api("GET", export.clone(), Some(walker.clone()), None).await;
+    let c1 = chains(&doc);
+    assert_eq!(c1["Post A"], ["Stall", "Frame"], "{doc}");
+    assert_eq!(c1["Roof"], ["Stall"]);
+
+    let frame_id = frame["id"].as_i64().unwrap();
+    let (status, _) = api(
+        "PATCH",
+        format!("{groups}/{frame_id}"),
+        Some(walker.clone()),
+        Some(serde_json::json!({ "name": "Posts" })),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let stall_id = stall["id"].as_i64().unwrap();
+    let (status, _) = api(
+        "DELETE",
+        format!("{groups}/{stall_id}"),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, doc) = api("GET", export, Some(walker), None).await;
+    let c2 = chains(&doc);
+    assert_eq!(c2["Post B"], ["Posts"], "{doc}");
+    assert!(c2["Roof"].is_empty(), "{doc}");
+}

@@ -588,6 +588,62 @@ impl PrimService {
         Ok(prim)
     }
 
+    /// Put prims in groups (protocol 51): each gets the whole chain it is now
+    /// in, outermost first. All or none — every prim must be the actor's to
+    /// change, checked before anything is written, so a group never ends up
+    /// half made.
+    pub async fn set_groups(
+        &self,
+        actor: &Actor,
+        changes: Vec<(i64, Vec<cartopolis_core::GroupLevel>)>,
+    ) -> Result<Vec<PrimDto>, PrimError> {
+        let _writer = self.writer.lock().await;
+        {
+            let w = self.world.read().await;
+            for (id, _) in &changes {
+                editable(&w, actor, *id)?;
+            }
+        }
+        let written = db::call(&self.conn, move |c| {
+            let tx = c.transaction()?;
+            let mut rows = Vec::new();
+            for (id, groups) in &changes {
+                db::set_prim_groups(&tx, *id, groups)?;
+                if let Some(prim) = db::select_prim_by_id(&tx, *id)? {
+                    rows.push(prim);
+                }
+            }
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .await;
+        let rows = match written {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) | Err(e) => {
+                return Err(PrimError::Storage(format!("set_prim_groups failed: {e:#}")))
+            }
+        };
+        let mut done = Vec::new();
+        {
+            let mut w = self.world.write().await;
+            for prim in rows {
+                let id = prim.id;
+                if w.replace_prim(prim) {
+                    if let Some(p) = w.prim(id) {
+                        done.push(p.clone());
+                    }
+                }
+            }
+        }
+        for prim in &done {
+            self.broadcast(
+                &NetMessage::PrimUpsert { prim: prim.clone() },
+                actor.principal.as_deref(),
+            );
+        }
+        Ok(done)
+    }
+
     /// Delete a prim: its row, its script, its place in the world, and every
     /// client's copy.
     ///

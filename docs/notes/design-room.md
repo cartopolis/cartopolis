@@ -1,5 +1,5 @@
 ---
-triggers: [design_room.rs, systems::design_room, designs.rs, "/api/inventory/designs", "/api/inventory/drafts", V48__designs.sql, V49__prim_draft.sql, DESIGN_LAYER, RenderLayers, "Design here", designroom, draft, PrimDto::draft, place_draft, only_for, SimWorld::sees]
+triggers: [design_room.rs, systems::design_room, designs.rs, "/api/inventory/designs", "/api/inventory/drafts", V48__designs.sql, V49__prim_draft_and_groups.sql, DESIGN_LAYER, RenderLayers, "Design here", designroom, draft, PrimDto::draft, place_draft, only_for, SimWorld::sees]
 updated: 2026-11-19
 ---
 
@@ -60,7 +60,7 @@ by centimetres even on the Grote Markt.
 
 ## Drafts: built unseen, placed as one act (protocol 51)
 
-What the room builds is a **draft** (`PrimDto::draft`, `V49__prim_draft.sql`):
+What the room builds is a **draft** (`PrimDto::draft`, `V49__prim_draft_and_groups.sql`):
 the edit dialog sends `CreatePrim { draft: true }` while the room is open, and a
 kept design placed into the room comes in as drafts too. The bar's **Place in
 the street** (`POST /api/inventory/drafts/place`, `PrimService::place_draft`)
