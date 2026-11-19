@@ -106,6 +106,13 @@ pub struct DesignRoom {
     /// The person paused the agent from the room: its building tools answer
     /// that it is paused until they resume it (`mcp::agent`).
     pub ai_paused: bool,
+    /// What the scripts in the room said and did, newest last (the Scripts
+    /// panel's log).
+    pub script_log: Vec<ScriptLogLine>,
+    /// How many console lines the room has read (`ScriptEditorState::pushed`).
+    script_seen: u64,
+    /// Parts a script just touched, and until when they glow (real seconds).
+    pub pulse: std::collections::HashMap<i64, f64>,
     /// Counts each way in and out; each one whites the screen out and fades
     /// it back ([`draw_veil`]). The second is the one the veil has started.
     flash: u32,
@@ -133,6 +140,19 @@ impl DesignRoom {
         self.flash += 1;
     }
 }
+
+/// One line of the Scripts panel's log.
+#[derive(Debug, Clone)]
+pub struct ScriptLogLine {
+    pub text: String,
+    pub error: bool,
+}
+
+/// Most lines the Scripts panel keeps.
+const MAX_SCRIPT_LOG: usize = 40;
+
+/// How long a part glows after its script touched it, in seconds.
+const PULSE_SECS: f64 = 0.8;
 
 /// One part in the outliner.
 #[derive(Debug, Clone, PartialEq)]
@@ -1193,6 +1213,245 @@ pub fn render_design_room_outliner(
     }
     room.picked = picked;
     room.group_name = group_name;
+}
+
+/// A glow round a part its script just touched.
+#[derive(Component)]
+pub struct ScriptPulse;
+
+/// Watch the scripts of the room's parts: what they print (the console every
+/// script's output already lands in, `ScriptEditorState`) and when they change
+/// their part (an upsert of a scripted part nobody has selected). Each is a
+/// line in the Scripts panel's log and a moment's glow on the part, so a
+/// script's work can be seen where it happens (v4's fifth principle).
+///
+/// What it cannot say is *which call* changed a part: the wire carries the
+/// part's new state, not the call that made it. The line says the script
+/// changed it; its own `log` lines say more, when it writes them.
+#[allow(clippy::type_complexity)]
+pub fn watch_scripts(
+    mut room: ResMut<DesignRoom>,
+    editor: Res<crate::systems::script_editor::ScriptEditorState>,
+    real: Res<Time<bevy::time::Real>>,
+    prims: Query<(Ref<Prim>, Has<crate::components::Selected>)>,
+) {
+    if room.spot.is_none() {
+        if !room.script_log.is_empty() || !room.pulse.is_empty() {
+            room.script_log.clear();
+            room.pulse.clear();
+        }
+        room.script_seen = editor.pushed;
+        return;
+    }
+    let now = real.elapsed_secs_f64();
+    let name_of = |room: &DesignRoom, id: i64| {
+        room.tree
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.clone())
+    };
+    let new = editor.pushed.saturating_sub(room.script_seen) as usize;
+    room.script_seen = editor.pushed;
+    let start = editor.console.len().saturating_sub(new);
+    for line in &editor.console[start..] {
+        let Some(name) = name_of(&room, line.prim_id) else {
+            continue;
+        };
+        let error = matches!(line.level, cartopolis_core::ScriptLevel::Error);
+        room.script_log.push(ScriptLogLine {
+            text: format!("{name}: {}", line.text),
+            error,
+        });
+        room.pulse.insert(line.prim_id, now + PULSE_SECS);
+    }
+    for (prim, selected) in &prims {
+        if !prim.scripted || selected || !prim.is_changed() || prim.is_added() {
+            continue;
+        }
+        let Some(name) = name_of(&room, prim.id) else {
+            continue;
+        };
+        // One line per burst: a script setting a colour every tick is one
+        // glow and one line, not twenty a second.
+        if room.pulse.get(&prim.id).is_none_or(|until| *until < now) {
+            room.script_log.push(ScriptLogLine {
+                text: format!("{name}: changed by its script"),
+                error: false,
+            });
+        }
+        room.pulse.insert(prim.id, now + PULSE_SECS);
+    }
+    let excess = room.script_log.len().saturating_sub(MAX_SCRIPT_LOG);
+    if excess > 0 {
+        room.script_log.drain(0..excess);
+    }
+}
+
+/// Draw the glow round each part in [`DesignRoom::pulse`], and take it away
+/// when its moment is over: a box a tenth larger than the part, green and
+/// see-through, on the room's layer alone.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_script_pulses(
+    mut commands: Commands,
+    mut room: ResMut<DesignRoom>,
+    real: Res<Time<bevy::time::Real>>,
+    prims: Query<(Entity, &Prim)>,
+    pulses: Query<(Entity, &ChildOf), With<ScriptPulse>>,
+    mut look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let now = real.elapsed_secs_f64();
+    room.pulse.retain(|_, until| *until >= now);
+    let glowing: std::collections::HashSet<Entity> =
+        pulses.iter().map(|(_, parent)| parent.parent()).collect();
+    for (pulse, parent) in &pulses {
+        let keep = prims
+            .get(parent.parent())
+            .is_ok_and(|(_, p)| room.pulse.contains_key(&p.id));
+        if !keep {
+            commands.entity(pulse).try_despawn();
+        }
+    }
+    if room.pulse.is_empty() {
+        return;
+    }
+    let (mesh, material) = look
+        .get_or_insert_with(|| {
+            (
+                meshes.add(Cuboid::from_length(1.1).mesh().build()),
+                materials.add(StandardMaterial {
+                    base_color: Color::srgba(0.19, 0.64, 0.42, 0.35),
+                    unlit: true,
+                    fog_enabled: false,
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                }),
+            )
+        })
+        .clone();
+    for (entity, prim) in &prims {
+        if room.pulse.contains_key(&prim.id) && !glowing.contains(&entity) {
+            commands.entity(entity).with_child((
+                ScriptPulse,
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::IDENTITY,
+                RenderLayers::layer(DESIGN_LAYER),
+                bevy::light::NotShadowCaster,
+            ));
+        }
+    }
+}
+
+/// The Scripts panel, top right while the room is open: every scripted part,
+/// whether its script runs or failed (and why), Edit to open it in the script
+/// editor, New script for the selected part, and the log of what they did.
+#[allow(clippy::too_many_arguments)]
+pub fn render_design_room_scripts(
+    egui: EguiMut,
+    room: Res<DesignRoom>,
+    mut editor: ResMut<crate::systems::script_editor::ScriptEditorState>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+    prims: Query<&Prim>,
+    selected: Query<&Prim, With<crate::components::Selected>>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+) {
+    if room.spot.is_none() || online.is_none() {
+        return;
+    }
+    // A right panel (the script editor itself) takes that side of the screen.
+    if !right_panel.is(crate::resources::RightPanel::None) {
+        return;
+    }
+    let scripted: Vec<(i64, String)> = room
+        .tree
+        .iter()
+        .filter(|r| prims.iter().any(|p| p.id == r.id && p.scripted))
+        .map(|r| (r.id, r.name.clone()))
+        .collect();
+    let chosen = selected
+        .single()
+        .ok()
+        .filter(|p| room.parts.contains(&p.id));
+    if scripted.is_empty() && chosen.is_none() {
+        return;
+    }
+    // The newest error a part's script reported, if its last word was one.
+    let failing = |id: i64| {
+        editor
+            .console
+            .iter()
+            .rev()
+            .find(|l| l.prim_id == id)
+            .filter(|l| matches!(l.level, cartopolis_core::ScriptLevel::Error))
+            .map(|l| l.text.clone())
+    };
+    let mut open: Option<i64> = None;
+    let width = 300.0_f32.min(egui.viewport_pts().x * 0.45);
+    egui::Area::new(egui::Id::new("design_room_scripts"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        )
+        .show(egui.ctx(), |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                ui.set_width(width);
+                ui.label(
+                    egui::RichText::new("Scripts")
+                        .size(theme::SIZE_TITLE)
+                        .strong()
+                        .color(theme::p().accent_text),
+                );
+                for (id, name) in &scripted {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().text_dim));
+                        ui.label(name);
+                        let glowing = room.pulse.contains_key(id);
+                        let (state, colour) = match failing(*id) {
+                            Some(_) => ("error", theme::p().error),
+                            None if glowing => ("working", theme::p().accent_text),
+                            None => ("running", theme::p().text_dim),
+                        };
+                        ui.label(egui::RichText::new(state).small().color(colour));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Edit").clicked() {
+                                open = Some(*id);
+                            }
+                        });
+                    });
+                    if let Some(why) = failing(*id) {
+                        ui.label(egui::RichText::new(why).small().color(theme::p().error));
+                    }
+                }
+                if let Some(p) = chosen.filter(|p| !p.scripted) {
+                    if ui
+                        .button(format!("New script on {}", p.name))
+                        .on_hover_text("write JavaScript that runs on the selected part")
+                        .clicked()
+                    {
+                        open = Some(p.id);
+                    }
+                }
+                if !room.script_log.is_empty() {
+                    ui.add_space(4.0);
+                    ui.separator();
+                    for line in room.script_log.iter().rev().take(6) {
+                        let colour = if line.error {
+                            theme::p().error
+                        } else {
+                            theme::p().text_dim
+                        };
+                        ui.label(egui::RichText::new(&line.text).small().color(colour));
+                    }
+                }
+            });
+        });
+    if let Some(id) = open {
+        editor.open(id);
+        *right_panel = crate::resources::RightPanel::Script;
+    }
 }
 
 /// How far east of the original a duplicate stands, in metres: beside it, and

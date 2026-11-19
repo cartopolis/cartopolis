@@ -124,6 +124,25 @@ below 2^53: a JavaScript client rounded a 63-bit id and its `ungroup` missed.
 - **Duplicate**: Shift-D, or the bar's Duplicate — a draft copy a metre east.
   The bar shows the selected part's name and size (width × depth × height).
 
+## Scripts you can see working
+
+A **Scripts** panel, top right in the room (signed in, with no right panel
+open): every scripted part with its state — `running`, `working` while it
+glows, `error` with the reason from its last console line — an **Edit** that
+opens the script editor, **New script on …** for the selected part, and the
+last lines of a log. The log and the glow come from two places
+(`watch_scripts`): each console line a part's script prints
+(`ScriptEditorState::console`, whose `pushed` count tells which lines are new),
+and each upsert of a scripted part nobody has selected, which says its script
+changed it. The wire carries the new state, not the call that made it, so a
+line cannot name the call; a script's own `log` lines say more. The glow is a
+green see-through box a tenth larger than the part (`ScriptPulse`), on the
+room's layer, for 0.8 s.
+
+Seen working on 2026-11-19: an agent built a stall whose lantern's script
+blinks every second; the panel showed it `working` with `lit` / `dark` lines,
+and the lantern glowed as it changed.
+
 ## Not built yet, from v3
 
 - No `group` field on the wire: a placed copy is separate objects again.

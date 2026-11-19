@@ -92,6 +92,9 @@ pub struct ScriptEditorState {
     /// Whether the server holds a live instance for this prim.
     pub running: bool,
     pub console: Vec<ConsoleLine>,
+    /// Lines ever pushed, so a reader can tell which of [`Self::console`] are
+    /// new to it after the oldest have been dropped (the design room's log).
+    pub pushed: u64,
     /// The world's budget, from `WorldCapacity`. `None` until the server has
     /// said — offline it never does, and the headroom line is simply absent.
     pub budget: Option<WorldBudget>,
@@ -140,6 +143,7 @@ impl ScriptEditorState {
     }
 
     pub fn push(&mut self, prim_id: i64, level: ScriptLevel, text: String) {
+        self.pushed += 1;
         self.console.push(ConsoleLine {
             prim_id,
             level,

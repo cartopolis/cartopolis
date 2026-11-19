@@ -168,6 +168,13 @@ impl Plugin for GuiPlugin {
                     systems::design_room::layer_design_room.in_set(ClientPhase::Present),
                     systems::design_room::layer_prims.in_set(ClientPhase::Present),
                     systems::design_room::design_room_keys.in_set(ClientPhase::Input),
+                    systems::design_room::watch_scripts.in_set(ClientPhase::Present),
+                    systems::design_room::draw_script_pulses
+                        .after(systems::design_room::watch_scripts)
+                        .in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_scripts
+                        .after(systems::design_room::render_design_room_outliner)
+                        .in_set(ClientPhase::Present),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),
