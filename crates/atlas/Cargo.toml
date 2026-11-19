@@ -32,12 +32,12 @@ tracing-subscriber.workspace = true
 ureq.workspace = true
 # All three already in the lockfile through other members; the pipelines need
 # gzip for the CityJSON tiles, query encoding, and the WFS capabilities XML.
-flate2 = "1.1"
+flate2.workspace = true
 earcutr.workspace = true
 # Cutting garden plots along the infrared photograph (`pipeline/gardens.rs`);
 # the same overlay the geo crate cuts its ground sheets with.
 i_overlay.workspace = true
-url = "2.5"
+url.workspace = true
 # The `.br` copy of every served file (`stamped::write_served`). 7, not 8: it
 # shares `brotli-decompressor` 4 with ureq's `brotli` feature.
 brotli = "7"
@@ -53,12 +53,12 @@ image.workspace = true
 # Reading an uploaded building model (`overrides::gltf_model`). The same crate,
 # version and features the simulator's model store reads with, so a second
 # copy costs the lockfile nothing.
-gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+gltf = { workspace = true, features = ["names"] }
 # Placing that model (`overrides::gltf_model`), and naming which upload a record
 # was saved with. Both already in the lockfile (the workspace's glam; the calls
 # crate's sha2 0.10).
 glam.workspace = true
-sha2 = "0.10"
+sha2.workspace = true
 # The geocoder's index file (`geocoder`). The workspace's, already built for core.
 postcard.workspace = true
 # Reading a Geofabrik `.osm.pbf` extract in place of asking Overpass (`osm`).
@@ -72,7 +72,7 @@ cartopolis_geo = { path = "../geo" }
 cartopolis_scenario = { path = "../scenario" }
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile.workspace = true
 
 [lints]
 workspace = true

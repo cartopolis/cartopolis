@@ -34,7 +34,7 @@ serde.workspace = true
 postcard.workspace = true
 # The pack is deflated (`HumanPack::encode`). miniz_oxide underneath, pure Rust,
 # so it builds for the phone and the web as it does here.
-flate2 = "1.1"
+flate2.workspace = true
 serde_json = { workspace = true, optional = true }
 # Resizing the textures and making the neutral, tintable ones (`pack::textures`).
 image = { workspace = true, optional = true }

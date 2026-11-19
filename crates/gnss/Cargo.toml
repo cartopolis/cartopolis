@@ -33,7 +33,7 @@ serialport = { version = "4.10", default-features = false, optional = true }
 # rustls with ring and compiled-in Mozilla roots, as the client's own connection
 # uses (its Cargo.toml says why: no OpenSSL, no system trust store on Android).
 # Both already in the lock at these versions.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { workspace = true, features = ["std", "tls12"] }
 webpki-roots = "1.0"
 
 [lints]

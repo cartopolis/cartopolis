@@ -45,7 +45,7 @@ oxideav-vp8 = { version = "0.2.7", default-features = false, optional = true }
 # app sends. Bit-exact against libvpx's conformance vectors.
 rusty_vp9 = { version = "0.1.1", optional = true }
 # WebM, for clips played on a prim (`clip`). Pure Rust, no dependencies.
-matroska-demuxer = { version = "0.8", optional = true }
+matroska-demuxer = { workspace = true, optional = true }
 # Only for a random SFrame context id per join (`keys::Sender::new`).
 uuid = { workspace = true, optional = true }
 
@@ -69,7 +69,7 @@ ctr = "0.9"
 hmac = "0.12.1"
 sha1 = "0.10"
 # `oid`: the certificate names its signature algorithm, ECDSA with SHA-256.
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { workspace = true, features = ["oid"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 x509-cert = { version = "0.2", features = ["builder"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

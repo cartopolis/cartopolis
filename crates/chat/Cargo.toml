@@ -29,9 +29,9 @@ uuid = { workspace = true }
 # of features for each (`a-dev-dep-default-feature-forks-the-build`).
 [dev-dependencies]
 cartopolis_simulator = { path = "../simulator" }
-tempfile = "3"
+tempfile.workspace = true
 bytes.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+futures-util = { workspace = true, features = ["sink", "async-await"] }
 tokio.workspace = true
 tokio-util.workspace = true
 

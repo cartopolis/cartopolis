@@ -36,7 +36,7 @@ blake2 = "0.10"
 axum.workspace = true
 bytes.workspace = true
 clap.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+futures-util = { workspace = true, features = ["sink", "async-await"] }
 figment = { workspace = true, features = ["toml", "env"] }
 # Outbound mail (account verification). `native-tls` is out of the default set
 # deliberately: it means OpenSSL, and this workspace is rustls everywhere for the
@@ -53,7 +53,7 @@ lettre = { version = "0.11", default-features = false, features = [
 # Only to install the process-wide `CryptoProvider` rustls 0.23 refuses to pick
 # for itself. Without it the first TLS connection to the mail relay panics —
 # compiles perfectly, dies when somebody registers.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls.workspace = true
 glam.workspace = true
 # Physical prims (`physics.rs`, docs/notes/physical-prims.md). Pure Rust, so it
 # adds no C toolchain to any lane. The simulator is the one authority over
@@ -62,15 +62,15 @@ glam.workspace = true
 # `simd8`: the contact solver works on eight constraints at once (the `wide`
 # crate, stable Rust). It costs only cross-platform bit-determinism, which a
 # server-authoritative step does not need.
-rapier3d = { version = "0.36", features = ["simd8"] }
+rapier3d.workspace = true
 # Parsing an uploaded model, to count what is in it before it is stored
 # (`assets::inspect`). Already in the tree — `bevy_gltf` builds it for the client
 # — so naming it here costs the dependency graph nothing new.
-gltf = { version = "1.4", default-features = false, features = ["utils"] }
+gltf.workspace = true
 # Decoding the data URIs in a self-contained `.gltf` so it can be repacked into a
 # `.glb` (`assets::repack_gltf`). Already in the tree several times over — every
 # HTTP and TLS crate here pulls one — so this is a name, not a new dependency.
-base64 = "0.22"
+base64.workspace = true
 # Reading a texture's dimensions out of its header, which is the only way to tell
 # a small file from a small *image*: a decompression bomb is tiny on disk.
 image.workspace = true
@@ -93,7 +93,7 @@ uuid.workspace = true
 ureq.workspace = true
 # Unpacking the monthly country table (`stats::countries`), which is published
 # gzipped. Already in the tree: it is what `ureq`'s `gzip` feature decodes with.
-flate2 = "1"
+flate2.workspace = true
 cartopolis_core = { path = "../core" }
 # The call forwarder (`calls`). Only the `sfu` half: sealing and opening media
 # is the `client` feature, which this crate must not link outside its tests,
@@ -101,7 +101,7 @@ cartopolis_core = { path = "../core" }
 cartopolis_calls = { path = "../calls", features = ["sfu"] }
 # The video store's upload check (`videos::inspect`): reads a WebM's tracks
 # and frame timestamps, never decodes a picture. Pure Rust, no dependencies.
-matroska-demuxer = "0.8"
+matroska-demuxer.workspace = true
 # Signing pushes to browsers (`vapid`, RFC 8292: ES256 over P-256). Both are
 # already in the tree — `openmls_rust_crypto` builds p256 with ecdsa, and
 # getrandom 0.2 is under half the crypto here — so these are names, not new
@@ -119,7 +119,7 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # timing advisory against `rsa` is discussed in `signing`'s module note. The
 # pkcs8, spki and sha2 0.10 it builds on are already in the tree.
 rsa = { version = "0.9", features = ["getrandom"] }
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { workspace = true, features = ["oid"] }
 # Sealing the client secrets Discord, Google and the rest issue before they are
 # stored (`signin::keys`). Already in the tree (the MLS crypto's), so a name,
 # not a new dependency.
@@ -128,7 +128,7 @@ chacha20poly1305 = { version = "0.10", default-features = false, features = ["al
 httpdate = "1"
 # Parsing the URLs other servers name, for the request guard
 # (`fediverse::fetch`). Already in the tree (ureq's).
-url = "2"
+url.workspace = true
 # Passing atlas's paths through when this listener stands in front of it
 # (`atlas_proxy`). Already in the tree (axum's); the client half is a feature.
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
@@ -140,7 +140,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile.workspace = true
 # A WebSocket *client*, for the test that proves the browser carrier reaches the
 # same handshake the TCP one does. Test-only: the server half is axum's.
 tokio-tungstenite.workspace = true

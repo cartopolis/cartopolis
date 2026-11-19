@@ -39,7 +39,7 @@ rmcp = { version = "3.4", default-features = false, features = [
 ] }
 # MCP carries an image as base64 in a JSON message, so a capture has to be
 # encoded before it can be handed over. Already in the lock under the simulator.
-base64 = "0.22"
+base64.workspace = true
 futures-channel = { version = "0.3", default-features = false, features = ["std"] }
 # The voice agent's `ToolHost`, which `voice_tools` implements with these tools.
 cartopolis_voice = { path = "../voice" }
@@ -55,7 +55,7 @@ tracing.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-util.workspace = true
 
 [lints]
 workspace = true

@@ -20,8 +20,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-base64 = "0.22"
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+base64.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 serde_json.workspace = true
 tokio.workspace = true
 # The workspace's one version, with rustls and webpki-roots (the client's

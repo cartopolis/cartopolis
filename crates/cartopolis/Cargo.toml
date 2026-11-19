@@ -125,7 +125,7 @@ scalar-fallback = []
 # simulator, with the same features so the two share one artifact; pure Rust,
 # so every lane (web, Android) takes it as it is. Not for prims: the server
 # alone moves those (`docs/notes/physical-prims.md`).
-rapier3d = { version = "0.36", features = ["simd8"] }
+rapier3d.workspace = true
 anyhow.workspace = true
 bevy.workspace = true
 bevy_image.workspace = true
@@ -171,7 +171,7 @@ egui-wgpu.workspace = true
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
 # dependencies of its own, so it builds on every lane, Android and wasm included.
 qrcodegen = "1.8"
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+futures-util = { workspace = true, features = ["sink", "async-await"] }
 # The client-intent channel behind `OnlineSession` — pure-Rust and wasm-safe,
 # unlike tokio's `sync::mpsc`, so the online session type compiles on the web
 # build (the transport itself, `network.rs`, stays native). ADR-033.
@@ -218,7 +218,7 @@ bevy = { workspace = true, features = ["wayland"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The Midas device link (`systems::midas_link`) sends a screenshot or a camera
 # frame as base64 in a JSON message, on the phone too. Already in the lock.
-base64 = "0.22"
+base64.workspace = true
 # An external GNSS receiver — an RTK rover on a cable — as the first location
 # provider (`platform::gnss_receiver`). The desktop also takes its serial port,
 # below; Android reaches the adapter through the USB host API instead.
@@ -248,7 +248,7 @@ tokio-util.workspace = true
 ureq.workspace = true
 # A release's files, hashed on the owner's phone before they approve it
 # (`systems::release_approval`); already in the tree for the server.
-sha2 = "0.10"
+sha2.workspace = true
 # TLS to a remote simulator. The desktop and Android clients speak the same
 # `wss://` the browser does, so a password never crosses a network in the clear on
 # any build (`network::Target`).
@@ -280,7 +280,7 @@ tokio-tungstenite.workspace = true
 # target lane checks `aarch64-linux-android` with nothing but the NDK's clang.
 # `network::install_crypto_provider` installs it explicitly anyway, so a future
 # dependency that switches this on cannot silently make it ambiguous again.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls.workspace = true
 
 # The desktop clipboard. Deliberately *not* under `cfg(not(wasm32))` with the rest:
 # Android is a native target too, and arboard is X11/Wayland/AppKit/Win32 only — it
@@ -338,7 +338,7 @@ cartopolis_mcp = { path = "../mcp_server" }
 cartopolis_voice = { path = "../voice" }
 # MCP carries an image as base64 in a JSON message, so a capture has to be
 # encoded before it can be handed over. Already in the lock under the simulator.
-base64 = "0.22"
+base64.workspace = true
 
 # Android (`docs/notes/android-build.md`). `android-native-activity` picks the
 # `android-activity` backend, and without one of the two that crate is a bare
@@ -593,4 +593,4 @@ features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessag
 cartopolis_simulator = { path = "../simulator" }
 # A throwaway world database for those same tests. Already in the tree as the
 # simulator's own dev-dependency.
-tempfile = "3"
+tempfile.workspace = true
