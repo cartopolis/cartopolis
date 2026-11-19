@@ -47,6 +47,13 @@ One trap: `cargo check` does **not** compile `cfg(test)` code, so a green check
 says nothing about the suite. Run the tests when touching egui, geometry or tile
 parsing.
 
+A module's tests live beside it: a short `#[cfg(test)] mod tests { … }` at the
+end of the file, or, once it runs to hundreds of lines, `mod tests;` and the
+body in `foo/tests.rs` (`use super::*;` reaches the private items either way).
+A file of thousands of lines with no single concern splits into a folder the
+same way — `theme/`, `mcp/agent/` — whose `mod.rs` re-exports its parts with
+`pub use part::*`, so no caller's path changes.
+
 `#[ignore]`-d tests are diagnostics, not tests — they dump a PNG, print a tile's
 layers, time a cell, or solve a real route against the network. Run one by name:
 `cargo test -p cartopolis dump_png -- --ignored --nocapture`.

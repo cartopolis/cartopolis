@@ -10,7 +10,7 @@
 //   assets/icon/cartopolis.svg          the dark mark, source of the files below
 //   assets/icon/cartopolis-light.svg    the light-theme variant (the web UI)
 //   assets/icon/cartopolis.png / .ico   the OS icons (256 px; .ico 256→16)
-//   crates/cartopolis/src/systems/gui/mark_table.rs
+//   crates/cartopolis/src/systems/gui/theme/mark_table.rs
 //                                       the same lines as a table, which
 //                                       `theme::paint_mark` draws with egui
 //   crates/cartopolis/index.html        the web loader's inline copy, between
@@ -242,7 +242,7 @@ pub const PIN_KEYLINE: f32 = ${(PIN_KEYLINE * PIN_SCALE).toFixed(1)};
 #[cfg(test)]
 pub const PIN_HALO: f32 = ${HALO.toFixed(1)};
 `
-await Bun.write(path.join(root, 'crates/cartopolis/src/systems/gui/mark_table.rs'), rust)
+await Bun.write(path.join(root, 'crates/cartopolis/src/systems/gui/theme/mark_table.rs'), rust)
 
 // The web loader's inline copy.
 const loader = path.join(root, 'crates/cartopolis/index.html')

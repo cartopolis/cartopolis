@@ -253,7 +253,7 @@ fn tokens() -> Vec<(&'static str, Value)> {
 pub fn css() -> String {
     let mut out = String::from(
         "/*\n \
-         * GENERATED from crates/cartopolis/src/systems/gui/theme.rs by\n \
+         * GENERATED from crates/cartopolis/src/systems/gui/theme/ by\n \
          * crates/cartopolis/src/systems/gui/web_theme.rs — do not edit. Change the\n \
          * constant there and run\n \
          *\n \

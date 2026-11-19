@@ -984,8 +984,8 @@ fn dim(c: egui::Color32, a: f32) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::network;
     use crate::systems::egui_manager::UnpaintedPasses as _;
+    use crate::systems::network;
 
     /// **A bare hostname is left bare**, because `resolve_target` sends it to
     /// `wss://host/ws` on 443. Completing it with the TCP sim port produced

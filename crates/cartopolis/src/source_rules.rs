@@ -150,7 +150,7 @@ fn no_frustum_culling_comes_with_not_shadow_caster() {
 /// Widgets that carry their own text (`Label`, `Button`, a `UiBuilder::sense`
 /// row, all `.sense(..)`) are left to it; a sense picked into a variable
 /// first is out of the scan's reach, so name those by hand all the same.
-/// `#[cfg(test)] mod`s are not scanned.
+/// `#[cfg(test)] mod`s are not scanned, nor a module's `tests.rs`.
 #[test]
 fn hand_drawn_controls_are_named() {
     const CALLS: &[&str] = &[
@@ -167,7 +167,7 @@ fn hand_drawn_controls_are_named() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/systems");
     let mut bad = Vec::new();
     for (path, text) in sources() {
-        if !path.starts_with(&root) {
+        if !path.starts_with(&root) || path.ends_with("tests.rs") {
             continue;
         }
         let lines: Vec<&str> = text.lines().collect();
