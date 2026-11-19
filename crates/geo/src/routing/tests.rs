@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::vector_tiles::synth;
 

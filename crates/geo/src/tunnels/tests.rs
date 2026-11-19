@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::road_texture::{road_class, StreetFlags};
 use crate::vector_tiles::kind_of;

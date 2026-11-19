@@ -1,4 +1,3 @@
-
 use super::*;
 use cartopolis_core::{CommunitySettings, JoinRule};
 

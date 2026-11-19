@@ -1,4 +1,3 @@
-
 use super::*;
 
 // -- Reference decoders, written from the Khronos Data Format spec and the

@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::vector_tiles::{INDEX_BYTES, VERTEX_BYTES};
 
