@@ -12,6 +12,7 @@ pub mod building_fade;
 pub mod building_windows;
 pub mod crowd;
 pub mod data_layers;
+pub mod design_floor;
 pub mod globe_ocean;
 pub mod grass;
 pub mod ground_detail;
@@ -75,6 +76,8 @@ impl Plugin for MaterialsPlugin {
             // whole sign pool (`systems::street_labels`, `systems::label_atlas`).
             .add_plugins(MaterialPlugin::<label_sign::LabelSignMaterial>::default())
             .add_plugins(MaterialPlugin::<lens::LensAreaMaterial>::default())
+            // The design room's floor and grid (`systems::design_room`).
+            .add_plugins(MaterialPlugin::<design_floor::DesignFloorMaterial>::default())
             .add_plugins(MaterialPlugin::<globe_ocean::GlobeSurfaceMaterial>::default());
     }
 }

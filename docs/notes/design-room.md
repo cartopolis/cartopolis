@@ -44,6 +44,27 @@ horizon, a row of faint pink and yellow pixels shows along the top edge;
 `CARTO_NO_CLOUDS=1 CARTO_NO_ATMOSPHERE=1` removes it, and the cloud shell is a
 layer-0 mesh, so it is the atmosphere pass. Not chased further (2026-11-19).
 
+## The grid is a shader, the panels are dark
+
+The first grid was line meshes: thin quads that broke into dashes and grain as
+they receded, and crowded into a grey band at the horizon ("the grid is ugly",
+2026-11-19). The floor is now one quad with `DesignFloorMaterial`
+(`crates/materials/src/design_floor.rs`, `assets/shaders/design_floor.wesl`):
+each pixel measures its distance to the nearest line in its own footprint
+(`fwidth`), so lines are the same crisp width near and far, the metre lines
+leave before they are 6 px apart and the five-metre lines before 2 px, and
+everything fades out between 14 m and 36 m from the spot. UV0 is metres from the
+spot, never `world_position`.
+
+The room's panels are drawn in the dark palette whatever the app's theme
+(`room_panel`, `theme::dark_here`): over a white floor the map's light chrome
+lost its edges. Each has a title row with an icon, and states are pills
+(`draft`, `running`, `working`, `error`).
+
+While the room is open the camera stays in orbit round the spot: the session's
+first snapshot arriving just after an agent opened the room put it back on the
+avatar, 73 m away, which showed the street where the room should be.
+
 ## One white, unlit, and shadows by hand
 
 Floor, grid and walls are one unlit white at linear 1.6 — above 1.0 because the

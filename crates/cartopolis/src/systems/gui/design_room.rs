@@ -39,6 +39,7 @@ use crate::resources::{ContextMenuState, EditDialogState, GameState, MapAnchor};
 use crate::systems::egui_manager::EguiMut;
 use crate::systems::model_assets;
 use crate::systems::{icons, theme};
+use cartopolis_materials::design_floor::DesignFloorMaterial;
 
 /// The render layer the room is drawn on. Layer 0 is everything else.
 pub const DESIGN_LAYER: usize = 7;
@@ -50,12 +51,10 @@ const ROOM_RADIUS_M: f32 = 40.0;
 /// The mockup's bound on a design is twenty metres across.
 pub const PARTS_RADIUS_M: f64 = 10.0;
 
-/// Half the side of the metre grid drawn on the floor.
-const GRID_HALF_M: i32 = 40;
-
-/// Where the grid starts to dissolve into the white, as a fraction of
-/// [`GRID_HALF_M`]: crisp across the room, gone before the walls.
-const GRID_FADE_FROM: f32 = 0.35;
+/// Where the grid starts to dissolve into the white, and where it is gone, in
+/// metres from the spot: crisp across the room, gone before the walls.
+const GRID_FADE_FROM_M: f32 = 14.0;
+const GRID_FADE_TO_M: f32 = 36.0;
 
 /// The room's white, in linear light.
 const ROOM_WHITE: f32 = 1.6;
@@ -305,9 +304,14 @@ pub fn enter(
     lat: f64,
     lng: f64,
 ) {
-    use crate::systems::geo_nav::{CameraPose, Teleport};
     room.open_at(lat, lng);
     room.name.clear();
+    look_at_spot(nav, lat, lng);
+}
+
+/// Bring the camera to the room's spot, orbiting it.
+fn look_at_spot(nav: &mut crate::systems::geo_nav::GeoNavState, lat: f64, lng: f64) {
+    use crate::systems::geo_nav::{CameraPose, Teleport};
     // Earth mode, orbiting the spot from a passer-by's distance: the
     // mockup's Orbit view, and the one camera that turns round a point.
     nav.pending_teleport = Some(Teleport {
@@ -334,6 +338,7 @@ pub fn drive_design_room(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     online: Option<Res<crate::resources::OnlineSession>>,
     prims: Query<(&Prim, &PrimGeo, Has<Draft>, Option<&Groups>)>,
+    camera: Res<crate::resources::CameraState>,
 ) {
     if let Some((lat, lng)) = menu.design_here.take() {
         enter(&mut room, &mut nav, lat, lng);
@@ -341,6 +346,14 @@ pub fn drive_design_room(
     let Some(spot) = room.spot else {
         return;
     };
+    // The room is looked at, not walked in: the avatar stays in the street.
+    // Something that puts the camera back on it — the session's first
+    // snapshot arriving just after an agent opened the room, seen 2026-11-19 —
+    // would leave the person looking at the street through a hole where the
+    // room is, so the room takes the camera back to its spot.
+    if camera.mode == crate::resources::CameraMode::Avatar && nav.pending_teleport.is_none() {
+        look_at_spot(&mut nav, spot.0, spot.1);
+    }
     let mut tree: Vec<PartRow> = prims
         .iter()
         .filter(|(_, g, ..)| metres_between(spot, (g.latitude, g.longitude)) <= PARTS_RADIUS_M)
@@ -416,6 +429,7 @@ pub fn layer_design_room(
     mut pieces: Query<(Entity, &mut Transform, &mut GridCell), With<RoomPiece>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut floors: ResMut<Assets<DesignFloorMaterial>>,
 ) {
     let (Some((lat, lng)), Some(anchor)) = (room.spot, map_anchor.geo) else {
         // Closed: the camera and the lights back on layer 0, the room gone.
@@ -471,18 +485,6 @@ pub fn layer_design_room(
     // took the sun's colour (peach at mid-morning) against grey walls. Above
     // 1.0 because the tonemapper takes 1.0 to a light grey.
     let white = Color::linear_rgb(ROOM_WHITE, ROOM_WHITE, ROOM_WHITE);
-    let floor = materials.add(StandardMaterial {
-        base_color: white,
-        unlit: true,
-        fog_enabled: false,
-        ..default()
-    });
-    let lines = materials.add(StandardMaterial {
-        base_color: white,
-        unlit: true,
-        fog_enabled: false,
-        ..default()
-    });
     let walls = materials.add(StandardMaterial {
         base_color: white,
         unlit: true,
@@ -503,16 +505,19 @@ pub fn layer_design_room(
                 bevy::light::NotShadowCaster,
             ));
         };
-    piece(
-        &mut commands,
-        meshes.add(
-            Plane3d::new(Vec3::Y, Vec2::splat(ROOM_RADIUS_M))
-                .mesh()
-                .build(),
-        ),
-        floor,
-    );
-    piece(&mut commands, meshes.add(grid_mesh()), lines);
+    // The floor and its grid, drawn per pixel (`design_floor.wesl`).
+    commands.spawn((
+        RoomPiece,
+        Mesh3d(meshes.add(floor_mesh())),
+        MeshMaterial3d(floors.add(DesignFloorMaterial {
+            params: Vec4::new(ROOM_WHITE, GRID_FADE_FROM_M, GRID_FADE_TO_M, 0.0),
+        })),
+        Transform::from_translation(local),
+        cell,
+        ChildOf(root),
+        layer.clone(),
+        bevy::light::NotShadowCaster,
+    ));
     piece(
         &mut commands,
         meshes.add(Sphere::new(ROOM_RADIUS_M).mesh().uv(48, 24)),
@@ -711,72 +716,115 @@ pub fn let_gizmos_into_the_room(store: Option<ResMut<bevy::gizmos::config::Gizmo
     config.render_layers = RenderLayers::from_layers(&[0, DESIGN_LAYER]);
 }
 
-/// The metre grid on the floor: thin quads a centimetre above it, every fifth
-/// line darker, the one through the spot darker still, each fading into the
-/// floor's white towards the edge so the room has no line where it ends. Cut
-/// into metre segments, because a vertex colour only fades between vertices.
-fn grid_mesh() -> Mesh {
+/// The floor: one quad as wide as the room, UV0 in metres from the spot (x
+/// east, y south), which is what `design_floor.wesl` draws its grid in.
+fn floor_mesh() -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut colours: Vec<[f32; 4]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
-    let half = GRID_HALF_M as f32;
-    // 1.0 is the floor itself (the lines' material is the floor's white).
-    // `tint` is the line's colour at the spot; the axes have one (Blender's:
-    // red X, east; blue Z, which runs south here), every other line a cool grey.
-    let shade = |tint: [f32; 3], x: f32, z: f32| {
-        let r = x.hypot(z) / half;
-        let t = ((r - GRID_FADE_FROM) / (1.0 - GRID_FADE_FROM)).clamp(0.0, 1.0);
-        let fade = t * t * (3.0 - 2.0 * t);
-        let [r, g, b] = tint.map(|c| c + (1.0 - c) * fade);
-        [r, g, b, 1.0]
-    };
-    // The two axes through the spot, in the room's white's units (1.0 is the
-    // floor): dark enough to read against a white the tonemapper squeezes.
-    const X_AXIS: [f32; 3] = [0.62, 0.12, 0.14];
-    const Z_AXIS: [f32; 3] = [0.14, 0.3, 0.62];
-    for i in -GRID_HALF_M..=GRID_HALF_M {
-        let (width, grey) = match i {
-            0 => (0.03, 0.25),
-            _ if i % 5 == 0 => (0.022, 0.42),
-            _ => (0.012, 0.6),
-        };
-        let at = i as f32;
-        let w = width / 2.0;
-        for s in -GRID_HALF_M..GRID_HALF_M {
-            let (a, b) = (s as f32, s as f32 + 1.0);
-            // One segment along x (the X axis when `i` is 0) and one along z.
-            for (quad, axis) in [
-                [[a, at - w], [b, at - w], [b, at + w], [a, at + w]],
-                [[at - w, a], [at + w, a], [at + w, b], [at - w, b]],
-            ]
-            .into_iter()
-            .zip([X_AXIS, Z_AXIS])
-            {
-                let tint = if i == 0 {
-                    axis
-                } else {
-                    [grey * 0.96, grey * 0.98, grey]
-                };
-                let base = positions.len() as u32;
-                for [x, z] in quad {
-                    positions.push([x, 0.01, z]);
-                    colours.push(shade(tint, x, z));
-                }
-                indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
-            }
-        }
-    }
-    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+    let r = ROOM_RADIUS_M;
+    let corners = [[-r, -r], [r, -r], [r, r], [-r, r]];
+    let positions: Vec<[f32; 3]> = corners.iter().map(|[x, z]| [*x, 0.0, *z]).collect();
+    let uvs: Vec<[f32; 2]> = corners.to_vec();
     Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colours)
-    .with_inserted_indices(Indices::U32(indices))
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 4])
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(vec![0, 2, 1, 0, 3, 2]))
+}
+
+// ---------------------------------------------------------------------------
+// The room's chrome
+// ---------------------------------------------------------------------------
+
+/// Draw one of the room's panels: dark glass over the white, whatever the
+/// app's theme (v4's sheet, `docs/mockups/design-room/v4-editor.png`).
+///
+/// Dark because the room is white. The map's light chrome is drawn to sit on
+/// a map; over a white floor its panels lost their edges and read as grey
+/// smudges ("the UI panels are too plainly styled"), where a drawing tool's
+/// dark panels frame the white as its viewport.
+fn room_panel(
+    ctx: &egui::Context,
+    id: &str,
+    anchor: egui::Align2,
+    offset: egui::Vec2,
+    width: Option<f32>,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    theme::dark_here(|| {
+        egui::Area::new(egui::Id::new(id))
+            .order(egui::Order::Foreground)
+            .anchor(anchor, offset)
+            .show(ctx, |ui| {
+                theme::use_dark_visuals(ui);
+                theme::overlay_frame()
+                    .shadow(theme::card_shadow())
+                    .show(ui, |ui| {
+                        if let Some(w) = width {
+                            ui.set_width(w);
+                        }
+                        add(ui);
+                    });
+            });
+    });
+}
+
+/// A panel's title row: its icon on a small accent-tinted square, the title,
+/// and a dim note on the right.
+fn title_row(ui: &mut egui::Ui, icon: &str, title: &str, note: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(8),
+            theme::p().accent.gamma_multiply(0.22),
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(15.0),
+            theme::p().accent_text,
+        );
+        ui.label(
+            egui::RichText::new(title)
+                .size(theme::SIZE_TITLE)
+                .color(theme::p().cream),
+        );
+        if !note.is_empty() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(note).small().color(theme::p().text_dim));
+            });
+        }
+    });
+    ui.add_space(4.0);
+    let r = ui.available_rect_before_wrap();
+    ui.painter().line_segment(
+        [
+            egui::pos2(r.left(), r.top()),
+            egui::pos2(r.right(), r.top()),
+        ],
+        egui::Stroke::new(1.0, theme::p().overlay_line),
+    );
+    ui.add_space(6.0);
+}
+
+/// A small status label on a tinted rounded plate: `draft`, `running`, `error`.
+fn pill(ui: &mut egui::Ui, text: &str, colour: egui::Color32) {
+    egui::Frame::NONE
+        .fill(colour.gamma_multiply(0.18))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .size(theme::SIZE_TINY)
+                    .color(colour),
+            );
+        });
 }
 
 /// The room's white as the screen shows it, for the veil.
@@ -842,152 +890,161 @@ pub fn render_design_room_bar(
     let mut place: Option<(i64, String)> = None;
     let mut forget: Option<(i64, String)> = None;
 
-    egui::Area::new(egui::Id::new("design_room_bar"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(egui.ctx(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width);
-                ui.horizontal(|ui| {
-                    // No close button here: the way out is one, top left
-                    // (`render_design_room_outliner`), and Escape.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new("Design room")
-                                    .size(theme::SIZE_TITLE)
-                                    .strong()
-                                    .color(theme::p().accent_text),
-                            );
-                            let count = match parts {
-                                0 => "nothing here yet".to_string(),
-                                1 => "1 object".to_string(),
-                                n => format!("{n} objects"),
-                            };
-                            ui.label(egui::RichText::new(count).color(theme::p().text_dim));
-                        });
-                    });
-                });
-                ui.add_space(6.0);
-                if !signed_in {
-                    ui.label(
-                        egui::RichText::new("Sign in to build here and keep what you make.")
-                            .color(theme::p().text_dim),
-                    );
-                    return;
+    let note = match parts {
+        0 => "nothing here yet".to_string(),
+        1 => "1 object".to_string(),
+        n => format!("{n} objects"),
+    };
+    room_panel(
+        egui.ctx(),
+        "design_room_bar",
+        egui::Align2::CENTER_BOTTOM,
+        egui::vec2(0.0, -bottom),
+        Some(width),
+        |ui| {
+            // No close button here: the way out is one, top left
+            // (`render_design_room_outliner`), and Escape.
+            title_row(ui, icons::PALETTE, "Design room", &note);
+            if !signed_in {
+                ui.label(
+                    egui::RichText::new("Sign in to build here and keep what you make.")
+                        .color(theme::p().text_dim),
+                );
+                return;
+            }
+            ui.horizontal(|ui| {
+                if theme::secondary_button(ui, icons::ADD, "Add a part", 0.0)
+                    .on_hover_text("a new box on the spot, in the editor")
+                    .clicked()
+                {
+                    add_part = true;
                 }
-                ui.horizontal(|ui| {
-                    if theme::secondary_button(ui, icons::ADD, "Add a part", 0.0).clicked() {
-                        add_part = true;
-                    }
-                    ui.add(
-                        egui::TextEdit::singleline(&mut name)
-                            .hint_text("What is it?")
-                            .desired_width(ui.available_width() - 70.0),
-                    );
-                    let ready = parts > 0 && !name.trim().is_empty() && !busy;
-                    if ui
-                        .add_enabled(ready, egui::Button::new("Keep"))
-                        .on_hover_text("keep the objects here in your inventory, as one design")
-                        .clicked()
-                    {
-                        save = true;
-                    }
-                });
-                if let Some((prim, tf, ..)) = chosen {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let s = tf.scale.abs();
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} · {:.2} × {:.2} × {:.2} m",
-                                prim.name, s.x, s.z, s.y
-                            ))
-                            .color(theme::p().accent_text),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .button("Duplicate")
-                                .on_hover_text("a copy a metre east of it (Shift-D)")
-                                .clicked()
-                            {
-                                duplicate = true;
-                            }
-                        });
-                    });
-                }
-                if drafts > 0 {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let what = if drafts == 1 {
-                            "1 object is a draft: only you see it.".to_string()
-                        } else {
-                            format!("{drafts} objects are drafts: only you see them.")
-                        };
-                        ui.label(egui::RichText::new(what).color(theme::p().text_dim));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(!busy, egui::Button::new("Place in the street"))
-                                .on_hover_text("put the drafts here in the world, for everybody")
-                                .clicked()
-                            {
-                                place_all = true;
-                            }
-                        });
-                    });
-                }
-                if !designs.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("Your objects")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            for d in &designs {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&d.name).strong());
-                                    let parts = if d.parts == 1 {
-                                        "1 part".to_string()
-                                    } else {
-                                        format!("{} parts", d.parts)
-                                    };
-                                    ui.label(egui::RichText::new(parts).color(theme::p().text_dim));
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button(icons::DELETE)
-                                                .on_hover_text(
-                                                    "remove it from your objects; copies \
-                                                     already placed stay",
-                                                )
-                                                .clicked()
-                                            {
-                                                forget = Some((d.id, d.name.clone()));
-                                            }
-                                            if ui
-                                                .add_enabled(!busy, egui::Button::new("Place here"))
-                                                .on_hover_text("stand a copy of it on this spot")
-                                                .clicked()
-                                            {
-                                                place = Some((d.id, d.name.clone()));
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                        });
-                }
-                if busy {
-                    ui.label(egui::RichText::new("Working…").color(theme::p().text_dim));
-                } else if !status.is_empty() {
-                    ui.label(egui::RichText::new(&status).color(theme::p().text_dim));
+                let can_copy = chosen.is_some();
+                if ui
+                    .add_enabled_ui(can_copy, |ui| {
+                        theme::secondary_button(ui, icons::COPY, "Duplicate", 0.0)
+                    })
+                    .inner
+                    .on_hover_text("a copy of the selected part, a metre east (Shift-D)")
+                    .clicked()
+                {
+                    duplicate = true;
                 }
             });
-        });
+            if let Some((prim, tf, ..)) = chosen {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let s = tf.scale.abs();
+                    ui.label(egui::RichText::new(&prim.name).color(theme::p().cream));
+                    ui.label(
+                        egui::RichText::new(format!("{:.2} × {:.2} × {:.2} m", s.x, s.z, s.y))
+                            .color(theme::p().accent_text),
+                    );
+                });
+            }
+            if drafts > 0 {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    pill(ui, "draft", theme::p().warn);
+                    let what = if drafts == 1 {
+                        "1 object only you see".to_string()
+                    } else {
+                        format!("{drafts} objects only you see")
+                    };
+                    ui.label(egui::RichText::new(what).color(theme::p().text_dim));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled_ui(!busy, |ui| {
+                                theme::primary_button_sized(ui, "Place in the street", 0.0)
+                            })
+                            .inner
+                            .on_hover_text("put the drafts here in the world, for everybody")
+                            .clicked()
+                        {
+                            place_all = true;
+                        }
+                    });
+                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("Name it to keep it")
+                        .desired_width(ui.available_width() - 90.0),
+                );
+                let ready = parts > 0 && !name.trim().is_empty() && !busy;
+                if ui
+                    .add_enabled_ui(ready, |ui| {
+                        theme::secondary_button(ui, icons::BOOKMARK_ADD, "Keep", 0.0)
+                    })
+                    .inner
+                    .on_hover_text("keep the objects here in your inventory, as one design")
+                    .clicked()
+                {
+                    save = true;
+                }
+            });
+            if !designs.is_empty() {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("YOUR OBJECTS")
+                        .size(theme::SIZE_TINY)
+                        .color(theme::p().text_dim),
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for d in &designs {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(icons::CABINET)
+                                        .color(theme::p().accent_text),
+                                );
+                                ui.label(egui::RichText::new(&d.name).color(theme::p().cream));
+                                let parts = if d.parts == 1 {
+                                    "1 part".to_string()
+                                } else {
+                                    format!("{} parts", d.parts)
+                                };
+                                ui.label(
+                                    egui::RichText::new(parts)
+                                        .small()
+                                        .color(theme::p().text_dim),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .button(icons::DELETE)
+                                            .on_hover_text(
+                                                "remove it from your objects; copies \
+                                                 already placed stay",
+                                            )
+                                            .clicked()
+                                        {
+                                            forget = Some((d.id, d.name.clone()));
+                                        }
+                                        if ui
+                                            .add_enabled(!busy, egui::Button::new("Place here"))
+                                            .on_hover_text("a copy of it on this spot, as a draft")
+                                            .clicked()
+                                        {
+                                            place = Some((d.id, d.name.clone()));
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+            }
+            if busy {
+                ui.label(egui::RichText::new("Working…").color(theme::p().text_dim));
+            } else if !status.is_empty() {
+                ui.label(egui::RichText::new(&status).color(theme::p().text_dim));
+            }
+        },
+    );
 
     room.name = name;
     if duplicate {
@@ -1044,20 +1101,23 @@ pub fn render_design_room_outliner(
     // the room shows (v4's first principle). Escape and Back do the same
     // (`dismiss::Rung::DesignRoom`).
     let mut leave = false;
-    egui::Area::new(egui::Id::new("design_room_back"))
-        .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN),
-        )
-        .show(egui.ctx(), |ui| {
-            if theme::secondary_button(ui, icons::BACK, "Back to the map", 0.0)
-                .on_hover_text("Esc · drafts wait here for you, placed objects stay standing")
-                .clicked()
-            {
-                leave = true;
-            }
-        });
+    theme::dark_here(|| {
+        egui::Area::new(egui::Id::new("design_room_back"))
+            .order(egui::Order::Foreground)
+            .anchor(
+                egui::Align2::LEFT_TOP,
+                egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN),
+            )
+            .show(egui.ctx(), |ui| {
+                theme::use_dark_visuals(ui);
+                if theme::secondary_button(ui, icons::BACK, "Back to the map", 0.0)
+                    .on_hover_text("Esc · drafts wait here for you, placed objects stay standing")
+                    .clicked()
+                {
+                    leave = true;
+                }
+            });
+    });
     if leave {
         room.close();
         return;
@@ -1074,132 +1134,142 @@ pub fn render_design_room_outliner(
     let mut dissolve: Option<(i64, String)> = None;
     let width = 270.0_f32.min(egui.viewport_pts().x * 0.45);
 
-    egui::Area::new(egui::Id::new("design_room_outliner"))
-        .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::LEFT_TOP,
-            // Under the way out.
-            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
-        )
-        .show(egui.ctx(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width);
-                ui.label(
-                    egui::RichText::new("Outliner")
-                        .size(theme::SIZE_TITLE)
-                        .strong()
-                        .color(theme::p().accent_text),
-                );
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
-                    .show(ui, |ui| {
-                        let mut previous: &[cartopolis_core::GroupLevel] = &[];
-                        for row in &tree {
-                            let shared = row
-                                .groups
+    let draft_count = tree.iter().filter(|r| r.draft).count();
+    let note = if draft_count > 0 {
+        format!("{} · {draft_count} draft", tree.len())
+    } else {
+        tree.len().to_string()
+    };
+    room_panel(
+        egui.ctx(),
+        "design_room_outliner",
+        egui::Align2::LEFT_TOP,
+        // Under the way out.
+        egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        Some(width),
+        |ui| {
+            title_row(ui, icons::LAYERS, "Outliner", &note);
+            egui::ScrollArea::vertical()
+                .max_height(340.0)
+                .show(ui, |ui| {
+                    let mut previous: &[cartopolis_core::GroupLevel] = &[];
+                    for row in &tree {
+                        let shared = row
+                            .groups
+                            .iter()
+                            .zip(previous)
+                            .take_while(|(a, b)| a.id == b.id)
+                            .count();
+                        // A header for each group this row enters.
+                        for (depth, g) in row.groups.iter().enumerate().skip(shared) {
+                            let members: Vec<i64> = tree
                                 .iter()
-                                .zip(previous)
-                                .take_while(|(a, b)| a.id == b.id)
-                                .count();
-                            // A header for each group this row enters.
-                            for (depth, g) in row.groups.iter().enumerate().skip(shared) {
-                                let members: Vec<i64> = tree
-                                    .iter()
-                                    .filter(|r| r.groups.iter().any(|x| x.id == g.id))
-                                    .map(|r| r.id)
-                                    .collect();
+                                .filter(|r| r.groups.iter().any(|x| x.id == g.id))
+                                .map(|r| r.id)
+                                .collect();
+                            ui.horizontal(|ui| {
+                                ui.add_space(depth as f32 * 16.0);
+                                let mut all = members.iter().all(|id| picked.contains(id));
+                                if ui.checkbox(&mut all, "").changed() {
+                                    for id in &members {
+                                        if all {
+                                            picked.insert(*id);
+                                        } else {
+                                            picked.remove(id);
+                                        }
+                                    }
+                                }
+                                ui.label(egui::RichText::new(icons::LAYERS).color(theme::p().warn));
+                                ui.label(egui::RichText::new(&g.name).color(theme::p().cream));
+                                ui.label(
+                                    egui::RichText::new(members.len().to_string())
+                                        .small()
+                                        .color(theme::p().text_dim),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if signed_in
+                                            && ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new("Ungroup").small(),
+                                                )
+                                                .on_hover_text(
+                                                    "dissolve this group; its parts stay in the \
+                                             groups around it",
+                                                )
+                                                .clicked()
+                                        {
+                                            dissolve = Some((g.id, g.name.clone()));
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        let on = picked.contains(&row.id);
+                        // A ticked row is lit, as the sheet's selected one is.
+                        let fill = if on {
+                            theme::p().accent.gamma_multiply(0.14)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        egui::Frame::NONE
+                            .fill(fill)
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.add_space(depth as f32 * 14.0);
-                                    let mut all = members.iter().all(|id| picked.contains(id));
-                                    if ui.checkbox(&mut all, "").changed() {
-                                        for id in &members {
-                                            if all {
-                                                picked.insert(*id);
-                                            } else {
-                                                picked.remove(id);
-                                            }
+                                    ui.add_space(row.groups.len() as f32 * 16.0);
+                                    let mut tick = on;
+                                    if ui.checkbox(&mut tick, "").changed() {
+                                        if tick {
+                                            picked.insert(row.id);
+                                        } else {
+                                            picked.remove(&row.id);
                                         }
                                     }
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} {}",
-                                            icons::LAYERS,
-                                            g.name
-                                        ))
-                                        .strong()
-                                        .color(theme::p().accent_text),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(members.len().to_string())
-                                            .small()
+                                        egui::RichText::new(icons::BUILD)
                                             .color(theme::p().text_dim),
                                     );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if signed_in
-                                                && ui
-                                                    .add_enabled(
-                                                        !busy,
-                                                        egui::Button::new("Ungroup"),
-                                                    )
-                                                    .on_hover_text(
-                                                        "dissolve this group; its parts stay in \
-                                                     the groups around it",
-                                                    )
-                                                    .clicked()
-                                            {
-                                                dissolve = Some((g.id, g.name.clone()));
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                            ui.horizontal(|ui| {
-                                ui.add_space(row.groups.len() as f32 * 14.0);
-                                let mut on = picked.contains(&row.id);
-                                if ui.checkbox(&mut on, &row.name).changed() {
-                                    if on {
-                                        picked.insert(row.id);
-                                    } else {
-                                        picked.remove(&row.id);
+                                    ui.label(egui::RichText::new(&row.name).color(theme::p().text));
+                                    if row.draft {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| pill(ui, "draft", theme::p().warn),
+                                        );
                                     }
-                                }
-                                if row.draft {
-                                    ui.label(
-                                        egui::RichText::new("draft")
-                                            .small()
-                                            .color(theme::p().text_dim),
-                                    );
-                                }
+                                });
                             });
-                            previous = &row.groups;
-                        }
-                    });
-                if signed_in {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut group_name)
-                                .hint_text("Group name")
-                                .desired_width(ui.available_width() - 70.0),
-                        );
-                        let ready = picked.len() >= 1 && !group_name.trim().is_empty() && !busy;
-                        if ui
-                            .add_enabled(ready, egui::Button::new("Group"))
-                            .on_hover_text("put the ticked parts in a new group (Ctrl-G)")
-                            .clicked()
-                        {
-                            make = Some((
-                                group_name.trim().to_string(),
-                                picked.iter().copied().collect(),
-                            ));
-                        }
-                    });
-                }
-            });
-        });
+                        previous = &row.groups;
+                    }
+                });
+            if signed_in {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut group_name)
+                            .hint_text("Group name")
+                            .desired_width(ui.available_width() - 90.0),
+                    );
+                    let ready = !picked.is_empty() && !group_name.trim().is_empty() && !busy;
+                    if ui
+                        .add_enabled_ui(ready, |ui| {
+                            theme::secondary_button(ui, icons::LAYERS, "Group", 0.0)
+                        })
+                        .inner
+                        .on_hover_text("put the ticked parts in a new group")
+                        .clicked()
+                    {
+                        make = Some((
+                            group_name.trim().to_string(),
+                            picked.iter().copied().collect(),
+                        ));
+                    }
+                });
+            }
+        },
+    );
 
     if let Some((name, ids)) = make {
         room.busy = true;
@@ -1389,65 +1459,88 @@ pub fn render_design_room_scripts(
     };
     let mut open: Option<i64> = None;
     let width = 300.0_f32.min(egui.viewport_pts().x * 0.45);
-    egui::Area::new(egui::Id::new("design_room_scripts"))
-        .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
-        )
-        .show(egui.ctx(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width);
-                ui.label(
-                    egui::RichText::new("Scripts")
-                        .size(theme::SIZE_TITLE)
-                        .strong()
-                        .color(theme::p().accent_text),
-                );
-                for (id, name) in &scripted {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().text_dim));
-                        ui.label(name);
-                        let glowing = room.pulse.contains_key(id);
-                        let (state, colour) = match failing(*id) {
-                            Some(_) => ("error", theme::p().error),
-                            None if glowing => ("working", theme::p().accent_text),
-                            None => ("running", theme::p().text_dim),
-                        };
-                        ui.label(egui::RichText::new(state).small().color(colour));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Edit").clicked() {
-                                open = Some(*id);
-                            }
-                        });
+    let note = match scripted.len() {
+        0 => String::new(),
+        1 => "1 script".to_string(),
+        n => format!("{n} scripts"),
+    };
+    room_panel(
+        egui.ctx(),
+        "design_room_scripts",
+        egui::Align2::RIGHT_TOP,
+        egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
+        Some(width),
+        |ui| {
+            title_row(ui, icons::SCRIPT, "Scripts", &note);
+            for (id, name) in &scripted {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().accent_text));
+                    ui.label(egui::RichText::new(name).color(theme::p().cream));
+                    let glowing = room.pulse.contains_key(id);
+                    let (state, colour) = match failing(*id) {
+                        Some(_) => ("error", theme::p().error),
+                        None if glowing => ("working", theme::p().accent_bright),
+                        None => ("running", theme::p().accent_text),
+                    };
+                    pill(ui, state, colour);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button("Edit")
+                            .on_hover_text("open it in the script editor")
+                            .clicked()
+                        {
+                            open = Some(*id);
+                        }
                     });
-                    if let Some(why) = failing(*id) {
-                        ui.label(egui::RichText::new(why).small().color(theme::p().error));
-                    }
+                });
+                if let Some(why) = failing(*id) {
+                    ui.label(egui::RichText::new(why).small().color(theme::p().error));
                 }
-                if let Some(p) = chosen.filter(|p| !p.scripted) {
-                    if ui
-                        .button(format!("New script on {}", p.name))
-                        .on_hover_text("write JavaScript that runs on the selected part")
-                        .clicked()
-                    {
-                        open = Some(p.id);
-                    }
+            }
+            if let Some(p) = chosen.filter(|p| !p.scripted) {
+                ui.add_space(4.0);
+                if theme::secondary_button(
+                    ui,
+                    icons::ADD,
+                    &format!("New script on {}", p.name),
+                    0.0,
+                )
+                .on_hover_text("write JavaScript that runs on the selected part")
+                .clicked()
+                {
+                    open = Some(p.id);
                 }
-                if !room.script_log.is_empty() {
-                    ui.add_space(4.0);
-                    ui.separator();
-                    for line in room.script_log.iter().rev().take(6) {
-                        let colour = if line.error {
-                            theme::p().error
-                        } else {
-                            theme::p().text_dim
-                        };
-                        ui.label(egui::RichText::new(&line.text).small().color(colour));
-                    }
-                }
-            });
-        });
+            }
+            if !room.script_log.is_empty() {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("WHAT THEY DID")
+                        .size(theme::SIZE_TINY)
+                        .color(theme::p().text_dim),
+                );
+                egui::Frame::NONE
+                    .fill(theme::p().ink.gamma_multiply(0.5))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        for line in room.script_log.iter().rev().take(6) {
+                            let colour = if line.error {
+                                theme::p().error
+                            } else {
+                                theme::p().text
+                            };
+                            ui.label(
+                                egui::RichText::new(&line.text)
+                                    .monospace()
+                                    .size(theme::SIZE_TINY + 1.0)
+                                    .color(colour),
+                            );
+                        }
+                    });
+            }
+        },
+    );
     if let Some(id) = open {
         editor.open(id);
         *right_panel = crate::resources::RightPanel::Script;
@@ -1553,43 +1646,58 @@ pub fn render_design_room_ai(
         return;
     }
     let mut paused = room.ai_paused;
-    egui::Area::new(egui::Id::new("design_room_ai"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, theme::OSD_MARGIN))
-        .show(egui.ctx(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let line = if paused {
-                        "Paused: the AI waits for you".to_string()
-                    } else {
-                        match &latest {
-                            Some(e) if e.outcome == Outcome::Working => {
-                                format!("The AI is building · {} {}", e.label, e.detail)
-                            }
-                            Some(e) => format!("The AI · {}: {}", e.label, e.detail),
-                            None => String::new(),
-                        }
-                    };
-                    let line: String = line.chars().take(80).collect();
-                    ui.label(egui::RichText::new(line).color(theme::p().accent_text));
-                    let (icon, label, tip) = if paused {
-                        (icons::PLAY, "Resume", "let the AI carry on building")
-                    } else {
-                        (
-                            icons::STOP,
-                            "Pause",
-                            "hold the AI's next change until you resume it",
-                        )
-                    };
-                    if theme::secondary_button(ui, icon, label, 0.0)
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        paused = !paused;
+    room_panel(
+        egui.ctx(),
+        "design_room_ai",
+        egui::Align2::CENTER_TOP,
+        egui::vec2(0.0, theme::OSD_MARGIN),
+        None,
+        |ui| {
+            ui.horizontal(|ui| {
+                // A live dot: the agent at work, still when paused.
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                let colour = if paused {
+                    theme::p().warn
+                } else {
+                    theme::p().accent_bright
+                };
+                ui.painter()
+                    .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
+                ui.painter().circle_filled(dot.center(), 4.0, colour);
+                let (head, rest) = if paused {
+                    ("Paused".to_string(), "the AI waits for you".to_string())
+                } else {
+                    match &latest {
+                        Some(e) if e.outcome == Outcome::Working => (
+                            "The AI is building".to_string(),
+                            format!("{} {}", e.label, e.detail),
+                        ),
+                        Some(e) => ("The AI".to_string(), format!("{}: {}", e.label, e.detail)),
+                        None => (String::new(), String::new()),
                     }
-                });
+                };
+                ui.label(egui::RichText::new(head).color(theme::p().cream));
+                let rest: String = rest.chars().take(56).collect();
+                ui.label(egui::RichText::new(rest).color(theme::p().text_dim));
+                ui.add_space(8.0);
+                let (icon, label, tip) = if paused {
+                    (icons::PLAY, "Resume", "let the AI carry on building")
+                } else {
+                    (
+                        icons::STOP,
+                        "Pause",
+                        "hold the AI's next change until you resume it",
+                    )
+                };
+                if theme::secondary_button(ui, icon, label, 0.0)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    paused = !paused;
+                }
             });
-        });
+        },
+    );
     if paused != room.ai_paused {
         room.ai_paused = paused;
     }
