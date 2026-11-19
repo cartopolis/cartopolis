@@ -24,6 +24,7 @@
 //! nobody else. Nothing here reads a sealed byte: the hub relays what it
 //! relayed before, and the follower relays it on.
 
+pub mod calls;
 pub mod routes;
 
 use std::collections::HashMap;

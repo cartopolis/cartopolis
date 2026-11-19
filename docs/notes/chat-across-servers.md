@@ -1,7 +1,7 @@
 ---
 topic: chat-across-servers
-triggers: [crates/simulator/src/remote, "accounts.home", V45__people_elsewhere.sql, "/ap/chat", peer_test_bases, chat_elsewhere.rs, "other servers", "full address", local_name, ADDRESS_MARK]
-updated: 2026-11-16
+triggers: [crates/simulator/src/remote, remote/calls.rs, "call/join", "call/signal", "accounts.home", V45__people_elsewhere.sql, "/ap/chat", peer_test_bases, chat_elsewhere.rs, "other servers", "full address", local_name, ADDRESS_MARK]
+updated: 2026-11-19
 ---
 
 # Contacts and private chats between servers
@@ -63,12 +63,52 @@ Delivery from the hub runs in the background and is not retried: a missed
 `deliver` is a gap the device fills by `sync`, as it does for any gap. A missed
 **`invite` is not recovered** yet; the inviter's device has to add them again.
 
+## Calls (2026-11-19)
+
+A call in a chat runs on **the forwarder of the chat's hub**, for every member
+wherever they live (`remote::calls`): one call, one forwarder, nobody's media
+relayed twice, and the keys are the chat's as on one server. A device still
+talks only to its home; its home forwards what it says about the call:
+
+| Call (`POST /ap/chat/call/…`) | From → to | What |
+|---|---|---|
+| `join` | member's home → hub | a `CallJoin`, with the full addresses the person blocks; answered with the forwarder's SDP, "waiting", or the refusal |
+| `answer`, `leave` | member's home → hub | answers to the forwarder's offers, in order; leaving, joining another call or the connection ending |
+| `signal` | hub → member's home | a call message for one device in the call (offers, `CallJoined` on admission, `CallEnded`, reactions), or a roster for the people named — which is what rings them |
+
+The media goes from the device straight to the hub's forwarder: its address is
+the one candidate in the forwarder's SDP, so **the hub needs `calls_listen`
+and a reachable `calls_public_addr`; the member's home needs neither.**
+
+- **A home accepts from a hub only call messages, only about chats that hub
+  is the hub of**, and a device-addressed one only while that device is in one
+  of that hub's calls (`call_message`, `Elsewhere::to_device`).
+- **Names are rewritten at the home** (`localise`): a roster says `alice` for
+  somebody on the home and `bob@rug.example` for everyone else, as the app
+  compares a roster with its own bare username to know whether it is ringing.
+- **What the hub signals before the join's answer is back is held** until the
+  device has its `CallJoined` (`AwayCall::start`, `Elsewhere::release`): an
+  offer for the receiving connection must not overtake it.
+- The hub posts its signals one at a time, in order, from one task
+  (`spawn_relay`): a slow home delays others' signalling, never media.
+
+Not across servers yet: **declining** (the caller elsewhere rings until the
+minute is up), **a closed app** of a member elsewhere is not woken (no push
+from the hub, none from the home), a device that **comes online mid-call** at
+a home is not told of the running call (`Catchup` knows only devices here),
+and **hands, host actions, reactions sent, cameras watched, guests** from a
+device elsewhere (`CallControl`, `CallReact`, `CallWatch`, `CallInvite`,
+`CallKeyDrop` are not forwarded; the defaults — everybody's cameras — hold).
+None of it has run between two real servers on the internet: the test runs two
+on one machine (`people_on_two_servers_call_each_other_on_the_chats_hub`).
+
 ## Not done yet
 
 - **Communities with members elsewhere**, **adding a person elsewhere's new
   device** to an existing chat (`missing_devices` asks only devices here),
   **removing a contact** across servers, presence and "where" of contacts
-  elsewhere, and **calls**. Each is named in the design's stage 5.
+  elsewhere, and the rest of calls (above). Each is named in the design's
+  stage 5.
 - **Contact links** are `https://cartopolis.org/go?contact=…` whatever server
   made them (`place_link::contact_link`), so a link from a self-hosted server
   names the wrong one. Typing the full address works.

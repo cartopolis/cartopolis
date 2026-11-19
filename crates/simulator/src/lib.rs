@@ -170,6 +170,7 @@ pub async fn serve_with(
                 chat.clone(),
                 Some(ring),
                 Some(stats.clone()),
+                remote::calls::spawn_relay(remote::Link::from_config(&config), conn.clone()),
             )
             .await
             .with_context(|| format!("bind calls_listen {listen}"))?;

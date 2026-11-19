@@ -150,6 +150,10 @@ pub struct ChatHub {
     /// Where a private message for somebody with no device connected goes to
     /// wake their closed app (`crate::push`); unset in tests that start none.
     wake: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<crate::push::Ring>>,
+    /// Calls in chats whose hub is another server, both sides of them
+    /// (`crate::remote::calls`): the connections, the HTTP routes and the
+    /// calls task all reach them, and this hub is what they share.
+    pub elsewhere: crate::remote::calls::Elsewhere,
 }
 
 /// Lock the hub, surviving poisoning. `connected_ids` runs inside the tick loop,

@@ -7,7 +7,7 @@ use super::{
     MIN_CALL_REACT_INTERVAL,
 };
 use crate::db;
-use cartopolis_core::{CallAction, NetMessage, CALL_CONTROL_REQUEST};
+use cartopolis_core::{address, CallAction, NetMessage, CALL_CONTROL_REQUEST};
 use std::time::Instant;
 
 pub(super) async fn on_join<T: FrameTransport>(
@@ -20,6 +20,15 @@ pub(super) async fn on_join<T: FrameTransport>(
     let Some(device) = ctx.e2ee_device else {
         return Ok(());
     };
+    // A chat another server is the hub of has its call on that server's
+    // forwarder, which this server only forwards to (`remote::calls`).
+    if ctx.guest_of.is_none() {
+        let link = crate::remote::Link::from_config(&ctx.config);
+        if let Some(hub) = link.hub_elsewhere(&group) {
+            return join_elsewhere(ctx, &link, &hub, device, request_id, group, offer, screen)
+                .await;
+        }
+    }
     // Cloned rather than borrowed: every refusal below is a send on the same
     // connection, which needs all of it.
     let Some(handle) = ctx.calls.clone() else {
@@ -43,7 +52,7 @@ pub(super) async fn on_join<T: FrameTransport>(
     ctx.gates.last_call_join = Instant::now();
     let account = ctx.principal_key.clone();
     let id = group.clone();
-    let (members, blocked, community, agent) = match db::call(&ctx.conn, move |c| {
+    let (members, blocked, community, agent, elsewhere) = match db::call(&ctx.conn, move |c| {
         // Fresh rather than the list at connect, as the private-chat sync does: a
         // block made since connecting holds.
         let blocked = blocked_lowercase(c, &account);
@@ -51,12 +60,9 @@ pub(super) async fn on_join<T: FrameTransport>(
             .ok()
             .flatten();
         let agent = crate::auth::is_agent(c, &account);
-        (
-            crate::e2ee::members(c, &id).unwrap_or_default(),
-            blocked,
-            community,
-            agent,
-        )
+        let members = crate::e2ee::members(c, &id).unwrap_or_default();
+        let elsewhere = crate::remote::calls::members_elsewhere(c, &members);
+        (members, blocked, community, agent, elsewhere)
     })
     .await
     {
@@ -75,6 +81,7 @@ pub(super) async fn on_join<T: FrameTransport>(
     }
     // One call per connection: joining another leaves this one.
     ctx.call_seat = None;
+    ctx.away_call = None;
     let joined = handle
         .join(crate::calls::Joiner {
             group: group.clone(),
@@ -89,6 +96,8 @@ pub(super) async fn on_join<T: FrameTransport>(
             guest: ctx.guest,
             agent,
             community,
+            home: None,
+            elsewhere,
         })
         .await;
     match joined {
@@ -117,6 +126,91 @@ pub(super) async fn on_join<T: FrameTransport>(
         }
         Err(message) => ctx.send(&server_error(request_id, 409, message)).await,
     }
+}
+
+/// Join the call of a chat whose hub is `hub`: the join goes there, and the
+/// device's media goes to that server's forwarder, whose address its answer
+/// carries. Whether this device's person may join is the hub's to say, since
+/// it keeps the chat's members; what they block is this server's to tell it.
+#[allow(clippy::too_many_arguments)]
+async fn join_elsewhere<T: FrameTransport>(
+    ctx: &mut ConnCtx<T>,
+    link: &crate::remote::Link,
+    hub: &str,
+    device: uuid::Uuid,
+    request_id: u32,
+    group: Vec<u8>,
+    offer: String,
+    screen: Option<String>,
+) -> anyhow::Result<()> {
+    use crate::remote::calls::{AwayCall, Join, Joined};
+    if offer.len() > crate::calls::MAX_SDP_BYTES
+        || group.len() > crate::e2ee::MAX_GROUP_ID_BYTES
+        || screen.as_ref().is_some_and(|m| m.len() > 16)
+    {
+        return ctx.send(&server_error(request_id, 413, "too large")).await;
+    }
+    if ctx.gates.last_call_join.elapsed() < MIN_CALL_JOIN_INTERVAL {
+        return ctx.send(&server_error(request_id, 429, "slow down")).await;
+    }
+    ctx.gates.last_call_join = Instant::now();
+    let account = ctx.principal_key.clone();
+    let blocked = db::call(&ctx.conn, move |c| blocked_lowercase(c, &account))
+        .await
+        .unwrap_or_default();
+    ctx.call_seat = None;
+    ctx.away_call = None;
+    let who = address::person(&ctx.display_name, &link.server);
+    // Started before the join is sent, so what the hub signals before its
+    // answer is back is held, not lost.
+    let away = AwayCall::start(link, &ctx.conn, &ctx.chat, hub, &who, device, &group);
+    let body = Join {
+        who,
+        device,
+        group: group.clone(),
+        offer,
+        screen,
+        request_id,
+        blocked: blocked
+            .iter()
+            .map(|b| address::qualify(b, &link.server))
+            .collect(),
+    };
+    let joined: Result<Joined, String> =
+        crate::remote::post(link, &ctx.conn, hub, "/call/join", &body).await;
+    let reply = match joined {
+        Ok(Joined {
+            participant: Some(participant),
+            answer: Some(answer),
+            refused: None,
+        }) => NetMessage::CallJoined {
+            request_id,
+            group,
+            participant,
+            answer,
+        },
+        Ok(Joined {
+            participant: Some(participant),
+            answer: None,
+            refused: None,
+        }) => NetMessage::CallWaiting {
+            request_id,
+            group,
+            participant,
+        },
+        Ok(Joined {
+            refused: Some(why), ..
+        }) => return ctx.send(&server_error(request_id, 409, why)).await,
+        Ok(_) => {
+            let why = format!("{hub} answered something unreadable");
+            return ctx.send(&server_error(request_id, 502, why)).await;
+        }
+        Err(why) => return ctx.send(&server_error(request_id, 502, why)).await,
+    };
+    ctx.send(&reply).await?;
+    ctx.chat.elsewhere.release(&ctx.chat, device);
+    ctx.away_call = Some(away);
+    Ok(())
 }
 
 /// A member asks for a guest link to its chat's call. The server keeps the
@@ -190,6 +284,12 @@ pub(super) fn on_key_drop<T: FrameTransport>(
 }
 
 pub(super) fn on_answer<T: FrameTransport>(ctx: &mut ConnCtx<T>, group: Vec<u8>, sdp: String) {
+    if let Some(away) = ctx.away_call.as_ref().filter(|a| a.group == group) {
+        if sdp.len() <= crate::calls::MAX_SDP_BYTES {
+            away.answer(sdp);
+        }
+        return;
+    }
     if let (Some(handle), Some(seat)) = (&ctx.calls, &ctx.call_seat) {
         // Said, not dropped quietly: an answer this refuses leaves the device
         // receiving nothing, and the forwarder offering it nothing more.
@@ -269,6 +369,9 @@ pub(super) fn on_watch<T: FrameTransport>(
 pub(super) fn on_leave<T: FrameTransport>(ctx: &mut ConnCtx<T>, group: Vec<u8>) {
     if ctx.call_seat.as_ref().is_some_and(|s| s.group == group) {
         ctx.call_seat = None;
+    }
+    if ctx.away_call.as_ref().is_some_and(|a| a.group == group) {
+        ctx.away_call = None;
     }
 }
 

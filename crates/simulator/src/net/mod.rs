@@ -626,6 +626,9 @@ struct ConnCtx<T> {
     /// dropping the seat leaves the call, which is also what happens when the
     /// connection ends and this goes out of scope.
     call_seat: Option<crate::calls::Seat>,
+    /// Or its place in a call another server is the hub of
+    /// (`crate::remote::calls`); dropping it leaves that call the same way.
+    away_call: Option<crate::remote::calls::AwayCall>,
     /// The push endpoint this connection last registered (protocol 29), so
     /// `SetPushEndpoint { endpoint: None }` knows which one to take back.
     push_endpoint: Option<String>,
@@ -962,6 +965,7 @@ pub async fn handle_connection<T: FrameTransport>(
         presence_active: guest_of.is_none(),
         e2ee_device: None,
         call_seat: None,
+        away_call: None,
         push_endpoint: None,
         reach: reach::ReachState::default(),
     };

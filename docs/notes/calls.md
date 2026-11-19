@@ -208,6 +208,10 @@ address, not a hostname. The port is UDP and goes straight to the container —
 Caddy carries none of it — so a deployment publishes it in Docker and opens it
 in any firewall. `calls_addr` on `SimHandle` says what was bound.
 
+A chat whose hub is another server has its call on **that** server's
+forwarder; this one only forwards the signalling (`chat-across-servers.md`,
+"Calls").
+
 ## Known gaps in the server
 
 - A block made during a call applies from the next join, not at once.

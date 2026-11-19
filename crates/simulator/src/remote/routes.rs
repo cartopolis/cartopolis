@@ -16,8 +16,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 
 use super::{
-    account, own_device, ClaimKeys, ContactAnswer, ContactRequest, ContactRequested, Deliver, Done,
-    Entry, Invite, KeyPackage, Keys, Link, LookUp, Person, Submit, Submitted, Sync, Synced, PREFIX,
+    account, calls, own_device, ClaimKeys, ContactAnswer, ContactRequest, ContactRequested,
+    Deliver, Done, Entry, Invite, KeyPackage, Keys, Link, LookUp, Person, Submit, Submitted, Sync,
+    Synced, PREFIX,
 };
 use crate::contacts::{self, Refusal, Sent};
 use crate::fediverse::fetch::host_of;
@@ -39,6 +40,10 @@ pub fn routes() -> Router<HttpState> {
         .route(&format!("{PREFIX}/deliver"), post(deliver))
         .route(&format!("{PREFIX}/invite"), post(invite))
         .route(&format!("{PREFIX}/sync"), post(sync))
+        .route(&format!("{PREFIX}/call/join"), post(call_join))
+        .route(&format!("{PREFIX}/call/answer"), post(call_answer))
+        .route(&format!("{PREFIX}/call/leave"), post(call_leave))
+        .route(&format!("{PREFIX}/call/signal"), post(call_signal))
         .layer(limit)
 }
 
@@ -657,6 +662,210 @@ async fn sync(
         Ok(entries) => Json(Synced { entries }).into_response(),
         Err(r) => r,
     }
+}
+
+/// Somebody elsewhere joins the call of a chat this server is the hub of: on
+/// this server's forwarder, as the account that stands for them, under the
+/// rules a join here is under — a member of the chat, with their own device.
+async fn call_join(
+    State(state): State<HttpState>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (server, link, j) = match verified::<calls::Join>(&state, &uri, &headers, &body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if on(&j.who, &server).is_none() {
+        return refuse(StatusCode::FORBIDDEN, "not somebody on your server");
+    }
+    if link.hub_elsewhere(&j.group).is_some() || address::group_home(&j.group).is_none() {
+        return refuse(StatusCode::BAD_REQUEST, "that chat does not live here");
+    }
+    if j.offer.len() > crate::calls::MAX_SDP_BYTES
+        || j.screen.as_ref().is_some_and(|m| m.len() > 16)
+    {
+        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+    }
+    let refused = |why: String| {
+        Json(calls::Joined {
+            refused: Some(why),
+            ..calls::Joined::default()
+        })
+        .into_response()
+    };
+    let Some(handle) = state.calls.clone() else {
+        return refused(format!("calls are not available on {}", link.server));
+    };
+    let here_name = link.server.clone();
+    let (who, device, group) = (j.who.clone(), j.device, j.group.clone());
+    let read = db(&state, move |c| {
+        let account = account(c, &who, &here_name)
+            .map_err(storage)?
+            .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "not an address elsewhere"))?;
+        if !own_device(c, &account, device).map_err(storage)? {
+            return Ok(Err(crate::e2ee::Refusal::ForeignDevice.to_string()));
+        }
+        let members = crate::e2ee::members(c, &group).map_err(storage)?;
+        if !members.contains(&account) {
+            return Ok(Err("you are not in that chat".to_string()));
+        }
+        let community = crate::communities::community_of_topic(c, &group)
+            .ok()
+            .flatten();
+        let elsewhere = calls::members_elsewhere(c, &members);
+        Ok(Ok((account, members, community, elsewhere)))
+    })
+    .await;
+    let (account, members, community, elsewhere) = match read {
+        Ok(Ok(v)) => v,
+        Ok(Err(why)) => return refused(why),
+        Err(r) => return r,
+    };
+    // What they block, as this server names people: bare for its own.
+    let blocked = j
+        .blocked
+        .iter()
+        .map(|b| address::display(b, &link.server).to_lowercase())
+        .collect();
+    let joined = handle
+        .join(crate::calls::Joiner {
+            group: j.group,
+            username: address::qualify(&j.who, &server),
+            account,
+            device,
+            blocked,
+            members,
+            offer: j.offer,
+            screen: j.screen,
+            request_id: j.request_id,
+            guest: false,
+            agent: false,
+            community,
+            home: Some(server.to_lowercase()),
+            elsewhere,
+        })
+        .await;
+    let (seat, answer) = match joined {
+        Ok(crate::calls::Joined::In(seat, answer)) => (seat, Some(answer)),
+        Ok(crate::calls::Joined::Waiting(seat)) => (seat, None),
+        Err(why) => return refused(why),
+    };
+    let participant = seat.participant;
+    state.chat.elsewhere.keep(device, &server, seat);
+    Json(calls::Joined {
+        participant: Some(participant),
+        answer,
+        refused: None,
+    })
+    .into_response()
+}
+
+/// A device elsewhere answers this server's forwarder.
+async fn call_answer(
+    State(state): State<HttpState>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (server, _link, a) = match verified::<calls::Answer>(&state, &uri, &headers, &body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if on(&a.who, &server).is_none() {
+        return refuse(StatusCode::FORBIDDEN, "not somebody on your server");
+    }
+    if a.sdp.len() > crate::calls::MAX_SDP_BYTES {
+        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+    }
+    if let Some(handle) = &state.calls {
+        state
+            .chat
+            .elsewhere
+            .answer(handle, a.device, &server, &a.group, a.sdp);
+    }
+    Json(Done {}).into_response()
+}
+
+/// A device elsewhere leaves a call on this server's forwarder.
+async fn call_leave(
+    State(state): State<HttpState>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (server, _link, l) = match verified::<calls::Leave>(&state, &uri, &headers, &body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if on(&l.who, &server).is_none() {
+        return refuse(StatusCode::FORBIDDEN, "not somebody on your server");
+    }
+    state.chat.elsewhere.leave(l.device, &server, &l.group);
+    Json(Done {}).into_response()
+}
+
+/// The hub of a chat has something about its call for people here: only a
+/// call message, only about a chat it is the hub of, and for one device only
+/// while that device is in one of its calls.
+async fn call_signal(
+    State(state): State<HttpState>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let (server, link, s) = match verified::<calls::Signal>(&state, &uri, &headers, &body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some((mut msg, group)) = calls::call_message(&s.frame) else {
+        return refuse(StatusCode::BAD_REQUEST, "not a call message");
+    };
+    if group
+        .as_deref()
+        .is_some_and(|g| !address::group_home(g).is_some_and(|h| h.eq_ignore_ascii_case(&server)))
+    {
+        return refuse(StatusCode::FORBIDDEN, "that chat is not yours");
+    }
+    calls::localise(&mut msg, &server, &link.server);
+    let Ok(frame) = cartopolis_core::encode_app_frame(&msg) else {
+        return refuse(StatusCode::BAD_REQUEST, "");
+    };
+    let frame = axum::body::Bytes::from(frame);
+    if let Some(device) = s.device {
+        state
+            .chat
+            .elsewhere
+            .to_device(&state.chat, &server, device, group.as_deref(), frame);
+        return Json(Done {}).into_response();
+    }
+    // To people by name: who is in the call, which rings them.
+    if !matches!(msg, NetMessage::CallRoster { .. }) {
+        return refuse(StatusCode::BAD_REQUEST, "only a roster goes to people");
+    }
+    let names = s.to;
+    let accounts = match db(&state, move |c| {
+        let mut ids = Vec::new();
+        for n in &names {
+            if let Some(a) = here(c, n).map_err(storage)? {
+                ids.push(a.id);
+            }
+        }
+        Ok(ids)
+    })
+    .await
+    {
+        Ok(ids) => ids,
+        Err(r) => return r,
+    };
+    let from = if s.from.is_empty() {
+        String::new()
+    } else {
+        address::display(&address::qualify(&s.from, &server), &link.server).to_lowercase()
+    };
+    state.chat.deliver_private(&accounts, &from, false, &frame);
+    Json(Done {}).into_response()
 }
 
 fn now_ms() -> u64 {

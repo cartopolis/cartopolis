@@ -45,7 +45,7 @@ async fn start(users: &[&str]) -> (SimHandle, tempfile::TempDir) {
 }
 
 /// One device in a call: its link, its keys, and what it heard.
-struct Phone {
+pub(super) struct Phone {
     link: Link,
     keys: CallKeys,
     up: UdpSocket,
@@ -60,7 +60,11 @@ fn socket() -> UdpSocket {
 }
 
 /// Ask to join `group`'s call; returns the phone on success, the refusal otherwise.
-async fn join(c: &mut Client, dev: &Device, group: &[u8]) -> Result<(Phone, u64), (u32, String)> {
+pub(super) async fn join(
+    c: &mut Client,
+    dev: &Device,
+    group: &[u8],
+) -> Result<(Phone, u64), (u32, String)> {
     let (up, down) = (socket(), socket());
     let (mut link, offer) = Link::new(
         Instant::now(),
@@ -338,7 +342,7 @@ async fn talk(
 
 /// [`talk`], stopping early once `done` holds for the frames heard so far and
 /// the messages said: most steps wait for an event, not for a fixed time.
-async fn talk_until(
+pub(super) async fn talk_until(
     (fc, from): (&mut Client, &mut Phone),
     (tc, to): (&mut Client, &mut Phone),
     group: &[u8],

@@ -87,6 +87,12 @@ pub struct Joiner {
     /// The community the chat is a topic of, for its moderators' numbers
     /// (`crate::stats`).
     pub community: Option<uuid::Uuid>,
+    /// The server the joining device lives on, when it is not this one: what
+    /// the call has for it goes there (`crate::remote::calls`).
+    pub home: Option<String>,
+    /// The chat's members who live on other servers, whose homes are told
+    /// who is in the call.
+    pub elsewhere: Vec<crate::remote::calls::Member>,
 }
 
 /// What became of a join.
@@ -647,6 +653,7 @@ pub async fn spawn(
     chat: Arc<ChatHub>,
     ring: Option<mpsc::UnboundedSender<crate::push::Ring>>,
     stats: Option<Arc<crate::stats::Stats>>,
+    relay: Option<mpsc::UnboundedSender<crate::remote::calls::Relay>>,
 ) -> anyhow::Result<(CallsHandle, SocketAddr, tokio::task::JoinHandle<()>)> {
     let socket = UdpSocket::bind(listen).await?;
     let bound = socket.local_addr()?;
@@ -666,6 +673,9 @@ pub async fn spawn(
         members: HashMap::new(),
         meetings: HashMap::new(),
         stats,
+        relay,
+        away_members: HashMap::new(),
+        away_devices: HashMap::new(),
     };
     let task = tokio::spawn(run(socket, state, rx));
     Ok((CallsHandle { tx }, bound, task))
@@ -689,12 +699,47 @@ struct State {
     meetings: HashMap<Vec<u8>, Meeting>,
     /// Calls started and minutes spent (`crate::stats`).
     stats: Option<Arc<crate::stats::Stats>>,
+    /// Where what is for somebody on another server goes
+    /// (`crate::remote::calls::spawn_relay`); `None` where this server talks
+    /// to no other.
+    relay: Option<mpsc::UnboundedSender<crate::remote::calls::Relay>>,
+    /// The members elsewhere of a chat whose call has anyone in it, read at
+    /// each join as [`Self::members`] is.
+    away_members: HashMap<Vec<u8>, Vec<crate::remote::calls::Member>>,
+    /// The devices in a call (or waiting) that live on another server, and which.
+    away_devices: HashMap<uuid::Uuid, String>,
 }
 
 impl State {
     fn send_to(&self, device: uuid::Uuid, msg: &NetMessage) {
-        if let Ok(frame) = encode_app_frame(msg) {
-            self.chat.deliver_to_device(device, &Bytes::from(frame));
+        let Ok(frame) = encode_app_frame(msg) else {
+            return;
+        };
+        match self.away_devices.get(&device) {
+            Some(home) => self.relay(home, Some(device), Vec::new(), "", frame),
+            None => self.chat.deliver_to_device(device, &Bytes::from(frame)),
+        }
+    }
+
+    /// Send `frame` to `home`, for one of its devices or for the people named.
+    fn relay(
+        &self,
+        home: &str,
+        device: Option<uuid::Uuid>,
+        to: Vec<String>,
+        from: &str,
+        frame: Vec<u8>,
+    ) {
+        if let Some(relay) = &self.relay {
+            let _ = relay.send(crate::remote::calls::Relay {
+                home: home.to_string(),
+                signal: crate::remote::calls::Signal {
+                    device,
+                    to,
+                    from: from.to_string(),
+                    frame,
+                },
+            });
         }
     }
 
@@ -708,6 +753,11 @@ impl State {
             return Err("the meeting has not started yet".into());
         }
         self.members.insert(group.clone(), joiner.members.clone());
+        self.away_members
+            .insert(group.clone(), joiner.elsewhere.clone());
+        if let Some(home) = &joiner.home {
+            self.away_devices.insert(joiner.device, home.clone());
+        }
         if must_wait(self.meetings.get(&group), &joiner, anyone_in) {
             let participant = self.sfu.reserve();
             tracing::info!(participant = participant.0, username = %joiner.username, "waiting to join a call");
@@ -1032,6 +1082,9 @@ impl State {
             }
             Signal::Left { who } => {
                 if let Some(i) = self.info.remove(&who) {
+                    if !self.info.values().any(|o| o.device == i.device) {
+                        self.away_devices.remove(&i.device);
+                    }
                     tracing::info!(participant = who.0, username = %i.username, "left a call");
                     if let Some(stats) = &self.stats {
                         let minutes =
@@ -1057,6 +1110,7 @@ impl State {
                             }
                         }
                         self.members.remove(&i.group);
+                        self.away_members.remove(&i.group);
                     }
                 }
             }
@@ -1125,6 +1179,15 @@ impl State {
             return;
         };
         if let Ok(frame) = encode_app_frame(&self.roster_msg(group)) {
+            // The members elsewhere hear it through their homes, which keep
+            // their blocks: one message a home.
+            let mut homes: HashMap<&str, Vec<String>> = HashMap::new();
+            for m in self.away_members.get(group).into_iter().flatten() {
+                homes.entry(&m.home).or_default().push(m.name.clone());
+            }
+            for (home, names) in homes {
+                self.relay(home, None, names, from, frame.clone());
+            }
             self.chat
                 .deliver_private(accounts, from, false, &Bytes::from(frame));
         }
@@ -1187,6 +1250,8 @@ mod tests {
             guest,
             agent: false,
             community: None,
+            home: None,
+            elsewhere: Vec::new(),
         }
     }
 

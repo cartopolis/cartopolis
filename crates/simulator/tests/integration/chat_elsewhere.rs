@@ -30,8 +30,16 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// A server called `host` with `user` on it, that finds `peer` at `peer_base`.
-async fn server(host: &str, port: u16, user: &str, peer: &str, peer_base: &str) -> Server {
+/// A server called `host` with `user` on it, that finds `peer` at `peer_base`,
+/// with a call forwarder when `calls`.
+async fn server(
+    host: &str,
+    port: u16,
+    user: &str,
+    peer: &str,
+    peer_base: &str,
+    calls: bool,
+) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("world.db").to_str().unwrap().to_string();
     {
@@ -49,6 +57,7 @@ async fn server(host: &str, port: u16, user: &str, peer: &str, peer_base: &str) 
         fediverse_allow_private: true,
         fediverse_blocklists: Vec::new(),
         peer_test_bases: HashMap::from([(peer.to_string(), peer_base.to_string())]),
+        calls_listen: calls.then(|| "127.0.0.1:0".to_string()),
         ..SimConfig::default()
     };
     let handle = serve(Arc::new(config)).await.unwrap();
@@ -63,6 +72,11 @@ async fn server(host: &str, port: u16, user: &str, peer: &str, peer_base: &str) 
 /// Alice's server is `localhost`, Bob's `127.0.0.1`: two names for one
 /// machine, as two servers' names are two hosts.
 async fn two_servers() -> (Server, Server) {
+    servers(false).await
+}
+
+/// [`two_servers`], Alice's with a call forwarder when `calls`; Bob's never has one.
+async fn servers(calls: bool) -> (Server, Server) {
     let (pa, pb) = (free_port(), free_port());
     let a = server(
         "localhost",
@@ -70,6 +84,7 @@ async fn two_servers() -> (Server, Server) {
         "alice",
         "127.0.0.1",
         &format!("http://127.0.0.1:{pb}"),
+        calls,
     )
     .await;
     let b = server(
@@ -78,6 +93,7 @@ async fn two_servers() -> (Server, Server) {
         "bob",
         "localhost",
         &format!("http://localhost:{pa}"),
+        false,
     )
     .await;
     (a, b)
@@ -325,4 +341,145 @@ async fn a_server_is_believed_only_with_its_own_signature() {
     .await
     .unwrap();
     assert_eq!(status, 401);
+}
+
+/// Alice (on `localhost`) and Bob (on `127.0.0.1`) as contacts with a direct
+/// chat, which lives on her server.
+async fn a_chat_across(sa: &Server, sb: &Server) -> (Device, Device, Client, Client, Vec<u8>) {
+    let mut alice = Device::new("alice@localhost", Uuid::new_v4()).unwrap();
+    let mut bob = Device::new("bob@127.0.0.1", Uuid::new_v4()).unwrap();
+    let mut a = online(&sa.addr, &mut alice).await;
+    let mut b = online(&sb.addr, &mut bob).await;
+    send(
+        &mut b,
+        &NetMessage::SetContactSettings {
+            request_id: 21,
+            policy: RequestPolicy::Anyone,
+            show_online: true,
+            notify_requests: false,
+            separate_new_accounts: false,
+            reset_link: false,
+        },
+    )
+    .await;
+    contacts_state(&mut b).await;
+    send(
+        &mut a,
+        &NetMessage::RequestContact {
+            request_id: 22,
+            username: "bob@127.0.0.1".into(),
+            link_code: None,
+        },
+    )
+    .await;
+    contacts_until(&mut b, |s| !s.1.is_empty()).await;
+    send(
+        &mut b,
+        &NetMessage::AnswerContact {
+            request_id: 23,
+            username: "alice@localhost".into(),
+            accept: true,
+        },
+    )
+    .await;
+    contacts_until(&mut a, |s| !s.0.is_empty()).await;
+    let group = start_direct(&mut a, &mut alice, "bob@127.0.0.1").await;
+    let (welcome, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::E2eeInvite { welcome, .. } => Some(welcome),
+        _ => None,
+    })
+    .await
+    .expect("invitation delivered through his server");
+    bob.join(&welcome).unwrap();
+    (alice, bob, a, b, group)
+}
+
+/// The names in the last roster among `said` for `group`.
+fn last_roster(said: &[NetMessage], group: &[u8]) -> Option<Vec<String>> {
+    said.iter().rev().find_map(|m| match m {
+        NetMessage::CallRoster {
+            group: g, members, ..
+        } if g == group => Some(members.iter().map(|m| m.username.clone()).collect()),
+        _ => None,
+    })
+}
+
+/// A call in a chat across two servers runs on the forwarder of the chat's
+/// hub: Bob's server has no forwarder at all, rings him for Alice's call,
+/// forwards his join and answers to hers, and his media goes straight to hers
+/// — sealed with the chat's keys, as in a call on one server.
+#[tokio::test]
+async fn people_on_two_servers_call_each_other_on_the_chats_hub() {
+    use super::calls::{join, talk_until};
+    let (sa, sb) = servers(true).await;
+    let (alice, bob, mut a, mut b, group) = a_chat_across(&sa, &sb).await;
+
+    // Alice calls; his phone rings, through his server, with her full address.
+    let (mut pa, alice_id) = join(&mut a, &alice, &group).await.expect("alice calls");
+    let (ring, _) = next_matching(&mut b, PATIENT, |m| match m {
+        NetMessage::CallRoster {
+            group: g, members, ..
+        } if g == group => Some(members),
+        _ => None,
+    })
+    .await
+    .expect("the call rings for bob at his server");
+    assert_eq!(ring.len(), 1);
+    assert_eq!(ring[0].username, "alice@localhost");
+    assert_eq!(ring[0].participant, alice_id);
+
+    // He picks up at his own server, which has no forwarder: hers answers.
+    let (mut pb, bob_id) = join(&mut b, &bob, &group)
+        .await
+        .expect("bob joins through his server");
+    assert_ne!(bob_id, alice_id);
+
+    // Her voice reaches him, and his her, through her forwarder.
+    let mut sent = 0;
+    let (heard, said) = talk_until(
+        (&mut a, &mut pa),
+        (&mut b, &mut pb),
+        &group,
+        15_000,
+        &mut sent,
+        |n, _| n >= 20,
+    )
+    .await;
+    assert!(heard >= 20, "bob heard {heard} of {sent} frames from alice");
+    let (heard, said_back) = talk_until(
+        (&mut b, &mut pb),
+        (&mut a, &mut pa),
+        &group,
+        15_000,
+        &mut sent,
+        |n, _| n >= 20,
+    )
+    .await;
+    assert!(heard >= 20, "alice heard {heard} frames from bob");
+    // Each sees both, named as their own server names people.
+    let rosters: Vec<NetMessage> = said.into_iter().chain(said_back).collect();
+    let mut names = last_roster(&rosters, &group).expect("a roster with both");
+    names.sort();
+    assert!(
+        names == ["alice", "bob@127.0.0.1"] || names == ["alice@localhost", "bob"],
+        "{names:?}"
+    );
+
+    // He hangs up; she is alone in it.
+    send(
+        &mut b,
+        &NetMessage::CallLeave {
+            group: group.clone(),
+        },
+    )
+    .await;
+    let (alone, _) = next_matching(&mut a, PATIENT, |m| match m {
+        NetMessage::CallRoster {
+            group: g, members, ..
+        } if g == group && members.len() == 1 => Some(members),
+        _ => None,
+    })
+    .await
+    .expect("his leaving reaches her server");
+    assert_eq!(alone[0].username, "alice");
 }
