@@ -104,6 +104,8 @@ pub struct DesignRoom {
     pub group_name: String,
     /// The person paused the agent from the room: its building tools answer
     /// that it is paused until they resume it (`mcp::agent`).
+    /// Read only where the agent tools are (`mcp`): the web build has none.
+    #[cfg_attr(not(mcp), allow(dead_code))]
     pub ai_paused: bool,
     /// What the scripts in the room said and did, newest last (the Scripts
     /// panel's log).
