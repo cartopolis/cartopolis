@@ -296,6 +296,8 @@ pub struct Covers<'w> {
     driver: Res<'w, crate::systems::driver::DriverState>,
     keyboard: Res<'w, crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     walk: Res<'w, crate::systems::walk_guide::WalkGuide>,
+    // The design room is a white room: nothing of the map's chrome in it.
+    room: Res<'w, crate::systems::design_room::DesignRoom>,
 }
 
 /// Draw the switch, the search bar with your face, the right column and the
@@ -321,8 +323,8 @@ pub fn render_dock(
     let has_avatar = !avatars.is_empty();
     let viewport = egui.viewport_pts();
     chrome.right_bottom = right_column(viewport, has_avatar, has_camera).bottom;
-    // Driving owns the screen, and so does the camera.
-    if covers.driver.active || camera.is_open() {
+    // Driving owns the screen, and so do the camera and the design room.
+    if covers.driver.active || camera.is_open() || covers.room.spot.is_some() {
         crate::systems::place_pins::set_chrome_holes(egui.ctx(), Vec::new());
         menu.open = false;
         return;

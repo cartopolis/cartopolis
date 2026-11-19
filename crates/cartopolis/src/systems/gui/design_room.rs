@@ -53,6 +53,9 @@ pub const PARTS_RADIUS_M: f64 = 10.0;
 /// Half the side of the metre grid drawn on the floor.
 const GRID_HALF_M: i32 = 12;
 
+/// The room's white, in linear light.
+const ROOM_WHITE: f32 = 1.6;
+
 /// How far up the camera arrives, and at what pitch it looks down at the spot.
 const ARRIVE_ALTITUDE_M: f64 = 7.0;
 const ARRIVE_PITCH_RAD: f32 = 0.42;
@@ -331,21 +334,25 @@ pub fn layer_design_room(
         return;
     };
     let layer = RenderLayers::layer(DESIGN_LAYER);
+    // One white for floor, grid and walls, unlit, so there is no horizon where
+    // the floor meets the walls and no tint from the time of day: a lit floor
+    // took the sun's colour (peach at mid-morning) against grey walls. Above
+    // 1.0 because the tonemapper takes 1.0 to a light grey.
+    let white = Color::linear_rgb(ROOM_WHITE, ROOM_WHITE, ROOM_WHITE);
     let floor = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.96, 0.96, 0.95),
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
+        base_color: white,
+        unlit: true,
         fog_enabled: false,
         ..default()
     });
     let lines = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
+        base_color: white,
         unlit: true,
         fog_enabled: false,
         ..default()
     });
     let walls = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.97, 0.97, 0.97),
+        base_color: white,
         unlit: true,
         fog_enabled: false,
         cull_mode: None,
@@ -381,6 +388,145 @@ pub fn layer_design_room(
     );
 }
 
+/// A soft dark patch on the floor under a part that stands on it.
+#[derive(Component)]
+pub struct ContactShadow;
+
+/// How far above the floor a part's underside may be and still get a shadow.
+const CONTACT_GAP_M: f32 = 0.3;
+
+/// Ground the parts on the room's floor with a contact shadow each.
+///
+/// The floor is unlit, so it takes no shadow from the sun: lit, it took the
+/// sun's colour too (peach at mid-morning against white walls), and a white
+/// room should not change with the time of day. A real second light for the
+/// room was ruled out by `directional-lights-share-one-cascade-config.md`.
+/// So each part of the room whose underside is within [`CONTACT_GAP_M`] of the floor gets
+/// a feathered patch the size of its footprint, as a child — it turns and
+/// scales with the part — drawn on the room's layer alone.
+#[allow(clippy::type_complexity)]
+pub fn shade_design_room(
+    mut commands: Commands,
+    room: Res<DesignRoom>,
+    map_anchor: Res<MapAnchor>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
+    prims: Query<(
+        Entity,
+        &Prim,
+        &Transform,
+        Option<&GridCell>,
+        &crate::components::PrimLift,
+    )>,
+    shadows: Query<(Entity, &ChildOf), With<ContactShadow>>,
+    mut mesh: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let (Some((lat, lng)), Some(anchor)) = (room.spot, map_anchor.geo) else {
+        for (entity, _) in &shadows {
+            commands.entity(entity).try_despawn();
+        }
+        return;
+    };
+    // The floor is flat at the ground under the spot; a part stands on the
+    // ground under itself, which differs by centimetres even on a square.
+    let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+    let floor = terrain.ground_at(wx as f32, wz as f32);
+    let (mesh, material) = mesh
+        .get_or_insert_with(|| {
+            (
+                meshes.add(shadow_mesh()),
+                materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    unlit: true,
+                    fog_enabled: false,
+                    alpha_mode: AlphaMode::Blend,
+                    cull_mode: None,
+                    ..default()
+                }),
+            )
+        })
+        .clone();
+    let shaded: std::collections::HashSet<Entity> =
+        shadows.iter().map(|(_, parent)| parent.parent()).collect();
+    for (entity, prim, transform, cell, lift) in &prims {
+        if !room.parts.contains(&prim.id) {
+            continue;
+        }
+        // Height above its own ground, whether or not the terrain lift is on
+        // this frame (`prim_geo`: put on late in the frame, taken off first).
+        let world = crate::systems::prim_geo::world_position(cell, transform);
+        let above = world.y as f32 - crate::systems::prim_geo::lift_to_strip(lift, world);
+        let half = transform.scale.y.abs() / 2.0;
+        let gap = above - half;
+        let wants = (-CONTACT_GAP_M..=CONTACT_GAP_M).contains(&gap);
+        if wants && !shaded.contains(&entity) {
+            // In the part's own units: a centimetre over the room's floor,
+            // against where the part is drawn (its own ground plus `above`),
+            // a little wider than its footprint.
+            let up = transform.scale.y.abs().max(1e-3);
+            let drawn = terrain.ground_at(world.x as f32, world.z as f32) + above;
+            let local_y = (floor + 0.01 - drawn) / up;
+            commands.entity(entity).with_child((
+                ContactShadow,
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_xyz(0.0, local_y, 0.0).with_scale(Vec3::new(1.5, 1.0, 1.5)),
+                RenderLayers::layer(DESIGN_LAYER),
+                bevy::light::NotShadowCaster,
+            ));
+        } else if !wants && shaded.contains(&entity) {
+            for (shadow, parent) in &shadows {
+                if parent.parent() == entity {
+                    commands.entity(shadow).try_despawn();
+                }
+            }
+        }
+    }
+}
+
+/// A unit disc, dark at the centre and clear at the rim, scaled to a part's
+/// footprint by its parent.
+fn shadow_mesh() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    const RIM: u32 = 32;
+    // Ring radii (of the unit half-size) and their darkness.
+    // Strong, because the room is brighter than 1.0 and the tonemapper
+    // squeezes everything above that: 28% darker read as no change at all.
+    const RINGS: [(f32, f32); 3] = [(0.0, 0.62), (0.36, 0.45), (0.5, 0.0)];
+    let mut positions = vec![[0.0, 0.0, 0.0]];
+    let mut colours = vec![[0.0, 0.0, 0.0, RINGS[0].1]];
+    for &(r, a) in &RINGS[1..] {
+        for k in 0..RIM {
+            let t = k as f32 / RIM as f32 * std::f32::consts::TAU;
+            // A rounded square rather than a circle: most parts are boxes.
+            let (s, c) = t.sin_cos();
+            let n = 4.0;
+            let k = (s.abs().powf(n) + c.abs().powf(n)).powf(-1.0 / n);
+            positions.push([c * k * r, 0.0, s * k * r]);
+            colours.push([0.0, 0.0, 0.0, a]);
+        }
+    }
+    let mut indices: Vec<u32> = Vec::new();
+    for k in 0..RIM {
+        let next = (k + 1) % RIM;
+        indices.extend([0, 1 + next, 1 + k]);
+        let (a, b) = (1 + k, 1 + next);
+        let (c, d) = (1 + RIM + k, 1 + RIM + next);
+        indices.extend([a, b, d, a, d, c]);
+    }
+    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colours)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
 /// Draw the editing handles (`systems::gizmo`, bevy gizmos) on both layers, so
 /// a part can be moved in the room as in the street. Once, at startup.
 pub fn let_gizmos_into_the_room(store: Option<ResMut<bevy::gizmos::config::GizmoConfigStore>>) {
@@ -392,7 +538,9 @@ pub fn let_gizmos_into_the_room(store: Option<ResMut<bevy::gizmos::config::Gizmo
 }
 
 /// The metre grid on the floor: thin quads a centimetre above it, every fifth
-/// line darker, the one through the spot darker still.
+/// line darker, the one through the spot darker still, each fading into the
+/// floor's white towards the edge so the room has no line where it ends. Cut
+/// into metre segments, because a vertex colour only fades between vertices.
 fn grid_mesh() -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
@@ -400,35 +548,35 @@ fn grid_mesh() -> Mesh {
     let mut colours: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let half = GRID_HALF_M as f32;
+    // 1.0 is the floor itself (the lines' material is the floor's white).
+    let shade = |grey: f32, x: f32, z: f32| {
+        let t = (x.hypot(z) / half).clamp(0.0, 1.0);
+        let fade = t * t * (3.0 - 2.0 * t);
+        let g = grey + (1.0 - grey) * fade;
+        [g, g, g, 1.0]
+    };
     for i in -GRID_HALF_M..=GRID_HALF_M {
         let (width, grey) = match i {
-            0 => (0.035, 0.55),
-            _ if i % 5 == 0 => (0.025, 0.72),
-            _ => (0.015, 0.84),
+            0 => (0.035, 0.35),
+            _ if i % 5 == 0 => (0.025, 0.5),
+            _ => (0.015, 0.66),
         };
         let at = i as f32;
         let w = width / 2.0;
-        // One line along x and one along z.
-        for quad in [
-            [
-                [-half, at - w],
-                [half, at - w],
-                [half, at + w],
-                [-half, at + w],
-            ],
-            [
-                [at - w, -half],
-                [at + w, -half],
-                [at + w, half],
-                [at - w, half],
-            ],
-        ] {
-            let base = positions.len() as u32;
-            for [x, z] in quad {
-                positions.push([x, 0.01, z]);
-                colours.push([grey, grey, grey, 1.0]);
+        for s in -GRID_HALF_M..GRID_HALF_M {
+            let (a, b) = (s as f32, s as f32 + 1.0);
+            // One segment along x and one along z.
+            for quad in [
+                [[a, at - w], [b, at - w], [b, at + w], [a, at + w]],
+                [[at - w, a], [at + w, a], [at + w, b], [at - w, b]],
+            ] {
+                let base = positions.len() as u32;
+                for [x, z] in quad {
+                    positions.push([x, 0.01, z]);
+                    colours.push(shade(grey, x, z));
+                }
+                indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
             }
-            indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
         }
     }
     let normals = vec![[0.0, 1.0, 0.0]; positions.len()];

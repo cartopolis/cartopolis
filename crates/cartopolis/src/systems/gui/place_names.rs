@@ -304,6 +304,7 @@ pub fn render_place_names(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut lenses: ResMut<crate::systems::scenario::ScenarioView>,
     night: Res<crate::systems::globe::GlobeNight>,
+    room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
         nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(
@@ -321,7 +322,7 @@ pub fn render_place_names(
         crate::systems::scenario::open_shelf(&mut lenses);
     }
     let mut anchored = WorldAnchored::new(egui.ctx(), "place_names");
-    if driver.active || !layers.place_names {
+    if driver.active || !layers.place_names || room.spot.is_some() {
         return;
     }
     let Some(anchor) = map_anchor.geo else {

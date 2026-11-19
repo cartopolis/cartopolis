@@ -840,9 +840,14 @@ pub fn render_map_controls(
     camera_screen: Res<crate::systems::camera_screen::CameraScreen>,
     mut high: ResMut<crate::systems::high_precision::HighPrecision>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    room: Res<crate::systems::design_room::DesignRoom>,
     // Whether the light disc's three choices are open beside it.
     mut light_open: Local<bool>,
 ) {
+    // The design room is a white room, with its own bar and nothing else.
+    if room.spot.is_some() {
+        return;
+    }
     // The camera is the whole screen. A chat's World view keeps these: its
     // header is one slim pill at the top centre (`chats::render_chat_world`).
     if camera_screen.is_open() && !driver.active {
