@@ -717,153 +717,17 @@ fn prim_motion_round_trip_and_size() {
     assert!(b.len() < 3 * 64, "{} bytes for three bodies", b.len());
 }
 
-/// Every `MessageKind` must survive the `discriminant → from_wire` trip, and
-/// nothing may sit outside the assigned range. This is the guard the
-/// per-message round-trips above can't be: adding a `NetMessage` variant +
-/// kind but forgetting its `from_wire` arm (or mis-numbering it) silently
-/// desyncs a real client. The `ALL.len()` assert is a deliberate tripwire —
-/// a new variant fails here until it's added to this list.
+/// Every number `from_wire` answers names the kind with that discriminant,
+/// and the retired numbers answer nothing. `message_kinds!` writes both from
+/// one table, so a forgotten arm cannot happen; what this guards is the holes.
 #[test]
 fn message_kind_wire_is_a_bijection() {
-    use MessageKind::*;
-    const ALL: [MessageKind; 123] = [
-        ClientHello,
-        ServerHelloAck,
-        ServerError,
-        ClientIntent,
-        WorldSnapshot,
-        PrimRemoved,
-        CreatePrim,
-        UpdatePrim,
-        DeletePrim,
-        PrimUpsert,
-        TextureCatalogRequest,
-        TextureCatalog,
-        TextureRequest,
-        TextureData,
-        TextureNotFound,
-        ChatSend,
-        ChatMessage,
-        GetPrimScript,
-        SetPrimScript,
-        PrimScript,
-        ScriptOutput,
-        TouchPrim,
-        WorldCapacity,
-        VoiceFrame,
-        VoiceData,
-        SetBlocked,
-        BlockedList,
-        ReportUser,
-        ReportAck,
-        DeleteAccount,
-        AccountDeleted,
-        Teleport,
-        SetPresence,
-        E2eeRegisterDevice,
-        E2eeDeviceStatus,
-        E2eeClaimKeyPackages,
-        E2eeKeyPackages,
-        E2eeCreateGroup,
-        E2eeGroupCreated,
-        E2eeSend,
-        E2eeSent,
-        E2eeSync,
-        E2eeSynced,
-        E2eeDeliver,
-        E2eeInvite,
-        CallJoin,
-        CallJoined,
-        CallOffer,
-        CallAnswer,
-        CallLeave,
-        CallRoster,
-        ContactsState,
-        RequestContact,
-        AnswerContact,
-        RemoveContact,
-        SetContactSettings,
-        LookupPerson,
-        PersonInfo,
-        GetNearbyPeople,
-        NearbyPeople,
-        SetPrimVideo,
-        SetPushEndpoint,
-        WherePeople,
-        PeopleWhere,
-        CallDecline,
-        CallDeclined,
-        PrimSound,
-        SetPrimPhysical,
-        PrimMotion,
-        Permissions,
-        HandPose,
-        PrimTone,
-        E2eeAddDevices,
-        CommunityList,
-        Communities,
-        CommunityCreate,
-        CommunityCreated,
-        CommunityEdit,
-        CommunityDirectory,
-        CommunityListings,
-        CommunityJoin,
-        CommunityLeave,
-        CommunityDecide,
-        CommunityAddMember,
-        CommunitySetRole,
-        CommunityRemove,
-        CommunityDelete,
-        TopicCreate,
-        TopicEdit,
-        TopicAddPeople,
-        TopicRemovePeople,
-        TopicRemoved,
-        TopicLeft,
-        ModerateDelete,
-        E2eeRedacted,
-        CommunityReport,
-        CommunityReportResolve,
-        CommunityInviteCreate,
-        CommunityInvite,
-        CommunityInviteLookup,
-        CommunityJoinInvite,
-        CallControl,
-        CallEnded,
-        CallReact,
-        CallReacted,
-        CallWatch,
-        CallWaiting,
-        CallInvite,
-        CallInvited,
-        CallKeyDrop,
-        CallKeyDropped,
-        SetAvatarLook,
-        AvatarLookOf,
-        SetFaceFrame,
-        FaceFrameOf,
-        PrimOutOfReach,
-        GrabPrim,
-        ReleasePrim,
-        OfferGreeting,
-        GreetingOffered,
-        AcceptGreeting,
-        GreetingStarted,
-        FollowPlans,
-    ];
-    for k in ALL {
-        assert_eq!(
-            MessageKind::from_wire(k as u16),
-            Some(k),
-            "discriminant {} lost its from_wire arm",
-            k as u16
-        );
+    for v in 0..=u16::MAX {
+        if let Some(k) = MessageKind::from_wire(v) {
+            assert_eq!(k as u16, v, "{k:?} answers to {v}");
+        }
     }
-    // Nothing on either side of the assigned run. `ALL` is the list to extend
-    // when a kind is added — that is the point of the test, and the reason it
-    // is written against a hand-maintained list rather than a derive.
     assert_eq!(MessageKind::from_wire(0), None);
-    assert_eq!(MessageKind::from_wire(FollowPlans as u16 + 1), None);
     // 5 is the hole `ObserverUpdate` left when regions went (protocol 23). A
     // retired number stays retired: reusing it would make a stale client's
     // observer update decode as whatever took the slot, and the run is
@@ -874,6 +738,40 @@ fn message_kind_wire_is_a_bijection() {
     for retired in [19, 75, 76, 77, 78, 79, 80, 81] {
         assert_eq!(MessageKind::from_wire(retired), None);
     }
+}
+
+/// A variant with a `request_id` field has to be marked `#[request_id]` in
+/// `message_kinds!`, or its header carries 0 and a client waiting on the
+/// reply never matches it — the one mistake there that still compiles. The
+/// pinned wire shape names every variant's fields, so it is the reference.
+#[test]
+fn every_request_id_reaches_the_header() {
+    let kinds: Vec<MessageKind> = (0..=u16::MAX).filter_map(MessageKind::from_wire).collect();
+    let shape = include_str!("wire_shape.txt");
+    let (_, variants) = shape
+        .split_once("\nNetMessage = enum\n")
+        .expect("wire_shape.txt lists NetMessage");
+    let mut seen = 0;
+    for line in variants.lines().take_while(|l| l.starts_with("  #")) {
+        // "  #2 ServerError { request_id: U32, code: U32, message: Str }"
+        let name = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|n| n.split(['{', '(']).next())
+            .expect("a variant line names its variant");
+        let has_field = line.contains("{ request_id: U32") || line.contains(", request_id: U32");
+        let kind = kinds
+            .iter()
+            .find(|k| format!("{k:?}") == name)
+            .unwrap_or_else(|| panic!("NetMessage::{name} has no MessageKind"));
+        assert_eq!(
+            kind.has_request_id(),
+            has_field,
+            "NetMessage::{name}: mark its row #[request_id] exactly when it has the field"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, kinds.len(), "one NetMessage variant per kind");
 }
 
 /// The header guards in `decode_app_frame` — the checks that keep a
