@@ -763,10 +763,16 @@ pub async fn handle_connection<T: FrameTransport>(
     let msg = match decode_app_frame(&first) {
         Ok(msg) => msg,
         Err(e) => {
-            // An app older or newer than this server: the one refusal nobody
-            // reports, because the app only says "connection reset".
+            // An app older or newer than this server: its hello's header
+            // already carries its version, so this is where an old app is
+            // refused, not the check below. Answer in our own version: an
+            // older app reads that as "too old, update" (`platform::update`),
+            // and closing without a word left it at "connection reset".
             if let ProtocolError::UnsupportedVersion(v) = e {
                 arrival.refused("protocol", v);
+                let err =
+                    encode_app_frame(&server_error(0, 1, format!("version {v} not supported")))?;
+                framed.send(Bytes::from(err)).await?;
             }
             return Err(e.into());
         }

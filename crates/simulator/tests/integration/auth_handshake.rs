@@ -176,3 +176,44 @@ async fn the_next_sign_in_is_told_where_the_avatar_was_left() {
     }
     assert_eq!(told, Some(left));
 }
+
+/// An app older than the server is answered, not just dropped: the refusal
+/// comes in the server's own wire version, which the old app cannot decode and
+/// so reads as "too old, update" (`platform::update::mark_too_old`). Closing
+/// without a word left it at "connection reset", with no way to tell why.
+#[tokio::test]
+async fn an_older_app_is_told_the_server_is_newer() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("old.db").to_str().unwrap().to_string();
+    cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+    let config = SimConfig {
+        database_path: db,
+        listen: "127.0.0.1:0".into(),
+        ..SimConfig::default()
+    };
+    let handle = serve(Arc::new(config)).await.unwrap();
+    let mut client = connect(&handle.local_addr.to_string()).await;
+
+    // An old build's hello: its own version in the header and the hello.
+    let mut frame = encode_app_frame(&NetMessage::ClientHello {
+        protocol_version: PROTOCOL_VERSION - 1,
+        auth: AuthCredential::Token("x".into()),
+    })
+    .unwrap();
+    frame[0..2].copy_from_slice(&(PROTOCOL_VERSION - 1).to_le_bytes());
+    client.send(Bytes::from(frame)).await.unwrap();
+
+    let reply = client
+        .next()
+        .await
+        .expect("the server answers before it closes")
+        .unwrap();
+    // What the old app sees is a version newer than its own…
+    let header = u16::from_le_bytes(reply[0..2].try_into().unwrap());
+    assert!(header > PROTOCOL_VERSION - 1);
+    // …and what this build reads is the refusal itself.
+    assert!(matches!(
+        decode_app_frame(&reply),
+        Ok(NetMessage::ServerError { code: 1, .. })
+    ));
+}
