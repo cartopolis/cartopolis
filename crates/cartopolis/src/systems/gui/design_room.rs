@@ -518,11 +518,7 @@ pub fn layer_design_room(
         layer.clone(),
         bevy::light::NotShadowCaster,
     ));
-    piece(
-        &mut commands,
-        meshes.add(Sphere::new(ROOM_RADIUS_M).mesh().uv(48, 24)),
-        walls,
-    );
+    piece(&mut commands, meshes.add(walls_mesh()), walls);
 }
 
 /// A soft dark patch on the floor under a part that stands on it.
@@ -714,6 +710,30 @@ pub fn let_gizmos_into_the_room(store: Option<ResMut<bevy::gizmos::config::Gizmo
     };
     let (config, _) = store.config_mut::<bevy::gizmos::config::DefaultGizmoConfigGroup>();
     config.render_layers = RenderLayers::from_layers(&[0, DESIGN_LAYER]);
+}
+
+/// The walls: a sphere round the spot, white at the horizon and greying
+/// upward to a light cool grey overhead, as the v4 sheet's backdrop does — a
+/// uniform white gave no up and no far, and the floor's edge was lost in it.
+/// Vertex colours, multiplying the walls' white.
+fn walls_mesh() -> Mesh {
+    let mut mesh = Sphere::new(ROOM_RADIUS_M).mesh().uv(48, 24);
+    let colours: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(ps)) => ps
+            .iter()
+            .map(|[_, y, _]| {
+                let up = (y / ROOM_RADIUS_M).clamp(0.0, 1.0);
+                let t = up.powf(0.6);
+                let [r, g, b] = [0.66_f32, 0.70, 0.75].map(|c| 1.0 + (c - 1.0) * t);
+                [r, g, b, 1.0]
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if !colours.is_empty() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+    }
+    mesh
 }
 
 /// The floor: one quad as wide as the room, UV0 in metres from the spot (x
@@ -1427,9 +1447,10 @@ pub fn render_design_room_scripts(
     selected: Query<&Prim, With<crate::components::Selected>>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    if room.spot.is_none() || online.is_none() {
+    if room.spot.is_none() {
         return;
     }
+    let signed_in = online.is_some();
     // A right panel (the script editor itself) takes that side of the screen.
     if !right_panel.is(crate::resources::RightPanel::None) {
         return;
@@ -1444,9 +1465,6 @@ pub fn render_design_room_scripts(
         .single()
         .ok()
         .filter(|p| room.parts.contains(&p.id));
-    if scripted.is_empty() && chosen.is_none() {
-        return;
-    }
     // The newest error a part's script reported, if its last word was one.
     let failing = |id: i64| {
         editor
@@ -1472,6 +1490,25 @@ pub fn render_design_room_scripts(
         Some(width),
         |ui| {
             title_row(ui, icons::SCRIPT, "Scripts", &note);
+            // Always there while the room is open, so it is found before it is
+            // needed ("I cannot see the script panel"): empty, it says how a
+            // script starts.
+            if !signed_in {
+                ui.label(
+                    egui::RichText::new("Scripts run on the server: sign in to write one.")
+                        .color(theme::p().text_dim),
+                );
+                return;
+            }
+            if scripted.is_empty() && chosen.is_none() {
+                ui.label(
+                    egui::RichText::new(
+                        "No scripts here yet. Select a part, and a New script button \
+                         appears here.",
+                    )
+                    .color(theme::p().text_dim),
+                );
+            }
             for (id, name) in &scripted {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().accent_text));

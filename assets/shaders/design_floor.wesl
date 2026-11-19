@@ -38,13 +38,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let p = in.uv;
     let white = params.x;
     let fade = 1.0 - smoothstep(params.y, params.z, length(p));
-    // Pixels per metre here: the metre lines go before they are 6 px apart,
-    // the five-metre lines before they are 2 px apart.
+    // Pixels per metre here: the metre lines go before they are 3 px apart,
+    // the five-metre lines before they are 1.5 px apart.
     let per_m = 1.0 / max(max(fwidth(p.x), fwidth(p.y)), 1e-5);
-    let minor = lines(p, 1.0, 1.0) * smoothstep(6.0, 14.0, per_m) * 0.40;
-    let major = lines(p, 5.0, 1.4) * smoothstep(2.0, 5.0, per_m) * 0.55;
+    // How dark each set is, as a share of the way from the white to the ink.
+    // The ink is absolute, not a share of the white: the tonemapper squeezes
+    // everything near the white together, and a grey of half the white came
+    // out a few percent darker than it ("the grid is not visible").
+    let minor = lines(p, 1.0, 1.1) * smoothstep(3.0, 8.0, per_m) * 0.55;
+    let major = lines(p, 5.0, 1.6) * smoothstep(1.5, 4.0, per_m) * 0.85;
     // A drawing office's grey, a touch cool.
-    let ink = vec3<f32>(0.50, 0.54, 0.60) * white;
+    let ink = vec3<f32>(0.20, 0.23, 0.27);
     var rgb = mix(vec3<f32>(white), ink, max(minor, major) * fade);
     // Blender's axes: red X (east), blue Z (south here).
     rgb = mix(rgb, vec3<f32>(0.80, 0.16, 0.19), axis(p.y, 1.8) * fade);
