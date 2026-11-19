@@ -36,13 +36,13 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::platform::http;
 use crate::platform::location::LocationWatch;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
-    camera_geo, lat_lng_to_world, nominatim_base_url, percent_encode, world_to_lat_lng,
-    GeoNavState, GeoSuggestion, Teleport,
+    camera_geo, nominatim_base_url, percent_encode, GeoNavState, GeoSuggestion, Teleport,
 };
 use crate::systems::globe::GlobeState;
 use crate::systems::ground_stack::GroundLayer;

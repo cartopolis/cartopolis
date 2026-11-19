@@ -407,21 +407,7 @@ pub struct LayerPrefs {
     pub overlays: std::collections::HashMap<String, bool>,
 }
 
-/// The local player's avatar: the designed MakeHuman body, sent to the server
-/// so everyone else sees it too (`human_avatar::send_avatar_look`).
-///
-/// Files written before the designer also carry `head`/`top`/`legs`/`feet`/
-/// `accessory` — the retired Quaternius clothing slots. serde ignores them.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
-pub struct AvatarAppearance {
-    /// Which default body a never-designed avatar starts from.
-    #[serde(default)]
-    pub sex: AvatarSex,
-    /// The MakeHuman body, when it has been designed (`systems::human_avatar`);
-    /// `None` is the default body for `sex`.
-    #[serde(default)]
-    pub human: Option<HumanLook>,
-}
+pub use crate::resources::AvatarAppearance;
 
 /// How the MakeHuman avatar looks: the wire's type (protocol 42), so what is
 /// saved here is exactly what the server keeps and hands on.
@@ -475,15 +461,7 @@ fn default_folder_color() -> [f32; 3] {
     DEFAULT_PIN_COLOR
 }
 
-/// The default body a never-designed avatar starts from
-/// (`AvatarLook::default_for`).
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AvatarSex {
-    #[default]
-    Man,
-    Woman,
-}
+pub use crate::resources::AvatarSex;
 
 /// Where the user was when Cartopolis closed, camera included.
 #[derive(Serialize, Deserialize, Clone)]

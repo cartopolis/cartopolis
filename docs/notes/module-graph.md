@@ -1,10 +1,49 @@
 ---
 topic: module-graph
-triggers: [crate split, circular dependency, systems/, resources.rs, hub module, crate naming, core crate]
-updated: 2026-08-06
+triggers: [crate split, circular dependency, systems/, resources.rs, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
+updated: 2026-11-19
 ---
 
 # The client's modules are coupled by state, not by behaviour
+
+## Where it stands (2026-11-19)
+
+Re-measured over every `.rs` under `crates/cartopolis/src` (263 modules, a
+subfolder folded into its module, `cfg(test)` and comments left out). The
+August cycle had grown with the code: **165** modules in one strongly connected
+component, 119 mutual pairs. Worse, `resources` and `quality`, the files meant to
+sit under everything, were *inside* it: `AvatarChooserState` held a
+`user_store::AvatarAppearance`, `AvatarState` a `locomotion::Gait` and a
+`climb::Climb`, `CameraState` a `zoom_rail::Scale`, `AppPrefs` asked
+`light_shafts` and `render_scale` whether the shafts were affordable, and
+`quality` read constants from `terrain` and `map_geometry` and carried a system
+over `AppPrefs`.
+
+**What fixed it is a split that is cheap in Rust, not the state crate the
+sections below rule out.** An inherent `impl` may live in any module of its
+crate, so only the *data* of `Gait`, `Climb`, `Scale`, `DesignerTab`,
+`AvatarAppearance` and `AvatarSex` moved down to `resources.rs` (their methods
+stayed beside their systems, which re-export the type so no path changed). The
+affordability check and the main-pass pixel count, `TERRAIN_GRID` and
+`SURFACE_MAX_IN_FLIGHT` moved into `quality`; `follow_preset` into `settings`.
+Then the cheapest outside edges: `tdbag_url` (named by 20 modules) to
+`services`, `is_loopback_host` to `platform::http`, the Mercator pair
+`lat_lng_to_world` / `world_to_lat_lng` / `WorldFrame` to `grid`, the markers
+`SunLight`, `AvatarHolder` and `AgentKind` to `components`, `glass_frame` and
+`halo_text_aligned` to `theme`, and `driver::metres_between` (five screens
+imported the driver for it) to `cartopolis_core::geo::plane_distance_m`.
+
+Result: **121** in the cycle, 104 mutual pairs, and `resources`, `components`,
+`quality`, `grid` and `services` name nothing above them —
+`source_rules::the_ground_floor_names_no_system` fails if one does again. No
+single remaining move shrinks the cycle by more than two; what is left is
+behaviour coupling (`theme ↔ chats ↔ dock`, `navigation ↔ driver ↔ geo_nav`),
+which only splitting those modules by concern can loosen.
+
+The hubs' machinery is private now (`GlobeState` 13 fields, 5 of them machinery,
+all private; `MapStream` likewise), so the August tables below overstate how
+hard a state/machinery split would be — but simulating one for the three hubs
+leaves the cycle at the same size, so it is not the lever either.
 
 Measured 2026-08-06 over `crates/cartopolis/src/systems/*.rs` (50 files) by
 extracting every `crate::systems::<m>` / `super::<m>::` reference into an edge

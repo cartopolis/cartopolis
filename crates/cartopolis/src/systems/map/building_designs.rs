@@ -28,7 +28,7 @@ use bevy::tasks::IoTaskPool;
 use cartopolis_geo::building_design::{BuildingDesign, DESIGN_ZOOM};
 
 use crate::platform::{http, storage};
-use crate::systems::osm_buildings::tdbag_url;
+use crate::services::tdbag_url;
 
 /// How often the manifest is asked again, seconds. Short enough that a person
 /// who saves in the editor and walks into the building sees it; long enough to be

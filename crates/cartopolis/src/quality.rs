@@ -637,15 +637,15 @@ impl Budget {
             shadow_filter: ShadowFilteringMethod::Gaussian,
             tonemapping: TONEMAPPING,
             space_raymarch: true,
-            tile_px: crate::systems::vector_tiles::TILE_PX,
-            compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
-            terrain_grid: crate::systems::terrain::TERRAIN_GRID,
+            tile_px: cartopolis_geo::vector_tiles::TILE_PX,
+            compressed_tile_px: cartopolis_geo::vector_tiles::TILE_PX,
+            terrain_grid: TERRAIN_GRID,
             render_scale: 1.0,
             fps_cap: Some(60.0),
             upload_bytes_per_frame: None,
             resident_bytes_target: None,
             surface_ring_bytes: None,
-            surface_jobs: crate::systems::map_geometry::SURFACE_MAX_IN_FLIGHT,
+            surface_jobs: SURFACE_MAX_IN_FLIGHT,
             // 512 MiB, which at 1,365 kB per 512² ground tile is roughly 380 of
             // them — a clipmap's worth of city held behind the live one, so
             // flying out and back costs an upload rather than another 68 ms of
@@ -727,9 +727,9 @@ impl Budget {
             shadow_filter: ShadowFilteringMethod::Hardware2x2,
             tonemapping: TONEMAPPING,
             space_raymarch: false,
-            tile_px: crate::systems::vector_tiles::TILE_PX,
-            compressed_tile_px: crate::systems::vector_tiles::TILE_PX,
-            terrain_grid: crate::systems::terrain::TERRAIN_GRID,
+            tile_px: cartopolis_geo::vector_tiles::TILE_PX,
+            compressed_tile_px: cartopolis_geo::vector_tiles::TILE_PX,
+            terrain_grid: TERRAIN_GRID,
             // Native resolution: an integrated GPU is bandwidth-limited, not
             // resolution-limited, and this rung's brief is to keep the picture.
             render_scale: 1.0,
@@ -1186,18 +1186,6 @@ pub fn budget() -> &'static Budget {
     unsafe { &*ptr }
 }
 
-/// Swap the budget when Settings ▸ Graphics picks another preset.
-///
-/// `PreUpdate`, so that every system in `Update` sees the new budget in the same
-/// frame it sees the changed preference — `manage_lights` and
-/// `apply_preferred_render_scale` both act on `AppPrefs` change detection and
-/// would otherwise apply the old budget's answer once and not look again.
-pub fn follow_preset(prefs: bevy::prelude::Res<crate::resources::AppPrefs>) {
-    if bevy::prelude::DetectChanges::is_changed(&prefs) {
-        select(prefs.quality.as_env_word());
-    }
-}
-
 /// How many times the budget has been installed. Changes when Settings swaps the
 /// preset, which is the signal to re-apply anything read from it once.
 #[must_use]
@@ -1416,7 +1404,7 @@ pub struct Capabilities {
     /// in it and the globe tiles the ocean mask. Read off the device for the reason
     /// `float32_filterable` is: whether an Adreno exposes BC is a property of the
     /// driver this run found, not of "Android".
-    pub tile_blocks: Option<crate::systems::texcomp::BlockFormat>,
+    pub tile_blocks: Option<cartopolis_geo::texcomp::BlockFormat>,
     /// `TEXTURE_COMPRESSION_ETC2` is offered, whichever format `tile_blocks` chose:
     /// what lets `CARTO_TILE_COMPRESSION=etc2` put the phone's format on a desktop.
     pub etc2_offered: bool,
@@ -1463,8 +1451,8 @@ pub fn capabilities() -> Option<Capabilities> {
 /// offers) — the A/B switch, since whether a compressed
 /// basemap looks worse is a judgement made by comparing two runs.
 #[must_use]
-pub fn tile_compression() -> Option<crate::systems::texcomp::BlockFormat> {
-    use crate::systems::texcomp::BlockFormat;
+pub fn tile_compression() -> Option<cartopolis_geo::texcomp::BlockFormat> {
+    use cartopolis_geo::texcomp::BlockFormat;
     let caps = capabilities()?;
     match crate::env_value("CARTO_TILE_COMPRESSION").as_deref() {
         Some("0" | "off") => None,
@@ -1974,6 +1962,103 @@ fn auto() -> Budget {
     Budget::desktop()
 }
 
+/// Main-pass pixels above which "Automatic" leaves the shafts off.
+///
+/// Bevy's march runs at full main-pass resolution, `MARCH_STEPS` shadow-map
+/// samples per pixel, with no reduced-resolution option — so its cost is pixels
+/// times steps and nothing else. Measured 2026-10-15 on an M5 Pro over Groningen
+/// at street level (`--shot --hide-ui --time 12 --clouds 0 --rain 0`, two runs
+/// each): 38 ms a frame with the shafts at 3134×1952, a MacBook's Retina panel,
+/// against 12.5 ms without — ~4 ms per megapixel. 4 MP keeps them on at 1440p
+/// and below, where they cost what they were judged worth, and drops them on
+/// Retina and 4K, where they were most of the frame. A person who asks for them
+/// in Settings still gets them; this only decides what nobody asked about.
+///
+/// The Steam Deck paid far more per pixel: ~17 ms at 1280×800 (2026-10-19), both
+/// over the street and from 3 km. The patched march (`bevy_pbr_volumetric_fog.wesl`:
+/// steps by ray length, no second march for point lights) and [`altitude_factor`]
+/// brought that to ~6 ms at 120 m and nothing at 3 km; this threshold was not
+/// re-tuned after it. `docs/notes/render-performance-survey.md` has the table.
+pub const AUTO_MAX_PIXELS: u64 = 4_000_000;
+
+/// Whether "Automatic" can afford the shafts at a main pass of `pixels`.
+///
+/// 0 — the camera has no target yet — answers yes, so the first frames of a
+/// small window are not drawn without them only to have them appear.
+#[must_use]
+pub fn affordable_at(pixels: u64) -> bool {
+    pixels <= AUTO_MAX_PIXELS
+}
+
+/// The main pass's pixel count, last frame. 0 until the camera has a target.
+pub(crate) static MAIN_PASS_PIXELS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How many pixels the 3D world is drawn at: the camera's physical target times
+/// the live [`RenderScale`], squared. 0 before the first frame has a target.
+///
+/// A global rather than a `Resource` for the reason `quality::capabilities()`
+/// is one: it is read by `AppPrefs` methods that resolve "Automatic", and every
+/// caller of those — Settings among them, a system at Bevy's parameter cap —
+/// would otherwise have to grow a parameter to pass it in.
+#[must_use]
+pub fn main_pass_pixels() -> u64 {
+    MAIN_PASS_PIXELS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Samples per side, so that [`TERRAIN_SAMPLE_M`] is 3.125 m over
+/// [`TERRAIN_HALF_M`]'s 6.4 km box. `2049`, not `2048`, so that the *intervals*
+/// between samples are a power of two and [`build_floors`]' pyramid halves exactly.
+///
+/// **This was 256 (25 m) and 25 m is the resolution at which a Dutch city has no
+/// slopes.** Measured over Groningen 2026-09-13, PDOK's `dtm_05m` over the field's
+/// own box, comparing the surface normal a mesh would be shaded by:
+///
+/// | field spacing | median slope | Lambert term against flat ground, sun at 30° |
+/// |---|---|---|
+/// | 25 m | 0.46° | 0.96 – 1.04 |
+/// | 12.5 m | 0.72° | 0.92 – 1.07 |
+/// | 6.25 m | 1.07° | 0.86 – 1.13 |
+/// | 3.125 m | 1.34° | 0.77 – 1.19 |
+///
+/// The relief was never missing: the Hondsrug rises 7 m through the centre of that
+/// box and falls to −0.7 m a kilometre west, and the 25 m field carried all of it.
+/// It carried it over 256 samples, so no facet ever tilted more than half a degree
+/// and the whole ridge shaded within ±4 % of flat — present, correct, and invisible
+/// under the map imagery. What 6.25 m adds is not more ground, it is ground with a
+/// gradient in it.
+///
+/// It is not finer than that because this is **one** request and one bake: 2049² is
+/// 12 MB on the wire (measured, 4.5 s) and 17 MB resident, and AHN's own 0.5 m over
+/// the same box would be 12800², 625 MB and 144 requests. Half a metre is what the
+/// fine tier ([`FINE_HALF_M`]) follows the camera to reach, for the consumers that
+/// ask about a *point* rather than build a mesh.
+pub const TERRAIN_GRID: usize = 2049;
+
+/// Max concurrent tessellation tasks.
+///
+/// This was 4, to keep a 400-cell burst of MVT decode + earcut + road raster +
+/// vegetation from freezing the frame loop — which it did, because that work ran
+/// on `IoTaskPool` and on wasm that is the main thread. It runs on
+/// `platform::workers` now, so the frame loop is no longer what a burst lands on,
+/// and a cap of 4 would instead leave most of the pool idle: the pool is sized to
+/// `hardware_concurrency - 1` (clamped to 8), so fewer in flight than workers is
+/// simply parallelism left unused.
+///
+/// Still bounded rather than unlimited: each finished cell holds meshes plus a
+/// shore field until the frame loop drains it at `MAX_BUILDS_PER_FRAME`, so an
+/// uncapped burst trades a frame-time problem for a memory one. Matching the
+/// pool's own ceiling keeps every worker fed without queueing results faster than
+/// they can be consumed.
+///
+/// **Nine, the whole 3×3 ring, not the eight it was.** Over graded ground every
+/// job parks after its downloads until the terrain lands
+/// (`TerrainField::holds_builds`, up to `terrain::GRADED_HOLD_S`) and keeps its
+/// slot while it waits, so at eight the ninth cell could not even start
+/// downloading until the hold ended — one cell of every start built a hold later
+/// than the rest. A parked job holds downloaded text, not meshes.
+pub(crate) const SURFACE_MAX_IN_FLIGHT: usize = 9;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2390,7 +2475,7 @@ mod tests {
         }
         assert_eq!(
             desktop.tile_px,
-            crate::systems::vector_tiles::TILE_PX,
+            cartopolis_geo::vector_tiles::TILE_PX,
             "the desktop tier must rasterise at the size the flat map was tuned at"
         );
     }

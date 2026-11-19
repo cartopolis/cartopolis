@@ -1338,6 +1338,50 @@ pub fn chip_frame() -> egui::Frame {
         ))
 }
 
+/// The design's floating card (`.float-top`, `.sheet`): solid since
+/// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
+pub fn glass_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(p().glass)
+        .stroke(egui::Stroke::new(1.0, p().panel_rim))
+        .corner_radius(CornerRadius::same(20))
+        .inner_margin(Margin::symmetric(12, 10))
+}
+
+/// Small text over the map, legible on both white paper and dark water.
+///
+/// The halo idiom is the scale bar's, and for its reason: a filled plate behind
+/// something this small reads as a piece of chrome that has come loose. Four
+/// offset copies rather than a stroke, because epaint's text has no outline —
+/// diagonals as well as axes, or the halo thins to nothing at the corners of a
+/// glyph. Anchored by `align` at `at`: the locate caption ends at its disc's
+/// right edge, the hand button's word sits to the left of its disc
+/// (`map_osd`).
+pub fn halo_text_aligned(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    ink: egui::Color32,
+) {
+    let font = egui::FontId::proportional(SIZE_TINY);
+    for dx in [-1.0, 0.0, 1.0] {
+        for dy in [-1.0, 0.0, 1.0] {
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            painter.text(
+                at + egui::vec2(dx, dy),
+                align,
+                text,
+                font.clone(),
+                p().overlay,
+            );
+        }
+    }
+    painter.text(at, align, text, font, ink);
+}
+
 /// Height of a primary button on a pointer. Under a finger it grows to
 /// [`row_height`], which is larger.
 pub const PRIMARY_BUTTON_HEIGHT: f32 = 40.0;

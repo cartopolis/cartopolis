@@ -106,7 +106,7 @@ pub(crate) async fn load_ground_sheets(
     }
     let url = format!(
         "{}/ground/{TILE_ZOOM}/{cx}/{cy}.bin?v={stamp}",
-        crate::systems::osm_buildings::tdbag_url()
+        crate::services::tdbag_url()
     );
     let b = http::fetch_optional(http::Request::get(url)).await.ok()??;
     let cut = cartopolis_geo::ground_sheets::decode(&b).ok()?;
@@ -137,7 +137,7 @@ pub(crate) async fn load_road_heights(
         None => {
             let url = format!(
                 "{}/roads/{TILE_ZOOM}/{cx}/{cy}.bin?v={stamp}",
-                crate::systems::osm_buildings::tdbag_url()
+                crate::services::tdbag_url()
             );
             let b = http::fetch_optional(http::Request::get(url)).await.ok()??;
             cartopolis_geo::road_levels::RoadHeights::decode(&b).ok()?;
@@ -178,7 +178,7 @@ const ATLAS_DECKS: crate::platform::cell_source::CellSource<Option<Vec<AtlasDeck
         url: Some(|cx, cy| {
             format!(
                 "{}/decks/{TILE_ZOOM}/{cx}/{cy}.json?v={}",
-                crate::systems::osm_buildings::tdbag_url(),
+                crate::services::tdbag_url(),
                 COVERAGE.graded_stamp()
             )
         }),

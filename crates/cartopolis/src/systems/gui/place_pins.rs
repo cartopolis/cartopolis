@@ -30,7 +30,7 @@
 //! for the redraw when one moved.
 //!
 //! Below the space tier a place is placed through the anchored Mercator frame
-//! (`geo_nav::lat_lng_to_world`) — the same frame the tiles are laid in, so the
+//! (`crate::grid::lat_lng_to_world`) — the same frame the tiles are laid in, so the
 //! pin sits on its building. In space that frame is meaningless, so the point is
 //! taken on the globe itself (`globe::GlobeState::direction_local`) and pins on
 //! the far side are dropped by the horizon test.
@@ -44,8 +44,9 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::grid::anchored_position_f64;
+use crate::grid::lat_lng_to_world;
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::geo_nav::{lat_lng_to_world, GeoNavState, Teleport};
+use crate::systems::geo_nav::{GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
 use crate::systems::theme;
 use crate::systems::user_store::UserStore;
@@ -505,7 +506,7 @@ pub fn render_place_pins(
         // longitude, as everybody else is.
         if let (Some(name), Ok((cell, tf))) = (&me, local.single()) {
             let abs = anchored_position_f64(cell, tf.translation);
-            let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(anchor, abs.x, abs.z);
+            let (lat, lng) = crate::grid::world_to_lat_lng(anchor, abs.x, abs.z);
             let foot = if in_space {
                 place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)
             } else {

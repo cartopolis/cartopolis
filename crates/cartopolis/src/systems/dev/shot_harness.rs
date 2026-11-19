@@ -3544,7 +3544,7 @@ pub fn hold_scripted_gizmo(
         .clamp(5.0, 12.0);
     let mut at = eye + forward * distance;
     at.y = at.y.max(HALF_HEIGHT);
-    let (latitude, longitude) = crate::systems::geo_nav::world_to_lat_lng(anchor, at.x, at.z);
+    let (latitude, longitude) = crate::grid::world_to_lat_lng(anchor, at.x, at.z);
 
     if seeded.is_empty() {
         commands.spawn((
@@ -3660,7 +3660,7 @@ pub fn hold_scripted_design_room(
     // Markt), and the ray put the spot 40 m off, the camera outside the walls.
     let flat = bevy::math::DVec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
     let at = eye + flat * 14.0;
-    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(anchor, at.x, at.z);
+    let (lat, lng) = crate::grid::world_to_lat_lng(anchor, at.x, at.z);
     // Followed until the shutter, as the fire is: the first frames see the
     // camera where the app started, not where `--at` puts it.
     if room
@@ -4088,7 +4088,7 @@ pub fn aim_scripted_camera(
     let (Some(geo), Ok((cell, tf))) = (anchor.geo, camera.single()) else {
         return;
     };
-    let (tx, tz) = crate::systems::geo_nav::lat_lng_to_world(geo, target[0], target[1]);
+    let (tx, tz) = crate::grid::lat_lng_to_world(geo, target[0], target[1]);
     let (tx, tz) = (tx as f32, tz as f32);
     let here = crate::grid::anchored_position(cell, tf.translation());
     let to = Vec3::new(tx, terrain.at(tx, tz), tz) - here;
@@ -4149,7 +4149,7 @@ pub fn pose_scripted_camera(
         let Some(geo) = anchor.geo else {
             return;
         };
-        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, shot.lat, shot.lng);
+        let (wx, wz) = crate::grid::lat_lng_to_world(geo, shot.lat, shot.lng);
         let here = crate::grid::anchored_position(cell, tf.translation);
         let want_y = terrain.at(wx as f32, wz as f32) + shot.alt as f32;
         let dy = want_y - here.y;
@@ -4442,7 +4442,7 @@ pub fn select_scripted_building(
     let Some(geo) = anchor.geo else {
         return;
     };
-    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+    let (lat, lng) = crate::grid::world_to_lat_lng(
         geo,
         f64::from(avatar.position.x),
         f64::from(avatar.position.z),
@@ -4732,14 +4732,7 @@ pub struct VisualCounts<'w, 's> {
         &'static bevy::camera::visibility::ViewVisibility,
         With<crate::systems::building_select::BuildingShell>,
     >,
-    agents: Query<
-        'w,
-        's,
-        (
-            &'static crate::systems::traffic::AgentKind,
-            &'static Visibility,
-        ),
-    >,
+    agents: Query<'w, 's, (&'static crate::components::AgentKind, &'static Visibility)>,
     crows: Query<'w, 's, &'static crate::systems::crows::Crow>,
     /// The particle emitters in the world (`systems::particles`). Bundled here
     /// rather than added as its own argument for the reason above — the system is
@@ -5247,9 +5240,8 @@ fn record_metrics(
         if let Some(anchor) = readouts.map_anchor.geo {
             let flat = Vec2::new(fwd.x, fwd.z).normalize_or_zero();
             let target = aim.unwrap_or(Vec2::new(cam_world.x, cam_world.z) + flat * 150.0);
-            let ll = |p: Vec2| {
-                crate::systems::geo_nav::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y))
-            };
+            let ll =
+                |p: Vec2| crate::grid::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y));
             let pose = match projection {
                 Projection::Perspective(p) => Some(crate::systems::aerial_reference::Pose {
                     anchor,
@@ -5280,11 +5272,8 @@ fn record_metrics(
         .and_then(|p| readouts.tunnels.nearest_entrance(p))
         .and_then(|(at, heading)| {
             readouts.map_anchor.geo.map(|anchor| {
-                let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
-                    anchor,
-                    f64::from(at.x),
-                    f64::from(at.y),
-                );
+                let (lat, lng) =
+                    crate::grid::world_to_lat_lng(anchor, f64::from(at.x), f64::from(at.y));
                 (lat, lng, heading)
             })
         });
@@ -5303,7 +5292,7 @@ fn record_metrics(
             .map_anchor
             .geo
             .map_or((f64::NAN, f64::NAN), |anchor| {
-                crate::systems::geo_nav::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y))
+                crate::grid::world_to_lat_lng(anchor, f64::from(p.x), f64::from(p.y))
             })
     };
     let camera_geo = geo_of(Vec2::new(cam_world.x, cam_world.z));
@@ -5474,22 +5463,20 @@ fn record_metrics(
         traffic_cars: visuals
             .agents
             .iter()
-            .filter(|(k, v)| {
-                **k == crate::systems::traffic::AgentKind::Car && **v != Visibility::Hidden
-            })
+            .filter(|(k, v)| **k == crate::components::AgentKind::Car && **v != Visibility::Hidden)
             .count(),
         traffic_walkers: visuals
             .agents
             .iter()
             .filter(|(k, v)| {
-                **k == crate::systems::traffic::AgentKind::Walker && **v != Visibility::Hidden
+                **k == crate::components::AgentKind::Walker && **v != Visibility::Hidden
             })
             .count(),
         traffic_cyclists: visuals
             .agents
             .iter()
             .filter(|(k, v)| {
-                **k == crate::systems::traffic::AgentKind::Cyclist && **v != Visibility::Hidden
+                **k == crate::components::AgentKind::Cyclist && **v != Visibility::Hidden
             })
             .count(),
         crows_air: visuals.crows.iter().filter(|c| c.flying()).count(),

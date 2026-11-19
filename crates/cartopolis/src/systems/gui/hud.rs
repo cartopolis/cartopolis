@@ -342,7 +342,7 @@ fn locate_overlay(
                         egui::Align2::RIGHT_CENTER,
                     )
                 };
-                halo_text_aligned(p, pos, align, &caption, tone);
+                theme::halo_text_aligned(p, pos, align, &caption, tone);
             }
             let resp = resp.on_hover_text(hover);
             clicked = resp.clicked();
@@ -563,40 +563,6 @@ fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, 
         points,
         egui::Stroke::new(2.2, theme::p().accent),
     ));
-}
-
-/// Small text over the map, legible on both white paper and dark water.
-///
-/// The halo idiom is the scale bar's, and for its reason: a filled plate behind
-/// something this small reads as a piece of chrome that has come loose. Four
-/// offset copies rather than a stroke, because epaint's text has no outline —
-/// diagonals as well as axes, or the halo thins to nothing at the corners of a
-/// glyph. Anchored by `align` at `at`: the locate caption ends at its disc's
-/// right edge, the hand button's word sits to the left of its disc
-/// (`map_osd`).
-pub(crate) fn halo_text_aligned(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    align: egui::Align2,
-    text: &str,
-    ink: egui::Color32,
-) {
-    let font = egui::FontId::proportional(theme::SIZE_TINY);
-    for dx in [-1.0, 0.0, 1.0] {
-        for dy in [-1.0, 0.0, 1.0] {
-            if dx == 0.0 && dy == 0.0 {
-                continue;
-            }
-            painter.text(
-                at + egui::vec2(dx, dy),
-                align,
-                text,
-                font.clone(),
-                theme::p().overlay,
-            );
-        }
-    }
-    painter.text(at, align, text, font, ink);
 }
 
 /// The locate button's caption: what pressing it will do, or — while it is lit —

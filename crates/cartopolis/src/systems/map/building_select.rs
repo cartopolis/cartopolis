@@ -45,11 +45,11 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use cartopolis_core::ring::point_in_ring;
 
 use crate::components::{Avatar, FreeCamera, HideInSpace};
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{AvatarState, MapAnchor};
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::building_windows::{BuildingMaterial, GHOST_MAX_POINTS, GHOST_RING_VEC4S};
-use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
 use crate::systems::interiors::InteriorFloors;
 use crate::systems::lod22::{Lod22Buildings, ShellMeasure};
 use crate::systems::map_stream::MapStream;

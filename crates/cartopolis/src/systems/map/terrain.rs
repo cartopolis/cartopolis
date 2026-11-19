@@ -53,8 +53,8 @@
 use bevy::prelude::*;
 
 use crate::grid::AnchoredCamera;
+use crate::grid::{world_to_lat_lng, WorldFrame};
 use crate::platform::sync::{Arc, Mutex};
-use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
 use futures_channel::oneshot;
@@ -64,34 +64,7 @@ use futures_channel::oneshot;
 /// close enough for relief to read as relief.
 pub const TERRAIN_HALF_M: f32 = 3_200.0;
 
-/// Samples per side, so that [`TERRAIN_SAMPLE_M`] is 3.125 m over
-/// [`TERRAIN_HALF_M`]'s 6.4 km box. `2049`, not `2048`, so that the *intervals*
-/// between samples are a power of two and [`build_floors`]' pyramid halves exactly.
-///
-/// **This was 256 (25 m) and 25 m is the resolution at which a Dutch city has no
-/// slopes.** Measured over Groningen 2026-09-13, PDOK's `dtm_05m` over the field's
-/// own box, comparing the surface normal a mesh would be shaded by:
-///
-/// | field spacing | median slope | Lambert term against flat ground, sun at 30° |
-/// |---|---|---|
-/// | 25 m | 0.46° | 0.96 – 1.04 |
-/// | 12.5 m | 0.72° | 0.92 – 1.07 |
-/// | 6.25 m | 1.07° | 0.86 – 1.13 |
-/// | 3.125 m | 1.34° | 0.77 – 1.19 |
-///
-/// The relief was never missing: the Hondsrug rises 7 m through the centre of that
-/// box and falls to −0.7 m a kilometre west, and the 25 m field carried all of it.
-/// It carried it over 256 samples, so no facet ever tilted more than half a degree
-/// and the whole ridge shaded within ±4 % of flat — present, correct, and invisible
-/// under the map imagery. What 6.25 m adds is not more ground, it is ground with a
-/// gradient in it.
-///
-/// It is not finer than that because this is **one** request and one bake: 2049² is
-/// 12 MB on the wire (measured, 4.5 s) and 17 MB resident, and AHN's own 0.5 m over
-/// the same box would be 12800², 625 MB and 144 requests. Half a metre is what the
-/// fine tier ([`FINE_HALF_M`]) follows the camera to reach, for the consumers that
-/// ask about a *point* rather than build a mesh.
-pub const TERRAIN_GRID: usize = 2049;
+pub use crate::quality::TERRAIN_GRID;
 
 /// Ground metres between adjacent samples (3.125 m). Public because it is the only
 /// honest answer to "how finely should I subdivide a mesh that stands on this
@@ -2382,7 +2355,7 @@ fn bake(
     let started = bevy::platform::time::Instant::now();
     let step = (half * 2.0) as f64 / (n - 1) as f64;
     // Mercator is separable, so the grid's 65,536 coordinate conversions are
-    // really `n` longitudes and `n` latitudes (`geo_nav::WorldFrame` says why this
+    // really `n` longitudes and `n` latitudes (`crate::grid::WorldFrame` says why this
     // is worth spelling out). Naively this ran the anchor's trig, a `sinh` and an
     // `atan` per *sample*, on the main thread, once per map anchor.
     let frame = WorldFrame::new(anchor);

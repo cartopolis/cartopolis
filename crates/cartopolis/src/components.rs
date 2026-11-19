@@ -403,3 +403,34 @@ pub struct VehicleBox;
 /// Marker for the billboarded line-number labels above the boxes.
 #[derive(Component)]
 pub struct VehicleLabel;
+
+/// Marker for the sun's directional light.
+#[derive(Component)]
+pub(crate) struct SunLight;
+
+/// The entity an avatar's MakeHuman body is built under, a child of the avatar
+/// (`human_avatar::spawn_human`). Its transform carries what the model does that
+/// the avatar does not — the tuck of a jump, the arrival after a teleport, the slide onto a seat,
+/// the designer's turn to the camera (`update_avatar_model_pose`) — and never
+/// the avatar's position, which is the sim's.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct AvatarHolder;
+
+/// What an agent is. The steering is the same for all three — what differs is
+/// which lines they may use, how fast they go, and where across the road they
+/// sit.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentKind {
+    Car,
+    /// A person on foot.
+    Walker,
+    /// A person on a bike: the crowd's people again, posed on a city bike
+    /// (`cartopolis_human::crowd::Ride`), on the cycle tracks and the streets
+    /// bikes share with cars (`cartopolis_geo::traffic::cycle_ok`).
+    Cyclist,
+    /// An electric fatbike, ridden fast and not by the rules: on the cycle
+    /// tracks and the streets, and on the pavements and footpaths too, either
+    /// way up a one-way street, weaving through whoever is in the way, and
+    /// most of them through a red light. Shown with the cyclists.
+    Fatbike,
+}

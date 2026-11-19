@@ -4428,16 +4428,6 @@ pub(crate) fn raised_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(12))
 }
 
-/// The design's floating card (`.float-top`, `.sheet`): solid since
-/// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
-pub(crate) fn glass_frame() -> egui::Frame {
-    egui::Frame::NONE
-        .fill(theme::p().glass)
-        .stroke(egui::Stroke::new(1.0, gline()))
-        .corner_radius(egui::CornerRadius::same(20))
-        .inner_margin(egui::Margin::symmetric(12, 10))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply(
     act: Actions,
@@ -4894,7 +4884,7 @@ pub fn render_chat_world(
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(&ctx, |ui| {
-            glass_frame()
+            theme::glass_frame()
                 .corner_radius(egui::CornerRadius::same(24))
                 .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
@@ -4933,7 +4923,7 @@ pub fn render_chat_world(
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
             .show(&ctx, |ui| {
                 ui.set_width(width);
-                glass_frame()
+                theme::glass_frame()
                     .corner_radius(egui::CornerRadius::same(26))
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {

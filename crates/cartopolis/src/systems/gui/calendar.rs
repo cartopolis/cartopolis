@@ -2053,7 +2053,7 @@ pub fn render_reminder(
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
         .show(&ctx, |ui| {
-            crate::systems::chats::glass_frame().show(ui, |ui| {
+            crate::systems::theme::glass_frame().show(ui, |ui| {
                 ui.set_width(w);
                 ui.horizontal(|ui| {
                     let icon = if r.item.is_meetup() {

@@ -53,6 +53,7 @@
 //! (`systems::street_detail`), because a car driving through a red light it is
 //! standing next to is not invisible at all — see [`signal_speed`].
 
+use crate::components::AgentKind;
 use bevy::prelude::*;
 use bevy::render::mesh::MeshTag;
 use big_space::prelude::{BigSpace, Grid, GridCell};
@@ -864,25 +865,6 @@ struct LineKey {
 }
 
 // ─── The cars ────────────────────────────────────────────────────────────────
-
-/// What an agent is. The steering is the same for all three — what differs is
-/// which lines they may use, how fast they go, and where across the road they
-/// sit.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentKind {
-    Car,
-    /// A person on foot.
-    Walker,
-    /// A person on a bike: the crowd's people again, posed on a city bike
-    /// (`cartopolis_human::crowd::Ride`), on the cycle tracks and the streets
-    /// bikes share with cars (`cartopolis_geo::traffic::cycle_ok`).
-    Cyclist,
-    /// An electric fatbike, ridden fast and not by the rules: on the cycle
-    /// tracks and the streets, and on the pavements and footpaths too, either
-    /// way up a one-way street, weaving through whoever is in the way, and
-    /// most of them through a red light. Shown with the cyclists.
-    Fatbike,
-}
 
 impl AgentKind {
     /// Which of the per-kind tables in [`drive_traffic`] this kind uses.

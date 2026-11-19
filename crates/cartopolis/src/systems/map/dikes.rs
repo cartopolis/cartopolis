@@ -49,12 +49,12 @@ use bevy::tasks::IoTaskPool;
 use crate::grid::AnchoredCamera;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::services::tdbag_url;
 use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::MapStream;
-use crate::systems::osm_buildings::tdbag_url;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
 /// Fixed cache/streaming zoom — the one the extractor bins into.
@@ -603,7 +603,7 @@ pub fn feed_dike_labels(
                 .points
                 .iter()
                 .map(|&(lat, lng)| {
-                    let (x, z) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+                    let (x, z) = crate::grid::lat_lng_to_world(anchor, lat, lng);
                     Vec2::new(x as f32, z as f32)
                 })
                 .collect();

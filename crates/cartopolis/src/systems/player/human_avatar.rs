@@ -1148,7 +1148,7 @@ pub(crate) fn finish_rebuilds(
     mut clip_assets: ResMut<Assets<AnimationClip>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     children: Query<&Children>,
-    holders: Query<&Visibility, With<super::avatar::AvatarHolder>>,
+    holders: Query<&Visibility, With<crate::components::AvatarHolder>>,
     players: Query<(&AnimationPlayer, &AnimationTransitions)>,
     parts: Query<&MeshMaterial3d<StandardMaterial>, With<HumanPart>>,
 ) {
@@ -1181,7 +1181,7 @@ pub(crate) fn finish_rebuilds(
                     prepared,
                     *tints,
                     avatar,
-                    super::avatar::AvatarHolder,
+                    crate::components::AvatarHolder,
                     true,
                 );
                 let holder = spawned.holder;

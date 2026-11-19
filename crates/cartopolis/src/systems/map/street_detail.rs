@@ -47,12 +47,13 @@ use crate::grid::{
 };
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
+use crate::services::tdbag_url;
 use crate::systems::cell_ring;
 use crate::systems::collision::{BuildingColliders, Footprint};
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::osm_buildings::{
-    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, tdbag_url, MeshData,
+    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, MeshData,
 };
 use crate::systems::scatter::{
     self, build_vegetation_meshes, srgb_to_linear_rgb, TreeForm, TreeInstance, TREE_FADE_END,

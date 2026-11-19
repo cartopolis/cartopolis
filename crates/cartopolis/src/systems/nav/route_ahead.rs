@@ -263,7 +263,7 @@ const SPEEDS_ZOOM: u32 = 14;
 /// that is harmless: [`parse_corridor`] keeps only a way within
 /// [`SPEED_MATCH_M`] of the route.
 async fn speeds_from_atlas(points: &[[f64; 2]]) -> Option<String> {
-    let host = crate::systems::osm_buildings::tdbag_url();
+    let host = crate::services::tdbag_url();
     if host.is_empty() {
         return None;
     }

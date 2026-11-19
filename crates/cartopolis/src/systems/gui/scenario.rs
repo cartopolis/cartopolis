@@ -390,7 +390,7 @@ impl ScenarioView {
 
 /// One area set, fetched from our host and decoded off the frame loop.
 async fn fetch_areas(name: String) -> Result<AreaSet, String> {
-    let base = crate::systems::osm_buildings::tdbag_url();
+    let base = crate::services::tdbag_url();
     let url = format!("{}/areas/{name}.bin", base.trim_end_matches('/'));
     let bytes = crate::platform::http::fetch(crate::platform::http::Request::get(url)).await?;
     AreaSet::decode(&bytes).map_err(|e| format!("{name}: {e}"))
@@ -571,7 +571,7 @@ impl Projector<'_> {
             return None;
         }
         let t = height / -d.y;
-        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+        let (lat, lng) = crate::grid::world_to_lat_lng(
             self.anchor,
             self.cam_world.x + o.x + d.x * t,
             self.cam_world.z + o.z + d.z * t,

@@ -100,18 +100,7 @@ pub fn swim_speed_for(land_speed: f32) -> f32 {
 pub const GROUND_ACCEL: f32 = 7.0;
 pub const GROUND_DECEL: f32 = 9.0;
 
-/// Which gait the avatar is travelling in. Chosen by held modifiers, not by
-/// speed — the speed is the *consequence* (see [`Gait::speed`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Gait {
-    /// Alt held: a stroll.
-    Stroll,
-    /// The default.
-    #[default]
-    Walk,
-    /// Shift held.
-    Run,
-}
+pub use crate::resources::Gait;
 
 impl Gait {
     /// Target ground speed for this gait (m/s).

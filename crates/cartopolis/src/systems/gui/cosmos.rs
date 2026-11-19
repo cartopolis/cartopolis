@@ -1095,7 +1095,7 @@ const GALAXIES_MAX: usize = if cfg!(any(target_os = "android", target_arch = "wa
 };
 
 async fn fetch_galaxies() -> Result<Galaxies, String> {
-    let base = crate::systems::osm_buildings::tdbag_url();
+    let base = crate::services::tdbag_url();
     let url = format!("{}/cosmos/galaxies.bin", base.trim_end_matches('/'));
     let bytes = crate::platform::http::fetch(crate::platform::http::Request::get(url)).await?;
     Galaxies::decode(&bytes).map_err(|e| e.to_string())

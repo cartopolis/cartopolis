@@ -148,12 +148,11 @@ use cartopolis_core::motion;
 use web_time::Instant;
 
 use crate::components::{Avatar, FreeCamera};
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::geo_nav::{
-    lat_lng_to_world, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
-};
+use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
 use crate::systems::navigation::RouteState;

@@ -266,7 +266,7 @@ mod tests {
     /// running 0–6 tiles at a time behind the surfaces' meshing at 16.
     #[test]
     fn the_web_cap_runs_the_basemap_beside_the_surfaces() {
-        use crate::systems::map_geometry::SURFACE_MAX_IN_FLIGHT;
+        use crate::quality::SURFACE_MAX_IN_FLIGHT;
         use crate::systems::map_stream::TILE_MAX_IN_FLIGHT;
         assert!(
             super::WEB_CAPACITY - RESERVED_FOR_NEAR >= TILE_MAX_IN_FLIGHT + SURFACE_MAX_IN_FLIGHT

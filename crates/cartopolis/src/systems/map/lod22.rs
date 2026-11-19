@@ -41,12 +41,13 @@ use cartopolis_core::ring::point_in_ring;
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::services::tdbag_url;
 use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::cell_ring;
 use crate::systems::globe::GlobeState;
 use crate::systems::load_control;
 use crate::systems::map_stream::MapStream;
-use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, tdbag_url, MeshData};
+use crate::systems::osm_buildings::{lat_lng_to_local, lod22_covers, MeshData};
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed cache/streaming zoom — the cells the server binned into, and the cells
@@ -1032,8 +1033,8 @@ fn cell_box(clat: f64, clng: f64, zoom: u32, c: (i64, i64)) -> (Vec2, Vec2) {
     let anchor = (clat, clng, zoom);
     let (north, west) = tile_to_lat_lng(c.0, c.1, LOD22_ZOOM);
     let (south, east) = tile_to_lat_lng(c.0 + 1, c.1 + 1, LOD22_ZOOM);
-    let (x0, z0) = crate::systems::geo_nav::lat_lng_to_world(anchor, north, west);
-    let (x1, z1) = crate::systems::geo_nav::lat_lng_to_world(anchor, south, east);
+    let (x0, z0) = crate::grid::lat_lng_to_world(anchor, north, west);
+    let (x1, z1) = crate::grid::lat_lng_to_world(anchor, south, east);
     (
         Vec2::new(x0.min(x1) as f32, z0.min(z1) as f32),
         Vec2::new(x0.max(x1) as f32, z0.max(z1) as f32),

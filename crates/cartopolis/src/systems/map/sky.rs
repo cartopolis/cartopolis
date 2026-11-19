@@ -10,6 +10,7 @@
 //! constant re-codegened every system registration in the crate. Registration
 //! stays in `lib.rs`; only the implementation lives here.
 
+use crate::components::SunLight;
 use bevy::camera::Exposure;
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::light::CascadeShadowConfigBuilder;
@@ -551,10 +552,6 @@ pub(crate) const SPACE_AMBIENT_BRIGHTNESS: f32 = 120.0;
 /// darkening is a tint on the imagery instead (`globe::GLOBE_DEEP_ALBEDO`), which
 /// bites where exposure can't; this is left as a small trim knob.
 pub(crate) const SPACE_EXPOSURE_STOPS: f32 = 0.0;
-
-/// Marker for the sun's directional light.
-#[derive(Component)]
-pub(crate) struct SunLight;
 
 /// Marker for the moon's directional light.
 #[derive(Component)]

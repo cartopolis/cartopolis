@@ -1,3 +1,4 @@
+use crate::components::AvatarHolder;
 use crate::components::AvatarModelLoaded;
 use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::AvatarState;
@@ -10,14 +11,6 @@ use bevy::ecs::query::Or;
 use bevy::prelude::*;
 use cartopolis_core::{motion, wrap_angle_pi, Emote};
 use std::time::Duration;
-
-/// The entity an avatar's MakeHuman body is built under, a child of the avatar
-/// (`human_avatar::spawn_human`). Its transform carries what the model does that
-/// the avatar does not — the tuck of a jump, the arrival after a teleport, the slide onto a seat,
-/// the designer's turn to the camera (`update_avatar_model_pose`) — and never
-/// the avatar's position, which is the sim's.
-#[derive(Component, Clone, Copy, Default)]
-pub(crate) struct AvatarHolder;
 
 /// Emotes in the order their clips sit in an avatar's table
 /// (`human_avatar::EMOTE_CLIPS`), so an [`Emote`] is an index into

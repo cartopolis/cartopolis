@@ -1098,7 +1098,7 @@ mod native {
         let ground_ahn = |lat: f64, lng: f64| -> Option<f32> {
             let geo = geo?;
             terrain.is_ready().then(|| {
-                let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, lat, lng);
+                let (wx, wz) = crate::grid::lat_lng_to_world(geo, lat, lng);
                 terrain.datum_m + terrain.at(wx as f32, wz as f32)
             })
         };
@@ -1236,8 +1236,7 @@ mod native {
                 // On the fix, at eye height above the ground underfoot (not
                 // the anchor's). Skipped on the frame a jump is pending.
                 if !jump {
-                    let (wx, wz) =
-                        crate::systems::geo_nav::lat_lng_to_world(geo, pose.lat, pose.lng);
+                    let (wx, wz) = crate::grid::lat_lng_to_world(geo, pose.lat, pose.lng);
                     let (wx, wz) = (wx as f32, wz as f32);
                     let here = crate::grid::anchored_position(cell, tf.translation);
                     let mut want = Vec3::new(wx, terrain.at(wx, wz) + pose.height_m as f32, wz);

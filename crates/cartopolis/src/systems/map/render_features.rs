@@ -106,9 +106,9 @@ use bevy::render::sync_world::{RenderEntity, SyncToRenderWorld};
 use bevy::render::view::Msaa;
 
 use crate::components::FreeCamera;
+use crate::components::SunLight;
 use crate::resources::AppPrefs;
 use crate::systems::light_shafts::{self, ShaftVolume};
-use crate::systems::sky::SunLight;
 use crate::systems::sky_dome::SkyMode;
 use crate::systems::sun_rays::SunRays;
 

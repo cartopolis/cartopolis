@@ -58,8 +58,8 @@ impl Plugin for PlayerPlugin {
             systems::touch::recognize_touch_gestures.after(bevy::input::InputSystems),
         );
         // A preset picked in Settings swaps the render budget before anything in
-        // `Update` reads it (`quality::follow_preset` says why it cannot be later).
-        app.add_systems(PreUpdate, crate::quality::follow_preset);
+        // `Update` reads it (`settings::follow_preset` says why it cannot be later).
+        app.add_systems(PreUpdate, crate::systems::settings::follow_preset);
 
         // The camera's switchable render state — bloom, samples, the sky and its
         // reflections — put on before the first frame is drawn, and then kept in

@@ -35,7 +35,8 @@ use std::collections::HashSet;
 use crate::components::{FreeCamera, RemoteAvatar};
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{ChatNotice, ChatState, ReportDraft};
-use crate::systems::chats::{avatar, glass_frame, raised_frame, ChatKind, ChatsView};
+use crate::systems::chats::{avatar, raised_frame, ChatKind, ChatsView};
+use crate::systems::theme::glass_frame;
 use crate::systems::{icons, theme};
 
 /// Request ids for contact traffic live in their own range, so a refusal

@@ -964,7 +964,7 @@ fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(ctx, |ui| {
-            crate::systems::chats::glass_frame()
+            crate::systems::theme::glass_frame()
                 .corner_radius(egui::CornerRadius::same(16))
                 .inner_margin(egui::Margin::symmetric(10, 4))
                 .show(ui, |ui| {
@@ -1611,7 +1611,7 @@ pub fn render_plans_news(
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(egui.ctx(), |ui| {
-            let r = crate::systems::chats::glass_frame()
+            let r = crate::systems::theme::glass_frame()
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {

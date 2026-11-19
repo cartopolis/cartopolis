@@ -42,12 +42,11 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
+use crate::grid::world_to_lat_lng;
 use crate::grid::AnchoredCamera;
 use crate::platform::http;
 use crate::resources::CameraState;
-use crate::systems::geo_nav::{
-    nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
-};
+use crate::systems::geo_nav::{nominatim_base_url, CameraPose, GeoNavState, Teleport};
 use crate::systems::icons;
 use crate::systems::theme;
 use crate::systems::user_store::UserStore;

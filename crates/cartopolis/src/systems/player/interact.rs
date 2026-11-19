@@ -18,8 +18,9 @@
 use crate::systems::egui_manager::{EguiMut, EguiRef};
 use bevy::prelude::*;
 
+use crate::grid::world_to_lat_lng;
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel, Seated};
-use crate::systems::geo_nav::{world_to_lat_lng, GeoNavState};
+use crate::systems::geo_nav::GeoNavState;
 use crate::systems::theme;
 use crate::systems::world_places::{Interactable, SeatSpot, WorldPlaces};
 use cartopolis_core::{carry, Emote};
@@ -637,7 +638,7 @@ fn nearest_scripted_prim(
         if !prim.scripted {
             continue;
         }
-        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, at.latitude, at.longitude);
+        let (wx, wz) = crate::grid::lat_lng_to_world(geo, at.latitude, at.longitude);
         let here = Vec2::new(wx as f32, wz as f32);
         // Half the widest horizontal axis: the distance from the middle to the
         // face you would be standing at.
@@ -680,7 +681,7 @@ fn nearest_pickable_prim(
         if !pickable(prim, tf.scale) {
             continue;
         }
-        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(geo, at.latitude, at.longitude);
+        let (wx, wz) = crate::grid::lat_lng_to_world(geo, at.latitude, at.longitude);
         let here = Vec2::new(wx as f32, wz as f32);
         let d = here.distance(pos);
         if d <= PICKUP_RADIUS && best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
@@ -1436,7 +1437,7 @@ mod tests {
 mod prim_prompt_tests {
     use super::*;
     use crate::components::{Prim, PrimGeo, PrimShape};
-    use crate::systems::geo_nav::lat_lng_to_world;
+    use crate::grid::lat_lng_to_world;
 
     /// Groningen's Grote Markt, at the zoom the map anchors at.
     const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);

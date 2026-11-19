@@ -38,7 +38,7 @@ use rapier3d::prelude::{
 use rapier3d::dynamics::{SoftBodySet, SoftBodyTearEvent};
 use rapier3d::parry::query::details::ShapeCastOptions;
 
-use super::traffic::AgentKind;
+use crate::components::AgentKind;
 
 /// What a body is, for its shape, its mass and how it behaves knocked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

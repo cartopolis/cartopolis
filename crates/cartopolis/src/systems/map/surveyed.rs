@@ -32,9 +32,9 @@
 //! arriving later on a schedule of its own.
 
 use crate::platform::cell_source::CellSource;
+use crate::services::tdbag_url;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind, LineKind, SurveyedLine};
-use crate::systems::osm_buildings::tdbag_url;
 use crate::systems::paving::{PavingKind, PavingMaterial};
 use crate::systems::scatter::{TreeInstance, WoodKind};
 

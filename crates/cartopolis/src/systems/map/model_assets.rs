@@ -125,7 +125,7 @@ pub fn derive_api_base(addr: &str) -> Option<String> {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         return Some(addr.to_string());
     }
-    if addr.starts_with("tcp://") || crate::systems::network::is_loopback_host(host_of(addr)) {
+    if addr.starts_with("tcp://") || crate::platform::http::is_loopback_host(host_of(addr)) {
         // A dev simulator. Its HTTP port is a separate `--http-listen` and there
         // is nothing here that knows it.
         return None;

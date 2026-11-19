@@ -5,7 +5,7 @@
 //! Both building streamers publish their footprints here as closed 2D polygons
 //! in the anchored world-XZ frame — the same frame the avatar's absolute
 //! position lives in (the anchor tile centre is the origin; see
-//! `osm_buildings::lat_lng_to_local` and `geo_nav::lat_lng_to_world`, which
+//! `osm_buildings::lat_lng_to_local` and `crate::grid::lat_lng_to_world`, which
 //! agree because `map_stream::snap_anchor` pins the anchor to a tile centre).
 //! `osm_buildings` contributes the near OSM detail patch (exact footprint
 //! rings); `lod22` contributes the 3DBAG cells (convex hull of each building's

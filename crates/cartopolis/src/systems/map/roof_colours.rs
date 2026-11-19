@@ -54,7 +54,7 @@ const ROOFS: CellSource<RoofCell> = CellSource {
     url: Some(|cx, cy| {
         format!(
             "{}/roofs/{ROOFS_ZOOM}/{cx}/{cy}.json",
-            crate::systems::osm_buildings::tdbag_url()
+            crate::services::tdbag_url()
         )
     }),
     breaker: None,

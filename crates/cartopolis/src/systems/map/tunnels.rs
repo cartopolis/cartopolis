@@ -493,7 +493,7 @@ impl Tunnels {
     /// latitude and longitude by hand landed 28 to 178 metres from the nearest
     /// tunnel. The client has never been confused about where these are: they are
     /// in the same frame as the avatar. So it answers, and
-    /// `geo_nav::world_to_lat_lng` turns it into something to type into `--at`.
+    /// `crate::grid::world_to_lat_lng` turns it into something to type into `--at`.
     ///
     /// The entrance is where the roof begins — the mouth — not the middle of an
     /// opening, which is a road at lawn level.

@@ -316,3 +316,44 @@ fn every_animation_goes_through_motion() {
         hits.join("\n")
     );
 }
+
+/// The ground floor of the module graph names nothing above it.
+///
+/// `resources` was meant as the state layer everyone reads, and by 2026-11-19
+/// it was inside the client's one big import cycle (165 of 265 modules), because
+/// a few of its fields and methods reached up into the systems for a type or a
+/// helper (`docs/notes/module-graph.md`). Those moved down, which took the cycle
+/// to 121. A type a resource holds goes in one of these files; its `impl` may
+/// stay beside the system that drives it, which Rust allows anywhere in a crate.
+/// Only `systems::icons`, a table of glyph constants, is below them.
+#[test]
+fn the_ground_floor_names_no_system() {
+    const FLOOR: &[&str] = &[
+        "resources.rs",
+        "components.rs",
+        "quality.rs",
+        "grid.rs",
+        "services.rs",
+        "utils/math.rs",
+        "utils/clock.rs",
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut bad = Vec::new();
+    for rel in FLOOR {
+        let text = std::fs::read_to_string(root.join(rel)).expect("a ground-floor file");
+        for (i, line) in text.lines().enumerate() {
+            // A file's own tests may reach anywhere.
+            if line.starts_with("#[cfg(test)]") {
+                break;
+            }
+            if !is_comment(line) && line.contains("systems::") && !line.contains("systems::icons") {
+                bad.push(format!("src/{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "these files are below every system; move what they need down to them:\n{}",
+        bad.join("\n")
+    );
+}

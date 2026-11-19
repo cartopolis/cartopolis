@@ -87,7 +87,7 @@ pub struct View {
 #[derive(Clone, Copy, Debug)]
 pub struct Pose {
     /// The map anchor the world frame is measured from
-    /// (`geo_nav::world_to_lat_lng`).
+    /// (`crate::grid::world_to_lat_lng`).
     pub anchor: (f64, f64, u32),
     pub position: [f32; 3],
     pub right: [f32; 3],
@@ -331,9 +331,8 @@ fn reach(pose: &Pose) -> f32 {
 /// The reference from the capture's own camera: every pixel's ray followed down
 /// to the ground and the photograph sampled where it lands.
 fn from_camera(pose: Pose) -> Result<RgbImage, String> {
-    let ll = |p: [f32; 2]| {
-        crate::systems::geo_nav::world_to_lat_lng(pose.anchor, f64::from(p[0]), f64::from(p[1]))
-    };
+    let ll =
+        |p: [f32; 2]| crate::grid::world_to_lat_lng(pose.anchor, f64::from(p[0]), f64::from(p[1]));
     let reach_m = reach(&pose);
     // The ground the view reaches, from a coarse grid of rays, and the camera's
     // own foot.

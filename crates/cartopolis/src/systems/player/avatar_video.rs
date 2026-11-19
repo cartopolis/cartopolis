@@ -18,9 +18,9 @@ use bevy::render::gpu_readback::{Readback, ReadbackComplete};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use cartopolis_calls::video::I420;
 
+use crate::components::AvatarHolder;
 use crate::components::{Avatar, FreeCamera};
 use crate::platform::sync::Mutex;
-use crate::systems::avatar::AvatarHolder;
 use crate::systems::held_phone::HumanArms;
 
 /// The picture's size: 4:3 like a camera's, and a width whose rows are a

@@ -692,7 +692,7 @@ pub fn keep_avatar_across_reconnect(
     };
     if let (Some((lat, lng, y)), Some(sess)) = (arrival, online.as_deref()) {
         if lat.is_finite() && lng.is_finite() && lat.abs() <= 90.0 && lng.abs() <= 180.0 {
-            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
+            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
             if wx.hypot(wz) < geo_nav::SHORT_JUMP_M {
                 let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                     .translation_to_grid(DVec3::new(wx, y.clamp(0.0, 10_000.0), wz));
@@ -718,7 +718,7 @@ pub fn keep_avatar_across_reconnect(
         // left, which is this one at best and a stale save at worst.
         identity.arrival = None;
         if let (Some((lat, lng, y)), Some(sess)) = (*last, online.as_deref()) {
-            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, lat, lng);
+            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
             let (to_cell, to_local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(DVec3::new(wx, y, wz));
             geo_nav::place_avatar(
@@ -742,7 +742,7 @@ pub fn keep_avatar_across_reconnect(
     let p = avatar_state.position;
     let wx = cell.x as f64 * edge + f64::from(p.x);
     let wz = cell.z as f64 * edge + f64::from(p.z);
-    let (lat, lng) = geo_nav::world_to_lat_lng(anchor, wx, wz);
+    let (lat, lng) = crate::grid::world_to_lat_lng(anchor, wx, wz);
     *last = Some((lat, lng, f64::from(p.y)));
     // Compared first so a standing avatar does not mark the store changed every
     // frame; the autosave writes it with everything else.
@@ -1576,8 +1576,11 @@ mod tests {
             Ok(cartopolis_core::NetMessage::Teleport { geo, alt_m, .. }) => {
                 // A place on Earth (protocol 47), which under the test's anchor
                 // is the frame position the avatar had walked to.
-                let (x, z) =
-                    geo_nav::lat_lng_to_world((53.2194, 6.5665, 14), geo.latitude, geo.longitude);
+                let (x, z) = crate::grid::lat_lng_to_world(
+                    (53.2194, 6.5665, 14),
+                    geo.latitude,
+                    geo.longitude,
+                );
                 let told = Vec3::new(x as f32, alt_m, z as f32);
                 assert!(told.distance(walked) < 0.01, "sim told {told}");
             }
@@ -1603,7 +1606,7 @@ mod tests {
             .add_systems(Update, keep_avatar_across_reconnect);
         let (intent_tx, mut rx) = futures_channel::mpsc::unbounded();
         app.insert_resource(OnlineSession { intent_tx });
-        let device = geo_nav::world_to_lat_lng(anchor, -300.0, 40.0);
+        let device = crate::grid::world_to_lat_lng(anchor, -300.0, 40.0);
         app.world_mut().resource_mut::<UserStore>().data.last_avatar = Some(SavedAvatar {
             lat: device.0,
             lng: device.1,
@@ -1615,7 +1618,7 @@ mod tests {
 
         for (x, z) in [(200.0, -150.0), (-900.0, 600.0)] {
             // A sign-in: the handshake says where, and the avatar is new.
-            let (lat, lng) = geo_nav::world_to_lat_lng(anchor, x, z);
+            let (lat, lng) = crate::grid::world_to_lat_lng(anchor, x, z);
             app.world_mut().resource_mut::<AuthIdentity>().arrival =
                 Some(cartopolis_core::GeoAnchor {
                     latitude: lat,
@@ -1645,8 +1648,8 @@ mod tests {
     fn the_first_sign_in_puts_the_avatar_back_where_it_was_left() {
         use crate::systems::user_store::SavedAvatar;
         let anchor = (53.2194, 6.5665, 14);
-        let near = geo_nav::world_to_lat_lng(anchor, 200.0, -150.0);
-        let far = geo_nav::world_to_lat_lng(anchor, 50_000.0, 0.0);
+        let near = crate::grid::world_to_lat_lng(anchor, 200.0, -150.0);
+        let far = crate::grid::world_to_lat_lng(anchor, 50_000.0, 0.0);
         for (saved, expect_moved) in [(near, true), (far, false)] {
             let mut app = App::new();
             app.init_resource::<SessionState>()
@@ -1705,7 +1708,7 @@ mod tests {
                 .data
                 .last_avatar
                 .unwrap();
-            let (wx, wz) = geo_nav::lat_lng_to_world(anchor, kept.lat, kept.lng);
+            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, kept.lat, kept.lng);
             assert!((Vec3::new(wx as f32, 0.0, wz as f32) - at).length() < 0.5);
         }
     }

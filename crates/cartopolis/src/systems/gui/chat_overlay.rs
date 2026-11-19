@@ -737,7 +737,7 @@ pub fn render_chat_chip(
         .show(&ctx, |ui| {
             ui.set_opacity(alpha);
             ui.set_width(width);
-            let frame = crate::systems::chats::glass_frame()
+            let frame = crate::systems::theme::glass_frame()
                 .fill(if talking {
                     VOICE_FILL
                 } else {

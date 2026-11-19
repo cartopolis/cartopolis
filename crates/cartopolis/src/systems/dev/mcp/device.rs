@@ -892,7 +892,7 @@ fn here(w: &DeviceWorld) -> Option<(f64, f64)> {
     let anchor = w.anchor.geo?;
     if w.session.is_online() {
         let p = w.avatar.position;
-        return Some(crate::systems::geo_nav::world_to_lat_lng(
+        return Some(crate::grid::world_to_lat_lng(
             anchor,
             f64::from(p.x),
             f64::from(p.z),

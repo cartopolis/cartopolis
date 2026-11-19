@@ -16,6 +16,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::math::{DVec3, Vec2, Vec3};
 use bevy::prelude::{Entity, Query, Res, Resource, Transform, With};
 use big_space::prelude::{BigSpace, GridCell};
+use cartopolis_core::world::{lat_lng_to_tile_frac, tile_to_meters};
 
 use crate::components::FreeCamera;
 
@@ -143,6 +144,85 @@ impl AnchoredCamera<'_, '_> {
 pub struct CameraAndRoot<'w, 's> {
     pub camera: AnchoredCamera<'w, 's>,
     pub root: Query<'w, 's, Entity, With<BigSpace>>,
+}
+
+/// Lat/lng → world metres (x = east, z = south), in the same anchored Web
+/// Mercator frame `map_stream` places its tiles in, so a teleport lands exactly
+/// on the imagery for that location.
+pub fn lat_lng_to_world(anchor: (f64, f64, u32), lat: f64, lng: f64) -> (f64, f64) {
+    let (clat, clng, zoom) = anchor;
+    let gs = tile_to_meters(zoom, clat);
+    let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
+    let (fx, fy) = lat_lng_to_tile_frac(lat, lng, zoom);
+    ((fx - fcx) * gs, (fy - fcy) * gs)
+}
+
+/// One anchor's Mercator constants, resolved once.
+///
+/// [`world_to_lat_lng`] is the whole of this for a single point, and for a single
+/// point that is the right shape. For a *bulk* conversion it is the wrong one
+/// twice over. Everything `new` computes here — the ground scale, the anchor's
+/// fractional tile, the zoom's tile count — depends only on the anchor, and the
+/// per-call version paid six transcendentals for them on every sample:
+/// `tile_to_meters`'s `cos`/`powi` and `lat_lng_to_tile_frac`'s `tan`/`cos`/`ln`.
+/// `terrain::bake` called it 65,536 times per map anchor, on the main thread.
+///
+/// The second saving is the one worth naming in a type: **Mercator is separable**.
+/// Longitude is a function of `wx` alone and latitude of `wz` alone, so a grid of
+/// `n × n` samples needs `n` longitudes and `n` latitudes, not `n²` of each — and
+/// the expensive half, latitude's `sinh().atan()`, is the half that collapses.
+/// Splitting the conversion into two methods is what makes that fact usable
+/// instead of merely true.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldFrame {
+    /// Ground metres per tile at the anchor's latitude.
+    gs: f64,
+    /// The anchor's own fractional tile coordinate.
+    fcx: f64,
+    fcy: f64,
+    /// Tiles across the world at this zoom.
+    n: f64,
+}
+
+impl WorldFrame {
+    #[must_use]
+    pub fn new(anchor: (f64, f64, u32)) -> Self {
+        let (clat, clng, zoom) = anchor;
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
+        Self {
+            gs: tile_to_meters(zoom, clat),
+            fcx,
+            fcy,
+            n: 2.0_f64.powi(zoom as i32),
+        }
+    }
+
+    /// Longitude of a world easting. Independent of `wz`.
+    #[must_use]
+    pub fn lng_at(&self, wx: f64) -> f64 {
+        (wx / self.gs + self.fcx) / self.n * 360.0 - 180.0
+    }
+
+    /// Latitude of a world northing. Independent of `wx`, and the expensive one.
+    #[must_use]
+    pub fn lat_at(&self, wz: f64) -> f64 {
+        let fy = wz / self.gs + self.fcy;
+        ((1.0 - 2.0 * fy / self.n) * std::f64::consts::PI)
+            .sinh()
+            .atan()
+            .to_degrees()
+    }
+}
+
+/// Inverse of [`lat_lng_to_world`].
+///
+/// Delegates to [`WorldFrame`] so there is one Mercator inverse in the tree rather
+/// than a bulk copy that can drift from the single-point one. Converting more than
+/// a handful of points — anything grid-shaped — should build the frame once and
+/// call its two halves directly.
+pub fn world_to_lat_lng(anchor: (f64, f64, u32), wx: f64, wz: f64) -> (f64, f64) {
+    let frame = WorldFrame::new(anchor);
+    (frame.lat_at(wz), frame.lng_at(wx))
 }
 
 #[cfg(test)]

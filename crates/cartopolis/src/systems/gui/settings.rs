@@ -1950,9 +1950,7 @@ fn graphics_tab(
     let caps = crate::quality::capabilities();
     let shafts_possible_adapter = caps.is_some_and(|caps| !caps.software_renderer);
     let shadows_now = prefs.shadows_on();
-    let shafts_affordable = crate::systems::light_shafts::affordable_at(
-        crate::systems::render_scale::main_pass_pixels(),
-    );
+    let shafts_affordable = crate::quality::affordable_at(crate::quality::main_pass_pixels());
     let prefs_shafts_default = shafts_possible_adapter && shadows_now && shafts_affordable;
 
     ui.add_space(6.0);
@@ -2739,6 +2737,18 @@ fn build_line() -> String {
         },
         crate::quality::budget().tier,
     )
+}
+
+/// Swap the budget when Settings ▸ Graphics picks another preset.
+///
+/// `PreUpdate`, so that every system in `Update` sees the new budget in the same
+/// frame it sees the changed preference — `manage_lights` and
+/// `apply_preferred_render_scale` both act on `AppPrefs` change detection and
+/// would otherwise apply the old budget's answer once and not look again.
+pub fn follow_preset(prefs: bevy::prelude::Res<crate::resources::AppPrefs>) {
+    if bevy::prelude::DetectChanges::is_changed(&prefs) {
+        crate::quality::select(prefs.quality.as_env_word());
+    }
 }
 
 #[cfg(test)]

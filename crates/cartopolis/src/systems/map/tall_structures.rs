@@ -38,10 +38,11 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::services::tdbag_url;
 use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::osm_buildings::{
-    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, tdbag_url, MeshData,
+    lat_lng_to_local, num_from_value, overpass_query, overpass_remark, MeshData,
 };
 use crate::systems::street_detail::{feature_seed, linear, push_yawed_box, shade, srand};
 use crate::systems::terrain::TerrainSnapshot;

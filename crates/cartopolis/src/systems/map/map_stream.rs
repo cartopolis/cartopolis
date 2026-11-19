@@ -2531,7 +2531,7 @@ mod tests {
         for (lat, lng) in [(53.21937, 6.56820), (53.2030, 6.5930)] {
             let building =
                 crate::systems::osm_buildings::lat_lng_to_local(lat, lng, ax, ay, z, tile_m);
-            let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
             assert!(
                 (building.x as f64 - wx).abs() < 0.05 && (building.y as f64 - wz).abs() < 0.05,
                 "building at ({}, {}) but the ground at ({wx:.2}, {wz:.2})",

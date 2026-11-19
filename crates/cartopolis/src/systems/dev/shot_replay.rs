@@ -25,9 +25,9 @@ use bevy::prelude::*;
 use cartopolis_core::PrimDto;
 use serde::Deserialize;
 
+use crate::components::AvatarHolder;
 use crate::components::{Avatar, Prim};
 use crate::systems::anim_clock::AnimClock;
-use crate::systems::avatar::AvatarHolder;
 
 /// Two hand samples further apart than this are a hand that left between them,
 /// not one to draw moving across the gap: a client reports at 20 Hz.

@@ -82,13 +82,14 @@ use bevy::prelude::*;
 use big_space::prelude::{Grid, GridCell};
 
 use crate::components::{Avatar, FreeCamera};
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::platform::orientation::{DeviceAttitude, OrientationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
 use crate::systems::driver::{DriverState, FixGlide};
 use crate::systems::free_camera::cell_origin;
-use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
+use crate::systems::geo_nav::{GeoNavState, Teleport};
 
 /// The world-XZ yaw that puts a compass bearing up the screen.
 ///

@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::{http, storage};
-use crate::systems::osm_buildings::tdbag_url;
+use crate::services::tdbag_url;
 
 /// Attempts before an unreachable manifest latches as "no coverage here".
 const MAX_ATTEMPTS: u8 = 3;

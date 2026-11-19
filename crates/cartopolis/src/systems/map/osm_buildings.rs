@@ -23,6 +23,7 @@ use crate::components::OsmBuildingMesh;
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use crate::platform::sync::{Arc, Mutex, RwLock};
+use crate::services::tdbag_url;
 use cartopolis_core::ring::{point_in_ring_f64, ring_area, ring_area_f64};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -153,13 +154,6 @@ fn pace_fallback() {
     *last = Some(Instant::now());
 }
 
-/// Self-hosted 3DBAG static building host (real Dutch BAG heights + ground level;
-/// ADR-027). Serves Overpass-shaped per-cell JSON at
-/// `/buildings/{CACHE_ZOOM}/{x}/{y}.json` plus a `/coverage.json` manifest, so
-/// covered cells parse through the same `parse_buildings` path as Overpass — only
-/// the source differs. Override with `CARTO_3DBAG_URL`; empty disables 3DBAG.
-const DEFAULT_3DBAG_URL: &str = cartopolis_core::services::DEFAULT_MAP_DATA_URL;
-
 /// Camera altitude (m, geocentric) above which no 3D building is drawn or
 /// streamed, in either tier — the far map's painted footprints and shadows
 /// (`docs/notes/painted-far-map.md`) stand in for them from here up.
@@ -173,16 +167,6 @@ const DEFAULT_3DBAG_URL: &str = cartopolis_core::services::DEFAULT_MAP_DATA_URL;
 /// far OSM tier's `building_fade` does), and what steps is sub-pixel geometry
 /// over its own painted footprint.
 pub const BUILDINGS_TOP_ALT: f32 = 10_000.0;
-
-/// Resolve the 3DBAG host from `CARTO_3DBAG_URL` (empty string disables 3DBAG,
-/// falling back to OSM buildings everywhere), then the server's map data
-/// (`crate::services`), then the self-hosted default.
-pub(crate) fn tdbag_url() -> String {
-    std::env::var("CARTO_3DBAG_URL")
-        .ok()
-        .or_else(crate::services::map_data)
-        .unwrap_or_else(|| DEFAULT_3DBAG_URL.to_string())
-}
 
 /// Which fixed-zoom cells the 3DBAG host serves, loaded once from its coverage
 /// manifest. Cells outside this set (and any 3DBAG fetch miss) fall through to

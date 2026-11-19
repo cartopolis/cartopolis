@@ -1931,7 +1931,7 @@ pub fn render_filter_chip(
         .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(&ctx, |ui| {
-            crate::systems::chats::glass_frame()
+            crate::systems::theme::glass_frame()
                 .corner_radius(egui::CornerRadius::same(16))
                 .inner_margin(egui::Margin::symmetric(10, 4))
                 .show(ui, |ui| {
@@ -2036,7 +2036,7 @@ pub fn render_floating_composer(
         .order(egui::Order::Foreground)
         .anchor(anchor, offset)
         .show(&ctx, |ui| {
-            crate::systems::chats::glass_frame().show(ui, |ui| {
+            crate::systems::theme::glass_frame().show(ui, |ui| {
                 ui.set_width(width - 24.0);
                 egui::ScrollArea::vertical()
                     .max_height(height - 24.0)

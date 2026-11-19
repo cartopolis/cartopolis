@@ -24,9 +24,10 @@ use std::sync::OnceLock;
 use bevy::prelude::*;
 use cartopolis_human::feet::{self, Footing, Leg};
 
+use crate::components::AvatarHolder;
 use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::AvatarState;
-use crate::systems::avatar::{AvatarHolder, ClipName, EmotePlayback, PinnedAnimation};
+use crate::systems::avatar::{ClipName, EmotePlayback, PinnedAnimation};
 use crate::systems::terrain::TerrainField;
 
 /// How far from the camera another avatar's feet are still placed, metres:

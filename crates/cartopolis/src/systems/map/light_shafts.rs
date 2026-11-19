@@ -90,34 +90,6 @@ pub struct ShaftVolume;
 /// count has to grow with it.
 const VOLUME_EDGE_M: f32 = 600.0;
 
-/// Main-pass pixels above which "Automatic" leaves the shafts off.
-///
-/// Bevy's march runs at full main-pass resolution, `MARCH_STEPS` shadow-map
-/// samples per pixel, with no reduced-resolution option — so its cost is pixels
-/// times steps and nothing else. Measured 2026-10-15 on an M5 Pro over Groningen
-/// at street level (`--shot --hide-ui --time 12 --clouds 0 --rain 0`, two runs
-/// each): 38 ms a frame with the shafts at 3134×1952, a MacBook's Retina panel,
-/// against 12.5 ms without — ~4 ms per megapixel. 4 MP keeps them on at 1440p
-/// and below, where they cost what they were judged worth, and drops them on
-/// Retina and 4K, where they were most of the frame. A person who asks for them
-/// in Settings still gets them; this only decides what nobody asked about.
-///
-/// The Steam Deck paid far more per pixel: ~17 ms at 1280×800 (2026-10-19), both
-/// over the street and from 3 km. The patched march (`bevy_pbr_volumetric_fog.wesl`:
-/// steps by ray length, no second march for point lights) and [`altitude_factor`]
-/// brought that to ~6 ms at 120 m and nothing at 3 km; this threshold was not
-/// re-tuned after it. `docs/notes/render-performance-survey.md` has the table.
-pub const AUTO_MAX_PIXELS: u64 = 4_000_000;
-
-/// Whether "Automatic" can afford the shafts at a main pass of `pixels`.
-///
-/// 0 — the camera has no target yet — answers yes, so the first frames of a
-/// small window are not drawn without them only to have them appear.
-#[must_use]
-pub fn affordable_at(pixels: u64) -> bool {
-    pixels <= AUTO_MAX_PIXELS
-}
-
 /// How much light the medium takes out of a ray per metre per unit of density:
 /// the `absorption + scattering` sum the march multiplies by. Written once here
 /// so [`density_for`] and [`spawn_volume`] cannot drift apart about it.
@@ -297,6 +269,7 @@ pub fn follow_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quality::affordable_at;
 
     /// The sample spacing the step count assumes. A volume that grows without the
     /// march growing with it is the banding failure the constant's own comment

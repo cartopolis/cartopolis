@@ -123,7 +123,7 @@
 //! it rests on which world `cluster_factors` is computed in.
 
 use std::ops::RangeInclusive;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use bevy::core_pipeline::blit::{init_blit_pipeline, BlitPipeline};
 use bevy::prelude::*;
@@ -308,21 +308,6 @@ pub fn apply_preferred_render_scale(
     }
 }
 
-/// The main pass's pixel count, last frame. 0 until the camera has a target.
-static MAIN_PASS_PIXELS: AtomicU64 = AtomicU64::new(0);
-
-/// How many pixels the 3D world is drawn at: the camera's physical target times
-/// the live [`RenderScale`], squared. 0 before the first frame has a target.
-///
-/// A global rather than a `Resource` for the reason `quality::capabilities()`
-/// is one: it is read by `AppPrefs` methods that resolve "Automatic", and every
-/// caller of those — Settings among them, a system at Bevy's parameter cap —
-/// would otherwise have to grow a parameter to pass it in.
-#[must_use]
-pub fn main_pass_pixels() -> u64 {
-    MAIN_PASS_PIXELS.load(Ordering::Relaxed)
-}
-
 /// Keep [`main_pass_pixels`] current, so dragging the window onto a Retina
 /// screen or moving the render-scale slider re-resolves what depends on it.
 fn track_main_pass_pixels(
@@ -333,7 +318,8 @@ fn track_main_pass_pixels(
         return;
     };
     let scaled = scaled_size(size, scale.0);
-    MAIN_PASS_PIXELS.store(u64::from(scaled.x) * u64::from(scaled.y), Ordering::Relaxed);
+    crate::quality::MAIN_PASS_PIXELS
+        .store(u64::from(scaled.x) * u64::from(scaled.y), Ordering::Relaxed);
 }
 
 /// Scale one physical size, floored at 1 px and never larger than the input.

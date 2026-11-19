@@ -99,16 +99,7 @@ const UNIVERSE: &[Step] = &[
     step(Rung::LocalGroup, "Local Group"),
 ];
 
-/// The four scales, each the stretch of the ladder whose subject stays in the
-/// middle of the view: your place, the Sun, the galaxy, the cosmic web.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Scale {
-    #[default]
-    Globe,
-    SolarSystem,
-    MilkyWay,
-    Universe,
-}
+pub use crate::resources::Scale;
 
 impl Scale {
     /// From the street outwards.

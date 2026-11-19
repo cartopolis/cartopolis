@@ -36,7 +36,7 @@ use bevy::tasks::IoTaskPool;
 
 use crate::platform::cell_source::CellSource;
 use crate::platform::http;
-use crate::systems::osm_buildings::tdbag_url;
+use crate::services::tdbag_url;
 
 /// Fixed cache/streaming zoom — the same cells as every other building tier.
 const LOD3_ZOOM: u32 = 14;

@@ -42,9 +42,10 @@ use bevy::render::extract_resource::ExtractResource;
 use bevy::render::sync_world::RenderEntity;
 use bevy::render::RenderApp;
 
+use crate::components::SunLight;
 use crate::components::{FreeCamera, PlanetAtmosphere};
 use crate::systems::render_features::EnvMapComponent;
-use crate::systems::sky::{MoonLight, SunLight};
+use crate::systems::sky::MoonLight;
 
 /// A light or the local vertical turning by more than this re-bakes. A fifth of a
 /// degree is under a minute of the real sun, and well under anything the eye can

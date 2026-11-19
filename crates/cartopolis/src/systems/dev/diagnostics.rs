@@ -35,8 +35,9 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::components::Avatar;
+use crate::components::AvatarHolder;
 use crate::resources::{AvatarState, CameraMode, CameraState};
-use crate::systems::avatar::{AvatarHolder, AvatarReadout};
+use crate::systems::avatar::AvatarReadout;
 
 /// Set by the menu entry; cleared by [`share_diagnostics`] on the next frame.
 ///

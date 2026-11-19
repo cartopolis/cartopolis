@@ -36,7 +36,7 @@ use crate::systems::avatar::RouteWalk;
 use crate::systems::driver::{
     countdown, point_along, project_onto_route, DriverState, Progress, RouteGeom,
 };
-use crate::systems::geo_nav::{self, GeoNavState, Teleport};
+use crate::systems::geo_nav::{GeoNavState, Teleport};
 use crate::systems::icons;
 use crate::systems::locomotion::Gait;
 use crate::systems::navigation::RouteState;
@@ -160,7 +160,8 @@ pub fn drive_walk_guide(
         return;
     };
     let here_xz = Vec2::new(avatar.position.x, avatar.position.z);
-    let (lat, lng) = geo_nav::world_to_lat_lng(anchor, f64::from(here_xz.x), f64::from(here_xz.y));
+    let (lat, lng) =
+        crate::grid::world_to_lat_lng(anchor, f64::from(here_xz.x), f64::from(here_xz.y));
     let progress = project_onto_route(geom, &r, [lat, lng]);
     let aim = point_along(geom, progress.along_m + AIM_AHEAD_M).map(|(p, _)| p);
     let moved = progress.along_m - guide.last_along;
@@ -209,7 +210,7 @@ pub fn drive_walk_guide(
         steer_off(&mut walk);
         return;
     };
-    let (ax, az) = geo_nav::lat_lng_to_world(anchor, aim[0], aim[1]);
+    let (ax, az) = crate::grid::lat_lng_to_world(anchor, aim[0], aim[1]);
     let dir = (Vec2::new(ax as f32, az as f32) - here_xz).normalize_or_zero();
     walk.dir = Vec3::new(dir.x, 0.0, dir.y);
     // The last few metres at a stroll, so arriving is a stop, not a run-on.

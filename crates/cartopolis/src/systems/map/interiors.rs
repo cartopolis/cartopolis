@@ -49,11 +49,11 @@ use cartopolis_core::ring::{point_in_ring, ring_area};
 use cartopolis_geo::building_design::{self as bd, BuildingDesign, Compiled};
 
 use crate::components::HideInSpace;
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{AvatarState, MapAnchor};
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::collision::{BuildingColliders, Footprint};
-use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
 use crate::systems::map_stream::MapStream;
 
 /// How far from the avatar a building still gets an interior, metres.

@@ -46,7 +46,7 @@ pub fn update_ground_probes(
         .filter_map(|p| {
             let (lat, lng) = p.split_once(',')?;
             let (lat, lng) = (lat.trim().parse().ok()?, lng.trim().parse().ok()?);
-            let (x, z) = crate::systems::geo_nav::lat_lng_to_world(a, lat, lng);
+            let (x, z) = crate::grid::lat_lng_to_world(a, lat, lng);
             Some(Vec2::new(x as f32, z as f32))
         })
         .collect();

@@ -16,14 +16,7 @@
 use crate::systems::theme;
 use crate::systems::user_store::HumanLook;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum DesignerTab {
-    #[default]
-    Body,
-    Face,
-    SkinAndHair,
-    Clothes,
-}
+pub use crate::resources::DesignerTab;
 
 /// The part of the face the Face tab shows.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]

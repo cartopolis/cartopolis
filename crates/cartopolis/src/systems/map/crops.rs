@@ -18,8 +18,8 @@
 //! client knows is silently dropped content.
 
 use crate::platform::cell_source::CellSource;
+use crate::services::tdbag_url;
 use crate::systems::coverage::CoverageSlot;
-use crate::systems::osm_buildings::tdbag_url;
 
 /// Fixed cache/streaming zoom — must match `map_geometry::GEOMETRY_ZOOM` and the
 /// zoom the extractor bins into.

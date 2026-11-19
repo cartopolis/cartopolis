@@ -28,12 +28,12 @@ pub struct HeadlessSurface {
 pub struct AvatarChooserState {
     pub open: bool,
     /// Working copy edited by the UI, committed to the store on Apply.
-    pub draft: crate::systems::user_store::AvatarAppearance,
+    pub draft: AvatarAppearance,
     /// Whether `draft` has been seeded from the saved appearance since opening.
     pub seeded: bool,
     /// A tab for the designer to open on, taken once: `--ui appearance,designer-face`
     /// photographs the Face tab, which a capture cannot tap to.
-    pub open_tab: Option<crate::systems::avatar_designer::DesignerTab>,
+    pub open_tab: Option<DesignerTab>,
 }
 
 /// Which right-hand panel is open. Exactly one at a time (opening one replaces
@@ -490,7 +490,7 @@ pub struct AppPrefs {
     #[serde(default = "crate::resources::yes")]
     pub voice_guidance: bool,
     /// What the user asked the render budget to be. Applied live:
-    /// `quality::follow_preset` swaps the budget when this changes, and the
+    /// `settings::follow_preset` swaps the budget when this changes, and the
     /// systems that act on it reconcile the scene to the new one
     /// (`quality::select` lists what follows and the little that does not).
     #[serde(default)]
@@ -826,10 +826,8 @@ impl AppPrefs {
         let possible = !caps.software_renderer
             && self.shadows_on()
             && !crate::env_flag("CARTO_NO_LIGHT_SHAFTS");
-        let automatic = possible
-            && crate::systems::light_shafts::affordable_at(
-                crate::systems::render_scale::main_pass_pixels(),
-            );
+        let automatic =
+            possible && crate::quality::affordable_at(crate::quality::main_pass_pixels());
         self.light_shafts.unwrap_or(automatic) && possible
     }
 
@@ -1570,7 +1568,7 @@ pub struct AvatarState {
     /// frame the key comes up (the wish direction is zero by then).
     pub move_dir: Vec3,
     /// Gait the held modifiers ask for (Alt stroll / default walk / Shift run).
-    pub gait: crate::systems::locomotion::Gait,
+    pub gait: Gait,
     /// Vertical velocity (m/s, up positive) for the jump/fall arc. The sim owns
     /// the authoritative copy; this is the client's prediction of it, and offline
     /// it *is* the avatar's vertical state.
@@ -1626,7 +1624,7 @@ pub struct AvatarState {
     /// Set while the avatar climbs onto a wall (`systems::climb`): it is
     /// carried onto the top over the climb clip and stands there when it ends.
     /// Input waits until it has.
-    pub climb: Option<crate::systems::climb::Climb>,
+    pub climb: Option<Climb>,
     /// Asked for this frame by the interaction prompt ("Climb up", E or a
     /// tap); taken by `avatar::handle_avatar_movement`, which knows where the
     /// avatar is.
@@ -1694,7 +1692,7 @@ impl Default for AvatarState {
             ground_speed: 0.0,
             carried_speed: 0.0,
             move_dir: Vec3::ZERO,
-            gait: crate::systems::locomotion::Gait::Walk,
+            gait: Gait::Walk,
             vertical_velocity: 0.0,
             grounded: false,
             swimming: false,
@@ -1885,7 +1883,7 @@ pub struct CameraState {
     /// The scale the zoom is held in (`zoom_rail::Scale`): the wheel, a pinch,
     /// the keys and the rail's discs stop at its ends. A jump sets it to its
     /// goal's, any other move that left it to where the camera is now.
-    pub zoom_scale: crate::systems::zoom_rail::Scale,
+    pub zoom_scale: Scale,
     /// A zoom pushing against the end of [`Self::zoom_scale`]: which way (out is
     /// `true`) and since when and when last, seconds of [`Self::globe_clock`].
     /// Half a second of it crosses into the next scale.
@@ -2081,7 +2079,7 @@ impl Default for CameraState {
             globe_clock: 0.0,
             rail_goal: None,
             rail_way: None,
-            zoom_scale: crate::systems::zoom_rail::Scale::Globe,
+            zoom_scale: Scale::Globe,
             edge_push: None,
             edge_push_shown: 0.0,
             globe_return_alt: None,
@@ -2292,6 +2290,80 @@ impl NetworkMailbox {
 pub struct MapAnchor {
     /// `(lat, lng, base zoom)`. `None` until the first anchor is placed.
     pub geo: Option<(f64, f64, u32)>,
+}
+
+/// Which gait the avatar is travelling in. Chosen by held modifiers, not by
+/// speed — the speed is the *consequence* (see [`Gait::speed`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Gait {
+    /// Alt held: a stroll.
+    Stroll,
+    /// The default.
+    #[default]
+    Walk,
+    /// Shift held.
+    Run,
+}
+
+/// A climb under way: the avatar carried from where it stood to its landing
+/// on the top, over [`CLIMB_SECS`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Climb {
+    /// The way it goes, unit world XZ.
+    pub dir: Vec2,
+    /// How fast it is carried, m/s.
+    pub speed: f32,
+    /// The top, in the colliders' frame.
+    pub top: f32,
+    /// Where the soles were when it started, same frame.
+    pub ground: f32,
+    pub elapsed: f32,
+}
+
+/// The four scales, each the stretch of the ladder whose subject stays in the
+/// middle of the view: your place, the Sun, the galaxy, the cosmic web.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scale {
+    #[default]
+    Globe,
+    SolarSystem,
+    MilkyWay,
+    Universe,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum DesignerTab {
+    #[default]
+    Body,
+    Face,
+    SkinAndHair,
+    Clothes,
+}
+
+/// The local player's avatar: the designed MakeHuman body, sent to the server
+/// so everyone else sees it too (`human_avatar::send_avatar_look`).
+///
+/// Files written before the designer also carry `head`/`top`/`legs`/`feet`/
+/// `accessory` — the retired Quaternius clothing slots. serde ignores them.
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct AvatarAppearance {
+    /// Which default body a never-designed avatar starts from.
+    #[serde(default)]
+    pub sex: AvatarSex,
+    /// The MakeHuman body, when it has been designed (`systems::human_avatar`);
+    /// `None` is the default body for `sex`.
+    #[serde(default)]
+    pub human: Option<cartopolis_core::AvatarLook>,
+}
+
+/// The default body a never-designed avatar starts from
+/// (`AvatarLook::default_for`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AvatarSex {
+    #[default]
+    Man,
+    Woman,
 }
 
 #[cfg(test)]

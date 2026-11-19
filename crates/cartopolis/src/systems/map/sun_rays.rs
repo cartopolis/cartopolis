@@ -43,7 +43,7 @@ use crate::utils::math::smoothstep;
 use bevy::prelude::*;
 
 use crate::components::FreeCamera;
-use crate::systems::sky::SunLight;
+use crate::components::SunLight;
 
 /// Overall strength of the beams. The one art knob; the shader's constants set
 /// their shape.

@@ -31,7 +31,7 @@ use cartopolis_human::hands::PhoneGrip;
 use cartopolis_human::reach::{reach, Arm};
 
 use crate::components::Avatar;
-use crate::systems::avatar::AvatarHolder;
+use crate::components::AvatarHolder;
 use crate::systems::prim_hand::PreciseHand;
 
 /// Which hand holds the phone.

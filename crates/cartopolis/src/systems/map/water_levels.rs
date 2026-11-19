@@ -64,11 +64,11 @@ use cartopolis_core::ring::point_in_ring;
 use crate::grid::AnchoredCamera;
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::services::tdbag_url;
 use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
-use crate::systems::osm_buildings::tdbag_url;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_meters};
 
 /// Fixed cache/streaming zoom — the one the extractor bins into.
@@ -367,7 +367,7 @@ impl WaterLevelField {
                     .points
                     .iter()
                     .map(|&(lat, lng)| {
-                        let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+                        let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
                         [wx as f32, wz as f32]
                     })
                     .collect();

@@ -538,7 +538,7 @@ pub fn drive_crows(
         (
             &GridCell,
             &Transform,
-            &crate::systems::traffic::AgentKind,
+            &crate::components::AgentKind,
             &Visibility,
         ),
         (Without<Crow>, Without<CrowPart>, Without<FreeCamera>),
@@ -568,7 +568,7 @@ pub fn drive_crows(
         threats.push((avatar.display_position, STARTLE_M));
     }
     for (cell, tf, kind, vis) in &walkers {
-        if *kind == crate::systems::traffic::AgentKind::Walker && *vis != Visibility::Hidden {
+        if *kind == crate::components::AgentKind::Walker && *vis != Visibility::Hidden {
             threats.push((anchored_position(cell, tf.translation), WALKER_STARTLE_M));
         }
     }

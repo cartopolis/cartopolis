@@ -13,7 +13,7 @@
 //! hand. No count at any place was fitted: the traffic is invented, and so
 //! is its timetable (`docs/notes/ambient-traffic.md`).
 
-use super::traffic::AgentKind;
+use crate::components::AgentKind;
 
 /// The share of a pool out at each whole hour, local time, Monday to Friday.
 /// Read between the hours by straight lines, round midnight too.

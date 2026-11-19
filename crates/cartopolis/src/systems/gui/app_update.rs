@@ -94,7 +94,7 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
             egui::vec2(0.0, crate::systems::dock::reserved_top()),
         )
         .show(ctx, |ui| {
-            crate::systems::chats::glass_frame().show(ui, |ui| {
+            crate::systems::theme::glass_frame().show(ui, |ui| {
                 ui.set_width(width);
                 ui.horizontal(|ui| {
                     ui.label(

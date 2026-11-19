@@ -125,20 +125,7 @@ pub fn pose_for(surface: f32, feet_ground: f32, root: f32, fit: SeatFit) -> Seat
     }
 }
 
-/// A climb under way: the avatar carried from where it stood to its landing
-/// on the top, over [`CLIMB_SECS`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Climb {
-    /// The way it goes, unit world XZ.
-    pub dir: Vec2,
-    /// How fast it is carried, m/s.
-    pub speed: f32,
-    /// The top, in the colliders' frame.
-    pub top: f32,
-    /// Where the soles were when it started, same frame.
-    pub ground: f32,
-    pub elapsed: f32,
-}
+pub use crate::resources::Climb;
 
 impl Climb {
     /// A climb from `pos` (world XZ), soles at `soles`, onto `ledge`.

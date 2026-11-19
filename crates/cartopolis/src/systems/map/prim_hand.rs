@@ -145,9 +145,8 @@ pub fn report_hands(
         }
         let hand = match tracked {
             Some((map, (lat, lng, alt))) => {
-                let (hx, hz) = crate::systems::geo_nav::lat_lng_to_world(map, lat, lng);
-                let (px, pz) =
-                    crate::systems::geo_nav::lat_lng_to_world(map, geo.latitude, geo.longitude);
+                let (hx, hz) = crate::grid::lat_lng_to_world(map, lat, lng);
+                let (px, pz) = crate::grid::lat_lng_to_world(map, geo.latitude, geo.longitude);
                 let offset = Vec3::new(
                     (hx - px) as f32,
                     alt - local.translation.y,

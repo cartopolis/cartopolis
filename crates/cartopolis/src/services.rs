@@ -103,6 +103,17 @@ pub fn height() -> Option<String> {
     said(|d| &d.height, core::DEFAULT_HEIGHT_URL)
 }
 
+/// The map-data host the per-cell layers (buildings, terrain, surveyed streets,
+/// …) are fetched from: `CARTO_3DBAG_URL` (empty disables it, and the buildings
+/// fall back to OpenStreetMap everywhere), then the server's directory, then the
+/// self-hosted default. Named for the 3DBAG buildings it first served.
+pub fn tdbag_url() -> String {
+    std::env::var("CARTO_3DBAG_URL")
+        .ok()
+        .or_else(map_data)
+        .unwrap_or_else(|| core::DEFAULT_MAP_DATA_URL.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

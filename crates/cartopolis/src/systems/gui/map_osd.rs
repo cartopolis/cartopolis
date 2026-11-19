@@ -1328,7 +1328,7 @@ fn hand_button(
                 face.ink,
             );
             if let Some(word) = word {
-                crate::systems::hud::halo_text_aligned(
+                crate::systems::theme::halo_text_aligned(
                     ui.painter(),
                     egui::pos2(face.center.x - face.radius - 8.0, face.center.y),
                     egui::Align2::RIGHT_CENTER,

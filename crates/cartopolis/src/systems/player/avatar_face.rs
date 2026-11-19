@@ -17,8 +17,8 @@ use bevy::prelude::*;
 use cartopolis_core::{Expression, EXPRESSION_SECS, FACE_UNITS};
 use cartopolis_human::face;
 
+use crate::components::AvatarHolder;
 use crate::components::{Avatar, RemoteAvatar};
-use crate::systems::avatar::AvatarHolder;
 
 /// The local avatar's face starts an expression: read by the face here and by
 /// the intent sender, which puts it on the wire.

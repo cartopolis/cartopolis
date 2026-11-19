@@ -44,9 +44,9 @@
 //! lamp posts in it is still the city's word that there are none.
 
 use crate::platform::cell_source::CellSource;
+use crate::services::tdbag_url;
 use crate::systems::coverage::CoverageSlot;
 use crate::systems::furniture::{FurnitureInstance, FurnitureKind};
-use crate::systems::osm_buildings::tdbag_url;
 use crate::systems::scatter::{TreeForm, TreeInstance};
 use cartopolis_geo::formats::registers::{self, SUPPLIES_TREES};
 

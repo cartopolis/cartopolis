@@ -905,7 +905,7 @@ impl AgentWorld<'_, '_> {
     /// Anchored world XZ of a lat/lng, if the map has an anchor.
     fn to_world(&self, lat: f64, lng: f64) -> Option<Vec2> {
         let a = self.anchor.geo?;
-        let (x, z) = geo_nav::lat_lng_to_world(a, lat, lng);
+        let (x, z) = crate::grid::lat_lng_to_world(a, lat, lng);
         Some(Vec2::new(x as f32, z as f32))
     }
 
@@ -934,7 +934,7 @@ impl AgentWorld<'_, '_> {
         }
         let anchor = self.anchor.geo?;
         let p = self.avatar.position;
-        Some(geo_nav::world_to_lat_lng(
+        Some(crate::grid::world_to_lat_lng(
             anchor,
             f64::from(p.x),
             f64::from(p.z),
@@ -1166,7 +1166,7 @@ pub fn steer(
     let (target, radius) = match (&w.goal, anchor.geo) {
         (_, None) => (None, 0.0),
         (Goal::Place { lat, lng }, Some(a)) => {
-            let (x, z) = geo_nav::lat_lng_to_world(a, *lat, *lng);
+            let (x, z) = crate::grid::lat_lng_to_world(a, *lat, *lng);
             (Some(Vec2::new(x as f32, z as f32)), ARRIVE_PLACE_M)
         }
         (Goal::Person { sim_id, .. }, Some(_)) => (
@@ -1240,7 +1240,7 @@ pub fn steer(
     // already within reach, or the goal itself.
     let to_world = |p: &[f64; 2]| {
         anchor.geo.map(|a| {
-            let (x, z) = geo_nav::lat_lng_to_world(a, p[0], p[1]);
+            let (x, z) = crate::grid::lat_lng_to_world(a, p[0], p[1]);
             Vec2::new(x as f32, z as f32)
         })
     };
@@ -3195,7 +3195,7 @@ fn walk(
             )
         }
         (None, Some((lat, lng))) => {
-            let (x, z) = geo_nav::lat_lng_to_world(anchor, lat, lng);
+            let (x, z) = crate::grid::lat_lng_to_world(anchor, lat, lng);
             (Goal::Place { lat, lng }, Vec2::new(x as f32, z as f32))
         }
         _ => {
@@ -4993,7 +4993,7 @@ fn go_and(state: &mut AgentState, w: &mut AgentWorld, at: Vec2, then: Then, now:
     let Some(anchor) = w.anchor.geo else {
         return false;
     };
-    let (lat, lng) = geo_nav::world_to_lat_lng(anchor, f64::from(at.x), f64::from(at.y));
+    let (lat, lng) = crate::grid::world_to_lat_lng(anchor, f64::from(at.x), f64::from(at.y));
     let here = w.here();
     state.walk = Some(Walk {
         goal: Goal::Place { lat, lng },

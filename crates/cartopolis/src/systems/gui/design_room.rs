@@ -465,7 +465,7 @@ pub fn layer_design_room(
         }
     }
     // Where the room stands: the spot in the anchored frame, on the ground.
-    let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+    let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
     let y = f64::from(terrain.ground_at(wx as f32, wz as f32));
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
     let (cell, local) = grid.translation_to_grid(DVec3::new(wx, y, wz));
@@ -571,7 +571,7 @@ pub fn shade_design_room(
     };
     // The floor is flat at the ground under the spot; a part stands on the
     // ground under itself, which differs by centimetres even on a square.
-    let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, lat, lng);
+    let (wx, wz) = crate::grid::lat_lng_to_world(anchor, lat, lng);
     let floor = terrain.ground_at(wx as f32, wz as f32);
     let (mesh, material) = mesh
         .get_or_insert_with(|| {
@@ -1086,7 +1086,7 @@ pub fn render_design_room_bar(
     }
     if add_part {
         if let Some(anchor) = map_anchor.geo {
-            let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(anchor, spot.0, spot.1);
+            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, spot.0, spot.1);
             crate::systems::ui::open_new_object(
                 &mut edit_dialog,
                 &mut game_state,

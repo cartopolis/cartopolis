@@ -573,6 +573,20 @@ mod imp {
     }
 }
 
+/// Whether a bare host — no port — names this machine.
+///
+/// Split out of `network::is_loopback` and compiled on **every** target because the
+/// sign-in card asks the same question on the web: "is this address one where a
+/// port number still means a socket?" It is the predicate that decides whether
+/// `normalize_server` may complete an address with the default sim port, and a
+/// wasm build that could not ask it would be back to appending `:4747` to a
+/// hostname it is about to reach over `wss`.
+#[must_use]
+pub fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

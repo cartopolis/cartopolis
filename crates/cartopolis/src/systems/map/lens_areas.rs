@@ -93,7 +93,7 @@ impl Reference {
         let p = match (self.lay, frame) {
             (Lay::Sphere, Some(f)) => crate::systems::globe::geodetic_to_local(f, lat, lng, 0.0),
             _ => {
-                let (wx, wz) = crate::systems::geo_nav::lat_lng_to_world(self.anchor, lat, lng);
+                let (wx, wz) = crate::grid::lat_lng_to_world(self.anchor, lat, lng);
                 let d = wx.hypot(wz);
                 if d > MAX_FLAT_RANGE_M {
                     return None;

@@ -164,30 +164,6 @@ const MAX_DESPAWNS_PER_FRAME: usize = 4;
 /// A z14 cell coordinate (absolute Web Mercator tile x/y at [`GEOMETRY_ZOOM`]).
 type Cell = (i64, i64);
 
-/// Max concurrent tessellation tasks.
-///
-/// This was 4, to keep a 400-cell burst of MVT decode + earcut + road raster +
-/// vegetation from freezing the frame loop — which it did, because that work ran
-/// on `IoTaskPool` and on wasm that is the main thread. It runs on
-/// `platform::workers` now, so the frame loop is no longer what a burst lands on,
-/// and a cap of 4 would instead leave most of the pool idle: the pool is sized to
-/// `hardware_concurrency - 1` (clamped to 8), so fewer in flight than workers is
-/// simply parallelism left unused.
-///
-/// Still bounded rather than unlimited: each finished cell holds meshes plus a
-/// shore field until the frame loop drains it at `MAX_BUILDS_PER_FRAME`, so an
-/// uncapped burst trades a frame-time problem for a memory one. Matching the
-/// pool's own ceiling keeps every worker fed without queueing results faster than
-/// they can be consumed.
-///
-/// **Nine, the whole 3×3 ring, not the eight it was.** Over graded ground every
-/// job parks after its downloads until the terrain lands
-/// (`TerrainField::holds_builds`, up to `terrain::GRADED_HOLD_S`) and keeps its
-/// slot while it waits, so at eight the ninth cell could not even start
-/// downloading until the hold ended — one cell of every start built a hold later
-/// than the rest. A parked job holds downloaded text, not meshes.
-pub(crate) const SURFACE_MAX_IN_FLIGHT: usize = 9;
-
 /// How much bigger a ground surface gets when it is refined against the measured
 /// terrain, as a divisor on the byte cap handed to the tessellators.
 ///

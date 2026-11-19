@@ -295,9 +295,7 @@ fn map_geo_at(
     }
     let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);
     let hit = cam_world + dir * (cam_world.y / -dir.y);
-    Some(crate::systems::geo_nav::world_to_lat_lng(
-        anchor, hit.x, hit.z,
-    ))
+    Some(crate::grid::world_to_lat_lng(anchor, hit.x, hit.z))
 }
 
 // ─── Marquee update ───────────────────────────────────────────────────────────

@@ -49,7 +49,6 @@ use bevy::prelude::*;
 use cartopolis_core::AuthCredential;
 
 use crate::resources::AuthIdentity;
-use crate::systems::network;
 use crate::systems::session::{
     can_simulate, SessionKind, SessionPrefs, SessionRequest, SessionState, SessionStatus,
 };
@@ -321,7 +320,7 @@ fn normalize_server(raw: &str) -> String {
     // fails later with the server's own message.
     let bracketed = host.starts_with('[') && host.ends_with(']');
     let portless = bracketed || !host.contains(':');
-    if portless && network::is_loopback_host(host) {
+    if portless && crate::platform::http::is_loopback_host(host) {
         format!("{host}:{DEFAULT_PORT}")
     } else {
         host.to_string()
@@ -985,6 +984,7 @@ fn dim(c: egui::Color32, a: f32) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::network;
     use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// **A bare hostname is left bare**, because `resolve_target` sends it to

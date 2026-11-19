@@ -484,7 +484,7 @@ pub struct DataLayers {
     /// still — so it should not be five rows down a list of ground textures.
     pub traffic_enabled: bool,
     /// Feature toggle (under Life): the ambient people (`systems::traffic`'s
-    /// [`AgentKind::Walker`](crate::systems::traffic::AgentKind) pool) walking the
+    /// [`AgentKind::Walker`](crate::components::AgentKind) pool) walking the
     /// pavements beside those same streets.
     ///
     /// Split from the cars, though they share every line of the steering: the
@@ -494,7 +494,7 @@ pub struct DataLayers {
     /// write it never makes.
     pub people_enabled: bool,
     /// Feature toggle (under Life): the ambient cyclists (`systems::traffic`'s
-    /// [`AgentKind::Cyclist`](crate::systems::traffic::AgentKind) pool) on the
+    /// [`AgentKind::Cyclist`](crate::components::AgentKind) pool) on the
     /// cycle tracks and in the streets' cycle lanes, and the fatbikes
     /// (`AgentKind::Fatbike`) on those and the pavements. Its own row on the terms
     /// the people have one: a separate pool, and one somebody judging a street
@@ -3368,7 +3368,7 @@ async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, Str
 
     // A cell atlas cut from the OpenStreetMap extract is the same answer as a
     // file; anything else, or a file that does not arrive, is asked of Overpass.
-    let host = crate::systems::osm_buildings::tdbag_url();
+    let host = crate::services::tdbag_url();
     if coverage(def.key).is_some_and(|c| c.covers(cx, cy)) && !host.is_empty() {
         let url = format!("{host}/{}/{LAYER_ZOOM}/{cx}/{cy}.json", def.key);
         match crate::platform::http::fetch_string(crate::platform::http::Request::get(url.clone()))

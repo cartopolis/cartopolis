@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::{Prim, PrimGeo};
-use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
+use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use cartopolis_core::GeoAnchor;
 
 /// Reconstruct a prim's absolute world position from its `GridCell` + local

@@ -266,21 +266,7 @@ fn is_loopback(addr: &str) -> bool {
         Some((h, _)) => h,
         None => addr,
     };
-    is_loopback_host(host)
-}
-
-/// Whether a bare host — no port — names this machine.
-///
-/// Split out of [`is_loopback`] and compiled on **every** target because the
-/// sign-in card asks the same question on the web: "is this address one where a
-/// port number still means a socket?" It is the predicate that decides whether
-/// `normalize_server` may complete an address with the default sim port, and a
-/// wasm build that could not ask it would be back to appending `:4747` to a
-/// hostname it is about to reach over `wss`.
-#[must_use]
-pub fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.")
+    crate::platform::http::is_loopback_host(host)
 }
 
 /// Everything one connection attempt produces. The caller inserts these as
@@ -1256,11 +1242,7 @@ struct Seen<'a> {
 
 impl<'a> Seen<'a> {
     fn new(anchor: (f64, f64, u32), state: &'a AvatarStateDto) -> Self {
-        let (x, z) = crate::systems::geo_nav::lat_lng_to_world(
-            anchor,
-            state.geo.latitude,
-            state.geo.longitude,
-        );
+        let (x, z) = crate::grid::lat_lng_to_world(anchor, state.geo.latitude, state.geo.longitude);
         Self {
             position: Vec3::new(x as f32, state.alt_m, z as f32),
             state,
@@ -1671,7 +1653,7 @@ fn avatar_geo(
     avatar_state: &AvatarState,
 ) -> Option<cartopolis_core::GeoAnchor> {
     map_anchor.geo.map(|anchor| {
-        let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(
+        let (lat, lng) = crate::grid::world_to_lat_lng(
             anchor,
             f64::from(avatar_state.position.x),
             f64::from(avatar_state.position.z),
