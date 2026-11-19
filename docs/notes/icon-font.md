@@ -1,6 +1,6 @@
 ---
 topic: ui
-triggers: [icons.rs, theme.rs, "icon", "glyph", "tofu", "empty box", "material symbols", "first_drawable", subset-icon-font.py]
+triggers: [icons.rs, systems/gui/theme, "icon", "glyph", "tofu", "empty box", "material symbols", "first_drawable", subset-icon-font.py]
 updated: 2026-08-16
 ---
 

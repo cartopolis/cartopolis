@@ -1,6 +1,6 @@
 ---
 topic: ui
-triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, welcome.rs, MainMenu, "face sheet", "World | Community", "space switch", chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
+triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, welcome.rs, MainMenu, "face sheet", "World | Community", "space switch", chat.rs, splash.rs, systems/gui/theme, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
 updated: 2026-11-10
 ---
 

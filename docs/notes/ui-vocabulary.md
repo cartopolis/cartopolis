@@ -1,6 +1,6 @@
 ---
 topic: ui
-triggers: [theme.rs, ui_theme.rs, dismiss.rs, UiTheme, ui_theme, "Appearance", map_disc, round_button, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
+triggers: [systems/gui/theme, ui_theme.rs, dismiss.rs, UiTheme, ui_theme, "Appearance", map_disc, round_button, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
 updated: 2026-11-10
 ---
 

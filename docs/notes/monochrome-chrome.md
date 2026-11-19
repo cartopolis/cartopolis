@@ -1,6 +1,6 @@
 ---
 topic: ui
-triggers: [theme.rs, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
+triggers: [systems/gui/theme, palette, colour, color, accent, orange, brand, glass, translucent, "panel fill", contrast, WCAG, "index.html", splash, monochrome]
 updated: 2026-11-10
 ---
 
