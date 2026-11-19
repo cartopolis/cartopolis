@@ -51,7 +51,11 @@ const ROOM_RADIUS_M: f32 = 40.0;
 pub const PARTS_RADIUS_M: f64 = 10.0;
 
 /// Half the side of the metre grid drawn on the floor.
-const GRID_HALF_M: i32 = 12;
+const GRID_HALF_M: i32 = 40;
+
+/// Where the grid starts to dissolve into the white, as a fraction of
+/// [`GRID_HALF_M`]: crisp across the room, gone before the walls.
+const GRID_FADE_FROM: f32 = 0.35;
 
 /// The room's white, in linear light.
 const ROOM_WHITE: f32 = 1.6;
@@ -90,6 +94,10 @@ pub struct DesignRoom {
     pub busy: bool,
     /// The prims within [`PARTS_RADIUS_M`] of the spot, counted each frame.
     pub parts: Vec<i64>,
+    /// Counts each way in and out; each one whites the screen out and fades
+    /// it back ([`draw_veil`]). The second is the one the veil has started.
+    flash: u32,
+    flash_started: u32,
     loaded: bool,
     inbox: Inbox,
 }
@@ -98,8 +106,16 @@ impl DesignRoom {
     /// Open the room around a spot, without moving the camera.
     pub fn open_at(&mut self, lat: f64, lng: f64) {
         self.spot = Some((lat, lng));
+        self.flash += 1;
         self.status.clear();
         self.loaded = false;
+    }
+
+    /// Close the room. What was built in it stays standing.
+    pub fn close(&mut self) {
+        self.spot = None;
+        self.parts.clear();
+        self.flash += 1;
     }
 }
 
@@ -550,16 +566,18 @@ fn grid_mesh() -> Mesh {
     let half = GRID_HALF_M as f32;
     // 1.0 is the floor itself (the lines' material is the floor's white).
     let shade = |grey: f32, x: f32, z: f32| {
-        let t = (x.hypot(z) / half).clamp(0.0, 1.0);
+        let r = x.hypot(z) / half;
+        let t = ((r - GRID_FADE_FROM) / (1.0 - GRID_FADE_FROM)).clamp(0.0, 1.0);
         let fade = t * t * (3.0 - 2.0 * t);
         let g = grey + (1.0 - grey) * fade;
-        [g, g, g, 1.0]
+        // A touch cool, as a drawing office's grid is.
+        [g * 0.96, g * 0.98, g, 1.0]
     };
     for i in -GRID_HALF_M..=GRID_HALF_M {
         let (width, grey) = match i {
-            0 => (0.035, 0.35),
-            _ if i % 5 == 0 => (0.025, 0.5),
-            _ => (0.015, 0.66),
+            0 => (0.03, 0.25),
+            _ if i % 5 == 0 => (0.022, 0.42),
+            _ => (0.012, 0.6),
         };
         let at = i as f32;
         let w = width / 2.0;
@@ -590,6 +608,33 @@ fn grid_mesh() -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// The room's white as the screen shows it, for the veil.
+const VEIL: egui::Color32 = egui::Color32::from_gray(247);
+
+/// The way in and the way out: the screen goes white and the new view comes
+/// up through it, so the street and its controls dissolve into the room
+/// rather than vanish (and the camera's jump to the spot is never seen).
+///
+/// A fresh animation id per way in or out: egui starts an id it has not seen
+/// at its target, so the first frame asks for `true` (fully white) and every
+/// later one for `false`, which eases it out over [`motion::ambient_time`] —
+/// nothing under reduced motion.
+fn draw_veil(ctx: &egui::Context, room: &mut DesignRoom) {
+    use crate::systems::motion;
+    if room.flash == 0 {
+        return;
+    }
+    let id = egui::Id::new("design_room_veil").with(room.flash);
+    let first = room.flash_started != room.flash;
+    room.flash_started = room.flash;
+    let alpha = motion::toggle(ctx, id, first, motion::ambient_time());
+    if alpha <= 0.0 {
+        return;
+    }
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, id));
+    painter.rect_filled(ctx.content_rect(), 0.0, VEIL.gamma_multiply(alpha));
+}
+
 /// The bar along the bottom while the room is open: add a part, keep the
 /// design, place one kept earlier, leave.
 #[allow(clippy::too_many_lines)]
@@ -601,6 +646,7 @@ pub fn render_design_room_bar(
     map_anchor: Res<MapAnchor>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
+    draw_veil(egui.ctx(), &mut room);
     let Some(spot) = room.spot else {
         return;
     };
@@ -730,8 +776,7 @@ pub fn render_design_room_bar(
 
     room.name = name;
     if leave {
-        room.spot = None;
-        room.parts.clear();
+        room.close();
         return;
     }
     if add_part {
