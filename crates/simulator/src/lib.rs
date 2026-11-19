@@ -19,6 +19,7 @@ pub mod config;
 pub mod contacts;
 pub mod content;
 pub mod db;
+pub mod designs;
 pub mod e2ee;
 pub mod fediverse;
 pub mod http;

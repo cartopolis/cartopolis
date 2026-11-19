@@ -160,6 +160,8 @@ pub fn router(state: HttpState) -> Router {
         // same reason the authoring surface is: one listener, one token, one
         // reverse-proxy prefix to configure.
         .merge(crate::library::routes())
+        // Designs from the design room, kept beside the models in the inventory.
+        .merge(crate::designs::routes())
         // Roles and who holds them (`docs/notes/permissions.md`).
         .merge(crate::roles::routes())
         .merge(crate::videos::routes())

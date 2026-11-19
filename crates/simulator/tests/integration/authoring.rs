@@ -1717,3 +1717,116 @@ async fn managing_accounts_is_not_making_admins() {
     .await;
     assert_eq!(status, 403);
 }
+
+/// The design room's inventory, end to end: two parts built at a spot are kept
+/// as one design, somebody else's prim in the room is left out of it, and the
+/// design is placed again elsewhere as copies standing the same metres apart.
+#[tokio::test]
+async fn a_design_is_kept_and_placed_again_somewhere_else() {
+    let (handle, _dir) = server().await;
+    let walker = session(&handle, "walker", "walkerpw").await;
+    let meddler = session(&handle, "meddler", "meddlerpw").await;
+
+    let mut c = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
+    let counter = build(&mut c, "Counter", LAT, LNG).await;
+    // Two metres north of the counter.
+    let awning = build(&mut c, "Awning", LAT + 2.0 / 111_319.49, LNG).await;
+    let mut m = connect(&handle.local_addr.to_string(), "meddler", "meddlerpw").await;
+    let theirs = build(&mut m, "Not yours", LAT, LNG).await;
+
+    let designs = format!("{}/api/inventory/designs", base(&handle));
+    let (status, saved) = api(
+        "POST",
+        designs.clone(),
+        Some(walker.clone()),
+        Some(serde_json::json!({
+            "name": "Market stall",
+            "latitude": LAT,
+            "longitude": LNG,
+            "prim_ids": [counter, awning, theirs],
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["parts"], 2, "only the caller's own prims: {saved}");
+    let id = saved["id"].as_i64().unwrap();
+
+    let (status, list) = api("GET", designs.clone(), Some(walker.clone()), None).await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["name"], "Market stall");
+    // A design is its maker's: nobody else lists or places it.
+    let (_, theirs_list) = api("GET", designs.clone(), Some(meddler.clone()), None).await;
+    assert_eq!(theirs_list.as_array().unwrap().len(), 0, "{theirs_list}");
+    let place = format!("{designs}/{id}/place");
+    let (status, _) = api(
+        "POST",
+        place.clone(),
+        Some(meddler.clone()),
+        Some(serde_json::json!({ "latitude": LAT, "longitude": LNG })),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    // The Vismarkt, a few hundred metres away.
+    let (to_lat, to_lng) = (53.2165, 6.5640);
+    let (status, placed) = api(
+        "POST",
+        place,
+        Some(walker.clone()),
+        Some(serde_json::json!({ "latitude": to_lat, "longitude": to_lng })),
+    )
+    .await;
+    assert_eq!(status, 200, "{placed}");
+    assert_eq!(placed["placed"].as_array().unwrap().len(), 2, "{placed}");
+
+    // The copies are the walker's, at the new spot, still two metres apart.
+    let (_, doc) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    let prims = doc["prims"].as_array().unwrap();
+    assert_eq!(prims.len(), 4, "two originals and two copies: {doc}");
+    let at = |name: &str| {
+        prims
+            .iter()
+            .filter(|p| p["name"] == name)
+            .map(|p| {
+                (
+                    p["latitude"].as_f64().unwrap(),
+                    p["longitude"].as_f64().unwrap(),
+                )
+            })
+            .find(|(lat, _)| (lat - to_lat).abs() < 0.001)
+            .unwrap_or_else(|| panic!("no copy of {name} at the new spot: {doc}"))
+    };
+    let (c_lat, c_lng) = at("Counter");
+    let (a_lat, a_lng) = at("Awning");
+    assert!((c_lat - to_lat).abs() < 1e-9 && (c_lng - to_lng).abs() < 1e-9);
+    let apart_m = (a_lat - c_lat) * 111_319.49;
+    assert!((apart_m - 2.0).abs() < 0.01, "{apart_m} m apart");
+    assert!((a_lng - c_lng).abs() < 1e-9);
+
+    // Forgetting the design leaves the copies standing.
+    let (status, _) = api(
+        "DELETE",
+        format!("{designs}/{id}"),
+        Some(walker.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, list) = api("GET", designs, Some(walker.clone()), None).await;
+    assert_eq!(list.as_array().unwrap().len(), 0, "{list}");
+    let (_, doc) = api(
+        "GET",
+        format!("{}/api/content/export", base(&handle)),
+        Some(walker),
+        None,
+    )
+    .await;
+    assert_eq!(doc["prims"].as_array().unwrap().len(), 4, "{doc}");
+}

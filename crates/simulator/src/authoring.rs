@@ -409,7 +409,11 @@ async fn create_prim(
 ///
 /// `actor` decides who owns the result: [`Actor::server`] for an operator and a
 /// pack (nobody — it belongs to the server), the importing account for an import.
-async fn create(state: &HttpState, actor: &Actor, spec: &PrimSpec) -> ApiResult<PrimDto> {
+pub(crate) async fn create(
+    state: &HttpState,
+    actor: &Actor,
+    spec: &PrimSpec,
+) -> ApiResult<PrimDto> {
     // A prim has to be *somewhere*, and there is no sensible default for where:
     // the sim holds no map, so its own frame origin is not a place.
     let (Some(latitude), Some(longitude)) = (spec.latitude, spec.longitude) else {
@@ -564,7 +568,7 @@ pub struct ContentDocument {
 }
 
 /// The only document version this build writes.
-const CONTENT_DOCUMENT_VERSION: u32 = 1;
+pub(crate) const CONTENT_DOCUMENT_VERSION: u32 = 1;
 
 /// Most prims one import may create. A document is a file a person can edit, so
 /// this is the ceiling on what one request may cost the server — the world's own
@@ -942,7 +946,7 @@ fn merge(base: &PrimDto, spec: &PrimSpec) -> Result<PrimFields, String> {
 ///
 /// The trimming, the size limit, the budget and the permission are
 /// `PrimService::set_script`'s, the same ones the wire's `SetPrimScript` meets.
-async fn store_script(
+pub(crate) async fn store_script(
     state: &HttpState,
     actor: &Actor,
     prim_id: i64,
