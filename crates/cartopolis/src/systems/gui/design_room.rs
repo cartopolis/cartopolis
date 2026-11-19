@@ -1026,7 +1026,7 @@ pub fn render_design_room_outliner(
                                         }
                                     }
                                     ui.label(
-                                        egui::RichText::new(format!("▾ {}", g.name))
+                                        egui::RichText::new(format!("{} {}", icons::LAYERS, g.name))
                                             .strong()
                                             .color(theme::p().accent_text),
                                     );
