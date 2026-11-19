@@ -35,8 +35,28 @@ the room has none of them, deliberately.
 
 What still shows: the sky (bevy's atmosphere is a camera effect, not an entity —
 the room's walls, a 40 m unlit sphere, are what hide it from inside), and every
-egui overlay anchored to the world (names, pins) — those do not go through
-render layers at all.
+egui overlay anchored to the world — those do not go through render layers at
+all, so each one that matters asks `DesignRoom::spot` itself: place names, and
+the map chrome (dock, compass column, touch clusters, zoom rail) all stand down
+while the room is open, as they do for driver mode and the camera. Place pins
+do not yet (their system is at Bevy's parameter cap). Looking up near the
+horizon, a row of faint pink and yellow pixels shows along the top edge;
+`CARTO_NO_CLOUDS=1 CARTO_NO_ATMOSPHERE=1` removes it, and the cloud shell is a
+layer-0 mesh, so it is the atmosphere pass. Not chased further (2026-11-19).
+
+## One white, unlit, and shadows by hand
+
+Floor, grid and walls are one unlit white at linear 1.6 — above 1.0 because the
+tonemapper takes 1.0 to a light grey. A lit floor was tried first and took the
+sun's colour (peach at mid-morning against grey walls; the person called it
+ugly). Unlit takes no sun shadow, and a second, neutral directional light just
+for the room is ruled out by `directional-lights-share-one-cascade-config.md`, so
+each part whose underside is within 0.3 m of the floor gets a feathered dark
+patch as a child (`ContactShadow`). It has to be strong — 62% at the centre —
+because at 1.6 the tonemapper squeezes a 28% darkening to no visible change; the
+grid's greys are low (0.35–0.66 of the white) for the same reason. The patch is
+placed against the room's flat floor, not the part's own ground: the two differ
+by centimetres even on the Grote Markt.
 
 ## Not built yet, from v3
 
