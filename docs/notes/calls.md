@@ -645,8 +645,23 @@ the chat's messages for as long as they were in it.
 - **What it costs.** The guest holds the epoch's call key. It cannot get
   any media but this call's (the forwarder sends media only to people let
   in), but a later call in the same chat *and epoch* would be openable by
-  the guest together with a server that kept the frames. Rotating the epoch
-  after a meeting with guests is not built.
+  the guest together with a server that kept the frames — so the chat
+  does not stay in that epoch (below).
+- **After a meeting with guests the chat moves to a new key** (2026-11-19).
+  Every device that handed a guest a key, once out of the call (left,
+  ended for everyone, or dropped), makes a commit that changes nobody's
+  place in the chat, only its own leaf key (`Device::rotate`, an MLS
+  self-update; `Engine::rotate`): a new epoch, so a new call key the guest
+  was never handed. It is skipped when the chat has already moved past the
+  epoch it handed, which is why several hosts make one rotation and not
+  several; a commit refused because somebody else's won the epoch needs no
+  retry. No protocol change: the server takes any member's commit. The app
+  (`private_chat`, `Calls::guests_keyed`) asks again every frame until the
+  epoch has moved; the browser asks once as its call closes
+  (`call_rotate`), so a page closed mid-meeting, before its worker sends
+  it, leaves the chat in the guest's epoch until its next change. Checked
+  by `meeting-browser.ts`, which waits for the chat's epoch on the server
+  to rise after Ann ends the meeting.
 - **Guests are browser-only.** The app hosts guests (invites, hands keys)
   but cannot be one.
 

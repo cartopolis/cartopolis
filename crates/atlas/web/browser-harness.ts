@@ -41,9 +41,13 @@ export async function waitFor(what: string, f: () => Promise<boolean>, ms = 2000
 
 export const procs: {kill(): void}[] = []
 
+/** The database of the simulator `bootSim` started, for reading what the server holds. */
+export let simDb = ''
+
 export async function bootSim(): Promise<number> {
     const dir = mkdtempSync(path.join(tmpdir(), 'chat-browser-'))
     const db = path.join(dir, 'world.db')
+    simDb = db
     for (const name of ['ann', 'bob', 'carol', 'dave']) {
         const p = Bun.spawnSync([sim, '--database-path', db, '--create-admin', name], {
             env: {...process.env, CARTO_ADMIN_PASSWORD: 'pw'},

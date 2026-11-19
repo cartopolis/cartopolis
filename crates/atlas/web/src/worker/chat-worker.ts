@@ -642,6 +642,8 @@ async function run(command: Command, from: Port): Promise<void> {
             return c.community((core) => core.call_answer(command.channel, command.sdp))
         case 'call_leave':
             return c.community((core) => core.call_leave(command.channel))
+        case 'call_rotate':
+            return c.community((core) => core.call_rotate(command.channel, command.epoch))
         case 'call_decline':
             return c.community((core) => core.call_decline(command.channel))
         case 'push_endpoint':

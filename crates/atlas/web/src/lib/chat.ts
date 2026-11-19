@@ -292,6 +292,7 @@ export class ChatClient {
                     | 'call_join'
                     | 'call_key_drop'
                     | 'call_leave'
+                    | 'call_rotate'
                     | 'call_react'
                     | 'call_watch'
             }

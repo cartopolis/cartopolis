@@ -403,6 +403,12 @@ pub struct Calls {
     /// participant. Cleared with the call.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub keys_dropped: HashMap<u64, u64>,
+    /// Hosting: the chat whose call key this device handed a guest, and the
+    /// newest epoch it handed. Once this device is out of that call, the chat
+    /// moves to a new epoch (`private_chat`), so the guest's key opens
+    /// nothing of the chat's next call.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub guests_keyed: Option<(Vec<u8>, u64)>,
     active: Option<Active>,
     /// Set by the UI; taken by [`drive_calls`].
     pub request: Option<CallRequest>,

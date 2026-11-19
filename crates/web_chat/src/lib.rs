@@ -749,6 +749,27 @@ impl ChatCore {
         })
     }
 
+    /// After a meeting this page handed guests the key of `epoch` (decimal)
+    /// in: move `channel` to a new epoch, unless it has already moved past
+    /// it, so a guest's key opens nothing of the chat's next call
+    /// (`calls.md`, "Guests, by link").
+    pub fn call_rotate(&mut self, channel: &str, epoch: &str) -> Result<(), Error> {
+        let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
+        let handed: u64 = epoch.parse().map_err(|_| Error("not an epoch".into()))?;
+        let engine = self.engine_mut()?;
+        let now = engine
+            .call_epoch(&group, CALL_KEY_LEN)
+            .map_err(js_err)?
+            .epoch;
+        if now > handed {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        engine.rotate(&group, &mut out);
+        self.dirty = true;
+        self.flush(out, Vec::new())
+    }
+
     /// Leave the call in `channel`.
     pub fn call_leave(&mut self, channel: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;

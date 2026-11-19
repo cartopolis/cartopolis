@@ -699,6 +699,37 @@ impl Device {
         }))
     }
 
+    /// Move a chat to a new epoch without changing who is in it: a commit
+    /// carrying only this device's fresh leaf key. Every key derived from the
+    /// old epoch — a call's SFrame key among them — stops opening anything
+    /// sealed after it. How a meeting's guests are shut out of the chat's next
+    /// call (`calls.md`, "Guests, by link"). Pending like [`Self::add`].
+    pub fn rotate(&mut self, group: &[u8]) -> Result<Outgoing, Error> {
+        let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
+        let epoch = g.epoch().as_u64();
+        let bundle = g
+            .commit_builder()
+            .force_self_update(true)
+            .load_psks(self.provider.storage())
+            .map_err(mls)?
+            .build(
+                self.provider.rand(),
+                self.provider.crypto(),
+                &self.signer,
+                |_| true,
+            )
+            .map_err(mls)?
+            .stage_commit(&self.provider)
+            .map_err(mls)?;
+        let (commit, _welcome, _) = bundle.into_messages();
+        Ok(Outgoing {
+            group: group.to_vec(),
+            epoch,
+            message: commit.tls_serialize_detached().map_err(mls)?,
+            welcome: None,
+        })
+    }
+
     /// The server accepted this device's commit: apply it.
     pub fn confirm_pending(&mut self, group: &[u8]) -> Result<(), Error> {
         let g = self.groups.get_mut(group).ok_or(Error::UnknownGroup)?;
@@ -1417,5 +1448,36 @@ mod tests {
             cas.receive(&g, &line.message).is_err(),
             "a removed device must not read what is said after"
         );
+    }
+
+    #[test]
+    fn a_rotation_changes_the_call_key_and_nobody_s_place_in_the_chat() {
+        let mut ann = Device::new("ann@x", Uuid::new_v4()).unwrap();
+        let mut bob = Device::new("bob@x", Uuid::new_v4()).unwrap();
+        let g = ann.create_group(b"x/meeting").unwrap();
+        let add = ann.add(&g, &bob.key_packages(1).unwrap()).unwrap();
+        ann.confirm_pending(&g).unwrap();
+        bob.join(&add.welcome.unwrap()).unwrap();
+        // What a guest was handed during the meeting.
+        let handed = ann.call_epoch(&g, 16).unwrap();
+
+        let out = bob.rotate(&g).unwrap();
+        assert!(out.welcome.is_none());
+        assert!(bob.has_pending(&g), "pending until the server takes it");
+        bob.confirm_pending(&g).unwrap();
+        assert!(matches!(
+            ann.receive(&g, &out.message).unwrap(),
+            Received::Membership { .. }
+        ));
+
+        let ann_now = ann.call_epoch(&g, 16).unwrap();
+        let bob_now = bob.call_epoch(&g, 16).unwrap();
+        assert_eq!(ann_now.epoch, handed.epoch + 1);
+        assert_eq!(
+            ann_now.base_key, bob_now.base_key,
+            "both still share one key"
+        );
+        assert_ne!(ann_now.base_key, handed.base_key, "and not the guest's");
+        assert_eq!(ann.members(&g).len(), 2);
     }
 }

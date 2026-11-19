@@ -48,6 +48,7 @@ export interface ChatCoreApi {
     call_key_drop(channel: string, participant: number, sealed: string): void
     call_keys(channel: string): string
     call_leave(channel: string): void
+    call_rotate(channel: string, epoch: string): void
     start_direct(username: string): void
     start_group(name: string, members: string[]): void
     take_events(): string

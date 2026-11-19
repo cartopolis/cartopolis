@@ -233,6 +233,8 @@ export type Command =
     | {channel: string; participant: number; sealed: string; type: 'call_key_drop'}
     | {channel: string; sdp: string; type: 'call_answer'}
     | {channel: string; type: 'call_leave'}
+    /** After a meeting this page handed guests `epoch`'s key in (decimal): a new epoch. */
+    | {channel: string; epoch: string; type: 'call_rotate'}
     | {channel: string; type: 'call_decline'}
     /** This browser's push subscription (`webpush:` + its URL), or '' to take it back. */
     | {endpoint: string; type: 'push_endpoint'}

@@ -494,6 +494,9 @@ pub struct Engine {
     /// Commits in flight that add more devices of people already in a chat
     /// (`NetMessage::E2eeAddDevices`): the request and the chat.
     device_adds: Vec<(u32, Vec<u8>)>,
+    /// Commits in flight that move a chat to a new epoch and nothing else
+    /// ([`Engine::rotate`]): the request and the chat.
+    rotating: Vec<(u32, Vec<u8>)>,
     /// Lines written while this device had a commit to their chat in flight:
     /// the request id they were given, the chat and what to seal. Sealing
     /// waits for the commit to be settled (`flush_held`), because until then
@@ -524,6 +527,7 @@ impl Engine {
             communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
+            rotating: Vec::new(),
             held: Vec::new(),
             settling: Vec::new(),
             next_request: 1,
@@ -545,6 +549,7 @@ impl Engine {
             communities: Vec::new(),
             adding: Vec::new(),
             device_adds: Vec::new(),
+            rotating: Vec::new(),
             held: Vec::new(),
             settling: Vec::new(),
             next_request: 1,
@@ -714,6 +719,7 @@ impl Engine {
         self.starting.clear();
         self.group_starts.clear();
         self.device_adds.clear();
+        self.rotating.clear();
         self.removing.clear();
         self.adding.clear();
         // Their answers will never come, but a commit one of them sent may
@@ -1400,6 +1406,53 @@ impl Engine {
         self.device_adds.push((request, group.to_vec()));
     }
 
+    /// Move `group` to a new epoch, keeping everybody in it: after a meeting
+    /// with guests, whose handed call key then opens nothing of the chat's
+    /// next call (`calls.md`, "Guests, by link"). Answers whether a commit
+    /// went out. A chat already changing needs none — that change is a new
+    /// epoch too — and a refusal is dropped for the same reason: somebody
+    /// else's commit won the epoch, which moves it just as well.
+    pub fn rotate(&mut self, group: &[u8], out: &mut Vec<NetMessage>) -> bool {
+        if !self.cursors.contains_key(group) || self.changing(group) {
+            return false;
+        }
+        let commit = match self.device.rotate(group) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not move a chat to a new key");
+                return false;
+            }
+        };
+        let request = self.request();
+        out.push(NetMessage::E2eeSend {
+            request_id: request,
+            group: group.to_vec(),
+            epoch: commit.epoch,
+            commit: true,
+            message: commit.message,
+            welcome: None,
+        });
+        self.rotating.push((request, group.to_vec()));
+        true
+    }
+
+    /// The server's answer to a rotation's commit. Returns whether it was one.
+    fn on_rotated(&mut self, request_id: u32, seq: Option<u64>) -> bool {
+        let Some(i) = self.rotating.iter().position(|(r, _)| *r == request_id) else {
+            return false;
+        };
+        let (_, group) = self.rotating.remove(i);
+        let result = if seq.is_some() {
+            self.device.confirm_pending(&group)
+        } else {
+            self.device.discard_pending(&group)
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not settle a new key");
+        }
+        true
+    }
+
     /// Whether this device has a change to `group`'s membership in flight.
     /// A pending commit counts even when nothing here remembers sending it
     /// (it outlived its connection, or the app restarted): it is settled from
@@ -1407,6 +1460,7 @@ impl Engine {
     fn changing(&self, group: &[u8]) -> bool {
         self.device.has_pending(group)
             || self.device_adds.iter().any(|(_, g)| g == group)
+            || self.rotating.iter().any(|(_, g)| g == group)
             || self.removing.iter().any(|(_, g, _)| g == group)
             || self.adding.iter().any(|a| a.group == group)
             || self
@@ -2052,6 +2106,9 @@ impl Engine {
                 if self.on_removal_committed(request_id, seq, out) {
                     return;
                 }
+                if self.on_rotated(request_id, seq) {
+                    return;
+                }
                 if self.on_adding_committed(request_id, seq, refused.clone(), out, events) {
                     return;
                 }
@@ -2106,6 +2163,10 @@ impl Engine {
                     }
                     if let Some(i) = self.removing.iter().position(|(r, ..)| *r == request_id) {
                         let (_, group, _) = self.removing.remove(i);
+                        let _ = self.device.discard_pending(&group);
+                    }
+                    if let Some(i) = self.rotating.iter().position(|(r, _)| *r == request_id) {
+                        let (_, group) = self.rotating.remove(i);
                         let _ = self.device.discard_pending(&group);
                     }
                     self.community_starts.retain(|(r, ..)| *r != request_id);
@@ -2941,6 +3002,49 @@ mod loopback {
         assert_eq!(alice.lines(), vec![("bob".into(), "yes!".into())]);
         // Neither sees their own line come back as somebody else's.
         assert!(bob.lines().iter().all(|(f, _)| f == "alice"));
+    }
+
+    #[tokio::test]
+    async fn a_rotation_gives_both_sides_a_new_call_key_and_the_chat_goes_on() {
+        let (_dir, _h, addr) = server(&["alice", "bob"]).await;
+        let mut alice = Peer::connect(&addr, "alice").await;
+        let mut bob = Peer::connect(&addr, "bob").await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+        let mut out = Vec::new();
+        alice
+            .engine
+            .start_direct("bob", &mut out, &mut alice.events);
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        let group = alice.opened().expect("alice's side opened");
+        bob.pump(PUMP).await;
+        // The key a guest would have been handed during the meeting.
+        let handed = alice.engine.call_epoch(&group, 16).unwrap();
+
+        let mut out = Vec::new();
+        assert!(alice.engine.rotate(&group, &mut out));
+        assert!(
+            !alice.engine.rotate(&group, &mut Vec::new()),
+            "one is in flight: a second adds nothing"
+        );
+        alice.send_all(out).await;
+        alice.pump(PUMP).await;
+        bob.pump(PUMP).await;
+
+        let a = alice.engine.call_epoch(&group, 16).unwrap();
+        let b = bob.engine.call_epoch(&group, 16).unwrap();
+        assert_eq!(a.epoch, handed.epoch + 1, "the server took it");
+        assert_eq!(a.base_key, b.base_key);
+        assert_ne!(a.base_key, handed.base_key);
+
+        let mut out = Vec::new();
+        bob.engine
+            .send_text(&group, "same chat", 0, &mut out)
+            .unwrap();
+        bob.send_all(out).await;
+        alice.pump(PUMP).await;
+        assert_eq!(alice.lines(), vec![("bob".into(), "same chat".into())]);
     }
 
     #[tokio::test]

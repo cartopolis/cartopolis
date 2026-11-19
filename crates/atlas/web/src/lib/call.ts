@@ -1261,6 +1261,12 @@ export class Calls {
             console.warn('call: the record', e)
         }
         this.active = null
+        // This page handed guests the call's key: the chat moves to a new
+        // epoch, so a guest's key opens nothing of the chat's next call.
+        if (a.dropped.size) {
+            const handed = Math.max(...a.dropped.values())
+            this.client.callSignal({channel: a.channel, epoch: String(handed), type: 'call_rotate'})
+        }
         // Left here: neither "ringing" while the others are still in it, nor
         // "missed" when it ends.
         this.dismissed.add(a.channel)

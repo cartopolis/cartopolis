@@ -628,6 +628,7 @@ pub fn drive_private_chats(
                             continue;
                         }
                         calls.keys_dropped.insert(participant, e.epoch);
+                        calls.guests_keyed = Some((group.clone(), e.epoch));
                         let key = cartopolis_calls::events::GuestKey {
                             epoch: e.epoch,
                             base_key: e.base_key.clone(),
@@ -641,6 +642,26 @@ pub fn drive_private_chats(
                         });
                     }
                 }
+            }
+        }
+    }
+    // Out of a call whose key this device handed a guest: the chat moves to a
+    // new epoch, so a guest who leaves cannot open the chat's next call with
+    // what it was handed (`calls.md`, "Guests, by link"). Asked again each
+    // frame until the epoch has moved — by this commit or anybody's — since a
+    // commit in flight or refused moves nothing yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((group, handed)) = calls.guests_keyed.clone() {
+        if calls.active_group() != Some(group.as_slice()) {
+            calls.keys_dropped.clear();
+            match engine.call_epoch(&group, cartopolis_calls::keys::BASE_KEY_LEN) {
+                Ok(e) if e.epoch <= handed => {
+                    if engine.rotate(&group, &mut out) {
+                        tracing::info!("a meeting with guests ended: its chat moves to a new key");
+                    }
+                }
+                // Moved on, or a chat this device is no longer in.
+                _ => calls.guests_keyed = None,
             }
         }
     }

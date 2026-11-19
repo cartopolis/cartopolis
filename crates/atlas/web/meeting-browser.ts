@@ -11,15 +11,17 @@
  * hand, a sealed reaction, a host's mute that holds, a shared screen,
  * spotlight, breakout rooms, recording, captions, the waiting room (Dave), a
  * guest by link with no account (the fifth browser, handed the key by Ann's
- * page), notes and the agenda. After it: end for everyone and the record.
+ * page), notes and the agenda. After it: end for everyone, the record, and
+ * the chat moved to a new key the guest was never handed.
  * The screen is a canvas standing in for `getDisplayMedia`, which a headless
  * browser has no screen for.
  */
 import {mkdirSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
+import {Database} from 'bun:sqlite'
 
-import {Browser, bootSim, bootWeb, procs, shots, waitFor} from './browser-harness'
+import {Browser, bootSim, bootWeb, procs, shots, simDb, waitFor} from './browser-harness'
 
 const browsers: Browser[] = []
 const started = Date.now()
@@ -288,6 +290,8 @@ try {
     await waitFor('ann sees the guest', () =>
         ann.eval(`[...document.querySelectorAll('.chat-call-tile')].some((t) => t.innerText.includes('Sanne Jansen (guest)') && [...t.querySelectorAll('video')].some((v) => v.videoWidth > 0 && v.currentTime > 0))`), 60000)
     step('a guest came in by link, waited, was let in, and sees and is seen through the handed key')
+    // Every chat's epoch on the server while the guest holds the call's key.
+    const keyedAt = epochs()
     if (shots) await guest.shot(path.join(shots, 'guest.png'))
 
     // Notes: Ann notes a decision; Bob sees it in his notes panel.
@@ -322,6 +326,11 @@ try {
     step('the meeting record arrived in the chat, with the decision in it')
     await guest.until('The meeting is over', 20000)
     step('the guest was told the meeting is over')
+    // Ann's page handed the guest a key: the chat moves to a new epoch, so the
+    // guest's key opens nothing of its next call.
+    await waitFor('the chat moved to a new key', async () =>
+        [...epochs()].some(([id, e]) => e > (keyedAt.get(id) ?? Infinity)), 20000)
+    step('the chat moved to a new key, which the guest was never handed')
     if (shots) await bob.shot(path.join(shots, 'record.png'))
     // A page that kept working past an error it did not catch is not a pass.
     const errors = browsers.flatMap((b) => b.logs.filter((l) => /^uncaught|call: closing/.test(l)).map((l) => `${b.name}: ${l}`))
@@ -343,4 +352,15 @@ try {
     process.exitCode = 1
 } finally {
     for (const p of procs) p.kill()
+}
+
+/** Each private chat's MLS epoch, as the server checks commits against it. */
+function epochs(): Map<string, number> {
+    const sql = new Database(simDb, {readonly: true})
+    try {
+        const rows = sql.query('SELECT hex(id) AS id, epoch FROM e2ee_groups').all() as {epoch: number; id: string}[]
+        return new Map(rows.map((r) => [r.id, r.epoch]))
+    } finally {
+        sql.close()
+    }
 }
