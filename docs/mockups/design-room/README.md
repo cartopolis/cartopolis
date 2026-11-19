@@ -1,10 +1,32 @@
 ---
 topic: design-room
 triggers: [design room, library_publish, "server library", "Design here", clean room, white room, Build, render_context_menu, ring of actions, render_edit_dialog, EditDialogState, prim editing, drafts, inventory, inventory_items, model_library.rs, library.rs, library_share, "shared library", Take, "Take copy"]
-updated: 2026-10-15
+updated: 2026-11-19
 ---
 
 # A white room to design an object in, and an inventory to keep it in
+
+## v4 — the room as an editor, and the AI building in it, proposed 2026-11-19
+
+![v4](v4-editor.png)
+
+Asked after the first room was built (`docs/notes/design-room.md`): a way
+out that is always in the same place (**Back to the map**, top left, and
+**Esc**), a grid you can read sizes off (coloured axes, a navigation gizmo with
+Top / Front / Side, dimensions on the selection, a 1.75 m figure), Blender's
+tools sized for a finger too (G R S, snapping, align, duplicate, mirror, array,
+measure), **groups** with an outliner, a **Scripts** list per design whose
+running calls light the object they touch, a **log** of every change by who
+made it (you, the AI, a script), and **the AI building through Midas** while
+the person watches: a Claude session on the Midas page opens the room on the
+person's own device over the device link and builds with the room's tools;
+the room shows "Claude is building" with Pause, Take over and Undo its last
+step, and "Tell Claude…" on a long-pressed part.
+
+It rests on v3's server-side draft (so neither the person nor the AI builds
+in front of others) and on a `group` field on the wire. The sheet's table
+splits what exists today from what is new, and recommends the order: draft,
+groups, editor tools, AI bar.
 
 ## v3 — thought through, proposed 2026-10-15
 

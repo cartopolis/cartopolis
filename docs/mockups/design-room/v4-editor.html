@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cartopolis — v4: the design room as an editor, and the AI building in it</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.new { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:rgba(253,96,18,.18); color:#ffb48a; margin-left:4px; vertical-align:1px; }
+.today { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:6px; background:#23392f; color:#9fd3b4; margin-left:4px; vertical-align:1px; }
+.row { display:flex; gap:40px; align-items:flex-start; margin-top:56px; }
+.shot { width:390px; }
+
+/* the white room */
+.room { position:absolute; inset:0; background:radial-gradient(ellipse at 50% 58%, #ffffff 0, #f6f7f8 40%, #e4e8ea 100%); overflow:hidden; }
+.room svg.scene { position:absolute; inset:0; }
+.dark { color:var(--ink) !important; }
+
+/* panels that float over the white */
+.gp { position:absolute; z-index:5; background:rgba(19,25,27,.92); backdrop-filter:blur(14px); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.22); }
+.gp h4 { font-size:12px; color:var(--dim); font-weight:inherit; text-transform:uppercase; letter-spacing:.8px; margin:12px 0 7px; }
+.gp .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.gp .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.gp .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.field { background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13.5px; color:var(--cream); }
+.part { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:10px; font-size:13.5px; color:var(--text); }
+.part .ic { width:26px; height:26px; border-radius:8px; background:var(--raised); display:grid; place-items:center; color:var(--dim); }
+.part small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.part.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); color:var(--cream); }
+.part.sel .ic { background:var(--brand); color:#fff; }
+.add { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+.add div { height:58px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:11px; color:var(--dim); }
+.tabs3 { display:flex; gap:4px; padding:10px 14px 0; }
+.tabs3 div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); }
+.tabs3 .on { background:var(--accent); color:var(--ink); }
+.grid2 { display:grid; grid-template-columns:96px 1fr; gap:8px 10px; align-items:center; font-size:13px; padding:12px 14px; }
+.grid2 > span { color:var(--dim); }
+.xyz { display:flex; gap:5px; }
+.xyz div { flex:1; background:var(--raised); border:1px solid var(--gline); border-radius:8px; padding:5px 7px; font-size:12.5px; color:var(--cream); display:flex; gap:5px; }
+.xyz i { font-style:normal; font-size:11px; }
+.xyz .rx { color:#ff7b7f; } .xyz .gy { color:#5fd394; } .xyz .bz { color:#6fb2ff; }
+.slider { height:4px; border-radius:2px; background:var(--muted); position:relative; }
+.slider::after { content:""; position:absolute; top:-6px; width:16px; height:16px; border-radius:50%; background:var(--cream); left:var(--v,30%); transform:translateX(-50%); }
+.slider b { position:absolute; left:0; top:0; bottom:0; width:var(--v,30%); background:var(--brand); border-radius:2px; }
+.btn { display:inline-flex; align-items:center; gap:7px; padding:10px 16px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:14px; color:var(--text); white-space:nowrap; }
+.btn.p { background:var(--brand); color:#fff; border-color:transparent; }
+.btn.q { background:transparent; }
+.segw { display:flex; background:rgba(19,25,27,.92); border:1px solid var(--gline); border-radius:12px; padding:3px; gap:2px; }
+.segw div { padding:6px 12px; border-radius:9px; font-size:13px; color:var(--dim); display:flex; gap:6px; align-items:center; white-space:nowrap; }
+.segw .on { background:var(--accent); color:var(--ink); }
+.disc { width:40px; height:40px; border-radius:50%; background:rgba(19,25,27,.92); border:1px solid var(--gline); display:grid; place-items:center; color:var(--text); }
+.chipw { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border-radius:16px; background:rgba(19,25,27,.92); border:1px solid var(--gline); font-size:13px; color:var(--dim); white-space:nowrap; }
+.chipw b { color:var(--cream); font-weight:inherit; }
+.chipw .x { width:24px; height:24px; border-radius:50%; background:var(--raised); display:grid; place-items:center; color:var(--text); }
+.callout { position:absolute; z-index:7; font-size:12px; color:#2b3a40; background:#fff; border:1px solid #cfd7db; border-radius:10px; padding:5px 9px; box-shadow:0 4px 12px rgba(0,0,0,.08); max-width:220px; line-height:1.3; }
+.callout b { color:var(--brand); font-weight:inherit; }
+.tg { width:30px; height:17px; border-radius:9px; background:var(--muted); position:relative; flex:none; }
+.tg::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--dim); }
+.tg.on { background:var(--brand); } .tg.on::after { left:15px; background:#fff; }
+.trow { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text); padding:5px 0; }
+.trow span { flex:1; }
+
+/* the ring, from layers-and-ring v1 */
+.ring { position:absolute; z-index:6; }
+.ring .b { position:absolute; width:56px; height:56px; border-radius:50%; background:var(--glass); border:1px solid var(--gline); backdrop-filter:blur(10px); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:10px; color:var(--text); gap:1px; transform:translate(-50%,-50%); text-align:center; line-height:1.05; }
+.ring .b.p { background:var(--brand); color:#fff; border-color:transparent; }
+.ring .b.n { background:#fff; color:var(--ink); border:2px solid var(--brand); box-shadow:0 0 0 5px rgba(253,96,18,.25); }
+.ring .b.x { width:34px; height:34px; background:rgba(10,14,16,.85); color:var(--dim); }
+.ring .guide { position:absolute; width:164px; height:164px; border-radius:50%; border:1px dashed rgba(255,255,255,.18); transform:translate(-50%,-50%); }
+.pin { position:absolute; width:14px; height:14px; border-radius:50%; background:var(--brand); border:3px solid #fff; transform:translate(-50%,-50%); z-index:5; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+.ipill { position:absolute; z-index:6; transform:translateX(-50%); background:var(--glass); backdrop-filter:blur(12px); border:1px solid var(--gline); border-radius:14px; padding:7px 12px; font-size:12px; color:var(--dim); white-space:nowrap; text-align:center; }
+.ipill b { display:block; color:var(--cream); font-size:14px; font-weight:inherit; }
+.status.ondark span { color:var(--ink); }
+.washout { position:absolute; inset:0; z-index:3; background:radial-gradient(circle at 196px 430px, #fff 0, #fff 120px, rgba(255,255,255,.85) 190px, rgba(255,255,255,.35) 300px, rgba(255,255,255,0) 420px); }
+
+.sheetw { position:absolute; left:0; right:0; bottom:0; z-index:6; background:rgba(19,25,27,.95); border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 26px; }
+.sheetw .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.pchips { display:flex; gap:6px; overflow:hidden; margin-bottom:10px; }
+.pchips div { padding:6px 10px; border-radius:12px; background:var(--raised); border:1px solid var(--gline); font-size:12.5px; color:var(--text); white-space:nowrap; display:flex; gap:5px; align-items:center; }
+.pchips .sel { background:rgba(253,96,18,.16); border-color:rgba(253,96,18,.7); color:var(--cream); }
+.pchips .plus { color:var(--dim); }
+</style>
+<style>
+.inv { position:absolute; z-index:5; background:rgba(19,25,27,.96); border:1px solid var(--gline); border-radius:16px; color:var(--text); box-shadow:0 10px 30px rgba(10,14,16,.3); overflow:hidden; }
+.inv .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.inv .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.inv .ph .med { width:28px; height:28px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.inv .search { margin:10px 14px 8px; background:var(--raised); border:1px solid var(--gline); border-radius:10px; padding:7px 10px; font-size:13px; color:var(--line); display:flex; gap:7px; align-items:center; }
+.fchips { display:flex; gap:5px; padding:0 14px 8px; flex-wrap:wrap; }
+.fchips div { font-size:12px; padding:3px 9px; border-radius:10px; background:var(--raised); border:1px solid var(--gline); color:var(--dim); }
+.fchips .on { background:var(--accent); color:var(--ink); border-color:transparent; }
+.tree { padding:2px 8px 10px; font-size:13.5px; }
+.fold { display:flex; align-items:center; gap:8px; padding:6px 6px; color:var(--cream); border-radius:8px; }
+.fold .car { width:12px; color:var(--dim); font-size:10px; }
+.fold small { margin-left:auto; color:var(--dim); font-size:11.5px; }
+.fold .fi { color:var(--amber); }
+.fold.lib .fi { color:var(--accent); }
+.item { display:flex; align-items:center; gap:9px; padding:6px 6px 6px 28px; border-radius:8px; color:var(--text); }
+.item .th { width:30px; height:30px; border-radius:8px; background:#e9edef; flex:none; display:grid; place-items:center; overflow:hidden; }
+.item .tx { flex:1; min-width:0; line-height:1.2; }
+.item .tx span { display:block; font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); }
+.item.later, .fold.later { opacity:.45; }
+.ipt { font-size:10.5px; padding:1px 6px; border-radius:6px; background:var(--raised); color:var(--dim); border:1px solid var(--gline); white-space:nowrap; }
+.ipt.inw { background:#23392f; color:#9fd3b4; border-color:transparent; }
+.ipt.dev { background:#2a3340; color:#a9c4e8; border-color:transparent; }
+.ipt.adm { background:rgba(253,96,18,.18); color:#ffb48a; border-color:transparent; }
+.divl { margin:8px 6px; border-top:1px solid var(--gline); padding-top:6px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.8px; }
+.menu { position:absolute; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:12px; padding:5px; width:250px; box-shadow:0 12px 30px rgba(0,0,0,.45); font-size:13.5px; }
+.menu div { display:flex; align-items:center; gap:9px; padding:7px 10px; border-radius:8px; color:var(--text); }
+.menu div.h { background:var(--hover); color:var(--cream); }
+.menu div .ipt { margin-left:auto; }
+.menu hr { border:0; border-top:1px solid var(--gline); margin:4px 2px; }
+.menu .dang { color:#ff9b8f; }
+.ghost3d { position:absolute; z-index:6; }
+.dropring { position:absolute; z-index:5; width:90px; height:36px; border-radius:50%; border:2.5px dashed var(--brand); transform:translate(-50%,-50%); background:rgba(253,96,18,.12); }
+.tip { position:absolute; z-index:7; background:var(--glass); border:1px solid var(--gline); border-radius:10px; padding:5px 10px; font-size:12px; color:var(--cream); white-space:nowrap; }
+.decided { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:44px; }
+.decided div { background:var(--surface); border:1px solid var(--gline); border-radius:14px; padding:13px 15px; font-size:13px; color:var(--dim); }
+.decided b { display:block; color:var(--cream); font-weight:inherit; font-size:14.5px; margin-bottom:4px; }
+.decided b::before { content:"✓ "; color:#7fd0a0; }
+.full { position:absolute; left:0; right:0; top:44px; bottom:0; z-index:5; background:var(--surface); }
+.full .ph { display:flex; align-items:center; gap:8px; padding:8px 16px 10px; }
+.full .ph b { color:var(--cream); font-weight:inherit; font-size:22px; flex:1; letter-spacing:-.3px; }
+.asheet { position:absolute; left:0; right:0; bottom:0; z-index:7; background:#1D2427; border-radius:22px 22px 0 0; border-top:1px solid var(--gline); padding:8px 14px 28px; }
+.asheet .handle { width:40px; height:5px; border-radius:3px; background:var(--muted); margin:0 auto 10px; }
+.asheet .hd { display:flex; gap:12px; align-items:center; padding:0 4px 12px; border-bottom:1px solid var(--gline); margin-bottom:6px; }
+.asheet .hd .th { width:54px; height:54px; border-radius:12px; background:#e9edef; display:grid; place-items:center; }
+.asheet .hd b { display:block; color:var(--cream); font-weight:inherit; font-size:16px; }
+.asheet .hd span { color:var(--dim); font-size:12.5px; }
+.arow { display:flex; align-items:center; gap:12px; padding:11px 6px; font-size:14.5px; color:var(--text); border-radius:10px; }
+.arow .ipt { margin-left:auto; }
+.arow.p { color:var(--brand); }
+.dlg { position:absolute; left:14px; right:14px; z-index:8; background:#1D2427; border:1px solid var(--gline); border-radius:20px; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,.5); }
+.dlg h3 { color:var(--cream); font-size:17px; font-weight:inherit; margin-bottom:4px; }
+.dlg p { color:var(--dim); font-size:12.5px; margin-bottom:10px; }
+.radio { display:flex; gap:10px; align-items:flex-start; padding:7px 4px; font-size:13.5px; color:var(--text); }
+.radio i { width:16px; height:16px; border-radius:50%; border:2px solid var(--line); flex:none; margin-top:2px; }
+.radio i.on { border-color:var(--brand); box-shadow:inset 0 0 0 3px #1D2427; background:var(--brand); }
+.radio span { display:block; font-size:11.5px; color:var(--dim); }
+.radio.off { opacity:.45; }
+.lbl { font-size:12px; color:var(--dim); margin:10px 0 5px; }
+.dim-bg { position:absolute; inset:0; z-index:7; background:rgba(5,8,10,.55); }
+.cardx { background:var(--surface); border:1px solid var(--gline); border-radius:16px; padding:16px 18px; }
+.cardx h3 { color:var(--cream); font-weight:inherit; font-size:16px; margin-bottom:10px; }
+table.perm { border-collapse:collapse; width:100%; font-size:13px; margin:0; }
+table.perm td, table.perm th { padding:8px 8px; border-bottom:1px solid var(--gline); text-align:center; }
+table.perm td:first-child, table.perm th:first-child { text-align:left; }
+table.perm th { color:var(--dim); font-weight:inherit; font-size:12px; }
+.ck { display:inline-block; width:16px; height:16px; border-radius:4px; border:1.5px solid var(--line); vertical-align:-3px; }
+.ck.on { background:var(--brand); border-color:var(--brand); position:relative; }
+.ck.on::after { content:"✓"; color:#fff; font-size:11px; position:absolute; left:2px; top:-2px; }
+.ck.fixed { background:var(--muted); border-color:var(--muted); position:relative; }
+.ck.fixed::after { content:"✓"; color:var(--dim); font-size:11px; position:absolute; left:2px; top:-2px; }
+tr.newrow td { background:rgba(253,96,18,.07); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h6a3 3 0 0 0 0-6h-4a3 3 0 0 1 0-6h6"/></symbol>
+  <symbol id="from" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+  <symbol id="star" viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></symbol>
+  <symbol id="share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.5M8.2 13.2l7.6 4.5"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="room" viewBox="0 0 24 24"><path d="M3 18l9 4 9-4M3 18V7l9-4 9 4v11"/><path d="M12 22V11M3 7l9 4 9-4" opacity=".5"/></symbol>
+  <symbol id="box" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+  <symbol id="sphere" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3"/></symbol>
+  <symbol id="cyl" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/></symbol>
+  <symbol id="cone" viewBox="0 0 24 24"><path d="M12 3L5 18.5M12 3l7 15.5"/><ellipse cx="12" cy="18.5" rx="7" ry="2.5"/></symbol>
+  <symbol id="model" viewBox="0 0 24 24"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M8 9l4 2 4-2M12 11v5"/></symbol>
+  <symbol id="undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+  <symbol id="drop" viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></symbol>
+  <symbol id="pin" viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0 1 12 0c0 5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></symbol>
+  <symbol id="save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></symbol>
+  <symbol id="tune" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="hand" viewBox="0 0 24 24"><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6M11 11V3.5a1.5 1.5 0 0 1 3 0V11M14 11V5a1.5 1.5 0 0 1 3 0v8c0 5-3 8-7 8s-6-3-7-6l-1.5-3a1.5 1.5 0 0 1 2.6-1.4L8 14"/></symbol>
+  <symbol id="cam" viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8" r="1.4"/></symbol>
+  <symbol id="edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+  <symbol id="bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/></symbol>
+  <symbol id="lib" viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="take" viewBox="0 0 24 24"><path d="M12 3v11M7 9l5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="orbit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="10" ry="4.5"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="street" viewBox="0 0 24 24"><circle cx="7" cy="5" r="2"/><path d="M7 8v7M4 21l3-6 3 6M2 21h20M13 21l5-12" opacity=".9"/></symbol>
+  <symbol id="pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></symbol>
+  <symbol id="sel" viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></symbol>
+  <symbol id="move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></symbol>
+  <symbol id="rot" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="scale" viewBox="0 0 24 24"><rect x="3" y="11" width="10" height="10" rx="1"/><path d="M14 3h7v7M21 3l-9 9"/></symbol>
+  <symbol id="ruler" viewBox="0 0 24 24"><path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/></symbol>
+  <symbol id="magnet" viewBox="0 0 24 24"><path d="M6 3v8a6 6 0 0 0 12 0V3"/><path d="M6 7h4M14 7h4"/></symbol>
+  <symbol id="align" viewBox="0 0 24 24"><path d="M3 21h18"/><rect x="5" y="9" width="5" height="12"/><rect x="14" y="4" width="5" height="17"/></symbol>
+  <symbol id="mirror" viewBox="0 0 24 24"><path d="M12 2v20" stroke-dasharray="2 2"/><path d="M9 6L3 18h6zM15 6l6 12h-6z"/></symbol>
+  <symbol id="array" viewBox="0 0 24 24"><rect x="2" y="9" width="5" height="6"/><rect x="9.5" y="9" width="5" height="6"/><rect x="17" y="9" width="5" height="6"/></symbol>
+  <symbol id="dup" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/><path d="M14 11v6M11 14h6"/></symbol>
+  <symbol id="group" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3" stroke-dasharray="3 2"/><rect x="7" y="7" width="5" height="5"/><rect x="12" y="12" width="5" height="5"/></symbol>
+  <symbol id="script" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></symbol>
+  <symbol id="play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="pause" viewBox="0 0 24 24"><path d="M7 4v16M17 4v16"/></symbol>
+  <symbol id="spark" viewBox="0 0 24 24"><path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="vis" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="chevd" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="hand2" viewBox="0 0 24 24"><path d="M8 12V5a1.5 1.5 0 0 1 3 0v6M11 11V3.5a1.5 1.5 0 0 1 3 0V11M14 11V5a1.5 1.5 0 0 1 3 0v8c0 5-3 8-7 8s-6-3-7-6l-1.5-3a1.5 1.5 0 0 1 2.6-1.4L8 14"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+  <symbol id="term" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></symbol>
+</svg>
+<style>
+.ed { position:relative; width:1740px; height:960px; border-radius:18px; overflow:hidden; background:#f7f8f8; box-shadow:0 30px 60px rgba(0,0,0,.45); }
+.ed svg.scene { position:absolute; inset:0; }
+.tool { display:flex; flex-direction:column; gap:4px; padding:6px; }
+.tool div { width:40px; height:40px; border-radius:10px; display:grid; place-items:center; color:var(--text); position:relative; }
+.tool div.on { background:var(--brand); color:#fff; }
+.tool div kbd { position:absolute; right:2px; bottom:1px; font:10px Jakarta; color:var(--line); }
+.tool div.on kbd { color:#ffd9c4; }
+.tool hr { border:0; border-top:1px solid var(--gline); margin:3px 4px; }
+.ol { font-size:13px; padding:4px 6px 10px; }
+.ol .r { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:8px; color:var(--text); }
+.ol .r .ic { color:var(--dim); }
+.ol .r small { margin-left:auto; color:var(--line); display:flex; gap:6px; }
+.ol .r.g { color:var(--cream); }
+.ol .r.g .ic { color:var(--amber); }
+.ol .r.sel { background:rgba(253,96,18,.16); outline:1px solid rgba(253,96,18,.7); }
+.ol .r.ai { background:rgba(111,178,255,.12); outline:1px dashed rgba(111,178,255,.7); }
+.ol .r .sc { color:#9fd3b4; }
+.ind1 { padding-left:24px !important; } .ind2 { padding-left:42px !important; }
+.log { font:12.5px/1.45 Jakarta; }
+.log .l { display:flex; gap:8px; padding:3px 0; align-items:baseline; }
+.log .t { color:var(--line); width:44px; flex:none; font-size:11.5px; }
+.log .w { width:62px; flex:none; font-size:11px; border-radius:6px; padding:0 5px; text-align:center; }
+.w.me { background:#2b3a40; color:var(--accent); } .w.ai { background:#203247; color:#9cc8ff; } .w.js { background:#23392f; color:#9fd3b4; }
+.log code, .mono { font:12px ui-monospace, Menlo, monospace; color:var(--cream); }
+.log .u { margin-left:auto; color:var(--line); font-size:11px; }
+.navg { position:absolute; z-index:6; }
+.ruler-chip { position:absolute; z-index:6; background:#fff; border:1px solid #cfd7db; color:#2b3a40; font-size:12.5px; border-radius:8px; padding:3px 8px; box-shadow:0 3px 8px rgba(0,0,0,.08); }
+.ai-chip { display:flex; align-items:center; gap:8px; padding:6px 10px 6px 8px; border-radius:16px; background:#203247; border:1px solid rgba(111,178,255,.5); color:#cfe3ff; font-size:13px; white-space:nowrap; }
+.ai-chip .dot { width:8px; height:8px; border-radius:50%; background:#6fb2ff; box-shadow:0 0 0 4px rgba(111,178,255,.25); }
+.statusbar { position:absolute; left:0; right:0; bottom:0; height:30px; z-index:6; background:rgba(19,25,27,.94); border-top:1px solid var(--gline); display:flex; align-items:center; gap:18px; padding:0 14px; font-size:12px; color:var(--dim); white-space:nowrap; }
+.statusbar kbd { font:11px Jakarta; background:var(--raised); border:1px solid var(--gline); border-radius:5px; padding:0 5px; color:var(--cream); margin-right:4px; }
+.statusbar b { color:var(--cream); font-weight:inherit; }
+.hub { width:390px; height:844px; border-radius:46px; background:#0f1416; position:relative; overflow:hidden; box-shadow:0 0 0 10px #1a2124, 0 0 0 11px #2b3438, 0 30px 60px rgba(0,0,0,.5); }
+.msg { margin:8px 14px; font-size:13.5px; color:var(--text); line-height:1.4; }
+.msg.me { background:var(--raised); border:1px solid var(--gline); border-radius:14px 14px 4px 14px; padding:9px 12px; margin-left:60px; color:var(--cream); }
+.tc { margin:5px 14px; border:1px solid var(--gline); border-radius:10px; background:#141b1e; font-size:12px; color:var(--dim); padding:6px 10px; display:flex; gap:8px; align-items:center; }
+.tc .mono { color:#9cc8ff; }
+.tc .ok { margin-left:auto; color:#7fd0a0; }
+.tc.run { border-color:rgba(111,178,255,.6); }
+.tc.run .ok { color:#9cc8ff; }
+.panel { background:var(--surface); border:1px solid var(--gline); border-radius:16px; overflow:hidden; }
+.panel .ph { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--gline); }
+.panel .ph b { color:var(--cream); font-weight:inherit; font-size:15px; flex:1; }
+.srow { display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--gline); font-size:13.5px; }
+.srow .nm { color:var(--cream); }
+.srow .on2 { font-size:11.5px; color:var(--dim); }
+.st { font-size:11px; border-radius:6px; padding:1px 7px; margin-left:auto; }
+.st.run { background:#23392f; color:#9fd3b4; } .st.err { background:rgba(229,72,77,.18); color:#ff9b8f; } .st.off { background:var(--raised); color:var(--dim); }
+.code { background:#0e1416; font:12px/1.55 ui-monospace, Menlo, monospace; color:#cdd6da; padding:10px 14px; white-space:pre; }
+.code .k { color:#ff9e64; } .code .s { color:#9ece6a; } .code .c { color:#6b7a80; } .code .hl { background:rgba(111,178,255,.16); display:block; margin:0 -14px; padding:0 14px; }
+.tbl { border-collapse:collapse; width:100%; font-size:13px; }
+.tbl td, .tbl th { padding:8px 10px; border-bottom:1px solid var(--gline); text-align:left; vertical-align:top; }
+.tbl th { color:var(--dim); font-weight:inherit; font-size:12px; }
+.tbl td:first-child { color:var(--cream); white-space:nowrap; }
+.tbl .mono { color:#9cc8ff; }
+h2.sec { font-size:22px; color:var(--cream); margin:56px 0 6px; font-weight:inherit; }
+p.secl { color:var(--dim); font-size:14.5px; max-width:1200px; margin-bottom:20px; }
+</style>
+
+<h1>v4: the design room as <b>an editor</b>, and the AI building in it</h1>
+<p class="lede">Asked on 2026-11-19, after the first room was built: a way out that is always there, a grid you can read sizes off, tools for building by hand, groups, scripts you can manage and watch, and the AI building through Midas while you watch and steer. A complete editing setup, closer to Blender than to a map. Everything marked <span class="new">new</span> does not exist today; <span class="today">today</span> is built.</p>
+
+<div class="principles" style="grid-template-columns:repeat(3,1fr)">
+  <div><h3>1 · One way out, always in the same place</h3><p><i>← Back to the map</i> at the top left, and <i>Esc</i>. The street comes back through a white fade; what you built stays as a draft, not half in the world. The map's own buttons are gone while you design (<span class="today">today</span>).</p></div>
+  <div><h3>2 · A grid you can read sizes off</h3><p>Red X (east) and blue Z (south) axes through the spot, metre lines and darker 5 m lines, a navigation gizmo that turns the view and snaps to Top / Front / Side, a 1.75 m figure, and dimensions on whatever is selected.</p></div>
+  <div><h3>3 · Blender's tools, sized for a finger too</h3><p>Select, move, rotate and scale (G R S), snap to the grid or to another part's face, align, duplicate, mirror, a row of copies (array), measure. Every one is a key on a desktop and a button on a phone.</p></div>
+  <div><h3>4 · Groups that really exist</h3><p>Ctrl-G groups, Alt-G ungroups, in the outliner or on the ring. A group moves, copies and is kept as one; inside it, each part still edits on its own. This needs a <code>group</code> on each object on the wire (v3's change 5).</p></div>
+  <div><h3>5 · Scripts you can see working</h3><p>A Scripts tab lists every script in the design, which object it sits on, and whether it is running, stopped or failing. While one runs, each call it makes lights up the object it touches and leaves a line in the log.</p></div>
+  <div><h3>6 · The AI builds in front of you</h3><p>From a Claude session on the Midas page: the AI opens the room on your device, builds with the same tools you have, and you watch it happen. Pause, take over, undo its last step, or point at a part and tell it what to change.</p></div>
+</div>
+
+<h2 class="sec">1 · The editor, on a desktop</h2>
+<p class="secl">The room keeps v3's white, now with the axes, measurements and the tools around it. Left: the tool column and the outliner (the design's tree, with its groups). Right: properties for whatever is selected. Bottom: the log of what happened, by whom (you, the AI, a script), each line undoable.</p>
+
+<div class="ed">
+  <svg class="scene" id="edScene" width="1740" height="960"></svg>
+
+  <!-- top bar -->
+  <div style="position:absolute;top:14px;left:14px;z-index:6;display:flex;gap:10px;align-items:center">
+    <div class="chipw" style="padding:7px 14px 7px 10px;color:var(--cream)"><svg class="i s"><use href="#back"/></svg><b>Back to the map</b><span style="font-size:11px;color:var(--line);margin-left:4px">Esc</span></div>
+    <div class="chipw" style="padding-right:12px"><svg class="i s" style="color:var(--brand)"><use href="#pin"/></svg>Draft for <b>Grote Markt 1</b><span style="color:var(--line)">·</span><span style="color:#9fd3b4">saved</span></div>
+  </div>
+  <div style="position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:6" class="segw">
+    <div class="on"><svg class="i s"><use href="#orbit"/></svg>Perspective</div><div>Top</div><div>Front</div><div>Side</div><div><svg class="i s"><use href="#street"/></svg>From the street</div>
+  </div>
+  <div style="position:absolute;top:14px;right:14px;z-index:6;display:flex;gap:8px;align-items:center">
+    <div class="ai-chip"><span class="dot"></span>Claude can build here<span style="color:#8fb3dd">· via Midas</span></div>
+    <div class="disc"><svg class="i s"><use href="#undo"/></svg></div>
+    <div class="disc"><svg class="i s"><use href="#redo"/></svg></div>
+  </div>
+
+  <!-- tool column -->
+  <div class="gp tool" style="left:14px;top:70px">
+    <div><svg class="i"><use href="#sel"/></svg><kbd>W</kbd></div>
+    <div class="on"><svg class="i"><use href="#move"/></svg><kbd>G</kbd></div>
+    <div><svg class="i"><use href="#rot"/></svg><kbd>R</kbd></div>
+    <div><svg class="i"><use href="#scale"/></svg><kbd>S</kbd></div>
+    <hr>
+    <div style="color:var(--brand)"><svg class="i"><use href="#magnet"/></svg></div>
+    <div><svg class="i"><use href="#align"/></svg></div>
+    <div><svg class="i"><use href="#dup"/></svg><kbd>⇧D</kbd></div>
+    <div><svg class="i"><use href="#mirror"/></svg></div>
+    <div><svg class="i"><use href="#array"/></svg></div>
+    <div><svg class="i"><use href="#ruler"/></svg><kbd>M</kbd></div>
+    <hr>
+    <div><svg class="i"><use href="#group"/></svg><kbd>^G</kbd></div>
+  </div>
+
+  <!-- outliner -->
+  <div class="gp" style="left:80px;top:70px;width:270px">
+    <div class="tabs3" style="padding:10px 12px 4px"><div class="on">Outliner</div><div>Add</div><div>Inventory</div></div>
+    <div class="ol">
+      <div class="r g"><svg class="i s ic"><use href="#chevd"/></svg><svg class="i s ic"><use href="#group"/></svg>Market stall<small>8</small></div>
+      <div class="r ind1"><svg class="i s ic"><use href="#box"/></svg>Counter<small><svg class="i s"><use href="#vis"/></svg></small></div>
+      <div class="r ind1"><svg class="i s ic"><use href="#box"/></svg>Counter top<small><svg class="i s"><use href="#vis"/></svg></small></div>
+      <div class="r g ind1"><svg class="i s ic"><use href="#chevd"/></svg><svg class="i s ic"><use href="#group"/></svg>Frame<small>4</small></div>
+      <div class="r ind2"><svg class="i s ic"><use href="#box"/></svg>Post<small><svg class="i s"><use href="#lock"/></svg></small></div>
+      <div class="r ind2"><svg class="i s ic"><use href="#box"/></svg>Post.001</div>
+      <div class="r ind2"><svg class="i s ic"><use href="#box"/></svg>Post.002</div>
+      <div class="r ind2"><svg class="i s ic"><use href="#box"/></svg>Post.003</div>
+      <div class="r sel ind1"><svg class="i s ic"><use href="#box"/></svg>Awning<small>selected</small></div>
+      <div class="r ind1"><svg class="i s ic"><use href="#model"/></svg>Lantern<small class="sc"><svg class="i s"><use href="#script"/></svg>script</small></div>
+    </div>
+    <div style="display:flex;gap:6px;padding:0 12px 12px">
+      <div class="btn" style="padding:6px 10px;font-size:12.5px"><svg class="i s"><use href="#group"/></svg>Group</div>
+      <div class="btn" style="padding:6px 10px;font-size:12.5px">Ungroup</div>
+      <div class="btn q" style="padding:6px 10px;font-size:12.5px;margin-left:auto">⋯</div>
+    </div>
+  </div>
+
+  <!-- navigation gizmo -->
+  <svg class="navg" style="right:372px;top:70px" width="96" height="96" viewBox="0 0 96 96">
+    <circle cx="48" cy="48" r="44" fill="rgba(19,25,27,.12)"/>
+    <line x1="48" y1="48" x2="80" y2="60" stroke="#e5484d" stroke-width="3"/><circle cx="80" cy="60" r="10" fill="#e5484d"/><text x="80" y="64" font-size="11" fill="#fff" text-anchor="middle" font-family="Jakarta">X</text>
+    <line x1="48" y1="48" x2="48" y2="14" stroke="#30a46c" stroke-width="3"/><circle cx="48" cy="14" r="10" fill="#30a46c"/><text x="48" y="18" font-size="11" fill="#fff" text-anchor="middle" font-family="Jakarta">Y</text>
+    <line x1="48" y1="48" x2="24" y2="66" stroke="#3e8ed0" stroke-width="3"/><circle cx="24" cy="66" r="10" fill="#3e8ed0"/><text x="24" y="70" font-size="11" fill="#fff" text-anchor="middle" font-family="Jakarta">Z</text>
+    <circle cx="20" cy="38" r="7" fill="none" stroke="#e5484d" stroke-width="2"/><circle cx="66" cy="28" r="7" fill="none" stroke="#3e8ed0" stroke-width="2"/>
+    <text x="48" y="92" font-size="10" fill="#5d6b72" text-anchor="middle" font-family="Jakarta">N ↑ as at the spot</text>
+  </svg>
+
+  <!-- properties -->
+  <div class="gp" style="right:14px;top:70px;width:340px">
+    <div class="ph"><div class="med"><svg class="i s"><use href="#tune"/></svg></div><b>Awning</b><span style="font-size:12px;color:var(--dim)">in Market stall</span></div>
+    <div class="tabs3"><div class="on">Object</div><div>Shape</div><div>Surface</div><div>Script</div></div>
+    <div class="grid2">
+      <span>Location, m</span><div class="xyz"><div><i class="rx">X</i>0.00</div><div><i class="gy">Y</i>2.26</div><div><i class="bz">Z</i>0.00</div></div>
+      <span>Rotation</span><div class="xyz"><div><i class="rx">X</i>8°</div><div><i class="gy">Y</i>0°</div><div><i class="bz">Z</i>0°</div></div>
+      <span>Dimensions, m</span><div class="xyz"><div><i class="rx">X</i>2.70</div><div><i class="gy">Y</i>0.12</div><div><i class="bz">Z</i>1.45</div></div>
+      <span>Relative to</span><div class="field" style="padding:5px 10px">The spot ▾</div>
+    </div>
+    <div style="border-top:1px solid var(--gline);padding:8px 14px 12px">
+      <h4 style="margin-top:4px">Snapping</h4>
+      <div class="trow"><span>To the grid, every</span><div class="field" style="padding:3px 9px">10 cm ▾</div></div>
+      <div class="trow"><span>To other parts' faces and edges</span><div class="tg on"></div></div>
+      <div class="trow"><span>Rotate in steps of</span><div class="field" style="padding:3px 9px">15° ▾</div></div>
+      <h4>Show</h4>
+      <div class="trow"><span>Dimensions of the selection</span><div class="tg on"></div></div>
+      <div class="trow"><span>Figure for scale (1.75 m)</span><div class="tg on"></div></div>
+      <div class="trow"><span>The spot's kerb and facade</span><div class="tg on"></div></div>
+    </div>
+  </div>
+
+  <!-- log -->
+  <div class="gp" style="left:380px;right:370px;bottom:44px;padding:10px 14px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="color:var(--cream);font-weight:inherit;font-size:13.5px">Log</b><span style="font-size:12px;color:var(--dim)">what changed, by whom · each line undoes on its own</span><div class="segw" style="margin-left:auto;font-size:12px"><div class="on">All</div><div>Me</div><div>AI</div><div>Scripts</div></div></div>
+    <div class="log">
+      <div class="l"><span class="t">14:21</span><span class="w ai">Claude</span><span>grouped 4 posts as <b style="color:var(--cream);font-weight:inherit">Frame</b></span><span class="u">undo</span></div>
+      <div class="l"><span class="t">14:22</span><span class="w js">lantern.js</span><span><code>set_color(0.95, 0.8, 0.35)</code> on Lantern, from <code>on_touch</code></span><span class="u">stop script</span></div>
+      <div class="l"><span class="t">14:23</span><span class="w me">You</span><span>moved Awning 0.12 m up, tilted it 8°</span><span class="u">undo</span></div>
+    </div>
+  </div>
+
+  <div class="ruler-chip" style="left:1186px;top:236px">snap · 10 cm</div>
+
+  <div class="statusbar">
+    <span><kbd>G</kbd>move <kbd>R</kbd>rotate <kbd>S</kbd>scale, then <kbd>X</kbd><kbd>Y</kbd><kbd>Z</kbd> for one axis</span>
+    <span><kbd>⇧D</kbd>duplicate</span><span><kbd>^G</kbd>group <kbd>⌥G</kbd>ungroup</span><span><kbd>M</kbd>measure</span><span><kbd>Num 1 3 7</kbd>front · side · top</span><span><kbd>Esc</kbd>back to the map</span>
+    <span style="margin-left:auto"><b>8 objects</b> · 2 groups · 2.9 × 2.4 × 1.6 m · grid 1 m</span>
+  </div>
+</div>
+
+<h2 class="sec">2 · Scripts: managed in one list, visible while they run</h2>
+<p class="secl">Today a script is reached object by object, through the ring's Script. In the room, every script in the design is in one list, with its state; selecting one shows its source and its console; while it runs, the object it acts on is lit in the room and each call it makes is a line in the log.</p>
+
+<div class="row" style="margin-top:0">
+  <div class="panel" style="width:520px">
+    <div class="ph"><div class="med" style="width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center"><svg class="i s"><use href="#script"/></svg></div><b>Scripts in this design</b><span class="new">new</span></div>
+    <div class="srow"><svg class="i s" style="color:#9fd3b4"><use href="#script"/></svg><div><div class="nm">lantern.js</div><div class="on2">on Lantern · on_touch, on_timer</div></div><span class="st run">running</span><svg class="i s" style="color:var(--dim)"><use href="#pause"/></svg></div>
+    <div class="srow"><svg class="i s" style="color:#ff9b8f"><use href="#script"/></svg><div><div class="nm">awning-wind.js</div><div class="on2">on Awning · line 7: <span style="color:#ff9b8f">set_rot expects 3 numbers</span></div></div><span class="st err">error</span><svg class="i s" style="color:var(--dim)"><use href="#play"/></svg></div>
+    <div class="srow"><svg class="i s" style="color:var(--dim)"><use href="#script"/></svg><div><div class="nm">sign.js</div><div class="on2">on Counter top · on_touch</div></div><span class="st off">stopped</span><svg class="i s" style="color:var(--dim)"><use href="#play"/></svg></div>
+    <div style="display:flex;gap:8px;padding:12px 14px">
+      <div class="btn"><svg class="i s"><use href="#plus"/></svg>New script on the selection</div>
+      <div class="btn q">Stop all</div>
+    </div>
+    <div class="code"><span class="c">// lantern.js — on Lantern</span>
+<span class="k">function</span> on_touch(id, who) {
+<span class="hl">  set_color(0.95, 0.80, 0.35)     <span class="c">// ← running now</span></span>  say(<span class="s">"Welcome to the stall"</span>)
+}
+<span class="k">function</span> on_timer() { set_color(0.30, 0.25, 0.20) }</div>
+    <div style="padding:8px 14px 12px;font-size:12px;color:var(--dim);border-top:1px solid var(--gline)"><span style="color:#9fd3b4">14:22:04</span> on_touch by <b style="color:var(--cream);font-weight:inherit">you</b> → set_color, say · 2 ms</div>
+  </div>
+
+  <div style="width:560px">
+    <div class="ed" style="width:560px;height:470px;border-radius:16px"><svg class="scene" id="jsScene" width="560" height="470"></svg>
+      <div class="callout" style="left:300px;top:120px;max-width:230px"><b>lantern.js</b> just called <code>set_color</code> on Lantern: the part glows green for a moment and the call is in the log.</div>
+      <div class="chipw" style="position:absolute;left:12px;bottom:12px;z-index:6"><svg class="i s" style="color:#9fd3b4"><use href="#script"/></svg><b>lantern.js</b> running · <span style="color:#9fd3b4">2 calls/s</span></div>
+    </div>
+    <div class="shot" style="width:560px"><ul style="margin-top:12px">
+      <li>A script's effect on the room is the same effect it has in the street: it runs on the server (<span class="today">today</span>: JavaScript prim scripts), so what you see here is real.</li>
+      <li>Stopping a script is one tap, here and in the log. A script that fails says the line and the reason, in the list, without opening it.</li>
+      <li>When the AI writes or changes a script, the change shows in the list with its diff before it runs, and the log says the AI did it.</li>
+    </ul></div>
+  </div>
+
+  <div style="width:520px">
+    <div class="panel">
+      <div class="ph"><b>Group and ungroup</b><span class="new">new</span></div>
+      <div style="padding:12px 14px;font-size:13.5px;color:var(--dim);line-height:1.5">
+        <p style="margin-bottom:8px">Select parts (shift-click, or drag a box in the room), then <b style="color:var(--cream);font-weight:inherit">Group</b>, <span class="mono">Ctrl-G</span>, or the ring's Group. A group is named, nests, and shows as a folder in the outliner.</p>
+        <p style="margin-bottom:8px">Clicking a part in the room selects its <i>group</i>; clicking again goes one level in, to the part. The breadcrumb shows where you are: <span class="mono" style="color:var(--cream)">Market stall ▸ Frame ▸ Post.002</span>.</p>
+        <p>A placed copy stays a group in the street, so one tap there picks up the whole stall (v3: "a group needs the wire"). Ungrouping in the room ungroups only the draft.</p>
+      </div>
+      <div class="ed" style="width:518px;height:250px;border-radius:0"><svg class="scene" id="grpScene" width="518" height="250"></svg>
+        <div class="menu" style="left:250px;top:40px;width:220px"><div>Select the group</div><div class="h"><svg class="i s"><use href="#group"/></svg>Group selection<span class="ipt" style="margin-left:auto">^G</span></div><div>Ungroup<span class="ipt" style="margin-left:auto">⌥G</span></div><hr><div><svg class="i s"><use href="#dup"/></svg>Duplicate<span class="ipt" style="margin-left:auto">⇧D</span></div><div><svg class="i s"><use href="#array"/></svg>Make a row of 4…</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 class="sec">3 · The AI builds while you watch, through Midas</h2>
+<p class="secl">The person asks in a Claude session on the Midas page — on the phone, or beside the app on a desktop. The session reaches the app over the Midas device link (<span class="today">today</span>: the paired phone's MCP tools, and a node's headless app), opens the room on that device, and builds with the same operations the editor has. The app shows it happening; the person steers in the session or in the room.</p>
+
+<div class="row" style="margin-top:0;gap:36px">
+  <div class="shot">
+    <div class="hub">
+      <div class="status"><span>14:21</span><div class="notch"></div><span>●●● 82%</span></div>
+      <div style="padding:6px 16px 10px;border-bottom:1px solid var(--gline);display:flex;align-items:center;gap:8px"><svg class="i s" style="color:var(--dim)"><use href="#back"/></svg><b style="color:var(--cream);font-weight:inherit;font-size:15px">A market stall for the Grote Markt</b><span style="margin-left:auto;font-size:11px;color:#9fd3b4">midas</span></div>
+      <div class="msg me">Build a market stall for Saturday's market at Grote Markt 1. 2.7 m wide, a red-and-white awning, a lantern that lights when touched.</div>
+      <div class="msg">I'll open the design room on your phone at that spot and build it there so you can watch.</div>
+      <div class="tc"><svg class="i s"><use href="#term"/></svg><span class="mono">design_room</span> open · 53.2194, 6.5665<span class="ok">✓</span></div>
+      <div class="tc"><svg class="i s"><use href="#term"/></svg><span class="mono">build</span> Counter · box 2.4 × 1.0 × 0.8<span class="ok">✓</span></div>
+      <div class="tc"><svg class="i s"><use href="#term"/></svg><span class="mono">build</span> Post × 4 · <span class="mono">group</span> Frame<span class="ok">✓</span></div>
+      <div class="tc run"><svg class="i s"><use href="#term"/></svg><span class="mono">build</span> Awning · 9 stripes<span class="ok">running</span></div>
+      <div class="msg" style="color:var(--dim);font-size:12.5px">Then the lantern and its script. You can pause me in the room at any time.</div>
+      <div class="msg me" style="margin-top:14px">Make the awning 30 cm deeper, it should cover the counter.</div>
+      <div style="position:absolute;left:12px;right:12px;bottom:22px;display:flex;gap:8px;align-items:center;background:var(--raised);border:1px solid var(--gline);border-radius:16px;padding:9px 12px;font-size:13px;color:var(--line)">Reply…<svg class="i s" style="margin-left:auto;color:var(--dim)"><use href="#chat"/></svg></div>
+    </div>
+    <h2><span>a</span>The session, on the Midas page</h2>
+    <ul>
+      <li>Each tool call is a line, and the one running now is marked. The person answers in the same thread to steer: "deeper", "less red", "start again".</li>
+      <li>Nothing here is new to Midas: a session already drives a paired device's tools. What is new is the room's tools in that set.</li>
+    </ul>
+  </div>
+
+  <div style="width:1260px">
+    <div class="ed" style="width:1260px;height:700px"><svg class="scene" id="aiScene" width="1260" height="700"></svg>
+      <div style="position:absolute;top:14px;left:14px;z-index:6;display:flex;gap:10px"><div class="chipw" style="padding:7px 14px 7px 10px;color:var(--cream)"><svg class="i s"><use href="#back"/></svg><b>Back to the map</b></div></div>
+      <div style="position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:8px;align-items:center;padding:6px;border-radius:18px;background:#203247;border:1px solid rgba(111,178,255,.5)">
+        <span class="dot" style="width:9px;height:9px;border-radius:50%;background:#6fb2ff;box-shadow:0 0 0 4px rgba(111,178,255,.25);margin-left:8px"></span>
+        <span style="color:#cfe3ff;font-size:13.5px;padding:0 6px;white-space:nowrap">Claude is building · <b style="font-weight:inherit;color:#fff">Awning, stripe 6 of 9</b></span>
+        <div class="btn" style="padding:6px 12px;font-size:13px"><svg class="i s"><use href="#pause"/></svg>Pause</div>
+        <div class="btn" style="padding:6px 12px;font-size:13px"><svg class="i s"><use href="#hand2"/></svg>Take over</div>
+        <div class="btn q" style="padding:6px 12px;font-size:13px;color:#cfe3ff"><svg class="i s"><use href="#undo"/></svg>Undo its last step</div>
+      </div>
+      <div class="gp" style="left:14px;top:70px;width:250px">
+        <div class="tabs3" style="padding:10px 12px 4px"><div class="on">Outliner</div></div>
+        <div class="ol">
+          <div class="r g"><svg class="i s ic"><use href="#chevd"/></svg><svg class="i s ic"><use href="#group"/></svg>Market stall<small>7</small></div>
+          <div class="r ind1"><svg class="i s ic"><use href="#box"/></svg>Counter</div>
+          <div class="r ind1"><svg class="i s ic"><use href="#box"/></svg>Counter top</div>
+          <div class="r g ind1"><svg class="i s ic"><use href="#chev"/></svg><svg class="i s ic"><use href="#group"/></svg>Frame<small>4</small></div>
+          <div class="r ai ind1"><svg class="i s ic" style="color:#9cc8ff"><use href="#spark"/></svg>Awning<small style="color:#9cc8ff">building</small></div>
+        </div>
+      </div>
+      <div class="callout" style="left:810px;top:150px;max-width:250px">The part the AI is working on is outlined in <b style="color:#3e8ed0">blue</b>, with a label saying what it is doing. Parts it has not built yet are not guessed at.</div>
+      <div class="callout" style="left:60px;top:470px;max-width:260px"><b>Point and say:</b> long-press a part, <i>Tell Claude…</i>, and the session gets the part's name and what you typed, as in panel a.</div>
+      <div class="gp" style="left:290px;right:14px;bottom:14px;padding:10px 14px">
+        <div class="log">
+          <div class="l"><span class="t">14:20</span><span class="w ai">Claude</span><span>opened the room at Grote Markt 1</span></div>
+          <div class="l"><span class="t">14:21</span><span class="w ai">Claude</span><span>built Counter, Counter top · grouped 4 posts as Frame</span><span class="u">undo</span></div>
+          <div class="l"><span class="t">14:22</span><span class="w ai">Claude</span><span>building Awning · stripe 6 of 9</span><span class="u" style="color:#9cc8ff">now</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="shot" style="width:1260px">
+      <h2><span>b</span>The room, while the AI builds</h2>
+      <ul>
+        <li><b style="color:var(--cream);font-weight:inherit">Pause</b> holds the session's next tool call until you resume; <b style="color:var(--cream);font-weight:inherit">Take over</b> ends its turn in the room and gives you the tools; <b style="color:var(--cream);font-weight:inherit">Undo its last step</b> takes back the last AI line in the log. All three are refused to the AI, never to the person.</li>
+        <li>The AI builds the draft, not the street: nothing appears for others until someone places it (v3's draft, which this needs).</li>
+        <li>What the AI can do is exactly what the account can do: it builds as you, through the server's own checks.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<h2 class="sec">4 · On a phone</h2>
+<p class="secl">The same room, with the tools as a bottom bar and the outliner as a sheet. Two fingers turn and zoom the view; one finger on a part moves it along the floor, snapping to 10 cm.</p>
+<div class="row" style="margin-top:0">
+  <div class="shot"><div class="phone"><div class="room" style="background:#f7f8f8"><svg class="scene" id="phScene" width="390" height="844"></svg></div>
+    <div class="status ondark" style="z-index:7"><span>9:41</span><div class="notch"></div><span>●●● 82%</span></div>
+    <div style="position:absolute;top:50px;left:12px;right:12px;z-index:6;display:flex;justify-content:space-between;align-items:center">
+      <div class="chipw" style="font-size:12.5px;padding:6px 12px 6px 8px;color:var(--cream)"><svg class="i s"><use href="#back"/></svg><b>Map</b></div>
+      <div class="segw" style="font-size:12px"><div class="on">3D</div><div>Top</div><div>Street</div></div>
+      <div class="disc" style="width:36px;height:36px"><svg class="i s"><use href="#undo"/></svg></div>
+    </div>
+    <div class="tip" style="left:14px;top:100px">Market stall ▸ <b style="color:#ffb48a;font-weight:inherit">Awning</b> · 2.70 × 1.45 m</div>
+    <div class="sheetw" style="padding-bottom:28px">
+      <div class="handle"></div>
+      <div style="display:flex;justify-content:space-between;padding:0 4px 10px">
+        <div style="text-align:center;font-size:10.5px;color:#fff"><div class="disc" style="background:var(--brand);border-color:transparent;margin:0 auto 3px"><svg class="i s"><use href="#move"/></svg></div>Move</div>
+        <div style="text-align:center;font-size:10.5px;color:var(--dim)"><div class="disc" style="margin:0 auto 3px"><svg class="i s"><use href="#rot"/></svg></div>Turn</div>
+        <div style="text-align:center;font-size:10.5px;color:var(--dim)"><div class="disc" style="margin:0 auto 3px"><svg class="i s"><use href="#scale"/></svg></div>Size</div>
+        <div style="text-align:center;font-size:10.5px;color:var(--dim)"><div class="disc" style="margin:0 auto 3px"><svg class="i s"><use href="#dup"/></svg></div>Copy</div>
+        <div style="text-align:center;font-size:10.5px;color:var(--dim)"><div class="disc" style="margin:0 auto 3px"><svg class="i s"><use href="#group"/></svg></div>Group</div>
+        <div style="text-align:center;font-size:10.5px;color:var(--dim)"><div class="disc" style="margin:0 auto 3px"><svg class="i s"><use href="#script"/></svg></div>Script</div>
+      </div>
+      <div class="pchips"><div>Counter</div><div>Frame ▸</div><div class="sel">Awning</div><div>Lantern</div><div class="plus">＋ Add</div></div>
+    </div>
+  </div><h2><span>a</span>Editing on the phone</h2><ul><li>Back to the map is the first thing at the top left, as on a desktop.</li><li>The selected part's size is always on screen.</li></ul></div>
+
+  <div style="width:1160px">
+    <div class="cardx">
+      <h3>What it takes, against what exists</h3>
+      <table class="tbl">
+        <tr><th>Piece</th><th>Built on</th><th>New</th></tr>
+        <tr><td>Way out</td><td>The room's close button and the white fade <span class="today">today</span></td><td>"Back to the map" top left and <span class="mono">Esc</span></td></tr>
+        <tr><td>Grid and orientation</td><td>The room's metre grid <span class="today">today</span>; north from the spot</td><td>Coloured axes, the navigation gizmo, Top / Front / Side views (orthographic, which v3 dropped and this brings back as views, not as the default), dimensions on the selection, the scale figure</td></tr>
+        <tr><td>Move / rotate / scale</td><td><span class="mono">systems::gizmo</span> handles and the edit dialog <span class="today">today</span></td><td>Keys (G R S + axis), snapping to grid and faces, align, duplicate, mirror, array, measure</td></tr>
+        <tr><td>Groups</td><td>—</td><td>A <span class="mono">group</span> on each object: a wire change (protocol bump), group-first selection, the outliner</td></tr>
+        <tr><td>Scripts</td><td>JavaScript prim scripts, the script editor, <span class="mono">ScriptOutput</span> <span class="today">today</span></td><td>One list per design with state; a server notice per host call so the room can light the object and log the call</td></tr>
+        <tr><td>Draft</td><td>Parts are live prims <span class="today">today</span>: others see them as they are built</td><td>A server-side draft that only its maker (and their AI) sees until it is placed: v3's draft, needed before the AI builds unseen by others</td></tr>
+        <tr><td>AI through Midas</td><td>The app's MCP tools <span class="today">today</span>: <span class="mono">build</span>, <span class="mono">edit_object</span>, <span class="mono">delete_objects</span>, <span class="mono">inspect_object</span>, <span class="mono">set_script</span>, <span class="mono">script_output</span>, <span class="mono">measure</span>, <span class="mono">view</span>; the Midas device link to the paired phone</td><td><span class="mono">design_room</span> (open / close at a spot), <span class="mono">select</span>, <span class="mono">group</span> / <span class="mono">ungroup</span>, <span class="mono">set_view</span>, <span class="mono">keep_design</span> / <span class="mono">place_design</span>; the "Claude is building" bar with Pause / Take over / Undo, and "Tell Claude…" on a part</td></tr>
+        <tr><td>Log</td><td>—</td><td>Every change with who made it (you, the AI, a script) and an undo per line</td></tr>
+      </table>
+    </div>
+    <div class="cardx" style="margin-top:18px">
+      <h3>Still open</h3>
+      <table class="tbl">
+        <tr><th>Question</th><th>Recommended</th></tr>
+        <tr><td>Order of building</td><td>Draft first (the AI and you build unseen), then groups (wire change), then the editor tools, then the AI bar. Each one lands on its own.</td></tr>
+        <tr><td>Where the AI runs</td><td>On the person's own device via the Midas link, so they watch in their own app; a node's headless app only for work nobody watches.</td></tr>
+        <tr><td>Blender's keys on the web</td><td>Same keys, except where the browser takes them (Ctrl-G is free; Ctrl-D is a bookmark, hence Shift-D as in Blender).</td></tr>
+        <tr><td>Can a script run in the draft?</td><td>Yes, but only for its maker, and stopped when the room closes; it starts for everyone when the design is placed.</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+// A small perspective renderer for the mockup: metres in, SVG out. The room
+// camera is the app's orbit camera, so the drawing is perspective too.
+const V = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: a => { const l = Math.hypot(...a); return a.map(x => x / l); },
+};
+function mk(svg, tag, attrs) { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; }
+const shade = (hex, f) => { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.min(255, v * f) | 0); return `rgb(${c})`; };
+function scene(svg, o) {
+  const cam = o.cam, fw = V.norm(V.sub(o.tgt, cam)), rt = V.norm(V.cross(fw, [0, 1, 0])), up = V.cross(rt, fw);
+  const Pz = (x, y, z) => { const v = V.sub([x, y, z], cam); const d = V.dot(v, fw); return [o.cx + o.f * V.dot(v, rt) / d, o.cy - o.f * V.dot(v, up) / d, d]; };
+  const P = (x, y, z) => Pz(x, y, z).slice(0, 2);
+  const pts = a => a.map(p => P(...p).join(",")).join(" ");
+  const defs = mk(svg, "defs", {});
+  defs.innerHTML = `<filter id="blur${o.id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${Math.max(1.5, o.f * .006)}"/></filter>
+    <linearGradient id="sky${o.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e9edef"/><stop offset="1" stop-color="#fbfcfc"/></linearGradient>`;
+  if (o.room) {
+    // The horizon: where the floor meets the white, softened.
+    const fh = V.norm([fw[0], 0, fw[2]]);
+    const hz = P(cam[0] + fh[0] * 1e5, 0, cam[2] + fh[2] * 1e5)[1];
+    mk(svg, "rect", { x: 0, y: 0, width: 4000, height: Math.max(0, hz), fill: `url(#sky${o.id})` });
+    mk(svg, "rect", { x: 0, y: hz - 6, width: 4000, height: 14, fill: "#ffffff", filter: `url(#blur${o.id})` });
+  }
+  // A floor line, cut into short pieces so the part behind the camera drops out
+  // and the far part fades into the white.
+  const line = (a, b, attrs, fade) => {
+    const n = 40;
+    for (let i = 0; i < n; i++) {
+      const t0 = i / n, t1 = (i + 1) / n;
+      const p0 = a.map((v, k) => v + (b[k] - v) * t0), p1 = a.map((v, k) => v + (b[k] - v) * t1);
+      const q0 = Pz(...p0), q1 = Pz(...p1);
+      if (q0[2] < .4 || q1[2] < .4) continue;
+      const mid = p0.map((v, k) => (v + p1[k]) / 2);
+      const op = Math.max(0, 1 - Math.hypot(mid[0], mid[2]) / fade);
+      if (op <= 0) continue;
+      mk(svg, "line", { x1: q0[0], y1: q0[1], x2: q1[0], y2: q1[1], opacity: op, ...attrs });
+    }
+  };
+  if (o.grid) {
+    for (let i = -16; i <= 16; i++) {
+      const w = i % 5 === 0 ? 1.5 : .8;
+      line([i, 0, -16], [i, 0, 16], { stroke: i % 5 === 0 ? "#a9b3b9" : "#c9d1d5", "stroke-width": w }, 15);
+      line([-16, 0, i], [16, 0, i], { stroke: i % 5 === 0 ? "#a9b3b9" : "#c9d1d5", "stroke-width": w }, 15);
+    }
+  }
+  if (o.axes) {
+    line([-16, 0, 0], [16, 0, 0], { stroke: "#e5484d", "stroke-width": 2 }, 16);
+    line([0, 0, -16], [0, 0, 16], { stroke: "#3e8ed0", "stroke-width": 2 }, 16);
+  }
+  if (o.spot) {
+    const st = { stroke: "#5b9bd5", "stroke-width": 2, "stroke-dasharray": "9 6" };
+    line([-16, 0, 1.75], [16, 0, 1.75], st, 16);
+    const fac = [[-16, -3.1], [-2.5, -3.1], [-2.5, -3.6], [3, -3.6], [3, -3.1], [16, -3.1]];
+    for (let i = 0; i + 1 < fac.length; i++) line([fac[i][0], 0, fac[i][1]], [fac[i + 1][0], 0, fac[i + 1][1]], st, 16);
+    if (o.labels) {
+      const t1 = Pz(3.4, 0, 1.75), t2 = Pz(4.2, 0, -3.1);
+      if (t1[2] > 0) mk(svg, "text", { x: t1[0] + 10, y: t1[1] + 22, fill: "#5b9bd5", "font-size": 15, "font-family": "Jakarta" }).textContent = "kerb";
+      if (t2[2] > 0) mk(svg, "text", { x: t2[0], y: t2[1] - 10, fill: "#5b9bd5", "font-size": 15, "font-family": "Jakarta" }).textContent = "facade, Grote Markt 1";
+    }
+  }
+  // contact shadow, cast a little away from the studio light
+  if (!o.noShadow) mk(svg, "polygon", { points: pts([[-1.4, 0, -0.75], [1.5, 0, -0.75], [1.65, 0, 0.95], [-1.25, 0, 0.95]]), fill: "rgba(40,55,62,.2)", filter: `url(#blur${o.id})` });
+  if (o.spot) {
+    const ring = []; for (let i = 0; i < 48; i++) { const a = i / 48 * Math.PI * 2; ring.push([Math.cos(a) * .8, 0, Math.sin(a) * .8]); }
+    mk(svg, "polygon", { points: pts(ring), fill: "none", stroke: "#FD6012", "stroke-width": 2.5 });
+  }
+  if (o.avatar) {
+    const f = P(-2.6, 0, .5), hd = P(-2.6, 1.8, .5), h = f[1] - hd[1], cx = f[0], by = f[1];
+    mk(svg, "ellipse", { cx, cy: by, rx: h * .18, ry: h * .05, fill: "rgba(40,55,62,.22)", filter: `url(#blur${o.id})` });
+    const g = mk(svg, "g", { fill: "#55646b" });
+    mk(g, "rect", { x: cx - h * .085, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .015, y: by - h * .48, width: h * .07, height: h * .48, rx: h * .03 });
+    mk(g, "rect", { x: cx - h * .12, y: by - h * .84, width: h * .24, height: h * .4, rx: h * .07 });
+    mk(g, "rect", { x: cx - h * .17, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "rect", { x: cx + h * .115, y: by - h * .82, width: h * .055, height: h * .34, rx: h * .03 });
+    mk(g, "circle", { cx, cy: by - h * .92, r: h * .075 });
+    if (o.dims) {
+      const x = cx - h * .32, s = { stroke: "#8a979d", "stroke-width": 1.2 };
+      mk(svg, "line", { x1: x, y1: by, x2: x, y2: by - h, ...s });
+      mk(svg, "line", { x1: x - 6, y1: by, x2: x + 6, y2: by, ...s });
+      mk(svg, "line", { x1: x - 6, y1: by - h, x2: x + 6, y2: by - h, ...s });
+      mk(svg, "text", { x: x - 10, y: by - h / 2, fill: "#5d6b72", "font-size": 17, "text-anchor": "end", "font-family": "Jakarta" }).textContent = "1.8 m";
+    }
+  }
+  // A box draws whichever of its six faces look toward the camera.
+  const box = (x0, x1, y0, y1, z0, z1, col, outline) => {
+    const F = [
+      [[0, 1, 0], [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], 1.08],
+      [[0, -1, 0], [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], .55],
+      [[1, 0, 0], [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]], .82],
+      [[-1, 0, 0], [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]], .74],
+      [[0, 0, 1], [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], .66],
+      [[0, 0, -1], [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]], .9],
+    ];
+    for (const [n, q, k] of F) {
+      if (V.dot(n, V.sub(cam, q[0])) <= 0) continue;
+      if (outline) mk(svg, "polygon", { points: pts(q), fill: outline === true ? "none" : outline.fill || "none", stroke: outline === true ? "#FD6012" : outline.stroke, "stroke-width": 2.4, "stroke-dasharray": outline.dash || "", "stroke-linejoin": "round" });
+      else mk(svg, "polygon", { points: pts(q), fill: shade(col, k), stroke: shade(col, .7), "stroke-width": .6 });
+    }
+  };
+  if (o.kind === "bench") { box(-.85,-.78,0,.42,-.18,.18,"#3a3f42"); box(.78,.85,0,.42,-.18,.18,"#3a3f42"); box(-.95,.95,.42,.48,-.22,.22,"#8a6a48"); box(-.95,.95,.55,.85,-.24,-.18,"#8a6a48"); return; }
+  if (o.kind === "beacon") { box(-.15,.15,0,1.5,-.15,.15,"#6b7a80"); box(-.25,.25,1.5,1.9,-.25,.25,"#FD9212"); return; }
+  if (o.kind === "kiosk") { box(-.8,.8,0,2.0,-.8,.8,"#3e6f8e"); box(-1,1,2.0,2.2,-1,1,"#2b3a40"); return; }
+  if (o.kind === "rack") { for (const x of [-.9,-.3,.3,.9]) { box(x-.04,x+.04,0,.8,-.35,-.3,"#8d989e"); box(x-.04,x+.04,.8,.86,-.35,.35,"#8d989e"); box(x-.04,x+.04,0,.8,.3,.35,"#8d989e"); } return; }
+  const wood = "#a8754a", post = "#6b5644";
+  box(-1.25, -1.17, 0, 2.2, -0.62, -0.54, post);
+  box(1.17, 1.25, 0, 2.2, -0.62, -0.54, post);
+  box(-1.2, 1.2, 0, 1.0, -0.4, 0.4, wood);
+  box(-1.3, 1.3, 1.0, 1.06, -0.5, 0.5, "#d8b48a");
+  box(-1.25, -1.17, 0, 2.2, 0.54, 0.62, post);
+  box(1.17, 1.25, 0, 2.2, 0.54, 0.62, post);
+  const n = 9, w = 2.7 / n;
+  for (let i = 0; i < (o.stripes ?? n); i++) { const x0 = -1.35 + i * w; box(x0, x0 + w, 2.2, 2.32, -0.72, 0.73, i % 2 ? "#efe6d6" : "#c8463a"); }
+  if (o.selected) box(-1.35, 1.35, 2.2, 2.32, -0.72, 0.73, null, true);
+  if (o.aiPart) box(-1.35, 1.35, 2.2, 2.32, -0.72, 0.73, null, { stroke: "#3e8ed0", dash: "8 5", fill: "rgba(62,142,208,.08)" });
+  if (o.groupSel) { box(-1.27, 1.27, 0, 2.2, -0.64, 0.64, null, { stroke: "#FD6012", dash: "6 5" }); }
+  if (o.lantern) {
+    // the model from the inventory, hung under the awning's front edge
+    box(.6, .62, 1.9, 2.2, .6, .62, "#3a3f42");
+    box(.5, .72, 1.62, 1.9, .5, .72, "#2f3436");
+    box(.53, .69, 1.65, 1.87, .53, .69, o.glow ? "#fff1b8" : "#ffd27a");
+    if (o.glow) { const c = P(.61, 1.76, .61); mk(svg, "circle", { cx: c[0], cy: c[1], r: o.f * .045, fill: "none", stroke: "#30a46c", "stroke-width": 3 }); mk(svg, "circle", { cx: c[0], cy: c[1], r: o.f * .07, fill: "none", stroke: "rgba(48,164,108,.35)", "stroke-width": 6 }); }
+  }
+  if (o.dims) {
+    const s = { stroke: "#8a979d", "stroke-width": 1.2 };
+    const a = P(-1.3, 0, 1.25), b = P(1.3, 0, 1.25), m = P(0, 0, 1.25);
+    mk(svg, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...s });
+    mk(svg, "text", { x: m[0], y: m[1] + 24, fill: "#5d6b72", "font-size": 17, "font-family": "Jakarta", "text-anchor": "middle" }).textContent = "2.7 m";
+  }
+  if (o.gizmo) {
+    const c = P(0, 2.32, 0), L = 1.0;
+    for (const [[dx, dy, dz], col] of [[[L, 0, 0], "#e5484d"], [[0, L, 0], "#30a46c"], [[0, 0, L], "#3e8ed0"]]) {
+      const e = P(dx, 2.32 + dy, dz);
+      mk(svg, "line", { x1: c[0], y1: c[1], x2: e[0], y2: e[1], stroke: col, "stroke-width": 4, "stroke-linecap": "round" });
+      mk(svg, "circle", { cx: e[0], cy: e[1], r: 8, fill: col });
+    }
+    mk(svg, "circle", { cx: c[0], cy: c[1], r: 6, fill: "#fff", stroke: "#2b3a40", "stroke-width": 2 });
+  }
+}
+// The awning's own dimensions, for the selected part in the editor.
+function dimsAwning(id, o) {
+  const svg = document.getElementById(id);
+  const cam = o.cam, fw = V.norm(V.sub(o.tgt, cam)), rt = V.norm(V.cross(fw, [0, 1, 0])), up = V.cross(rt, fw);
+  const P = (x, y, z) => { const v = V.sub([x, y, z], cam); const d = V.dot(v, fw); return [o.cx + o.f * V.dot(v, rt) / d, o.cy - o.f * V.dot(v, up) / d]; };
+  const s = { stroke: "#FD6012", "stroke-width": 1.4 };
+  const a = P(-1.35, 2.75, 0.73), b = P(1.35, 2.75, 0.73);
+  mk(svg, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...s });
+  for (const p of [a, b]) mk(svg, "line", { x1: p[0], y1: p[1] - 7, x2: p[0], y2: p[1] + 7, ...s });
+  const m = P(0, 2.75, 0.73);
+  mk(svg, "rect", { x: m[0] - 34, y: m[1] - 30, width: 68, height: 24, rx: 6, fill: "#fff", stroke: "#f3b08c" });
+  mk(svg, "text", { x: m[0], y: m[1] - 12, fill: "#c4490b", "font-size": 16, "font-family": "Jakarta", "text-anchor": "middle" }).textContent = "2.70 m";
+  const g0 = P(1.75, 0, 0.9), g1 = P(1.75, 2.26, 0.9);
+  mk(svg, "line", { x1: g0[0], y1: g0[1], x2: g1[0], y2: g1[1], ...s, "stroke-dasharray": "5 4" });
+  mk(svg, "rect", { x: g1[0] + 6, y: (g0[1] + g1[1]) / 2 - 17, width: 84, height: 24, rx: 6, fill: "#fff", stroke: "#f3b08c" });
+  mk(svg, "text", { x: g1[0] + 12, y: (g0[1] + g1[1]) / 2, fill: "#c4490b", "font-size": 16, "font-family": "Jakarta" }).textContent = "2.26 m up";
+}
+const T = (id, o) => { const e = document.getElementById(id); if (e) scene(e, { id, cam: [5, 3.6, 6.4], tgt: [0, 1.1, 0], ...o }); return o; };
+const ed = { f: 1500, cx: 930, cy: 470, cam: [5.4, 4.2, 7.2], tgt: [0, 1.0, 0] };
+T("edScene", { ...ed, grid: true, axes: true, spot: true, avatar: true, dims: true, selected: true, gizmo: true, lantern: true });
+dimsAwning("edScene", { ...ed, cam: [5.4, 4.2, 7.2], tgt: [0, 1.0, 0] });
+T("jsScene", { f: 640, cx: 230, cy: 250, cam: [4.2, 3.0, 5.6], tgt: [0, 1.2, 0], grid: true, axes: true, lantern: true, glow: true });
+T("grpScene", { f: 330, cx: 130, cy: 135, cam: [4.6, 3.4, 6.2], tgt: [0, 1.1, 0], grid: true, axes: true, lantern: true, groupSel: true });
+T("aiScene", { f: 1200, cx: 680, cy: 380, cam: [5.0, 3.9, 6.8], tgt: [0, 1.0, 0], grid: true, axes: true, avatar: true, stripes: 6, aiPart: true });
+T("phScene", { f: 560, cx: 195, cy: 380, cam: [4.6, 3.6, 6.4], tgt: [0, 1.1, 0], grid: true, axes: true, selected: true, lantern: true, gizmo: true });
+</script>
+</body>
+</html>
