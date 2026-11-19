@@ -302,10 +302,10 @@ here needs a callback, and the JNI call (`getIntent().getDataString()`) is one
 line. What the no-dex rule cost there is the *trampoline activity* that would
 re-deliver a link tapped while the app is already running, because
 `NativeActivity` never calls `setIntent` and a replacement for it is a Java class.
-So a place link is honoured on a cold start and ignored on a warm one; the whole
-reasoning is in [place-links.md](place-links.md). **That one is now buildable and
-simply unbuilt** — the trampoline is an ordinary `Activity` subclass, which is
-exactly what the dex lane makes possible.
+So a link was honoured on a cold start and ignored on a warm one. **Built
+2026-11-19** without a trampoline: `MainActivity`, our `NativeActivity` subclass,
+overrides `onNewIntent` and hands the link to `platform::android::new_link`;
+community invites read it so far ([place-links.md](place-links.md)).
 
 So location is **pulled, not pushed**: `requestLocationUpdates` is registered
 with the `PendingIntent` overload — a broadcast with deliberately no receiver,

@@ -410,11 +410,23 @@ pub fn sync_device(
     globe: Res<crate::systems::globe::GlobeState>,
     cameras: crate::grid::AnchoredCamera,
     online: Option<Res<crate::resources::OnlineSession>>,
+    time: Res<Time>,
     mut launched: Local<bool>,
+    mut next_link_check: Local<f64>,
 ) {
     if !*launched {
         *launched = true;
         cs.pending_invite = launch_invite();
+    }
+    // A link tapped while the app already runs: shown over whatever screen was
+    // open, because the person just asked for it. Twice a second, as a JNI call.
+    let now = time.elapsed_secs_f64();
+    if now >= *next_link_check {
+        *next_link_check = now + 0.5;
+        if let Some(code) = new_invite() {
+            cs.screen = None;
+            cs.pending_invite = Some(code);
+        }
     }
     if let (Some(anchor), Some((cell, tf))) = (map_anchor.geo, cameras.get()) {
         cs.here = Some(crate::systems::geo_nav::camera_geo(
@@ -456,6 +468,15 @@ fn launch_invite() -> Option<String> {
         }
     }
     crate::systems::place_link::invite_from_link(&crate::env_value("CARTO_COMMUNITY")?)
+}
+
+/// An invite link tapped while the app was already running (Android only).
+fn new_invite() -> Option<String> {
+    #[cfg(target_os = "android")]
+    if let Some(url) = crate::platform::android::new_link() {
+        return crate::systems::place_link::invite_from_link(&url);
+    }
+    None
 }
 
 async fn admin_request(username: &str, delete: bool) -> String {

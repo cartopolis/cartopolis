@@ -31,6 +31,7 @@ import android.app.NotificationManager;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Process;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends NativeActivity {
     /** Whether the app is on screen, for `PushReceiver`: a wake-up for a call
@@ -43,6 +44,28 @@ public final class MainActivity extends NativeActivity {
         // Where the simulator wakes this phone while the app is closed
         // (Push.java). Nothing happens without a UnifiedPush distributor.
         Push.register(this);
+    }
+
+    /** A link tapped while the app already runs (`launchMode="singleTask"`
+     *  routes it here, not to a new activity), until the client takes it
+     *  (`platform::android::new_link`). `NativeActivity` neither overrides
+     *  this nor calls `setIntent`, so without it such a tap only brought the
+     *  app forward. */
+    private static final AtomicReference<String> newLink = new AtomicReference<>();
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String data = intent.getDataString();
+        if (data != null) {
+            newLink.set(data);
+        }
+    }
+
+    /** The link tapped since the last call, once; `null` when none was. */
+    static String takeNewLink() {
+        return newLink.getAndSet(null);
     }
 
     @Override

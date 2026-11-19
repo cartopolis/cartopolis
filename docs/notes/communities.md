@@ -79,7 +79,8 @@ unlisted community shows its face to somebody holding its link and nobody
 else. The link is `https://cartopolis.org/go?community=CODE`: on `/go` because
 that is the one path the app claims on Android, so a phone with the app opens
 the app; on the desktop the viewer handles it, and the chat page reads
-`?community=` too and takes a pasted link or code in Find.
+`?community=` too and takes a pasted link or code in Find. On Android a link tapped while the app
+already runs opens the invite too (`platform::android::new_link`, 2026-11-19).
 
 ## History for people added later
 

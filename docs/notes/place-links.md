@@ -1,7 +1,7 @@
 ---
 topic: sharing
 triggers: [place_link.rs, AndroidManifest.xml, assetlinks.json, "deep link", "app link", "intent filter", "cartopolis://", "?place=", "/go", "Copy link", launch_url, autoVerify]
-updated: 2026-08-23
+updated: 2026-11-19
 ---
 
 # A link to a place opens the app, and what that costs
@@ -77,36 +77,34 @@ next push.
 that path is a framework one, so this worked even under the no-dex rule
 (`docs/notes/android-build.md`) that applied when it was written.
 
-## The limit: a link followed while the app is running does nothing
+## A link followed while the app is running (2026-11-19)
 
 `android.app.NativeActivity` does not override `onNewIntent`, and the default
 implementation does not call `setIntent`. So `getIntent()` keeps handing back the
 intent that *started* the activity for the life of the process. With
-`launchMode="singleTask"` — which the app needs, and which is what routes a second
-link to `onNewIntent` rather than to a new activity — tapping a link while the app
-is already running brings the existing task forward showing the place it was
-already at, and `launch_url` reports the *first* link again.
+`launchMode="singleTask"` — which the app needs — a second link goes to
+`onNewIntent` rather than to a new activity, and until 2026-11-19 tapping one
+while the app ran brought it forward and did nothing else.
 
-This is why `geo_nav::launch_place` is documented as called **once, at startup**:
-polling it would re-teleport the camera to a link followed hours ago, which is a
-worse failure than the one being worked around.
+`MainActivity.onNewIntent` (the activity has been our own subclass since the dex
+lane) now keeps the link until the client takes it, once:
+`platform::android::new_link`, polled twice a second. **Only community invites
+read it so far** (`communities::sync_device`); a place or contact link tapped
+while the app runs is taken and dropped, exactly as it was ignored before. Giving
+those the same treatment is a match on the link in the same place.
+
+`launch_url` stays a read-once-at-startup call: `getIntent` answers the same
+link for as long as nothing replaces it, so polling it would re-teleport the
+camera to a link followed hours ago.
 
 Options considered and why they lost:
 
 | | |
 |---|---|
-| A trampoline activity that reads the intent and hands it over | The correct fix, and **no longer blocked**: it is a Java class, which was a `classes.dex`, which was assumed to be a Gradle project — and the dex lane (2026-08-23, `docs/notes/android-build.md`) showed it is javac + d8 and no Gradle at all. This is now unbuilt work rather than a rejected option; the rest of this table stands |
+| A trampoline activity that reads the intent and hands it over | Unneeded once `MainActivity` existed: overriding `onNewIntent` in it is the same hand-over with no second activity in the manifest |
 | `launchMode="standard"` so each link starts a fresh activity | A second `NativeActivity` in one process means a second Bevy app against one `ANDROID_APP`, one winit and one surface |
 | `noHistory="true"` so every launch is cold | Loses the whole session — map, camera, tile cache warmth — every time the user switches apps |
 | Poll `getIntent()` each frame | It never changes; there is nothing to poll |
-
-This used to read "the fix waits for the day this APK grows a dex for some other
-reason" — **and that day was 2026-08-23**, when the background-connection work
-brought in javac + d8. The trampoline is now ordinary unbuilt work: a small
-`Activity` subclass in `crates/cartopolis_android/java/`, a manifest entry, and a
-way to hand the URL across. Until someone writes it the behaviour is unchanged —
-cold start honours the link, warm start brings the app forward. Worth knowing
-before someone spends an afternoon deciding the JNI call is broken.
 
 ## What a link carries, and what it does not
 

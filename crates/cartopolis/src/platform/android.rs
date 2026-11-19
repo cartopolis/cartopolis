@@ -807,19 +807,11 @@ fn display_rotation_inner(env: &mut JNIEnv, activity: &JObject) -> Result<i32, F
 /// framework one, so — like `open_url` — this worked back when the APK carried no
 /// `classes.dex` at all.
 ///
-/// **It answers for the launch, and only the launch.** `android-activity` 0.6
-/// surfaces no intent at all, and `android.app.NativeActivity` does not override
-/// `onNewIntent`, so nothing calls `setIntent` and `getIntent` keeps handing back
-/// the intent that *started* the activity for as long as the process lives. With
-/// `launchMode="singleTask"` in the manifest, tapping a second link while the app
-/// is already running therefore brings the existing task forward showing the place
-/// it was already at, and this function reports the *first* link again. The fix is
-/// a trampoline activity, which is a Java class — and as of the dex lane
-/// (`build-apk.sh`, `report_dex`) the APK *can* carry one, so this is now unbuilt
-/// work rather than the platform limit it used to be
-/// (`docs/notes/android-build.md`). Until it is built, callers must read this
-/// **once**, at startup, or a link followed hours ago will teleport the camera
-/// again.
+/// **Read it once, at startup.** `android-activity` 0.6 surfaces no intent at
+/// all, and with `launchMode="singleTask"` in the manifest a link tapped while
+/// the app is already running goes to `MainActivity.onNewIntent`, which hands it
+/// to [`new_link`]. Polling this instead would answer the same link again and
+/// again, and a link followed hours ago would teleport the camera again.
 ///
 /// Returns `None` for an ordinary launcher tap, which carries an `ACTION_MAIN`
 /// intent with no data — the overwhelmingly common case, and not a failure.
@@ -850,6 +842,38 @@ pub fn launch_url() -> Option<String> {
         Err(Fail(msg)) => {
             clear_pending(&env);
             tracing::warn!(error = %msg, "could not read the launch intent");
+            None
+        }
+    }
+}
+
+/// `eu.garage44.cartopolis.MainActivity`, the activity.
+const MAIN_ACTIVITY_BINARY: &str = "eu.garage44.cartopolis.MainActivity";
+
+/// A link tapped while the app was already running, once: the launch has
+/// [`launch_url`], and every later tap lands here (`MainActivity.onNewIntent`).
+/// `None` when there was none since the last call, or the class could not be
+/// reached.
+pub fn new_link() -> Option<String> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    let result = env.with_local_frame(6, |env| {
+        let class = load_app_class(env, &activity, MAIN_ACTIVITY_BINARY)?;
+        let link = env
+            .call_static_method(&class, "takeNewLink", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if link.is_null() {
+            return Ok::<Option<String>, Fail>(None);
+        }
+        let url: String = env.get_string(&JString::from(link))?.into();
+        Ok(Some(url))
+    });
+    match result {
+        Ok(url) => url.filter(|u| !u.trim().is_empty()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read a new link");
             None
         }
     }
