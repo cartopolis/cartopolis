@@ -154,6 +154,16 @@ const pBase = protocol(mergeBase);
 const pOurs = protocol("HEAD");
 const pMain = protocol(base);
 
+// A pattern that stops matching reads as "no numbers", and no numbers never
+// clash: the check would pass on every branch from then on. This tree's own
+// source has to parse.
+if (pOurs.revisions.size === 0 || pOurs.kinds.size === 0) {
+    problems.push(
+        `could not read PROTOCOL_HISTORY rows or MessageKind's \`Name = N,\` rows under ${PROTOCOL}/ ` +
+            `(${pOurs.revisions.size} revisions, ${pOurs.kinds.size} kinds); the declarations no longer match the patterns in protocol() here.`,
+    );
+}
+
 clashes(
     "protocol revision ",
     pBase.revisions,
