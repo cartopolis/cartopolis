@@ -31,6 +31,7 @@
 //! are all unchanged — this module only draws them.
 
 use crate::systems::egui_manager::EguiMut;
+use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 use cartopolis_core::meeting::Every;
 use cartopolis_core::{NetMessage, ReportReason};
@@ -414,13 +415,6 @@ pub fn clock_time(at_ms: u64) -> String {
                 .to_string()
         })
         .unwrap_or_default()
-}
-
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 pub(crate) fn tone_for(name: &str) -> egui::Color32 {
@@ -1022,7 +1016,7 @@ fn calendar_out(
     if let Some((key, day_ms)) = out.plan_in {
         // The chat's own form, on the day the calendar was showing, at the
         // clock time it would have proposed for today.
-        let today = MeetingForm::plan(now_ms());
+        let today = MeetingForm::plan(unix_ms());
         let mut form = today.clone();
         if let (MeetingForm::Plan { start_ms, .. }, MeetingForm::Plan { start_ms: t, .. }) =
             (&mut form, &today)
@@ -1138,7 +1132,7 @@ pub fn render_chats_panel(
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     let mut open_flag = true;
-    let now = now_ms();
+    let now = unix_ms();
     // The composer sits on the panel's bottom edge, which is where the
     // on-screen keys land, so while they are up the band lifts itself clear of
     // them (and says so to the keyboard, in `compose_row`).
@@ -1580,7 +1574,7 @@ fn list_screen(
             // the list is then the answer to the search.
             if needle.is_empty() && !sending {
                 let (open, pick) =
-                    crate::systems::calendar::coming_up(ui, calendar, chat, communities, now_ms());
+                    crate::systems::calendar::coming_up(ui, calendar, chat, communities, unix_ms());
                 act.calendar |= open;
                 if pick.is_some() {
                     act.calendar_pick = pick;
@@ -3005,7 +2999,7 @@ fn meetup_people(
                     .map_or_else(
                         || "going".to_string(),
                         |l| {
-                            let d = crate::systems::driver::metres_between(
+                            let d = cartopolis_core::geo::plane_distance_m(
                                 [l.latitude, l.longitude],
                                 [place.latitude, place.longitude],
                             );
@@ -4544,7 +4538,7 @@ fn apply(
         view.attach = false;
     }
     if let Some(minutes) = act.meetup_shift {
-        let floor = crate::systems::meetup::default_start_ms(now_ms()).saturating_sub(30 * 60_000);
+        let floor = crate::systems::meetup::default_start_ms(unix_ms()).saturating_sub(30 * 60_000);
         if let Some(m) = chat
             .meetup_draft
             .as_mut()
@@ -4890,7 +4884,7 @@ pub fn render_chat_world(
         view.open_chat(&key);
     }
 
-    let now = now_ms();
+    let now = unix_ms();
     let viewport = egui.viewport_pts();
     let top = top_offset(&chat);
     let ctx = egui.ctx_mut().clone();
@@ -4990,7 +4984,7 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
     let sanne = "dm:5a4e";
     if !chat.channels.iter().any(|c| c.key == sanne) {
         // Minutes before now, so the thread's day chip reads "Today".
-        let start = now_ms().saturating_sub(10 * 60_000);
+        let start = unix_ms().saturating_sub(10 * 60_000);
         let at = move |min: u64| start + min * 60_000;
         chat.open_channel(sanne, &crate::systems::private_chat::private_label("Sanne"));
         let push = |chat: &mut ChatState,
@@ -5079,7 +5073,7 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
         let mut vismarkt = point(53.2166, 6.5683, "Vismarkt", "halfway for both?");
         vismarkt.view = None;
         vismarkt.meetup = Some(cartopolis_core::point::Meetup {
-            start_ms: crate::systems::meetup::default_start_ms(now_ms()),
+            start_ms: crate::systems::meetup::default_start_ms(unix_ms()),
             going: false,
         });
         push(
@@ -5098,9 +5092,9 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
                 latitude: 53.2232,
                 longitude: 6.5720,
                 accuracy_m: 8.0,
-                until_ms: now_ms() + 60 * 60_000,
+                until_ms: unix_ms() + 60 * 60_000,
             },
-            now_ms(),
+            unix_ms(),
         );
         let joris = "dm:10a5";
         chat.open_channel(joris, &crate::systems::private_chat::private_label("Joris"));
@@ -5152,13 +5146,13 @@ pub fn seed_demo_chats(chat: &mut ChatState, view: &mut ChatsView, screen: &str)
                 if screen == "plan" {
                     MeetingForm::Plan {
                         title: "Street party wrap-up".into(),
-                        start_ms: next_hour_ms(now_ms()) + 24 * 3_600_000,
+                        start_ms: next_hour_ms(unix_ms()) + 24 * 3_600_000,
                         minutes: 45,
                         agenda: "What went well 10\nThe money 15\nNext year 20".into(),
                         text: String::new(),
                         repeat: Some((Every::Week, 1)),
                         // Nine weeks, so the capture shows Until stepped.
-                        until_ms: Some(next_hour_ms(now_ms()) + 57 * 24 * 3_600_000),
+                        until_ms: Some(next_hour_ms(unix_ms()) + 57 * 24 * 3_600_000),
                     }
                 } else {
                     MeetingForm::Poll {
@@ -5212,7 +5206,7 @@ fn seed_demo_meeting(chat: &mut ChatState) {
         return;
     }
     chat.open_channel(key, "Street party crew");
-    let now = now_ms();
+    let now = unix_ms();
     let say = |chat: &mut ChatState, id: u64, who: &str, m: MeetingObject| {
         chat.receive_meeting(key, id, who.into(), m.caption(), m);
     };

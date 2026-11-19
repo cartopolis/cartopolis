@@ -106,6 +106,20 @@ pub fn ground_distance_m(lat_a: f64, lng_a: f64, lat_b: f64, lng_b: f64) -> f64 
     d.truncate().length()
 }
 
+/// Metres between two nearby `[lat, lng]` points, equirectangular: the cheap
+/// cousin of [`ground_distance_m`] for hot loops over short spans.
+///
+/// Over the tens of metres between consecutive route vertices the two agree to
+/// well under a millimetre, and the route display calls this for every vertex on
+/// every frame. Not for long spans, the poles or the antimeridian.
+#[must_use]
+pub fn plane_distance_m(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let mid = (a[0] + b[0]) * 0.5;
+    let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
+    let dy = (b[0] - a[0]) * 110_540.0;
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// How many metres a degree of latitude and of longitude are worth at a latitude
 /// — the local scale of the map, which is what turns a distance in metres into
 /// an offset in degrees.

@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
+use cartopolis_core::ring::point_in_ring_f64;
 
 use crate::grid::AnchoredCamera;
 use crate::platform::stream::{CellStream, Policy};
@@ -535,7 +536,7 @@ fn place_doors_on_facades(buildings: &mut HashMap<Arc<str>, BuildingFact>) {
         for ox in -1..=1 {
             for oy in -1..=1 {
                 for id in buckets.get(&(bx + ox, by + oy)).into_iter().flatten() {
-                    if *id != mine && rings.get(*id).is_some_and(|r| point_in_ring(r, p)) {
+                    if *id != mine && rings.get(*id).is_some_and(|r| point_in_ring_f64(r, p)) {
                         return true;
                     }
                 }
@@ -586,7 +587,7 @@ fn doorway_on_facade(
         // winding is not promised and getting it backwards is silent (it is what
         // once drew all 113,710 doors on the inside of their own walls).
         let n = (ab.1 / len, -ab.0 / len);
-        let n = if point_in_ring(ring, (at.0 + n.0 * PROBE_M, at.1 + n.1 * PROBE_M)) {
+        let n = if point_in_ring_f64(ring, (at.0 + n.0 * PROBE_M, at.1 + n.1 * PROBE_M)) {
             (-n.0, -n.1)
         } else {
             n
@@ -604,29 +605,6 @@ fn doorway_on_facade(
             ))
         })
         .map(|(_, at, _)| at)
-}
-
-/// Even-odd ray cast against a ring of metre pairs.
-///
-/// A third copy of a test `collision::Footprint` and `lod22` also carry, and
-/// deliberately: both of those answer about `Vec2` in the anchored world frame,
-/// while this one runs at parse time on `f64` pairs derived straight from
-/// lat/lng, before any anchor exists to convert them against.
-fn point_in_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
-    let mut inside = false;
-    let n = ring.len();
-    let mut j = n - 1;
-    for i in 0..n {
-        let (a, b) = (ring[i], ring[j]);
-        if (a.1 > p.1) != (b.1 > p.1) {
-            let x = a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
-            if p.0 < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
 }
 
 // ─── Coverage ────────────────────────────────────────────────────────────────
@@ -1048,7 +1026,7 @@ impl BuildingFacts {
         };
         self.near(lat, lng, 300.0)
             .into_iter()
-            .find(|(_, b)| crate::systems::osm_buildings::point_in_ring((lat, lng), &b.footprint))
+            .find(|(_, b)| point_in_ring_f64(&b.footprint, (lat, lng)))
             .and_then(|(_, b)| {
                 b.doors
                     .iter()
@@ -1372,7 +1350,8 @@ mod tests {
         // Metres, x east and y north. Fronts run along y = 0.
         let house = |x0: f64| vec![(x0, 0.0), (x0 + 6.0, 0.0), (x0 + 6.0, 10.0), (x0, 10.0)];
         let (left, middle, right) = (house(-6.0), house(0.0), house(6.0));
-        let neighbours = |p: (f64, f64)| point_in_ring(&left, p) || point_in_ring(&right, p);
+        let neighbours =
+            |p: (f64, f64)| point_in_ring_f64(&left, p) || point_in_ring_f64(&right, p);
 
         // 1.0 m from the party wall at x = 6, 1.5 m from the front wall at y = 0.
         let p = (5.0, 1.5);

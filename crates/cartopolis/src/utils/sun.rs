@@ -2,6 +2,7 @@
 //! fog systems. The photometry follows the same extinction physics the Nishita sky
 //! shader integrates, so lights lit from these curves match what the sky shows.
 
+use super::math::smoothstep;
 use bevy::math::{Quat, Vec3};
 
 /// Local apparent-solar time of day (0–24 h) for a Unix timestamp at a longitude
@@ -53,12 +54,6 @@ pub fn sun_direction(hours: f32, decl_rad: f32) -> Vec3 {
     let up = sin_l * sin_d + cos_l * cos_d * cos_h;
     let south = cos_h * cos_d * sin_l - sin_d * cos_l;
     Vec3::new(east, up, south).normalize()
-}
-
-/// Hermite smoothstep: 0 below `e0`, 1 above `e1`, smooth in between.
-pub fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Zenith optical depth of Rayleigh scattering per RGB channel (λ⁻⁴, so blue is

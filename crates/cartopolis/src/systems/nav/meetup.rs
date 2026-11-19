@@ -17,6 +17,7 @@
 //!   chat, so nobody has to remember to stop sharing.
 
 use crate::platform::sync::{Arc, Mutex};
+use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 
 use cartopolis_core::point::{Meetup, Point};
@@ -24,12 +25,13 @@ use cartopolis_core::point::{Meetup, Point};
 use crate::grid::AnchoredCamera;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate};
 use crate::systems::chat::ChatState;
-use crate::systems::driver::{metres_between, point_along, DriverState, RouteGeom};
+use crate::systems::driver::{point_along, DriverState, RouteGeom};
 use crate::systems::geo_nav::camera_geo;
 use crate::systems::globe::GlobeState;
 use crate::systems::navigation::{self, DetachedSolve, RouteState};
 use crate::systems::routing::TravelMode;
 use crate::systems::walk_guide::WalkGuide;
+use cartopolis_core::geo::plane_distance_m;
 
 /// A proposal starts at least this far ahead, so there is time to get there.
 const LEAD_MS: u64 = 30 * 60_000;
@@ -187,7 +189,7 @@ pub fn answer_meetup_requests(
             None => true,
         }
     });
-    let now = now_ms();
+    let now = unix_ms();
     for (key, lat, lng, name) in ready {
         chat.meetup_draft = Some((
             key,
@@ -230,19 +232,12 @@ pub fn finish_on_arrival(
     };
     let (here, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut chat.meetups_going)
         .into_iter()
-        .partition(|(_, p)| metres_between([to.0, to.1], [p.latitude, p.longitude]) < ARRIVED_M);
+        .partition(|(_, p)| plane_distance_m([to.0, to.1], [p.latitude, p.longitude]) < ARRIVED_M);
     chat.meetups_going = rest;
     for (key, _) in here {
         chat.stop_sharing(&key);
         chat.private_outbox.push((key, "I'm here".to_string()));
     }
-}
-
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -5757,7 +5757,7 @@ impl Landing {
     /// Smoothstepped, so the ground leaves the landing and rejoins the field
     /// without a crease at either edge.
     fn weight(&self, p: [f32; 2]) -> f32 {
-        use crate::utils::sun::smoothstep;
+        use crate::utils::math::smoothstep;
         // Past the run's own ends only: between two segments of one end the
         // other segment holds the point.
         let n = self.segments.len();
@@ -6815,7 +6815,7 @@ struct BesideRoads<'a> {
 impl BesideRoads<'_> {
     /// How much the field at world `(x, z)` is off, by the street beside it.
     fn correction(&self, x: f32, z: f32) -> f32 {
-        use crate::utils::sun::smoothstep;
+        use crate::utils::math::smoothstep;
         let local = [x - self.origin.x, z - self.origin.y];
         let Some(near) =
             self.levels

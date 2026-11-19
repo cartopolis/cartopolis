@@ -377,7 +377,7 @@ impl GrassArea {
                 && x <= b[2]
                 && z >= b[1]
                 && z <= b[3]
-                && crate::tunnels::point_in_ring([x, z], ring)
+                && cartopolis_core::ring::point_in_ring(ring, [x, z])
         })
     }
 }

@@ -732,7 +732,7 @@ fn into_building(g: &Ground, anchor: (f64, f64, u32), b: &Boxed) -> Option<Strin
         let inside = points.into_iter().any(|c| {
             c.y > low
                 && c.y < high
-                && crate::systems::building_select::point_in_ring(&prism.ring, Vec2::new(c.x, c.z))
+                && cartopolis_core::ring::point_in_ring(&prism.ring, Vec2::new(c.x, c.z))
         });
         if inside {
             return Some(id.to_string());

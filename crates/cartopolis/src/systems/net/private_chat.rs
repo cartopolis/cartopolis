@@ -26,6 +26,7 @@
 //! - **Changing a group after it starts.** A group is created with its members
 //!   and its name; adding or removing people later is not built.
 
+use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 use cartopolis_core::NetMessage;
 
@@ -259,7 +260,7 @@ fn share_location(
     events: &mut Vec<Event>,
 ) {
     use crate::platform::location::LocationWatch;
-    let now = now_ms();
+    let now = unix_ms();
     chat.expire_shares(now);
     // A meet-up somebody said they are going to starts its share here, on the
     // same tick that sends shares, so it goes out the moment it is due.
@@ -322,13 +323,6 @@ fn share_location(
             Err(e) => tracing::warn!(error = %e, "could not send a location update"),
         }
     }
-}
-
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Run the engine for this frame: connect it when a session comes up, apply
@@ -411,7 +405,7 @@ pub fn drive_private_chats(
                 stored,
                 count,
             } => {
-                if let Err(e) = engine.send_history(&group, &stored, count, now_ms(), &mut out) {
+                if let Err(e) = engine.send_history(&group, &stored, count, unix_ms(), &mut out) {
                     tracing::warn!(error = %e, "could not send a history");
                 }
                 private.dirty = true;
@@ -502,7 +496,7 @@ pub fn drive_private_chats(
         let Some(group) = group_of(&channel) else {
             continue;
         };
-        match engine.send_text(&group, &text, now_ms(), &mut out) {
+        match engine.send_text(&group, &text, unix_ms(), &mut out) {
             Ok(request) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
@@ -540,7 +534,7 @@ pub fn drive_private_chats(
             &group,
             &uploaded.picture,
             &uploaded.caption,
-            now_ms(),
+            unix_ms(),
             &mut out,
         ) {
             Ok(_) => {
@@ -575,7 +569,7 @@ pub fn drive_private_chats(
                 crate::systems::place_link::web_link(point.latitude, point.longitude, 300.0, None)
             }
         });
-        match engine.send_point(&group, &point, link, now_ms(), &mut out) {
+        match engine.send_point(&group, &point, link, unix_ms(), &mut out) {
             Ok(_) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
@@ -681,7 +675,7 @@ pub fn drive_private_chats(
         let Some(group) = group_of(&channel) else {
             continue;
         };
-        match engine.send_meeting(&group, &meeting, now_ms(), &mut out) {
+        match engine.send_meeting(&group, &meeting, unix_ms(), &mut out) {
             Ok(request) => {
                 let me = shown(&engine, engine.address());
                 let my_id = chat.my_id.unwrap_or(0);
@@ -707,7 +701,7 @@ pub fn drive_private_chats(
                     .position(|(who, _)| who.eq_ignore_ascii_case(&peer))
                 {
                     let (_, text) = chat.private_hello.remove(i);
-                    match engine.send_text(&group, &text, now_ms(), &mut out) {
+                    match engine.send_text(&group, &text, unix_ms(), &mut out) {
                         Ok(request) => {
                             let me = shown(&engine, engine.address());
                             let my_id = chat.my_id.unwrap_or(0);
@@ -781,7 +775,7 @@ pub fn drive_private_chats(
                     accuracy_m,
                     until_ms,
                 },
-                now_ms(),
+                unix_ms(),
             ),
             Event::LocationStopped { group, from } => {
                 chat.drop_location(&channel_key(&group), &shown(&engine, &from));

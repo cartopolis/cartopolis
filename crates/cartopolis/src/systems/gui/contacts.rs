@@ -22,6 +22,7 @@
 //! request to them — starting the chat first would race the request and lose.
 
 use crate::systems::egui_manager::{EguiMut, EguiRef};
+use crate::utils::clock::unix_ms;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -410,13 +411,6 @@ impl Contacts {
     }
 }
 
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// "5 min ago", "yesterday": how long ago a meeting or a request was.
 #[must_use]
 /// A person row's second line, saying first that an AI agent speaks for the
@@ -781,7 +775,7 @@ pub fn render_person_card(
     let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * (theme::OSD_MARGIN + 12.0));
     let lift = crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open());
     let ctx = egui.ctx().clone();
-    let now = now_ms();
+    let now = unix_ms();
 
     if contacts.compose.is_some() {
         let mut send = false;
@@ -1301,7 +1295,7 @@ pub fn screen(
     me: &str,
 ) {
     let mut act = Act::default();
-    let now = now_ms();
+    let now = unix_ms();
     let depth = match sub {
         Sub::Requests | Sub::Contacts => 1,
         Sub::Request(_) | Sub::Add | Sub::Privacy => 2,
@@ -2143,7 +2137,7 @@ fn paint_qr(ui: &mut egui::Ui, text: &str, size: f32) {
 /// Fill the screens with the design's people for `--ui contacts` and friends:
 /// the same switch `ChatsView::demo` is, so the screens draw with no session.
 pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
-    let now_ms = now_ms();
+    let now_ms = unix_ms();
     // The request's own chat: one line and a point, held back.
     let key = "dm:je01";
     if !chat.channels.iter().any(|c| c.key == key) {
@@ -2249,7 +2243,7 @@ pub fn seed_demo(contacts: &mut Contacts, chat: &mut ChatState) {
 /// The person card as it looks for a stranger standing nearby (`--ui
 /// personcard`).
 pub fn seed_demo_card(contacts: &mut Contacts) {
-    let now_ms = now_ms();
+    let now_ms = unix_ms();
     contacts.card = Some(Card {
         person: Some(PersonDto {
             username: "sanne_k".into(),

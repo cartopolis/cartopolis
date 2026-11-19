@@ -143,6 +143,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use big_space::prelude::{BigSpace, Grid, GridCell};
+use cartopolis_core::geo::plane_distance_m;
 use cartopolis_core::motion;
 use web_time::Instant;
 
@@ -954,18 +955,6 @@ impl DriverState {
 
 // ─── Progress along the route ────────────────────────────────────────────────
 
-/// Metres between two `[lat, lng]` points, on the local tangent plane.
-///
-/// Equirectangular rather than haversine on purpose: over the tens of metres
-/// between consecutive route vertices the two agree to well under a millimetre,
-/// and this is called for every vertex of the route on every frame.
-pub(crate) fn metres_between(a: [f64; 2], b: [f64; 2]) -> f64 {
-    let mid = (a[0] + b[0]) * 0.5;
-    let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
-    let dy = (b[0] - a[0]) * 110_540.0;
-    (dx * dx + dy * dy).sqrt()
-}
-
 impl RouteGeom {
     /// Measure a route out along its own polyline.
     ///
@@ -985,7 +974,7 @@ impl RouteGeom {
         let mut total = 0.0;
         cum.push(0.0);
         for w in points.windows(2) {
-            total += metres_between(w[0], w[1]);
+            total += plane_distance_m(w[0], w[1]);
             cum.push(total);
         }
 
@@ -3580,7 +3569,7 @@ mod tests {
         ];
         let mut cum = vec![0.0];
         for w in points.windows(2) {
-            cum.push(cum.last().unwrap() + metres_between(w[0], w[1]));
+            cum.push(cum.last().unwrap() + plane_distance_m(w[0], w[1]));
         }
         let geom = RouteGeom {
             total_m: *cum.last().unwrap(),

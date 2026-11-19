@@ -814,7 +814,7 @@ pub fn update_satellite_material(
     if !shown {
         return;
     }
-    let fade = crate::utils::sun::smoothstep(GLOBE_SHOW_ALT, GLOBE_SHOW_ALT + FADE_IN_M, altitude);
+    let fade = crate::utils::math::smoothstep(GLOBE_SHOW_ALT, GLOBE_SHOW_ALT + FADE_IN_M, altitude);
     let scale = windows
         .iter()
         .next()

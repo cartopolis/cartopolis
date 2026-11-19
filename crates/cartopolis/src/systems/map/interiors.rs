@@ -45,6 +45,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use big_space::prelude::BigSpace;
+use cartopolis_core::ring::{point_in_ring, ring_area};
 use cartopolis_geo::building_design::{self as bd, BuildingDesign, Compiled};
 
 use crate::components::HideInSpace;
@@ -962,36 +963,6 @@ fn latlng_in_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
         if (u.0 > p.0) != (v.0 > p.0) {
             let x = u.1 + (p.0 - u.0) / (v.0 - u.0) * (v.1 - u.1);
             if p.1 < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
-fn ring_area(ring: &[Vec2]) -> f32 {
-    let n = ring.len();
-    (0..n)
-        .map(|i| ring[i].perp_dot(ring[(i + 1) % n]))
-        .sum::<f32>()
-        .abs()
-        * 0.5
-}
-
-/// Even-odd ray cast against a bare ring.
-fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
-    let mut inside = false;
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    let mut j = n - 1;
-    for i in 0..n {
-        let (u, v) = (ring[i], ring[j]);
-        if (u.y > p.y) != (v.y > p.y) {
-            let x = u.x + (p.y - u.y) / (v.y - u.y) * (v.x - u.x);
-            if p.x < x {
                 inside = !inside;
             }
         }

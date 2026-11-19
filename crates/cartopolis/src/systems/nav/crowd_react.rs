@@ -13,6 +13,7 @@
 //! Purely per viewer: the crowd is invented on each client and nobody else
 //! sees the same walker, so none of this is on the wire.
 
+use crate::utils::math::smoothstep;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -169,11 +170,6 @@ pub fn keep_clear(p: Vec2, travel: Vec2, shift: f32, people: &[Vec2]) -> f32 {
         shift = side + away * (need + 1e-3);
     }
     shift
-}
-
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 // ── Looking ──────────────────────────────────────────────────────────────────

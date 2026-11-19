@@ -30,6 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 use cartopolis_core::{
     CallAction, CallEndReason, CallMember, CallRooms, CallSettings, CallWaiter, NetMessage,
@@ -233,14 +234,6 @@ fn send_agenda(
     }
     #[cfg(target_arch = "wasm32")]
     let _ = (calls, private, online, plan, at);
-}
-
-/// Unix milliseconds now.
-fn unix_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// The rest of a call's meeting state, from its roster (protocol 41).

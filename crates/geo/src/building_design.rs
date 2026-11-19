@@ -1243,40 +1243,8 @@ fn norm(a: P2) -> Option<P2> {
     (l.is_finite() && l > 1e-6).then(|| scale(a, 1.0 / l))
 }
 
-/// Even-odd ray cast against a bare ring.
-#[must_use]
-pub fn point_in_ring(ring: &[P2], p: P2) -> bool {
-    let mut inside = false;
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    let mut j = n - 1;
-    for i in 0..n {
-        let (u, v) = (ring[i], ring[j]);
-        if (u[1] > p[1]) != (v[1] > p[1]) {
-            let x = u[0] + (p[1] - u[1]) / (v[1] - u[1]) * (v[0] - u[0]);
-            if p[0] < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
-fn signed_area(ring: &[P2]) -> f32 {
-    let mut a = 0.0;
-    for i in 0..ring.len() {
-        let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
-        a += p[0] * q[1] - q[0] * p[1];
-    }
-    a * 0.5
-}
-
-fn ring_area(ring: &[P2]) -> f32 {
-    signed_area(ring).abs()
-}
+pub use cartopolis_core::ring::point_in_ring;
+use cartopolis_core::ring::{ring_area, signed_area};
 
 /// Move every edge of a ring inward by `by` metres.
 ///

@@ -59,6 +59,7 @@
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
+use cartopolis_core::ring::point_in_ring;
 
 use crate::grid::AnchoredCamera;
 use crate::platform::stream::{CellStream, Policy};
@@ -567,7 +568,7 @@ impl WaterLevelField {
             if wx < bb[0] || wx > bb[2] || wz < bb[1] || wz > bb[3] {
                 continue;
             }
-            if !point_in_ring(pts, wx, wz) {
+            if !point_in_ring(pts, [wx, wz]) {
                 continue;
             }
             found = Some(match found {
@@ -625,23 +626,6 @@ fn distance_to_ring(pts: &[[f32; 2]], x: f32, z: f32) -> f32 {
         best = best.min((x - px).hypot(z - pz));
     }
     best
-}
-
-/// Even-odd point-in-polygon over a closed ring whose last point is not repeated.
-fn point_in_ring(pts: &[[f32; 2]], x: f32, z: f32) -> bool {
-    let mut inside = false;
-    let n = pts.len();
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        if (a[1] > z) != (b[1] > z) {
-            let t = (z - a[1]) / (b[1] - a[1]);
-            if x < a[0] + t * (b[0] - a[0]) {
-                inside = !inside;
-            }
-        }
-    }
-    inside
 }
 
 fn water_covers(cx: i64, cy: i64) -> bool {
@@ -792,7 +776,7 @@ mod tests {
                 if wx < bb[0] || wx > bb[2] || wz < bb[1] || wz > bb[3] {
                     continue;
                 }
-                if !point_in_ring(pts, wx, wz) {
+                if !point_in_ring(pts, [wx, wz]) {
                     continue;
                 }
                 found = Some(found.map_or(*level, |p: f32| p.min(*level)));

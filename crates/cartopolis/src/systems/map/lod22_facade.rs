@@ -27,6 +27,7 @@
 //! design — so the window you look out of is the window the street sees.
 
 use bevy::prelude::*;
+use cartopolis_core::ring::point_in_ring;
 
 use crate::systems::osm_buildings::MeshData;
 
@@ -375,22 +376,6 @@ fn profile_min(profile: &[(f32, f32)], u0: f32, u1: f32) -> f32 {
         }
     }
     m
-}
-
-fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
-    let mut inside = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (u, v) = (ring[i], ring[j]);
-        if (u.y > p.y) != (v.y > p.y) {
-            let x = u.x + (p.y - u.y) / (v.y - u.y) * (v.x - u.x);
-            if p.x < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
 }
 
 #[cfg(test)]

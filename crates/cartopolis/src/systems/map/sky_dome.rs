@@ -237,7 +237,7 @@ pub struct SkyDomeParams {
 /// `daylight` here instead snapped the sky to night about twenty minutes early,
 /// with the city below it still lit.
 fn sky_daylight(hours: f32, decl_rad: f32) -> f32 {
-    sun::smoothstep(-0.21, 0.25, sun::sun_direction(hours, decl_rad).y)
+    crate::utils::math::smoothstep(-0.21, 0.25, sun::sun_direction(hours, decl_rad).y)
 }
 
 /// Everything the dome's shader is driven by, for a time of day and a camera
@@ -262,7 +262,8 @@ pub fn sky_dome_params(hours: f32, decl_rad: f32, altitude_m: f32) -> SkyDomePar
     let tint = sun::sun_transmittance_at(hours, decl_rad, SKY_SCATTER_ALT_M.max(altitude_m));
     // …taken the rest of the way to zero before the shell is hidden, so that the
     // hide is not a cut (see SKY_DOME_MAX_ALT).
-    let fade = 1.0 - sun::smoothstep(SKY_DOME_FADE_ALT, SKY_DOME_MAX_ALT, altitude_m);
+    let fade =
+        1.0 - crate::utils::math::smoothstep(SKY_DOME_FADE_ALT, SKY_DOME_MAX_ALT, altitude_m);
     let source =
         tint * (RAW_SUNLIGHT * crate::systems::sky::SUN_SCALE * day * fade / std::f32::consts::PI);
 

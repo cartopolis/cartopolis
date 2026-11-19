@@ -23,6 +23,7 @@ use crate::components::OsmBuildingMesh;
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
 use crate::platform::sync::{Arc, Mutex, RwLock};
+use cartopolis_core::ring::{point_in_ring_f64, ring_area, ring_area_f64};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -2192,7 +2193,7 @@ fn build_far_from_body(
             .collect();
         // Sheds and garages read as noise from afar; the detail ring shows them
         // up close, and skipping them keeps the vertex budget in check.
-        if polygon_area(&ring) < 30.0 {
+        if ring_area(&ring) < 30.0 {
             continue;
         }
         let world: Vec<Vec2> = ring.iter().map(|p| Vec2::new(p.x + ox, p.y + oz)).collect();
@@ -3048,17 +3049,6 @@ fn oriented_bbox(ring: &[Vec2]) -> Obb {
     })
 }
 
-fn polygon_area(ring: &[Vec2]) -> f32 {
-    let n = ring.len();
-    let mut a = 0.0;
-    for i in 0..n {
-        let p = ring[i];
-        let q = ring[(i + 1) % n];
-        a += p.x * q.y - q.x * p.y;
-    }
-    a.abs() * 0.5
-}
-
 /// Greedy outline simplification for far LOD: drop vertices that deviate less
 /// than `tol` metres from the line between their kept neighbours. Far
 /// silhouettes don't need sub-metre detail, and this roughly halves the ring's
@@ -3302,7 +3292,7 @@ fn push_building(
         RoofShape::Skillion => skillion_roof(bld, &ring, &obb, wall_h, roof_h, roof_across, roof),
         RoofShape::Gabled | RoofShape::Hipped => {
             // Ridged roofs assume a ~rectangular footprint; fall back to flat otherwise.
-            if obb.area <= 0.0 || polygon_area(&ring) / obb.area < 0.82 {
+            if obb.area <= 0.0 || ring_area(&ring) / obb.area < 0.82 {
                 flat_cap(bld, &ring, wall_h, roof);
             } else {
                 ridged_roof(
@@ -3959,39 +3949,6 @@ fn buildings_from_doc(
     Ok(out)
 }
 
-/// Even-odd point-in-ring test (lat/lng or any planar pair).
-pub(crate) fn point_in_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
-    let n = ring.len();
-    if n < 3 {
-        // No area to be inside; and `n - 1` below would underflow on an empty one.
-        return false;
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (yi, xi) = ring[i];
-        let (yj, xj) = ring[j];
-        if ((yi > p.0) != (yj > p.0)) && p.1 < (xj - xi) * (p.0 - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-/// Planar ring area in squared degrees — only ever compared against another
-/// area from the same cell, so the projection distortion cancels.
-fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
-    let n = ring.len();
-    let mut a = 0.0;
-    for i in 0..n {
-        let (y0, x0) = ring[i];
-        let (y1, x1) = ring[(i + 1) % n];
-        a += x0 * y1 - x1 * y0;
-    }
-    (a * 0.5).abs()
-}
-
 /// Simple 3D Buildings: where `building:part` ways cover most of an outline,
 /// drop the outline's own extrusion and let the parts carry the massing —
 /// that is what parts are *for* (the church tower over its nave, the setback
@@ -4013,7 +3970,7 @@ fn resolve_parts(buildings: &mut Vec<Building>) {
                     clat += la;
                     clng += lo;
                 }
-                ((clat / n, clng / n), ring_area_deg2(&b.ring))
+                ((clat / n, clng / n), ring_area_f64(&b.ring))
             })
         })
         .collect();
@@ -4022,14 +3979,14 @@ fn resolve_parts(buildings: &mut Vec<Building>) {
         if outline.part {
             continue;
         }
-        let own = ring_area_deg2(&outline.ring);
+        let own = ring_area_f64(&outline.ring);
         if own <= 0.0 {
             continue;
         }
         let covered: f64 = centroids
             .iter()
             .flatten()
-            .filter(|(c, _)| point_in_ring(*c, &outline.ring))
+            .filter(|(c, _)| point_in_ring_f64(&outline.ring, *c))
             .map(|(_, area)| area)
             .sum();
         if covered >= own * 0.5 {

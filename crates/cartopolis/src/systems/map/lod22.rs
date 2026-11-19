@@ -37,6 +37,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
+use cartopolis_core::ring::point_in_ring;
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
@@ -527,26 +528,6 @@ fn nearest_edge_point(ring: &[Vec2], p: Vec2) -> Option<(Vec2, Vec2)> {
             n
         },
     ))
-}
-
-/// Even-odd ray cast — the same test `collision::Footprint` uses, kept here
-/// because this crate's copy answers about a bare slice rather than a built
-/// footprint.
-fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
-    let mut inside = false;
-    let n = ring.len();
-    let mut j = n - 1;
-    for i in 0..n {
-        let (a, b) = (ring[i], ring[j]);
-        if (a.y > p.y) != (b.y > p.y) {
-            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-            if p.x < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
 }
 
 /// Marker for spawned LoD2.2 meshes.

@@ -42,6 +42,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
+use cartopolis_core::ring::point_in_ring;
 
 use crate::components::{Avatar, FreeCamera, HideInSpace};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -457,28 +458,6 @@ fn ray_prism(origin: Vec3, dir: Vec3, ring: &[Vec2], base: f32, top: f32) -> Opt
     let enter = lo.max(poly_in);
     let exit = hi.min(poly_out);
     (enter <= exit).then_some(enter)
-}
-
-/// Even-odd point-in-ring, in the same shape `collision::Footprint::contains`
-/// uses. Kept local because that one is private and is about collision.
-pub(crate) fn point_in_ring(ring: &[Vec2], p: Vec2) -> bool {
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (a, b) = (ring[i], ring[j]);
-        if (a.y > p.y) != (b.y > p.y) {
-            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-            if p.x < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
 }
 
 // ─── Indoors ─────────────────────────────────────────────────────────────────

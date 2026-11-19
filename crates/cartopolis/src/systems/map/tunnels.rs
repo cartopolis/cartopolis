@@ -35,6 +35,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use cartopolis_core::ring::point_in_ring;
 use cartopolis_geo::tunnels::Tunnel;
 
 /// One cell's tunnels, as the worker built them: tile-local metres.
@@ -580,7 +581,7 @@ impl Tunnels {
         self.cells
             .values()
             .flat_map(|c| c.openings.iter())
-            .any(|m| point_in_ring(at, &m.ring))
+            .any(|m| point_in_ring(&m.ring, at))
     }
 
     /// Every tunnel's carriageway outline, for the collider mirror.
@@ -605,26 +606,6 @@ pub const INSIDE_M: f32 = -0.5;
 #[must_use]
 pub fn inside(floor_lift: f32) -> bool {
     floor_lift <= INSIDE_M
-}
-
-/// Even-odd point in ring. The rings are closed (first point repeated), which
-/// costs one degenerate edge and no correctness.
-fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
-    if ring.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[j]);
-        if (a[1] > p[1]) != (b[1] > p[1])
-            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
-        {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }
 
 #[cfg(test)]

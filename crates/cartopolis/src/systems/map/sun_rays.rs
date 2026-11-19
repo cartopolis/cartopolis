@@ -39,6 +39,7 @@
 //! the one place the Graphics settings reach the camera, and [`update_sun_rays`]
 //! writes where the sun is on screen every frame.
 
+use crate::utils::math::smoothstep;
 use bevy::prelude::*;
 
 use crate::components::FreeCamera;
@@ -110,11 +111,6 @@ pub fn update_sun_rays(
     {
         *rays = next;
     }
-}
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[cfg(test)]

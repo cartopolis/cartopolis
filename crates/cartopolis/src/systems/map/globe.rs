@@ -592,7 +592,7 @@ impl GlobeState {
         if !self.ready {
             return 0.0;
         }
-        crate::utils::sun::smoothstep(
+        crate::utils::math::smoothstep(
             GLOBE_SHOW_ALT,
             SPACE_FULL_ALT,
             self.altitude_m(cell, tf) as f32,
@@ -1479,7 +1479,7 @@ pub fn update_globe_visibility(
         // `city_fade` reaches 1 exactly at the globe threshold, where `sf` picks
         // up from 0, so the inner and outer lerps meet continuously.
         let alt = globe.altitude_m(cell, tf) as f32;
-        let city_fade = crate::utils::sun::smoothstep(CITY_ATMOSPHERE_ALT, GLOBE_SHOW_ALT, alt);
+        let city_fade = crate::utils::math::smoothstep(CITY_ATMOSPHERE_ALT, GLOBE_SHOW_ALT, alt);
         let density =
             (1.0f32.lerp(ATMOSPHERE_DENSITY_NEAR, city_fade)).lerp(SPACE_ATMOSPHERE_DENSITY, sf);
         // The medium is an asset; rewriting it rebuilds its falloff/phase LUTs, so

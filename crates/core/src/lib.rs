@@ -19,6 +19,7 @@ pub mod plans;
 pub mod point;
 pub mod posts;
 pub mod protocol;
+pub mod ring;
 pub mod script_api;
 pub mod services;
 pub mod shot_env;

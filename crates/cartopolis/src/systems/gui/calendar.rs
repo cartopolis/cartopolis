@@ -28,6 +28,7 @@
 
 use std::collections::HashSet;
 
+use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 use cartopolis_core::meeting::{
     current_plan, tally_rsvps, AnswerFor, Every, MeetingObject, Plan, Repeat, Rsvp,
@@ -517,7 +518,7 @@ pub fn ordinal_in_series(plan: &Plan, date_ms: u64) -> Option<String> {
 
 /// Straight-line metres between two (lat, lon).
 fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
-    crate::systems::driver::metres_between([a.0, a.1], [b.0, b.1])
+    cartopolis_core::geo::plane_distance_m([a.0, a.1], [b.0, b.1])
 }
 
 /// Minutes to walk from `here` to the meet-up, guessed from the straight line.
@@ -613,7 +614,7 @@ impl Calendar {
     /// Rows from `from_ms` to `to_ms`, worked out from the book, from the
     /// cache when it covers them.
     fn rows(&self, from_ms: u64, to_ms: u64) -> Vec<Item> {
-        let now = now_ms();
+        let now = unix_ms();
         let mut rows = self
             .rows
             .lock()
@@ -711,13 +712,6 @@ fn store_key(server: &str, username: &str) -> String {
     format!("{STORE_PREFIX}{}/{}.json", clean(server), clean(username))
 }
 
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Keep the book: load it for the account signed in, copy into it every plan,
 /// answer, update and meet-up the chats hold, and save it when that changed.
 pub fn collect_calendar(
@@ -781,7 +775,7 @@ pub fn collect_calendar(
         }
         cal.scanned = shape;
         if added {
-            cal.book.prune(now_ms(), &offset_s);
+            cal.book.prune(unix_ms(), &offset_s);
             cal.dirty = true;
         }
     }
@@ -2002,7 +1996,7 @@ pub fn render_reminder(
     chat: Res<ChatState>,
     communities: Res<crate::systems::communities::Communities>,
 ) {
-    let now = now_ms();
+    let now = unix_ms();
     // Worked out every few seconds: a reminder a few seconds late is on time.
     if now >= cal.checked_ms + 5_000 && cal.reminder.is_none() && cal.key.is_some() {
         cal.checked_ms = now;
@@ -2331,7 +2325,7 @@ pub fn seed_demo(cal: &mut Calendar, page: Option<&str>, chats: bool, reminder: 
     if page.is_none() && !chats && !reminder {
         return;
     }
-    let now = now_ms();
+    let now = unix_ms();
     cal.me = "jeroen".into();
     cal.book = demo_book(now);
     cal.here = Some((53.2194, 6.5665));

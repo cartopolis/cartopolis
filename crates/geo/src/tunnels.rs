@@ -62,6 +62,7 @@ use crate::terrain_refine::GroundField;
 use crate::vector_tiles::{
     clip_polyline, flag_of, road_depth_rung, SurfaceGroup, SurfaceMesh, TileData, VERTEX_BYTES,
 };
+use cartopolis_core::ring::point_in_ring;
 use geo_types::Geometry;
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::{Overlay, ShapeType};
@@ -605,7 +606,7 @@ fn building_rings(tile: &TileData) -> Vec<(Bbox, Vec<[f32; 2]>)> {
 fn under_a_building(rings: &[(Bbox, Vec<[f32; 2]>)], p: [f32; 2]) -> bool {
     rings
         .iter()
-        .any(|(b, ring)| point_in_bbox(p, b) && point_in_ring(p, ring))
+        .any(|(b, ring)| point_in_bbox(p, b) && point_in_ring(ring, p))
 }
 
 /// A handful of points along a line: both ends and three interior fractions.
@@ -637,7 +638,7 @@ fn point_in_bbox(p: [f32; 2], b: &Bbox) -> bool {
 /// this is what the caller uses instead.
 #[must_use]
 pub fn in_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2]) -> bool {
-    openings.iter().any(|ring| point_in_ring(p, ring))
+    openings.iter().any(|ring| point_in_ring(ring, p))
 }
 
 /// Whether a building whose footprint centres on `p` stands **in the trench of
@@ -766,7 +767,7 @@ pub const TRENCH_DUG_M: f32 = 2.0;
 #[must_use]
 pub fn near_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2], r: f32) -> bool {
     openings.iter().any(|ring| {
-        point_in_ring(p, ring)
+        point_in_ring(ring, p)
             || ring.windows(2).any(|w| {
                 let (a, b) = (w[0], w[1]);
                 let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -775,22 +776,6 @@ pub fn near_an_opening(openings: &[Vec<[f32; 2]>], p: [f32; 2], r: f32) -> bool 
                 (p[0] - (a[0] + dx * t)).hypot(p[1] - (a[1] + dy * t)) < r
             })
     })
-}
-
-/// Even-odd point in ring.
-pub(crate) fn point_in_ring(p: [f32; 2], ring: &[[f32; 2]]) -> bool {
-    let mut inside = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[j]);
-        if (a[1] > p[1]) != (b[1] > p[1])
-            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
-        {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }
 
 /// A surface street line: its geometry in tile-local metres, and
@@ -1402,7 +1387,7 @@ pub fn audit(runs: &[StreetRun], profiles: &[Option<Profile>]) -> Vec<Finding> {
             let hit = openings
                 .iter()
                 .zip(&bounds)
-                .any(|(ring, b)| point_in_bbox(q, b) && point_in_ring(q, ring));
+                .any(|(ring, b)| point_in_bbox(q, b) && point_in_ring(ring, q));
             if hit {
                 let qk = k;
                 // The structure under it, and how it meets the street.
@@ -2722,9 +2707,9 @@ fn merge_parallel_openings(
             let hb = bbox_of_ring(&hull);
             let swallows = keep_out.iter().any(|&q| {
                 point_in_bbox(q, &hb)
-                    && point_in_ring(q, &hull)
-                    && !point_in_ring(q, &ring)
-                    && !point_in_ring(q, other)
+                    && point_in_ring(&hull, q)
+                    && !point_in_ring(&ring, q)
+                    && !point_in_ring(other, q)
             });
             if swallows {
                 continue;
@@ -4010,7 +3995,7 @@ mod tests {
         for t in &trees {
             for ring in &out.openings {
                 assert!(
-                    !point_in_ring([t.x, t.z], ring),
+                    !point_in_ring(ring, [t.x, t.z]),
                     "a tree stands in an opening at {},{}",
                     t.x,
                     t.z
@@ -4056,7 +4041,7 @@ mod tests {
                         (t.road_y[i] - t.land_y[i]).min(t.road_y[i + 1] - t.land_y[i + 1]) < -1.0;
                     for f in [0.25f32, 0.5, 0.75] {
                         let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-                        if !pools.iter().any(|r| point_in_ring(p, r)) {
+                        if !pools.iter().any(|r| point_in_ring(r, p)) {
                             continue;
                         }
                         if t.covered[i] && t.covered[i + 1] {
@@ -4171,7 +4156,7 @@ mod tests {
                         let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
                         for ring in &out.openings {
                             assert!(
-                                !point_in_ring(p, ring),
+                                !point_in_ring(ring, p),
                                 "{name}: the ground is cut away over a lid at {p:?}"
                             );
                         }

@@ -29,6 +29,7 @@ use std::hash::{Hash, Hasher};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
+use cartopolis_core::geo::plane_distance_m;
 
 use crate::platform::storage;
 use crate::systems::coverage::CoverageSlot;
@@ -413,7 +414,7 @@ fn stamp_limit(
     };
     stamp(coords[0]);
     for w in coords.windows(2) {
-        let span = metres_between(w[0], w[1]);
+        let span = plane_distance_m(w[0], w[1]);
         let steps = (span / SPEED_WALK_M).ceil().max(1.0) as usize;
         for s in 1..=steps {
             let t = s as f64 / steps as f64;
@@ -423,15 +424,6 @@ fn stamp_limit(
             ]);
         }
     }
-}
-
-/// Metres between two `[lat, lng]`, on the local tangent plane (see
-/// `driver::metres_between` — same approximation, same reason).
-fn metres_between(a: [f64; 2], b: [f64; 2]) -> f64 {
-    let mid = (a[0] + b[0]) * 0.5;
-    let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
-    let dy = (b[0] - a[0]) * 110_540.0;
-    (dx * dx + dy * dy).sqrt()
 }
 
 /// OSM `maxspeed` → km/h, or `None` when it is not a number this can show.
@@ -472,7 +464,7 @@ mod tests {
         let mut cum = vec![0.0];
         let mut total = 0.0;
         for w in points.windows(2) {
-            total += metres_between(w[0], w[1]);
+            total += plane_distance_m(w[0], w[1]);
             cum.push(total);
         }
         (points, cum, total)

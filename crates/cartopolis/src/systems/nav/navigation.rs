@@ -605,7 +605,7 @@ impl RouteState {
         let Some(at) = self.from.coord else {
             return false;
         };
-        if crate::systems::driver::metres_between([at.0, at.1], [here.0, here.1]) <= HERE_REFRESH_M
+        if cartopolis_core::geo::plane_distance_m([at.0, at.1], [here.0, here.1]) <= HERE_REFRESH_M
         {
             return false;
         }
@@ -673,7 +673,7 @@ pub fn snap_walk_to_door(
     match facts.door_for(to.0, to.1) {
         Some(door) => {
             *decided = Some(door);
-            if crate::systems::driver::metres_between([to.0, to.1], [door.0, door.1]) > 1.0 {
+            if cartopolis_core::geo::plane_distance_m([to.0, to.1], [door.0, door.1]) > 1.0 {
                 tracing::info!(?door, "walking destination moved to the building's door");
                 route.door = Some(door);
                 let previous = route.route.take();
@@ -709,7 +709,7 @@ pub fn follow_shared_location(
     let Some(to) = route.to.coord else {
         return;
     };
-    let moved = crate::systems::driver::metres_between([to.0, to.1], [l.latitude, l.longitude]);
+    let moved = cartopolis_core::geo::plane_distance_m([to.0, to.1], [l.latitude, l.longitude]);
     if moved > FOLLOW_RESOLVE_M {
         let (lat, lng) = (l.latitude, l.longitude);
         tracing::info!(
@@ -1066,7 +1066,7 @@ fn failure_message(route: &RouteState, e: &RouteError) -> String {
         .from
         .coord
         .zip(route.to.coord)
-        .map(|(a, b)| crate::systems::driver::metres_between([a.0, a.1], [b.0, b.1]));
+        .map(|(a, b)| cartopolis_core::geo::plane_distance_m([a.0, a.1], [b.0, b.1]));
     match apart {
         Some(m) if route.from.label == HERE_LABEL && !to.is_empty() => {
             format!("You are already at {to} ({} away)", format_distance(m))

@@ -642,8 +642,8 @@ pub fn render_cosmos(
     for (m, words) in RINGS {
         let r = view.ring(m);
         let a = ruler
-            * crate::utils::sun::smoothstep(24.0, 64.0, r)
-            * (1.0 - crate::utils::sun::smoothstep(reach * 0.9, reach, r));
+            * crate::utils::math::smoothstep(24.0, 64.0, r)
+            * (1.0 - crate::utils::math::smoothstep(reach * 0.9, reach, r));
         if a > 0.01 {
             p.circle_stroke(view.centre, r, egui::Stroke::new(1.0, alpha(RING, a)));
             ring_tags.push(Tag {
@@ -779,7 +779,7 @@ pub fn render_cosmos(
 
     // ── The edge of the observable universe ─────────────────────────────────
     let edge_r = view.ring(EDGE_M);
-    let ea = bd * crate::utils::sun::smoothstep(reach * 1.4, reach * 0.9, edge_r);
+    let ea = bd * crate::utils::math::smoothstep(reach * 1.4, reach * 0.9, edge_r);
     if ea > 0.01 {
         p.circle_stroke(view.centre, edge_r, egui::Stroke::new(1.5, alpha(EDGE, ea)));
         tags.push(Tag {
@@ -853,7 +853,7 @@ pub fn render_cosmos(
     let you_apart = apart(earth_at, sun_at, 6.0, 20.0);
     // An orbit seen edge-on is a line through the screen, not a ring: drawn
     // only once the view has turned to look down on it.
-    let face_on = crate::utils::sun::smoothstep(0.6, 0.9, view.back.z.abs() as f32);
+    let face_on = crate::utils::math::smoothstep(0.6, 0.9, view.back.z.abs() as f32);
     // And the planets' orbits only once the Sun is the middle: the squeeze is
     // round the middle, and a ring running through it (the Earth's own, while
     // the Earth is the middle) comes out as a teardrop.

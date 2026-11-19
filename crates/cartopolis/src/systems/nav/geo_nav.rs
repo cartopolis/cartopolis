@@ -1115,7 +1115,7 @@ pub(crate) async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, Str
 
 /// Great-circle metres between two points.
 ///
-/// Haversine, not the equirectangular approximation `driver::metres_between`
+/// Haversine, not the equirectangular approximation `cartopolis_core::geo::plane_distance_m`
 /// uses: that one is measuring tens of metres between consecutive route vertices,
 /// this one routinely measures thousands of kilometres (searching "Amsterdam"
 /// from the Netherlands returns one in Missouri), where the flat-earth error is

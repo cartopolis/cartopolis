@@ -182,7 +182,7 @@ const FOG_FADE_HIGH: f32 = 5000.0;
 /// near the surface; this mirrors that so climbing out reveals the world rather
 /// than drowning it in fog (see `apply_distance_fog` / `update_horizon_haze`).
 pub fn fog_altitude_factor(altitude_m: f32) -> f32 {
-    1.0 - crate::utils::sun::smoothstep(FOG_FADE_LOW, FOG_FADE_HIGH, altitude_m)
+    1.0 - crate::utils::math::smoothstep(FOG_FADE_LOW, FOG_FADE_HIGH, altitude_m)
 }
 
 /// Distance the horizon-haze shell stands in for: the far edge of the streamed
@@ -502,7 +502,7 @@ fn recentre_turn(azimuth: f32, velocity: Vec2, idle_s: f32, dt: f32) -> f32 {
     // Behind the avatar is `azimuth ≡ heading + π` (see the follow-and-rotate arm).
     let target = velocity.x.atan2(velocity.y) + std::f32::consts::PI;
     let d = cartopolis_core::wrap_angle_pi(target - azimuth);
-    let toward_lens = crate::utils::sun::smoothstep(RECENTRE_FADE_FROM, RECENTRE_FADE_TO, d.abs());
+    let toward_lens = crate::utils::math::smoothstep(RECENTRE_FADE_FROM, RECENTRE_FADE_TO, d.abs());
     let ramp = ((idle_s - RECENTRE_WAIT_S) / RECENTRE_RAMP_S).clamp(0.0, 1.0);
     let pace = (speed / crate::systems::locomotion::WALK_SPEED).clamp(0.0, 1.0);
     d * (1.0 - (-RECENTRE_RATE * ramp * pace * (1.0 - toward_lens) * dt).exp())

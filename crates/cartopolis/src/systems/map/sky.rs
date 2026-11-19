@@ -410,7 +410,7 @@ pub(crate) fn metered_light(hours: f32, decl_rad: f32) -> f32 {
 /// below about 3 stops under the dusk at sunset, where colour starts to go,
 /// to the night floor, where it has. Drives [`night_vision_grading`].
 pub(crate) fn scotopic(hours: f32, decl_rad: f32) -> f32 {
-    utils::sun::smoothstep(7.5, 5.2, metered_light(hours, decl_rad))
+    utils::math::smoothstep(7.5, 5.2, metered_light(hours, decl_rad))
 }
 
 /// Saturation kept in the shadows and the midtones at full night vision. Rods
@@ -595,7 +595,7 @@ pub(crate) fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, 
 /// ([`TWILIGHT_SUN_FULL_Y`]).
 pub(crate) fn sun_light_in_atmosphere(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
     let y = sun_direction(hours, decl_rad).y;
-    let on = utils::sun::smoothstep(TWILIGHT_SUN_OFF_Y, TWILIGHT_SUN_FULL_Y, y);
+    let on = utils::math::smoothstep(TWILIGHT_SUN_OFF_Y, TWILIGHT_SUN_FULL_Y, y);
     // Untinted and undimmed: bevy extincts this light itself, through the
     // transmittance table, for the sky and for every surface (the patched
     // `bevy_pbr_lighting.wesl`). Tinting it as well reddened everything twice,
@@ -873,7 +873,7 @@ pub(crate) fn update_moon(
     let sun_elev = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     let dusk = ((0.05 - sun_elev) / 0.15).clamp(0.0, 1.0);
     let fog_veil = (-3.0 * dev.fog_density).exp();
-    let extinction = 0.3 + 0.7 * utils::sun::smoothstep(0.0, 0.25, moon_dir.y);
+    let extinction = 0.3 + 0.7 * utils::math::smoothstep(0.0, 0.25, moon_dir.y);
     let brightness = dusk * fog_veil * extinction;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
@@ -2226,7 +2226,7 @@ pub(crate) fn sky_light_dimming(hours: f32, decl_rad: f32) -> f32 {
 pub(crate) fn cloud_sky_floor(cover: f32) -> f32 {
     CLOUD_SKY_FLOOR_SCATTERED.lerp(
         CLOUD_SKY_FLOOR_OVERCAST,
-        utils::sun::smoothstep(0.55, 1.0, cover),
+        utils::math::smoothstep(0.55, 1.0, cover),
     )
 }
 
