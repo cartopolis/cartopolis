@@ -9,10 +9,11 @@
 //! - **macOS**: Core Graphics' picture of the main display. The first time,
 //!   macOS asks for the Screen Recording permission; until it is given the
 //!   picture is the desktop without its windows.
+//! - **Linux on Wayland**: the desktop portal, which asks the person which
+//!   screen or window in the desktop's own dialog, every time, and hands it
+//!   over as a PipeWire stream (`wayland`, PipeWire loaded only then).
 //! - **Linux on X11**: the root window through X11's own protocol (`x11rb`,
-//!   pure Rust). **Not Wayland**: there the screen is the compositor's, handed
-//!   out only through the desktop portal and PipeWire, a C library this build
-//!   does not take; the app says so rather than share a black screen.
+//!   pure Rust).
 //! - **Windows**: GDI's copy of the primary screen.
 //!
 //! Like `platform::camera`, a capture that cannot start still yields a
@@ -199,28 +200,48 @@ mod imp {
 }
 
 #[cfg(target_os = "linux")]
+mod wayland;
+
+#[cfg(target_os = "linux")]
 mod imp {
     use super::I420;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
     use x11rb::rust_connection::RustConnection;
 
-    pub struct Grabber {
+    /// Wayland when the app runs in a Wayland session — even under XWayland,
+    /// whose root window holds only the X programs' windows — else X11.
+    pub enum Grabber {
+        Wayland(super::wayland::Grabber),
+        X11(X11),
+    }
+
+    impl Grabber {
+        pub fn open() -> Result<Self, String> {
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                super::wayland::Grabber::open().map(Self::Wayland)
+            } else {
+                X11::open().map(Self::X11)
+            }
+        }
+
+        pub fn next(&mut self) -> Result<Option<I420>, String> {
+            match self {
+                Self::Wayland(g) => g.next(),
+                Self::X11(g) => g.next(),
+            }
+        }
+    }
+
+    pub struct X11 {
         conn: RustConnection,
         root: u32,
         width: u16,
         height: u16,
     }
 
-    impl Grabber {
-        pub fn open() -> Result<Self, String> {
-            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                return Err(
-                    "On Wayland the app cannot share the screen yet: share it from \
-                            the browser, or sign in to an X11 session"
-                        .into(),
-                );
-            }
+    impl X11 {
+        fn open() -> Result<Self, String> {
             let (conn, n) =
                 x11rb::connect(None).map_err(|e| format!("No X display to share: {e}"))?;
             let screen = &conn.setup().roots[n];
@@ -363,8 +384,11 @@ mod tests {
     use super::*;
 
     /// One picture of the screen this test runs on: an X display on Linux
-    /// (`Xvfb :99 & DISPLAY=:99`), the main display on macOS. Ignored by
-    /// default — a build node usually has no screen to share.
+    /// (`Xvfb :99 & DISPLAY=:99`), the portal's stream in a Wayland session
+    /// (headless sway with `xdg-desktop-portal-wlr`'s `chooser_type=none`
+    /// answers without a person), the main display on macOS. Ignored by
+    /// default — a build node usually has no screen to share. It prints the
+    /// centre's colour, to compare with what the screen shows.
     #[test]
     #[ignore = "needs a display to share"]
     fn a_picture_of_the_screen_arrives() {
@@ -385,5 +409,13 @@ mod tests {
             picture.height
         );
         assert!(capture.running());
+        let (w, h) = (picture.width as usize, picture.height as usize);
+        let c = (h / 4) * w.div_ceil(2) + w / 4;
+        eprintln!(
+            "{w}×{h}, centre Y {} U {} V {}",
+            picture.y[(h / 2) * w + w / 2],
+            picture.u[c],
+            picture.v[c]
+        );
     }
 }

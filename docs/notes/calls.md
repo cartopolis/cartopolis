@@ -1,6 +1,6 @@
 ---
 topic: calls
-triggers: [calls, meeting.rs, meeting.ts, "core::meeting", "meeting record", poll, agenda, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim", calls.rs, call_screen.rs, call_tones.rs, systems::call_screen, platform/camera.rs, hw_video.rs, web_call.rs, webcall.js, call-worker.js, call.ts, call-tones.ts, webcall.d.ts, web_call_test.ts, web-push.ts, crates/atlas/web/src/sw.js, crates/calls, cartopolis_calls]
+triggers: [calls, meeting.rs, meeting.ts, "core::meeting", "meeting record", poll, agenda, "voice call", "video call", str0m, sframe, SFrame, SFU, opus, opus-pure, VP8, VP9, WebRTC, webrtc, Galene, "video on a prim", calls.rs, call_screen.rs, call_tones.rs, systems::call_screen, platform/camera.rs, platform/screen.rs, platform/screen, wayland.rs, hw_video.rs, web_call.rs, webcall.js, call-worker.js, call.ts, call-tones.ts, webcall.d.ts, web_call_test.ts, web-push.ts, crates/atlas/web/src/sw.js, crates/calls, cartopolis_calls]
 updated: 2026-10-17
 ---
 
@@ -683,13 +683,40 @@ answer is logged.
   MediaProjection (`ScreenCapture.java`, with a foreground service of type
   `mediaProjection`, required since API 34, and the system's own dialog
   every time); Core Graphics on macOS; the X11 root window over `x11rb` on
-  Linux; GDI on Windows. **Not Wayland**: the screen there comes only
-  through the desktop portal and PipeWire, a C library; the app says to
-  share from the browser instead. Pictures go out about twice a second on
+  Linux under X11, the desktop portal and PipeWire under Wayland (below);
+  GDI on Windows. Pictures go out about twice a second on
   the third track every join offers, through a VP9 encoder of their own at
   up to 1280×720. Checked by building for each target and a two-session
   forwarder test; the Windows code only against `windows-sys`' signatures,
   and none of it yet on a device.
+- **Wayland** (`platform/screen/wayland.rs`, 2026-11-19): a Wayland
+  session's screen belongs to the compositor; apps get it only through
+  `org.freedesktop.portal.ScreenCast`, which puts up the desktop's own
+  picker (screen or window, cursor drawn in) and hands back a PipeWire
+  node. The portal is spoken with `zbus` (pure Rust, 18 new crates, Linux
+  only). **PipeWire is loaded with `libloading`, never linked**: the
+  `pipewire` crate would need libpipewire's headers and clang on every
+  Linux build node and in the CI image, and would stop the app starting
+  on a system without the library. The price is ~20 hand-declared `pw_*`
+  signatures and the two parameter pods written by hand (`pod`, tested
+  against SPA's layout), because SPA's builders are inline C. Only
+  mappable memory is asked for (no DMA-BUF), BGRx/BGRA/RGBx/RGBA, and a
+  buffer is copied only when the 400 ms loop wants one.
+  **Checked 2026-11-19** end to end in a throwaway Arch container on the
+  VPS: headless sway (pixman), xdg-desktop-portal 1.22 with
+  `xdg-desktop-portal-wlr` 0.8 (`chooser_type=none`, so nobody has to
+  pick), PipeWire 1.6.11, running the ignored
+  `a_picture_of_the_screen_arrives` with `WAYLAND_DISPLAY` set: 1280×720
+  BGRx negotiated, twelve pictures in 4.8 s, and the saved picture showed
+  the terminal on that screen. Two things learnt there: wlr's portal sends
+  **nothing while the screen does not change** (a static screen gave no
+  picture in 5 s; a window that ticks gave a steady stream), and an
+  output reconfiguration (`swaymsg output … bg`) renegotiates the stream
+  every time, which the code follows. Sway's binary carries a file
+  capability that docker refuses (`Operation not permitted`): copy it
+  to `/usr/local/bin` first. **Not checked**: GNOME's and KDE's portals,
+  a person's own picker, and stopping from the desktop's own indicator
+  (which should read as "You stopped sharing the screen").
 - **Noise** (`cartopolis_calls::denoise`, More → Noise suppression, on by
   default): RNNoise's network (`nnnoiseless`, pure Rust) on the
   microphone's own 48 kHz samples, before gain and resampling; 10 ms of
