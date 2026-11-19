@@ -5268,19 +5268,7 @@ fn face_yaw(
 
 /// A prim's shape parameters, as the wire carries them.
 fn geometry_of(prim: &Prim) -> cartopolis_core::PrimGeometry {
-    cartopolis_core::PrimGeometry {
-        path_cut_begin: prim.path_cut_begin,
-        path_cut_end: prim.path_cut_end,
-        hollow: prim.hollow,
-        twist_begin: prim.twist_begin,
-        twist_end: prim.twist_end,
-        taper_x: prim.taper_x,
-        taper_y: prim.taper_y,
-        top_shear_x: prim.top_shear_x,
-        top_shear_y: prim.top_shear_y,
-        slice_begin: prim.slice_begin,
-        slice_end: prim.slice_end,
-    }
+    prim.geometry()
 }
 
 /// One object as it stands now, as the two messages that would bring it back

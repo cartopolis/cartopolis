@@ -46,11 +46,17 @@ pub struct GizmoState {
 
 // ─── Keyboard mode switch ─────────────────────────────────────────────────────
 
+/// A move in the design room goes in whole steps of this many metres.
+pub const SNAP_M: f32 = 0.1;
+/// A turn in the design room goes in steps of this many degrees.
+pub const SNAP_DEG: f32 = 15.0;
+
 pub fn handle_gizmo_mode_input(
     mut gizmo_state: ResMut<GizmoState>,
     keyboard: Res<ButtonInput<KeyCode>>,
     egui_manager: EguiRef,
     selected: Query<(), With<Selected>>,
+    room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     // Ignore T/R/S when a text field is focused or a Ctrl chord is held; stays live
     // while the edit dialog is open (pass `false`) so mode switching works during editing.
@@ -66,7 +72,10 @@ pub fn handle_gizmo_mode_input(
     if selected.is_empty() {
         return;
     }
-    if keyboard.just_pressed(KeyCode::KeyT) {
+    // G is Blender's move key, in the design room only: in the street G puts
+    // down what the avatar carries (`interact`). T works in both.
+    let blender_g = room.spot.is_some() && keyboard.just_pressed(KeyCode::KeyG);
+    if keyboard.just_pressed(KeyCode::KeyT) || blender_g {
         gizmo_state.mode = GizmoMode::Translate;
     } else if keyboard.just_pressed(KeyCode::KeyR) {
         gizmo_state.mode = GizmoMode::Rotate;
@@ -277,6 +286,7 @@ pub fn handle_gizmo_interaction(
     time: Res<Time>,
     online_session: Option<Res<OnlineSession>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     if selected_query.is_empty() {
         return;
@@ -390,6 +400,11 @@ pub fn handle_gizmo_interaction(
     let screen_norm = screen_axis / screen_arm_px;
     // Signed distance the cursor moved along this axis (in world units).
     let world_delta = screen_norm.dot(mouse_delta) / screen_arm_px * arm;
+    // In the design room a drag snaps, as Blender's does with snapping on:
+    // a move to whole steps of [`SNAP_M`], a turn to [`SNAP_DEG`], a size to
+    // tenths. The street keeps the free drag it always had.
+    let snap = room.spot.is_some();
+    let step = |v: f32, by: f32| if snap { (v / by).round() * by } else { v };
 
     let Ok((mut transform, _, prim, cell)) = selected_query.single_mut() else {
         return;
@@ -397,14 +412,17 @@ pub fn handle_gizmo_interaction(
 
     match gizmo_state.mode {
         GizmoMode::Translate => {
-            transform.translation = start_tr.translation + dir * world_delta;
+            transform.translation = start_tr.translation + dir * step(world_delta, SNAP_M);
         }
         GizmoMode::Rotate => {
-            let angle = screen_norm.dot(mouse_delta) * 0.02; // ~1° per 1.8 px
+            let angle = step(
+                screen_norm.dot(mouse_delta) * 0.02, // ~1° per 1.8 px
+                SNAP_DEG.to_radians(),
+            );
             transform.rotation = Quat::from_axis_angle(dir, angle) * start_tr.rotation;
         }
         GizmoMode::Scale => {
-            let factor = (1.0 + world_delta * 0.5).max(0.05);
+            let factor = step(1.0 + world_delta * 0.5, 0.1).max(0.05);
             let scale_mul = match active_axis {
                 GizmoAxis::X => Vec3::new(factor, 1.0, 1.0),
                 GizmoAxis::Y => Vec3::new(1.0, factor, 1.0),

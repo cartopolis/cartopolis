@@ -167,6 +167,7 @@ impl Plugin for GuiPlugin {
                         .in_set(ClientPhase::Input),
                     systems::design_room::layer_design_room.in_set(ClientPhase::Present),
                     systems::design_room::layer_prims.in_set(ClientPhase::Present),
+                    systems::design_room::design_room_keys.in_set(ClientPhase::Input),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),

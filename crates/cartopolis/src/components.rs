@@ -58,6 +58,26 @@ pub struct Prim {
     pub physical: bool,
 }
 
+impl Prim {
+    /// Its shape's deformations, as the wire carries them.
+    #[must_use]
+    pub fn geometry(&self) -> cartopolis_core::PrimGeometry {
+        cartopolis_core::PrimGeometry {
+            path_cut_begin: self.path_cut_begin,
+            path_cut_end: self.path_cut_end,
+            hollow: self.hollow,
+            twist_begin: self.twist_begin,
+            twist_end: self.twist_end,
+            taper_x: self.taper_x,
+            taper_y: self.taper_y,
+            top_shear_x: self.top_shear_x,
+            top_shear_y: self.top_shear_y,
+            slice_begin: self.slice_begin,
+            slice_end: self.slice_end,
+        }
+    }
+}
+
 /// The prim's script wants the hands within this many metres (protocol 36,
 /// `sense_hands`); `systems::prim_hand` reports this client's to it. Its own
 /// component so that a prim script can be read without touching `Prim`,

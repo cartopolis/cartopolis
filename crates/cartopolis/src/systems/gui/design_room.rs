@@ -703,14 +703,19 @@ fn grid_mesh() -> Mesh {
     let mut indices: Vec<u32> = Vec::new();
     let half = GRID_HALF_M as f32;
     // 1.0 is the floor itself (the lines' material is the floor's white).
-    let shade = |grey: f32, x: f32, z: f32| {
+    // `tint` is the line's colour at the spot; the axes have one (Blender's:
+    // red X, east; blue Z, which runs south here), every other line a cool grey.
+    let shade = |tint: [f32; 3], x: f32, z: f32| {
         let r = x.hypot(z) / half;
         let t = ((r - GRID_FADE_FROM) / (1.0 - GRID_FADE_FROM)).clamp(0.0, 1.0);
         let fade = t * t * (3.0 - 2.0 * t);
-        let g = grey + (1.0 - grey) * fade;
-        // A touch cool, as a drawing office's grid is.
-        [g * 0.96, g * 0.98, g, 1.0]
+        let [r, g, b] = tint.map(|c| c + (1.0 - c) * fade);
+        [r, g, b, 1.0]
     };
+    // The two axes through the spot, in the room's white's units (1.0 is the
+    // floor): dark enough to read against a white the tonemapper squeezes.
+    const X_AXIS: [f32; 3] = [0.62, 0.12, 0.14];
+    const Z_AXIS: [f32; 3] = [0.14, 0.3, 0.62];
     for i in -GRID_HALF_M..=GRID_HALF_M {
         let (width, grey) = match i {
             0 => (0.03, 0.25),
@@ -721,15 +726,23 @@ fn grid_mesh() -> Mesh {
         let w = width / 2.0;
         for s in -GRID_HALF_M..GRID_HALF_M {
             let (a, b) = (s as f32, s as f32 + 1.0);
-            // One segment along x and one along z.
-            for quad in [
+            // One segment along x (the X axis when `i` is 0) and one along z.
+            for (quad, axis) in [
                 [[a, at - w], [b, at - w], [b, at + w], [a, at + w]],
                 [[at - w, a], [at + w, a], [at + w, b], [at - w, b]],
-            ] {
+            ]
+            .into_iter()
+            .zip([X_AXIS, Z_AXIS])
+            {
+                let tint = if i == 0 {
+                    axis
+                } else {
+                    [grey * 0.96, grey * 0.98, grey]
+                };
                 let base = positions.len() as u32;
                 for [x, z] in quad {
                     positions.push([x, 0.01, z]);
-                    colours.push(shade(grey, x, z));
+                    colours.push(shade(tint, x, z));
                 }
                 indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
             }
@@ -783,11 +796,16 @@ pub fn render_design_room_bar(
     mut game_state: ResMut<GameState>,
     map_anchor: Res<MapAnchor>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    selected: Query<SelectedPart, With<crate::components::Selected>>,
 ) {
     draw_veil(egui.ctx(), &mut room);
     let Some(spot) = room.spot else {
         return;
     };
+    // The selected part and its size, always on screen: v4's "a grid you can
+    // read sizes off" for the part in hand.
+    let chosen = selected.single().ok();
+    let mut duplicate = false;
     let signed_in = online.is_some() && model_assets::have_endpoint();
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let width = 420.0_f32.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
@@ -801,7 +819,6 @@ pub fn render_design_room_bar(
     let busy = room.busy;
     let mut add_part = false;
     let mut save = false;
-    let mut leave = false;
     let mut place: Option<(i64, String)> = None;
     let mut forget: Option<(i64, String)> = None;
 
@@ -812,13 +829,9 @@ pub fn render_design_room_bar(
             theme::overlay_frame().show(ui, |ui| {
                 ui.set_width(width);
                 ui.horizontal(|ui| {
+                    // No close button here: the way out is one, top left
+                    // (`render_design_room_outliner`), and Escape.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::close_button(ui)
-                            .on_hover_text("back to the map; drafts wait here for you, placed objects stay standing")
-                            .clicked()
-                        {
-                            leave = true;
-                        }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.label(
                                 egui::RichText::new("Design room")
@@ -861,6 +874,28 @@ pub fn render_design_room_bar(
                         save = true;
                     }
                 });
+                if let Some((prim, tf, ..)) = chosen {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let s = tf.scale.abs();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {:.2} × {:.2} × {:.2} m",
+                                prim.name, s.x, s.z, s.y
+                            ))
+                            .color(theme::p().accent_text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button("Duplicate")
+                                .on_hover_text("a copy a metre east of it (Shift-D)")
+                                .clicked()
+                            {
+                                duplicate = true;
+                            }
+                        });
+                    });
+                }
                 if drafts > 0 {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -935,9 +970,10 @@ pub fn render_design_room_bar(
         });
 
     room.name = name;
-    if leave {
-        room.close();
-        return;
+    if duplicate {
+        if let (Some(session), Some(part)) = (online.as_ref(), chosen) {
+            session.send("duplicate", duplicate_message(part));
+        }
     }
     if place_all {
         room.busy = true;
@@ -981,7 +1017,32 @@ pub fn render_design_room_outliner(
     mut room: ResMut<DesignRoom>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    if room.spot.is_none() || room.tree.is_empty() {
+    if room.spot.is_none() {
+        return;
+    }
+    // The one way out, always in the same place: top left, above everything
+    // the room shows (v4's first principle). Escape and Back do the same
+    // (`dismiss::Rung::DesignRoom`).
+    let mut leave = false;
+    egui::Area::new(egui::Id::new("design_room_back"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN),
+        )
+        .show(egui.ctx(), |ui| {
+            if theme::secondary_button(ui, icons::BACK, "Back to the map", 0.0)
+                .on_hover_text("Esc · drafts wait here for you, placed objects stay standing")
+                .clicked()
+            {
+                leave = true;
+            }
+        });
+    if leave {
+        room.close();
+        return;
+    }
+    if room.tree.is_empty() {
         return;
     }
     let signed_in = online.is_some() && model_assets::have_endpoint();
@@ -997,7 +1058,8 @@ pub fn render_design_room_outliner(
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::LEFT_TOP,
-            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN),
+            // Under the way out.
+            egui::vec2(theme::OSD_MARGIN, theme::OSD_MARGIN + 56.0),
         )
         .show(egui.ctx(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
@@ -1131,6 +1193,72 @@ pub fn render_design_room_outliner(
     }
     room.picked = picked;
     room.group_name = group_name;
+}
+
+/// How far east of the original a duplicate stands, in metres: beside it, and
+/// on the grid, so a row of copies lines up.
+const DUPLICATE_OFFSET_M: f64 = 1.0;
+
+/// The selected part, as the bar and Shift-D read it.
+type SelectedPart<'a> = (
+    &'a Prim,
+    &'a Transform,
+    Option<&'a GridCell>,
+    &'a PrimGeo,
+    &'a crate::components::PrimLift,
+);
+
+/// A copy of a part a metre east of it, as a draft: Shift-D (Blender's), and
+/// the bar's Duplicate. A copy is the object without its script, video and
+/// sound, as an agent's re-made one is: a client holds none of their source.
+fn duplicate_message(part: SelectedPart) -> cartopolis_core::NetMessage {
+    const M_PER_DEG: f64 = 6_378_137.0 * std::f64::consts::PI / 180.0;
+    let (prim, tf, cell, geo, lift) = part;
+    let world = crate::systems::prim_geo::world_position(cell, tf);
+    // Its height over its own ground, with or without the terrain lift on.
+    let above = world.y as f32 - crate::systems::prim_geo::lift_to_strip(lift, world);
+    let (rx, ry, rz) = tf.rotation.to_euler(EulerRot::XYZ);
+    let srgb = prim.color.to_srgba();
+    cartopolis_core::NetMessage::CreatePrim {
+        request_id: 0,
+        name: prim.name.clone(),
+        position: Vec3::new(0.0, above, 0.0),
+        rotation: Vec3::new(rx, ry, rz),
+        scale: tf.scale,
+        color: [srgb.red, srgb.green, srgb.blue],
+        texture_id: prim.texture_id.clone(),
+        shape: format!("{:?}", prim.shape).to_lowercase(),
+        surface: prim.surface,
+        geometry: prim.geometry(),
+        geo: cartopolis_core::GeoAnchor {
+            latitude: geo.latitude,
+            longitude: geo.longitude
+                + DUPLICATE_OFFSET_M / (M_PER_DEG * geo.latitude.to_radians().cos()),
+        },
+        particles: prim.particles,
+        model: prim.model.clone(),
+        draft: true,
+    }
+}
+
+/// Shift-D in the design room: duplicate the selected part.
+pub fn design_room_keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    egui: crate::systems::egui_manager::EguiRef,
+    room: Res<DesignRoom>,
+    online: Option<Res<crate::resources::OnlineSession>>,
+    selected: Query<SelectedPart, With<crate::components::Selected>>,
+) {
+    if room.spot.is_none() || egui.ui_owns_keyboard(false, &keyboard) {
+        return;
+    }
+    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    if !(shift && keyboard.just_pressed(KeyCode::KeyD)) {
+        return;
+    }
+    if let (Some(session), Ok(part)) = (online.as_ref(), selected.single()) {
+        session.send("duplicate", duplicate_message(part));
+    }
 }
 
 /// How long after its last call the agent still counts as at work in the room.

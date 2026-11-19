@@ -85,6 +85,8 @@ pub struct Dismissable<'w> {
 pub struct Spaces<'w> {
     pub welcome: ResMut<'w, crate::systems::welcome::Welcome>,
     pub bridges: ResMut<'w, crate::systems::bridges::Bridges>,
+    /// The design room: a press goes back to the map, as its close does.
+    pub room: ResMut<'w, crate::systems::design_room::DesignRoom>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -141,6 +143,10 @@ pub enum Rung {
     MainMenu,
     /// The Share sheet (`bridges`): a sheet over the map, like the menu's.
     ShareSheet,
+    /// The design room (`systems::design_room`): a mode over the whole map,
+    /// as driver mode is, left back to the map; its drafts wait in it. Inside
+    /// the dialogs, so a press first closes the editor a part is open in.
+    DesignRoom,
     /// Driver mode. Below the menu because the menu draws over it, and a gesture
     /// should not step past something visibly on top.
     DriverMode,
@@ -189,6 +195,7 @@ pub struct OpenSurfaces {
     pub sign_in: bool,
     pub main_menu: bool,
     pub share_sheet: bool,
+    pub design_room: bool,
     pub driver_mode: bool,
     pub right_panel: bool,
     pub panel_page: bool,
@@ -229,6 +236,8 @@ impl OpenSurfaces {
             Some(Rung::MainMenu)
         } else if self.share_sheet {
             Some(Rung::ShareSheet)
+        } else if self.design_room {
+            Some(Rung::DesignRoom)
         } else if self.driver_mode {
             Some(Rung::DriverMode)
         } else if self.panel_page {
@@ -270,6 +279,7 @@ impl Dismissable<'_> {
             sign_in: self.login.open && !self.login.is_busy(),
             main_menu: self.menu.open,
             share_sheet: self.spaces.bridges.share.is_some(),
+            design_room: self.spaces.room.spot.is_some(),
             driver_mode: self.driver.active,
             right_panel: *self.panel != RightPanel::None,
             panel_page: crate::systems::theme::page_back_shown(ctx),
@@ -302,6 +312,7 @@ impl Dismissable<'_> {
             Rung::SignIn => self.login.open = false,
             Rung::MainMenu => self.menu.open = false,
             Rung::ShareSheet => self.spaces.bridges.share = None,
+            Rung::DesignRoom => self.spaces.room.close(),
             Rung::DriverMode => self.driver.exit(),
             Rung::PanelPage => crate::systems::theme::press_page_back(ctx),
             Rung::RightPanel => *self.panel = RightPanel::None,
@@ -348,6 +359,7 @@ mod tests {
             sign_in: true,
             main_menu: true,
             share_sheet: true,
+            design_room: true,
             driver_mode: true,
             right_panel: true,
             panel_page: true,
@@ -374,6 +386,7 @@ mod tests {
             Rung::SignIn => s.sign_in = false,
             Rung::MainMenu => s.main_menu = false,
             Rung::ShareSheet => s.share_sheet = false,
+            Rung::DesignRoom => s.design_room = false,
             Rung::DriverMode => s.driver_mode = false,
             Rung::PanelPage => s.panel_page = false,
             Rung::RightPanel => s.right_panel = false,
@@ -398,7 +411,7 @@ mod tests {
         while let Some(rung) = s.innermost() {
             close(&mut s, rung);
             fired.push(rung);
-            assert!(fired.len() <= 20, "the ladder does not terminate");
+            assert!(fired.len() <= 21, "the ladder does not terminate");
         }
         assert_eq!(
             fired,
@@ -415,6 +428,7 @@ mod tests {
                 Rung::SignIn,
                 Rung::MainMenu,
                 Rung::ShareSheet,
+                Rung::DesignRoom,
                 Rung::DriverMode,
                 Rung::PanelPage,
                 Rung::RightPanel,

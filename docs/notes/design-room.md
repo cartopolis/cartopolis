@@ -109,6 +109,21 @@ client on mac-1, through `bun tools/mcp.ts`: open, an eight-part stall built as
 drafts, grouped, ungrouped, placed. That run found that group ids must stay
 below 2^53: a JavaScript client rounded a 63-bit id and its `ungroup` missed.
 
+## Editing by hand
+
+- **One way out**: "Back to the map" top left, and Escape / Android Back
+  (`dismiss::Rung::DesignRoom`, after the share sheet and before driver mode,
+  so a press first closes the editor a part is open in). The bar has no close
+  button of its own any more.
+- **Axes**: the grid's two lines through the spot are Blender's red X (east)
+  and blue Z (south here), fading with the grid.
+- **Snapping**: in the room a handle drag moves in 10 cm steps, turns in 15°
+  and sizes in tenths (`gizmo::SNAP_M`, `SNAP_DEG`); the street keeps the free
+  drag. G moves (Blender), in the room only: in the street G puts down what the
+  avatar carries.
+- **Duplicate**: Shift-D, or the bar's Duplicate — a draft copy a metre east.
+  The bar shows the selected part's name and size (width × depth × height).
+
 ## Not built yet, from v3
 
 - No `group` field on the wire: a placed copy is separate objects again.
