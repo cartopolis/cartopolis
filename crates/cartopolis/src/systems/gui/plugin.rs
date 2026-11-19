@@ -179,6 +179,16 @@ impl Plugin for GuiPlugin {
                 ),
             );
 
+        // The agent at work in the design room, with Pause: wherever the agent
+        // tools are (`mcp`, Unix desktops and Android).
+        #[cfg(mcp)]
+        app.add_systems(
+            Update,
+            systems::design_room::render_design_room_ai
+                .after(systems::design_room::render_design_room_outliner)
+                .in_set(ClientPhase::Present),
+        );
+
         // The camera (`systems::camera_screen`): in Mixed it drives the world
         // camera after any teleport has landed and before the camera system reads
         // the rotation, and its screen is drawn over everything, as the call

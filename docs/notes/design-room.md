@@ -91,6 +91,24 @@ On the client a draft carries `design_room::Draft` and is drawn on the room's
 layer alone (`layer_prims`), so its maker sees it in the room and not in the
 street.
 
+## The AI builds in the room (MCP, and so the Midas device link)
+
+The client's agent tools gain `design_room` (`open` at a spot, `close`,
+`place`), `group` and `ungroup` (`crates/mcp_server/src/server.rs`; the Midas
+link lists the same server's tools, so a session on the Midas page reaches them
+on the person's phone with no list of its own to edit). While the room is open,
+`build` makes drafts and takes the room's spot as its origin. In the room, a bar
+at the top says what the agent is doing, read from the activity log the
+desktop's editor overlay draws (`McpBridge::log`), with **Pause**: paused, the
+building tools (build, edit, delete, script, group, ungroup, design_room)
+answer that the person paused it, so it waits and the person steers in the
+room or in the session.
+
+Checked end to end on 2026-11-19 against a scratch simulator and a headless
+client on mac-1, through `bun tools/mcp.ts`: open, an eight-part stall built as
+drafts, grouped, ungrouped, placed. That run found that group ids must stay
+below 2^53: a JavaScript client rounded a 63-bit id and its `ungroup` missed.
+
 ## Not built yet, from v3
 
 - No `group` field on the wire: a placed copy is separate objects again.

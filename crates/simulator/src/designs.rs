@@ -318,8 +318,11 @@ async fn place_drafts(
 
 /// A fresh group id: positive, and unlikely ever to meet another on this
 /// server — a group is a chain written on its prims, not a row to number.
+/// Below 2^53, because an agent reads it as a JSON number: the first ids were
+/// 63 bits, and a JavaScript client rounded 8888078594042373124 to …373000,
+/// so its `ungroup` named a group that did not exist.
 fn new_group_id() -> i64 {
-    (uuid::Uuid::new_v4().as_u64_pair().0 >> 1) as i64
+    (uuid::Uuid::new_v4().as_u64_pair().0 >> 11) as i64
 }
 
 fn check_group_name(name: &str) -> ApiResult<String> {
@@ -560,6 +563,14 @@ mod tests {
         of.iter()
             .map(|(id, m)| (*id, m.iter().copied().collect()))
             .collect()
+    }
+
+    #[test]
+    fn a_group_id_survives_a_javascript_number() {
+        for _ in 0..1000 {
+            let id = new_group_id();
+            assert!((0..1 << 53).contains(&id), "{id}");
+        }
     }
 
     #[test]

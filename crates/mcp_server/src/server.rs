@@ -42,11 +42,11 @@ use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 use crate::args::{
-    AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, EditArgs,
-    EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, IdArgs, IdsArgs, InboxArgs, LookAroundArgs,
-    LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs, ReadChatArgs, RecallArgs,
-    RememberArgs, SavePlaceArgs, SayToolArgs, ScriptArgs, VideoArgs, VoiceCallArgs, WaitArgs,
-    WalkArgs,
+    AgentReply, AgentRequest, AnswerContactArgs, BuildArgs, CallArgs, ContactArgs, DesignRoomArgs,
+    EditArgs, EmoteArgs, FaceArgs, FindPlaceArgs, FollowArgs, GroupArgs, IdArgs, IdsArgs,
+    InboxArgs, LookAroundArgs, LookPrep, NameArgs, NearArgs, NoteIdArgs, OutputArgs, PlaceArgs,
+    ReadChatArgs, RecallArgs, RememberArgs, SavePlaceArgs, SayToolArgs, ScriptArgs, UngroupArgs,
+    VideoArgs, VoiceCallArgs, WaitArgs, WalkArgs,
 };
 use crate::args::{
     AnswerMeetingArgs, CalendarArgs, CommunitiesArgs, CommunityArgs, FindModelsArgs, PostIdArgs,
@@ -960,6 +960,40 @@ impl Tools {
         Parameters(args): Parameters<BuildArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.act(AgentRequest::Build(args)).await
+    }
+
+    #[tool(
+        description = "The design room: `open` it at a spot to build there in a white room \
+                       the person watches on their screen, `close` it, or `place` what was \
+                       built in it. Objects built while it is open are drafts only this \
+                       account sees, until placed. The person can pause you from the room: \
+                       then building answers that you are paused, and you wait for them."
+    )]
+    async fn design_room(
+        &self,
+        Parameters(args): Parameters<DesignRoomArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::DesignRoom(args)).await
+    }
+
+    #[tool(
+        description = "Put some of your objects in a named group: it nests (grouping two \
+                       groups puts both inside the new one) and shows in the design room's \
+                       outliner. Returns the group's id."
+    )]
+    async fn group(
+        &self,
+        Parameters(args): Parameters<GroupArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Group(args)).await
+    }
+
+    #[tool(description = "Dissolve a group; what was in it stays in the groups around it.")]
+    async fn ungroup(
+        &self,
+        Parameters(args): Parameters<UngroupArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(AgentRequest::Ungroup(args)).await
     }
 
     #[tool(

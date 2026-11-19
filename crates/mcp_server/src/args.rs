@@ -541,8 +541,40 @@ pub struct AnswerMeetingArgs {
     pub every: Option<bool>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DesignRoomArgs {
+    #[schemars(
+        description = "`open` the design room at `latitude` + `longitude` (the street fades \
+                       to a white room with a metre grid around that spot, on the person's \
+                       screen); `close` it; or `place` the drafts in it, which puts them in \
+                       the street for everybody. While it is open, what `build` makes there \
+                       is a draft only this account sees."
+    )]
+    pub action: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GroupArgs {
+    #[schemars(description = "What the group is called, as the outliner shows it.")]
+    pub name: String,
+    #[schemars(description = "Ids of your objects to put in it (from `build` or `my_builds`).")]
+    pub ids: Vec<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UngroupArgs {
+    #[schemars(description = "The group's id, as `group` answered it.")]
+    pub group_id: i64,
+}
+
 #[derive(Debug)]
 pub enum AgentRequest {
+    /// Open, close or place the design room (`docs/notes/design-room.md`).
+    DesignRoom(DesignRoomArgs),
+    Group(GroupArgs),
+    Ungroup(UngroupArgs),
     Me,
     ReadChat(ReadChatArgs),
     Say(SayArgs),
@@ -623,6 +655,9 @@ impl AgentRequest {
             Self::Teleport(_) => "teleport",
             Self::Emote(_) => "emote",
             Self::Build(_) => "build",
+            Self::DesignRoom(_) => "design room",
+            Self::Group(_) => "group",
+            Self::Ungroup(_) => "ungroup",
             Self::SetScript(_) => "script",
             Self::PlayVideo(_) => "play video",
             Self::ReplaceBuilding(_) => "replace building",

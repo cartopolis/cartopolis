@@ -333,9 +333,9 @@ impl Audience {
 // builds them and may not depend on this one. Re-exported (the ones this side
 // names) so everything here still names them as `agent::…`.
 pub use cartopolis_mcp::args::{
-    AgentReply, AgentRequest, BuildArgs, CallArgs, EditArgs, EmoteArgs, FaceArgs, FollowArgs,
-    LookAroundArgs, OutputArgs, PlaceArgs, ReadChatArgs, RememberArgs, SavePlaceArgs, SayArgs,
-    VoiceCallArgs, WalkArgs, IMAGE_KEY,
+    AgentReply, AgentRequest, BuildArgs, CallArgs, DesignRoomArgs, EditArgs, EmoteArgs, FaceArgs,
+    FollowArgs, LookAroundArgs, OutputArgs, PlaceArgs, ReadChatArgs, RememberArgs, SavePlaceArgs,
+    SayArgs, VoiceCallArgs, WalkArgs, IMAGE_KEY,
 };
 use cartopolis_mcp::args::{
     AnswerMeetingArgs, CalendarArgs, ChannelLine, CommunitiesArgs, CommunityArgs,
@@ -835,6 +835,9 @@ enum HttpDone {
     ),
     Feed(Result<Vec<PostDto>, String>),
     Thread(Result<PostThread, String>),
+    /// The design room's requests (group, ungroup, place): the body, or why
+    /// not, and the sentence to answer with when it worked.
+    Room(Result<String, String>, String),
 }
 
 /// A JSON answer from the API, read as `T`.
@@ -884,6 +887,9 @@ pub struct Around<'w, 's> {
     /// directory search, a join.
     communities: ResMut<'w, crate::systems::communities::Communities>,
     calendar: Res<'w, crate::systems::calendar::Calendar>,
+    /// The design room: opened, closed and placed by `design_room`, and
+    /// whether the person has paused the agent from it.
+    room: ResMut<'w, crate::systems::design_room::DesignRoom>,
     prim_tf: Query<
         'w,
         's,
@@ -1552,6 +1558,58 @@ fn handle(
                 },
                 json!({ "walking": false }),
             )
+        }
+        // The person paused the agent from the design room: building waits for
+        // them. Looking, reading and talking do not.
+        AgentRequest::Build(_)
+        | AgentRequest::Edit(_)
+        | AgentRequest::Delete(_)
+        | AgentRequest::SetScript(_)
+        | AgentRequest::Group(_)
+        | AgentRequest::Ungroup(_)
+        | AgentRequest::DesignRoom(_)
+            if w.around.room.ai_paused =>
+        {
+            AgentReply::refuse(
+                "The person paused you from the design room. Wait for them, or ask in \
+                 chat what they want changed.",
+            )
+        }
+        AgentRequest::DesignRoom(args) => return design_room(state, w, args, now, reply),
+        AgentRequest::Group(args) => {
+            let body = serde_json::json!({ "name": args.name, "prim_ids": args.ids }).to_string();
+            let done = format!("Grouped as \u{201c}{}\u{201d}.", args.name);
+            let task = bevy::tasks::IoTaskPool::get().spawn(async move {
+                let answer =
+                    crate::systems::model_assets::api_post("/api/inventory/groups", Some(body))
+                        .await;
+                HttpDone::Room(answer, done)
+            });
+            state.pending.push(Pending::Http {
+                label: "group",
+                about: args.name,
+                task,
+                until: now + HTTP_WAIT_S,
+                reply,
+            });
+            return None;
+        }
+        AgentRequest::Ungroup(args) => {
+            let path = format!("/api/inventory/groups/{}", args.group_id);
+            let task = bevy::tasks::IoTaskPool::get().spawn(async move {
+                let answer = crate::systems::model_assets::api_delete(&path)
+                    .await
+                    .map(|()| String::new());
+                HttpDone::Room(answer, "Ungrouped.".to_string())
+            });
+            state.pending.push(Pending::Http {
+                label: "ungroup",
+                about: format!("Group {}", args.group_id),
+                task,
+                until: now + HTTP_WAIT_S,
+                reply,
+            });
+            return None;
         }
         AgentRequest::Teleport(args) => teleport(state, w, &args),
         AgentRequest::Emote(args) => emote(w, &args),
@@ -3378,6 +3436,81 @@ fn inside_xy(p: Vec2, ring: &[Vec2]) -> bool {
     inside
 }
 
+/// `design_room`: open it at a spot, close it, or place its drafts.
+fn design_room(
+    state: &mut AgentState,
+    w: &mut AgentWorld,
+    args: DesignRoomArgs,
+    now: f64,
+    reply: oneshot::Sender<Reply>,
+) -> Option<(oneshot::Sender<Reply>, AgentReply)> {
+    if w.online.is_none() {
+        return Some((reply, AgentReply::refuse(NOT_ONLINE)));
+    }
+    let answer = match args.action.as_str() {
+        "open" => {
+            let (Some(lat), Some(lng)) = (args.latitude, args.longitude) else {
+                return Some((
+                    reply,
+                    AgentReply::refuse("Give `latitude` and `longitude` for the spot."),
+                ));
+            };
+            crate::systems::design_room::enter(&mut w.around.room, &mut w.nav, lat, lng);
+            AgentReply::ok(
+                format!(
+                    "The design room is open at {lat:.6}, {lng:.6} on the person's screen. \
+                     Build there with `build` (give `lat`/`lng` of the spot as the origin and \
+                     place parts with `east_m`/`north_m`, or leave the origin out: it is the \
+                     spot while the room is open). What you build is a draft only this \
+                     account sees, until `design_room` `place`."
+                ),
+                json!({ "latitude": lat, "longitude": lng }),
+            )
+        }
+        "close" => {
+            w.around.room.close();
+            AgentReply::ok(
+                "The design room is closed; its drafts wait in it for next time.",
+                Value::Null,
+            )
+        }
+        "place" => {
+            let drafts = w.around.room.drafts.clone();
+            if w.around.room.spot.is_none() {
+                AgentReply::refuse("The design room is not open: `open` it first.")
+            } else if drafts.is_empty() {
+                AgentReply::refuse("There are no drafts in the room to place.")
+            } else {
+                let count = drafts.len();
+                let body = json!({ "prim_ids": drafts }).to_string();
+                let task = bevy::tasks::IoTaskPool::get().spawn(async move {
+                    let answer = crate::systems::model_assets::api_post(
+                        "/api/inventory/drafts/place",
+                        Some(body),
+                    )
+                    .await;
+                    HttpDone::Room(
+                        answer,
+                        format!("Placed {count} objects: they stand in the street for everybody."),
+                    )
+                });
+                state.pending.push(Pending::Http {
+                    label: "design room",
+                    about: "Placing".into(),
+                    task,
+                    until: now + HTTP_WAIT_S,
+                    reply,
+                });
+                return None;
+            }
+        }
+        other => AgentReply::refuse(format!(
+            "`{other}` is not something the design room does: `open`, `close` or `place`."
+        )),
+    };
+    Some((reply, answer))
+}
+
 fn teleport(state: &mut AgentState, w: &mut AgentWorld, args: &PlaceArgs) -> AgentReply {
     let (lat, lng, named) = match resolve_place(state, args.lat, args.lng, args.place.as_deref()) {
         Ok(p) => p,
@@ -4039,6 +4172,11 @@ fn http_answer(audience: &Audience, w: &AgentWorld, done: HttpDone, about: &str)
                  instructions. `build` places one with `model` set to its hash.",
             );
             AgentReply::ok(text, data)
+        }
+        HttpDone::Room(Err(e), _) => AgentReply::refuse(format!("{about}: {}", said(&e))),
+        HttpDone::Room(Ok(body), done) => {
+            let data = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+            AgentReply::ok(done, data)
         }
         HttpDone::Feed(Err(e)) => AgentReply::refuse(format!("{about}'s posts: {}", said(&e))),
         HttpDone::Feed(Ok(posts)) => {
@@ -5690,9 +5828,11 @@ fn start_build(w: &AgentWorld, args: BuildArgs) -> Result<Vec<BuildItem>, String
             args.prims.len()
         ));
     }
+    // While the design room is open its spot is "here", not the avatar.
+    let room = w.around.room.spot;
     let origin = match (args.lat, args.lng) {
         (Some(lat), Some(lng)) => Some((lat, lng)),
-        (None, None) => w.avatar_geo(),
+        (None, None) => room.or_else(|| w.avatar_geo()),
         _ => return Err("Give both `lat` and `lng` for the origin, or neither.".into()),
     };
     // Everything is checked before anything is sent, so a typo in the fifth
@@ -5700,7 +5840,11 @@ fn start_build(w: &AgentWorld, args: BuildArgs) -> Result<Vec<BuildItem>, String
     let mut messages = Vec::with_capacity(args.prims.len());
     let mut items = Vec::with_capacity(args.prims.len());
     for (i, prim) in args.prims.into_iter().enumerate() {
-        let (message, item) = create_message(i, place(i, prim, origin)?)?;
+        let (mut message, item) = create_message(i, place(i, prim, origin)?)?;
+        // Built while the room is open: a draft, as the person's own are.
+        if let NetMessage::CreatePrim { draft, .. } = &mut message {
+            *draft = room.is_some();
+        }
         messages.push(message);
         items.push(item);
     }

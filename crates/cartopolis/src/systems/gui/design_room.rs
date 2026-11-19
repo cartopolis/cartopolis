@@ -103,6 +103,9 @@ pub struct DesignRoom {
     pub picked: std::collections::BTreeSet<i64>,
     /// The name a new group gets, as typed in the outliner.
     pub group_name: String,
+    /// The person paused the agent from the room: its building tools answer
+    /// that it is paused until they resume it (`mcp::agent`).
+    pub ai_paused: bool,
     /// Counts each way in and out; each one whites the screen out and fades
     /// it back ([`draw_veil`]). The second is the one the veil has started.
     flash: u32,
@@ -274,6 +277,35 @@ fn forget_design(inbox: Inbox, id: i64, name: String) {
         .detach();
 }
 
+/// Open the room at a spot and bring the camera there: the ring's Design here,
+/// and the agent's `design_room` `open`, one way in.
+pub fn enter(
+    room: &mut DesignRoom,
+    nav: &mut crate::systems::geo_nav::GeoNavState,
+    lat: f64,
+    lng: f64,
+) {
+    use crate::systems::geo_nav::{CameraPose, Teleport};
+    room.open_at(lat, lng);
+    room.name.clear();
+    // Earth mode, orbiting the spot from a passer-by's distance: the
+    // mockup's Orbit view, and the one camera that turns round a point.
+    nav.pending_teleport = Some(Teleport {
+        lat,
+        lng,
+        altitude: Some(ARRIVE_ALTITUDE_M),
+        pose: Some(CameraPose {
+            mode: "earth".to_string(),
+            orbit_pitch: ARRIVE_PITCH_RAD,
+            orbit_yaw: 0.0,
+            orbit_distance: 0.0, // apply_teleport derives it from the altitude
+            ..Default::default()
+        }),
+        silent: true,
+        look: true,
+    });
+}
+
 /// Take the ring's Design here, bring the camera to the spot, count the parts
 /// and drain finished requests.
 pub fn drive_design_room(
@@ -283,26 +315,8 @@ pub fn drive_design_room(
     online: Option<Res<crate::resources::OnlineSession>>,
     prims: Query<(&Prim, &PrimGeo, Has<Draft>, Option<&Groups>)>,
 ) {
-    use crate::systems::geo_nav::{CameraPose, Teleport};
     if let Some((lat, lng)) = menu.design_here.take() {
-        room.open_at(lat, lng);
-        room.name.clear();
-        // Earth mode, orbiting the spot from a passer-by's distance: the
-        // mockup's Orbit view, and the one camera that turns round a point.
-        nav.pending_teleport = Some(Teleport {
-            lat,
-            lng,
-            altitude: Some(ARRIVE_ALTITUDE_M),
-            pose: Some(CameraPose {
-                mode: "earth".to_string(),
-                orbit_pitch: ARRIVE_PITCH_RAD,
-                orbit_yaw: 0.0,
-                orbit_distance: 0.0, // apply_teleport derives it from the altitude
-                ..Default::default()
-            }),
-            silent: true,
-            look: true,
-        });
+        enter(&mut room, &mut nav, lat, lng);
     }
     let Some(spot) = room.spot else {
         return;
@@ -1026,9 +1040,13 @@ pub fn render_design_room_outliner(
                                         }
                                     }
                                     ui.label(
-                                        egui::RichText::new(format!("{} {}", icons::LAYERS, g.name))
-                                            .strong()
-                                            .color(theme::p().accent_text),
+                                        egui::RichText::new(format!(
+                                            "{} {}",
+                                            icons::LAYERS,
+                                            g.name
+                                        ))
+                                        .strong()
+                                        .color(theme::p().accent_text),
                                     );
                                     ui.label(
                                         egui::RichText::new(members.len().to_string())
@@ -1113,6 +1131,81 @@ pub fn render_design_room_outliner(
     }
     room.picked = picked;
     room.group_name = group_name;
+}
+
+/// How long after its last call the agent still counts as at work in the room.
+#[cfg(mcp)]
+const AI_ACTIVE_SECS: f64 = 15.0;
+
+/// While an agent works in the room (an MCP client, or a session on the Midas
+/// page through the device link): a bar at the top saying what it is doing,
+/// with Pause. Paused, its building tools answer that the person paused it
+/// (`mcp::agent`), so it waits and the person steers — in the room, or in the
+/// session's chat. Fed by the same activity log the desktop's editor overlay
+/// draws (`McpBridge::log`), so every tool shows here with no extra wiring.
+#[cfg(mcp)]
+pub fn render_design_room_ai(
+    egui: EguiMut,
+    mut room: ResMut<DesignRoom>,
+    bridge: Option<Res<crate::systems::mcp::McpBridge>>,
+    real: Res<Time<bevy::time::Real>>,
+) {
+    use crate::systems::mcp::Outcome;
+    if room.spot.is_none() {
+        return;
+    }
+    let now = real.elapsed_secs_f64();
+    let latest = bridge.as_ref().and_then(|b| {
+        b.log
+            .iter()
+            .filter(|e| e.outcome == Outcome::Working || now - e.at <= AI_ACTIVE_SECS)
+            .max_by(|a, b| a.at.total_cmp(&b.at))
+            .cloned()
+    });
+    if latest.is_none() && !room.ai_paused {
+        return;
+    }
+    let mut paused = room.ai_paused;
+    egui::Area::new(egui::Id::new("design_room_ai"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, theme::OSD_MARGIN))
+        .show(egui.ctx(), |ui| {
+            theme::overlay_frame().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let line = if paused {
+                        "Paused: the AI waits for you".to_string()
+                    } else {
+                        match &latest {
+                            Some(e) if e.outcome == Outcome::Working => {
+                                format!("The AI is building · {} {}", e.label, e.detail)
+                            }
+                            Some(e) => format!("The AI · {}: {}", e.label, e.detail),
+                            None => String::new(),
+                        }
+                    };
+                    let line: String = line.chars().take(80).collect();
+                    ui.label(egui::RichText::new(line).color(theme::p().accent_text));
+                    let (icon, label, tip) = if paused {
+                        (icons::PLAY, "Resume", "let the AI carry on building")
+                    } else {
+                        (
+                            icons::STOP,
+                            "Pause",
+                            "hold the AI's next change until you resume it",
+                        )
+                    };
+                    if theme::secondary_button(ui, icon, label, 0.0)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        paused = !paused;
+                    }
+                });
+            });
+        });
+    if paused != room.ai_paused {
+        room.ai_paused = paused;
+    }
 }
 
 /// The objects of a market stall, as `(name, shape, colour, east, up, north,
