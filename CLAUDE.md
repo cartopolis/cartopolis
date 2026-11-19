@@ -99,7 +99,9 @@ placement and visibility and none at all for colour, lighting or frame time.**
 
 ## Architecture
 
-A Cargo workspace of eighteen crates. Each row's note has the history and numbers.
+A Cargo workspace of twenty-two crates. Each row's note has the history and numbers.
+The **No `bevy`** and "never links" rules below are checked by `tools/dep-rules.ts`
+in the gate's `tests` step: a new rule goes in its table, not only in this one.
 
 | Crate | Role |
 |---|---|
@@ -107,6 +109,10 @@ A Cargo workspace of eighteen crates. Each row's note has the history and number
 | `cartopolis_geo` (`crates/geo`) | Bevy-free map geodata: MVT decode/raster, roads, routing graph, terrain grading, building designs, and `formats` — the per-cell files atlas writes and the client reads. **No `bevy`**: a `Component` goes in the client, the pure part it wraps here (`client-build-cost.md`) |
 | `cartopolis_vio` (`crates/vio`) | Visual-inertial odometry for the high-precision mode, developed on its `sim.rs` bench. **No `bevy`** (`camera-tracking.md`) |
 | `cartopolis_gnss` (`crates/gnss`) | An external RTK receiver over a byte port: NMEA, RTCM 3, NTRIP. **No `bevy`** (`rtk-receiver.md`) |
+| `cartopolis_human` (`crates/human`) | MakeHuman bodies, clothes and retargeted motion built at runtime; `human-pack` behind feature `pack`. **No `bevy`** (`makehuman-avatars.md`) |
+| `cartopolis_face` (`crates/face`) | Face tracking (MediaPipe models on tract, via the vendored `tract_tflite` patch). **No `bevy`** (`avatar-faces.md`) |
+| `cartopolis_scenario` (`crates/scenario`) | The scenario engine's types and "the state at time t", shared by the client and atlas. **No `bevy`** (`scenarios.md`) |
+| `cartopolis_voice` (`crates/voice`) | A call's audio to a realtime speech model and back, tools through a `ToolHost` trait. **No `bevy`** (`voice-agent.md`) |
 | `cartopolis_e2ee` (`crates/e2ee`) | MLS device keys, groups and sealed messages, no I/O. **The simulator must never link it outside its tests** (`encrypted-chat.md`) |
 | `cartopolis_chat` (`crates/chat`) | The private-chat `Engine` the client and the web UI share. **No `bevy`**; the simulator does not link it (`web-chat.md`) |
 | `cartopolis_web_chat` (`crates/web_chat`) | That engine as wasm for the web UI's chat worker (`web-chat.md`) |

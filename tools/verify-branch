@@ -336,7 +336,11 @@ if want tests; then
     # ceilings prim scripts rely on are tested in Bun, not in Rust
     # (docs/notes/javascript-prim-scripts.md). It needs Bun 1.4, which the
     # nodes have and the container's 1.3 is not.
-    run tests "cargo test --locked --workspace --exclude cartopolis_android, and the script host's bun test" <<'CMD'
+    # And the crate graph against CLAUDE.md's "no bevy" / "never links" rules
+    # (tools/dep-rules.ts). Here rather than in `cheap`: it resolves the graph,
+    # which needs every crate in the registry cache, and only a node has them.
+    run tests "cargo test --locked --workspace --exclude cartopolis_android, the script host's bun test, and the crate graph's rules" <<'CMD'
+bun tools/dep-rules.ts --quiet
 cargo test --locked --workspace --exclude cartopolis_android
 cd tools/script-host
 bun install --frozen-lockfile
