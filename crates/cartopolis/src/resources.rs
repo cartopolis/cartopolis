@@ -1240,6 +1240,9 @@ pub struct ContextMenuState {
     /// The ring's Plans here was chosen at this spot: taken by
     /// `plans::drive_plans`, which opens the list of notices around it.
     pub plans_here: Option<(f64, f64)>,
+    /// The ring's Design here was chosen at this spot: taken by
+    /// `design_room::drive_design_room`, which opens the room around it.
+    pub design_here: Option<(f64, f64)>,
     /// Set when the ring was opened on a place's name; `lat_lng` is then the
     /// place itself, and the ring offers the place's actions.
     pub place: Option<MapPlace>,

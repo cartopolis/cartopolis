@@ -1117,6 +1117,14 @@ pub fn render_context_menu(
                 label: "Build",
                 hint: "Create an object here",
             });
+            // The same act with the street taken away: a white room around
+            // the spot to build a group of objects in (`systems::design_room`).
+            actions.push(RingAction {
+                key: "design",
+                icon: icons::PALETTE,
+                label: "Design here",
+                hint: "Design an object for this spot in a white room",
+            });
         }
         actions.push(RingAction {
             key: "route_from",
@@ -1200,28 +1208,10 @@ pub fn render_context_menu(
             context_menu.share_at = Some((lat, lng, name));
         }
         ("build", _, _) => {
-            edit_dialog.prim_id = None;
-            edit_dialog.is_new = true;
-            edit_dialog.name = "Object".to_string();
-            edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
-            edit_dialog.shape = "box".to_string();
-            edit_dialog.texture_id = None;
-            edit_dialog.model = None;
-            edit_dialog.texture_picker_open = false;
-            edit_dialog.path_cut_begin = 0.0;
-            edit_dialog.path_cut_end = 1.0;
-            edit_dialog.hollow = 0.0;
-            edit_dialog.warp = crate::resources::PrimWarp::default();
-            edit_dialog.surface = cartopolis_core::PrimSurface::default();
-            edit_dialog.repeats_per_meter = 0.0;
             let hit = context_menu.hit_point;
-            // Offset Y so the prim rests on the surface instead of being centred in it.
-            edit_dialog.position = [hit.x, hit.y + 0.5, hit.z];
-            edit_dialog.rotation = [0.0, 0.0, 0.0];
-            edit_dialog.scale = [1.0, 1.0, 1.0];
-            edit_dialog.visible = true;
-            game_state.editing_prim_id = None;
+            open_new_object(&mut edit_dialog, &mut game_state, [hit.x, hit.y, hit.z]);
         }
+        ("design", Some(at), _) => context_menu.design_here = Some(at),
         ("edit", _, Some((prim_id, _))) => {
             for entity in selected_query.iter() {
                 commands.entity(entity).remove::<Selected>();
@@ -1265,6 +1255,35 @@ pub fn render_context_menu(
         }
         _ => {}
     }
+}
+
+/// Open the object editor on a new grey box standing at `ground` (anchored
+/// world metres): the ring's Build, and the design room's Add a part.
+pub fn open_new_object(
+    edit_dialog: &mut EditDialogState,
+    game_state: &mut GameState,
+    ground: [f32; 3],
+) {
+    edit_dialog.prim_id = None;
+    edit_dialog.is_new = true;
+    edit_dialog.name = "Object".to_string();
+    edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
+    edit_dialog.shape = "box".to_string();
+    edit_dialog.texture_id = None;
+    edit_dialog.model = None;
+    edit_dialog.texture_picker_open = false;
+    edit_dialog.path_cut_begin = 0.0;
+    edit_dialog.path_cut_end = 1.0;
+    edit_dialog.hollow = 0.0;
+    edit_dialog.warp = crate::resources::PrimWarp::default();
+    edit_dialog.surface = cartopolis_core::PrimSurface::default();
+    edit_dialog.repeats_per_meter = 0.0;
+    // Offset Y so the prim rests on the surface instead of being centred in it.
+    edit_dialog.position = [ground[0], ground[1] + 0.5, ground[2]];
+    edit_dialog.rotation = [0.0, 0.0, 0.0];
+    edit_dialog.scale = [1.0, 1.0, 1.0];
+    edit_dialog.visible = true;
+    game_state.editing_prim_id = None;
 }
 
 /// Width of the object editor and its texture picker, clamped to the viewport.

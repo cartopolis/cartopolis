@@ -2656,6 +2656,9 @@ const UI_ELEMENTS: &[&str] = &[
     "gizmo",
     "gizmorotate",
     "gizmoscale",
+    // The design room open where the camera looks, a stall standing in it
+    // (`systems::design_room`).
+    "designroom",
     "callincoming",
     "call",
     "callvideo",
@@ -3597,6 +3600,115 @@ pub fn hold_scripted_gizmo(
             });
             transform.translation.y = (at.y - cell_y) as f32;
         }
+    }
+}
+
+/// Marks the stall [`hold_scripted_design_room`] seeded.
+#[derive(Component)]
+pub struct ScriptedDesignPart(usize);
+
+/// `--ui designroom`: the design room opened on the ground where the camera
+/// looks, with a market stall (`design_room::DEMO_STALL`) standing in it.
+///
+/// The spot follows the camera until the shutter, as the fire does, 14 m
+/// ahead along the ground; the question a capture answers is whether the
+/// street is gone from around it and the stall stands in the room.
+/// The parts go in through their geo anchors, as the gizmo's box does.
+#[allow(clippy::type_complexity)]
+pub fn hold_scripted_design_room(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut commands: Commands,
+    mut room: ResMut<crate::systems::design_room::DesignRoom>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+    camera: crate::grid::AnchoredCamera,
+    mut seeded: Query<(Entity, &ScriptedDesignPart, &mut crate::components::PrimGeo)>,
+) {
+    let panels = harness.ui_for(progress.index);
+    if !panels.iter().any(|u| u == "designroom") {
+        if !seeded.is_empty() {
+            for (entity, ..) in &seeded {
+                commands.entity(entity).try_despawn();
+            }
+            room.spot = None;
+        }
+        return;
+    }
+    let Some(anchor) = map_anchor.geo else { return };
+    let Some((cell, cam)) = camera.get() else {
+        return;
+    };
+    let forward = cam.forward().as_vec3().as_dvec3();
+    let eye = crate::grid::anchored_position_f64(cell, cam.translation);
+    // A fixed distance ahead along the ground, not where the view ray meets
+    // y = 0: the anchored frame is not at ground level (7.6 m on the Grote
+    // Markt), and the ray put the spot 40 m off, the camera outside the walls.
+    let flat = bevy::math::DVec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let at = eye + flat * 14.0;
+    let (lat, lng) = crate::systems::geo_nav::world_to_lat_lng(anchor, at.x, at.z);
+    // Followed until the shutter, as the fire is: the first frames see the
+    // camera where the app started, not where `--at` puts it.
+    if room
+        .spot
+        .is_some_and(|s| crate::systems::design_room::metres_between(s, (lat, lng)) < 0.5)
+    {
+        return;
+    }
+    room.spot = Some((lat, lng));
+    const M_PER_DEG: f64 = 6_378_137.0 * std::f64::consts::PI / 180.0;
+    let part_at = |i: usize| {
+        let [east, _, north] = crate::systems::design_room::DEMO_STALL[i].3;
+        (
+            lat + f64::from(north) / M_PER_DEG,
+            lng + f64::from(east) / (M_PER_DEG * lat.to_radians().cos()),
+        )
+    };
+    if !seeded.is_empty() {
+        for (_, part, mut geo) in &mut seeded {
+            let (latitude, longitude) = part_at(part.0);
+            geo.latitude = latitude;
+            geo.longitude = longitude;
+        }
+        return;
+    }
+    for (i, (name, shape, colour, [_, up, _], size)) in
+        crate::systems::design_room::DEMO_STALL.iter().enumerate()
+    {
+        let (latitude, longitude) = part_at(i);
+        commands.spawn((
+            crate::components::Prim {
+                // Negative, like the seeded fire: never a server id.
+                id: -100 - i as i64,
+                name: (*name).into(),
+                shape: crate::components::PrimShape::from_str(shape),
+                color: Color::srgb(colour[0], colour[1], colour[2]),
+                texture_id: None,
+                model: None,
+                path_cut_begin: 0.0,
+                path_cut_end: 1.0,
+                hollow: 0.0,
+                twist_begin: 0.0,
+                twist_end: 0.0,
+                taper_x: 0.0,
+                taper_y: 0.0,
+                top_shear_x: 0.0,
+                top_shear_y: 0.0,
+                slice_begin: 0.0,
+                slice_end: 1.0,
+                surface: cartopolis_core::PrimSurface::default(),
+                particles: None,
+                scripted: false,
+                video: None,
+                sound_loop: None,
+                physical: false,
+            },
+            crate::components::PrimGeo {
+                latitude,
+                longitude,
+            },
+            ScriptedDesignPart(i),
+            Transform::from_xyz(0.0, *up, 0.0).with_scale(Vec3::from_array(*size)),
+        ));
     }
 }
 

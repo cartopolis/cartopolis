@@ -25,6 +25,7 @@ pub mod community_posts;
 pub mod contacts;
 pub mod cosmos;
 pub mod data_layers;
+pub mod design_room;
 pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;

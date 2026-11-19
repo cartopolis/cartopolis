@@ -153,6 +153,25 @@ impl Plugin for GuiPlugin {
             ),
         );
 
+        // The design room (`systems::design_room`): the ring's Design here is
+        // taken after the ring draws; the room's layers are set before the
+        // frame renders; its bar is a floating `Foreground` area, like the
+        // plans card, so not in the panel chain.
+        app.init_resource::<systems::design_room::DesignRoom>()
+            .add_systems(PostStartup, systems::design_room::let_gizmos_into_the_room)
+            .add_systems(
+                Update,
+                (
+                    systems::design_room::drive_design_room
+                        .after(systems::ui::render_context_menu)
+                        .in_set(ClientPhase::Input),
+                    systems::design_room::layer_design_room.in_set(ClientPhase::Present),
+                    systems::design_room::render_design_room_bar
+                        .after(systems::place_pins::render_place_pins)
+                        .in_set(ClientPhase::Present),
+                ),
+            );
+
         // The camera (`systems::camera_screen`): in Mixed it drives the world
         // camera after any teleport has landed and before the camera system reads
         // the rotation, and its screen is drawn over everything, as the call
