@@ -1,0 +1,185 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><title>Sharing from the app — v1</title></head><body>
+<h1>Sharing from the app <span class="new">new</span></h1>
+<p class="lede">One <b>Share</b> button, three things to share: <b>my screen</b>, <b>my view in the world</b> (what I see, or my avatar), and <b>video on an object</b> (a prim). Every screen on this sheet is a proposal; only the screen share inside a call (More → Share your screen) exists today, and the clip on a prim (edit ▸ Video).</p>
+
+<!-- ───────── A: choosing ───────── -->
+<div class="row">
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div>
+   <div class="avatar" style="left:137px;top:300px"></div>
+   <div class="top"><span class="pill">☰</span><span class="pill" style="flex:1">Vismarkt, Groningen</span></div>
+   <div class="dock"><div class="rb">💬</div><div class="rb">📍</div><div class="rb acc">📷</div><div class="rb ring">⇪</div><div class="rb">⋯</div></div>
+  </div>
+  <h2><b>1</b>A Share button in the dock <span class="new">new</span></h2>
+  <p>Beside the camera, the same round size. In a call it is also in the call's bar, so sharing is never more than one tap away.</p>
+ </div>
+
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div><div class="scrim"></div>
+   <div class="sheet"><div class="grab"></div>
+    <h3>Share</h3><div class="sub">What do you want to show?</div>
+    <div class="opt"><div class="ic">▭</div><div><div class="t">My screen</div><div class="d">Everything on this phone, also other apps</div></div></div>
+    <div class="opt on"><div class="ic">👁</div><div><div class="t">My view in the world</div><div class="d">What I see here, or my avatar. Others draw the city themselves: sharp, little data</div></div></div>
+    <div class="opt"><div class="ic">▣</div><div><div class="t">Video on an object</div><div class="d">Play a clip or a live picture on a screen in the world, for everyone nearby</div></div></div>
+   </div>
+  </div>
+  <h2><b>2</b>What to share</h2>
+  <p>Three choices, each with a sentence on what the others will get. The middle one is the one this app is good at.</p>
+ </div>
+
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div><div class="scrim"></div>
+   <div class="sheet"><div class="grab"></div>
+    <h3>Share my view with…</h3>
+    <div class="lbl">In a call</div>
+    <div class="chips"><span class="chip on">✓ Call with Sanne, Joris +3</span></div>
+    <div class="lbl">A chat</div>
+    <div class="chips"><span class="chip">Buurtteam</span><span class="chip">Sanne</span><span class="chip">Werkgroep markt</span><span class="chip">…</span></div>
+    <div class="lbl">Nobody yet</div>
+    <div class="chips"><span class="chip">Copy a link</span></div>
+    <div class="sub" style="margin-top:12px">A chat gets a live card “Lena is sharing her view — Watch”. It ends when you stop.</div>
+    <span class="go">Start sharing</span>
+   </div>
+  </div>
+  <h2><b>3</b>With whom</h2>
+  <p>Started from a call, this step is skipped: it goes to that call. Otherwise a call, a chat, or a link. Always encrypted, like the call's sound.</p>
+ </div>
+</div>
+
+<!-- ───────── B: my screen ───────── -->
+<div class="row">
+ <div class="cell">
+  <div class="phone dark">
+   <div class="scrim"></div>
+   <div class="sys"><h4>Start recording or casting with Cartopolis?</h4>Cartopolis will have access to all information that is visible on your screen or played from your device while recording or casting.<div class="seg" style="margin-top:12px;background:#3a3e43"><span class="on" style="background:#8ab4f8;color:#111">Entire screen</span><span>A single app</span></div><div class="b"><span>Cancel</span><span>Start</span></div></div>
+  </div>
+  <h2><b>4</b>The phone asks first</h2>
+  <p>Android's own question, every time; we cannot skip it, and should not. On a desktop: a list of screens and windows instead.</p>
+ </div>
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div>
+   <div class="top"><span class="pill live"><span class="dot"></span>Sharing your screen</span><span class="pill">Stop</span></div>
+   <div class="dock"><div class="rb">🎤</div><div class="rb">🎥</div><div class="rb acc">⇪</div><div class="rb red">✕</div></div>
+  </div>
+  <h2><b>5</b>Always visible while it runs</h2>
+  <p>A red pill at the top in every screen of the app, with Stop in it. Notifications and passwords are shown too, so the pill says it in plain words.</p>
+ </div>
+ <div class="cell">
+  <div class="phone dark">
+   <div style="position:absolute;left:10px;right:10px;top:60px;height:420px;background:#1d272b;border-radius:14px;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:13px">Lena's screen</div>
+   <div class="top"><span class="pill">← Call</span><span class="pill" style="flex:1">Lena is sharing her screen</span></div>
+   <div class="pip" style="top:auto;bottom:80px;width:70px;height:100px;background:#2f5f7a"></div>
+   <div class="dock"><div class="rb">🎤</div><div class="rb">🎥</div><div class="rb">⤢</div><div class="rb red">✕</div></div>
+  </div>
+  <h2><b>6</b>What the others see</h2>
+  <p>The shared screen is the stage, faces go small. Pinch to zoom; ⤢ turns the phone sideways for a landscape screen.</p>
+ </div>
+</div>
+
+<!-- ───────── C: my view / avatar ───────── -->
+<div class="row">
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div><div class="scrim"></div>
+   <div class="sheet"><div class="grab"></div>
+    <h3>My view in the world</h3>
+    <div class="opt on"><div class="ic">👁</div><div><div class="t">What I see</div><div class="d">They look through my camera, wherever I turn it</div></div></div>
+    <div class="opt"><div class="ic">🧍</div><div><div class="t">Follow my avatar</div><div class="d">They walk behind me, but turn their own head</div></div></div>
+    <div class="opt"><div class="ic">🎞</div><div><div class="t">As a video</div><div class="d">For people without the app: a picture stream, blurrier, more data</div></div></div>
+    <div class="lbl">Also share</div>
+    <div class="chips"><span class="chip on">✓ Pointing</span><span class="chip on">✓ My voice</span><span class="chip">Spots I drop → chat</span></div>
+   </div>
+  </div>
+  <h2><b>7</b>View or avatar</h2>
+  <p>The first two send only where the camera or avatar is, a few bytes a frame; every viewer draws the city at full sharpness. “As a video” is the fallback for a browser without 3D.</p>
+ </div>
+ <div class="cell">
+  <div class="phone">
+   <div class="city" style="top:150px"><i style="left:0;width:80px;height:140px"></i><i style="left:82px;width:60px;height:100px"></i><i style="left:144px;width:90px;height:160px"></i><i style="left:236px;width:64px;height:110px"></i></div>
+   <div class="street" style="top:300px"></div>
+   <div class="top"><span class="pill live"><span class="dot"></span>Sharing your view · 4 watching</span><span class="pill">Stop</span></div>
+   <div style="position:absolute;left:160px;top:250px;width:34px;height:34px;border-radius:17px;border:3px solid var(--accent)"></div>
+   <div class="tag" style="left:196px;top:256px">pointing</div>
+   <div class="dock"><div class="rb">🎤</div><div class="rb">☝</div><div class="rb acc">⇪</div><div class="rb">📍</div></div>
+  </div>
+  <h2><b>8</b>The sharer walks on</h2>
+  <p>Hold ☝ and touch the world: a ring shows at that spot for everyone, so “this corner” is the same corner.</p>
+ </div>
+ <div class="cell">
+  <div class="phone">
+   <div class="city" style="top:150px"><i style="left:0;width:80px;height:140px"></i><i style="left:82px;width:60px;height:100px"></i><i style="left:144px;width:90px;height:160px"></i><i style="left:236px;width:64px;height:110px"></i></div>
+   <div class="street" style="top:300px"></div>
+   <div style="position:absolute;left:160px;top:250px;width:34px;height:34px;border-radius:17px;border:3px solid var(--accent)"></div>
+   <div class="top"><span class="pill acc" style="flex:1">👁 Watching Lena's view</span><span class="pill">Look myself</span></div>
+   <div class="pip"><div class="avatar" style="left:36px;top:70px;transform:scale(.6)"></div></div>
+   <div class="dock"><div class="rb">🎤</div><div class="rb">💬</div><div class="rb red">✕</div></div>
+  </div>
+  <h2><b>9</b>Watching, and leaving to look</h2>
+  <p>“Look myself” frees the camera; the bar then says “Back to Lena”. Your own place stays in the small window.</p>
+ </div>
+</div>
+
+<!-- ───────── D: video on a prim ───────── -->
+<div class="row">
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div>
+   <div class="prim sel" style="left:90px;top:250px;width:120px;height:70px"></div>
+   <div class="prim" style="left:228px;top:290px;width:46px;height:30px;opacity:.45"></div>
+   <div class="tag" style="left:96px;top:226px">Board at the market</div>
+   <div class="top"><span class="pill acc" style="flex:1">Tap a screen to play on</span><span class="pill">Cancel</span></div>
+   <div class="sheet" style="padding-bottom:14px"><div class="t" style="font-size:13px;color:var(--mute)">Only objects you may edit light up. The others are faded.</div></div>
+  </div>
+  <h2><b>10</b>Pick the object</h2>
+  <p>After “Video on an object” the world becomes a picker. Long-press an object ▸ Play video on it leads to the next step too.</p>
+ </div>
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div><div class="scrim"></div>
+   <div class="sheet"><div class="grab"></div>
+    <h3>Play on “Board at the market”</h3>
+    <div class="opt on"><div class="ic">🎞</div><div><div class="t">A video from my phone</div><div class="d">Uploaded once, plays in step for everyone</div></div></div>
+    <div class="opt"><div class="ic">▭</div><div><div class="t">My screen, live <span class="new">new</span></div><div class="d">Until I stop</div></div></div>
+    <div class="opt"><div class="ic">📷</div><div><div class="t">My camera, live <span class="new">new</span></div><div class="d">The phone's camera on the board</div></div></div>
+    <div class="opt"><div class="ic">👁</div><div><div class="t">A call's stage <span class="new">new</span></div><div class="d">Whatever is shared in my call</div></div></div>
+    <div class="chips"><span class="chip on">✓ Loop</span><span class="chip on">✓ Sound</span><span class="chip">Everyone within 60 m</span></div>
+   </div>
+  </div>
+  <h2><b>11</b>What plays on it</h2>
+  <p>A clip is what exists today, moved here from the edit dialog. The three live sources are new: a live picture on a board in the square.</p>
+ </div>
+ <div class="cell">
+  <div class="phone">
+   <div class="city"><i style="left:0;width:60px;height:110px"></i><i style="left:62px;width:48px;height:80px"></i><i style="left:112px;width:70px;height:130px"></i><i style="left:184px;width:50px;height:90px"></i><i style="left:236px;width:64px;height:120px"></i></div>
+   <div class="street"></div>
+   <div class="prim" style="left:90px;top:250px;width:120px;height:70px"><div class="screen">▶ market_plan.webm<br>0:42 / 3:10</div></div>
+   <div class="avatar" style="left:60px;top:330px"></div><div class="avatar" style="left:230px;top:340px;background:#7a4a2f"></div>
+   <div class="top"><span class="pill live"><span class="dot"></span>Playing on the board · 2 nearby</span><span class="pill">Stop</span></div>
+   <div class="dock"><div class="rb">💬</div><div class="rb">⏸</div><div class="rb acc">⇪</div><div class="rb">🔊</div></div>
+  </div>
+  <h2><b>12</b>On the board, for everyone near</h2>
+  <p>Whoever stands near sees and hears it, in step. The pill shows how many are near, and Pause and Stop stay in reach.</p>
+ </div>
+</div>
+
+<div class="notes">
+ <h2>Open</h2>
+ <ul>
+  <li><b>A live screen on a board is public</b>: anyone within 60 m sees it, unencrypted to the server. Ask once more before starting (“Everyone here will see your screen”)?</li>
+  <li><b>Who may put a live picture on an object</b>: only its owner, as with clips, or anyone the owner allows (a community's board)?</li>
+  <li><b>“As a video”</b> for viewers without 3D: keep it, or send only the view and leave the browser to draw it?</li>
+  <li><b>A phone plays one video at a time</b> today; a live board and a call's stage together may be one too many.</li>
+ </ul>
+</div>
+</body></html>
