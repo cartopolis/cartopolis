@@ -1,0 +1,528 @@
+# The wire's shape. Generated; see wire_shape.rs.
+AuthCredential = enum
+  #0 Token(Str)
+  #1 Password { username: Str, password: Str }
+  #2 Guest { code: Str, name: Str }
+AvatarLook = struct
+  .0 body_shape: U8
+  .1 age: U8
+  .2 height: U8
+  .3 weight: U8
+  .4 muscle: U8
+  .5 proportions: U8
+  .6 chest: U8
+  .7 skin: Str
+  .8 eyes: Str
+  .9 hair: Option<Str>
+  .10 hair_colour: Option<[U8; 3]>
+  .11 eyebrows: Str
+  .12 outfit: Str
+  .13 top_colour: Option<[U8; 3]>
+  .14 bottom_colour: Option<[U8; 3]>
+  .15 shoes: Str
+  .16 hat: Option<Str>
+  .17 face: Vec<(Str, I8)>
+  .18 skin_tone: I8
+  .19 extras: Vec<Str>
+AvatarStateDto = struct
+  .0 id: U64
+  .1 geo: GeoAnchor
+  .2 alt_m: F32
+  .3 yaw: F32
+  .4 emote: Option<EmoteState>
+  .5 expression: Option<ExpressionState>
+  .6 seated: Option<[F32; 2]>
+  .7 velocity: Vec3
+  .8 holding: Option<I64>
+CallAction = enum
+  #0 Hand(Bool)
+  #1 Sharing(Bool)
+  #2 Muted(Bool)
+  #3 Mute { participant: U64 }
+  #4 AllowTalk { participant: U64 }
+  #5 LowerHand { participant: U64 }
+  #6 StopSharing { participant: U64 }
+  #7 MuteAll
+  #8 Remove { participant: U64 }
+  #9 Role { participant: U64, role: CallRole }
+  #10 Settings(CallSettings)
+  #11 EndForAll
+  #12 Admit { participant: U64 }
+  #13 Deny { participant: U64 }
+  #14 AdmitAll
+  #15 Recording(Bool)
+  #16 Spotlight { participant: Option<U64> }
+  #17 OpenRooms { names: Vec<Str>, assign: Vec<(U64, U32)>, minutes: U32, may_move: Bool }
+  #18 MoveTo { participant: U64, room: U32 }
+  #19 CloseRooms
+CallEndReason = enum
+  #0 Removed { by: Str }
+  #1 Ended { by: Str }
+CallMember = struct
+  .0 participant: U64
+  .1 username: Str
+  .2 device: Bytes
+  .3 role: CallRole
+  .4 hand: Option<U32>
+  .5 held: Bool
+  .6 sharing: Bool
+  .7 muted: Bool
+  .8 recording: Bool
+  .9 guest: Bool
+  .10 room: U32
+  .11 agent: Bool
+CallRole = enum
+  #0 Member
+  #1 CoHost
+  #2 Host
+CallRooms = struct
+  .0 names: Vec<Str>
+  .1 until_ms: Option<U64>
+  .2 may_move: Bool
+CallSettings = struct
+  .0 locked: Bool
+  .1 may_unmute: Bool
+  .2 may_share: Bool
+  .3 members_wait: Bool
+  .4 may_record: Bool
+CallTrack = struct
+  .0 mid: Str
+  .1 participant: U64
+  .2 kind: CallTrackKind
+CallTrackKind = enum
+  #0 Audio
+  #1 Camera
+  #2 Screen
+CallWaiter = struct
+  .0 participant: U64
+  .1 username: Str
+  .2 guest: Bool
+  .3 since_ms: U64
+ChatScope = enum
+  #0 Local { shout: Bool }
+  #1 Global
+CommunityDto = struct
+  .0 id: Bytes
+  .1 home: Str
+  .2 settings: CommunitySettings
+  .3 role: Option<CommunityRole>
+  .4 members: Vec<CommunityMemberDto>
+  .5 topics: Vec<TopicDto>
+  .6 requests: Vec<JoinRequestDto>
+  .7 reports: Vec<CommunityReportDto>
+CommunityListing = struct
+  .0 id: Bytes
+  .1 name: Str
+  .2 about: Str
+  .3 join: JoinRule
+  .4 members: U32
+  .5 topics: Vec<Str>
+  .6 moderators: Vec<CommunityMemberDto>
+  .7 mine: ListingState
+  .8 created_ms: U64
+  .9 picture: Option<Str>
+  .10 place: Option<CommunityPlace>
+  .11 distance_m: Option<F64>
+CommunityMemberDto = struct
+  .0 address: Str
+  .1 role: CommunityRole
+CommunityPlace = struct
+  .0 latitude: F64
+  .1 longitude: F64
+  .2 name: Str
+CommunityReportDto = struct
+  .0 id: I64
+  .1 reporter: Str
+  .2 reported: Str
+  .3 group: Vec<U8>
+  .4 seq: U64
+  .5 reason: ReportReason
+  .6 note: Str
+  .7 line: Str
+  .8 created_ms: U64
+CommunityRole = enum
+  #0 Owner
+  #1 Moderator
+  #2 Member
+CommunitySettings = struct
+  .0 name: Str
+  .1 about: Str
+  .2 join: JoinRule
+  .3 listed: Bool
+  .4 members_start_topics: Bool
+  .5 picture: Option<Str>
+  .6 place: Option<CommunityPlace>
+ContactDto = struct
+  .0 username: Str
+  .1 since_ms: U64
+  .2 met: Option<MetDto>
+  .3 online: Option<Bool>
+  .4 agent: Bool
+ContactRequestDto = struct
+  .0 username: Str
+  .1 sent_at_ms: U64
+  .2 met: Option<MetDto>
+  .3 new_account: Bool
+  .4 joined_ms: U64
+  .5 in_common: Vec<Str>
+  .6 agent: Bool
+ContactSettings = struct
+  .0 policy: RequestPolicy
+  .1 show_online: Bool
+  .2 notify_requests: Bool
+  .3 separate_new_accounts: Bool
+  .4 link_code: Str
+DirectoryOrder = enum
+  #0 Popular
+  #1 New
+  #2 Near
+E2eeCursor = struct
+  .0 group: Vec<U8>
+  .1 after: U64
+E2eeKeyPackage = struct
+  .0 device: Bytes
+  .1 bytes: Vec<U8>
+E2eeNewDevice = struct
+  .0 address: Str
+  .1 package: E2eeKeyPackage
+E2eeWelcome = struct
+  .0 devices: Vec<Bytes>
+  .1 members: Vec<Str>
+  .2 bytes: Vec<U8>
+Emote = enum
+  #0 Wave
+  #1 Interact
+  #2 Roll
+  #3 Punch
+  #4 Kick
+  #5 Faint
+  #6 Handshake
+  #7 HighFive
+  #8 Throw
+EmoteState = struct
+  .0 emote: Emote
+  .1 sequence: U32
+Expression = enum
+  #0 Happy
+  #1 Laugh
+  #2 Sad
+  #3 Angry
+  #4 Surprised
+  #5 Afraid
+  #6 Disgusted
+  #7 Wink
+ExpressionState = struct
+  .0 expression: Expression
+  .1 sequence: U32
+GeoAnchor = struct
+  .0 latitude: F64
+  .1 longitude: F64
+Greeting = enum
+  #0 Handshake
+  #1 HighFive
+GroupLevel = struct
+  .0 id: I64
+  .1 name: Str
+HandPose = struct
+  .0 prim_id: I64
+  .1 offset: [F32; 3]
+  .2 precise: Bool
+JoinRequestDto = struct
+  .0 address: Str
+  .1 message: Str
+  .2 requested_ms: U64
+JoinRule = enum
+  #0 Open
+  #1 Ask
+  #2 Invite
+ListingState = enum
+  #0 Outside
+  #1 Asked
+  #2 Member
+  #3 Refused
+MetDto = struct
+  .0 at_ms: U64
+  .1 latitude: F64
+  .2 longitude: F64
+NearbyPersonDto = struct
+  .0 username: Str
+  .1 distance_m: F32
+  .2 relation: Relation
+  .3 may_request: Bool
+NetMessage = enum
+  #0 ClientHello { protocol_version: U16, auth: AuthCredential }
+  #1 ServerHelloAck { session_id: Bytes, tick_hz: F32, your_avatar_id: U64, principal_id: Bytes, username: Str, session_token: Str, osm_tile_url_template: Str, api_base_url: Str, server_name: Str, last_place: Option<GeoAnchor> }
+  #2 ServerError { request_id: U32, code: U32, message: Str }
+  #3 ClientIntent { request_id: U32, move_x: F32, move_z: F32, display_yaw: F32, flying: Bool, fly_up: Bool, fly_down: Bool, jump: Bool, emote: Option<Emote>, expression: Option<Expression>, seated: Option<[F32; 2]>, geo: Option<GeoAnchor> }
+  #4 WorldSnapshot { tick: U64, avatars: Vec<AvatarStateDto> }
+  #5 PrimRemoved { id: I64 }
+  #6 PrimOutOfReach { id: I64 }
+  #7 CreatePrim { request_id: U32, name: Str, position: Vec3, rotation: Vec3, scale: Vec3, color: [F32; 3], texture_id: Option<Str>, shape: Str, surface: PrimSurface, geometry: PrimGeometry, geo: GeoAnchor, particles: Option<ParticleEffect>, model: Option<Str>, draft: Bool }
+  #8 UpdatePrim { request_id: U32, prim_id: I64, position: Vec3, rotation: Vec3, scale: Vec3, color: [F32; 3], texture_id: Option<Str>, name: Str, surface: PrimSurface, geometry: PrimGeometry, geo: GeoAnchor, particles: Option<ParticleEffect>, model: Option<Str> }
+  #9 DeletePrim { request_id: U32, prim_id: I64 }
+  #10 PrimUpsert { prim: PrimDto }
+  #11 TextureCatalogRequest
+  #12 TextureCatalog { textures: Vec<TextureEntry> }
+  #13 TextureRequest { request_id: U32, texture_id: Str }
+  #14 TextureData { request_id: U32, texture_id: Str, png_bytes: Vec<U8> }
+  #15 TextureNotFound { request_id: U32, texture_id: Str }
+  #16 ChatSend { request_id: U32, scope: ChatScope, body: Str }
+  #17 ChatMessage { channel: Str, sender_id: U64, sender_name: Str, sent_at_ms: U64, body: Str, distance_m: Option<F32> }
+  #18 GetPrimScript { request_id: U32, prim_id: I64 }
+  #19 SetPrimScript { request_id: U32, prim_id: I64, source: Str }
+  #20 PrimScript { prim_id: I64, source: Str, running: Bool }
+  #21 ScriptOutput { prim_id: I64, level: ScriptLevel, text: Str, at_ms: U64 }
+  #22 TouchPrim { request_id: U32, prim_id: I64 }
+  #23 WorldCapacity { prims_used: U32, prims_max: U32, scripts_used: U32, scripts_max: U32, script_memory_bytes: U32 }
+  #24 VoiceFrame { scope: ChatScope, seq: U32, payload: Vec<U8> }
+  #25 VoiceData { channel: Str, sender_id: U64, seq: U32, payload: Vec<U8>, distance_m: Option<F32> }
+  #26 SetBlocked { request_id: U32, username: Str, blocked: Bool }
+  #27 BlockedList { usernames: Vec<Str> }
+  #28 ReportUser { request_id: U32, username: Str, reason: ReportReason, note: Str, message: Option<Str>, asset: Option<Str> }
+  #29 ReportAck { request_id: U32, accepted: Bool }
+  #30 DeleteAccount { request_id: U32, password: Str }
+  #31 AccountDeleted
+  #32 Teleport { request_id: U32, geo: GeoAnchor, alt_m: F32 }
+  #33 SetPresence { request_id: U32, active: Bool }
+  #34 E2eeRegisterDevice { request_id: U32, device: Bytes, key_packages: Vec<Vec<U8>> }
+  #35 E2eeDeviceStatus { request_id: U32, key_packages: U32 }
+  #36 E2eeClaimKeyPackages { request_id: U32, address: Str }
+  #37 E2eeKeyPackages { request_id: U32, address: Str, packages: Vec<E2eeKeyPackage> }
+  #38 E2eeCreateGroup { request_id: U32, group: Vec<U8>, direct_with: Option<Str> }
+  #39 E2eeGroupCreated { request_id: U32, group: Vec<U8>, existing: Option<Vec<U8>> }
+  #40 E2eeSend { request_id: U32, group: Vec<U8>, epoch: U64, commit: Bool, message: Vec<U8>, welcome: Option<E2eeWelcome> }
+  #41 E2eeSent { request_id: U32, group: Vec<U8>, seq: Option<U64>, refused: Option<Str> }
+  #42 E2eeSync { request_id: U32, cursors: Vec<E2eeCursor> }
+  #43 E2eeSynced { request_id: U32 }
+  #44 E2eeDeliver { group: Vec<U8>, seq: U64, sender: Str, device: Bytes, sent_at_ms: U64, commit: Bool, message: Vec<U8> }
+  #45 E2eeInvite { group: Vec<U8>, from: Str, after: U64, welcome: Vec<U8> }
+  #46 CallJoin { request_id: U32, group: Vec<U8>, offer: Str, screen: Option<Str> }
+  #47 CallJoined { request_id: U32, group: Vec<U8>, participant: U64, answer: Str }
+  #48 CallOffer { group: Vec<U8>, sdp: Str, tracks: Vec<CallTrack> }
+  #49 CallAnswer { group: Vec<U8>, sdp: Str }
+  #50 CallLeave { group: Vec<U8> }
+  #51 CallRoster { group: Vec<U8>, members: Vec<CallMember>, settings: CallSettings, waiting: Vec<CallWaiter>, spotlight: Option<U64>, rooms: Option<CallRooms> }
+  #52 ContactsState { contacts: Vec<ContactDto>, incoming: Vec<ContactRequestDto>, outgoing: Vec<ContactRequestDto>, settings: ContactSettings }
+  #53 RequestContact { request_id: U32, username: Str, link_code: Option<Str> }
+  #54 AnswerContact { request_id: U32, username: Str, accept: Bool }
+  #55 RemoveContact { request_id: U32, username: Str }
+  #56 SetContactSettings { request_id: U32, policy: RequestPolicy, show_online: Bool, notify_requests: Bool, separate_new_accounts: Bool, reset_link: Bool }
+  #57 LookupPerson { request_id: U32, username: Option<Str>, avatar_id: Option<U64> }
+  #58 PersonInfo { request_id: U32, person: Option<PersonDto> }
+  #59 GetNearbyPeople { request_id: U32 }
+  #60 NearbyPeople { request_id: U32, people: Vec<NearbyPersonDto> }
+  #61 SetPrimVideo { request_id: U32, prim_id: I64, video: Option<SetVideo> }
+  #62 SetPushEndpoint { endpoint: Option<Str> }
+  #63 WherePeople { request_id: U32, usernames: Vec<Str> }
+  #64 PeopleWhere { request_id: U32, people: Vec<PersonWhereDto> }
+  #65 CallDecline { group: Vec<U8> }
+  #66 CallDeclined { group: Vec<U8>, username: Str }
+  #67 PrimSound { prim_id: I64, sound: PrimSound }
+  #68 SetPrimPhysical { request_id: U32, prim_id: I64, physical: Bool }
+  #69 PrimMotion { tick: U64, bodies: Vec<PrimBody> }
+  #70 GrabPrim { request_id: U32, prim_id: I64 }
+  #71 ReleasePrim { request_id: U32, throw: Bool }
+  #72 OfferGreeting { request_id: U32, to: U64, greeting: Greeting }
+  #73 GreetingOffered { from: U64, name: Str, greeting: Option<Greeting> }
+  #74 AcceptGreeting { request_id: U32, from: U64 }
+  #75 GreetingStarted { greeting: Greeting, partner: U64, yaw: F32 }
+  #76 FollowPlans { places: Vec<[F64; 2]> }
+  #77 Permissions { granted: Vec<Str> }
+  #78 HandPose { pose: HandPose }
+  #79 PrimTone { prim_id: I64, tone: Option<ToneSpec> }
+  #80 CommunityList { request_id: U32 }
+  #81 Communities { request_id: U32, communities: Vec<CommunityDto> }
+  #82 CommunityCreate { request_id: U32, settings: CommunitySettings }
+  #83 CommunityCreated { request_id: U32, id: Bytes }
+  #84 CommunityEdit { request_id: U32, id: Bytes, settings: CommunitySettings }
+  #85 CommunityDirectory { request_id: U32, query: Str, order: DirectoryOrder, near: Option<[F64; 2]> }
+  #86 CommunityListings { request_id: U32, listings: Vec<CommunityListing> }
+  #87 CommunityJoin { request_id: U32, id: Bytes, message: Str }
+  #88 CommunityLeave { request_id: U32, id: Bytes }
+  #89 CommunityDecide { request_id: U32, id: Bytes, address: Str, accept: Bool }
+  #90 CommunityAddMember { request_id: U32, id: Bytes, address: Str }
+  #91 CommunitySetRole { request_id: U32, id: Bytes, address: Str, role: CommunityRole }
+  #92 CommunityRemove { request_id: U32, id: Bytes, address: Str, topic: Option<Vec<U8>>, block: Bool }
+  #93 CommunityDelete { request_id: U32, id: Bytes }
+  #94 TopicCreate { request_id: U32, community: Bytes, group: Vec<U8>, name: Str }
+  #95 TopicEdit { request_id: U32, community: Bytes, group: Vec<U8>, name: Str, position: U32, archived: Bool }
+  #96 TopicAddPeople { group: Vec<U8>, people: Vec<E2eeNewDevice> }
+  #97 TopicRemovePeople { group: Vec<U8>, addresses: Vec<Str> }
+  #98 TopicRemoved { group: Vec<U8>, addresses: Vec<Str> }
+  #99 TopicLeft { group: Vec<U8>, community: Bytes, by: Str }
+  #100 ModerateDelete { request_id: U32, group: Vec<U8>, seq: U64 }
+  #101 E2eeRedacted { group: Vec<U8>, seq: U64, by: Str }
+  #102 CommunityReport { request_id: U32, id: Bytes, address: Str, group: Vec<U8>, seq: U64, reason: ReportReason, note: Str, line: Str }
+  #103 CommunityReportResolve { request_id: U32, id: Bytes, report: I64 }
+  #104 CommunityInviteCreate { request_id: U32, id: Bytes }
+  #105 CommunityInvite { request_id: U32, id: Bytes, code: Str }
+  #106 CommunityInviteLookup { request_id: U32, code: Str }
+  #107 CommunityJoinInvite { request_id: U32, code: Str }
+  #108 E2eeAddDevices { group: Vec<U8>, devices: Vec<E2eeNewDevice> }
+  #109 CallControl { group: Vec<U8>, action: CallAction }
+  #110 CallEnded { group: Vec<U8>, reason: CallEndReason }
+  #111 CallReact { group: Vec<U8>, epoch: U64, sealed: Vec<U8> }
+  #112 CallReacted { group: Vec<U8>, participant: U64, epoch: U64, sealed: Vec<U8> }
+  #113 CallWatch { group: Vec<U8>, cameras: Option<Vec<U64>> }
+  #114 CallWaiting { request_id: U32, group: Vec<U8>, participant: U64 }
+  #115 CallInvite { group: Vec<U8> }
+  #116 CallInvited { group: Vec<U8>, code: Str, expires_ms: U64 }
+  #117 CallKeyDrop { group: Vec<U8>, participant: U64, sealed: Vec<U8> }
+  #118 CallKeyDropped { group: Vec<U8>, sealed: Vec<U8> }
+  #119 SetAvatarLook { look: AvatarLook }
+  #120 AvatarLookOf { avatar_id: U64, look: AvatarLook }
+  #121 SetFaceFrame { weights: Vec<U8> }
+  #122 FaceFrameOf { avatar_id: U64, weights: Vec<U8> }
+ParticleEffect = struct
+  .0 count: U16
+  .1 life: F32
+  .2 speed: F32
+  .3 spread_deg: F32
+  .4 gravity: F32
+  .5 source_radius: F32
+  .6 size_start: F32
+  .7 size_end: F32
+  .8 color_start: [F32; 3]
+  .9 color_end: [F32; 3]
+  .10 alpha: F32
+  .11 turbulence: F32
+  .12 burst: Bool
+  .13 sequence: U32
+PersonDto = struct
+  .0 username: Str
+  .1 joined_ms: U64
+  .2 new_account: Bool
+  .3 in_common: Vec<Str>
+  .4 relation: Relation
+  .5 met: Option<MetDto>
+  .6 distance_m: Option<F32>
+  .7 may_request: Bool
+PersonWhereDto = struct
+  .0 username: Str
+  .1 avatar_id: U64
+  .2 latitude: F64
+  .3 longitude: F64
+PrimBody = struct
+  .0 id: I64
+  .1 geo: GeoAnchor
+  .2 altitude: F32
+  .3 rotation: [F32; 4]
+  .4 velocity: Vec3
+  .5 resting: Bool
+PrimDto = struct
+  .0 id: I64
+  .1 name: Str
+  .2 shape: Str
+  .3 position: Vec3
+  .4 rotation: Vec3
+  .5 scale: Vec3
+  .6 color: [F32; 3]
+  .7 texture_id: Option<Str>
+  .8 model: Option<Str>
+  .9 path_cut_begin: F32
+  .10 path_cut_end: F32
+  .11 hollow: F32
+  .12 twist_begin: F32
+  .13 twist_end: F32
+  .14 taper_x: F32
+  .15 taper_y: F32
+  .16 top_shear_x: F32
+  .17 top_shear_y: F32
+  .18 slice_begin: F32
+  .19 slice_end: F32
+  .20 surface: PrimSurface
+  .21 geo: GeoAnchor
+  .22 particles: Option<ParticleEffect>
+  .23 scripted: Bool
+  .24 video: Option<PrimVideo>
+  .25 sound_loop: Option<PrimSound>
+  .26 physical: Bool
+  .27 hand_range: F32
+  .28 tone: Option<ToneSpec>
+  .29 draft: Bool
+  .30 groups: Vec<GroupLevel>
+PrimGeometry = struct
+  .0 path_cut_begin: F32
+  .1 path_cut_end: F32
+  .2 hollow: F32
+  .3 twist_begin: F32
+  .4 twist_end: F32
+  .5 taper_x: F32
+  .6 taper_y: F32
+  .7 top_shear_x: F32
+  .8 top_shear_y: F32
+  .9 slice_begin: F32
+  .10 slice_end: F32
+PrimSound = struct
+  .0 sound: SoundName
+  .1 volume: F32
+  .2 range_m: F32
+PrimSurface = struct
+  .0 alpha: F32
+  .1 glow: F32
+  .2 full_bright: Bool
+  .3 repeat_u: F32
+  .4 repeat_v: F32
+  .5 flip_u: Bool
+  .6 flip_v: Bool
+  .7 rotation: F32
+  .8 offset_u: F32
+  .9 offset_v: F32
+PrimVideo = struct
+  .0 asset: Str
+  .1 started_at_ms: U64
+  .2 looped: Bool
+Relation = enum
+  #0 Nobody
+  #1 Me
+  #2 Contact
+  #3 RequestSent
+  #4 RequestReceived
+ReportReason = enum
+  #0 Harassment
+  #1 HateSpeech
+  #2 SexualContent
+  #3 Threat
+  #4 Spam
+  #5 Other
+RequestPolicy = enum
+  #0 Anyone
+  #1 Near
+  #2 LinkOnly
+ScriptLevel = enum
+  #0 Info
+  #1 Notice
+  #2 Error
+SetVideo = struct
+  .0 asset: Str
+  .1 looped: Bool
+SoundName = enum
+  #0 Firework
+  #1 Crackle
+  #2 Pop
+  #3 Chime
+  #4 Bell
+  #5 Click
+  #6 Whoosh
+TextureEntry = struct
+  .0 id: Str
+  .1 name: Str
+ToneSpec = struct
+  .0 voice: Voice
+  .1 pitch_hz: F32
+  .2 gain: F32
+  .3 glide_s: F32
+  .4 vibrato: F32
+  .5 range_m: F32
+TopicDto = struct
+  .0 group: Vec<U8>
+  .1 name: Str
+  .2 position: U32
+  .3 archived: Bool
+  .4 joined: Bool
+Vec3 = (F32, F32, F32)
+Voice = enum
+  #0 Sine
+  #1 Organ
+  #2 Saw
+  #3 Square

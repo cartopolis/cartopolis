@@ -1,7 +1,7 @@
 ---
 topic: wire-protocol-versions
-triggers: [crates/core/src/protocol.rs, PROTOCOL_HISTORY, PROTOCOL_VERSION, ProtocolRevision, MessageKind, UnsupportedVersion, check-numbers.ts, "protocol version", "wire revision", "protocol bump"]
-updated: 2026-10-17
+triggers: [crates/core/src/protocol, wire_shape.txt, CARTO_BLESS_WIRE, PROTOCOL_HISTORY, PROTOCOL_VERSION, ProtocolRevision, MessageKind, UnsupportedVersion, check-numbers.ts, "protocol version", "wire revision", "protocol bump"]
+updated: 2026-11-19
 ---
 
 # The wire version is the last row of a changelog, and nothing else
@@ -34,6 +34,19 @@ What is and is not a revision:
 - **Anything a player's client must send or understand is.** Account creation is
   absent from the wire, so offering it in the app would be a revision, not a UI
   change (`session-modes.md`).
+
+**The payload's shape is pinned, the header's numbers are not enough.**
+postcard sends a `NetMessage` variant as its position in the enum and a struct
+as its fields in order, so moving a variant or swapping two fields compiles,
+round-trips in every same-build test, and makes every deployed peer misread the
+message. Nothing caught that until 2026-11-19: `MessageKind`'s explicit numbers
+guard the header only. `protocol::wire_shape` now traces every type reachable
+from `NetMessage` (and `AvatarLook`, which the server keeps as postcard) into
+`crates/core/src/protocol/wire_shape.txt`, one line per numbered variant or
+field, and fails on any difference. A meant change re-pins it with
+`CARTO_BLESS_WIRE=1 cargo test -p cartopolis_core wire_shape`, beside a
+`PROTOCOL_HISTORY` row. A new nested enum fails the trace as
+`MissingVariants([...])`; add it to the `enums!` list there.
 
 **Two branches each appending the next number collide at merge**, the way
 migrations collide at deploy (`migration-numbers-are-claimed-by-a-deploy.md`).

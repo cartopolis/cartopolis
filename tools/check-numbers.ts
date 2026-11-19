@@ -48,7 +48,9 @@ if (args.help) {
 }
 
 const MIGRATIONS = "crates/simulator/migrations";
-const PROTOCOL = "crates/core/src/protocol.rs";
+// One file until 2026-11-19, a folder since; either shape is read, so a base
+// from before the move still compares.
+const PROTOCOL = "crates/core/src/protocol";
 
 function git(...a: string[]): string | null {
     const r = spawnSync("git", a, { encoding: "utf8", maxBuffer: 64 << 20 });
@@ -77,9 +79,19 @@ function migrations(rev: string): Map<number, string[]> {
     return out;
 }
 
-/** The parts of protocol.rs that carry numbers, for one tree. */
+/** The protocol module's source in one tree, every file of it concatenated. */
+function protocolSource(rev: string): string {
+    const single = git("show", `${rev}:${PROTOCOL}.rs`);
+    if (single !== null) return single;
+    const files = (git("ls-tree", "-r", "--name-only", rev, `${PROTOCOL}/`) ?? "")
+        .split("\n")
+        .filter((f) => f.endsWith(".rs"));
+    return files.map((f) => git("show", `${rev}:${f}`) ?? "").join("\n");
+}
+
+/** The parts of the protocol module that carry numbers, for one tree. */
 function protocol(rev: string): { revisions: Map<number, string>; kinds: Map<number, string> } {
-    const src = git("show", `${rev}:${PROTOCOL}`) ?? "";
+    const src = protocolSource(rev);
     const revisions = new Map<number, string>();
     // A row is `version: N,` followed (a line or two later) by its summary; the
     // summary is the row's identity, since the number is the thing in dispute.

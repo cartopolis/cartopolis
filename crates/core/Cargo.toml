@@ -29,6 +29,8 @@ uuid = { workspace = true }
 # Note the workspace entry turns `approx`'s default features off; see the
 # comment there, it is load-bearing for the build and not a size trim.
 approx = { workspace = true }
+# `protocol::wire_shape`: traces every type on the wire into a pinned text.
+serde-reflection = "0.5"
 
 [lints]
 workspace = true

@@ -3288,6 +3288,9 @@ pub fn decode_app_frame(bytes: &[u8]) -> Result<NetMessage, ProtocolError> {
 }
 
 #[cfg(test)]
+mod wire_shape;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -125,7 +125,7 @@ console in a connected viewer is still where the answer appears.
 
 | Path | Contents |
 |------|----------|
-| `crates/core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) — the `cartopolis_core` crate |
+| `crates/core/` | Wire protocol (`protocol/`), tile/coordinate math (`world.rs`, `geo.rs`) — the `cartopolis_core` crate |
 | `crates/geo/` | Bevy-free map geodata (`cartopolis_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
 | `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs`, `http.rs` + `authoring.rs` (the admin/authoring API) |
 | `crates/cartopolis/` | Bevy client — everything below |
