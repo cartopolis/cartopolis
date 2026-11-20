@@ -88,6 +88,7 @@ pub fn router(state: ApiState) -> Router {
             axum::routing::delete(delete_facade),
         )
         .route("/buildings/{pand}/facade/recheck", post(recheck_facade))
+        .route("/buildings/{pand}/facade/status", get(facade_status))
         .route(
             "/buildings/{pand}/facade/photo",
             // A phone's photograph is 3–8 MB; axum's default refuses it.
@@ -421,8 +422,10 @@ struct FacadeQuery {
     heading: Option<f64>,
 }
 
-/// Run one facade measurement off the async workers, refusing rather than
-/// queueing while another runs, and file what it finds.
+/// Start one facade measurement in the background and answer at once: it
+/// takes minutes, longer than a phone holds a request open. The caller asks
+/// `GET …/facade/status` until it is done. Refused, with the reason in words,
+/// while another runs.
 async fn measure_facade(
     state: &ApiState,
     pand: String,
@@ -436,34 +439,81 @@ async fn measure_facade(
     none: &'static str,
 ) -> Response {
     let edits = state.facade_edits.clone();
-    let site = state.out_root.clone();
-    let p = pand.clone();
-    let done = blocking(move || {
-        let Ok(_busy) = edits.busy.try_lock() else {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Another facade is being measured; try again in a minute".to_string(),
-            ));
-        };
-        let log = |l: String| tracing::info!(pand = %p, "{l}");
-        let (found, cell) = work(&site).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-        if let Some(f) = &found {
-            edits
-                .save(cell, &p, f, &by)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            log(format!("facade corrected by {by}: {f:?}"));
+    {
+        let mut running = edits.running.lock().unwrap_or_else(|e| e.into_inner());
+        if running.is_some() {
+            return Json(json!({
+                "facade": null,
+                "why": "Another facade is being measured; try again in a few minutes",
+            }))
+            .into_response();
         }
-        Ok(found)
-    })
-    .await;
-    // Every answer the person can act on — measured, not found in the
-    // photograph, no location, busy — is a 200 with the reason in words: the
-    // app shows `why` as it is, and its HTTP layer keeps only a status.
-    match done {
-        Ok(Some(facade)) => Json(json!({ "facade": facade })).into_response(),
-        Ok(None) => Json(json!({ "facade": null, "why": none })).into_response(),
-        Err((StatusCode::INTERNAL_SERVER_ERROR, e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err((_, e)) => Json(json!({ "facade": null, "why": e })).into_response(),
+        *running = Some(pand.clone());
+    }
+    let site = state.out_root.clone();
+    tokio::task::spawn_blocking(move || {
+        // Whatever becomes of the work — a panic in a network included — the
+        // next measurement must not be refused for ever.
+        struct Done(Arc<crate::facade_edits::FacadeEdits>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                *self.0.running.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        }
+        let _done = Done(edits.clone());
+        let log = |l: String| tracing::info!(pand = %pand, "{l}");
+        // Every answer the person can act on — measured, not found in the
+        // photograph, no location — carries the reason in words: the app
+        // shows `why` as it is.
+        let answer = match work(&site) {
+            Ok((Some(f), cell)) => match edits.save(cell, &pand, &f, &by) {
+                Ok(()) => {
+                    log(format!("facade corrected by {by}: {f:?}"));
+                    json!({ "facade": f })
+                }
+                Err(e) => json!({ "facade": null, "why": format!("Could not be saved: {e}") }),
+            },
+            Ok((None, _)) => json!({ "facade": null, "why": none }),
+            Err(e) => json!({ "facade": null, "why": e }),
+        };
+        edits
+            .answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pand.clone(), answer);
+    });
+    (StatusCode::ACCEPTED, Json(json!({ "status": "measuring" }))).into_response()
+}
+
+/// Where a building's facade measurement has got to: `{"status":
+/// "measuring"}`, its answer (once, then it is forgotten), or `{"status":
+/// "none"}`.
+async fn facade_status(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+) -> Response {
+    if let Err(r) = building_access(&state, &headers, &pand).await {
+        return r;
+    }
+    let edits = &state.facade_edits;
+    if edits
+        .running
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        == Some(&*pand)
+    {
+        return Json(json!({ "status": "measuring" })).into_response();
+    }
+    match edits
+        .answers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pand)
+    {
+        Some(answer) => Json(answer).into_response(),
+        None => Json(json!({ "status": "none" })).into_response(),
     }
 }
 

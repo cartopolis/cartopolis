@@ -31,6 +31,12 @@ pub struct FacadeCheck {
     capture: Option<Capture>,
     location: Option<LocationWatch>,
     task: Option<Task<Result<String, String>>>,
+    /// When to ask atlas again how a measurement is going (seconds of app
+    /// time), while it runs: it takes minutes, longer than a phone keeps a
+    /// request open.
+    ask_at: Option<f64>,
+    /// How many times it has been asked.
+    asked: u32,
     /// What became of the last request, in words, for the card to show.
     note: Option<(Arc<str>, String)>,
 }
@@ -39,7 +45,7 @@ impl FacadeCheck {
     /// Whether a request about `pand` is under way.
     #[must_use]
     pub fn busy(&self) -> bool {
-        self.capture.is_some() || self.task.is_some()
+        self.capture.is_some() || self.task.is_some() || self.ask_at.is_some()
     }
 
     /// Whether the camera (or the file dialog) is open for a photograph.
@@ -135,7 +141,8 @@ impl FacadeCheck {
 }
 
 /// Carry a request on: a photograph taken, an answer come back.
-pub fn drive_facade_check(mut check: ResMut<FacadeCheck>) {
+pub fn drive_facade_check(mut check: ResMut<FacadeCheck>, time: Res<Time>) {
+    let now = time.elapsed_secs_f64();
     let Some(pand) = check.pand.clone() else {
         return;
     };
@@ -154,6 +161,15 @@ pub fn drive_facade_check(mut check: ResMut<FacadeCheck>) {
             }
         }
     }
+    if check.task.is_none() && check.ask_at.is_some_and(|t| now >= t) {
+        check.ask_at = None;
+        check.asked += 1;
+        let path = format!("/api/pipeline/buildings/{pand}/facade/status");
+        check.task = Some(
+            IoTaskPool::get()
+                .spawn(async move { crate::systems::model_assets::api_get(&path).await }),
+        );
+    }
     let Some(task) = check.task.as_mut() else {
         return;
     };
@@ -162,13 +178,36 @@ pub fn drive_facade_check(mut check: ResMut<FacadeCheck>) {
     };
     check.task = None;
     let note = match result {
-        Ok(body) => answer(&body),
+        Ok(body) if still_measuring(&body) => {
+            if check.asked >= MAX_ASKS {
+                check.asked = 0;
+                "No answer after a quarter of an hour; try again later".to_string()
+            } else {
+                check.ask_at = Some(now + ASK_EVERY_S);
+                "Measuring the facade from street photos; this takes a few minutes…".to_string()
+            }
+        }
+        Ok(body) => {
+            check.asked = 0;
+            answer(&body)
+        }
         Err(e) => {
             tracing::warn!(%pand, "facade check: {e}");
             "The server could not be asked; try again later".to_string()
         }
     };
     check.say(&pand, note);
+}
+
+/// How often atlas is asked how a measurement is going, seconds.
+const ASK_EVERY_S: f64 = 5.0;
+/// Asked this often, it has run a quarter of an hour: something is wrong.
+const MAX_ASKS: u32 = 180;
+
+/// Whether atlas says the measurement is still running.
+fn still_measuring(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .is_ok_and(|j| j["status"].as_str() == Some("measuring"))
 }
 
 /// The card's line for atlas's answer: `{"facade": …}` when it measured one,
@@ -207,5 +246,7 @@ mod tests {
             "No street photograph shows enough of this building"
         );
         assert_eq!(answer("not json"), "Nothing could be measured");
+        assert!(still_measuring(r#"{"status":"measuring"}"#));
+        assert!(!still_measuring(r#"{"facade":null,"why":"x"}"#));
     }
 }

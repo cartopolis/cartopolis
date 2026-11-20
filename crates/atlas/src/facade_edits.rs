@@ -28,9 +28,15 @@ pub struct FacadeEdits {
     /// One correction at a time: each rewrites a shared cell and the shared
     /// manifest, and two interleaved would lose one of them.
     lock: Mutex<()>,
-    /// One measurement at a time: each runs the facade network, a second or
-    /// two of every core, and a queue of them would starve the tile server.
-    pub busy: Mutex<()>,
+    /// One measurement at a time: each runs two networks over up to nine
+    /// photographs, minutes of every core on the VPS (5 min 13 s on
+    /// 2026-11-20), and a queue of them would starve the tile server. The
+    /// building being measured, while one is.
+    pub running: Mutex<Option<String>>,
+    /// What each finished measurement said, until its caller asks
+    /// (`GET …/facade/status`): a measurement outlasts any HTTP request a
+    /// phone would hold open.
+    pub answers: Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl FacadeEdits {
@@ -40,7 +46,8 @@ impl FacadeEdits {
             log_path: data_dir.join("facade_edits.jsonl"),
             tree: site_dir.join("facade_edits"),
             lock: Mutex::new(()),
-            busy: Mutex::new(()),
+            running: Mutex::new(None),
+            answers: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

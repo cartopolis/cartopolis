@@ -99,7 +99,15 @@ Reading it against its own white frames helps only where they are in view.
 So a measurement pools several photos with equal shares (`SHARE`): the
 player's and up to eight of Mapillary's. Pooled, repeat runs agree within
 about 5 per channel (130–135,113–120,102–110; the hotel 85–87,61–62,58).
-One run takes 70–110 s on an M5 core set; the client waits up to 180 s.
+One run takes 70–110 s on an M5 core set and **5 min 13 s on the VPS**
+(2026-11-20, load ~10), so a request only starts it: `POST …/recheck` and
+`…/photo` answer 202 at once, the app asks `GET …/facade/status` every 5 s,
+and one measurement runs at a time.
+
+**The scene network is stored in half precision and run in full**
+(`FloatPrecisionTranslator` at load). Run in half, an x86 host emulates every
+operation: one photograph took 25 minutes on the VPS against ten seconds on
+an M5.
 
 Mapillary's API answers a bbox with an arbitrary 500 of the thousands there,
 different each time, so it is asked in 60 m tiles (`TILE_M`). Views are spread
