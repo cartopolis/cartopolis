@@ -75,6 +75,32 @@ enum Command {
         #[arg(long, default_value = "assets/globe/countries.tsv")]
         out: PathBuf,
     },
+    /// Measure one building's facade again from Mapillary street photographs
+    /// (`pipeline::mapillary`; needs `ATLAS_MAPILLARY_TOKEN`) or from one
+    /// photograph (`pipeline::street_photo`), and print what it finds. The
+    /// building card does the same through the API, which also files it.
+    FacadeRecheck {
+        /// The served site tree, holding the `bag` and `lod22` cells around it.
+        #[arg(long, default_value = "site")]
+        out: PathBuf,
+        /// A point in or by the building, `lat,lng`.
+        #[arg(long, value_delimiter = ',')]
+        near: Vec<f64>,
+        /// Measure from this photograph instead (`pipeline::street_photo`).
+        #[arg(long)]
+        photo: Option<PathBuf>,
+        /// Where the photograph was taken when its EXIF does not say, `lat,lng`.
+        #[arg(long, value_delimiter = ',')]
+        at: Vec<f64>,
+        /// How far out that may be, metres.
+        #[arg(long, default_value_t = 10.0)]
+        accuracy: f64,
+        /// Measure the photograph together with Mapillary's.
+        #[arg(long)]
+        with_mapillary: bool,
+        /// The BAG identificatie.
+        pand: String,
+    },
     /// Rebuild a landmark from measurements and photographs
     /// (`landmark`, `docs/notes/landmark-kit.md`).
     Landmark {
@@ -299,6 +325,44 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(Command::FacadeRecheck {
+        out,
+        near,
+        photo,
+        at,
+        accuracy,
+        with_mapillary,
+        pand,
+    }) = &cli.command
+    {
+        let [lat, lng] = near[..] else {
+            anyhow::bail!("--near takes lat,lng");
+        };
+        let log = |l: String| eprintln!("  {l}");
+        let (found, cell) = match photo {
+            Some(path) => {
+                let hint = cartopolis_atlas::pipeline::street_photo::Hint {
+                    lat: at.first().copied(),
+                    lng: at.get(1).copied(),
+                    accuracy_m: Some(*accuracy),
+                    heading: None,
+                };
+                cartopolis_atlas::pipeline::street_photo::measure_photos(
+                    out,
+                    pand,
+                    (lat, lng),
+                    Some((&std::fs::read(path)?, hint)),
+                    *with_mapillary,
+                    &log,
+                )
+                .map(|m| (m.facade, m.cell))
+            }
+            None => cartopolis_atlas::pipeline::mapillary::recheck(out, pand, (lat, lng), &log),
+        }
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        eprintln!("cell {cell:?}: {found:?}");
+        return Ok(());
+    }
     if let Some(Command::Landmark { step }) = &cli.command {
         let said = match step {
             LandmarkStep::Gather { pand, names, out } => {

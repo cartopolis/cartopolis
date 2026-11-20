@@ -214,6 +214,10 @@ mod tests {
                 runner: crate::jobs::Runner::new(dir.path(), crate::jobs::Registry::new()),
                 out_root: dir.path().to_path_buf(),
                 designs: std::sync::Arc::new(crate::designs::Designs::new(dir.path(), dir.path())),
+                facade_edits: std::sync::Arc::new(crate::facade_edits::FacadeEdits::new(
+                    dir.path(),
+                    dir.path(),
+                )),
                 overrides: std::sync::Arc::new(crate::overrides::Overrides::new(
                     dir.path(),
                     dir.path(),

@@ -33,6 +33,8 @@ pub struct ApiState {
     pub designs: Arc<crate::designs::Designs>,
     /// Building overrides (`crate::overrides`).
     pub overrides: Arc<crate::overrides::Overrides>,
+    /// Facades measured again on a player's word (`crate::facade_edits`).
+    pub facade_edits: Arc<crate::facade_edits::FacadeEdits>,
 }
 
 fn fail(status: StatusCode, message: &str) -> Response {
@@ -78,6 +80,18 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/buildings/{pand}/design",
             axum::routing::put(put_design).delete(delete_design),
+        )
+        // A facade the city model got wrong, measured again from street
+        // photographs (`crate::facade_edits`).
+        .route(
+            "/buildings/{pand}/facade",
+            axum::routing::delete(delete_facade),
+        )
+        .route("/buildings/{pand}/facade/recheck", post(recheck_facade))
+        .route(
+            "/buildings/{pand}/facade/photo",
+            // A phone's photograph is 3–8 MB; axum's default refuses it.
+            post(photo_facade).layer(axum::extract::DefaultBodyLimit::max(MAX_PHOTO_BYTES)),
         )
         // Building overrides (`crate::overrides`, `docs/notes/building-models.md`).
         .route("/overrides", get(list_overrides))
@@ -391,6 +405,173 @@ async fn delete_design(
 
 /// The signed-in operator, if their roles let them replace a building's outside
 /// (`building_override`; an admin always may).
+/// The largest photograph a facade is measured from.
+const MAX_PHOTO_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct FacadeQuery {
+    /// A point in or by the building, to find its cell.
+    lat: f64,
+    lng: f64,
+    /// Where the phone was when it sent the photograph, and how sure it was.
+    at_lat: Option<f64>,
+    at_lng: Option<f64>,
+    accuracy: Option<f64>,
+    /// Which way the phone's camera pointed, degrees from north.
+    heading: Option<f64>,
+}
+
+/// Run one facade measurement off the async workers, refusing rather than
+/// queueing while another runs, and file what it finds.
+async fn measure_facade(
+    state: &ApiState,
+    pand: String,
+    by: String,
+    work: impl FnOnce(
+            &std::path::Path,
+        )
+            -> Result<(Option<cartopolis_geo::formats::facades::Facade>, (i64, i64)), String>
+        + Send
+        + 'static,
+    none: &'static str,
+) -> Response {
+    let edits = state.facade_edits.clone();
+    let site = state.out_root.clone();
+    let p = pand.clone();
+    let done = blocking(move || {
+        let Ok(_busy) = edits.busy.try_lock() else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Another facade is being measured; try again in a minute".to_string(),
+            ));
+        };
+        let log = |l: String| tracing::info!(pand = %p, "{l}");
+        let (found, cell) = work(&site).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        if let Some(f) = &found {
+            edits
+                .save(cell, &p, f, &by)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            log(format!("facade corrected by {by}: {f:?}"));
+        }
+        Ok(found)
+    })
+    .await;
+    // Every answer the person can act on — measured, not found in the
+    // photograph, no location, busy — is a 200 with the reason in words: the
+    // app shows `why` as it is, and its HTTP layer keeps only a status.
+    match done {
+        Ok(Some(facade)) => Json(json!({ "facade": facade })).into_response(),
+        Ok(None) => Json(json!({ "facade": null, "why": none })).into_response(),
+        Err((StatusCode::INTERNAL_SERVER_ERROR, e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err((_, e)) => Json(json!({ "facade": null, "why": e })).into_response(),
+    }
+}
+
+/// Measure a building's facade again from Mapillary's street photographs.
+async fn recheck_facade(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    Query(q): Query<FacadeQuery>,
+) -> Response {
+    let access = match building_access(&state, &headers, &pand).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let p = pand.clone();
+    measure_facade(
+        &state,
+        pand,
+        access.username,
+        move |site| {
+            crate::pipeline::mapillary::recheck(site, &p, (q.lat, q.lng), &|l| {
+                tracing::info!(pand = %p, "{l}");
+            })
+        },
+        "No street photograph shows enough of this building",
+    )
+    .await
+}
+
+/// Measure a building's facade from a photograph the caller took of it. The
+/// photograph is read and dropped.
+async fn photo_facade(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    Query(q): Query<FacadeQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    let access = match building_access(&state, &headers, &pand).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let p = pand.clone();
+    let hint = crate::pipeline::street_photo::Hint {
+        lat: q.at_lat,
+        lng: q.at_lng,
+        accuracy_m: q.accuracy,
+        heading: q.heading,
+    };
+    measure_facade(
+        &state,
+        pand,
+        access.username,
+        move |site| {
+            // Beside Mapillary's photographs of it where this host may ask:
+            // one photograph's light is one afternoon's.
+            let m = crate::pipeline::street_photo::measure_photos(
+                site,
+                &p,
+                (q.lat, q.lng),
+                Some((&body, hint)),
+                crate::pipeline::mapillary::available(),
+                &|l| tracing::info!(pand = %p, "{l}"),
+            )?;
+            Ok((m.facade, m.cell))
+        },
+        "The building could not be found in that photo, or too little of its wall shows",
+    )
+    .await
+}
+
+/// Take a building's facade correction out (operators who may replace
+/// buildings): it goes back to the city model's measurement.
+async fn delete_facade(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(pand): Path<String>,
+    Query(near): Query<Near>,
+) -> Response {
+    let who = match override_operator(&state, &headers).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let (Some(lat), Some(lng)) = (near.lat, near.lng) else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Say where the building is: lat and lng",
+        );
+    };
+    let edits = state.facade_edits.clone();
+    let site = state.out_root.clone();
+    let p = pand.clone();
+    let by = who.username.clone();
+    let done = blocking(move || {
+        let (_, cell) = crate::pipeline::street_photo::target(&site, &p, (lat, lng))?;
+        edits.remove(cell, &p, &by).map_err(|e| e.to_string())
+    })
+    .await;
+    match done {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => fail(
+            StatusCode::NOT_FOUND,
+            "That building's facade has no correction",
+        ),
+        Err(e) => fail(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
 async fn override_operator(state: &ApiState, headers: &HeaderMap) -> Result<Principal, Response> {
     let who = state.auth.admin(headers).await.ok_or_else(|| {
         fail(
@@ -668,6 +849,10 @@ mod tests {
             runner: Runner::new(&site, registry),
             out_root: site.clone(),
             designs: Arc::new(crate::designs::Designs::new(
+                &dir.path().join("data"),
+                &site,
+            )),
+            facade_edits: Arc::new(crate::facade_edits::FacadeEdits::new(
                 &dir.path().join("data"),
                 &site,
             )),

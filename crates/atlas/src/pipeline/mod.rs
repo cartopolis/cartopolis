@@ -28,6 +28,7 @@ pub mod buildings;
 pub mod bv3d;
 pub mod contamination;
 pub mod dikes;
+pub mod facades;
 pub mod galaxies;
 pub mod gardens;
 pub mod gasfield;
@@ -37,12 +38,15 @@ pub mod ground;
 pub mod http;
 pub mod lod22;
 pub mod lower_quay;
+pub mod mapillary;
+pub mod model_roofs;
 pub mod models;
 pub mod pipelines;
 pub mod rd;
 pub mod registers;
 pub mod roofs;
 pub mod sewers;
+pub mod street_photo;
 pub mod tall;
 pub mod terrain;
 pub mod terrain_grade;
@@ -552,6 +556,18 @@ pub const DATASETS: &[Dataset] = &[
         coverage: "roofs/coverage.json",
         typical_minutes: 10,
         run: roofs::run,
+    },
+    Dataset {
+        id: "facades",
+        label: "Facade colours (Groningen 3D model)",
+        description: "What each building's walls are made of — brick, render or panels — and \
+                      what colour they are, measured from the textured 3D city model the \
+                      gemeente Groningen publishes (3dgroningen.nl). Only Groningen has one. \
+                      Reads the LoD2.2 cells, so it runs after them; fetches ~8 GB for the \
+                      whole municipality and keeps none of it.",
+        coverage: "facades/coverage.json",
+        typical_minutes: 120,
+        run: facades::run,
     },
     Dataset {
         id: "bag",
