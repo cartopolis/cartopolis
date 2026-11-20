@@ -60,10 +60,10 @@ pub use gui::{
     access_tokens, action_ring, admin, app_update, avatar_designer, bookmarks, bridges,
     building_card, calendar, call_screen, camera_screen, chat, chat_overlay, chat_people, chats,
     communities, community_posts, contacts, cosmos, data_layers, design_room, dismiss, dock,
-    egui_manager, external_signin, faces, floor_picker, hud, icons, js_highlight, layer_tiles,
-    layers_panel, login_screen, map_osd, model_library, motion, onscreen_keyboard, place_card,
-    place_names, place_pins, plans, scenario, script_editor, settings, splash, text_touch, theme,
-    ui, ui_theme, welcome, zoom_rail,
+    egui_manager, external_signin, facade_check, faces, floor_picker, hud, icons, js_highlight,
+    layer_tiles, layers_panel, login_screen, map_osd, model_library, motion, onscreen_keyboard,
+    place_card, place_names, place_pins, plans, scenario, script_editor, settings, splash,
+    text_touch, theme, ui, ui_theme, welcome, zoom_rail,
 };
 pub use map::prim_hand;
 pub use map::prim_sound;
@@ -73,15 +73,15 @@ pub use map::prim_video;
 pub use map::{
     aerial, atmosphere_patch, building_designs, building_facts, building_fade, building_select,
     building_windows, cache_reset, cell_ring, coverage, crops, crossings, cutaway, dikes,
-    drawn_ground, globe, globe_ocean, globe_weather, grass, ground_detail, ground_probe, height,
-    interiors, kerb_shadows, label_atlas, lens_areas, light_shafts, load_control, load_timing,
-    lod22, lod22_facade, lod3, map_geometry, map_stream, mesh_format, model_assets, municipal,
-    nav_marks, osm_buildings, particles, placeholder_models, render_features, render_scale,
-    rendering, road_depth, roof_colours, satellites, scaffolding, sewers, sky, sky_bake, sky_dome,
-    stream_ledger, stream_watch, street_detail, street_furniture, street_labels, sun_cascades,
-    sun_rays, surveyed, tall_structures, terrain, terrain_tiles, tile_loader, tile_source,
-    tree_models, tunnels, underground, vegetation, water, water_levels, weather, wet_surfaces,
-    world_places,
+    drawn_ground, facade_colours, globe, globe_ocean, globe_weather, grass, ground_detail,
+    ground_probe, height, interiors, kerb_shadows, label_atlas, lens_areas, light_shafts,
+    load_control, load_timing, lod22, lod22_facade, lod3, map_geometry, map_stream, mesh_format,
+    model_assets, municipal, nav_marks, osm_buildings, particles, placeholder_models,
+    render_features, render_scale, rendering, road_depth, roof_colours, satellites, scaffolding,
+    sewers, sky, sky_bake, sky_dome, stream_ledger, stream_watch, street_detail, street_furniture,
+    street_labels, sun_cascades, sun_rays, surveyed, tall_structures, terrain, terrain_tiles,
+    tile_loader, tile_source, tree_models, tunnels, underground, vegetation, water, water_levels,
+    weather, wet_surfaces, world_places,
 };
 pub use nav::{
     crowd, crowd_react, crows, driver, geo_nav, give_way, gnss_receiver, locate, meetup,

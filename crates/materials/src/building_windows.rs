@@ -271,6 +271,11 @@ impl MaterialExtension for BuildingWindows {
         if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
             wanted.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
         }
+        // A wall's measured window lattice, on a cell the city model measured
+        // (`MeshData::with_windows`); bevy sets `VERTEX_UVS_B` for it.
+        if layout.0.contains(Mesh::ATTRIBUTE_UV_1) {
+            wanted.push(Mesh::ATTRIBUTE_UV_1.at_shader_location(3));
+        }
         wanted.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
         wanted.push(ATTRIBUTE_FACADE_CODE.at_shader_location(FACADE_SHADER_LOCATION));
         let vertex = layout.0.get_layout(&wanted)?;

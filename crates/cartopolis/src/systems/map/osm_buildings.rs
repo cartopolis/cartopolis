@@ -2388,11 +2388,17 @@ pub(crate) struct MeshData {
     /// Per-vertex copy of [`Self::ground_y`] on a facade-coded buffer, packed
     /// into the bytes that layout leaves spare ([`pack_ground`]).
     grounds: Option<Vec<f32>>,
+    /// Per-vertex UV1 when built with [`MeshData::with_windows`]: a wall's
+    /// measured window lattice (`building_windows::WallFace::windows`).
+    uvs_b: Option<Vec<[f32; 2]>>,
+    /// The UV1 of every vertex pushed from now on — see
+    /// [`MeshData::set_windows`].
+    windows: [f32; 2],
 }
 
-/// A vertex's position, flat normal, colour, UV and building base, as raw bit
-/// patterns.
-type VertexKey = [u32; 13];
+/// A vertex's position, flat normal, colour, UV, building base and window
+/// lattice, as raw bit patterns.
+type VertexKey = [u32; 15];
 
 /// Hasher for [`VertexKey`], replacing the default `HashMap`'s SipHash-1-3.
 ///
@@ -2509,6 +2515,22 @@ impl MeshData {
         self
     }
 
+    /// Also carry a UV1 per vertex: the measured window lattice of the wall it
+    /// is on (`building_windows::WallFace::windows`), `[0, 0]` where none was
+    /// measured. Eight bytes a vertex, so `lod22` asks for it only on a cell
+    /// the city model measured windows in.
+    pub(crate) fn with_windows(mut self) -> Self {
+        self.uvs_b = Some(Vec::new());
+        self
+    }
+
+    /// The UV1 every vertex pushed from now on carries — a wall's lattice
+    /// before its triangles, `[0, 0]` after. Nothing on a buffer built without
+    /// [`MeshData::with_windows`].
+    pub(crate) fn set_windows(&mut self, windows: [f32; 2]) {
+        self.windows = windows;
+    }
+
     /// Record `ground` as the base of every vertex pushed from now on, without
     /// moving any — `lod22`'s positions already stand on it.
     ///
@@ -2566,6 +2588,8 @@ impl MeshData {
                 // Two buildings on different ground can meet at a corner of the
                 // same height; that corner is two vertices, one per base.
                 self.ground_y.to_bits(),
+                self.windows[0].to_bits(),
+                self.windows[1].to_bits(),
             ]
         });
         if let (Some(k), Some(map)) = (&key, &self.dedup) {
@@ -2589,6 +2613,9 @@ impl MeshData {
         }
         if let Some(grounds) = &mut self.grounds {
             grounds.push(self.ground_y);
+        }
+        if let Some(uvs_b) = &mut self.uvs_b {
+            uvs_b.push(self.windows);
         }
         if let (Some(k), Some(map)) = (key, &mut self.dedup) {
             map.insert(k, idx);
@@ -2773,6 +2800,7 @@ impl MeshData {
             &self.normals,
             &self.colors,
             self.uvs,
+            self.uvs_b,
             self.bases,
             self.grounds,
             self.indices,
@@ -2791,6 +2819,7 @@ impl MeshData {
         12 + mesh_format::COMPACT_NORMAL_BYTES
             + color
             + if self.uvs.is_some() { 8 } else { 0 }
+            + if self.uvs_b.is_some() { 8 } else { 0 }
             + if self.bases.is_some() { 4 } else { 0 }
     }
 
@@ -2858,6 +2887,7 @@ impl MeshData {
             let mut normals = Vec::new();
             let mut colors = Vec::new();
             let mut uvs = self.uvs.as_ref().map(|_| Vec::new());
+            let mut uvs_b = self.uvs_b.as_ref().map(|_| Vec::new());
             let mut bases = self.bases.as_ref().map(|_| Vec::new());
             let mut grounds = self.grounds.as_ref().map(|_| Vec::new());
             let mut indices = Vec::with_capacity(triangles.len());
@@ -2869,6 +2899,9 @@ impl MeshData {
                     normals.push(self.normals[old as usize]);
                     colors.push(self.colors[old as usize]);
                     if let (Some(out), Some(src)) = (&mut uvs, &self.uvs) {
+                        out.push(src[old as usize]);
+                    }
+                    if let (Some(out), Some(src)) = (&mut uvs_b, &self.uvs_b) {
                         out.push(src[old as usize]);
                     }
                     if let (Some(out), Some(src)) = (&mut bases, &self.bases) {
@@ -2885,6 +2918,7 @@ impl MeshData {
                 &normals,
                 &colors,
                 uvs,
+                uvs_b,
                 bases,
                 grounds,
                 indices,
@@ -2930,6 +2964,7 @@ fn finish_mesh(
     normals: &[[f32; 3]],
     colors: &[[f32; 4]],
     uvs: Option<Vec<[f32; 2]>>,
+    uvs_b: Option<Vec<[f32; 2]>>,
     bases: Option<Vec<f32>>,
     grounds: Option<Vec<f32>>,
     indices: Vec<u32>,
@@ -2970,6 +3005,9 @@ fn finish_mesh(
     }
     if let Some(uvs) = uvs {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    }
+    if let Some(uvs_b) = uvs_b {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uvs_b);
     }
     if let Some(bases) = bases {
         mesh.insert_attribute(

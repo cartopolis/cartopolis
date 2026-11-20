@@ -46,9 +46,10 @@ use cartopolis_materials::building_windows::{BLOCK_M, BLOCK_PERIOD, WINDOW_LATTI
 /// the rest beside it, exactly:
 ///
 /// `alpha = occupancy + 4 × code`, occupancy quantised to sixteenths in [0, 4),
-/// and `code = shop | era << 1 | eave << 4`, eave in 20 cm steps (0 = unknown,
-/// up to 102 m). The largest alpha is 2¹⁵, and a sixteenth of that is still
-/// exact in an `f32`'s 24 bits. **Code 0 is "nothing known"**, and `1.0` —
+/// and `code = shop | era << 1 | eave << 4 | material << 13`, eave in 20 cm steps
+/// (0 = unknown, up to 102 m) and material two bits (0 = unmeasured). The
+/// largest alpha is 2¹⁷, and a sixteenth of that is still exact in an `f32`'s
+/// 24 bits. **Code 0 is "nothing known"**, and `1.0` —
 /// what every building off the BAG, and the OSM lane, has always carried —
 /// decodes to occupancy 1 and code 0, which is exactly the old look.
 ///
@@ -72,6 +73,56 @@ pub struct Facade {
     pub eave_m: Option<f32>,
     /// Whether anybody is looking after it ([`condition`]).
     pub condition: Condition,
+    /// What atlas measured its walls to be made of ([`wall_material`]), 0 when
+    /// nothing was measured and the shader reads the material off the colour.
+    pub material: u8,
+}
+
+/// The shader's code for a measured roof covering
+/// (`building_windows.wesl::ROOF_*`), 0 for "not measured".
+#[must_use]
+pub fn roof_covering(k: cartopolis_geo::formats::facades::Covering) -> u8 {
+    use cartopolis_geo::formats::facades::Covering as C;
+    match k {
+        C::Unknown => 0,
+        C::Pantile => 1,
+        C::Glazed => 2,
+        C::Concrete => 3,
+        C::Slate => 4,
+        C::Metal => 5,
+        C::Solar => 6,
+        C::Bitumen => 7,
+        C::Gravel => 8,
+        C::Light => 9,
+        C::Green => 10,
+    }
+}
+
+/// A roof vertex's alpha: the building's night occupancy and condition as
+/// [`pack_facade`] packs them, and in the code's top bits the face's covering
+/// ([`roof_covering`]) — where a wall's vertices carry their eaves and
+/// material, which a roof has no use for. Kept apart from the walls' code, so
+/// the shader reading a covering off a roof never reads a wall's material.
+#[must_use]
+pub fn pack_roof(f: Facade, covering: u8) -> f32 {
+    let base = pack_facade(Facade {
+        occupancy: f.occupancy,
+        condition: f.condition,
+        ..Default::default()
+    });
+    base + 4.0 * (u32::from(covering.min(15)) << 13) as f32
+}
+
+/// The shader's code for a measured wall material: 1 brick, 2 render, 3 panel
+/// (`building_windows.wesl::wall_material`).
+#[must_use]
+pub fn wall_material(m: cartopolis_geo::formats::facades::Material) -> u8 {
+    use cartopolis_geo::formats::facades::Material as M;
+    match m {
+        M::Brick => 1,
+        M::Render => 2,
+        M::Panel => 3,
+    }
 }
 
 /// What the register says about a building's upkeep, as the facade shows it.
@@ -131,7 +182,10 @@ pub fn pack_facade(f: Facade) -> f32 {
     let eave = f.eave_m.map_or(0, |e| {
         ((e / EAVE_STEP_M).round().max(1.0) as u32).min(EAVE_MAX_STEPS)
     });
-    let code = u32::from(f.shop) | (u32::from(f.era.min(7)) << 1) | (eave << 4);
+    let code = u32::from(f.shop)
+        | (u32::from(f.era.min(7)) << 1)
+        | (eave << 4)
+        | (u32::from(f.material.min(3)) << 13);
     occupancy + 4.0 * code as f32
 }
 
@@ -141,7 +195,7 @@ fn unpack_facade(a: f32) -> Facade {
     let code = ((a + 1.0 / 32.0) / 4.0).floor();
     let raw = (a - 4.0 * code).max(0.0);
     let code = code as u32;
-    let eave = code >> 4;
+    let eave = (code >> 4) & 511;
     let (occupancy, condition) = if raw > 3.25 {
         (0.0, Condition::Condemned)
     } else if raw > 2.75 {
@@ -155,6 +209,7 @@ fn unpack_facade(a: f32) -> Facade {
         era: ((code >> 1) & 7) as u8,
         eave_m: (eave > 0).then(|| eave as f32 * EAVE_STEP_M),
         condition,
+        material: ((code >> 13) & 3) as u8,
     }
 }
 
@@ -196,16 +251,72 @@ pub struct WallFace {
     /// Where along the face its door stands, snapped to [`DOOR_STEP_M`].
     pub door: Option<f32>,
     bay: f32,
+    /// Metres the window lattice is slid along the face, so its columns
+    /// stand where the measured ones do ([`WallFace::measure`]).
+    shift: f32,
+    /// The measured lattice's pane and storey, packed for the shader's UV1;
+    /// `[0, 0]` where none was measured.
+    windows: [f32; 2],
 }
 
 impl WallFace {
+    /// Lay the face's windows on a lattice measured from the city model
+    /// (`formats::facades::Windows`): `a` and `b` its ends in this face's
+    /// frame (world XZ), the rest as measured. `false` — and nothing changed —
+    /// when the measured wall is not this face: turned more than 15° from it,
+    /// more than 1.5 m off its plane, or beside it rather than on it.
+    pub fn measure(
+        &mut self,
+        a: Vec2,
+        b: Vec2,
+        w: &cartopolis_geo::formats::facades::Windows,
+    ) -> bool {
+        let t = self.tangent();
+        let dir = (b - a).normalize_or_zero();
+        if dir.dot(t).abs() < 15f32.to_radians().cos() {
+            return false;
+        }
+        let mid = (a + b) * 0.5;
+        if (self.outward.dot(mid) - self.d).abs() > 1.5 {
+            return false;
+        }
+        let (ua, ub) = (t.dot(a) - self.u0, t.dot(b) - self.u0);
+        if ua.max(ub) < 0.0 || ua.min(ub) > self.len {
+            return false;
+        }
+        if !(0.6..=5.1).contains(&w.bay) {
+            return false;
+        }
+        // The first column's centre in this face's own along-coordinate: `x0`
+        // from `a`, whichever way along the face `a` lies.
+        let first = if ub >= ua { ua + w.x0 } else { ua - w.x0 };
+        self.bay = w.bay;
+        // The shader centres a window at (k + ½)·bay; slide so one is at `first`.
+        self.shift = (first - 0.5 * w.bay).rem_euclid(w.bay);
+        let cm = |v: f32, max: u32| ((v * 100.0).round().max(0.0) as u32).min(max);
+        self.windows = [
+            (cm(w.w, 511) + 512 * cm(w.h, 511)) as f32,
+            (cm(w.st, 511) + 512 * cm(w.z0, 2047) + 1_048_576 * u32::from(w.n.min(15))) as f32,
+        ];
+        true
+    }
+
+    /// The UV1 its vertices carry: its measured window lattice, packed as
+    /// `building_windows.wesl` reads it — `[w_cm + 512·h_cm, storey_cm +
+    /// 512·z0_cm + 2²⁰·rows]` — or `[0, 0]`. Under 2²⁴, so exact in the
+    /// float it travels as.
+    #[must_use]
+    pub fn windows(&self) -> [f32; 2] {
+        self.windows
+    }
     #[must_use]
     pub fn tangent(&self) -> Vec2 {
         Vec2::new(-self.outward.y, self.outward.x)
     }
 
-    /// The UV0 its vertices carry: `x` metres along the face from its start,
-    /// `y` the packed layout (see [`WallFaces`]).
+    /// The UV0 its vertices carry: `x` metres along the face from its start
+    /// (less a measured lattice's [`shift`](Self::measure)), `y` the packed
+    /// layout (see [`WallFaces`]).
     #[must_use]
     pub fn uv(&self, p: Vec2) -> [f32; 2] {
         let bay_cm = if self.len < MIN_WINDOWED_M {
@@ -213,11 +324,15 @@ impl WallFace {
         } else {
             ((self.bay * 100.0).round() as u32).clamp(2, 511)
         };
+        // In the same slid coordinate as the windows, so the shader keeps
+        // them clear of it; a door the slide puts before the start keeps none.
         let door = self
             .door
+            .map(|u| u - self.shift)
+            .filter(|&u| u > 0.0)
             .map_or(0, |u| ((u / DOOR_STEP_M).round() as u32).clamp(1, 2047));
         [
-            self.tangent().dot(p) - self.u0,
+            self.tangent().dot(p) - self.u0 - self.shift,
             (bay_cm + 512 * door) as f32,
         ]
     }
@@ -291,6 +406,8 @@ impl WallFaces {
                     high: f32::MIN,
                     door: None,
                     bay: bay_target,
+                    shift: 0.0,
+                    windows: [0.0, 0.0],
                 });
                 (faces.len() - 1) as u32
             });
@@ -461,6 +578,53 @@ mod tests {
         }
     }
 
+    /// The box's long wall on z = 0, measured with windows 2.4 m apart whose
+    /// first column stands 1.0 m from one end: its lattice moves there, and
+    /// the wall beside it, turned 90°, is not that wall.
+    #[test]
+    fn a_measured_lattice_lands_on_its_own_face() {
+        let (pts, tris) = box_building();
+        let mut walls = WallFaces::new(&pts, &tris, 1);
+        let w = cartopolis_geo::formats::facades::Windows {
+            a: (0.0, 0.0),
+            b: (0.0, 0.0),
+            bay: 2.4,
+            h: 1.6,
+            n: 3,
+            st: 3.1,
+            w: 1.1,
+            x0: 1.0,
+            z0: 4.2,
+        };
+        let (a, b) = (Vec2::new(0.0, 0.2), Vec2::new(10.0, 0.2));
+        let i = walls
+            .faces
+            .iter()
+            .position(|f| f.len == 10.0 && f.d.abs() < 0.01)
+            .unwrap();
+        let side = walls.faces.iter().position(|f| f.len == 6.0).unwrap();
+        assert!(!walls.faces[side].clone().measure(a, b, &w));
+        let face = &mut walls.faces[i];
+        assert!(face.measure(a, b, &w));
+        // A window's centre, (k + ½)·bay in the slid coordinate, lands on the
+        // first column wherever along the face `a` lies.
+        let at_first = face.tangent().dot(a + (b - a).normalize() * 1.0);
+        let along = at_first - face.u0 - face.shift;
+        let k = along / face.bay - 0.5;
+        assert!(
+            (k - k.round()).abs() < 1e-3,
+            "{along} on a {} m bay",
+            face.bay
+        );
+        // The shader's decode of the packed lattice.
+        let [x, y] = face.windows();
+        let (x, y) = (x as u32, y as u32);
+        assert_eq!(
+            (x % 512, x / 512, y % 512, (y / 512) % 2048, y / 1_048_576),
+            (110, 160, 310, 420, 3)
+        );
+    }
+
     #[test]
     fn a_door_lands_on_its_wall_clear_of_the_corner_and_on_the_step() {
         let (pts, tris) = box_building();
@@ -515,12 +679,16 @@ mod tests {
                     era: 4,
                     eave_m: Some(102.2),
                     condition,
+                    // The largest code there is: every bit of it set.
+                    material: 3,
                 };
                 let a = super::pack_facade(f);
                 for wobble in [-0.02, 0.0, 0.02] {
                     let back = super::unpack_facade(a + wobble);
                     assert_eq!(back.condition, condition, "{f:?} at {wobble}");
                     assert_eq!((back.shop, back.era), (true, 4), "{f:?} at {wobble}");
+                    assert_eq!(back.material, 3, "{f:?} at {wobble}");
+                    assert!((back.eave_m.unwrap() - 102.2).abs() <= 0.1, "{back:?}");
                     if condition == Condition::Kept {
                         assert!((back.occupancy - occupancy).abs() < 0.05, "{back:?}");
                     } else {
@@ -543,6 +711,38 @@ mod tests {
     }
 
     #[test]
+    fn a_roof_carries_its_covering_and_never_the_walls_material() {
+        let f = super::Facade {
+            occupancy: 1.25,
+            shop: true,
+            era: 4,
+            eave_m: Some(102.2),
+            condition: super::Condition::Kept,
+            material: 3,
+        };
+        for covering in 0..=10u8 {
+            let a = super::pack_roof(f, covering);
+            for wobble in [-0.02, 0.0, 0.02] {
+                let code = ((a + wobble + 1.0 / 32.0) / 4.0).floor() as u32;
+                assert_eq!(
+                    (code >> 13) & 15,
+                    u32::from(covering),
+                    "{covering} at {wobble}"
+                );
+                let back = super::unpack_facade(a + wobble);
+                assert!((back.occupancy - 1.25).abs() < 0.05, "{back:?}");
+                assert_eq!(
+                    back.material & 1,
+                    covering & 1,
+                    "bits 13–14 are the covering's"
+                );
+            }
+        }
+        // Unmeasured is exactly the facade's own occupancy and condition.
+        assert_eq!(super::unpack_facade(super::pack_roof(f, 0)).eave_m, None);
+    }
+
+    #[test]
     fn a_facade_survives_the_alpha_channel() {
         for f in [
             super::Facade {
@@ -551,6 +751,7 @@ mod tests {
                 era: 1,
                 eave_m: Some(9.4),
                 condition: super::Condition::Kept,
+                material: 1,
             },
             super::Facade {
                 occupancy: 0.25,
@@ -558,6 +759,15 @@ mod tests {
                 era: 4,
                 eave_m: Some(102.2),
                 condition: super::Condition::Kept,
+                material: 0,
+            },
+            super::Facade {
+                occupancy: 0.5,
+                shop: false,
+                era: 2,
+                eave_m: Some(12.0),
+                condition: super::Condition::Kept,
+                material: 2,
             },
         ] {
             let back = super::unpack_facade(super::pack_facade(f));
@@ -566,6 +776,7 @@ mod tests {
                 "{back:?}"
             );
             assert_eq!((back.shop, back.era), (f.shop, f.era));
+            assert_eq!(back.material, f.material);
             assert!(
                 (back.eave_m.unwrap() - f.eave_m.unwrap()).abs() <= 0.1,
                 "{back:?}"

@@ -724,7 +724,7 @@ pub struct Lod22Buildings {
     /// generated look and have to be rebuilt once the answer arrives. With the
     /// copy kept from the last launch answering first, that is only when the
     /// network disagrees with it.
-    bag_revision: (u32, u32, u32),
+    bag_revision: (u32, u32, u32, u32),
     /// Per-cell BAG join tally ([`DatedCount`]), summed for `--dump-state`.
     dated: HashMap<(i64, i64), DatedCount>,
     /// Per-cell tally of doors drawn ([`DoorCount`]).
@@ -902,7 +902,7 @@ impl Default for Lod22Buildings {
             cutaway_prewarm: None,
             enabled_was: true,
             terrain_revision: 0,
-            bag_revision: (0, 0, 0),
+            bag_revision: (0, 0, 0, 0),
             partial: None,
             live: HashMap::new(),
             retained: crate::platform::warm::WarmStore::new(crate::quality::warm_gpu_ceiling()),
@@ -1041,13 +1041,15 @@ fn cell_box(clat: f64, clng: f64, zoom: u32, c: (i64, i64)) -> (Vec2, Vec2) {
     )
 }
 
-/// What a cell's buildings depend on from the two trees that change while the
-/// app runs: the building designs around it and the building models filed in
-/// it (`lod3::cell_stamp`, `docs/notes/building-models.md`). A cell built under
-/// a different value is stale.
+/// What a cell's buildings depend on from the trees that change while the app
+/// runs: the building designs around it, the building models filed in it
+/// (`lod3::cell_stamp`, `docs/notes/building-models.md`) and the facade
+/// corrections around it (`facade_colours::edits_stamp`). A cell built under a
+/// different value is stale.
 fn live_rev(cx: i64, cy: i64) -> u64 {
     crate::systems::building_designs::neighbourhood_revision(cx, cy)
         ^ crate::systems::lod3::cell_stamp(cx, cy).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ crate::systems::facade_colours::edits_stamp(cx, cy).rotate_left(29)
 }
 
 /// Retire one live cell so that it is built again: its detail was promoted, or
@@ -1115,14 +1117,17 @@ fn retear_stale_cells(
     crate::systems::lod3::prefetch_coverage(now);
     crate::systems::building_designs::poll(now);
     crate::systems::roof_colours::prefetch_coverage(now);
+    crate::systems::facade_colours::prefetch_coverage(now);
+    crate::systems::facade_colours::poll_edits(now);
     // The additive manifests are folded in the same way and for the same reason:
-    // the BAG and the roofs decide a building's colours, lod3 decides whether it
-    // is drawn from a shell or from a model, and a cell built before one landed
-    // has none of what it says.
+    // the BAG, the roofs and the facades decide a building's colours, lod3
+    // decides whether it is drawn from a shell or from a model, and a cell built
+    // before one landed has none of what it says.
     let bag_revision = (
         crate::systems::building_facts::coverage_revision(),
         crate::systems::lod3::coverage_revision(),
         crate::systems::roof_colours::coverage_revision(),
+        crate::systems::facade_colours::coverage_revision(),
     );
     let reanchored = lod.stream.sync(stream.anchor_generation);
     // **A new field alone rebuilds only the cells built on an older one**, as the
@@ -1189,7 +1194,8 @@ fn retear_stale_cells(
     // below is for causes that move every building at once. Asked only when one
     // of the two published manifests moves, which is rare ([`live_rev`]).
     let design_manifest = crate::systems::building_designs::manifest_revision()
-        .wrapping_add(crate::systems::lod3::manifest_revision() << 32);
+        .wrapping_add(crate::systems::lod3::manifest_revision() << 32)
+        .wrapping_add(crate::systems::facade_colours::edits_revision() << 48);
     if !reanchored && lod.design_manifest_seen != design_manifest {
         lod.design_manifest_seen = design_manifest;
         let stale: Vec<(i64, i64)> = lod
@@ -1613,6 +1619,9 @@ fn dispatch_jobs(
                 let designs_task = io.spawn(crate::systems::building_designs::load_around(cx, cy));
                 // …the roof colours measured from the aerial photo, likewise baked.
                 let roofs_task = io.spawn(crate::systems::roof_colours::load_roof_cell(cx, cy));
+                // …the wall colours measured from the city model, likewise.
+                let facades_task =
+                    io.spawn(crate::systems::facade_colours::load_facade_cell(cx, cy));
                 // …and the imported models for the same cell, on the same terms.
                 let lod3_task = io.spawn(crate::systems::lod3::load_lod3_text(cx, cy));
                 let body = match fetch_lod22_body(cx, cy).await {
@@ -1625,6 +1634,7 @@ fn dispatch_jobs(
                         facts_task.detach();
                         designs_task.detach();
                         roofs_task.detach();
+                        facades_task.detach();
                         lod3_task.detach();
                         if let Ok(mut g) = results.lock() {
                             g.push(((cx, cy), (Err(e), 0)));
@@ -1636,6 +1646,7 @@ fn dispatch_jobs(
                 let facts =
                     crate::systems::building_designs::with_design_doors(facts_task.await, &designs);
                 let roofs = roofs_task.await;
+                let facades = facades_task.await;
                 let lod3 = lod3_task.await;
                 // The ground last, after every fetch.
                 if let Some(rx) = ground_later {
@@ -1680,6 +1691,7 @@ fn dispatch_jobs(
                             &ground,
                             &facts,
                             &roofs,
+                            &facades,
                             lod3.as_deref(),
                             detail,
                             streets.as_deref(),
@@ -2020,6 +2032,7 @@ fn build_lod22_from_body(
     ground: &crate::systems::terrain::TerrainSnapshot,
     facts: &crate::systems::building_facts::BagCell,
     roofs: &cartopolis_geo::formats::roofs::Cell,
+    facades: &cartopolis_geo::formats::facades::Cell,
     lod3_text: Option<&str>,
     detail: load_control::Detail,
     streets: Option<&cartopolis_geo::vector_tiles::TileData>,
@@ -2070,6 +2083,10 @@ fn build_lod22_from_body(
     // a dense cell ballooned to three unshared vertices per triangle (~720k for a
     // ~240k-triangle cell) behind a useless identity index buffer.
     let mut buf = MeshData::with_dedup().with_uvs().with_facade_code();
+    // Eight bytes a vertex more, only where the city model measured windows.
+    if !facades.windows.is_empty() {
+        buf = buf.with_windows();
+    }
     // Imported models mesh into their own buffer: they are drawn with culling off
     // (see [`Piece`]) and so cannot share a mesh with the shells.
     // UV0 carries `building_windows::WINDOWLESS_UV` on every vertex: a model's
@@ -2186,39 +2203,90 @@ fn build_lod22_from_body(
             fact.and_then(|f| f.material.as_deref()),
             fact.and_then(|f| f.colour.as_deref()),
         );
-        let lit = crate::systems::building_windows::pack_facade(
-            crate::systems::building_windows::Facade {
-                // A building with work going on at it is mostly empty after
-                // dark, whatever it is for.
-                occupancy: crate::systems::osm_buildings::night_lit_scale(
-                    fact.map_or(0, |f| f.uses),
-                    fact.map_or(0, |f| f.units),
-                ) * if works { 0.4 } else { 1.0 },
-                shop: fact
-                    .is_some_and(|f| f.uses & crate::systems::building_facts::uses::SHOP != 0),
-                era: crate::systems::building_windows::era(fact.and_then(|f| f.year)),
-                eave_m,
-                condition: fact.map_or(crate::systems::building_windows::Condition::Kept, |f| {
-                    crate::systems::building_windows::condition(f.status)
-                }),
-            },
-        );
+        // …and what the city model's photographs show wins over every guess:
+        // the colour of the wall, and what it is made of, for the shader to
+        // draw in place of reading it off the colour.
+        let walled = (!b.id.is_empty())
+            .then(|| facades.facades.get(&b.id))
+            .flatten();
+        let wall = walled.map_or(wall, |f| {
+            let l = crate::systems::roof_colours::linear(f.c, 1.0);
+            [l[0], l[1], l[2]]
+        });
+        let facade = crate::systems::building_windows::Facade {
+            // A building with work going on at it is mostly empty after
+            // dark, whatever it is for.
+            occupancy: crate::systems::osm_buildings::night_lit_scale(
+                fact.map_or(0, |f| f.uses),
+                fact.map_or(0, |f| f.units),
+            ) * if works { 0.4 } else { 1.0 },
+            shop: fact.is_some_and(|f| f.uses & crate::systems::building_facts::uses::SHOP != 0),
+            era: crate::systems::building_windows::era(fact.and_then(|f| f.year)),
+            eave_m,
+            condition: fact.map_or(crate::systems::building_windows::Condition::Kept, |f| {
+                crate::systems::building_windows::condition(f.status)
+            }),
+            material: walled.map_or(0, |f| crate::systems::building_windows::wall_material(f.m)),
+        };
+        let lit = crate::systems::building_windows::pack_facade(facade);
+        // A roof's vertices carry the occupancy and, where measured, the
+        // face's covering — never the walls' material (`pack_roof`).
+        let roof_code =
+            |covering: u8| crate::systems::building_windows::pack_roof(facade, covering);
+        let unmeasured = roof_code(0);
         let wall = [wall[0], wall[1], wall[2], lit];
-        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], lit];
+        let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], unmeasured];
         // `FLAT_ROOF_COLOR` is authored in sRGB; vertex colours multiply in
         // linear space (same exit rule as `building_palette`).
         let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
-        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], lit];
+        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], unmeasured];
         // The roof's measured colours, where atlas has photographed it: its flat
         // planes and its pitched ones separately, each falling back to the
         // generated tone when that half could not be measured.
         let measured = (!b.id.is_empty()).then(|| roofs.roofs.get(&b.id)).flatten();
         let flat = measured.and_then(|r| r.f.as_ref()).map_or(flat, |s| {
-            crate::systems::roof_colours::vertex_colour(s, lit)
+            crate::systems::roof_colours::vertex_colour(s, unmeasured)
         });
         let roof_tile = measured.and_then(|r| r.p.as_ref()).map_or(roof_tile, |s| {
-            crate::systems::roof_colours::vertex_colour(s, lit)
+            crate::systems::roof_colours::vertex_colour(s, unmeasured)
         });
+        // …and over both, where the city model was read, each face's own
+        // colour and covering: the slope the panels are on, the slate side.
+        let modelled = (!b.id.is_empty() && facades.roofs.contains_key(&b.id)).then_some(&b.id);
+        let roof_face = |n: Vec3| -> Option<[f32; 4]> {
+            use cartopolis_geo::formats::facades::{sector, FLAT};
+            let pand = modelled?;
+            // Up, whichever way the triangle was wound; then its horizontal
+            // part points down the slope, the way the face faces.
+            let n = if n.y < 0.0 { -n } else { n };
+            // World +z runs south.
+            let d = if n.y.abs() > FLAT_ROOF_NORMAL_Y {
+                FLAT
+            } else {
+                sector(f64::from(n.x), f64::from(-n.z))
+            };
+            let face = facades.roof_face(pand, d)?;
+            let code = roof_code(crate::systems::building_windows::roof_covering(face.k));
+            // The colour from the vertical photograph where the roofs layer
+            // measured this half: it is taken out of the sun and the haze
+            // there, and the model's oblique sun side came out near white
+            // (2026-11-19). The model's own colour only where that has none —
+            // and for panels and sedum, which the roofs layer does not see.
+            use cartopolis_geo::formats::facades::Covering;
+            let ortho = measured.and_then(|r| {
+                if d == FLAT {
+                    r.f.as_ref()
+                } else {
+                    r.p.as_ref()
+                }
+            });
+            Some(match ortho {
+                Some(s) if !matches!(face.k, Covering::Solar | Covering::Green) => {
+                    crate::systems::roof_colours::vertex_colour(s, code)
+                }
+                _ => crate::systems::roof_colours::linear(face.c, code),
+            })
+        };
 
         // World-XZ position of each vertex (before the cell offset).
         let world_xz: Vec<Vec2> =
@@ -2278,6 +2346,23 @@ fn build_lod22_from_body(
                 .map(|(&(_, _, h), &w)| Vec3::new(w.x, h, w.y))
                 .collect();
         let mut faces = crate::systems::building_windows::WallFaces::new(&shell_pts, &b.t, era);
+        // Where the city model was read, the windows its photographs show, on
+        // the face of this shell each measured wall is.
+        if let Some(measured) = (!b.id.is_empty())
+            .then(|| facades.windows.get(&b.id))
+            .flatten()
+        {
+            for w in measured {
+                let a = lat_lng_to_local(w.a.0, w.a.1, ax, ay, z, tile_m);
+                let e = lat_lng_to_local(w.b.0, w.b.1, ax, ay, z, tile_m);
+                // The first face not yet measured that this wall is.
+                for face in &mut faces.faces {
+                    if face.windows() == [0.0, 0.0] && face.len > 2.0 && face.measure(a, e, w) {
+                        break;
+                    }
+                }
+            }
+        }
         let placed: Vec<(Option<usize>, Vec2)> = doors
             .iter()
             .filter_map(|&d| {
@@ -2470,11 +2555,11 @@ fn build_lod22_from_body(
             }
             if is_roof == 1 {
                 let n = (bb - a).cross(c - a).normalize_or_zero();
-                let color = if n.y.abs() > FLAT_ROOF_NORMAL_Y {
+                let color = roof_face(n).unwrap_or(if n.y.abs() > FLAT_ROOF_NORMAL_Y {
                     flat
                 } else {
                     roof_tile
-                };
+                });
                 buf.tri(a, bb, c, color);
                 continue;
             }
@@ -2503,6 +2588,7 @@ fn build_lod22_from_body(
             match faces.of_triangle.get(ti).copied().flatten() {
                 Some(fi) => {
                     let face = &faces.faces[fi as usize];
+                    buf.set_windows(face.windows());
                     buf.tri_graded_uv(
                         [a, bb, c],
                         [tone(a), tone(bb), tone(c)],
@@ -2512,6 +2598,7 @@ fn build_lod22_from_body(
                             face.uv(world_xz[k]),
                         ],
                     );
+                    buf.set_windows([0.0, 0.0]);
                 }
                 None => buf.tri_graded(a, bb, c, [tone(a), tone(bb), tone(c)]),
             }
@@ -3156,6 +3243,7 @@ mod tests {
             &crate::systems::terrain::TerrainSnapshot::default(),
             &crate::systems::building_facts::BagCell::default(),
             roofs,
+            &cartopolis_geo::formats::facades::Cell::default(),
             None,
             load_control::Detail::Near,
             None,

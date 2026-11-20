@@ -56,6 +56,9 @@ struct Vertex {
     @location(1) normal: vec3<f32>,
     @if(VERTEX_UVS_A)
     @location(2) uv: vec2<f32>,
+    // A wall's measured window lattice (`building_windows::WallFace::windows`).
+    @if(VERTEX_UVS_B)
+    @location(3) uv_b: vec2<f32>,
     // `Unorm8x4` when the facade code is split out (its alpha byte is then
     // unused), four floats on a mesh built the old way.
     @if(VERTEX_COLORS)
@@ -79,6 +82,8 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.position = position_world_to_clip(out.world_position.xyz);
     @if(VERTEX_UVS_A)
     out.uv = vertex.uv;
+    @if(VERTEX_UVS_B)
+    out.uv_b = vertex.uv_b;
     // A mesh built without the split (`specialize` found no facade attribute)
     // carries its code in the alpha as it always did.
     @if(VERTEX_COLORS && BUILDING_FACADE_CODE)

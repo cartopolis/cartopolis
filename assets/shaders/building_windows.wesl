@@ -192,6 +192,45 @@ const TILE_WIDTH_M: f32 = 0.22;
 const TILE_MEAN: f32 = 0.88;
 /// Width of one bitumen roll.
 const ROLL_M: f32 = 1.0;
+
+/// The roof coverings atlas measures from a city model
+/// (`building_windows::RoofCovering`; 0 is "not measured"). Those not named
+/// here are drawn as the unmeasured roof is.
+const ROOF_GLAZED: u32 = 2u;
+const ROOF_CONCRETE: u32 = 3u;
+const ROOF_SLATE: u32 = 4u;
+const ROOF_METAL: u32 = 5u;
+const ROOF_SOLAR: u32 = 6u;
+/// One slate's exposed width and course.
+const SLATE_M: vec2<f32> = vec2<f32>(0.25, 0.2);
+/// The slate pattern's mean, as `TILE_MEAN` is the tiles'.
+const SLATE_MEAN: f32 = 0.9;
+/// Standing seams this far apart.
+const SEAM_M: f32 = 0.5;
+/// One solar panel, across and down the slope. Both divide the floating
+/// origin's 10,000 m jump, so a flat roof's panels, laid along the world axes,
+/// do not shift with it.
+const SOLAR_PANEL_M: vec2<f32> = vec2<f32>(1.0, 1.6);
+const SOLAR_MEAN: f32 = 0.95;
+/// A panel's aluminium frame, linear.
+const SOLAR_FRAME: vec3<f32> = vec3<f32>(0.45, 0.47, 0.5);
+
+/// A field of solar panels at a point: (tone of the cells, how much frame).
+/// Along the slope on a pitched roof (`u`, `down`), along the world axes on a
+/// flat one, which records no direction for them.
+fn roof_panels(xz: vec2<f32>, ny: f32, u: f32, down: f32) -> vec2<f32> {
+    let p = select(vec2<f32>(u, down), xz, ny >= FLAT_ROOF_Y) / SOLAR_PANEL_M;
+    let f = fract(p);
+    let edge = min(
+        min(f.x, 1.0 - f.x) * SOLAR_PANEL_M.x,
+        min(f.y, 1.0 - f.y) * SOLAR_PANEL_M.y,
+    );
+    let frame = 1.0 - smoothstep(0.015, 0.03, edge);
+    // Six cells across and ten down, their joins a faint lighter grid.
+    let c = fract(f * vec2<f32>(6.0, 10.0));
+    let join = 1.0 - smoothstep(0.0, 0.05, min(min(c.x, 1.0 - c.x), min(c.y, 1.0 - c.y)));
+    return vec2<f32>(1.0 + 0.12 * join, frame);
+}
 /// The scale of a gravel ballast's grain, and of the weathering, repairs and
 /// ponding that make one flat roof blotchy at a distance. Both divide the
 /// floating origin's 10,000 m jump into a multiple of the 256 `hash_wrapped`
@@ -211,6 +250,8 @@ const PATCH_M: f32 = 4.8828125;
 
 /// A shop's ground floor, and the storey everything else is divided into.
 const SHOP_FLOOR_M: f32 = 4.2;
+/// The least wall a window keeps between its head and the eaves.
+const EAVE_CLEAR_M: f32 = 0.3;
 const STOREY_M: f32 = 3.0;
 /// With the eaves known, the ground floor's windows start at a real sill.
 const GROUND_SILL_M: f32 = 0.7;
@@ -247,10 +288,23 @@ fn pane_for_era(era: u32, fallback: vec2<f32>) -> vec2<f32> {
     }
 }
 
+/// What atlas measured this building's walls to be made of
+/// (`building_windows::Facade::material`): 0 unknown, 1 brick, 2 render, 3
+/// panel. Set once per fragment from the packed code, before any wall is drawn;
+/// private to the invocation, so it needs threading through nothing.
+var<private> wall_material: u32 = 0u;
+
 /// What a wall of colour `c` (linear) is made of, as (brick, concrete, render)
 /// weights summing to 1: brick where it is a saturated warm colour, concrete
-/// panels where it is a mid grey, render where it is pale.
+/// panels where it is a mid grey, render where it is pale — or, where atlas
+/// measured it ([`wall_material`]), what it measured, whatever the colour.
 fn wall_kinds(c: vec3<f32>) -> vec3<f32> {
+    switch wall_material {
+        case 1u: { return vec3<f32>(1.0, 0.0, 0.0); }
+        case 2u: { return vec3<f32>(0.0, 0.0, 1.0); }
+        case 3u: { return vec3<f32>(0.0, 1.0, 0.0); }
+        default: {}
+    }
     let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
     let hi = max(c.r, max(c.g, c.b));
     let sat = (hi - min(c.r, min(c.g, c.b))) / max(hi, 1e-4);
@@ -1142,8 +1196,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let neglected = neglect > 0.5;
     let occupancy_raw = select(occupancy_packed, 0.0, neglected);
     let code = u32(code_f);
-    let eave = f32(code >> 4u) * 0.2;
+    let eave = f32((code >> 4u) & 511u) * 0.2;
     let era = (code >> 1u) & 7u;
+    wall_material = (code >> 13u) & 3u;
     // A shop front needs a ground floor to stand in.
     let shop = (code & 1u) == 1u && eave > SHOP_FLOOR_M + 2.0;
 
@@ -1157,6 +1212,41 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let rest = select(eave, eave - SHOP_FLOOR_M, shop);
         storey_h = rest / max(1.0, round(rest / STOREY_M));
         ground_h = select(storey_h, SHOP_FLOOR_M, shop);
+    }
+    // The wall's measured window lattice, where the city model was read
+    // (`building_windows::WallFace::windows`): a pane's size, the storey and
+    // the height of the lowest row seen. Its storeys are laid so a row's
+    // centre is where that row was; the ground floor is what lies under the
+    // lowest of them, a storey or more as fits.
+    @if(VERTEX_UVS_B)
+    let win_b = in.uv_b;
+    @else
+    let win_b = vec2<f32>(0.0, 0.0);
+    let measured = win_b.x > 0.5;
+    var measured_pane = vec2<f32>(0.0, 0.0);
+    // The height above which no row was seen: a parapet, an attic, a sign.
+    var measured_top = 1.0e9;
+    if measured {
+        let wx = u32(round(win_b.x));
+        let wy = u32(round(win_b.y));
+        measured_pane = vec2<f32>(f32(wx % 512u), f32(wx / 512u)) / 100.0;
+        let st = f32(wy % 512u) / 100.0;
+        let z0 = f32((wy / 512u) % 2048u) / 100.0;
+        let rows = wy / 1048576u;
+        if st >= 2.0 {
+            storey_h = st;
+        }
+        if rows > 0u {
+            measured_top = z0 + (f32(rows) - 0.5) * storey_h;
+        }
+        // The floor line under the lowest row seen, then down a storey at a
+        // time while a whole storey still fits under it.
+        var g = z0 - 0.5 * storey_h;
+        g = g - max(floor((g - 2.0) / storey_h), 0.0) * storey_h;
+        if g < 1.5 {
+            g = g + storey_h;
+        }
+        ground_h = g;
     }
     // A continuous floor coordinate: 0–1 is the ground floor, then one a storey.
     // Measured from y = 0, which is the building's base with the terrain layer
@@ -1335,6 +1425,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let on_ground = idx.y < 0.5;
         let floor_h = select(storey_h, ground_h, on_ground);
         var pane_m = pane_for_era(era, facade.lattice.zw);
+        if measured {
+            pane_m = measured_pane;
+        }
         var centre = vec2<f32>(0.5, 0.5);
         if shop && on_ground {
             pane_m = SHOP_PANE_M;
@@ -1399,8 +1492,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Where the eaves are known the building is known to be a building, and
         // its ground floor has windows like any other; a shop's is the window.
         let sill = select(facade.glow.w, GROUND_SILL_M, eave >= 4.0);
+        // No window the eaves cut through: a storey that only partly fits
+        // under them is a parapet or an attic, and a pane drawn there reads as
+        // broken off by the roof (seen on the Grote Markt, 2026-11-19).
+        let floor_bottom = select(ground_h + (idx.y - 1.0) * storey_h, 0.0, on_ground);
+        let pane_top = floor_bottom + (centre.y + half.y) * floor_h;
+        let under_eaves = eave <= 0.0 || pane_top <= eave - EAVE_CLEAR_M;
         let tall_enough = select(f32(v > sill), 1.0, shop && on_ground)
-            * f32(clear_of_door && !windowless);
+            * f32(clear_of_door && !windowless && under_eaves)
+            * f32(v < measured_top);
 
         // Below a pixel, converge on the pattern's own **mean** rather than fading
         // it out. Fading out is the usual answer and it is the wrong one here: the
@@ -1591,7 +1691,50 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.diffuse_occlusion *= street;
     } else if n.y > 0.0 && !door_part {
         var tone = 1.0;
-        if n.y < FLAT_ROOF_Y {
+        // What atlas measured this face to be covered with
+        // (`building_windows::RoofCovering`), 0 when nothing was: a roof's
+        // vertices carry it where a wall's carry its eaves and material.
+        let roof_kind = (code >> 13u) & 15u;
+        if roof_kind == ROOF_SOLAR {
+            // Panels, whatever the slope: a frame of bare aluminium round each,
+            // and its cells in a faint grid.
+            let panel = roof_panels(in.world_position.xz, n.y, u, down);
+            let panel_px = tile_px * TILE_COURSE_M / SOLAR_PANEL_M.y;
+            let blur = clamp(panel_px * 2.5 - 0.3, 0.0, 1.0);
+            tone = mix(panel.x, SOLAR_MEAN, blur);
+            pbr_input.material.base_color = vec4<f32>(
+                mix(pbr_input.material.base_color.rgb, SOLAR_FRAME, panel.y * (1.0 - blur)),
+                pbr_input.material.base_color.a,
+            );
+            pbr_input.material.perceptual_roughness = 0.25;
+            pbr_input.material.reflectance = vec3<f32>(0.6);
+        } else if n.y < FLAT_ROOF_Y && roof_kind == ROOF_SLATE {
+            // Slates: small, flat, rectangular, each laid half over the joint
+            // below, with a thin dark gap and a sharp lap shadow.
+            let s = vec2<f32>(tile.x * TILE_WIDTH_M / SLATE_M.x, tile.y * TILE_COURSE_M / SLATE_M.y);
+            let s_px = tile_px * TILE_COURSE_M / SLATE_M.y;
+            let course = floor(s.y);
+            let across = s.x + 0.5 * course;
+            let f = fract(s.y);
+            let g = fract(across);
+            let lap = mix(0.55, 1.0, smoothstep(0.0, 0.12, f));
+            let gap = mix(0.6, 1.0, smoothstep(0.0, 0.04, min(g, 1.0 - g)));
+            let each = 0.92 + 0.16 * hash_wrapped(vec2<f32>(floor(across), course) + vec2<f32>(31.0, 5.0));
+            let blur = clamp(s_px * 2.5 - 0.3, 0.0, 1.0);
+            tone = mix(lap * gap * each, SLATE_MEAN, blur);
+            pbr_input.material.perceptual_roughness *= 0.9;
+        } else if n.y < FLAT_ROOF_Y && roof_kind == ROOF_METAL {
+            // Standing seams down the slope: sheet between, a raised bead at
+            // each seam catching the light.
+            let seam_x = tile.x * TILE_WIDTH_M / SEAM_M;
+            let s_px = tile_px * TILE_WIDTH_M / SEAM_M;
+            let d = abs(fract(seam_x + 0.5) - 0.5) * SEAM_M;
+            let bead = 1.0 - smoothstep(0.0, 0.025, d);
+            let blur = clamp(s_px * 2.5 - 0.3, 0.0, 1.0);
+            tone = mix(1.0 + 0.25 * bead, 1.0 + 0.25 * 0.05, blur);
+            pbr_input.material.perceptual_roughness = 0.35;
+            pbr_input.material.metallic = 0.6;
+        } else if n.y < FLAT_ROOF_Y {
             // A pitched roof: courses of tiles, each course half a tile over
             // from the one above. `f` runs down the slope through one course,
             // so f ≈ 0 is where the course above laps over it and throws its
@@ -1616,8 +1759,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // trough a tile — so across the courses each tile's face turns from
             // the light and back. The slope of a sine over the tile's width.
             let across3 = vec3<f32>(tangent.x, 0.0, tangent.y);
-            let wave = 0.25 * cos(6.2831853 * g) * (1.0 - blur);
+            // A concrete tile is flatter across than a clay pantile; a glazed
+            // one is the same shape with a skin that shines.
+            let flatter = select(1.0, 0.4, roof_kind == ROOF_CONCRETE);
+            let wave = 0.25 * flatter * cos(6.2831853 * g) * (1.0 - blur);
             pbr_input.N = normalize(pbr_input.N - down3 * tilt - across3 * wave);
+            if roof_kind == ROOF_GLAZED {
+                pbr_input.material.perceptual_roughness *= 0.75;
+            }
         } else {
             // A flat roof: its finish follows from its measured tone, which is
             // what atlas's material classes are cut from too — dark is bitumen,

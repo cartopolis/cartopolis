@@ -66,6 +66,7 @@ pub mod osm_buildings;
 pub mod particles;
 pub mod placeholder_models;
 // Real tree models up close, the merged crowns further out.
+pub mod facade_colours;
 pub mod prim_hand;
 pub mod prim_sound;
 pub mod prim_tone;

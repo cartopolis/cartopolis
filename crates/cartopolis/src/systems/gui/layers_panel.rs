@@ -668,6 +668,20 @@ pub fn render_data_layers_panel(
                 if let Some(credit) = crate::systems::roof_colours::roofs_attribution() {
                     ui.small(credit);
                 }
+                // The wall colours come from a municipality's own city model:
+                // its line, as the manifest records it.
+                if let Some(credit) = crate::systems::facade_colours::facades_attribution() {
+                    ui.small(credit);
+                }
+                // A correction measured from Mapillary's street photographs is
+                // CC BY-SA, a licence condition like the lines above; shown
+                // wherever this host serves corrections at all.
+                if crate::systems::facade_colours::edits_present() {
+                    ui.small(
+                        "Facade corrections from street photos © Mapillary contributors \
+                         (CC BY-SA 4.0) and players",
+                    );
+                }
                 ui.small(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );
