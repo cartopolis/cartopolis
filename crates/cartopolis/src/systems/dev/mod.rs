@@ -25,6 +25,9 @@ pub mod frame_split;
 pub mod light_compare;
 #[cfg(mcp)]
 pub mod mcp;
+/// The editor link as the Settings panel sees it, below `mcp` and the panels.
+#[cfg(mcp)]
+pub mod mcp_access;
 /// This app paired to a developer's Midas hub, its tools relayed to their
 /// sessions (Developer tools ▸ Midas). The phone and desktop apps.
 #[cfg(not(target_arch = "wasm32"))]

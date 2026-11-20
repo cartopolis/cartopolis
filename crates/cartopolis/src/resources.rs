@@ -2366,6 +2366,41 @@ pub enum AvatarSex {
     Woman,
 }
 
+/// Present when the app runs under the capture harness (`--shot`, or a live
+/// harness for MCP), inserted beside `shot_harness::ShotHarness`: whether one is
+/// running is the only thing the camera and navigation ask of it, and asking
+/// here keeps them from reaching up into the dev tools.
+#[derive(Resource, Clone, Copy, Default)]
+pub struct ShotRun;
+
+/// How much of the cloud shell the globe draws, from above.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GlobeCloudMode {
+    /// None: the map, unclouded. The default.
+    #[default]
+    Off,
+    /// Thin and see-through: the weather without hiding the map.
+    Light,
+    /// As the shell has always been drawn.
+    Full,
+}
+
+/// Set by the menu entry; cleared by [`share_diagnostics`] on the next frame.
+///
+/// A flag rather than the menu assembling the report itself, for a boring reason
+/// that is nonetheless the whole design: `ui::render_main_menu` is at fifteen of
+/// Bevy's sixteen system parameters, and the report needs six of its own. It also
+/// keeps the assembly out of a system that runs every frame a menu is open.
+#[derive(Resource, Default)]
+pub struct DiagnosticsRequest {
+    pub pending: bool,
+    /// What the last request produced, shown back in the menu — on a phone the
+    /// share sheet is its own confirmation, but on a desktop nothing visible
+    /// happens at all and a silent button reads as a broken one.
+    pub last: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

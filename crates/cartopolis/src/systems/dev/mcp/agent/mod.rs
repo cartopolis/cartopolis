@@ -41,6 +41,7 @@
 //! a sign somebody built, a name somebody gave a prim — is the residual, and it
 //! is why the session driving this should hold no other keys.
 
+pub use crate::systems::mcp_access::Audience;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use futures_channel::oneshot;
@@ -222,24 +223,6 @@ const MAX_BATCHES: usize = 50;
 // ---------------------------------------------------------------------------
 // The allow-list
 // ---------------------------------------------------------------------------
-
-/// Whose words an agent may read. See the module note.
-#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Audience {
-    pub names: Vec<String>,
-    /// `*`: everyone. Offered because it is sometimes what somebody wants — a
-    /// greeter bot in a public square — and refused by nothing, but it is the
-    /// one setting under which a stranger can put words in front of the model.
-    pub everyone: bool,
-    /// Set by `--mcp-allow`: the flag is an instruction for this launch, and
-    /// Settings shows the list without being able to change it.
-    pub pinned: bool,
-    /// Set by `--mcp-private-only`: the agent speaks in private chats and
-    /// nowhere else. `say` without `to` is refused, and so is a script that
-    /// could make one of its objects speak ([`public_speech_in`]). Here, below
-    /// the agent, because an instruction in the agent's brief is only advice.
-    pub private_only: bool,
-}
 
 /// The script functions that put words in public chat
 /// (`cartopolis_core::script_api`, the Chat group but `log`, which prints to

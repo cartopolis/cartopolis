@@ -197,6 +197,8 @@ impl Plugin for ShotHarnessPlugin {
         if let Some(fps) = self.harness.video_fps {
             app.insert_resource(systems::anim_clock::AnimClock::video(fps));
         }
+        // The one fact systems below the harness ask of it.
+        app.insert_resource(crate::resources::ShotRun);
         app.insert_resource(self.harness.clone())
             .init_resource::<systems::shot_harness::ShotProgress>()
             .add_systems(

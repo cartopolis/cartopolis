@@ -2427,7 +2427,7 @@ pub(crate) fn update_globe_clouds(
     // the process runs, and `env_flag` takes a process-global lock.
     mut clouds_disabled: Local<Option<bool>>,
     layers: Res<crate::systems::data_layers::DataLayers>,
-    mut globe_clouds_override: Local<Option<Option<crate::systems::user_store::GlobeCloudMode>>>,
+    mut globe_clouds_override: Local<Option<Option<crate::resources::GlobeCloudMode>>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
         return;
@@ -2462,7 +2462,7 @@ pub(crate) fn update_globe_clouds(
     // From above, the shell is the person's choice of three (Layers ▸ Map ▸ From
     // above), off by default so the planet reads as a map
     // (`docs/mockups/macro-view/`, v3). Light is the same weather, thinner.
-    use crate::systems::user_store::GlobeCloudMode;
+    use crate::resources::GlobeCloudMode;
     // `CARTO_GLOBE_CLOUDS=off|light|full` overrides it, for a capture: a
     // scripted run never reads the saved setting.
     let mode = *globe_clouds_override.get_or_insert_with(|| {

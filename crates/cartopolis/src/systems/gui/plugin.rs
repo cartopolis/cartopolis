@@ -201,7 +201,7 @@ impl Plugin for GuiPlugin {
         #[cfg(mcp)]
         app.add_systems(
             Update,
-            systems::design_room::render_design_room_ai
+            systems::mcp::overlay::render_design_room_ai
                 .after(systems::design_room::render_design_room_outliner)
                 .in_set(ClientPhase::Present),
         );

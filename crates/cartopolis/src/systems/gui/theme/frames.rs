@@ -642,3 +642,85 @@ pub(super) fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: 
         d.ink,
     );
 }
+
+/// Segments in [`level_bar`].
+const METER_SEGMENTS: usize = 30;
+
+/// A level meter: a row of lit segments, like a mixing desk's, with a
+/// peak-hold segment above the signal.
+///
+/// Every segment is drawn, lit or not: the unlit ones in a faint copy of their
+/// own colour, so the scale — calm, then caution, then clipping — reads before
+/// any sound arrives. A lit segment carries a soft glow. Its colour is the
+/// colour of where it *is* on the scale ([`meter_colour`]), not of the current
+/// level, which is what makes a loud passage climb into amber and red rather
+/// than turning the whole bar red.
+///
+/// Shared with the chat panel's voice row rather than redrawn there: the two
+/// answer the same question about the same device, and a second bar with its own
+/// colours is how the chrome drifts (`systems::theme`'s note).
+pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, egui::CornerRadius::same(RADIUS_SM), super::p().ink);
+    let inner = rect.shrink2(egui::vec2(4.0, 4.0));
+    let gap = 2.0;
+    let n = METER_SEGMENTS as f32;
+    let width = ((inner.width() - gap * (n - 1.0)) / n).max(1.0);
+    let lit_upto = (meter.clamp(0.0, 1.0) * n).round() as usize;
+    let peak_at = (peak.clamp(0.0, 1.0) * n).ceil() as usize;
+    for i in 0..METER_SEGMENTS {
+        let x = inner.min.x + i as f32 * (width + gap);
+        let segment = egui::Rect::from_min_size(
+            egui::pos2(x, inner.min.y),
+            egui::vec2(width, inner.height()),
+        );
+        let colour = segment_colour((i as f32 + 0.5) / n);
+        let radius = egui::CornerRadius::same(2);
+        let lit = i < lit_upto;
+        let is_peak = peak > 0.0 && i + 1 == peak_at && !lit;
+        if lit {
+            p.rect_filled(
+                segment.expand(1.5),
+                egui::CornerRadius::same(3),
+                colour.gamma_multiply(0.25),
+            );
+            p.rect_filled(segment, radius, colour);
+        } else if is_peak {
+            p.rect_filled(segment, radius, colour.gamma_multiply(0.85));
+        } else {
+            p.rect_filled(segment, radius, colour.gamma_multiply(0.12));
+        }
+    }
+}
+
+/// A segment's colour by where it sits on the scale: the calm range
+/// brightening as it climbs, then [`meter_colour`]'s caution and clipping.
+fn segment_colour(at: f32) -> egui::Color32 {
+    if at > 0.75 {
+        return meter_colour(at);
+    }
+    let t = (at / 0.75).clamp(0.0, 1.0);
+    let low = egui::Rgba::from(p().accent_pressed);
+    let high = egui::Rgba::from(p().accent_bright);
+    egui::Color32::from(low * (1.0 - t) + high * t)
+}
+
+/// The live tone through amber to the error red as the signal approaches
+/// clipping.
+///
+/// The top of the bar is a warning, not a target — a meter that is full-scale in
+/// the ordinary colour invites people to clip their own microphone. This is one
+/// of the places the retired second accent was doing `WARN`'s job: a meter three
+/// quarters of the way up is a caution, and caution is one of the two things the
+/// monochrome palette still says in colour.
+pub(crate) fn meter_colour(meter: f32) -> egui::Color32 {
+    if meter > 0.9 {
+        p().error
+    } else if meter > 0.75 {
+        p().warn
+    } else {
+        p().accent
+    }
+}

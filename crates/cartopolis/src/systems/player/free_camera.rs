@@ -1223,7 +1223,7 @@ pub fn setup_camera(
     // The one render-target shape decided here for good — see
     // `render_features::hdr_at_launch` for why it cannot follow the switches.
     let hdr = sky == crate::systems::sky_dome::SkyMode::Atmosphere || prefs.bloom_on();
-    crate::systems::render_features::set_hdr_at_launch(hdr);
+    crate::quality::set_hdr_at_launch(hdr);
 
     commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
         // The root must carry Visibility: renderable children inherit it, and a
@@ -1735,7 +1735,7 @@ pub struct FollowRig<'w, 's> {
     colliders: Res<'w, crate::systems::collision::BuildingColliders>,
     layers: Res<'w, crate::systems::data_layers::DataLayers>,
     /// Present during a scripted capture, which places the lens where it is told.
-    shot: Option<Res<'w, crate::systems::shot_harness::ShotHarness>>,
+    shot: Option<Res<'w, crate::resources::ShotRun>>,
     smoothing: Local<'s, RigSmoothing>,
     /// What the drag moved the camera by this frame, for `systems::camera_pacing`.
     applied_drag: Option<ResMut<'w, crate::systems::camera_pacing::AppliedDrag>>,

@@ -998,7 +998,7 @@ pub(crate) fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::Vo
     // device is armed — including while *not* transmitting, which is what tells
     // an open-mic user that the gate is closed rather than the microphone dead.
     let meter = crate::platform::audio::level_to_meter(voice.level);
-    crate::systems::settings::level_bar(ui, meter, 0.0);
+    crate::systems::theme::level_bar(ui, meter, 0.0);
 
     let audible = voice.speakers.len();
     if audible > 0 {

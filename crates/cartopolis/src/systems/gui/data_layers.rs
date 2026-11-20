@@ -527,7 +527,7 @@ pub struct DataLayers {
     pub place_names: bool,
     /// From above (under Map): the globe's cloud shell, off / light / full
     /// (`sky::update_globe_clouds`).
-    pub globe_clouds: crate::systems::user_store::GlobeCloudMode,
+    pub globe_clouds: crate::resources::GlobeCloudMode,
     /// From above: the globe's night side, from the real sun (`globe_ocean.wesl`).
     pub night_side: bool,
     /// From above: city lights on the night side.
@@ -931,7 +931,7 @@ impl Default for DataLayers {
             // Not on the detail tier: a few dozen names painted over the map,
             // from tiles the basemap has mostly fetched already.
             place_names: true,
-            globe_clouds: crate::systems::user_store::GlobeCloudMode::Off,
+            globe_clouds: crate::resources::GlobeCloudMode::Off,
             night_side: true,
             city_lights: true,
             // Off, as decided; `CARTO_HEX_GRID=1` turns it on for a capture, which
@@ -2553,7 +2553,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     .color(theme::p().text_dim),
             );
             {
-                use crate::systems::user_store::GlobeCloudMode;
+                use crate::resources::GlobeCloudMode;
                 theme::segmented(
                     ui,
                     &mut dl.globe_clouds,

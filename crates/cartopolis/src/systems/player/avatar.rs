@@ -858,7 +858,7 @@ impl AvatarAnimations {
             return None;
         }
         let seek = player.animation(self.swim_index)?.seek_time();
-        Some(crate::systems::splashes::loop_phase(seek, self.swim_secs))
+        Some(crate::utils::math::loop_phase(seek, self.swim_secs))
     }
 
     /// One cycle of `node` in seconds, for the two clips whose phase means the

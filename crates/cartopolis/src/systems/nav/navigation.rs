@@ -870,7 +870,7 @@ pub fn drive_route_solver(
     mut nav: ResMut<GeoNavState>,
     tile_url: Res<OsmTileUrlTemplate>,
     camera_state: Res<crate::resources::CameraState>,
-    harness: Option<Res<crate::systems::shot_harness::ShotHarness>>,
+    harness: Option<Res<crate::resources::ShotRun>>,
     time: Res<Time>,
     mut idle_s: Local<f32>,
     mut framed_for: Local<Option<((f64, f64), (f64, f64))>>,

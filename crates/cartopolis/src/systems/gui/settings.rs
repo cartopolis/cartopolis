@@ -343,7 +343,7 @@ pub fn render_settings_panel(
     // Where an editor attaches and what it must present — see
     // `editor_access_section`. One parameter rather than three, because this
     // system was already at thirteen of Bevy's sixteen.
-    #[cfg(mcp)] mut mcp: crate::systems::mcp::EditorAccess,
+    #[cfg(mcp)] mut mcp: crate::systems::mcp_access::EditorAccess,
     // The external GNSS receiver (`systems::gnss_receiver`). Edited through a
     // draft in `SettingsState` and written back only on Apply or the switch.
     mut receiver: ResMut<crate::systems::gnss_receiver::ReceiverPrefs>,
@@ -364,9 +364,9 @@ pub fn render_settings_panel(
     #[cfg(mcp)]
     {
         editor.serving = mcp.serving().map(|s| match s {
-            crate::systems::mcp::Serving::At(addr) => EditorServing::At(addr),
-            crate::systems::mcp::Serving::Off => EditorServing::Off,
-            crate::systems::mcp::Serving::Failed(why) => EditorServing::Failed(why),
+            crate::systems::mcp_access::Serving::At(addr) => EditorServing::At(addr),
+            crate::systems::mcp_access::Serving::Off => EditorServing::Off,
+            crate::systems::mcp_access::Serving::Failed(why) => EditorServing::Failed(why),
         });
         (editor.allow, editor.allow_pinned) = mcp.allow();
     }
@@ -1427,7 +1427,10 @@ fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &Edit
         // The `mcpServers` entry, by the binary that is running: what works for
         // somebody who unpacked a download, which a bare `cartopolis` on `PATH`
         // would not.
-        ("Editor", crate::systems::mcp::editor_config_here(listen)),
+        (
+            "Editor",
+            crate::systems::mcp_access::editor_config_here(listen),
+        ),
     ] {
         ui.horizontal(|ui| {
             ui.label(
@@ -1877,7 +1880,7 @@ fn graphics_tab(
     );
     // A run launched with neither bloom nor the full sky has no `Hdr`, and that
     // cannot be added to a live camera (`render_features::hdr_at_launch`).
-    let hdr = crate::systems::render_features::hdr_at_launch().unwrap_or(true);
+    let hdr = crate::quality::hdr_at_launch().unwrap_or(true);
     ui.label(
         egui::RichText::new(if !hdr && prefs.bloom_on() {
             "Turns on at the next start: this run was launched with the simple \
@@ -2081,8 +2084,7 @@ fn sky_section(
     let now = match sky {
         Some(SkyMode::Atmosphere) => "Drawing the full atmosphere.".to_string(),
         Some(SkyMode::Dome) => {
-            let launched_without_hdr =
-                crate::systems::render_features::hdr_at_launch() == Some(false);
+            let launched_without_hdr = crate::quality::hdr_at_launch() == Some(false);
             let why = match (prefs.sky, filterable) {
                 (SkyPreference::Simple, _) => "as asked",
                 (_, Some(false)) => "this GPU cannot sample the atmosphere's lookup textures",
@@ -2326,7 +2328,7 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
 
     if state.mic.is_none() {
         if let Some((meter, peak)) = state.demo_level {
-            level_bar(ui, meter, peak);
+            theme::level_bar(ui, meter, peak);
         }
     }
     let (now, dt) = ui.input(|i| (i.time, i.stable_dt));
@@ -2339,7 +2341,7 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
             // this is usually the permission prompt still being open.
             ui.label("Waiting for the microphone…");
         } else {
-            level_bar(ui, meter, peak);
+            theme::level_bar(ui, meter, peak);
             if let Some(name) = mic.device_name() {
                 ui.small(name);
             }
@@ -2439,92 +2441,6 @@ fn unavailable_reason() -> &'static str {
         "This build has no audio support (built without the `audio` feature)."
     } else {
         "No microphone backend on this platform."
-    }
-}
-
-/// Segments in [`level_bar`].
-const METER_SEGMENTS: usize = 30;
-
-/// A level meter: a row of lit segments, like a mixing desk's, with a
-/// peak-hold segment above the signal.
-///
-/// Every segment is drawn, lit or not: the unlit ones in a faint copy of their
-/// own colour, so the scale — calm, then caution, then clipping — reads before
-/// any sound arrives. A lit segment carries a soft glow. Its colour is the
-/// colour of where it *is* on the scale ([`meter_colour`]), not of the current
-/// level, which is what makes a loud passage climb into amber and red rather
-/// than turning the whole bar red.
-///
-/// Shared with the chat panel's voice row rather than redrawn there: the two
-/// answer the same question about the same device, and a second bar with its own
-/// colours is how the chrome drifts (`systems::theme`'s note).
-pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(
-        rect,
-        egui::CornerRadius::same(theme::RADIUS_SM),
-        theme::p().ink,
-    );
-    let inner = rect.shrink2(egui::vec2(4.0, 4.0));
-    let gap = 2.0;
-    let n = METER_SEGMENTS as f32;
-    let width = ((inner.width() - gap * (n - 1.0)) / n).max(1.0);
-    let lit_upto = (meter.clamp(0.0, 1.0) * n).round() as usize;
-    let peak_at = (peak.clamp(0.0, 1.0) * n).ceil() as usize;
-    for i in 0..METER_SEGMENTS {
-        let x = inner.min.x + i as f32 * (width + gap);
-        let segment = egui::Rect::from_min_size(
-            egui::pos2(x, inner.min.y),
-            egui::vec2(width, inner.height()),
-        );
-        let colour = segment_colour((i as f32 + 0.5) / n);
-        let radius = egui::CornerRadius::same(2);
-        let lit = i < lit_upto;
-        let is_peak = peak > 0.0 && i + 1 == peak_at && !lit;
-        if lit {
-            p.rect_filled(
-                segment.expand(1.5),
-                egui::CornerRadius::same(3),
-                colour.gamma_multiply(0.25),
-            );
-            p.rect_filled(segment, radius, colour);
-        } else if is_peak {
-            p.rect_filled(segment, radius, colour.gamma_multiply(0.85));
-        } else {
-            p.rect_filled(segment, radius, colour.gamma_multiply(0.12));
-        }
-    }
-}
-
-/// A segment's colour by where it sits on the scale: the calm range
-/// brightening as it climbs, then [`meter_colour`]'s caution and clipping.
-fn segment_colour(at: f32) -> egui::Color32 {
-    if at > 0.75 {
-        return meter_colour(at);
-    }
-    let t = (at / 0.75).clamp(0.0, 1.0);
-    let low = egui::Rgba::from(theme::p().accent_pressed);
-    let high = egui::Rgba::from(theme::p().accent_bright);
-    egui::Color32::from(low * (1.0 - t) + high * t)
-}
-
-/// The live tone through amber to the error red as the signal approaches
-/// clipping.
-///
-/// The top of the bar is a warning, not a target — a meter that is full-scale in
-/// the ordinary colour invites people to clip their own microphone. This is one
-/// of the places the retired second accent was doing `WARN`'s job: a meter three
-/// quarters of the way up is a caution, and caution is one of the two things the
-/// monochrome palette still says in colour.
-fn meter_colour(meter: f32) -> egui::Color32 {
-    if meter > 0.9 {
-        theme::p().error
-    } else if meter > 0.75 {
-        theme::p().warn
-    } else {
-        theme::p().accent
     }
 }
 
@@ -2756,6 +2672,7 @@ pub fn follow_preset(prefs: bevy::prelude::Res<crate::resources::AppPrefs>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::theme::meter_colour;
 
     /// The World tab's clock formatter and its parser must be inverses, because
     /// egui puts the formatter's output into the text box the parser reads back

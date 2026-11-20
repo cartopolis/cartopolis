@@ -2059,6 +2059,34 @@ pub const TERRAIN_GRID: usize = 2049;
 /// than the rest. A parked job holds downloaded text, not meshes.
 pub(crate) const SURFACE_MAX_IN_FLIGHT: usize = 9;
 
+/// Whether this run's camera was launched with `Hdr` — the 16-bit float main
+/// texture both bloom and the atmosphere require.
+///
+/// **Fixed for the process, and that is measured, not cautious** (2026-09-29, a
+/// scripted run flipping every Graphics setting): changing the shape of a live
+/// camera's render target — its format when `Hdr` came or went, its sample count
+/// when `Msaa` did — intermittently left a `pbr_opaque_mesh_pipeline` built for
+/// the old shape drawing into the new one. That is a validation error, and a
+/// validation error halts the renderer for the rest of the process. So
+/// `setup_camera` decides it once, from what the launch wants: `Hdr` whenever the
+/// atmosphere or bloom is on. A run launched with neither — the simple sky and no
+/// glare — cannot switch either on until it restarts, and the Graphics tab says
+/// so rather than pretending.
+/// A static rather than a resource, like `quality::capabilities`: the Graphics
+/// tab reads it and its system is already at bevy's parameter limit.
+static HDR_AT_LAUNCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Record this run's answer. First call wins; `setup_camera` makes it.
+pub fn set_hdr_at_launch(hdr: bool) {
+    let _ = HDR_AT_LAUNCH.set(hdr);
+}
+
+/// This run's answer, or `None` before the camera exists.
+#[must_use]
+pub fn hdr_at_launch() -> Option<bool> {
+    HDR_AT_LAUNCH.get().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

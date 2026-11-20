@@ -97,15 +97,6 @@ pub fn splash_size(entry_speed: f32) -> f32 {
     ((entry_speed - WADE_SPEED) / (PLUNGE_SPEED - WADE_SPEED)).clamp(0.0, 1.0)
 }
 
-/// Where a looping clip is in its loop, 0..1, from the player's seek time.
-#[must_use]
-pub fn loop_phase(seek_secs: f32, loop_secs: f32) -> f32 {
-    if loop_secs <= 0.0 || !seek_secs.is_finite() {
-        return 0.0;
-    }
-    (seek_secs / loop_secs).rem_euclid(1.0)
-}
-
 /// Whether a loop going forward from phase `prev` to `now` passed `at` — once
 /// per pass, including across the loop's end. A loop standing still passes
 /// nothing.
@@ -1308,6 +1299,7 @@ mod playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::math::loop_phase;
 
     #[test]
     fn a_drop_off_a_quay_splashes_bigger_than_wading_in() {

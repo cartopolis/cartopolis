@@ -110,7 +110,7 @@ pub fn render_main_menu(
     mut app_exit: MessageWriter<AppExit>,
     mut sign_in: SignInMenu,
     // Written here, read and cleared by `diagnostics::share_diagnostics`.
-    mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
+    mut diagnostics: ResMut<crate::resources::DiagnosticsRequest>,
     prefs: Res<crate::resources::AppPrefs>,
 ) {
     let face = menu.face.take();

@@ -48,7 +48,7 @@ pub use dev::{
 // listen on a socket (`build.rs` sets the cfg, `Cargo.toml` gates the
 // dependency on the same predicate).
 #[cfg(mcp)]
-pub use dev::mcp;
+pub use dev::{mcp, mcp_access};
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.

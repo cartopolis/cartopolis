@@ -39,20 +39,7 @@ use crate::components::AvatarHolder;
 use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::avatar::AvatarReadout;
 
-/// Set by the menu entry; cleared by [`share_diagnostics`] on the next frame.
-///
-/// A flag rather than the menu assembling the report itself, for a boring reason
-/// that is nonetheless the whole design: `ui::render_main_menu` is at fifteen of
-/// Bevy's sixteen system parameters, and the report needs six of its own. It also
-/// keeps the assembly out of a system that runs every frame a menu is open.
-#[derive(Resource, Default)]
-pub struct DiagnosticsRequest {
-    pub pending: bool,
-    /// What the last request produced, shown back in the menu — on a phone the
-    /// share sheet is its own confirmation, but on a desktop nothing visible
-    /// happens at all and a silent button reads as a broken one.
-    pub last: Option<String>,
-}
+pub use crate::resources::DiagnosticsRequest;
 
 /// The file the desktop arm writes, beside the user's own data.
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
