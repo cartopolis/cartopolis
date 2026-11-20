@@ -1,7 +1,7 @@
 ---
 topic: module-graph
-triggers: [crate split, circular dependency, systems/, resources.rs, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
-updated: 2026-11-19
+triggers: [crate split, circular dependency, systems/, resources.rs, layers_panel.rs, mcp_access.rs, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
+updated: 2026-11-20
 ---
 
 # The client's modules are coupled by state, not by behaviour
@@ -35,10 +35,29 @@ imported the driver for it) to `cartopolis_core::geo::plane_distance_m`.
 
 Result: **121** in the cycle, 104 mutual pairs, and `resources`, `components`,
 `quality`, `grid` and `services` name nothing above them —
-`source_rules::the_ground_floor_names_no_system` fails if one does again. No
-single remaining move shrinks the cycle by more than two; what is left is
-behaviour coupling (`theme ↔ chats ↔ dock`, `navigation ↔ driver ↔ geo_nav`),
-which only splitting those modules by concern can loosen.
+`source_rules::the_ground_floor_names_no_system` fails if one does again.
+
+**2026-11-20: 121 → 100.** Counting the cycle's edges by group folder showed
+the order the code mostly follows — `dev` over `gui` over `nav`/`player` over
+`map` — and the few edges that run against it. The ones into `dev` went:
+`ShotRun` (a marker beside `ShotHarness`) for the camera and navigation,
+`mcp_access` for what Settings shows of the editor link, the design room's
+agent bar into `mcp::overlay`, `DiagnosticsRequest` to `resources`. Then single
+helpers (`level_bar` to `theme`, the HDR answer to `quality`, `loop_phase` to
+`utils::math`) and the Layers panel out of `data_layers` into `layers_panel`.
+
+**What is left is the map layer depending on what sits above it**, and it has
+to go all at once: cutting `map → gui`, `map → player` and `map → nav` together
+splits the cycle into 61 and 32 (simulated), any one of them alone gains ≤ 3.
+The load-bearing edges, each necessary: `DataLayers` (17 map modules read it,
+and `data_layers::apply_feature_toggles` in turn reaches into every layer it
+switches), `collision`'s colliders, `free_camera`'s fog and horizon maths (pure
+functions, cheap), `picking::PrimClick`, `traffic::{DriveNetwork, Car}`,
+`transit_live::WorldClock`, `give_way::PED_RED_GLOW`, `geo_nav::percent_encode`.
+All but `DataLayers` are moves; `DataLayers` needs its control inverted — each
+layer reading its own switch rather than one system writing every layer's
+visibility — which is a behaviour change across some twenty layers and wants
+captures to check, not just a compile.
 
 The hubs' machinery is private now (`GlobeState` 13 fields, 5 of them machinery,
 all private; `MapStream` likewise), so the August tables below overstate how
