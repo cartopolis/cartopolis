@@ -88,10 +88,13 @@ while the app ran brought it forward and did nothing else.
 
 `MainActivity.onNewIntent` (the activity has been our own subclass since the dex
 lane) now keeps the link until the client takes it, once:
-`platform::android::new_link`, polled twice a second. **Only community invites
-read it so far** (`communities::sync_device`); a place or contact link tapped
-while the app runs is taken and dropped, exactly as it was ignored before. Giving
-those the same treatment is a match on the link in the same place.
+`platform::android::new_link`, polled twice a second. **One system reads it**,
+`place_link::take_new_link` (2026-11-20): `new_link` hands a link out once, so
+two readers would take it from each other. It sorts the link with
+`place_link::followed` — invite, contact, place — flies to a place itself and
+brings the map forward (`RightPanel::None`), and leaves a contact or invite in
+`place_link::NewLink` for `contacts::drive_contacts` and
+`communities::sync_device`, which open it the way they open a launch's link.
 
 `launch_url` stays a read-once-at-startup call: `getIntent` answers the same
 link for as long as nothing replaces it, so polling it would re-teleport the

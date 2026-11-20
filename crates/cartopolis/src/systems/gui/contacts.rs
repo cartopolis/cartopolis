@@ -501,11 +501,17 @@ pub fn drive_contacts(
     mut chat: ResMut<ChatState>,
     private: Res<crate::systems::private_chat::PrivateChats>,
     layers: Res<crate::systems::layer_state::DataLayers>,
+    mut new_link: ResMut<crate::systems::place_link::NewLink>,
     mut launched: Local<bool>,
 ) {
     if !*launched {
         *launched = true;
         contacts.pending_link = launch_contact();
+    }
+    // One tapped while the app already runs (`place_link::take_new_link`):
+    // opened the same way, once signed in.
+    if let Some(link) = new_link.contact.take() {
+        contacts.pending_link = Some(link);
     }
     let Some(online) = online else {
         inbox.0.clear();

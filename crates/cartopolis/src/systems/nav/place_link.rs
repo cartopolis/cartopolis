@@ -131,6 +131,77 @@ pub fn invite_from_link(input: &str) -> Option<String> {
         .then(|| code.to_string())
 }
 
+/// What one tapped link asks for. Sorted once, in [`take_new_link`], because
+/// `platform::android::new_link` hands a link out only once: two systems each
+/// asking it for their own kind would take the link from each other.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Followed {
+    /// A community invite's code (`?community=`).
+    Invite(String),
+    /// A contact link's (username, code) (`?contact=`).
+    Contact(String, String),
+    /// A place (`?place=`).
+    Place(LocationFix),
+}
+
+/// Sort a link by what it names; `None` for one that names nothing this app
+/// opens. An invite reads first: it accepts a bare code, but a link only by
+/// its own key, so it cannot take a place or contact link for one.
+pub fn followed(url: &str) -> Option<Followed> {
+    if let Some(code) = invite_from_link(url) {
+        return Some(Followed::Invite(code));
+    }
+    if let Some((user, code)) = contact_from_link(url) {
+        return Some(Followed::Contact(user, code));
+    }
+    place_from_link(url).map(Followed::Place)
+}
+
+/// A contact or invite link tapped while the app ran, waiting for the panel
+/// that opens it (`contacts::drive_contacts`, `communities::sync_device`). A
+/// place needs no slot: [`take_new_link`] flies there itself.
+#[derive(bevy::prelude::Resource, Default)]
+pub struct NewLink {
+    pub invite: Option<String>,
+    pub contact: Option<(String, String)>,
+}
+
+/// A link tapped while the app already runs (Android's `onNewIntent`), read
+/// twice a second as a JNI call. A place is flown to and brings the map
+/// forward, because the person just asked to see it; a contact or invite is
+/// left in [`NewLink`] for its panel. The launch's own link is read elsewhere,
+/// once (`geo_nav::launch_place` has why).
+pub fn take_new_link(
+    mut link: bevy::prelude::ResMut<NewLink>,
+    mut nav: bevy::prelude::ResMut<super::geo_nav::GeoNavState>,
+    mut panel: bevy::prelude::ResMut<crate::resources::RightPanel>,
+    time: bevy::prelude::Res<bevy::prelude::Time>,
+    mut next_check: bevy::prelude::Local<f64>,
+) {
+    let now = time.elapsed_secs_f64();
+    if now < *next_check {
+        return;
+    }
+    *next_check = now + 0.5;
+    #[cfg(target_os = "android")]
+    let url = crate::platform::android::new_link();
+    #[cfg(not(target_os = "android"))]
+    let url: Option<String> = None;
+    let Some(url) = url else {
+        return;
+    };
+    match followed(&url) {
+        Some(Followed::Invite(code)) => link.invite = Some(code),
+        Some(Followed::Contact(user, code)) => link.contact = Some((user, code)),
+        Some(Followed::Place(fix)) => {
+            tracing::info!(%url, "flying to the place a tapped link names");
+            nav.pending_teleport = Some(super::geo_nav::Teleport::fix(fix));
+            *panel = crate::resources::RightPanel::None;
+        }
+        None => tracing::warn!(%url, "a tapped link names nothing this app opens"),
+    }
+}
+
 // There is deliberately no `app_link` beside `web_link`. The custom-scheme URL has
 // exactly one writer and it is not Rust: `index.html`'s loader builds
 // `cartopolis://go?place=…` in JavaScript, before any of this exists, because the
@@ -482,5 +553,29 @@ mod tests {
         assert_eq!(place_from_link("https://cartopolis.org/apk/"), None);
         assert_eq!(place_from_link("cartopolis://go?place=Groningen"), None);
         assert_eq!(place_from_link("https://example.com/go?place=300,4"), None);
+    }
+
+    /// A link tapped while the app runs goes to the one thing it names, each
+    /// kind from both schemes, and one naming nothing goes nowhere.
+    #[test]
+    fn a_tapped_link_is_sorted_by_what_it_names() {
+        assert_eq!(
+            followed(&invite_link("3f9a1c7e22b0")),
+            Some(Followed::Invite("3f9a1c7e22b0".into()))
+        );
+        assert_eq!(
+            followed("cartopolis://go?contact=sanne_k~3f9a1c7e22b0"),
+            Some(Followed::Contact("sanne_k".into(), "3f9a1c7e22b0".into()))
+        );
+        assert_eq!(
+            followed(&contact_link("sanne_k", "3f9a1c7e22b0")),
+            Some(Followed::Contact("sanne_k".into(), "3f9a1c7e22b0".into()))
+        );
+        match followed("https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45") {
+            Some(Followed::Place(f)) => assert_groningen(&f),
+            other => panic!("not a place: {other:?}"),
+        }
+        assert_eq!(followed("https://cartopolis.org/go"), None);
+        assert_eq!(followed("cartopolis://go?place=Groningen"), None);
     }
 }

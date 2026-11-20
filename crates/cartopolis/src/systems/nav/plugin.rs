@@ -119,6 +119,17 @@ impl Plugin for NavPlugin {
                 .in_set(ClientPhase::Anchor),
         );
 
+        // A link tapped while the app runs (`place_link`), sorted before the
+        // panels that open its contact or invite and the teleport to its place.
+        app.init_resource::<systems::place_link::NewLink>();
+        app.add_systems(
+            Update,
+            systems::place_link::take_new_link
+                .before(systems::communities::sync_device)
+                .before(systems::contacts::drive_contacts)
+                .in_set(ClientPhase::Input),
+        );
+
         // The web UI's World moving this app's camera (`place_link`). Before the
         // teleport, so a posted place is flown to in the frame it was read.
         #[cfg(target_arch = "wasm32")]
