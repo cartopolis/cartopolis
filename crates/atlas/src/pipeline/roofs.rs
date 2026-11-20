@@ -696,7 +696,7 @@ fn balance(p: [u8; 3], gains: [f32; 3]) -> [u8; 3] {
 }
 
 /// The cells of the run's bbox that `lod22` has written.
-fn lod22_cells(ctx: &Ctx) -> Vec<(Cell, lod22_cell::Cell)> {
+pub(super) fn lod22_cells(ctx: &Ctx) -> Vec<(Cell, lod22_cell::Cell)> {
     let [min_lng, min_lat, max_lng, max_lat] = wgs84_bbox(ctx.bbox);
     let (x0, y0) = lat_lng_to_cell(max_lat, min_lng);
     let (x1, y1) = lat_lng_to_cell(min_lat, max_lng);

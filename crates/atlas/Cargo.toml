@@ -50,6 +50,10 @@ serde_json.workspace = true
 tiff.workspace = true
 # JPEG decoding for the aerial photographs `roofs` samples.
 image.workspace = true
+# Running the facade-parsing network over the city model's walls
+# (`pipeline/facades.rs`). tract-core 0.23.9 is already built for the face
+# crate; this adds its ONNX reader.
+tract-onnx = "=0.23.9"
 # Reading an uploaded building model (`overrides::gltf_model`). The same crate,
 # version and features the simulator's model store reads with, so a second
 # copy costs the lockfile nothing.
