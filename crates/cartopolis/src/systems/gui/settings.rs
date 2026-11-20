@@ -1045,7 +1045,8 @@ fn general_tab(
         pending(
             ui,
             "Adds a permanent notification while it is on, and keeps the app \
-             running when you leave it. Only applies while signed in.",
+             running when you leave it. Only applies while signed in or \
+             linked to Midas. Off, the app stops when you leave it.",
         );
     }
 

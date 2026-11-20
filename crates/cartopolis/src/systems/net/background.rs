@@ -64,14 +64,18 @@ pub fn apply_background_connection(
     session: Option<Res<OnlineSession>>,
     mut applied: Local<Option<bool>>,
 ) {
-    // The Midas device link holds the process too, setting or no: a phone a
+    // The Midas device link holds the process too, signed in or not: a phone a
     // session is using must not drop its link whenever the person leaves the
-    // app to read the session (`systems::midas_link`).
+    // app to read the session (`systems::midas_link`). **But only with the
+    // setting on.** It used to hold it setting or no, and the owner, with the
+    // setting off, found the app still running in the background (2026-11-20):
+    // the switch is the one answer to "may it run when I leave it". With it off
+    // the link drops off screen, and the hub waits for the app to be opened.
     #[cfg(not(target_arch = "wasm32"))]
     let midas = crate::systems::midas_link::holds_process();
     #[cfg(target_arch = "wasm32")]
     let midas = false;
-    let want = (prefs.background_connection && session.is_some()) || midas;
+    let want = prefs.background_connection && (session.is_some() || midas);
     if *applied == Some(want) {
         return;
     }

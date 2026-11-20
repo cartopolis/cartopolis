@@ -1,7 +1,7 @@
 ---
 topic: the Midas device link (the app answering a developer's agent sessions)
 triggers: ["midas_link.rs", "MidasCall.java", "systems::midas_link", MidasLink, LinkTap, "Developer tools ▸ Midas", "X-Midas-Device", "mcp/film.rs", "mcp_server/src/local.rs", LocalTools]
-updated: 2026-11-11
+updated: 2026-11-20
 ---
 
 # The Midas device link
@@ -110,6 +110,14 @@ because `bevy_winit` runs no update while suspended (`should_update` asks
 `{"type":"away","away":true}`. The hub then tells the person a session wants
 the phone, and the call it holds is answered the moment the app is opened,
 with no reconnect.
+
+**Only while "Stay connected in the background" is on (2026-11-20).** The link
+held the process setting or no, and the owner, with the setting off, found the
+app still running after leaving it. The setting is now the one answer to "may it
+run when I leave it": off, the process is frozen off screen, the link drops, and
+the hub's held call waits for the app to be opened and link again. The face
+sheet's Exit row, desktop-only until then, is on Android too, so the app can be
+stopped outright.
 
 **Answering off screen was weighed and not built (2026-11-07).** The owner
 asked whether the app could answer while the Midas page is in front. Only the

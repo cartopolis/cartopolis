@@ -1,7 +1,7 @@
 ---
 topic: background-connection
 triggers: [background.rs, ConnectionService.java, SetPresence, presence, "foreground service", "push notification", FCM, "Firebase", "notification", POST_NOTIFICATIONS, foregroundServiceType, "background", "battery", "stay connected", quiesce_while_backgrounded, presence_active]
-updated: 2026-08-23
+updated: 2026-11-20
 ---
 
 # Staying reachable with the app off screen
@@ -157,6 +157,14 @@ launch went into that process and showed the theme's splash forever (reported
 The consequence to know: destroying the activity ends the process, so it ends the
 service and its notification with it — the held connection survives the screen
 going off, never a swipe out of recents.
+
+## The setting is the only thing that holds the process
+
+The Midas device link (`midas-device-link.md`) also wants the process held, and
+until 2026-11-20 it held it with the setting off; the owner read that as the
+switch not working. Now the service runs only with the setting on, for a session
+or for the link. To stop the app outright there is Exit in your face's sheet,
+which on Android ends the process and with it the service.
 
 ## Why there is often no notification
 

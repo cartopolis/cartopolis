@@ -80,7 +80,7 @@ enum SheetAct {
     DevTools,
     Diagnostics,
     SignOut,
-    #[cfg_attr(any(target_os = "android", target_arch = "wasm32"), allow(dead_code))]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Exit,
 }
 
@@ -272,7 +272,7 @@ pub fn render_main_menu(
         }
         None => {}
     }
-    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     let _ = &mut app_exit;
     if log_out {
         crate::systems::session::sign_out(&mut sign_in.session, &mut store);
@@ -449,9 +449,12 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             }
         }
         row(ui, RightPanel::About, act);
-        // Desktop only: an Android app does not quit (Back from the map sends
-        // it to the background), and a browser tab is closed by the browser.
-        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        // Not on the web, where a tab is closed by the browser. On the phone
+        // Back from the map only sends the app to the background, so this is
+        // the one way to stop it there (asked for 2026-11-20): the `AppExit`
+        // ends `run`, and `android_main` ends the process — the background
+        // connection and its notification with it.
+        #[cfg(not(target_arch = "wasm32"))]
         if theme::list_row_sized(
             ui,
             Some(SHEET_ROW),
