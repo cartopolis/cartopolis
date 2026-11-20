@@ -48,6 +48,15 @@ field, and fails on any difference. A meant change re-pins it with
 `PROTOCOL_HISTORY` row. A new nested enum fails the trace as
 `MissingVariants([...])`; add it to the `enums!` list there.
 
+**A message the server takes is a struct in `protocol::msg`** (2026-11-20):
+`NetMessage::CreatePrim(msg::CreatePrim { .. })`, and the server's
+`ClientRequest::CreatePrim` holds the same struct, so its fields are written
+once. A new client-to-server message with fields goes the same way, its row in
+`kind.rs` marked `#[request_id_inner]` when the struct has a `request_id`.
+Wrapping or unwrapping a struct variant this way moves no byte (postcard writes
+the variant index, then the fields in order), but it does change
+`wire_shape.txt`'s text: re-pin, and check the diff is only the move.
+
 **Two branches each appending the next number collide at merge**, the way
 migrations collide at deploy (`migration-numbers-are-claimed-by-a-deploy.md`).
 `tools/check-numbers.ts` checks `PROTOCOL_HISTORY`
