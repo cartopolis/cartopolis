@@ -181,6 +181,23 @@ pub async fn api_post(path: &str, body: Option<String>) -> Result<String, String
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
+/// `POST` a body that may take atlas a minute to answer: a facade measured
+/// from photographs (`gui::facade_check`), which downloads and reads them
+/// before it says anything.
+pub async fn api_post_bytes(
+    path: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Result<String, String> {
+    let request = api_request(http::Request::post, path)
+        .ok_or("not signed in")?
+        .header("Content-Type", content_type)
+        .timeout(std::time::Duration::from_secs(180))
+        .body(body);
+    let bytes = http::fetch(request).await?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
 /// `PATCH` a JSON document to the API.
 pub async fn api_patch(path: &str, body: String) -> Result<String, String> {
     let request = api_request(http::Request::patch, path)

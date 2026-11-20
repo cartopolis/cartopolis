@@ -99,6 +99,7 @@ pub fn render_building_card(
     identity: Res<crate::resources::AuthIdentity>,
     mut last_shown: Local<Option<std::sync::Arc<str>>>,
     mut bridges: ResMut<crate::systems::bridges::Bridges>,
+    mut facade: ResMut<crate::systems::facade_check::FacadeCheck>,
 ) {
     // The dock's suppression rules, and the place card's — each of these owns the
     // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
@@ -156,6 +157,18 @@ pub fn render_building_card(
     let mut open: Option<String> = None;
     let mut look: Option<bool> = None;
     let mut share = false;
+    let mut recheck = false;
+    let mut photo = false;
+    let mut cancel_photo = false;
+    // The building's middle: where Share points, and how atlas finds its cell.
+    let middle = (!fact.footprint.is_empty()).then(|| {
+        let n = fact.footprint.len() as f64;
+        let (lat, lng) = fact
+            .footprint
+            .iter()
+            .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+        (lat / n, lng / n)
+    });
     // A building has an inside when the game can build one: an entrance to come
     // in by (the generated layout needs it), or a design its owner drew.
     let has_inside = !fact.doors.is_empty() || crate::systems::building_designs::get(&id).is_some();
@@ -222,6 +235,8 @@ pub fn render_building_card(
                     Inside,
                     Plan,
                     Replace,
+                    Wrong,
+                    Photo,
                 }
                 let mut acts = vec![Act::Share];
                 if has_inside {
@@ -231,6 +246,16 @@ pub fn render_building_card(
                 if may_replace {
                     acts.push(Act::Replace);
                 }
+                // The facade measured again (`facade_check`): anybody signed
+                // in, since atlas files who asked.
+                let signed_in = identity.username.is_some() && middle.is_some();
+                if signed_in {
+                    acts.push(Act::Wrong);
+                    if crate::platform::photo::is_available() {
+                        acts.push(Act::Photo);
+                    }
+                }
+                let busy = facade.busy();
                 for pair in acts.chunks(2) {
                     ui.horizontal(|ui| {
                         let w = theme::equal_width(ui, 2);
@@ -278,6 +303,36 @@ pub fn render_building_card(
                                         open = Some(floor_plan_url(&id, &fact.footprint));
                                     }
                                 }
+                                Act::Wrong => {
+                                    let resp = ui.add_enabled_ui(!busy, |ui| {
+                                        theme::secondary_button(ui, icons::FLAG, "Facade wrong", w)
+                                    });
+                                    recheck = resp
+                                        .inner
+                                        .on_hover_text(
+                                            "The walls' colour or material is not right: \
+                                             measure them again from street photos",
+                                        )
+                                        .clicked();
+                                }
+                                Act::Photo => {
+                                    let resp = ui.add_enabled_ui(!busy, |ui| {
+                                        theme::secondary_button(
+                                            ui,
+                                            icons::CAMERA,
+                                            "Facade photo",
+                                            w,
+                                        )
+                                    });
+                                    photo = resp
+                                        .inner
+                                        .on_hover_text(
+                                            "Take a photo of the front: its colour and \
+                                             material are measured from it, and the photo \
+                                             is not kept",
+                                        )
+                                        .clicked();
+                                }
                                 Act::Replace => {
                                     let resp = ui.add_enabled_ui(can_open, |ui| {
                                         theme::secondary_button(
@@ -299,6 +354,24 @@ pub fn render_building_card(
                                     }
                                 }
                             }
+                        }
+                    });
+                }
+                if let Some(note) = facade.note(&id) {
+                    ui.horizontal(|ui| {
+                        if busy {
+                            ui.spinner();
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(note)
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::p().text_dim),
+                            )
+                            .wrap(),
+                        );
+                        if facade.capturing() && ui.small_button("Cancel").clicked() {
+                            cancel_photo = true;
                         }
                     });
                 }
@@ -341,20 +414,24 @@ pub fn render_building_card(
     if let Some(url) = open {
         open_url(&url);
     }
-    if share && !fact.footprint.is_empty() {
-        let n = fact.footprint.len() as f64;
-        let (lat, lng) = fact
-            .footprint
-            .iter()
-            .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+    if let (true, Some(near)) = (recheck, middle) {
+        facade.recheck(id.clone(), near);
+    }
+    if let (true, Some(near)) = (photo, middle) {
+        facade.photo(id.clone(), near);
+    }
+    if cancel_photo {
+        facade.cancel();
+    }
+    if let (true, Some((lat, lng))) = (share, middle) {
         let name = addresses
             .iter()
             .find_map(AddressFact::label)
             .unwrap_or_else(|| "this building".to_string());
         bridges.share = Some(crate::systems::bridges::SharePlace {
             name,
-            lat: lat / n,
-            lng: lng / n,
+            lat,
+            lng,
             view: None,
         });
     }

@@ -30,6 +30,7 @@ impl Plugin for GuiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<systems::settings::SettingsState>()
             .init_resource::<systems::place_names::PlaceNames>()
+            .init_resource::<systems::facade_check::FacadeCheck>()
             // The scenario over the map, if one is open (`systems::scenario`).
             .init_resource::<systems::scenario::ScenarioView>()
             // The galaxies past the Milky Way, fetched once the view climbs
@@ -335,6 +336,11 @@ impl Plugin for GuiPlugin {
                 systems::building_card::render_building_card
                     .after(systems::place_card::render_place_card)
                     .before(systems::ui::render_main_menu),
+                // Its facade buttons' photograph and answer (`facade_check`),
+                // carried on whether or not the card is up: the camera app
+                // hides the whole client while it runs.
+                systems::facade_check::drive_facade_check
+                    .before(systems::building_card::render_building_card),
                 // The floor picker (`systems::cutaway`): a floating column at the
                 // right edge, outside the panel chain on the card's terms. After
                 // the card, whose Look inside it answers in the same frame.

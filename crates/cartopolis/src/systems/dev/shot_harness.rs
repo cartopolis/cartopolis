@@ -4425,6 +4425,7 @@ pub fn select_scripted_building(
     avatar: Res<crate::resources::AvatarState>,
     anchor: Res<crate::resources::MapAnchor>,
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
+    mut identity: ResMut<crate::resources::AuthIdentity>,
 ) {
     let panels = harness.ui_for(progress.index);
     let all = panels.iter().any(|u| u == "all");
@@ -4432,6 +4433,12 @@ pub fn select_scripted_building(
     if !(all || inside || panels.iter().any(|u| u == "building")) {
         selection.clear();
         return;
+    }
+    // The card as somebody signed in sees it — its facade buttons are only
+    // offered to an account — with the account the docs hand out, as
+    // `hold_scripted_midas` stages it.
+    if identity.username.is_none() {
+        identity.username = Some("jeroen".to_string());
     }
     if let Some(id) = selection.selected.clone() {
         if inside && cutaway.looking.is_none() {
