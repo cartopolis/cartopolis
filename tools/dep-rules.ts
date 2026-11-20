@@ -47,9 +47,19 @@ const RULES: { crate: string; why: string; forbidden: (n: string) => boolean }[]
   { crate: "cartopolis_materials", why: "never depends on cartopolis", forbidden: (n) => n === "cartopolis" },
 ];
 
-const out = Bun.spawnSync(["cargo", "metadata", "--offline", "--locked", "--format-version", "1"], {
-  stderr: "pipe",
-});
+// `cargo metadata` reads every package's manifest, also those only another
+// platform builds, which a node's builds never downloaded: a new dependency
+// with a Windows-only one (zbus → uds_windows) failed here offline on 2026-11-20.
+// Fetching the whole lock once, then reading offline again, mends that.
+const metadata = () =>
+  Bun.spawnSync(["cargo", "metadata", "--offline", "--locked", "--format-version", "1"], {
+    stderr: "pipe",
+  });
+let out = metadata();
+if (out.exitCode !== 0) {
+  Bun.spawnSync(["cargo", "fetch", "--locked"], { stdout: "inherit", stderr: "inherit" });
+  out = metadata();
+}
 if (out.exitCode !== 0) {
   console.error(`dep-rules: cargo metadata failed\n${out.stderr.toString()}`);
   process.exit(2);
