@@ -9,6 +9,7 @@
 //! client, the leak showed up on everyone else's screen as a motionless ghost for
 //! the life of the process.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ async fn connect(addr: &str) -> Client {
 /// in earshot of nobody, which is how a chat-only web UI stays out of the world.
 fn stand_here() -> Bytes {
     Bytes::from(
-        encode_app_frame(&NetMessage::ClientIntent {
+        encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.0,
             move_z: 0.0,
@@ -55,7 +56,7 @@ fn stand_here() -> Bytes {
                 latitude: 53.2194,
                 longitude: 6.5665,
             }),
-        })
+        }))
         .unwrap(),
     )
 }

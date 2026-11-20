@@ -1,6 +1,7 @@
 //! Avatar looks (protocol 42): a look one client saves reaches the others, is
 //! kept with the account, and comes back on the next sign-in.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -150,7 +151,11 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
     send(&mut other, &standing_still()).await;
     until_listed(&mut other, u64::MAX, false).await;
 
-    send(&mut dev, &NetMessage::SetAvatarLook { look: a_look() }).await;
+    send(
+        &mut dev,
+        &NetMessage::SetAvatarLook(msg::SetAvatarLook { look: a_look() }),
+    )
+    .await;
     let seen = looks_settled(&mut other, 3, Duration::from_secs(5)).await;
     assert_eq!(seen.len(), 1, "the other client is told once: {seen:?}");
     assert_eq!(seen[0].1, a_look());
@@ -181,7 +186,7 @@ async fn a_saved_look_reaches_everyone_and_outlives_the_session() {
 }
 
 fn standing_still() -> NetMessage {
-    NetMessage::ClientIntent {
+    NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -197,7 +202,7 @@ fn standing_still() -> NetMessage {
             latitude: 53.2194,
             longitude: 6.5665,
         }),
-    }
+    })
 }
 
 #[tokio::test]
@@ -208,7 +213,11 @@ async fn an_unreasonable_look_is_dropped() {
     let _ = looks(&mut other, WINDOW).await;
     let mut look = a_look();
     look.age = 9;
-    send(&mut dev, &NetMessage::SetAvatarLook { look }).await;
+    send(
+        &mut dev,
+        &NetMessage::SetAvatarLook(msg::SetAvatarLook { look }),
+    )
+    .await;
     assert!(
         looks(&mut other, WINDOW).await.is_empty(),
         "a child's body is not relayed"
@@ -226,7 +235,7 @@ async fn a_face_reaches_those_near() {
     // Both embodied, at the spawn point, so within speaking range.
     send(&mut other, &standing_still()).await;
     let mut laughing = standing_still();
-    if let NetMessage::ClientIntent { expression, .. } = &mut laughing {
+    if let NetMessage::ClientIntent(msg::ClientIntent { expression, .. }) = &mut laughing {
         *expression = Some(Expression::Laugh);
     }
     send(&mut dev, &laughing).await;
@@ -252,17 +261,17 @@ async fn a_face_reaches_those_near() {
     // A frame of the wrong length is dropped; a whole one is handed on.
     send(
         &mut dev,
-        &NetMessage::SetFaceFrame {
+        &NetMessage::SetFaceFrame(msg::SetFaceFrame {
             weights: vec![9; 51],
-        },
+        }),
     )
     .await;
     let face: Vec<u8> = (0..FACE_UNITS as u8).collect();
     send(
         &mut dev,
-        &NetMessage::SetFaceFrame {
+        &NetMessage::SetFaceFrame(msg::SetFaceFrame {
             weights: face.clone(),
-        },
+        }),
     )
     .await;
     let got = tokio::time::timeout(Duration::from_secs(5), async {

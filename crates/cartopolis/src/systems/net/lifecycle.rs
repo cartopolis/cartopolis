@@ -3,6 +3,7 @@
 //! Registered by `lib.rs`'s `ShellPlugin`.
 
 use bevy::prelude::*;
+use cartopolis_core::msg;
 
 #[cfg(target_os = "android")]
 use crate::crash::run_breadcrumb_path;
@@ -103,10 +104,10 @@ fn set_presence(session: Option<&resources::OnlineSession>, active: bool) {
     if let Some(session) = session {
         session.send(
             "presence",
-            cartopolis_core::NetMessage::SetPresence {
+            cartopolis_core::NetMessage::SetPresence(msg::SetPresence {
                 request_id: 0,
                 active,
-            },
+            }),
         );
     }
 }

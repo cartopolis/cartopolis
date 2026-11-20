@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 // ---------------------------------------------------------------------------
 // Groups, communities, meet-ups and the calendar
@@ -103,10 +104,10 @@ pub(super) fn undo(
             for id in &ids {
                 online.send(
                     "agent undo",
-                    NetMessage::DeletePrim {
+                    NetMessage::DeletePrim(msg::DeletePrim {
                         request_id: 0,
                         prim_id: *id,
-                    },
+                    }),
                 );
             }
             if let Some(i) = state.batches.iter().rposition(|b| *b == ids) {

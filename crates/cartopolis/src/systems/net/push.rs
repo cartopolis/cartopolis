@@ -11,6 +11,7 @@
 //! itself is the roster this client already shows once connected.
 
 use bevy::prelude::*;
+use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
 
 use crate::resources::OnlineSession;
@@ -53,9 +54,9 @@ pub fn send_push_endpoint(
     if endpoint.is_some() && endpoint != *sent {
         online.send(
             "push endpoint",
-            NetMessage::SetPushEndpoint {
+            NetMessage::SetPushEndpoint(msg::SetPushEndpoint {
                 endpoint: endpoint.clone(),
-            },
+            }),
         );
         tracing::info!("push endpoint registered with the simulator");
         *sent = endpoint;

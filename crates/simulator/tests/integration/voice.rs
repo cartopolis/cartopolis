@@ -9,6 +9,7 @@
 //! authenticate as the same account and spawn co-located, and `SimHandle`
 //! exposes no way to move them apart.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,7 +47,7 @@ async fn start_sim() -> (SimHandle, String, tempfile::TempDir) {
 /// chat-only web UI stays out of the world.
 fn stand_here() -> Bytes {
     Bytes::from(
-        encode_app_frame(&NetMessage::ClientIntent {
+        encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.0,
             move_z: 0.0,
@@ -62,7 +63,7 @@ fn stand_here() -> Bytes {
                 latitude: 53.2194,
                 longitude: 6.5665,
             }),
-        })
+        }))
         .unwrap(),
     )
 }
@@ -110,11 +111,11 @@ async fn connect_auth(addr: &str) -> Client {
 
 fn say(seq: u32, payload: &[u8]) -> Bytes {
     Bytes::from(
-        encode_app_frame(&NetMessage::VoiceFrame {
+        encode_app_frame(&NetMessage::VoiceFrame(msg::VoiceFrame {
             scope: ChatScope::Local { shout: false },
             seq,
             payload: payload.to_vec(),
-        })
+        }))
         .unwrap(),
     )
 }
@@ -183,11 +184,11 @@ async fn global_voice_is_dropped() {
     let mut a = connect_auth(&addr).await;
     let mut b = connect_auth(&addr).await;
 
-    let frame = encode_app_frame(&NetMessage::VoiceFrame {
+    let frame = encode_app_frame(&NetMessage::VoiceFrame(msg::VoiceFrame {
         scope: ChatScope::Global,
         seq: 1,
         payload: b"everyone".to_vec(),
-    })
+    }))
     .unwrap();
     a.send(Bytes::from(frame)).await.unwrap();
 

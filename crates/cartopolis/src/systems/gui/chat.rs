@@ -11,6 +11,7 @@
 //! extra channels with no change to any of this.
 
 use bevy::prelude::*;
+use cartopolis_core::msg;
 use cartopolis_core::{ChatScope, NetMessage, ReportReason};
 use std::collections::HashMap;
 
@@ -1102,14 +1103,14 @@ pub(crate) fn render_report_dialog(
     } else if submit {
         online.send(
             "report user",
-            NetMessage::ReportUser {
+            NetMessage::ReportUser(msg::ReportUser {
                 request_id: 0,
                 username: draft.username.clone(),
                 reason: draft.reason,
                 note: draft.note.clone(),
                 message: draft.message.clone(),
                 asset: draft.asset.clone(),
-            },
+            }),
         );
     }
     if submit || cancel || !open {

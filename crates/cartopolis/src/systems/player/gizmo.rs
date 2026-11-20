@@ -9,6 +9,7 @@ use crate::resources::{EditDialogState, OnlineSession};
 use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
+use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
 use std::f32::consts::TAU;
 
@@ -337,7 +338,7 @@ pub fn handle_gizmo_interaction(
                     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
                     session.send(
                         "update prim",
-                        NetMessage::UpdatePrim {
+                        NetMessage::UpdatePrim(msg::UpdatePrim {
                             request_id: generate_request_id(),
                             prim_id: prim.id,
                             position: transform.translation,
@@ -360,7 +361,7 @@ pub fn handle_gizmo_interaction(
                             // gizmo can be dragging something the dialog was never
                             // opened on.
                             model: prim.model.clone(),
-                        },
+                        }),
                     );
                 }
             }
@@ -448,7 +449,7 @@ pub fn handle_gizmo_interaction(
             if let Some(geo) = crate::systems::prim_geo::geo_for(cell, &transform, &map_anchor) {
                 session.send(
                     "update prim",
-                    NetMessage::UpdatePrim {
+                    NetMessage::UpdatePrim(msg::UpdatePrim {
                         request_id: generate_request_id(),
                         prim_id: prim.id,
                         position: transform.translation,
@@ -462,7 +463,7 @@ pub fn handle_gizmo_interaction(
                         geo,
                         particles: prim.particles,
                         model: prim.model.clone(),
-                    },
+                    }),
                 );
             }
         }

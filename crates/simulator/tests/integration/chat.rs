@@ -1,6 +1,7 @@
 //! End-to-end chat over loopback TCP (ADR-028): global delivery to another
 //! connected client, and scrollback replay to a client that connects later.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,11 +73,11 @@ async fn global_delivery_and_scrollback() {
     // Two clients connected; A shouts globally, B receives it.
     let mut a = connect_auth(&addr).await;
     let mut b = connect_auth(&addr).await;
-    let send = encode_app_frame(&NetMessage::ChatSend {
+    let send = encode_app_frame(&NetMessage::ChatSend(msg::ChatSend {
         request_id: 1,
         scope: ChatScope::Global,
         body: "hello world".into(),
-    })
+    }))
     .unwrap();
     a.send(Bytes::from(send)).await.unwrap();
 

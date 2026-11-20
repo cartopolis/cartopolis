@@ -28,6 +28,7 @@
 
 use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
+use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
 
 pub use cartopolis_chat::{
@@ -635,11 +636,11 @@ pub fn drive_private_chats(
                             own_index: cartopolis_calls::events::guest_index(participant),
                             members: e.members.iter().map(|m| m.0).collect(),
                         };
-                        out.push(NetMessage::CallKeyDrop {
+                        out.push(NetMessage::CallKeyDrop(msg::CallKeyDrop {
                             group: group.clone(),
                             participant,
                             sealed: cartopolis_calls::events::seal_guest(&secret, &group, &key),
-                        });
+                        }));
                     }
                 }
             }

@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 /// Answer one request, or park it: `None` means the reply was kept and will be
 /// sent by [`settle`].
@@ -164,11 +165,11 @@ pub(super) fn handle(
                 .count();
             online.send(
                 "agent script",
-                NetMessage::SetPrimScript {
+                NetMessage::SetPrimScript(msg::SetPrimScript {
                     request_id: 0,
                     prim_id: args.id,
                     source: args.source,
-                },
+                }),
             );
             state.pending.push(Pending::Script {
                 id: args.id,
@@ -341,10 +342,10 @@ pub(super) fn handle(
                 for id in &args.ids {
                     online.send(
                         "agent delete",
-                        NetMessage::DeletePrim {
+                        NetMessage::DeletePrim(msg::DeletePrim {
                             request_id: 0,
                             prim_id: *id,
-                        },
+                        }),
                     );
                 }
                 state.built.retain(|id| !args.ids.contains(id));
@@ -364,10 +365,10 @@ pub(super) fn handle(
             Some(online) => {
                 online.send(
                     "agent touch",
-                    NetMessage::TouchPrim {
+                    NetMessage::TouchPrim(msg::TouchPrim {
                         request_id: 0,
                         prim_id: args.id,
-                    },
+                    }),
                 );
                 AgentReply::ok(
                     format!("Touched object {}.", args.id),
@@ -671,10 +672,10 @@ pub(super) fn handle(
                 w.script.needs_fetch = false;
                 online.send(
                     "agent inspect script",
-                    NetMessage::GetPrimScript {
+                    NetMessage::GetPrimScript(msg::GetPrimScript {
                         request_id: 0,
                         prim_id: args.id,
-                    },
+                    }),
                 );
                 state.pending.push(Pending::Inspect {
                     id: args.id,

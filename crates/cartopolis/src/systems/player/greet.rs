@@ -10,6 +10,7 @@
 
 use bevy::prelude::*;
 use cartopolis_core::greet::{Greeting, OFFER_SECS};
+use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
 
 use crate::components::RemoteAvatar;
@@ -170,11 +171,11 @@ impl Greetings {
     pub fn offer(&mut self, online: &OnlineSession, to: u64, greeting: Greeting) {
         if online.send(
             "offer a greeting",
-            NetMessage::OfferGreeting {
+            NetMessage::OfferGreeting(msg::OfferGreeting {
                 request_id: GREET_REQUEST,
                 to,
                 greeting,
-            },
+            }),
         ) {
             self.outgoing = Some((to, OFFER_SECS));
         }
@@ -189,10 +190,10 @@ impl Greetings {
         self.incoming.retain(|o| o.from != from);
         online.send(
             "accept a greeting",
-            NetMessage::AcceptGreeting {
+            NetMessage::AcceptGreeting(msg::AcceptGreeting {
                 request_id: GREET_REQUEST,
                 from,
-            },
+            }),
         );
     }
 

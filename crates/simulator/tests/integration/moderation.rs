@@ -6,6 +6,7 @@
 //! lives: a client can be rewritten, so "the block is applied in the UI" is not a
 //! block at all, and every one of these asserts that the *server* refuses.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -125,11 +126,11 @@ async fn a_listed_word_is_masked_before_anybody_receives_it() {
 
     send(
         &mut a,
-        &NetMessage::ChatSend {
+        &NetMessage::ChatSend(msg::ChatSend {
             request_id: 1,
             scope: ChatScope::Global,
             body: "you absolute retard, go away".into(),
-        },
+        }),
     )
     .await;
 
@@ -154,11 +155,11 @@ async fn a_blocked_speaker_is_not_delivered_and_the_block_survives_a_reconnect()
     // Bob blocks Alice, and gets his list back rather than an ack.
     send(
         &mut b,
-        &NetMessage::SetBlocked {
+        &NetMessage::SetBlocked(msg::SetBlocked {
             request_id: 1,
             username: "alice".into(),
             blocked: true,
-        },
+        }),
     )
     .await;
     let list = next_matching(&mut b, PATIENT, |m| match m {
@@ -172,11 +173,11 @@ async fn a_blocked_speaker_is_not_delivered_and_the_block_survives_a_reconnect()
     for scope in [ChatScope::Global, ChatScope::Local { shout: false }] {
         send(
             &mut a,
-            &NetMessage::ChatSend {
+            &NetMessage::ChatSend(msg::ChatSend {
                 request_id: 2,
                 scope,
                 body: "still here".into(),
-            },
+            }),
         )
         .await;
     }
@@ -220,11 +221,11 @@ async fn blocking_yourself_is_refused() {
 
     send(
         &mut a,
-        &NetMessage::SetBlocked {
+        &NetMessage::SetBlocked(msg::SetBlocked {
             request_id: 1,
             username: "ALICE".into(),
             blocked: true,
-        },
+        }),
     )
     .await;
     assert_eq!(
@@ -247,14 +248,14 @@ async fn a_report_is_acknowledged_and_stored_for_the_operator() {
 
     send(
         &mut b,
-        &NetMessage::ReportUser {
+        &NetMessage::ReportUser(msg::ReportUser {
             request_id: 9,
             username: "alice".into(),
             reason: ReportReason::Harassment,
             note: "followed me for ten minutes".into(),
             message: Some("the line as bob saw it".into()),
             asset: None,
-        },
+        }),
     )
     .await;
     let accepted = next_matching(&mut b, PATIENT, |m| match m {
@@ -282,14 +283,14 @@ async fn a_report_is_acknowledged_and_stored_for_the_operator() {
     // Reporting yourself is refused rather than silently filed.
     send(
         &mut b,
-        &NetMessage::ReportUser {
+        &NetMessage::ReportUser(msg::ReportUser {
             request_id: 10,
             username: "bob".into(),
             reason: ReportReason::Other,
             note: String::new(),
             message: None,
             asset: None,
-        },
+        }),
     )
     .await;
     let accepted = next_matching(&mut b, PATIENT, |m| match m {
@@ -314,10 +315,10 @@ async fn deleting_your_own_account_needs_the_password_and_then_takes_effect() {
     // The wrong password is refused, and the session survives to try again.
     send(
         &mut a,
-        &NetMessage::DeleteAccount {
+        &NetMessage::DeleteAccount(msg::DeleteAccount {
             request_id: 1,
             password: "not it".into(),
-        },
+        }),
     )
     .await;
     let code = next_matching(&mut a, PATIENT, |m| match m {
@@ -330,10 +331,10 @@ async fn deleting_your_own_account_needs_the_password_and_then_takes_effect() {
 
     send(
         &mut a,
-        &NetMessage::DeleteAccount {
+        &NetMessage::DeleteAccount(msg::DeleteAccount {
             request_id: 2,
             password: "pw".into(),
-        },
+        }),
     )
     .await;
     assert!(

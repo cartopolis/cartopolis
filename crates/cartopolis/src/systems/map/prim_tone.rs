@@ -449,6 +449,7 @@ mod tests {
 mod virtual_player {
     use super::*;
     use bytes::Bytes;
+    use cartopolis_core::msg;
     use cartopolis_core::{
         decode_app_frame, encode_app_frame, AuthCredential, GeoAnchor, HandPose, NetMessage,
         PrimDto, PrimGeometry, PrimSurface, PROTOCOL_VERSION,
@@ -673,7 +674,7 @@ mod virtual_player {
         {
             send(
                 &mut player,
-                &NetMessage::CreatePrim {
+                &NetMessage::CreatePrim(msg::CreatePrim {
                     request_id: n as u32 + 1,
                     name: spec.name.clone().unwrap_or_default(),
                     position: Vec3::new(0.0, spec.altitude.unwrap_or(0.0), 0.0),
@@ -691,7 +692,7 @@ mod virtual_player {
                     particles: None,
                     model: None,
                     draft: false,
-                },
+                }),
             )
             .await;
             let prim = recv_until(&mut player, "a theremin part", |m| match m {
@@ -704,11 +705,11 @@ mod virtual_player {
                 prim_id = Some(prim.id);
                 send(
                     &mut player,
-                    &NetMessage::SetPrimScript {
+                    &NetMessage::SetPrimScript(msg::SetPrimScript {
                         request_id: 100,
                         prim_id: prim.id,
                         source,
-                    },
+                    }),
                 )
                 .await;
             }

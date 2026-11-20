@@ -1,4 +1,11 @@
 # The wire's shape. Generated; see wire_shape.rs.
+AcceptGreeting = struct
+  .0 request_id: U32
+  .1 from: U64
+AnswerContact = struct
+  .0 request_id: U32
+  .1 username: Str
+  .2 accept: Bool
 AuthCredential = enum
   #0 Token(Str)
   #1 Password { username: Str, password: Str }
@@ -55,9 +62,30 @@ CallAction = enum
   #17 OpenRooms { names: Vec<Str>, assign: Vec<(U64, U32)>, minutes: U32, may_move: Bool }
   #18 MoveTo { participant: U64, room: U32 }
   #19 CloseRooms
+CallAnswer = struct
+  .0 group: Vec<U8>
+  .1 sdp: Str
+CallControl = struct
+  .0 group: Vec<U8>
+  .1 action: CallAction
+CallDecline = struct
+  .0 group: Vec<U8>
 CallEndReason = enum
   #0 Removed { by: Str }
   #1 Ended { by: Str }
+CallInvite = struct
+  .0 group: Vec<U8>
+CallJoin = struct
+  .0 request_id: U32
+  .1 group: Vec<U8>
+  .2 offer: Str
+  .3 screen: Option<Str>
+CallKeyDrop = struct
+  .0 group: Vec<U8>
+  .1 participant: U64
+  .2 sealed: Vec<U8>
+CallLeave = struct
+  .0 group: Vec<U8>
 CallMember = struct
   .0 participant: U64
   .1 username: Str
@@ -71,6 +99,10 @@ CallMember = struct
   .9 guest: Bool
   .10 room: U32
   .11 agent: Bool
+CallReact = struct
+  .0 group: Vec<U8>
+  .1 epoch: U64
+  .2 sealed: Vec<U8>
 CallRole = enum
   #0 Member
   #1 CoHost
@@ -98,9 +130,29 @@ CallWaiter = struct
   .1 username: Str
   .2 guest: Bool
   .3 since_ms: U64
+CallWatch = struct
+  .0 group: Vec<U8>
+  .1 cameras: Option<Vec<U64>>
 ChatScope = enum
   #0 Local { shout: Bool }
   #1 Global
+ChatSend = struct
+  .0 request_id: U32
+  .1 scope: ChatScope
+  .2 body: Str
+ClientIntent = struct
+  .0 request_id: U32
+  .1 move_x: F32
+  .2 move_z: F32
+  .3 display_yaw: F32
+  .4 flying: Bool
+  .5 fly_up: Bool
+  .6 fly_down: Bool
+  .7 jump: Bool
+  .8 emote: Option<Emote>
+  .9 expression: Option<Expression>
+  .10 seated: Option<[F32; 2]>
+  .11 geo: Option<GeoAnchor>
 CommunityDto = struct
   .0 id: Bytes
   .1 home: Str
@@ -172,10 +224,38 @@ ContactSettings = struct
   .2 notify_requests: Bool
   .3 separate_new_accounts: Bool
   .4 link_code: Str
+CreatePrim = struct
+  .0 request_id: U32
+  .1 name: Str
+  .2 position: Vec3
+  .3 rotation: Vec3
+  .4 scale: Vec3
+  .5 color: [F32; 3]
+  .6 texture_id: Option<Str>
+  .7 shape: Str
+  .8 surface: PrimSurface
+  .9 geometry: PrimGeometry
+  .10 geo: GeoAnchor
+  .11 particles: Option<ParticleEffect>
+  .12 model: Option<Str>
+  .13 draft: Bool
+DeleteAccount = struct
+  .0 request_id: U32
+  .1 password: Str
+DeletePrim = struct
+  .0 request_id: U32
+  .1 prim_id: I64
 DirectoryOrder = enum
   #0 Popular
   #1 New
   #2 Near
+E2eeClaimKeyPackages = struct
+  .0 request_id: U32
+  .1 address: Str
+E2eeCreateGroup = struct
+  .0 request_id: U32
+  .1 group: Vec<U8>
+  .2 direct_with: Option<Str>
 E2eeCursor = struct
   .0 group: Vec<U8>
   .1 after: U64
@@ -185,6 +265,20 @@ E2eeKeyPackage = struct
 E2eeNewDevice = struct
   .0 address: Str
   .1 package: E2eeKeyPackage
+E2eeRegisterDevice = struct
+  .0 request_id: U32
+  .1 device: Bytes
+  .2 key_packages: Vec<Vec<U8>>
+E2eeSend = struct
+  .0 request_id: U32
+  .1 group: Vec<U8>
+  .2 epoch: U64
+  .3 commit: Bool
+  .4 message: Vec<U8>
+  .5 welcome: Option<E2eeWelcome>
+E2eeSync = struct
+  .0 request_id: U32
+  .1 cursors: Vec<E2eeCursor>
 E2eeWelcome = struct
   .0 devices: Vec<Bytes>
   .1 members: Vec<Str>
@@ -214,9 +308,19 @@ Expression = enum
 ExpressionState = struct
   .0 expression: Expression
   .1 sequence: U32
+FollowPlans = struct
+  .0 places: Vec<[F64; 2]>
 GeoAnchor = struct
   .0 latitude: F64
   .1 longitude: F64
+GetNearbyPeople = struct
+  .0 request_id: U32
+GetPrimScript = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+GrabPrim = struct
+  .0 request_id: U32
+  .1 prim_id: I64
 Greeting = enum
   #0 Handshake
   #1 HighFive
@@ -240,6 +344,10 @@ ListingState = enum
   #1 Asked
   #2 Member
   #3 Refused
+LookupPerson = struct
+  .0 request_id: U32
+  .1 username: Option<Str>
+  .2 avatar_id: Option<U64>
 MetDto = struct
   .0 at_ms: U64
   .1 latitude: F64
@@ -253,80 +361,80 @@ NetMessage = enum
   #0 ClientHello { protocol_version: U16, auth: AuthCredential }
   #1 ServerHelloAck { session_id: Bytes, tick_hz: F32, your_avatar_id: U64, principal_id: Bytes, username: Str, session_token: Str, osm_tile_url_template: Str, api_base_url: Str, server_name: Str, last_place: Option<GeoAnchor> }
   #2 ServerError { request_id: U32, code: U32, message: Str }
-  #3 ClientIntent { request_id: U32, move_x: F32, move_z: F32, display_yaw: F32, flying: Bool, fly_up: Bool, fly_down: Bool, jump: Bool, emote: Option<Emote>, expression: Option<Expression>, seated: Option<[F32; 2]>, geo: Option<GeoAnchor> }
+  #3 ClientIntent(ClientIntent)
   #4 WorldSnapshot { tick: U64, avatars: Vec<AvatarStateDto> }
   #5 PrimRemoved { id: I64 }
   #6 PrimOutOfReach { id: I64 }
-  #7 CreatePrim { request_id: U32, name: Str, position: Vec3, rotation: Vec3, scale: Vec3, color: [F32; 3], texture_id: Option<Str>, shape: Str, surface: PrimSurface, geometry: PrimGeometry, geo: GeoAnchor, particles: Option<ParticleEffect>, model: Option<Str>, draft: Bool }
-  #8 UpdatePrim { request_id: U32, prim_id: I64, position: Vec3, rotation: Vec3, scale: Vec3, color: [F32; 3], texture_id: Option<Str>, name: Str, surface: PrimSurface, geometry: PrimGeometry, geo: GeoAnchor, particles: Option<ParticleEffect>, model: Option<Str> }
-  #9 DeletePrim { request_id: U32, prim_id: I64 }
+  #7 CreatePrim(CreatePrim)
+  #8 UpdatePrim(UpdatePrim)
+  #9 DeletePrim(DeletePrim)
   #10 PrimUpsert { prim: PrimDto }
   #11 TextureCatalogRequest
   #12 TextureCatalog { textures: Vec<TextureEntry> }
-  #13 TextureRequest { request_id: U32, texture_id: Str }
+  #13 TextureRequest(TextureRequest)
   #14 TextureData { request_id: U32, texture_id: Str, png_bytes: Vec<U8> }
   #15 TextureNotFound { request_id: U32, texture_id: Str }
-  #16 ChatSend { request_id: U32, scope: ChatScope, body: Str }
+  #16 ChatSend(ChatSend)
   #17 ChatMessage { channel: Str, sender_id: U64, sender_name: Str, sent_at_ms: U64, body: Str, distance_m: Option<F32> }
-  #18 GetPrimScript { request_id: U32, prim_id: I64 }
-  #19 SetPrimScript { request_id: U32, prim_id: I64, source: Str }
+  #18 GetPrimScript(GetPrimScript)
+  #19 SetPrimScript(SetPrimScript)
   #20 PrimScript { prim_id: I64, source: Str, running: Bool }
   #21 ScriptOutput { prim_id: I64, level: ScriptLevel, text: Str, at_ms: U64 }
-  #22 TouchPrim { request_id: U32, prim_id: I64 }
+  #22 TouchPrim(TouchPrim)
   #23 WorldCapacity { prims_used: U32, prims_max: U32, scripts_used: U32, scripts_max: U32, script_memory_bytes: U32 }
-  #24 VoiceFrame { scope: ChatScope, seq: U32, payload: Vec<U8> }
+  #24 VoiceFrame(VoiceFrame)
   #25 VoiceData { channel: Str, sender_id: U64, seq: U32, payload: Vec<U8>, distance_m: Option<F32> }
-  #26 SetBlocked { request_id: U32, username: Str, blocked: Bool }
+  #26 SetBlocked(SetBlocked)
   #27 BlockedList { usernames: Vec<Str> }
-  #28 ReportUser { request_id: U32, username: Str, reason: ReportReason, note: Str, message: Option<Str>, asset: Option<Str> }
+  #28 ReportUser(ReportUser)
   #29 ReportAck { request_id: U32, accepted: Bool }
-  #30 DeleteAccount { request_id: U32, password: Str }
+  #30 DeleteAccount(DeleteAccount)
   #31 AccountDeleted
-  #32 Teleport { request_id: U32, geo: GeoAnchor, alt_m: F32 }
-  #33 SetPresence { request_id: U32, active: Bool }
-  #34 E2eeRegisterDevice { request_id: U32, device: Bytes, key_packages: Vec<Vec<U8>> }
+  #32 Teleport(Teleport)
+  #33 SetPresence(SetPresence)
+  #34 E2eeRegisterDevice(E2eeRegisterDevice)
   #35 E2eeDeviceStatus { request_id: U32, key_packages: U32 }
-  #36 E2eeClaimKeyPackages { request_id: U32, address: Str }
+  #36 E2eeClaimKeyPackages(E2eeClaimKeyPackages)
   #37 E2eeKeyPackages { request_id: U32, address: Str, packages: Vec<E2eeKeyPackage> }
-  #38 E2eeCreateGroup { request_id: U32, group: Vec<U8>, direct_with: Option<Str> }
+  #38 E2eeCreateGroup(E2eeCreateGroup)
   #39 E2eeGroupCreated { request_id: U32, group: Vec<U8>, existing: Option<Vec<U8>> }
-  #40 E2eeSend { request_id: U32, group: Vec<U8>, epoch: U64, commit: Bool, message: Vec<U8>, welcome: Option<E2eeWelcome> }
+  #40 E2eeSend(E2eeSend)
   #41 E2eeSent { request_id: U32, group: Vec<U8>, seq: Option<U64>, refused: Option<Str> }
-  #42 E2eeSync { request_id: U32, cursors: Vec<E2eeCursor> }
+  #42 E2eeSync(E2eeSync)
   #43 E2eeSynced { request_id: U32 }
   #44 E2eeDeliver { group: Vec<U8>, seq: U64, sender: Str, device: Bytes, sent_at_ms: U64, commit: Bool, message: Vec<U8> }
   #45 E2eeInvite { group: Vec<U8>, from: Str, after: U64, welcome: Vec<U8> }
-  #46 CallJoin { request_id: U32, group: Vec<U8>, offer: Str, screen: Option<Str> }
+  #46 CallJoin(CallJoin)
   #47 CallJoined { request_id: U32, group: Vec<U8>, participant: U64, answer: Str }
   #48 CallOffer { group: Vec<U8>, sdp: Str, tracks: Vec<CallTrack> }
-  #49 CallAnswer { group: Vec<U8>, sdp: Str }
-  #50 CallLeave { group: Vec<U8> }
+  #49 CallAnswer(CallAnswer)
+  #50 CallLeave(CallLeave)
   #51 CallRoster { group: Vec<U8>, members: Vec<CallMember>, settings: CallSettings, waiting: Vec<CallWaiter>, spotlight: Option<U64>, rooms: Option<CallRooms> }
   #52 ContactsState { contacts: Vec<ContactDto>, incoming: Vec<ContactRequestDto>, outgoing: Vec<ContactRequestDto>, settings: ContactSettings }
-  #53 RequestContact { request_id: U32, username: Str, link_code: Option<Str> }
-  #54 AnswerContact { request_id: U32, username: Str, accept: Bool }
-  #55 RemoveContact { request_id: U32, username: Str }
-  #56 SetContactSettings { request_id: U32, policy: RequestPolicy, show_online: Bool, notify_requests: Bool, separate_new_accounts: Bool, reset_link: Bool }
-  #57 LookupPerson { request_id: U32, username: Option<Str>, avatar_id: Option<U64> }
+  #53 RequestContact(RequestContact)
+  #54 AnswerContact(AnswerContact)
+  #55 RemoveContact(RemoveContact)
+  #56 SetContactSettings(SetContactSettings)
+  #57 LookupPerson(LookupPerson)
   #58 PersonInfo { request_id: U32, person: Option<PersonDto> }
-  #59 GetNearbyPeople { request_id: U32 }
+  #59 GetNearbyPeople(GetNearbyPeople)
   #60 NearbyPeople { request_id: U32, people: Vec<NearbyPersonDto> }
-  #61 SetPrimVideo { request_id: U32, prim_id: I64, video: Option<SetVideo> }
-  #62 SetPushEndpoint { endpoint: Option<Str> }
-  #63 WherePeople { request_id: U32, usernames: Vec<Str> }
+  #61 SetPrimVideo(SetPrimVideo)
+  #62 SetPushEndpoint(SetPushEndpoint)
+  #63 WherePeople(WherePeople)
   #64 PeopleWhere { request_id: U32, people: Vec<PersonWhereDto> }
-  #65 CallDecline { group: Vec<U8> }
+  #65 CallDecline(CallDecline)
   #66 CallDeclined { group: Vec<U8>, username: Str }
   #67 PrimSound { prim_id: I64, sound: PrimSound }
-  #68 SetPrimPhysical { request_id: U32, prim_id: I64, physical: Bool }
+  #68 SetPrimPhysical(SetPrimPhysical)
   #69 PrimMotion { tick: U64, bodies: Vec<PrimBody> }
-  #70 GrabPrim { request_id: U32, prim_id: I64 }
-  #71 ReleasePrim { request_id: U32, throw: Bool }
-  #72 OfferGreeting { request_id: U32, to: U64, greeting: Greeting }
+  #70 GrabPrim(GrabPrim)
+  #71 ReleasePrim(ReleasePrim)
+  #72 OfferGreeting(OfferGreeting)
   #73 GreetingOffered { from: U64, name: Str, greeting: Option<Greeting> }
-  #74 AcceptGreeting { request_id: U32, from: U64 }
+  #74 AcceptGreeting(AcceptGreeting)
   #75 GreetingStarted { greeting: Greeting, partner: U64, yaw: F32 }
-  #76 FollowPlans { places: Vec<[F64; 2]> }
+  #76 FollowPlans(FollowPlans)
   #77 Permissions { granted: Vec<Str> }
   #78 HandPose { pose: HandPose }
   #79 PrimTone { prim_id: I64, tone: Option<ToneSpec> }
@@ -359,20 +467,24 @@ NetMessage = enum
   #106 CommunityInviteLookup { request_id: U32, code: Str }
   #107 CommunityJoinInvite { request_id: U32, code: Str }
   #108 E2eeAddDevices { group: Vec<U8>, devices: Vec<E2eeNewDevice> }
-  #109 CallControl { group: Vec<U8>, action: CallAction }
+  #109 CallControl(CallControl)
   #110 CallEnded { group: Vec<U8>, reason: CallEndReason }
-  #111 CallReact { group: Vec<U8>, epoch: U64, sealed: Vec<U8> }
+  #111 CallReact(CallReact)
   #112 CallReacted { group: Vec<U8>, participant: U64, epoch: U64, sealed: Vec<U8> }
-  #113 CallWatch { group: Vec<U8>, cameras: Option<Vec<U64>> }
+  #113 CallWatch(CallWatch)
   #114 CallWaiting { request_id: U32, group: Vec<U8>, participant: U64 }
-  #115 CallInvite { group: Vec<U8> }
+  #115 CallInvite(CallInvite)
   #116 CallInvited { group: Vec<U8>, code: Str, expires_ms: U64 }
-  #117 CallKeyDrop { group: Vec<U8>, participant: U64, sealed: Vec<U8> }
+  #117 CallKeyDrop(CallKeyDrop)
   #118 CallKeyDropped { group: Vec<U8>, sealed: Vec<U8> }
-  #119 SetAvatarLook { look: AvatarLook }
+  #119 SetAvatarLook(SetAvatarLook)
   #120 AvatarLookOf { avatar_id: U64, look: AvatarLook }
-  #121 SetFaceFrame { weights: Vec<U8> }
+  #121 SetFaceFrame(SetFaceFrame)
   #122 FaceFrameOf { avatar_id: U64, weights: Vec<U8> }
+OfferGreeting = struct
+  .0 request_id: U32
+  .1 to: U64
+  .2 greeting: Greeting
 ParticleEffect = struct
   .0 count: U16
   .1 life: F32
@@ -478,6 +590,12 @@ Relation = enum
   #2 Contact
   #3 RequestSent
   #4 RequestReceived
+ReleasePrim = struct
+  .0 request_id: U32
+  .1 throw: Bool
+RemoveContact = struct
+  .0 request_id: U32
+  .1 username: Str
 ReportReason = enum
   #0 Harassment
   #1 HateSpeech
@@ -485,6 +603,17 @@ ReportReason = enum
   #3 Threat
   #4 Spam
   #5 Other
+ReportUser = struct
+  .0 request_id: U32
+  .1 username: Str
+  .2 reason: ReportReason
+  .3 note: Str
+  .4 message: Option<Str>
+  .5 asset: Option<Str>
+RequestContact = struct
+  .0 request_id: U32
+  .1 username: Str
+  .2 link_code: Option<Str>
 RequestPolicy = enum
   #0 Anyone
   #1 Near
@@ -493,6 +622,38 @@ ScriptLevel = enum
   #0 Info
   #1 Notice
   #2 Error
+SetAvatarLook = struct
+  .0 look: AvatarLook
+SetBlocked = struct
+  .0 request_id: U32
+  .1 username: Str
+  .2 blocked: Bool
+SetContactSettings = struct
+  .0 request_id: U32
+  .1 policy: RequestPolicy
+  .2 show_online: Bool
+  .3 notify_requests: Bool
+  .4 separate_new_accounts: Bool
+  .5 reset_link: Bool
+SetFaceFrame = struct
+  .0 weights: Vec<U8>
+SetPresence = struct
+  .0 request_id: U32
+  .1 active: Bool
+SetPrimPhysical = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+  .2 physical: Bool
+SetPrimScript = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+  .2 source: Str
+SetPrimVideo = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+  .2 video: Option<SetVideo>
+SetPushEndpoint = struct
+  .0 endpoint: Option<Str>
 SetVideo = struct
   .0 asset: Str
   .1 looped: Bool
@@ -504,9 +665,16 @@ SoundName = enum
   #4 Bell
   #5 Click
   #6 Whoosh
+Teleport = struct
+  .0 request_id: U32
+  .1 geo: GeoAnchor
+  .2 alt_m: F32
 TextureEntry = struct
   .0 id: Str
   .1 name: Str
+TextureRequest = struct
+  .0 request_id: U32
+  .1 texture_id: Str
 ToneSpec = struct
   .0 voice: Voice
   .1 pitch_hz: F32
@@ -520,9 +688,33 @@ TopicDto = struct
   .2 position: U32
   .3 archived: Bool
   .4 joined: Bool
+TouchPrim = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+UpdatePrim = struct
+  .0 request_id: U32
+  .1 prim_id: I64
+  .2 position: Vec3
+  .3 rotation: Vec3
+  .4 scale: Vec3
+  .5 color: [F32; 3]
+  .6 texture_id: Option<Str>
+  .7 name: Str
+  .8 surface: PrimSurface
+  .9 geometry: PrimGeometry
+  .10 geo: GeoAnchor
+  .11 particles: Option<ParticleEffect>
+  .12 model: Option<Str>
 Vec3 = (F32, F32, F32)
 Voice = enum
   #0 Sine
   #1 Organ
   #2 Saw
   #3 Square
+VoiceFrame = struct
+  .0 scope: ChatScope
+  .1 seq: U32
+  .2 payload: Vec<U8>
+WherePeople = struct
+  .0 request_id: U32
+  .1 usernames: Vec<Str>

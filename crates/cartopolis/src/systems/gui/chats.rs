@@ -34,6 +34,7 @@ use crate::systems::egui_manager::EguiMut;
 use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
 use cartopolis_core::meeting::Every;
+use cartopolis_core::msg;
 use cartopolis_core::{NetMessage, ReportReason};
 use std::collections::HashMap;
 
@@ -4625,11 +4626,11 @@ fn apply(
             let Some(username) = name else { continue };
             online.send(
                 "set blocked",
-                NetMessage::SetBlocked {
+                NetMessage::SetBlocked(msg::SetBlocked {
                     request_id: 0,
                     username,
                     blocked: on,
-                },
+                }),
             );
         }
     }
@@ -4671,11 +4672,11 @@ fn send_line(
         Some(online) => {
             online.send(
                 "chat send",
-                NetMessage::ChatSend {
+                NetMessage::ChatSend(msg::ChatSend {
                     request_id: 0,
                     scope: crate::systems::chat::scope_for(key, false),
                     body,
-                },
+                }),
             );
         }
         None if demo => {

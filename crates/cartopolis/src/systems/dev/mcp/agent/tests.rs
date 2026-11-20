@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 #[test]
 fn a_private_only_client_refuses_scripts_that_could_speak() {
@@ -112,7 +113,7 @@ fn a_build_object_becomes_a_create_and_a_typo_is_refused() {
         }),
     )
     .unwrap();
-    let NetMessage::CreatePrim {
+    let NetMessage::CreatePrim(msg::CreatePrim {
         name,
         shape,
         position,
@@ -120,7 +121,7 @@ fn a_build_object_becomes_a_create_and_a_typo_is_refused() {
         scale,
         geo,
         ..
-    } = msg
+    }) = msg
     else {
         panic!("not a CreatePrim");
     };

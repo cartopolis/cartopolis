@@ -19,6 +19,7 @@
 //!   carry a geographic position, the sim to keep it, and `script_views` to
 //!   measure it against the prim's anchor — three files, one answer.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -140,7 +141,7 @@ async fn connect(addr: &str, username: &str, password: &str) -> Client {
 /// metres in its own client's anchored frame, so the server cannot derive this
 /// and a sensor has nothing to measure against a prim's absolute anchor.
 async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
-    let msg = NetMessage::ClientIntent {
+    let msg = NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -156,7 +157,7 @@ async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -196,7 +197,7 @@ async fn session(handle: &SimHandle, username: &str, password: &str) -> String {
 
 /// Build a prim over the wire, as a player does — the path that records an owner.
 async fn build(c: &mut Client, name: &str, lat: f64, lng: f64) -> i64 {
-    let msg = NetMessage::CreatePrim {
+    let msg = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 1,
         name: name.into(),
         position: glam::Vec3::new(0.0, 2.0, 0.0),
@@ -214,7 +215,7 @@ async fn build(c: &mut Client, name: &str, lat: f64, lng: f64) -> i64 {
         particles: None,
         model: None,
         draft: false,
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -227,11 +228,11 @@ async fn build(c: &mut Client, name: &str, lat: f64, lng: f64) -> i64 {
 
 /// Store a script without waiting for the outcome, so the caller can inspect it.
 async fn send_script(c: &mut Client, prim_id: i64, source: &str) {
-    let msg = NetMessage::SetPrimScript {
+    let msg = NetMessage::SetPrimScript(msg::SetPrimScript {
         request_id: 2,
         prim_id,
         source: source.into(),
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -246,11 +247,11 @@ async fn recv_output(c: &mut Client) -> (cartopolis_core::ScriptLevel, String) {
 }
 
 async fn set_script(c: &mut Client, prim_id: i64, source: &str) {
-    let msg = NetMessage::SetPrimScript {
+    let msg = NetMessage::SetPrimScript(msg::SetPrimScript {
         request_id: 2,
         prim_id,
         source: source.into(),
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -282,10 +283,10 @@ async fn recv_until<T>(
 
 /// Press a prim, the way walking up to it and pressing E does.
 async fn press(c: &mut Client, prim_id: i64) {
-    let msg = NetMessage::TouchPrim {
+    let msg = NetMessage::TouchPrim(msg::TouchPrim {
         request_id: 0,
         prim_id,
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -839,7 +840,7 @@ async fn a_document_from_the_future_is_refused() {
 /// can tell an accepted edit from a refused one *and* check what the server's own
 /// copy says afterwards.
 async fn try_rename(c: &mut Client, prim_id: i64, to: &str) -> Option<(u32, String)> {
-    let msg = NetMessage::UpdatePrim {
+    let msg = NetMessage::UpdatePrim(msg::UpdatePrim {
         request_id: 77,
         prim_id,
         position: glam::Vec3::new(0.0, 9.0, 0.0),
@@ -856,7 +857,7 @@ async fn try_rename(c: &mut Client, prim_id: i64, to: &str) -> Option<(u32, Stri
         },
         particles: None,
         model: None,
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -952,10 +953,10 @@ async fn a_player_cannot_delete_what_the_server_installed() {
     let beacon = installed["installed"][1]["id"].as_i64().unwrap();
 
     let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let msg = NetMessage::DeletePrim {
+    let msg = NetMessage::DeletePrim(msg::DeletePrim {
         request_id: 88,
         prim_id: beacon,
-    };
+    });
     walker
         .send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
@@ -1402,22 +1403,24 @@ async fn a_kick_into_the_north_goal_is_called_a_goal() {
     // A player half a metre behind it, facing north (yaw π faces -z), kicks.
     let mut player = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
     let behind = (spot.0 - 0.5 / m_lat, spot.1);
-    let intent = |emote| NetMessage::ClientIntent {
-        request_id: 0,
-        move_x: 0.0,
-        move_z: 0.0,
-        display_yaw: std::f32::consts::PI,
-        flying: false,
-        fly_up: false,
-        fly_down: false,
-        jump: false,
-        expression: None,
-        emote,
-        seated: None,
-        geo: Some(GeoAnchor {
-            latitude: behind.0,
-            longitude: behind.1,
-        }),
+    let intent = |emote| {
+        NetMessage::ClientIntent(msg::ClientIntent {
+            request_id: 0,
+            move_x: 0.0,
+            move_z: 0.0,
+            display_yaw: std::f32::consts::PI,
+            flying: false,
+            fly_up: false,
+            fly_down: false,
+            jump: false,
+            expression: None,
+            emote,
+            seated: None,
+            geo: Some(GeoAnchor {
+                latitude: behind.0,
+                longitude: behind.1,
+            }),
+        })
     };
     for msg in [intent(None), intent(Some(cartopolis_core::Emote::Kick))] {
         player
@@ -1563,7 +1566,7 @@ async fn narrowing_the_player_role_stops_everyone_building() {
     assert_eq!(status, 200, "{body}");
 
     let mut walker = connect(&handle.local_addr.to_string(), "walker", "walkerpw").await;
-    let msg = NetMessage::CreatePrim {
+    let msg = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 5,
         name: "nope".into(),
         position: glam::Vec3::new(0.0, 2.0, 0.0),
@@ -1581,7 +1584,7 @@ async fn narrowing_the_player_role_stops_everyone_building() {
         particles: None,
         model: None,
         draft: false,
-    };
+    });
     walker
         .send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
@@ -1601,10 +1604,10 @@ async fn narrowing_the_player_role_stops_everyone_building() {
 
 /// Ask for a prim's script, as the editor does when it opens.
 async fn ask_script(c: &mut Client, prim_id: i64) {
-    let msg = NetMessage::GetPrimScript {
+    let msg = NetMessage::GetPrimScript(msg::GetPrimScript {
         request_id: 9,
         prim_id,
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -1858,7 +1861,7 @@ async fn a_draft_is_seen_by_its_maker_only_until_it_is_placed() {
     let mut c = connect(&addr, "walker", "walkerpw").await;
     stand_at(&mut c, LAT, LNG).await;
 
-    let msg = NetMessage::CreatePrim {
+    let msg = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 1,
         name: "Stall draft".into(),
         position: glam::Vec3::new(0.0, 0.5, 0.0),
@@ -1876,7 +1879,7 @@ async fn a_draft_is_seen_by_its_maker_only_until_it_is_placed() {
         particles: None,
         model: None,
         draft: true,
-    };
+    });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
         .unwrap();
@@ -1899,10 +1902,10 @@ async fn a_draft_is_seen_by_its_maker_only_until_it_is_placed() {
     );
 
     // An edit by them is "not found", not a refusal carrying the true prim.
-    let edit = NetMessage::DeletePrim {
+    let edit = NetMessage::DeletePrim(msg::DeletePrim {
         request_id: 7,
         prim_id: id,
-    };
+    });
     other
         .send(Bytes::from(encode_app_frame(&edit).unwrap()))
         .await

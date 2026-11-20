@@ -2,6 +2,7 @@
 //! mode and `--connect` both use. Verifies password login issues a session token,
 //! that token reconnects, and a bad password is rejected.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -142,7 +143,7 @@ async fn the_next_sign_in_is_told_where_the_avatar_was_left() {
         latitude: 53.2163,
         longitude: 6.5711,
     };
-    let intent = encode_app_frame(&NetMessage::ClientIntent {
+    let intent = encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -155,7 +156,7 @@ async fn the_next_sign_in_is_told_where_the_avatar_was_left() {
         expression: None,
         seated: None,
         geo: Some(left),
-    })
+    }))
     .unwrap();
     first.send(Bytes::from(intent)).await.unwrap();
     // Leave once the sim has had time to take the intent. Each probe below is a

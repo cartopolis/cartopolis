@@ -13,6 +13,7 @@ use crate::systems::icons;
 use crate::systems::theme;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
+use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
 use egui::Window;
 
@@ -1242,10 +1243,10 @@ pub fn render_context_menu(
             if let Some(session) = online.as_ref() {
                 session.send(
                     "touch prim",
-                    cartopolis_core::NetMessage::TouchPrim {
+                    cartopolis_core::NetMessage::TouchPrim(msg::TouchPrim {
                         request_id: 0,
                         prim_id: *prim_id,
-                    },
+                    }),
                 );
             }
         }
@@ -2149,11 +2150,11 @@ pub fn send_prim_mutations(
         if let (Some(prim_id), Some(sess)) = (edit_dialog.prim_id, online.as_ref()) {
             sess.send(
                 "prim physics",
-                NetMessage::SetPrimPhysical {
+                NetMessage::SetPrimPhysical(msg::SetPrimPhysical {
                     request_id: 0,
                     prim_id,
                     physical: on,
-                },
+                }),
             );
         }
     }
@@ -2177,7 +2178,7 @@ pub fn send_prim_mutations(
             };
             sess.send(
                 "create prim",
-                NetMessage::CreatePrim {
+                NetMessage::CreatePrim(msg::CreatePrim {
                     request_id: 0,
                     name: dialog_state.name.clone(),
                     position: pos,
@@ -2204,7 +2205,7 @@ pub fn send_prim_mutations(
                     // Built in the design room: a draft only its maker sees until
                     // the room's Place puts it in the street (protocol 51).
                     draft: room.spot.is_some(),
-                },
+                }),
             );
             tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
             return;
@@ -2223,7 +2224,7 @@ pub fn send_prim_mutations(
             ) {
                 sess.send(
                     "update prim",
-                    NetMessage::UpdatePrim {
+                    NetMessage::UpdatePrim(msg::UpdatePrim {
                         request_id: 0,
                         prim_id,
                         position: pos,
@@ -2252,7 +2253,7 @@ pub fn send_prim_mutations(
                             .find(|(_, p, ..)| p.id == prim_id)
                             .and_then(|(_, p, ..)| p.particles),
                         model: dialog_state.model.clone(),
-                    },
+                    }),
                 );
             }
             for (entity, mut prim, mut transform, mat_handle_opt, owned) in prim_query.iter_mut() {
@@ -2385,10 +2386,10 @@ pub fn send_prim_mutations(
         if let Some(sess) = online.as_ref() {
             sess.send(
                 "delete prim",
-                NetMessage::DeletePrim {
+                NetMessage::DeletePrim(msg::DeletePrim {
                     request_id: 0,
                     prim_id,
-                },
+                }),
             );
         }
         for (entity, prim, _, _, _) in prim_query.iter() {

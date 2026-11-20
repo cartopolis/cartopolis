@@ -42,6 +42,7 @@ pub use particles::{
     MAX_PARTICLE_SPEED,
 };
 pub use permissions::{Permission, PermissionSet};
+pub use protocol::msg;
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_avatar_state, encode_message,
     message_kind, message_request_id, snapshot_frame, topic_name, AuthCredential, AvatarLook,

@@ -17,6 +17,7 @@
 
 use crate::systems::egui_manager::{EguiMut, EguiRef};
 use bevy::prelude::*;
+use cartopolis_core::msg;
 
 use crate::grid::world_to_lat_lng;
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel, Seated};
@@ -246,24 +247,24 @@ fn send_act(online: Option<&Res<crate::resources::OnlineSession>>, act: Option<W
     let _ = match act {
         WorldAct::Touch(prim_id) => session.send(
             "touch prim",
-            NetMessage::TouchPrim {
+            NetMessage::TouchPrim(msg::TouchPrim {
                 request_id: 0,
                 prim_id,
-            },
+            }),
         ),
         WorldAct::Grab(prim_id) => session.send(
             "pick up",
-            NetMessage::GrabPrim {
+            NetMessage::GrabPrim(msg::GrabPrim {
                 request_id: 0,
                 prim_id,
-            },
+            }),
         ),
         WorldAct::Release { throw } => session.send(
             "let go",
-            NetMessage::ReleasePrim {
+            NetMessage::ReleasePrim(msg::ReleasePrim {
                 request_id: 0,
                 throw,
-            },
+            }),
         ),
     };
 }

@@ -9,6 +9,7 @@
 //! see past, and three of them (the host thread, the tick barrier, the broadcast)
 //! were wired by hand.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,7 +70,7 @@ async fn connect_auth(addr: &str) -> Client {
 /// nowhere, so a connection that never does receives no snapshots and no
 /// things, whatever its presence says (protocol 47).
 async fn stand(c: &mut Client, lat: f64, lng: f64) {
-    let frame = encode_app_frame(&NetMessage::ClientIntent {
+    let frame = encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -85,7 +86,7 @@ async fn stand(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
-    })
+    }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();
 }
@@ -134,7 +135,7 @@ async fn send(c: &mut Client, msg: &NetMessage) {
 async fn create_prim(c: &mut Client) -> i64 {
     send(
         c,
-        &NetMessage::CreatePrim {
+        &NetMessage::CreatePrim(msg::CreatePrim {
             request_id: 1,
             name: "scripted".into(),
             position: glam::Vec3::new(1.0, 1.0, 1.0),
@@ -152,7 +153,7 @@ async fn create_prim(c: &mut Client) -> i64 {
             particles: None,
             model: None,
             draft: false,
-        },
+        }),
     )
     .await;
     recv_until(c, "prim upsert", |m| match m {
@@ -185,11 +186,11 @@ async fn store_compile_touch_and_hear_back() {
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_touch(id, name) { log('touched by ' + name) }".into(),
-        },
+        }),
     )
     .await;
 
@@ -206,10 +207,10 @@ async fn store_compile_touch_and_hear_back() {
 
     send(
         &mut c,
-        &NetMessage::TouchPrim {
+        &NetMessage::TouchPrim(msg::TouchPrim {
             request_id: 3,
             prim_id,
-        },
+        }),
     )
     .await;
     let (level, text) = recv_output(&mut c).await;
@@ -219,10 +220,10 @@ async fn store_compile_touch_and_hear_back() {
     // And the editor can read back what it stored.
     send(
         &mut c,
-        &NetMessage::GetPrimScript {
+        &NetMessage::GetPrimScript(msg::GetPrimScript {
             request_id: 4,
             prim_id,
-        },
+        }),
     )
     .await;
     let (source, running) = recv_until(&mut c, "prim script", |m| match m {
@@ -251,11 +252,11 @@ async fn script_moves_the_prim_for_everyone() {
 
     send(
         &mut author,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start() { set_pos(42.0, 7.0, -3.0) }".into(),
-        },
+        }),
     )
     .await;
 
@@ -279,11 +280,11 @@ async fn a_broken_script_reports_and_does_not_run() {
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start( }".into(),
-        },
+        }),
     )
     .await;
     let (level, text) = recv_output(&mut c).await;
@@ -304,30 +305,30 @@ async fn an_empty_script_removes_it() {
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start() { log('up') }".into(),
-        },
+        }),
     )
     .await;
     recv_output(&mut c).await;
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 3,
             prim_id,
             source: String::new(),
-        },
+        }),
     )
     .await;
     send(
         &mut c,
-        &NetMessage::GetPrimScript {
+        &NetMessage::GetPrimScript(msg::GetPrimScript {
             request_id: 4,
             prim_id,
-        },
+        }),
     )
     .await;
     let (source, running) = recv_until(&mut c, "prim script", |m| match m {
@@ -351,7 +352,7 @@ async fn appearance_calls_become_prim_state() {
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start() { \
@@ -362,7 +363,7 @@ async fn appearance_calls_become_prim_state() {
                      set_rot(0, 90, 0); \
                      }"
             .into(),
-        },
+        }),
     )
     .await;
 
@@ -398,11 +399,11 @@ async fn a_script_can_end_its_own_prim() {
 
     send(
         &mut c,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start() { die() }".into(),
-        },
+        }),
     )
     .await;
 
@@ -434,13 +435,13 @@ async fn a_hand_near_a_prim_becomes_a_tone_everybody_hears() {
     let prim_id = create_prim(&mut player).await;
     send(
         &mut player,
-        &NetMessage::SetPrimScript {
+        &NetMessage::SetPrimScript(msg::SetPrimScript {
             request_id: 2,
             prim_id,
             source: "function on_start() { sense_hands(2) } \
                      function on_hand(id, name, x, y, z, precise) { set_tone({pitch: 200 + x * 100}) }"
                 .into(),
-        },
+        }),
     )
     .await;
     // Clients learn which prims want hands from the prim itself.

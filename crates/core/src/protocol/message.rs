@@ -1,12 +1,10 @@
 //! [`NetMessage`], the one enum every message on the wire is a variant of.
 //! Its variant order is the wire (`wire_shape.rs`).
 
-use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::*;
-use crate::particles::ParticleEffect;
 use crate::sounds::PrimSound;
 use crate::tone::{HandPose, ToneSpec};
 
@@ -95,58 +93,7 @@ pub enum NetMessage {
         code: u32,
         message: String,
     },
-    ClientIntent {
-        request_id: u32,
-        move_x: f32,
-        move_z: f32,
-        /// World yaw replicated to others (travel facing — the direction the avatar
-        /// is turned toward). Server applies this instead of `atan2(velocity)`.
-        display_yaw: f32,
-        /// Avatar flight, from protocol 12 until it was removed on 2026-11-14.
-        ///
-        /// **Ignored by the sim, and clients send `false`.** The avatar walks,
-        /// runs and jumps; an old client that still sets this is simply fallen
-        /// by the sim like everyone else, and its flight-speed wish clamps at
-        /// `motion::MAX_SPEED`. Kept on the wire because removing a field is a
-        /// protocol revision, and these three cost three bytes.
-        flying: bool,
-        /// Climb and descend for `flying`; ignored by the sim, `false` from
-        /// clients, kept for the same reason.
-        fly_up: bool,
-        fly_down: bool,
-        /// One-shot: the client asked to jump this frame. The sim grants it only
-        /// from the ground, so this is a *request*, not an impulse — a client that
-        /// holds the bit down does not climb.
-        jump: bool,
-        /// One-shot: an emote the avatar started this frame, replicated to
-        /// everyone in range through [`AvatarStateDto::emote`]. `None` on almost
-        /// every intent.
-        emote: Option<Emote>,
-        /// One-shot: an expression the face started this frame (protocol 44),
-        /// replicated as [`AvatarStateDto::expression`]; like `emote`.
-        expression: Option<Expression>,
-        /// Where the avatar is sitting, as metres from its own position — see
-        /// [`AvatarStateDto::seated`] for why it is an offset. A *level*, not an
-        /// edge: it is set for as long as the sit lasts, so an avatar that comes
-        /// into range mid-sit is drawn sitting. The sim clears it the moment the
-        /// same intent asks to move.
-        seated: Option<[f32; 2]>,
-        /// Where this client believes its avatar stands on Earth (protocol v20).
-        ///
-        /// Since protocol 47 the sim holds the avatar's place itself
-        /// ([`AvatarStateDto::geo`]) and moves it by the intent's velocity, so
-        /// this is read for one thing: **placing an avatar that has no place
-        /// yet.** A connection's avatar is nowhere until its client says where
-        /// it is — the first intent carrying a `geo`, or a `Teleport` — and until
-        /// then it is in nobody's snapshot and in earshot of nobody, which is how
-        /// a web UI that only chats stays out of the world. On a placed avatar
-        /// the field is ignored: the authority is the sim's, and a client wanting
-        /// to be elsewhere teleports.
-        ///
-        /// `None` from a client that does not know yet (before the map has
-        /// anchored).
-        geo: Option<GeoAnchor>,
-    },
+    ClientIntent(msg::ClientIntent),
     /// The avatars within this connection's reach, once a tick (protocol 47:
     /// assembled per connection from the sim's spatial index, so what arrives
     /// is what the receiving avatar could see or hear — not everyone on the
@@ -161,77 +108,36 @@ pub enum NetMessage {
         avatars: Vec<AvatarStateDto>,
     },
     /// ADR-011 delta v0: remove prim by stable id (server-assigned).
-    PrimRemoved { id: i64 },
+    PrimRemoved {
+        id: i64,
+    },
     /// A thing left this connection's reach (protocol 47): forget it, as the
     /// receiver forgets an avatar missing from a snapshot. Not a deletion — the
     /// thing still exists and arrives again as `PrimUpsert` when it comes back
     /// within reach — which is why it is not a `PrimRemoved`: a client that
     /// treated the two alike would have no way to tell a thing it may build
     /// against from one that is gone.
-    PrimOutOfReach { id: i64 },
+    PrimOutOfReach {
+        id: i64,
+    },
     /// ADR-017 / ADR-018: client requests creation of a new prim with full initial state.
-    CreatePrim {
-        request_id: u32,
-        name: String,
-        position: Vec3,
-        rotation: Vec3,
-        scale: Vec3,
-        color: [f32; 3],
-        texture_id: Option<String>,
-        shape: String,
-        #[serde(default)]
-        surface: PrimSurface,
-        #[serde(default)]
-        geometry: PrimGeometry,
-        /// Absolute geo placement (ADR-029).
-        geo: GeoAnchor,
-        /// A particle emitter to author onto the prim (protocol v20).
-        #[serde(default)]
-        particles: Option<ParticleEffect>,
-        /// A stored model asset to draw instead of `shape` (protocol v22).
-        #[serde(default)]
-        model: Option<String>,
-        /// Make it a draft only its maker sees (protocol 51): what the design
-        /// room builds, until it is placed.
-        #[serde(default)]
-        draft: bool,
-    },
+    CreatePrim(msg::CreatePrim),
     /// ADR-017: client sends updated prim state (position, rotation, scale, color, texture, name).
-    UpdatePrim {
-        request_id: u32,
-        prim_id: i64,
-        position: Vec3,
-        rotation: Vec3,
-        scale: Vec3,
-        color: [f32; 3],
-        texture_id: Option<String>,
-        name: String,
-        /// Texture surface params (ADR-017 / protocol v8).
-        #[serde(default)]
-        surface: PrimSurface,
-        /// Geometry deformation params (ADR-018 / protocol v8).
-        #[serde(default)]
-        geometry: PrimGeometry,
-        /// Absolute geo placement (ADR-029).
-        geo: GeoAnchor,
-        /// The prim's particle emitter, or `None` to take it off (protocol v20).
-        #[serde(default)]
-        particles: Option<ParticleEffect>,
-        /// The prim's model asset, or `None` to go back to the procedural shape
-        /// (protocol v22).
-        #[serde(default)]
-        model: Option<String>,
-    },
+    UpdatePrim(msg::UpdatePrim),
     /// ADR-017: client requests deletion of a prim by id.
-    DeletePrim { request_id: u32, prim_id: i64 },
+    DeletePrim(msg::DeletePrim),
     /// ADR-017: server broadcasts the full authoritative prim state after a create or update.
-    PrimUpsert { prim: PrimDto },
+    PrimUpsert {
+        prim: PrimDto,
+    },
     /// Client requests the full texture catalog from the sim.
     TextureCatalogRequest,
     /// Sim responds with the list of available textures.
-    TextureCatalog { textures: Vec<TextureEntry> },
+    TextureCatalog {
+        textures: Vec<TextureEntry>,
+    },
     /// Client requests raw PNG bytes for a specific texture.
-    TextureRequest { request_id: u32, texture_id: String },
+    TextureRequest(msg::TextureRequest),
     /// Sim sends raw PNG bytes for the requested texture.
     TextureData {
         request_id: u32,
@@ -239,14 +145,13 @@ pub enum NetMessage {
         png_bytes: Vec<u8>,
     },
     /// Sim signals that the requested texture id does not exist.
-    TextureNotFound { request_id: u32, texture_id: String },
+    TextureNotFound {
+        request_id: u32,
+        texture_id: String,
+    },
     /// ADR-028: client sends a chat message in a scope; the server resolves the
     /// concrete channel, applies rate limits, and delivers it.
-    ChatSend {
-        request_id: u32,
-        scope: ChatScope,
-        body: String,
-    },
+    ChatSend(msg::ChatSend),
     /// ADR-028: server delivers a chat message on a resolved channel. `distance_m`
     /// is `Some` only for `Local` (proximity) messages.
     ChatMessage {
@@ -261,15 +166,11 @@ pub enum NetMessage {
     /// `WorldSnapshot`: source is authoring data, an order of magnitude larger
     /// than the rest of a `PrimDto`, and it would be re-sent to every observer
     /// 20 times a second for the benefit of the one person editing it.
-    GetPrimScript { request_id: u32, prim_id: i64 },
+    GetPrimScript(msg::GetPrimScript),
     /// Store (or, with an empty `source`, remove) a prim's script. The server
     /// compiles it and replies with a [`NetMessage::ScriptOutput`] carrying either
     /// the compile error or a ready line.
-    SetPrimScript {
-        request_id: u32,
-        prim_id: i64,
-        source: String,
-    },
+    SetPrimScript(msg::SetPrimScript),
     /// Server's answer to [`NetMessage::GetPrimScript`], and the broadcast after a
     /// successful `SetPrimScript` so a second editor on the same prim updates.
     PrimScript {
@@ -287,7 +188,7 @@ pub enum NetMessage {
         at_ms: u64,
     },
     /// Client touched a prim; the server turns it into the script's `on_touch`.
-    TouchPrim { request_id: u32, prim_id: i64 },
+    TouchPrim(msg::TouchPrim),
     /// The world's resource budget and current usage. Sent on connect and whenever
     /// a prim or script is added or removed, so the editor can show the headroom
     /// *before* an author hits the wall rather than as a refusal afterwards.
@@ -315,11 +216,7 @@ pub enum NetMessage {
     /// transport is unreliable, unordered datagrams, where arrival order is not
     /// send order, so sequencing has to live in the message rather than be
     /// inferred from the stream.
-    VoiceFrame {
-        scope: ChatScope,
-        seq: u32,
-        payload: Vec<u8>,
-    },
+    VoiceFrame(msg::VoiceFrame),
     /// Server forwards an audio frame to one recipient. `distance_m` is `Some`
     /// only for `Local` (proximity), and is what the client attenuates by.
     ///
@@ -343,18 +240,16 @@ pub enum NetMessage {
     /// The server answers with a [`NetMessage::BlockedList`] rather than an ack,
     /// so the client's list is always the server's list — a client that applied
     /// its own edit optimistically would diverge the moment one was refused.
-    SetBlocked {
-        request_id: u32,
-        username: String,
-        blocked: bool,
-    },
+    SetBlocked(msg::SetBlocked),
     /// The full set of people this account blocks. Sent once after the handshake
     /// and again after every accepted [`NetMessage::SetBlocked`].
     ///
     /// Whole list, not a delta: it is a handful of short strings, it makes the
     /// login and the update path the same code, and a lost delta would leave a
     /// blocked person audible with nothing to say why.
-    BlockedList { usernames: Vec<String> },
+    BlockedList {
+        usernames: Vec<String>,
+    },
     /// Report a person to the operators (App Store guideline 1.2).
     ///
     /// `message` is the offending line as the reporter saw it, which is the only
@@ -362,28 +257,14 @@ pub enum NetMessage {
     /// without it a report about the thing that actually happened arrives with no
     /// evidence attached. It is also the *unmasked* text where the filter hit,
     /// which is the point: masking is for the room, not for the operator.
-    ReportUser {
-        request_id: u32,
-        username: String,
-        reason: ReportReason,
-        /// The reporter's own words. May be empty.
-        note: String,
-        /// The reported message, if the report was raised from a chat line.
-        message: Option<String>,
-        /// The model asset the report is about, if it was raised from an object
-        /// rather than from a person or a chat line (protocol v22).
-        ///
-        /// The subject stays a username — the uploader is still who an operator
-        /// may need to act on — and this rides alongside so that acting on one
-        /// report reaches every prim wearing that file, rather than the single one
-        /// the reporter happened to be standing in front of.
-        #[serde(default)]
-        asset: Option<String>,
-    },
+    ReportUser(msg::ReportUser),
     /// Server confirms a report was filed. `accepted = false` means it was
     /// refused (unknown subject, or reporting yourself) — the client says so
     /// rather than showing a silent success.
-    ReportAck { request_id: u32, accepted: bool },
+    ReportAck {
+        request_id: u32,
+        accepted: bool,
+    },
     /// Delete the signed-in account and everything personal attached to it
     /// (App Store guideline 5.1.1(v): an app with accounts must offer deletion
     /// *within the app*).
@@ -392,7 +273,7 @@ pub enum NetMessage {
     /// authenticated: this is the one irreversible thing a session token can ask
     /// for, and a token can be a remembered one from a device somebody else is
     /// holding.
-    DeleteAccount { request_id: u32, password: String },
+    DeleteAccount(msg::DeleteAccount),
     /// The account is gone. The server closes the connection immediately after
     /// sending this, so it is both the receipt and the goodbye.
     AccountDeleted,
@@ -408,11 +289,7 @@ pub enum NetMessage {
     /// (protocol 47). Trusted like an intent is trusted (the sim has no map to
     /// validate a destination against); a non-finite or off-globe coordinate
     /// discards the whole message, same rule as `apply_intent`.
-    Teleport {
-        request_id: u32,
-        geo: GeoAnchor,
-        alt_m: f32,
-    },
+    Teleport(msg::Teleport),
     /// Client says whether it is being *looked at*.
     ///
     /// `active: false` means the app is off screen (Android's background
@@ -437,7 +314,7 @@ pub enum NetMessage {
     /// Resuming is the same message with `active: true`, and the next tick's
     /// snapshot is the resynchronisation — there is no catch-up and no ack, for
     /// the same reason `Teleport` has none: the next snapshot is the whole state.
-    SetPresence { request_id: u32, active: bool },
+    SetPresence(msg::SetPresence),
 
     // ── Private chats (protocol 25, `docs/notes/encrypted-chat.md`) ──────────
     //
@@ -449,19 +326,18 @@ pub enum NetMessage {
     /// Client registers this installation's device for its account, and tops
     /// up its stock of key packages (each can be used once, to add this device
     /// to one chat). Idempotent: sent on every connect.
-    E2eeRegisterDevice {
-        request_id: u32,
-        device: Uuid,
-        key_packages: Vec<Vec<u8>>,
-    },
+    E2eeRegisterDevice(msg::E2eeRegisterDevice),
     /// Server: how many unused key packages this device has left, so the
     /// client knows how many to make next time.
-    E2eeDeviceStatus { request_id: u32, key_packages: u32 },
+    E2eeDeviceStatus {
+        request_id: u32,
+        key_packages: u32,
+    },
     /// Client asks for one key package per device of `address` — a full
     /// `name@server` (protocol 37) — to add them to a chat. Each package handed
     /// out is deleted: it opens one invitation. Asking for your own address
     /// returns your *other* devices.
-    E2eeClaimKeyPackages { request_id: u32, address: String },
+    E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages),
     /// Server: the packages, one per device that had one left. A device with
     /// none left is simply absent — it can be added later, when it tops up.
     E2eeKeyPackages {
@@ -475,11 +351,7 @@ pub enum NetMessage {
     /// created on. `direct_with` is the other person's address for a direct
     /// chat, so the server can refuse a second direct chat between the same
     /// two accounts and point at the first instead.
-    E2eeCreateGroup {
-        request_id: u32,
-        group: Vec<u8>,
-        direct_with: Option<String>,
-    },
+    E2eeCreateGroup(msg::E2eeCreateGroup),
     /// Server: the chat exists. `existing` is set when a direct chat between
     /// these two people was already there; the client then uses that one.
     E2eeGroupCreated {
@@ -493,15 +365,7 @@ pub enum NetMessage {
     /// chat's current epoch; the second of two simultaneous commits is refused
     /// and its sender retries after catching up. That is the whole of the
     /// server's part in keeping everyone's view of the chat identical.
-    E2eeSend {
-        request_id: u32,
-        group: Vec<u8>,
-        epoch: u64,
-        commit: bool,
-        message: Vec<u8>,
-        /// For a commit that adds people: the invitation and whom it is for.
-        welcome: Option<E2eeWelcome>,
-    },
+    E2eeSend(msg::E2eeSend),
     /// Server: the entry's place in the log, or why it was refused.
     E2eeSent {
         request_id: u32,
@@ -512,12 +376,11 @@ pub enum NetMessage {
     /// Client asks for everything it has not seen: entries after each cursor,
     /// and any invitations waiting for this device. An invitation stops being
     /// resent once its chat appears in `cursors` (the device has joined).
-    E2eeSync {
-        request_id: u32,
-        cursors: Vec<E2eeCursor>,
-    },
+    E2eeSync(msg::E2eeSync),
     /// Server: the end of a sync's replay. Everything before it has been sent.
-    E2eeSynced { request_id: u32 },
+    E2eeSynced {
+        request_id: u32,
+    },
     /// Server: one log entry, live or replayed. The client skips entries its own
     /// device wrote, and processes the rest strictly in `seq` order.
     E2eeDeliver {
@@ -552,15 +415,7 @@ pub enum NetMessage {
     /// Client joins (or starts) the call of private chat `group` with the SDP
     /// offer for its sending connection. Only a member of the chat with a
     /// registered device may join.
-    CallJoin {
-        request_id: u32,
-        group: Vec<u8>,
-        offer: String,
-        /// The media id in `offer` that carries a shared screen (protocol 41).
-        /// Offered from the start, like the camera, so sharing later needs no
-        /// renegotiation; `None` from a device that cannot share.
-        screen: Option<String>,
-    },
+    CallJoin(msg::CallJoin),
     /// Server: in the call, with the forwarder's answer. `participant` is this
     /// device's number in the call, which [`NetMessage::CallRoster`] and
     /// [`CallTrack`] name people by.
@@ -578,9 +433,9 @@ pub enum NetMessage {
         tracks: Vec<CallTrack>,
     },
     /// Client: the answer to the last `CallOffer`.
-    CallAnswer { group: Vec<u8>, sdp: String },
+    CallAnswer(msg::CallAnswer),
     /// Client leaves the call. Closing the connection leaves it too.
-    CallLeave { group: Vec<u8> },
+    CallLeave(msg::CallLeave),
     /// Server: who is in a chat's call, sent to every member's connected
     /// devices whenever it changes. A roster this device is not in is the call
     /// ringing; an empty one is the call over.
@@ -620,37 +475,18 @@ pub enum NetMessage {
     /// Client asks to become contacts with `username`. `link_code` is the code
     /// from their contact link, which is accepted whatever their setting says.
     /// Answered with a `ContactsState`, or a `ServerError` saying why not.
-    RequestContact {
-        request_id: u32,
-        username: String,
-        link_code: Option<String>,
-    },
+    RequestContact(msg::RequestContact),
     /// Client accepts or declines a request from `username`.
-    AnswerContact {
-        request_id: u32,
-        username: String,
-        accept: bool,
-    },
+    AnswerContact(msg::AnswerContact),
     /// Client stops being contacts with `username`, or withdraws a request it
     /// sent them. Not a block: they can send a request again.
-    RemoveContact { request_id: u32, username: String },
+    RemoveContact(msg::RemoveContact),
     /// Client changes who may reach it. `reset_link` issues a new link code,
     /// so every copy of the old link stops working.
-    SetContactSettings {
-        request_id: u32,
-        policy: RequestPolicy,
-        show_online: bool,
-        notify_requests: bool,
-        separate_new_accounts: bool,
-        reset_link: bool,
-    },
+    SetContactSettings(msg::SetContactSettings),
     /// Client asks about one person: by exact username, or by the avatar it
     /// tapped (the client is never told whose an avatar is until it asks).
-    LookupPerson {
-        request_id: u32,
-        username: Option<String>,
-        avatar_id: Option<u64>,
-    },
+    LookupPerson(msg::LookupPerson),
     /// Server: the answer. `person` is `None` when there is nobody to show —
     /// no such account, or one that asked not to be found by name.
     PersonInfo {
@@ -658,7 +494,7 @@ pub enum NetMessage {
         person: Option<PersonDto>,
     },
     /// Client asks who is near its avatar now, for the contacts screen.
-    GetNearbyPeople { request_id: u32 },
+    GetNearbyPeople(msg::GetNearbyPeople),
     /// Server: people near the asker's avatar, nearest first.
     NearbyPeople {
         request_id: u32,
@@ -670,24 +506,17 @@ pub enum NetMessage {
     /// one playing (`None`). The clip must be in the simulator's video store;
     /// the server stamps the start time and answers with the prim's
     /// `PrimUpsert` to everyone, or a `ServerError` to the sender.
-    SetPrimVideo {
-        request_id: u32,
-        prim_id: i64,
-        video: Option<SetVideo>,
-    },
+    SetPrimVideo(msg::SetPrimVideo),
     /// Client: where to wake this device when it is not connected — a
     /// UnifiedPush endpoint (an `https:` URL its distributor gave it) — or
     /// `None` to stop. The server posts an empty wake-up there when a call
     /// starts in one of the account's chats; nothing about the call is in it.
-    SetPushEndpoint { endpoint: Option<String> },
+    SetPushEndpoint(msg::SetPushEndpoint),
 
     // ── Where the people in a chat are (protocol 30) ─────────────────────────
     /// Client asks where these people's avatars are, for a private chat's World
     /// view. Asked again every few seconds while that view is open.
-    WherePeople {
-        request_id: u32,
-        usernames: Vec<String>,
-    },
+    WherePeople(msg::WherePeople),
     /// Server: the ones the asker may see — contacts who show that they are
     /// online, whose avatar is in the world with a location. Anybody else is
     /// left out, never marked as hidden, so the answer says nothing about them.
@@ -696,17 +525,23 @@ pub enum NetMessage {
         people: Vec<PersonWhereDto>,
     },
     /// Client: this device declines the call ringing in `group`.
-    CallDecline { group: Vec<u8> },
+    CallDecline(msg::CallDecline),
     /// Server: `username` declined the call in `group` — to the chat's
     /// connected devices: the caller's, which stop ringing out, and the
     /// decliner's others, which stop ringing.
-    CallDeclined { group: Vec<u8>, username: String },
+    CallDeclined {
+        group: Vec<u8>,
+        username: String,
+    },
     /// Server: a script on `prim_id` played a one-shot sound (`play_sound`, protocol
     /// 33). Sent to every connection: the client knows where the prim is in its own
     /// frame and the server does not, so the client measures the distance and
     /// drops it when out of `sound.range_m`. A one-shot is an edge, not a level —
     /// somebody arriving a second later does not hear a bang that already happened.
-    PrimSound { prim_id: i64, sound: PrimSound },
+    PrimSound {
+        prim_id: i64,
+        sound: PrimSound,
+    },
 
     // ── Physical prims (protocol 34, `docs/notes/physical-prims.md`) ─────────
     /// Client switches a prim it may edit between physical (the simulator moves
@@ -714,39 +549,34 @@ pub enum NetMessage {
     /// `SetPrimVideo` is, because `UpdatePrim` is a full-state edit every tool
     /// sends and a tool that forgot the flag would drop every ball it touched.
     /// Answered with the prim's `PrimUpsert` to everyone, or a `ServerError`.
-    SetPrimPhysical {
-        request_id: u32,
-        prim_id: i64,
-        physical: bool,
-    },
+    SetPrimPhysical(msg::SetPrimPhysical),
     /// Server: where the physics step has moved the physical prims that moved
     /// this tick. Sent instead of a `PrimUpsert` per prim per tick, which would
     /// carry every field of the prim and make the client rebuild its mesh twenty
     /// times a second; a body is ~50 bytes. A body that has come to rest is sent
     /// once more with `resting` set, and then not until it moves again.
-    PrimMotion { tick: u64, bodies: Vec<PrimBody> },
+    PrimMotion {
+        tick: u64,
+        bodies: Vec<PrimBody>,
+    },
     /// Client: pick up this physical prim (protocol 48). Anyone may, as anyone
     /// may kick the ball; the sim refuses with a `ServerError` a prim that is not
     /// physical, too big or heavy to carry (`carry::can_carry`), out of reach of
     /// where the sim holds the avatar, or already in somebody's hands. Granted,
     /// it shows as `AvatarStateDto::holding` and the prim follows the avatar.
-    GrabPrim { request_id: u32, prim_id: i64 },
+    GrabPrim(msg::GrabPrim),
     /// Client: let go of whatever this avatar holds (protocol 48) — thrown
     /// forward and up from the hands when `throw`, set down at the feet when
     /// not. No speed on the wire: the sim throws at its own speed along the
     /// avatar's facing, plus the avatar's own velocity.
-    ReleasePrim { request_id: u32, throw: bool },
+    ReleasePrim(msg::ReleasePrim),
     /// Client: offer `greeting` to the avatar `to` (protocol 49). Refused with
     /// a `ServerError` when `to` is this avatar, is nowhere, is out of
     /// [`crate::greet::GREET_REACH_M`] of where the sim holds this one, either
     /// is seated, or either has blocked the other; rate limited. Granted, `to`
     /// is sent `GreetingOffered`; the offer lapses after
     /// [`crate::greet::OFFER_SECS`], and is withdrawn if the offerer moves.
-    OfferGreeting {
-        request_id: u32,
-        to: u64,
-        greeting: crate::greet::Greeting,
-    },
+    OfferGreeting(msg::OfferGreeting),
     /// Server: the avatar `from` (signed in as `name`) offers `greeting` to
     /// this one — or, with `greeting: None`, no longer does (it moved).
     GreetingOffered {
@@ -757,7 +587,7 @@ pub enum NetMessage {
     /// Client: take the greeting `from` offered. The sim checks the offer is
     /// still open and the two still within reach, stands them together and
     /// starts it on both; otherwise a `ServerError`.
-    AcceptGreeting { request_id: u32, from: u64 },
+    AcceptGreeting(msg::AcceptGreeting),
     /// Server, to both: the greeting has started. Turn to `yaw` (the sim has
     /// turned this avatar there and holds it while the gesture plays) and play
     /// it; `partner` is the other avatar. Everyone else sees it as both
@@ -775,7 +605,7 @@ pub enum NetMessage {
     /// 100 m (`simulator::plans_watch`). Sent once a connection when the list
     /// is not empty, and on every change, so a device that follows nothing
     /// does not clear what another device follows.
-    FollowPlans { places: Vec<[f64; 2]> },
+    FollowPlans(msg::FollowPlans),
     /// Server: what this account may do (`cartopolis_core::permissions`, by
     /// slug) — sent after the handshake and again whenever an operator changes
     /// a role, the account's roles or its admin flag, so a client's buttons
@@ -783,7 +613,9 @@ pub enum NetMessage {
     /// bit set so a permission added later is an unknown string to an older
     /// client, not a misread bit. The server enforces every one of these
     /// itself; this only decides what a client offers.
-    Permissions { granted: Vec<String> },
+    Permissions {
+        granted: Vec<String>,
+    },
 
     // ── Hands and tones (protocol 36, `docs/notes/hands-and-tones.md`) ──
     /// Client: where this user's hand is relative to a prim whose script senses
@@ -791,7 +623,9 @@ pub enum NetMessage {
     /// has high-precision tracking on — at most `tone::HAND_HZ` per prim.
     /// Dropped when it is out of that range. Never relayed: it is input for the
     /// prim's script (`on_hand`), which decides what it means.
-    HandPose { pose: HandPose },
+    HandPose {
+        pose: HandPose,
+    },
     /// Server: the tone a prim's script set (`set_tone`), or `None` when it
     /// stopped (`stop_tone`). Its own message rather than a `PrimUpsert`
     /// because a script following a hand sets it up to twenty times a second,
@@ -813,7 +647,9 @@ pub enum NetMessage {
     // added to or taken out of each topic, and hands that work to a device
     // already in it (the server holds no key and cannot do it itself).
     /// Client asks for every community it is in or has asked to join.
-    CommunityList { request_id: u32 },
+    CommunityList {
+        request_id: u32,
+    },
     /// Server: every community this account is in or waiting for, whole. The
     /// answer to every community request, and pushed unasked (`request_id` 0)
     /// whenever one of them changes, so a client never patches its own copy.
@@ -828,7 +664,10 @@ pub enum NetMessage {
         settings: CommunitySettings,
     },
     /// Server: the community exists.
-    CommunityCreated { request_id: u32, id: Uuid },
+    CommunityCreated {
+        request_id: u32,
+        id: Uuid,
+    },
     /// A moderator changes a community's settings.
     CommunityEdit {
         request_id: u32,
@@ -858,7 +697,10 @@ pub enum NetMessage {
     },
     /// Client leaves a community, or withdraws its request to join one. An
     /// owner must hand the community over first.
-    CommunityLeave { request_id: u32, id: Uuid },
+    CommunityLeave {
+        request_id: u32,
+        id: Uuid,
+    },
     /// A moderator lets somebody in, or turns their request down.
     CommunityDecide {
         request_id: u32,
@@ -892,7 +734,10 @@ pub enum NetMessage {
     },
     /// The owner (or a server operator who triages reports) deletes a
     /// community and all its topics.
-    CommunityDelete { request_id: u32, id: Uuid },
+    CommunityDelete {
+        request_id: u32,
+        id: Uuid,
+    },
     /// Client lists a chat it has just registered (`E2eeCreateGroup`) as a
     /// topic of a community it is in. Every other member is then added to it.
     TopicCreate {
@@ -972,7 +817,10 @@ pub enum NetMessage {
     },
     /// A moderator makes an invite link: anyone holding its code may join,
     /// whatever the community's way in, for [`COMMUNITY_INVITE_DAYS`].
-    CommunityInviteCreate { request_id: u32, id: Uuid },
+    CommunityInviteCreate {
+        request_id: u32,
+        id: Uuid,
+    },
     /// Server: the invite's code, for `https://cartopolis.org/c/<code>`.
     CommunityInvite {
         request_id: u32,
@@ -981,9 +829,15 @@ pub enum NetMessage {
     },
     /// Client looks an invite up before joining with it: the answer is a
     /// [`NetMessage::CommunityListings`] with the one community in it, listed or not.
-    CommunityInviteLookup { request_id: u32, code: String },
+    CommunityInviteLookup {
+        request_id: u32,
+        code: String,
+    },
     /// Client joins with an invite.
-    CommunityJoinInvite { request_id: u32, code: String },
+    CommunityJoinInvite {
+        request_id: u32,
+        code: String,
+    },
     /// Server, to a device already in `group`: these devices belong to its
     /// members but are not in it (signed in after it started, or had no key
     /// package left then). Add them with one commit whose invitation names
@@ -1004,7 +858,7 @@ pub enum NetMessage {
     /// shared screen), or a host's action on the call or on somebody in it.
     /// A host action from somebody who is not a host is refused with a
     /// `ServerError` carrying the request base of the call.
-    CallControl { group: Vec<u8>, action: CallAction },
+    CallControl(msg::CallControl),
     /// Server, to a device that is no longer in the call because a host
     /// removed it or ended the call for everyone. Its media connections are
     /// already closed.
@@ -1015,11 +869,7 @@ pub enum NetMessage {
     /// Client: a reaction, sealed with a key from the chat's group for
     /// `epoch` (`cartopolis_calls::keys::seal_event`), relayed to everyone
     /// else in the call. The server learns that somebody reacted, not how.
-    CallReact {
-        group: Vec<u8>,
-        epoch: u64,
-        sealed: Vec<u8>,
-    },
+    CallReact(msg::CallReact),
     /// Server: somebody in the call reacted. `participant` is stamped by the
     /// server, so who sent it cannot be forged.
     CallReacted {
@@ -1031,10 +881,7 @@ pub enum NetMessage {
     /// Client: whose cameras this device draws. `None` is everybody (where a
     /// call starts); the forwarder sends no camera picture to a device that
     /// does not draw it. Shared screens are always sent.
-    CallWatch {
-        group: Vec<u8>,
-        cameras: Option<Vec<u64>>,
-    },
+    CallWatch(msg::CallWatch),
     /// Server: the join under `request_id` waits for a host to let this
     /// device in (`CallSettings::members_wait`, or a guest). `participant` is
     /// its number from now on; a host's `Admit` answers it with the
@@ -1047,7 +894,7 @@ pub enum NetMessage {
     /// Client: make a link a guest can join this chat's call by. Only a member
     /// of the chat may; the answer is [`NetMessage::CallInvited`]. The link's
     /// secret is the asking device's own and never reaches the server.
-    CallInvite { group: Vec<u8> },
+    CallInvite(msg::CallInvite),
     /// Server: the code for a guest link to `group`'s call, good until
     /// `expires_ms`. Also what a guest is told right after signing in with
     /// one, so it knows which call it may join.
@@ -1059,29 +906,34 @@ pub enum NetMessage {
     /// Client (a host): the call's key for the guest seated as `participant`,
     /// sealed under the link's secret, which the server does not have
     /// (`docs/notes/calls.md`, "Guests"). Relayed to that guest only.
-    CallKeyDrop {
+    CallKeyDrop(msg::CallKeyDrop),
+    /// Server: a host's [`NetMessage::CallKeyDrop`], for this guest.
+    CallKeyDropped {
         group: Vec<u8>,
-        participant: u64,
         sealed: Vec<u8>,
     },
-    /// Server: a host's [`NetMessage::CallKeyDrop`], for this guest.
-    CallKeyDropped { group: Vec<u8>, sealed: Vec<u8> },
     /// This client's avatar look (protocol 42), sent once connected and again
     /// whenever its owner saves a new one. The server keeps it with the account
     /// and hands it on as [`NetMessage::AvatarLookOf`]; one it finds
     /// unreasonable ([`AvatarLook::is_reasonable`]) is dropped.
-    SetAvatarLook { look: AvatarLook },
+    SetAvatarLook(msg::SetAvatarLook),
     /// How the avatar `avatar_id` looks. Sent to every client when its owner
     /// arrives or changes it, and for every online avatar to a client that has
     /// just connected. Only the avatar id, never the account: who an avatar is
     /// stays something a client has to ask.
-    AvatarLookOf { avatar_id: u64, look: AvatarLook },
+    AvatarLookOf {
+        avatar_id: u64,
+        look: AvatarLook,
+    },
     /// This client's face as its camera tracks it (protocol 44): the face's
     /// [`FACE_UNITS`] weights, each 0–255 for 0–1, at most [`FACE_FRAME_HZ`]
     /// a second; empty when tracking stops. The server hands it on as
     /// [`NetMessage::FaceFrameOf`] to the clients within speaking range and
     /// keeps nothing. A frame of the wrong length is dropped.
-    SetFaceFrame { weights: Vec<u8> },
+    SetFaceFrame(msg::SetFaceFrame),
     /// The tracked face of the avatar `avatar_id`, as its owner sent it.
-    FaceFrameOf { avatar_id: u64, weights: Vec<u8> },
+    FaceFrameOf {
+        avatar_id: u64,
+        weights: Vec<u8>,
+    },
 }

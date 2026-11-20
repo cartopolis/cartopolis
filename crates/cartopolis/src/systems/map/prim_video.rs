@@ -21,6 +21,7 @@
 //! texture through `NeedsTextureRefresh`.
 
 use crate::platform::sync::{Arc, Mutex};
+use cartopolis_core::msg;
 use std::collections::HashMap;
 
 use bevy::asset::RenderAssetUsages;
@@ -393,14 +394,14 @@ pub fn drive_video_actions(
 fn set_video(online: &OnlineSession, prim_id: i64, asset: Option<String>) {
     online.send(
         "prim video",
-        NetMessage::SetPrimVideo {
+        NetMessage::SetPrimVideo(msg::SetPrimVideo {
             request_id: 0,
             prim_id,
             video: asset.map(|asset| SetVideo {
                 asset,
                 looped: true,
             }),
-        },
+        }),
     );
 }
 

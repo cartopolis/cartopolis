@@ -2,6 +2,7 @@
 //! over HTTP, a player starts it on their prim over the wire, everybody is told,
 //! an ordinary edit does not stop it, and somebody else's prim is refused.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,7 +75,7 @@ async fn connect(handle: &SimHandle, username: &str) -> (Client, String) {
 /// nowhere, so a connection that never does receives no snapshots and no
 /// things, whatever its presence says (protocol 47).
 async fn stand(c: &mut Client, lat: f64, lng: f64) {
-    let frame = encode_app_frame(&NetMessage::ClientIntent {
+    let frame = encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -90,7 +91,7 @@ async fn stand(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
-    })
+    }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();
 }
@@ -155,7 +156,7 @@ async fn get(url: String, token: &str) -> (u16, Vec<u8>) {
 }
 
 fn create(name: &str) -> NetMessage {
-    NetMessage::CreatePrim {
+    NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 1,
         name: name.into(),
         position: glam::Vec3::new(1.0, 1.0, 1.0),
@@ -173,7 +174,7 @@ fn create(name: &str) -> NetMessage {
         particles: None,
         model: None,
         draft: false,
-    }
+    })
 }
 
 #[tokio::test]
@@ -208,14 +209,14 @@ async fn a_clip_is_uploaded_started_on_a_prim_and_survives_an_edit() {
     .await;
     send(
         &mut a,
-        &NetMessage::SetPrimVideo {
+        &NetMessage::SetPrimVideo(msg::SetPrimVideo {
             request_id: 2,
             prim_id: id,
             video: Some(SetVideo {
                 asset: hash.clone(),
                 looped: true,
             }),
-        },
+        }),
     )
     .await;
     let seen = next(&mut b, |m| match m {
@@ -231,7 +232,7 @@ async fn a_clip_is_uploaded_started_on_a_prim_and_survives_an_edit() {
     // not stop it.
     send(
         &mut a,
-        &NetMessage::UpdatePrim {
+        &NetMessage::UpdatePrim(msg::UpdatePrim {
             request_id: 3,
             prim_id: id,
             position: glam::Vec3::new(1.0, 1.0, 1.0),
@@ -248,7 +249,7 @@ async fn a_clip_is_uploaded_started_on_a_prim_and_survives_an_edit() {
             },
             particles: None,
             model: None,
-        },
+        }),
     )
     .await;
     let after = next(&mut b, |m| match m {
@@ -263,11 +264,11 @@ async fn a_clip_is_uploaded_started_on_a_prim_and_survives_an_edit() {
     // Bob may not start or stop a clip on Alice's screen.
     send(
         &mut b,
-        &NetMessage::SetPrimVideo {
+        &NetMessage::SetPrimVideo(msg::SetPrimVideo {
             request_id: 4,
             prim_id: id,
             video: None,
-        },
+        }),
     )
     .await;
     let code = next(&mut b, |m| match m {
@@ -284,14 +285,14 @@ async fn a_clip_is_uploaded_started_on_a_prim_and_survives_an_edit() {
     // Nor may anyone play a clip the store does not have.
     send(
         &mut a,
-        &NetMessage::SetPrimVideo {
+        &NetMessage::SetPrimVideo(msg::SetPrimVideo {
             request_id: 5,
             prim_id: id,
             video: Some(SetVideo {
                 asset: "0".repeat(64),
                 looped: false,
             }),
-        },
+        }),
     )
     .await;
     let why = next(&mut a, |m| match m {

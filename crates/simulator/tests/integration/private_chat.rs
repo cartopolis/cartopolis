@@ -5,6 +5,7 @@
 //! these pin that the rules, the wire and actual encrypting clients fit
 //! together — and that what crosses the server is sealed.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -141,11 +142,11 @@ pub(super) async fn online(addr: &str, dev: &mut Device) -> Client {
     let mut c = connect(addr, &name).await;
     send(
         &mut c,
-        &NetMessage::E2eeRegisterDevice {
+        &NetMessage::E2eeRegisterDevice(msg::E2eeRegisterDevice {
             request_id: 1,
             device: dev.identity().device,
             key_packages: dev.key_packages(3).unwrap(),
-        },
+        }),
     )
     .await;
     next_matching(&mut c, PATIENT, |m| match m {
@@ -162,10 +163,10 @@ pub(super) async fn online(addr: &str, dev: &mut Device) -> Client {
 pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str) -> Vec<u8> {
     send(
         a,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 2,
             address: with.into(),
-        },
+        }),
     )
     .await;
     let (packages, _) = next_matching(a, PATIENT, |m| match m {
@@ -179,11 +180,11 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
     let group = alice.create_group(&new_group()).unwrap();
     send(
         a,
-        &NetMessage::E2eeCreateGroup {
+        &NetMessage::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id: 3,
             group: group.clone(),
             direct_with: Some(with.into()),
-        },
+        }),
     )
     .await;
     let (existing, _) = next_matching(a, PATIENT, |m| match m {
@@ -198,7 +199,7 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
     let add = alice.add(&group, &bytes).unwrap();
     send(
         a,
-        &NetMessage::E2eeSend {
+        &NetMessage::E2eeSend(msg::E2eeSend {
             request_id: 4,
             group: group.clone(),
             epoch: add.epoch,
@@ -209,7 +210,7 @@ pub(super) async fn start_direct(a: &mut Client, alice: &mut Device, with: &str)
                 members: vec![with.into()],
                 bytes: add.welcome.unwrap(),
             }),
-        },
+        }),
     )
     .await;
     let (seq, _) = next_matching(a, PATIENT, |m| match m {
@@ -235,14 +236,14 @@ pub(super) async fn say(c: &mut Client, dev: &mut Device, group: &[u8], body: &s
         .unwrap();
     send(
         c,
-        &NetMessage::E2eeSend {
+        &NetMessage::E2eeSend(msg::E2eeSend {
             request_id: 9,
             group: group.to_vec(),
             epoch: out.epoch,
             commit: false,
             message: out.message,
             welcome: None,
-        },
+        }),
     )
     .await;
     let ((seq, refused), _) = next_matching(c, PATIENT, |m| match m {
@@ -322,10 +323,10 @@ async fn a_message_sent_while_you_were_away_arrives_on_the_next_sync() {
     // First sync: no chats joined yet, so only the waiting invitation.
     send(
         &mut b,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 5,
             cursors: vec![],
-        },
+        }),
     )
     .await;
     let ((after, welcome), _) = next_matching(&mut b, PATIENT, |m| match m {
@@ -339,13 +340,13 @@ async fn a_message_sent_while_you_were_away_arrives_on_the_next_sync() {
     // Second sync, now reading from after the commit that added him.
     send(
         &mut b,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 6,
             cursors: vec![E2eeCursor {
                 group: group.clone(),
                 after,
             }],
-        },
+        }),
     )
     .await;
     let (message, _) = next_matching(&mut b, PATIENT, |m| match m {
@@ -389,10 +390,10 @@ async fn somebody_outside_the_chat_gets_nothing_from_it() {
     // …and asking for the chat's log by id gets her nothing either.
     send(
         &mut e,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 7,
             cursors: vec![E2eeCursor { group, after: 0 }],
-        },
+        }),
     )
     .await;
     let replay = next_matching(&mut e, PATIENT, |m| match m {
@@ -419,10 +420,10 @@ async fn a_groups_worth_of_claims_goes_through_and_a_flood_is_refused_out_loud()
     for i in 0..SENT {
         send(
             &mut a,
-            &NetMessage::E2eeClaimKeyPackages {
+            &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
                 request_id: 100 + i,
                 address: "bob".into(),
-            },
+            }),
         )
         .await;
     }
@@ -484,14 +485,14 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
     // to have stood near each other, which a test with no avatars cannot do.
     send(
         &mut b,
-        &NetMessage::SetContactSettings {
+        &NetMessage::SetContactSettings(msg::SetContactSettings {
             request_id: 1,
             policy: cartopolis_core::RequestPolicy::Anyone,
             show_online: true,
             notify_requests: false,
             separate_new_accounts: true,
             reset_link: false,
-        },
+        }),
     )
     .await;
     contacts_state(&mut b).await;
@@ -499,10 +500,10 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
     // No request yet: bob's keys are not handed out.
     send(
         &mut a,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 2,
             address: "bob".into(),
-        },
+        }),
     )
     .await;
     let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -516,11 +517,11 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
 
     send(
         &mut a,
-        &NetMessage::RequestContact {
+        &NetMessage::RequestContact(msg::RequestContact {
             request_id: 3,
             username: "bob".into(),
             link_code: None,
-        },
+        }),
     )
     .await;
     let (_, _, outgoing) = contacts_state(&mut a).await;
@@ -542,14 +543,14 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
         .unwrap();
     send(
         &mut a,
-        &NetMessage::E2eeSend {
+        &NetMessage::E2eeSend(msg::E2eeSend {
             request_id: 9,
             group: group.clone(),
             epoch: out.epoch,
             commit: false,
             message: out.message,
             welcome: None,
-        },
+        }),
     )
     .await;
     let ((seq, refused), _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -564,11 +565,11 @@ async fn strangers_become_contacts_through_a_request_that_holds_one_message() {
     // Bob accepts: both are contacts, and alice may write again.
     send(
         &mut b,
-        &NetMessage::AnswerContact {
+        &NetMessage::AnswerContact(msg::AnswerContact {
             request_id: 4,
             username: "alice".into(),
             accept: true,
-        },
+        }),
     )
     .await;
     let (contacts, incoming, _) = contacts_state(&mut b).await;
@@ -592,11 +593,11 @@ async fn a_chat_and_its_people_must_live_on_this_server() {
 
     send(
         &mut a,
-        &NetMessage::E2eeCreateGroup {
+        &NetMessage::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id: 10,
             group: cartopolis_core::address::group_id("elsewhere.example", [7; 16]),
             direct_with: None,
-        },
+        }),
     )
     .await;
     let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -617,10 +618,10 @@ async fn a_chat_and_its_people_must_live_on_this_server() {
 
     send(
         &mut a,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 11,
             address: "bob@elsewhere.example".into(),
-        },
+        }),
     )
     .await;
     let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -639,10 +640,10 @@ async fn a_chat_and_its_people_must_live_on_this_server() {
     // The same person by full address on this server is just bob.
     send(
         &mut a,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 12,
             address: "Bob@LOCALHOST".into(),
-        },
+        }),
     )
     .await;
     let (who, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -679,10 +680,10 @@ async fn a_device_signed_in_after_a_chat_started_is_added_to_it() {
     let mut p = online(&s.addr, &mut phone).await;
     send(
         &mut p,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 5,
             cursors: Vec::new(),
-        },
+        }),
     )
     .await;
 
@@ -705,7 +706,7 @@ async fn a_device_signed_in_after_a_chat_started_is_added_to_it() {
         .expect("the phone is a device of a member");
     send(
         &mut a,
-        &NetMessage::E2eeSend {
+        &NetMessage::E2eeSend(msg::E2eeSend {
             request_id: 6,
             group: group.clone(),
             epoch: add.epoch,
@@ -716,7 +717,7 @@ async fn a_device_signed_in_after_a_chat_started_is_added_to_it() {
                 members: vec!["alice@localhost".into()],
                 bytes: add.welcome.unwrap(),
             }),
-        },
+        }),
     )
     .await;
     let (seq, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -760,13 +761,13 @@ async fn a_device_signed_in_after_a_chat_started_is_added_to_it() {
     // Settled: the phone syncing again asks nobody for anything.
     send(
         &mut p,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 7,
             cursors: vec![E2eeCursor {
                 group: group.clone(),
                 after: seq,
             }],
-        },
+        }),
     )
     .await;
     assert!(

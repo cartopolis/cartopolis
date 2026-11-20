@@ -28,6 +28,7 @@
 //! carries its signalling and keys the same way and tells it about mute and
 //! the camera rather than feeding it samples.
 
+use cartopolis_core::msg;
 use std::collections::{HashMap, HashSet};
 
 use crate::utils::clock::unix_ms;
@@ -224,11 +225,11 @@ fn send_agenda(
             let sealed = cartopolis_calls::events::seal(&e.base_key, e.epoch, text.as_bytes());
             online.send(
                 "call agenda",
-                NetMessage::CallReact {
+                NetMessage::CallReact(msg::CallReact {
                     group,
                     epoch: e.epoch,
                     sealed,
-                },
+                }),
             );
         }
     }
@@ -1073,7 +1074,10 @@ pub fn drive_calls(
                     let is_group = private.describe(&group).is_some_and(|(g, _)| g);
                     calls.notice = Some(format!("{username} declined"));
                     if !is_group {
-                        online.send("call leave", NetMessage::CallLeave { group });
+                        online.send(
+                            "call leave",
+                            NetMessage::CallLeave(msg::CallLeave { group }),
+                        );
                         calls.active = None;
                     }
                 }
@@ -1264,7 +1268,10 @@ pub fn drive_calls(
                 calls.notice = Some("This chat is not ready for a call yet.".into());
             } else {
                 if let Some(old) = calls.active.take() {
-                    online.send("call leave", NetMessage::CallLeave { group: old.group });
+                    online.send(
+                        "call leave",
+                        NetMessage::CallLeave(msg::CallLeave { group: old.group }),
+                    );
                 }
                 // Both would open the microphone, and a call is not something
                 // to broadcast to whoever is standing nearby.
@@ -1278,7 +1285,10 @@ pub fn drive_calls(
             let ended = calls.ended_notice();
             if let Some(a) = calls.active.take() {
                 calls.notice = Some(ended);
-                online.send("call leave", NetMessage::CallLeave { group: a.group });
+                online.send(
+                    "call leave",
+                    NetMessage::CallLeave(msg::CallLeave { group: a.group }),
+                );
             }
         }
         Some(CallRequest::Dismiss(group)) => {
@@ -1286,9 +1296,9 @@ pub fn drive_calls(
             // account's other devices stop ringing (protocol 31).
             online.send(
                 "call decline",
-                NetMessage::CallDecline {
+                NetMessage::CallDecline(msg::CallDecline {
                     group: group.clone(),
-                },
+                }),
             );
             calls.dismissed.insert(group);
         }
@@ -1298,7 +1308,10 @@ pub fn drive_calls(
                 calls.record_due = calls.record_of_ending();
             }
             if let Some(group) = calls.active_group().map(<[u8]>::to_vec) {
-                online.send("call control", NetMessage::CallControl { group, action });
+                online.send(
+                    "call control",
+                    NetMessage::CallControl(msg::CallControl { group, action }),
+                );
             }
         }
         Some(CallRequest::React(emoji)) => {
@@ -1309,11 +1322,11 @@ pub fn drive_calls(
                         cartopolis_calls::events::seal(&e.base_key, e.epoch, emoji.as_bytes());
                     online.send(
                         "call react",
-                        NetMessage::CallReact {
+                        NetMessage::CallReact(msg::CallReact {
                             group,
                             epoch: e.epoch,
                             sealed,
-                        },
+                        }),
                     );
                     calls.reactions.push(Reaction {
                         participant: SELF_TILE,
@@ -1332,10 +1345,10 @@ pub fn drive_calls(
                 a.sharing_seen = false;
                 online.send(
                     "call sharing",
-                    NetMessage::CallControl {
+                    NetMessage::CallControl(msg::CallControl {
                         group: a.group.clone(),
                         action: CallAction::Sharing(on),
-                    },
+                    }),
                 );
             }
             #[cfg(target_arch = "wasm32")]
@@ -1348,7 +1361,10 @@ pub fn drive_calls(
                 // The secret: a v4 uuid's 16 bytes, 122 of their bits random.
                 let secret = uuid::Uuid::new_v4().into_bytes().to_vec();
                 calls.invite_secret = Some((group.clone(), secret));
-                online.send("call invite", NetMessage::CallInvite { group });
+                online.send(
+                    "call invite",
+                    NetMessage::CallInvite(msg::CallInvite { group }),
+                );
             }
         }
         Some(CallRequest::Agenda(plan, index)) => {
@@ -1394,7 +1410,10 @@ pub fn drive_calls(
             if seen {
                 calls.record_due = calls.record_of_ending();
             }
-            online.send("call leave", NetMessage::CallLeave { group });
+            online.send(
+                "call leave",
+                NetMessage::CallLeave(msg::CallLeave { group }),
+            );
             calls.active = None;
             calls.agenda = None;
             calls.notice = Some(why);
@@ -1429,10 +1448,10 @@ pub fn drive_calls(
         a.told_muted = Some(*muted);
         online.send(
             "call muted",
-            NetMessage::CallControl {
+            NetMessage::CallControl(msg::CallControl {
                 group: a.group.clone(),
                 action: CallAction::Muted(*muted),
-            },
+            }),
         );
     }
     // Folded, nothing draws a camera: the forwarder stops sending them, and
@@ -1441,10 +1460,10 @@ pub fn drive_calls(
         a.told_looking = Some(looking);
         online.send(
             "call watch",
-            NetMessage::CallWatch {
+            NetMessage::CallWatch(msg::CallWatch {
                 group: a.group.clone(),
                 cameras: if looking { None } else { Some(Vec::new()) },
-            },
+            }),
         );
     }
 
@@ -1473,21 +1492,21 @@ pub fn drive_calls(
                 Event::Offer(offer) => {
                     online.send(
                         "call join",
-                        NetMessage::CallJoin {
+                        NetMessage::CallJoin(msg::CallJoin {
                             request_id: JOIN_REQUEST,
                             group: a.group.clone(),
                             offer,
                             screen: None,
-                        },
+                        }),
                     );
                 }
                 Event::Answer(sdp) => {
                     online.send(
                         "call answer",
-                        NetMessage::CallAnswer {
+                        NetMessage::CallAnswer(msg::CallAnswer {
                             group: a.group.clone(),
                             sdp,
-                        },
+                        }),
                     );
                 }
                 Event::Connected => a.connected = true,
@@ -1517,9 +1536,9 @@ pub fn drive_calls(
             *notice = Some(format!("Call ended: {why}"));
             online.send(
                 "call leave",
-                NetMessage::CallLeave {
+                NetMessage::CallLeave(msg::CallLeave {
                     group: a.group.clone(),
-                },
+                }),
             );
             *active = None;
             *level = 0.0;
@@ -1544,21 +1563,21 @@ pub fn drive_calls(
                 Event::Offer(offer) => {
                     online.send(
                         "call join",
-                        NetMessage::CallJoin {
+                        NetMessage::CallJoin(msg::CallJoin {
                             request_id: JOIN_REQUEST,
                             group: a.group.clone(),
                             offer,
                             screen: a.session.screen_mid(),
-                        },
+                        }),
                     );
                 }
                 Event::Answer(sdp) => {
                     online.send(
                         "call answer",
-                        NetMessage::CallAnswer {
+                        NetMessage::CallAnswer(msg::CallAnswer {
                             group: a.group.clone(),
                             sdp,
-                        },
+                        }),
                     );
                 }
                 Event::Connected => a.connected = true,
@@ -1618,9 +1637,9 @@ pub fn drive_calls(
             *notice = Some(format!("Call ended: {why}"));
             online.send(
                 "call leave",
-                NetMessage::CallLeave {
+                NetMessage::CallLeave(msg::CallLeave {
                     group: a.group.clone(),
-                },
+                }),
             );
             *active = None;
             *level = 0.0;
@@ -1758,10 +1777,10 @@ fn send_screen(a: &mut Active, notice: &mut Option<String>, online: &OnlineSessi
         a.sharing_seen = false;
         online.send(
             "call sharing",
-            NetMessage::CallControl {
+            NetMessage::CallControl(msg::CallControl {
                 group: a.group.clone(),
                 action: CallAction::Sharing(false),
-            },
+            }),
         );
         return;
     }

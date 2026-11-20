@@ -4,6 +4,7 @@
 //! out of reach, between people one of whom blocked the other, after they
 //! lapse and after the offerer walked off are refused.
 
+use cartopolis_core::msg;
 use std::time::Duration;
 
 use cartopolis_core::greet::{Greeting, OFFER_SECS};
@@ -85,11 +86,11 @@ async fn place(c: &mut Client, m: f64) {
     let geo = east(m);
     send(
         c,
-        &NetMessage::Teleport {
+        &NetMessage::Teleport(msg::Teleport {
             request_id: 0,
             geo,
             alt_m: 0.0,
-        },
+        }),
     )
     .await;
     send(c, &stand(geo, std::f32::consts::PI, None)).await;
@@ -98,17 +99,21 @@ async fn place(c: &mut Client, m: f64) {
 async fn offer(c: &mut Client, request_id: u32, to: u64, greeting: Greeting) {
     send(
         c,
-        &NetMessage::OfferGreeting {
+        &NetMessage::OfferGreeting(msg::OfferGreeting {
             request_id,
             to,
             greeting,
-        },
+        }),
     )
     .await;
 }
 
 async fn accept(c: &mut Client, request_id: u32, from: u64) {
-    send(c, &NetMessage::AcceptGreeting { request_id, from }).await;
+    send(
+        c,
+        &NetMessage::AcceptGreeting(msg::AcceptGreeting { request_id, from }),
+    )
+    .await;
 }
 
 /// The code of the refusal answering `request_id`.
@@ -226,11 +231,11 @@ async fn greetings_that_cannot_happen_are_refused() {
     // Bob blocks alice: neither may greet the other, and bob hears nothing.
     send(
         &mut b,
-        &NetMessage::SetBlocked {
+        &NetMessage::SetBlocked(msg::SetBlocked {
             request_id: 0,
             username: "alice".into(),
             blocked: true,
-        },
+        }),
     )
     .await;
     next(&mut b, |m| {
@@ -258,7 +263,7 @@ async fn an_offer_lapses_and_walking_off_withdraws_it() {
     assert_eq!(offered(&mut b, alice).await, Some(Greeting::HighFive));
     send(
         &mut a,
-        &NetMessage::ClientIntent {
+        &NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.0,
             move_z: -0.3,
@@ -271,7 +276,7 @@ async fn an_offer_lapses_and_walking_off_withdraws_it() {
             expression: None,
             seated: None,
             geo: None,
-        },
+        }),
     )
     .await;
     assert_eq!(offered(&mut b, alice).await, None, "withdrawn");

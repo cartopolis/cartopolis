@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 // ---------------------------------------------------------------------------
 // Being comfortable in the world
@@ -620,10 +621,10 @@ pub(super) fn use_target(target: &Target, w: &mut AgentWorld) -> String {
             if let Some(online) = &w.online {
                 online.send(
                     "agent touch",
-                    NetMessage::TouchPrim {
+                    NetMessage::TouchPrim(msg::TouchPrim {
                         request_id: 0,
                         prim_id: *id,
-                    },
+                    }),
                 );
             }
             format!(

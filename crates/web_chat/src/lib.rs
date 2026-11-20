@@ -13,6 +13,7 @@
 //! and saving over each other break the groups they are in, with nothing to say
 //! so. That is why the web UI runs this in a `SharedWorker` and never in a page.
 
+use cartopolis_core::msg;
 use std::collections::VecDeque;
 
 use cartopolis_chat::{channel_key, group_of, Engine, Event, HistoryItem, PictureRef};
@@ -372,10 +373,10 @@ impl ChatCore {
                 // Nobody is looking at a world through this connection, so the
                 // server need not send it twenty snapshots a second. Chat and
                 // private-chat traffic still arrive.
-                self.push(&NetMessage::SetPresence {
+                self.push(&NetMessage::SetPresence(msg::SetPresence {
                     request_id: PRESENCE_REQUEST,
                     active: false,
-                })?;
+                }))?;
                 self.events.push(json!({
                     "kind": "signed_in",
                     "username": username,
@@ -677,12 +678,12 @@ impl ChatCore {
     /// `screen` is the offer's media id for a shared screen (empty: none).
     pub fn call_join(&mut self, channel: &str, offer: &str, screen: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        self.push(&NetMessage::CallJoin {
+        self.push(&NetMessage::CallJoin(msg::CallJoin {
             request_id: CALL_REQUEST_BASE | 1,
             group,
             offer: offer.to_string(),
             screen: (!screen.is_empty()).then(|| screen.to_string()),
-        })
+        }))
     }
 
     /// A hand, a shared screen or a host's action in `channel`'s call, as
@@ -692,7 +693,7 @@ impl ChatCore {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         let action: CallAction =
             serde_json::from_str(action).map_err(|e| Error(format!("not a call action: {e}")))?;
-        self.push(&NetMessage::CallControl { group, action })
+        self.push(&NetMessage::CallControl(msg::CallControl { group, action }))
     }
 
     /// A reaction the page sealed (`call-events.js`) for `epoch` (decimal),
@@ -701,17 +702,17 @@ impl ChatCore {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         let epoch = epoch.parse().map_err(|_| Error("not an epoch".into()))?;
         let sealed = unhex_vec(sealed).ok_or_else(|| Error("not hex".into()))?;
-        self.push(&NetMessage::CallReact {
+        self.push(&NetMessage::CallReact(msg::CallReact {
             group,
             epoch,
             sealed,
-        })
+        }))
     }
 
     /// Ask for a guest link to this chat's call (`call_invited` answers).
     pub fn call_invite(&mut self, channel: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        self.push(&NetMessage::CallInvite { group })
+        self.push(&NetMessage::CallInvite(msg::CallInvite { group }))
     }
 
     /// Hand the guest seated as `participant` the call's key, which the page
@@ -724,11 +725,11 @@ impl ChatCore {
     ) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         let sealed = unhex_vec(sealed).ok_or_else(|| Error("not hex".into()))?;
-        self.push(&NetMessage::CallKeyDrop {
+        self.push(&NetMessage::CallKeyDrop(msg::CallKeyDrop {
             group,
             participant: participant as u64,
             sealed,
-        })
+        }))
     }
 
     /// Whose cameras the page draws: a JSON list of participants, or `null`
@@ -737,16 +738,16 @@ impl ChatCore {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
         let cameras: Option<Vec<u64>> =
             serde_json::from_str(cameras).map_err(|e| Error(format!("not a list: {e}")))?;
-        self.push(&NetMessage::CallWatch { group, cameras })
+        self.push(&NetMessage::CallWatch(msg::CallWatch { group, cameras }))
     }
 
     /// Answer the forwarder's offer for the page's receiving connection.
     pub fn call_answer(&mut self, channel: &str, sdp: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        self.push(&NetMessage::CallAnswer {
+        self.push(&NetMessage::CallAnswer(msg::CallAnswer {
             group,
             sdp: sdp.to_string(),
-        })
+        }))
     }
 
     /// After a meeting this page handed guests the key of `epoch` (decimal)
@@ -773,13 +774,13 @@ impl ChatCore {
     /// Leave the call in `channel`.
     pub fn call_leave(&mut self, channel: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        self.push(&NetMessage::CallLeave { group })
+        self.push(&NetMessage::CallLeave(msg::CallLeave { group }))
     }
 
     /// Decline a call ringing in `channel`.
     pub fn call_decline(&mut self, channel: &str) -> Result<(), Error> {
         let group = group_of(channel).ok_or_else(|| Error("not a private chat".into()))?;
-        self.push(&NetMessage::CallDecline { group })
+        self.push(&NetMessage::CallDecline(msg::CallDecline { group }))
     }
 
     /// Register this browser's push subscription (protocol 29's message, with
@@ -787,7 +788,9 @@ impl ChatCore {
     /// while the page is closed; an empty string takes it back.
     pub fn set_push_endpoint(&mut self, endpoint: &str) -> Result<(), Error> {
         let endpoint = (!endpoint.is_empty()).then(|| endpoint.to_owned());
-        self.push(&NetMessage::SetPushEndpoint { endpoint })
+        self.push(&NetMessage::SetPushEndpoint(msg::SetPushEndpoint {
+            endpoint,
+        }))
     }
 
     /// The call key of `channel`'s current epoch, as JSON
@@ -1472,7 +1475,10 @@ mod tests {
         assert_eq!(core.username().as_deref(), Some("ann"));
         assert!(matches!(
             sent(&mut core).as_slice(),
-            [NetMessage::SetPresence { active: false, .. }]
+            [NetMessage::SetPresence(msg::SetPresence {
+                active: false,
+                ..
+            })]
         ));
         let ev = events(&mut core);
         assert_eq!(ev[0]["kind"], "signed_in");
@@ -1533,9 +1539,10 @@ mod tests {
         let _ = sent(&mut core);
         core.open(None).unwrap();
         let out = sent(&mut core);
-        assert!(out
-            .iter()
-            .any(|m| matches!(m, NetMessage::E2eeRegisterDevice { .. })));
+        assert!(out.iter().any(|m| matches!(
+            m,
+            NetMessage::E2eeRegisterDevice(msg::E2eeRegisterDevice { .. })
+        )));
         let state = core
             .take_state()
             .expect("a new device is something to keep");

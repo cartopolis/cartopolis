@@ -4,6 +4,7 @@
 //! place and one already in somebody's hands; and leaving, a teleport and the
 //! ball being switched off each let go of it.
 
+use cartopolis_core::msg;
 use std::time::Duration;
 
 use cartopolis_core::{
@@ -79,11 +80,11 @@ fn east_of(a: GeoAnchor, b: GeoAnchor) -> f64 {
 async fn place(c: &mut Client, geo: GeoAnchor, yaw: f32) {
     send(
         c,
-        &NetMessage::Teleport {
+        &NetMessage::Teleport(msg::Teleport {
             request_id: 0,
             geo,
             alt_m: 0.0,
-        },
+        }),
     )
     .await;
     send(c, &stand(geo, yaw, None)).await;
@@ -101,7 +102,7 @@ async fn make(
 ) -> i64 {
     send(
         c,
-        &NetMessage::CreatePrim {
+        &NetMessage::CreatePrim(msg::CreatePrim {
             request_id: 1,
             name: name.into(),
             position: Vec3::new(0.0, y, 0.0),
@@ -116,7 +117,7 @@ async fn make(
             particles: None,
             model: None,
             draft: false,
-        },
+        }),
     )
     .await;
     let id = next(c, |m| match m {
@@ -127,11 +128,11 @@ async fn make(
     if physical {
         send(
             c,
-            &NetMessage::SetPrimPhysical {
+            &NetMessage::SetPrimPhysical(msg::SetPrimPhysical {
                 request_id: 2,
                 prim_id: id,
                 physical: true,
-            },
+            }),
         )
         .await;
         next(c, |m| match m {
@@ -172,10 +173,10 @@ async fn refusal(c: &mut Client, request_id: u32) -> u32 {
 async fn grab(c: &mut Client, request_id: u32, prim_id: i64) {
     send(
         c,
-        &NetMessage::GrabPrim {
+        &NetMessage::GrabPrim(msg::GrabPrim {
             request_id,
             prim_id,
-        },
+        }),
     )
     .await;
 }
@@ -183,10 +184,10 @@ async fn grab(c: &mut Client, request_id: u32, prim_id: i64) {
 async fn release(c: &mut Client, throw: bool) {
     send(
         c,
-        &NetMessage::ReleasePrim {
+        &NetMessage::ReleasePrim(msg::ReleasePrim {
             request_id: 0,
             throw,
-        },
+        }),
     )
     .await;
 }
@@ -238,7 +239,7 @@ async fn a_ball_is_picked_up_carried_and_thrown() {
     // She walks east for a second and the ball comes with her.
     send(
         &mut a,
-        &NetMessage::ClientIntent {
+        &NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.5,
             move_z: 0.0,
@@ -251,7 +252,7 @@ async fn a_ball_is_picked_up_carried_and_thrown() {
             expression: None,
             seated: None,
             geo: None,
-        },
+        }),
     )
     .await;
     tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -421,11 +422,11 @@ async fn leaving_a_teleport_and_switching_off_each_let_go() {
     holding(&mut c, alice, Some(ball)).await;
     send(
         &mut a,
-        &NetMessage::SetPrimPhysical {
+        &NetMessage::SetPrimPhysical(msg::SetPrimPhysical {
             request_id: 23,
             prim_id: ball,
             physical: false,
-        },
+        }),
     )
     .await;
     holding(&mut c, alice, None).await;

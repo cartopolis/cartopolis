@@ -60,6 +60,7 @@
 //! still hears them at the right level.
 
 use crate::platform::sync::{Arc, Mutex};
+use cartopolis_core::msg;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -855,11 +856,13 @@ pub fn drive_voice_capture(
         // Proximity only. Global voice is refused by the server by design
         // (`net.rs`: "an unbounded fan-out and the loudest abuse surface chat
         // has"), and a room send would need the room this panel is not scoped to.
-        let _ = online.intent_tx.unbounded_send(NetMessage::VoiceFrame {
-            scope: ChatScope::Local { shout: false },
-            seq: *seq,
-            payload,
-        });
+        let _ = online
+            .intent_tx
+            .unbounded_send(NetMessage::VoiceFrame(msg::VoiceFrame {
+                scope: ChatScope::Local { shout: false },
+                seq: *seq,
+                payload,
+            }));
         sent += 1;
     }
     if sent > 0 {
@@ -1265,7 +1268,7 @@ mod loopback {
         // placed it (an intent or a teleport); a session that never does is
         // somebody reading chat in a browser. So stand here, and wait for a
         // snapshot that shows it, or the speaker races its own arrival.
-        let stand = encode_app_frame(&NetMessage::ClientIntent {
+        let stand = encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.0,
             move_z: 0.0,
@@ -1281,7 +1284,7 @@ mod loopback {
                 latitude: 53.2194,
                 longitude: 6.5665,
             }),
-        })
+        }))
         .unwrap();
         c.send(Bytes::from(stand)).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1344,11 +1347,11 @@ mod loopback {
         for (n, chunk) in resampled.chunks(FRAME_SAMPLES).take(FRAMES).enumerate() {
             let payload = encode_frame(chunk, &mut encoder);
             assert!(payload.len() <= 1500, "over the server's MAX_VOICE_BYTES");
-            let frame = encode_app_frame(&NetMessage::VoiceFrame {
+            let frame = encode_app_frame(&NetMessage::VoiceFrame(msg::VoiceFrame {
                 scope: ChatScope::Local { shout: false },
                 seq: n as u32 + 1,
                 payload,
-            })
+            }))
             .unwrap();
             speaker.send(Bytes::from(frame)).await.unwrap();
             // **The pacing is part of the test.** `net.rs` refuses anything

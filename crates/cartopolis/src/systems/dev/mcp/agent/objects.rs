@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 /// A prim's shape parameters, as the wire carries them.
 pub(super) fn geometry_of(prim: &Prim) -> cartopolis_core::PrimGeometry {
@@ -35,7 +36,7 @@ pub(super) fn prim_messages(
         latitude: geo.latitude,
         longitude: geo.longitude,
     };
-    let update = NetMessage::UpdatePrim {
+    let update = NetMessage::UpdatePrim(msg::UpdatePrim {
         request_id: 0,
         prim_id: id,
         position,
@@ -49,8 +50,8 @@ pub(super) fn prim_messages(
         geo: anchor(),
         particles: prim.particles,
         model: prim.model.clone(),
-    };
-    let create = NetMessage::CreatePrim {
+    });
+    let create = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 0,
         name: prim.name.clone(),
         position,
@@ -65,7 +66,7 @@ pub(super) fn prim_messages(
         particles: prim.particles,
         model: prim.model.clone(),
         draft: false,
-    };
+    });
     let item = BuildItem {
         name: prim.name.clone(),
         lat: geo.latitude,
@@ -152,7 +153,7 @@ pub(super) fn edit(w: &AgentWorld, args: &EditArgs) -> Result<(EditWant, NetMess
     let name = args.name.clone().unwrap_or_else(|| prim.name.clone());
     online.send(
         "agent edit",
-        NetMessage::UpdatePrim {
+        NetMessage::UpdatePrim(msg::UpdatePrim {
             request_id: 0,
             prim_id: prim.id,
             // Only the height is the object's own (ADR-029); x/z follow the anchor.
@@ -172,7 +173,7 @@ pub(super) fn edit(w: &AgentWorld, args: &EditArgs) -> Result<(EditWant, NetMess
             // would put out its fire or take off its model.
             particles: prim.particles,
             model: prim.model.clone(),
-        },
+        }),
     );
     Ok((
         EditWant {
@@ -567,7 +568,7 @@ pub(super) fn start_build(w: &AgentWorld, args: BuildArgs) -> Result<Vec<BuildIt
     for (i, prim) in args.prims.into_iter().enumerate() {
         let (mut message, item) = create_message(i, place(i, prim, origin)?)?;
         // Built while the room is open: a draft, as the person's own are.
-        if let NetMessage::CreatePrim { draft, .. } = &mut message {
+        if let NetMessage::CreatePrim(msg::CreatePrim { draft, .. }) = &mut message {
             *draft = room.is_some();
         }
         messages.push(message);
@@ -678,7 +679,7 @@ pub(super) fn create_message(i: usize, spec: Value) -> Result<(NetMessage, Build
             ))
         }
     };
-    let message = NetMessage::CreatePrim {
+    let message = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 0,
         name: name.clone(),
         // Only the height is the object's own: horizontal placement is the geo
@@ -702,7 +703,7 @@ pub(super) fn create_message(i: usize, spec: Value) -> Result<(NetMessage, Build
         particles: None,
         model,
         draft: false,
-    };
+    });
     Ok((
         message,
         BuildItem {

@@ -82,6 +82,7 @@
 
 use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
+use cartopolis_core::msg;
 
 use crate::platform::audio::{self, AudioInput};
 use crate::resources::{AppPrefs, QualityPreset, RightPanel, SunMode, Units};
@@ -518,11 +519,11 @@ pub fn render_settings_panel(
     if let (Some(username), Some(online)) = (unblock, online.as_deref()) {
         online.send(
             "set blocked",
-            cartopolis_core::NetMessage::SetBlocked {
+            cartopolis_core::NetMessage::SetBlocked(msg::SetBlocked {
                 request_id: 0,
                 username,
                 blocked: false,
-            },
+            }),
         );
     }
 
@@ -568,10 +569,10 @@ pub fn render_settings_panel(
         if let Some(online) = online {
             online.send(
                 "delete account",
-                cartopolis_core::NetMessage::DeleteAccount {
+                cartopolis_core::NetMessage::DeleteAccount(msg::DeleteAccount {
                     request_id: crate::resources::DELETE_ACCOUNT_REQUEST,
                     password: std::mem::take(&mut state.delete_password),
-                },
+                }),
             );
         }
     }

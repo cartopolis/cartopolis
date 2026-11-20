@@ -6,6 +6,7 @@
 //! still delivering chat is the entire reason to leave it connected. A test that
 //! only checked the first would pass just as happily on a server that had hung up.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +49,7 @@ async fn connect_auth(addr: &str, user: &str) -> Client {
 /// nowhere, so a connection that never does receives no snapshots and no
 /// things, whatever its presence says (protocol 47).
 async fn stand(c: &mut Client, lat: f64, lng: f64) {
-    let frame = encode_app_frame(&NetMessage::ClientIntent {
+    let frame = encode_app_frame(&NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -64,7 +65,7 @@ async fn stand(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
-    })
+    }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();
 }
@@ -74,10 +75,10 @@ const LAT: f64 = 53.2194;
 const LNG: f64 = 6.5665;
 
 async fn set_presence(c: &mut Client, active: bool) {
-    let frame = encode_app_frame(&NetMessage::SetPresence {
+    let frame = encode_app_frame(&NetMessage::SetPresence(msg::SetPresence {
         request_id: 0,
         active,
-    })
+    }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();
 }
@@ -154,11 +155,11 @@ async fn an_idle_client_is_sent_no_snapshots_and_still_hears_chat() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     let _ = drain(&mut idle, Duration::from_millis(100)).await;
 
-    let send = encode_app_frame(&NetMessage::ChatSend {
+    let send = encode_app_frame(&NetMessage::ChatSend(msg::ChatSend {
         request_id: 1,
         scope: ChatScope::Global,
         body: "are you there".into(),
-    })
+    }))
     .unwrap();
     talker.send(Bytes::from(send)).await.unwrap();
 
@@ -268,14 +269,14 @@ async fn things_come_within_reach_and_leave_it() {
 }
 
 async fn teleport(c: &mut Client, lat: f64, lng: f64) {
-    let frame = encode_app_frame(&NetMessage::Teleport {
+    let frame = encode_app_frame(&NetMessage::Teleport(msg::Teleport {
         request_id: 0,
         geo: GeoAnchor {
             latitude: lat,
             longitude: lng,
         },
         alt_m: 0.0,
-    })
+    }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();
 }

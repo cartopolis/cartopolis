@@ -2,6 +2,7 @@
 //! real server — signalling over its TCP connection, media over UDP to its
 //! forwarder — and what the forwarder handles is sealed.
 
+use cartopolis_core::msg;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -76,12 +77,12 @@ pub(super) async fn join(
     .unwrap();
     send(
         c,
-        &NetMessage::CallJoin {
+        &NetMessage::CallJoin(msg::CallJoin {
             request_id: 40,
             group: group.to_vec(),
             offer,
             screen: None,
-        },
+        }),
     )
     .await;
     let (answer, _) = next_matching(c, PATIENT, |m| match m {
@@ -160,10 +161,10 @@ async fn signalling_all(c: &mut Client, phone: &mut Phone, group: &[u8]) -> Vec<
                     .unwrap();
                 send(
                     c,
-                    &NetMessage::CallAnswer {
+                    &NetMessage::CallAnswer(msg::CallAnswer {
                         group: group.to_vec(),
                         sdp: answer,
-                    },
+                    }),
                 )
                 .await;
             }
@@ -378,10 +379,10 @@ pub(super) async fn talk_until(
 async fn control(c: &mut Client, group: &[u8], action: cartopolis_core::CallAction) {
     send(
         c,
-        &NetMessage::CallControl {
+        &NetMessage::CallControl(msg::CallControl {
             group: group.to_vec(),
             action,
-        },
+        }),
     )
     .await;
 }
@@ -705,9 +706,9 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     // Alice makes a link; a made-up code lets nobody in.
     send(
         &mut a,
-        &NetMessage::CallInvite {
+        &NetMessage::CallInvite(msg::CallInvite {
             group: group.clone(),
-        },
+        }),
     )
     .await;
     let (code, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -734,11 +735,11 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     let mut guest_dev = Device::new("guest@localhost", Uuid::new_v4()).unwrap();
     send(
         &mut g,
-        &NetMessage::E2eeRegisterDevice {
+        &NetMessage::E2eeRegisterDevice(msg::E2eeRegisterDevice {
             request_id: 1,
             device: guest_dev.identity().device,
             key_packages: guest_dev.key_packages(1).unwrap(),
-        },
+        }),
     )
     .await;
     next_matching(&mut g, PATIENT, |m| match m {
@@ -751,10 +752,10 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     // Nothing but the call: asking for somebody's keys goes unanswered.
     send(
         &mut g,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 7,
             address: "alice".into(),
-        },
+        }),
     )
     .await;
     assert!(
@@ -780,12 +781,12 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     .unwrap();
     send(
         &mut g,
-        &NetMessage::CallJoin {
+        &NetMessage::CallJoin(msg::CallJoin {
             request_id: 41,
             group: group.clone(),
             offer,
             screen: None,
-        },
+        }),
     )
     .await;
     let (waiting_as, _) = next_matching(&mut g, PATIENT, |m| match m {
@@ -825,11 +826,11 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     .expect("the guest is let in");
     send(
         &mut a,
-        &NetMessage::CallKeyDrop {
+        &NetMessage::CallKeyDrop(msg::CallKeyDrop {
             group: group.clone(),
             participant: waiting_as,
             sealed: vec![7; 64],
-        },
+        }),
     )
     .await;
     let (sealed, _) = next_matching(&mut g, PATIENT, |m| match m {
@@ -843,9 +844,9 @@ async fn a_guest_comes_in_by_link_waits_and_gets_the_key_from_a_host() {
     // A guest cannot make links of its own.
     send(
         &mut g,
-        &NetMessage::CallInvite {
+        &NetMessage::CallInvite(msg::CallInvite {
             group: group.clone(),
-        },
+        }),
     )
     .await;
     assert!(

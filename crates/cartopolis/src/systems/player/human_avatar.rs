@@ -11,6 +11,7 @@
 //! `AnimationTargetId` its name path hashes to, rooted at the holder's player,
 //! and the clips are keyed by the same paths.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 
 use bevy::animation::animation_curves::AnimatableCurve;
@@ -1304,7 +1305,7 @@ pub(crate) fn send_avatar_look(
     }
     if online.send(
         "avatar look",
-        cartopolis_core::NetMessage::SetAvatarLook { look: look.clone() },
+        cartopolis_core::NetMessage::SetAvatarLook(msg::SetAvatarLook { look: look.clone() }),
     ) {
         *sent = Some(look.clone());
     }

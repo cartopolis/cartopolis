@@ -18,6 +18,7 @@
 
 use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
+use cartopolis_core::msg;
 use cartopolis_core::{NetMessage, ScriptLevel};
 
 use crate::resources::{OnlineSession, RightPanel};
@@ -259,10 +260,10 @@ pub fn render_script_panel(
     if let (true, Some(prim_id)) = (editor.needs_fetch, editor.prim_id) {
         online.send(
             "get prim script",
-            NetMessage::GetPrimScript {
+            NetMessage::GetPrimScript(msg::GetPrimScript {
                 request_id: 0,
                 prim_id,
-            },
+            }),
         );
         editor.needs_fetch = false;
     }
@@ -455,11 +456,11 @@ pub fn render_script_panel(
         let source = editor.source.clone();
         online.send(
             "set prim script",
-            NetMessage::SetPrimScript {
+            NetMessage::SetPrimScript(msg::SetPrimScript {
                 request_id: 0,
                 prim_id,
                 source,
-            },
+            }),
         );
     }
     if stop {
@@ -468,20 +469,20 @@ pub fn render_script_panel(
         editor.source.clear();
         online.send(
             "set prim script",
-            NetMessage::SetPrimScript {
+            NetMessage::SetPrimScript(msg::SetPrimScript {
                 request_id: 0,
                 prim_id,
                 source: String::new(),
-            },
+            }),
         );
     }
     if touch {
         online.send(
             "touch prim",
-            NetMessage::TouchPrim {
+            NetMessage::TouchPrim(msg::TouchPrim {
                 request_id: 0,
                 prim_id,
-            },
+            }),
         );
     }
 }

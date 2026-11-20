@@ -18,12 +18,8 @@
 //!
 //! This is a server-side type and changes nothing on the wire.
 
-use cartopolis_core::{
-    ChatScope, E2eeCursor, E2eeWelcome, Emote, GeoAnchor, NetMessage, ParticleEffect, PrimGeometry,
-    PrimSurface, ReportReason, RequestPolicy,
-};
-use glam::Vec3;
-use uuid::Uuid;
+use cartopolis_core::msg;
+use cartopolis_core::NetMessage;
 
 /// A message a client may send, with the fields the server reads.
 ///
@@ -33,248 +29,66 @@ use uuid::Uuid;
 pub enum ClientRequest {
     /// A second `ClientHello` on an authenticated connection.
     Hello,
-    Intent {
-        move_x: f32,
-        move_z: f32,
-        display_yaw: f32,
-        jump: bool,
-        emote: Option<Emote>,
-        expression: Option<cartopolis_core::Expression>,
-        seated: Option<[f32; 2]>,
-        geo: Option<GeoAnchor>,
-    },
-    Teleport {
-        geo: GeoAnchor,
-        alt_m: f32,
-    },
-    SetPresence {
-        active: bool,
-    },
-    SetAvatarLook {
-        look: cartopolis_core::AvatarLook,
-    },
+    Intent(msg::ClientIntent),
+    Teleport(msg::Teleport),
+    SetPresence(msg::SetPresence),
+    SetAvatarLook(msg::SetAvatarLook),
     /// A face its camera tracks, to hand on (`look::on_face`).
-    SetFaceFrame {
-        weights: Vec<u8>,
-    },
-    CreatePrim {
-        request_id: u32,
-        name: String,
-        position: Vec3,
-        rotation: Vec3,
-        scale: Vec3,
-        color: [f32; 3],
-        texture_id: Option<String>,
-        shape: String,
-        surface: PrimSurface,
-        geometry: PrimGeometry,
-        geo: GeoAnchor,
-        particles: Option<ParticleEffect>,
-        model: Option<String>,
-        draft: bool,
-    },
-    UpdatePrim {
-        request_id: u32,
-        prim_id: i64,
-        position: Vec3,
-        rotation: Vec3,
-        scale: Vec3,
-        color: [f32; 3],
-        texture_id: Option<String>,
-        name: String,
-        surface: PrimSurface,
-        geometry: PrimGeometry,
-        geo: GeoAnchor,
-        particles: Option<ParticleEffect>,
-        model: Option<String>,
-    },
-    DeletePrim {
-        request_id: u32,
-        prim_id: i64,
-    },
-    SetPrimVideo {
-        request_id: u32,
-        prim_id: i64,
-        video: Option<cartopolis_core::SetVideo>,
-    },
-    SetPrimPhysical {
-        request_id: u32,
-        prim_id: i64,
-        physical: bool,
-    },
+    SetFaceFrame(msg::SetFaceFrame),
+    CreatePrim(msg::CreatePrim),
+    UpdatePrim(msg::UpdatePrim),
+    DeletePrim(msg::DeletePrim),
+    SetPrimVideo(msg::SetPrimVideo),
+    SetPrimPhysical(msg::SetPrimPhysical),
     /// Pick up a physical prim (`carry::on_grab`).
-    GrabPrim {
-        request_id: u32,
-        prim_id: i64,
-    },
+    GrabPrim(msg::GrabPrim),
     /// Throw or put down what the avatar carries (`carry::on_release`).
-    ReleasePrim {
-        request_id: u32,
-        throw: bool,
-    },
+    ReleasePrim(msg::ReleasePrim),
     /// Offer a handshake or a high five to another avatar (`greet::on_offer`).
-    OfferGreeting {
-        request_id: u32,
-        to: u64,
-        greeting: cartopolis_core::Greeting,
-    },
+    OfferGreeting(msg::OfferGreeting),
     /// Take a greeting another avatar offered (`greet::on_accept`).
-    AcceptGreeting {
-        request_id: u32,
-        from: u64,
-    },
-    SetPushEndpoint {
-        endpoint: Option<String>,
-    },
+    AcceptGreeting(msg::AcceptGreeting),
+    SetPushEndpoint(msg::SetPushEndpoint),
     /// The spots this account follows for new plans (`plans_watch`).
-    FollowPlans {
-        places: Vec<[f64; 2]>,
-    },
+    FollowPlans(msg::FollowPlans),
     TextureCatalogRequest,
-    TextureRequest {
-        request_id: u32,
-        texture_id: String,
-    },
-    ChatSend {
-        scope: ChatScope,
-        body: String,
-    },
-    GetPrimScript {
-        request_id: u32,
-        prim_id: i64,
-    },
-    SetPrimScript {
-        request_id: u32,
-        prim_id: i64,
-        source: String,
-    },
-    TouchPrim {
-        request_id: u32,
-        prim_id: i64,
-    },
+    TextureRequest(msg::TextureRequest),
+    ChatSend(msg::ChatSend),
+    GetPrimScript(msg::GetPrimScript),
+    SetPrimScript(msg::SetPrimScript),
+    TouchPrim(msg::TouchPrim),
     HandPose {
         pose: cartopolis_core::HandPose,
     },
-    VoiceFrame {
-        scope: ChatScope,
-        seq: u32,
-        payload: Vec<u8>,
-    },
+    VoiceFrame(msg::VoiceFrame),
     /// No `request_id`: the answer is the whole `BlockedList`, not an ack, so
     /// there is nothing to correlate.
-    SetBlocked {
-        username: String,
-        blocked: bool,
-    },
-    ReportUser {
-        request_id: u32,
-        username: String,
-        reason: ReportReason,
-        note: String,
-        message: Option<String>,
-        asset: Option<String>,
-    },
-    DeleteAccount {
-        request_id: u32,
-        password: String,
-    },
-    E2eeRegisterDevice {
-        request_id: u32,
-        device: Uuid,
-        key_packages: Vec<Vec<u8>>,
-    },
-    E2eeClaimKeyPackages {
-        request_id: u32,
-        address: String,
-    },
-    E2eeCreateGroup {
-        request_id: u32,
-        group: Vec<u8>,
-        direct_with: Option<String>,
-    },
-    E2eeSend {
-        request_id: u32,
-        group: Vec<u8>,
-        epoch: u64,
-        commit: bool,
-        message: Vec<u8>,
-        welcome: Option<E2eeWelcome>,
-    },
-    E2eeSync {
-        request_id: u32,
-        cursors: Vec<E2eeCursor>,
-    },
-    CallJoin {
-        request_id: u32,
-        group: Vec<u8>,
-        offer: String,
-        screen: Option<String>,
-    },
-    CallControl {
-        group: Vec<u8>,
-        action: cartopolis_core::CallAction,
-    },
-    CallReact {
-        group: Vec<u8>,
-        epoch: u64,
-        sealed: Vec<u8>,
-    },
-    CallWatch {
-        group: Vec<u8>,
-        cameras: Option<Vec<u64>>,
-    },
-    CallAnswer {
-        group: Vec<u8>,
-        sdp: String,
-    },
-    CallLeave {
-        group: Vec<u8>,
-    },
-    CallDecline {
-        group: Vec<u8>,
-    },
-    CallInvite {
-        group: Vec<u8>,
-    },
-    CallKeyDrop {
-        group: Vec<u8>,
-        participant: u64,
-        sealed: Vec<u8>,
-    },
-    RequestContact {
-        request_id: u32,
-        username: String,
-        link_code: Option<String>,
-    },
-    AnswerContact {
-        request_id: u32,
-        username: String,
-        accept: bool,
-    },
+    SetBlocked(msg::SetBlocked),
+    ReportUser(msg::ReportUser),
+    DeleteAccount(msg::DeleteAccount),
+    E2eeRegisterDevice(msg::E2eeRegisterDevice),
+    E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages),
+    E2eeCreateGroup(msg::E2eeCreateGroup),
+    E2eeSend(msg::E2eeSend),
+    E2eeSync(msg::E2eeSync),
+    CallJoin(msg::CallJoin),
+    CallControl(msg::CallControl),
+    CallReact(msg::CallReact),
+    CallWatch(msg::CallWatch),
+    CallAnswer(msg::CallAnswer),
+    CallLeave(msg::CallLeave),
+    CallDecline(msg::CallDecline),
+    CallInvite(msg::CallInvite),
+    CallKeyDrop(msg::CallKeyDrop),
+    RequestContact(msg::RequestContact),
+    AnswerContact(msg::AnswerContact),
     /// No `request_id`: the answer is the whole new contact state.
-    RemoveContact {
-        username: String,
-    },
+    RemoveContact(msg::RemoveContact),
     /// No `request_id`, for the same reason as `RemoveContact`.
-    SetContactSettings {
-        policy: RequestPolicy,
-        show_online: bool,
-        notify_requests: bool,
-        separate_new_accounts: bool,
-        reset_link: bool,
-    },
-    LookupPerson {
-        request_id: u32,
-        username: Option<String>,
-        avatar_id: Option<u64>,
-    },
-    GetNearbyPeople {
-        request_id: u32,
-    },
-    WherePeople {
-        request_id: u32,
-        usernames: Vec<String>,
-    },
+    SetContactSettings(msg::SetContactSettings),
+    LookupPerson(msg::LookupPerson),
+    GetNearbyPeople(msg::GetNearbyPeople),
+    WherePeople(msg::WherePeople),
     /// One of the community messages (protocols 39 and 40), kept whole: there
     /// are twenty, and `net::communities::dispatch` matches them exhaustively
     /// against this same list.
@@ -290,59 +104,59 @@ impl ClientRequest {
         match self {
             Self::Hello
             // Only ever to say "send me no world": a guest's page draws none.
-            | Self::SetPresence { .. }
-            | Self::E2eeRegisterDevice { .. }
+            | Self::SetPresence(msg::SetPresence { .. })
+            | Self::E2eeRegisterDevice(msg::E2eeRegisterDevice { .. })
             // Its own mailbox, which nothing is sent to: the chat engine
             // syncs on every connect, and a refusal would stall it.
-            | Self::E2eeSync { .. }
-            | Self::CallJoin { .. }
-            | Self::CallControl { .. }
-            | Self::CallReact { .. }
-            | Self::CallWatch { .. }
-            | Self::CallAnswer { .. }
-            | Self::CallLeave { .. } => true,
-            Self::Intent { .. }
-            | Self::Teleport { .. }
-            | Self::CreatePrim { .. }
-            | Self::UpdatePrim { .. }
-            | Self::DeletePrim { .. }
-            | Self::SetPrimVideo { .. }
-            | Self::SetPrimPhysical { .. }
+            | Self::E2eeSync(msg::E2eeSync { .. })
+            | Self::CallJoin(msg::CallJoin { .. })
+            | Self::CallControl(msg::CallControl { .. })
+            | Self::CallReact(msg::CallReact { .. })
+            | Self::CallWatch(msg::CallWatch { .. })
+            | Self::CallAnswer(msg::CallAnswer { .. })
+            | Self::CallLeave(msg::CallLeave { .. }) => true,
+            Self::Intent(msg::ClientIntent { .. })
+            | Self::Teleport(msg::Teleport { .. })
+            | Self::CreatePrim(msg::CreatePrim { .. })
+            | Self::UpdatePrim(msg::UpdatePrim { .. })
+            | Self::DeletePrim(msg::DeletePrim { .. })
+            | Self::SetPrimVideo(msg::SetPrimVideo { .. })
+            | Self::SetPrimPhysical(msg::SetPrimPhysical { .. })
             // A guest has no avatar in the world to carry anything with.
-            | Self::GrabPrim { .. }
-            | Self::ReleasePrim { .. }
+            | Self::GrabPrim(msg::GrabPrim { .. })
+            | Self::ReleasePrim(msg::ReleasePrim { .. })
             // Nor anybody to greet with.
-            | Self::OfferGreeting { .. }
-            | Self::AcceptGreeting { .. }
-            | Self::SetPushEndpoint { .. }
-            | Self::FollowPlans { .. }
+            | Self::OfferGreeting(msg::OfferGreeting { .. })
+            | Self::AcceptGreeting(msg::AcceptGreeting { .. })
+            | Self::SetPushEndpoint(msg::SetPushEndpoint { .. })
+            | Self::FollowPlans(msg::FollowPlans { .. })
             | Self::TextureCatalogRequest
-            | Self::TextureRequest { .. }
-            | Self::ChatSend { .. }
-            | Self::GetPrimScript { .. }
-            | Self::SetPrimScript { .. }
-            | Self::TouchPrim { .. }
+            | Self::TextureRequest(msg::TextureRequest { .. })
+            | Self::ChatSend(msg::ChatSend { .. })
+            | Self::GetPrimScript(msg::GetPrimScript { .. })
+            | Self::SetPrimScript(msg::SetPrimScript { .. })
+            | Self::TouchPrim(msg::TouchPrim { .. })
             | Self::HandPose { .. }
-            | Self::VoiceFrame { .. }
-            | Self::SetBlocked { .. }
-            | Self::ReportUser { .. }
-            | Self::DeleteAccount { .. }
-            | Self::E2eeClaimKeyPackages { .. }
-            | Self::E2eeCreateGroup { .. }
-            | Self::E2eeSend { .. }
-            | Self::CallDecline { .. }
-            | Self::CallInvite { .. }
-            | Self::CallKeyDrop { .. }
+            | Self::VoiceFrame(msg::VoiceFrame { .. })
+            | Self::SetBlocked(msg::SetBlocked { .. })
+            | Self::ReportUser(msg::ReportUser { .. })
+            | Self::DeleteAccount(msg::DeleteAccount { .. })
+            | Self::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages { .. })
+            | Self::E2eeCreateGroup(msg::E2eeCreateGroup { .. })
+            | Self::E2eeSend(msg::E2eeSend { .. })
+            | Self::CallDecline(msg::CallDecline { .. })
+            | Self::CallInvite(msg::CallInvite { .. })
+            | Self::CallKeyDrop(msg::CallKeyDrop { .. })
             // A guest has no avatar in the world to wear one.
-            | Self::SetAvatarLook { .. }
-            | Self::SetFaceFrame { .. }
-            | Self::RequestContact { .. }
-            | Self::AnswerContact { .. }
-            | Self::RemoveContact { .. }
-            | Self::SetContactSettings { .. }
-            | Self::LookupPerson { .. }
-            | Self::GetNearbyPeople { .. }
-            | Self::WherePeople { .. }
+            | Self::SetAvatarLook(msg::SetAvatarLook { .. })
+            | Self::SetFaceFrame(msg::SetFaceFrame { .. })
+            | Self::RequestContact(msg::RequestContact { .. })
+            | Self::AnswerContact(msg::AnswerContact { .. })
+            | Self::RemoveContact(msg::RemoveContact { .. })
+            | Self::SetContactSettings(msg::SetContactSettings { .. })
+            | Self::LookupPerson(msg::LookupPerson { .. })
+            | Self::GetNearbyPeople(msg::GetNearbyPeople { .. })
+            | Self::WherePeople(msg::WherePeople { .. })
             | Self::Community(_) => false,
         }
     }
@@ -355,341 +169,54 @@ impl TryFrom<NetMessage> for ClientRequest {
     fn try_from(msg: NetMessage) -> Result<Self, NetMessage> {
         Ok(match msg {
             NetMessage::ClientHello { .. } => Self::Hello,
-            NetMessage::ClientIntent {
-                move_x,
-                move_z,
-                display_yaw,
-                jump,
-                emote,
-                expression,
-                seated,
-                geo,
-                // `flying`, `fly_up` and `fly_down` are dropped here: avatar
-                // flight was removed on 2026-11-14 and the sim ignores them
-                // (they stay on the wire so the protocol did not move).
-                ..
-            } => Self::Intent {
-                move_x,
-                move_z,
-                display_yaw,
-                jump,
-                emote,
-                expression,
-                seated,
-                geo,
-            },
-            NetMessage::Teleport { geo, alt_m, .. } => Self::Teleport { geo, alt_m },
-            NetMessage::SetPresence { active, .. } => Self::SetPresence { active },
-            NetMessage::SetAvatarLook { look } => Self::SetAvatarLook { look },
-            NetMessage::SetFaceFrame { weights } => Self::SetFaceFrame { weights },
-            NetMessage::CreatePrim {
-                request_id,
-                name,
-                position,
-                rotation,
-                scale,
-                color,
-                texture_id,
-                shape,
-                surface,
-                geometry,
-                geo,
-                particles,
-                model,
-                draft,
-            } => Self::CreatePrim {
-                request_id,
-                name,
-                position,
-                rotation,
-                scale,
-                color,
-                texture_id,
-                shape,
-                surface,
-                geometry,
-                geo,
-                particles,
-                model,
-                draft,
-            },
-            NetMessage::UpdatePrim {
-                request_id,
-                prim_id,
-                position,
-                rotation,
-                scale,
-                color,
-                texture_id,
-                name,
-                surface,
-                geometry,
-                geo,
-                particles,
-                model,
-            } => Self::UpdatePrim {
-                request_id,
-                prim_id,
-                position,
-                rotation,
-                scale,
-                color,
-                texture_id,
-                name,
-                surface,
-                geometry,
-                geo,
-                particles,
-                model,
-            },
-            NetMessage::DeletePrim {
-                request_id,
-                prim_id,
-            } => Self::DeletePrim {
-                request_id,
-                prim_id,
-            },
-            NetMessage::SetPrimVideo {
-                request_id,
-                prim_id,
-                video,
-            } => Self::SetPrimVideo {
-                request_id,
-                prim_id,
-                video,
-            },
-            NetMessage::SetPrimPhysical {
-                request_id,
-                prim_id,
-                physical,
-            } => Self::SetPrimPhysical {
-                request_id,
-                prim_id,
-                physical,
-            },
-            NetMessage::GrabPrim {
-                request_id,
-                prim_id,
-            } => Self::GrabPrim {
-                request_id,
-                prim_id,
-            },
-            NetMessage::ReleasePrim { request_id, throw } => {
-                Self::ReleasePrim { request_id, throw }
-            }
-            NetMessage::OfferGreeting {
-                request_id,
-                to,
-                greeting,
-            } => Self::OfferGreeting {
-                request_id,
-                to,
-                greeting,
-            },
-            NetMessage::AcceptGreeting { request_id, from } => {
-                Self::AcceptGreeting { request_id, from }
-            }
-            NetMessage::SetPushEndpoint { endpoint } => Self::SetPushEndpoint { endpoint },
-            NetMessage::FollowPlans { places } => Self::FollowPlans { places },
+            NetMessage::ClientIntent(m) => Self::Intent(m),
+            NetMessage::Teleport(m) => Self::Teleport(m),
+            NetMessage::SetPresence(m) => Self::SetPresence(m),
+            NetMessage::SetAvatarLook(m) => Self::SetAvatarLook(m),
+            NetMessage::SetFaceFrame(m) => Self::SetFaceFrame(m),
+            NetMessage::CreatePrim(m) => Self::CreatePrim(m),
+            NetMessage::UpdatePrim(m) => Self::UpdatePrim(m),
+            NetMessage::DeletePrim(m) => Self::DeletePrim(m),
+            NetMessage::SetPrimVideo(m) => Self::SetPrimVideo(m),
+            NetMessage::SetPrimPhysical(m) => Self::SetPrimPhysical(m),
+            NetMessage::GrabPrim(m) => Self::GrabPrim(m),
+            NetMessage::ReleasePrim(m) => Self::ReleasePrim(m),
+            NetMessage::OfferGreeting(m) => Self::OfferGreeting(m),
+            NetMessage::AcceptGreeting(m) => Self::AcceptGreeting(m),
+            NetMessage::SetPushEndpoint(m) => Self::SetPushEndpoint(m),
+            NetMessage::FollowPlans(m) => Self::FollowPlans(m),
             NetMessage::TextureCatalogRequest => Self::TextureCatalogRequest,
-            NetMessage::TextureRequest {
-                request_id,
-                texture_id,
-            } => Self::TextureRequest {
-                request_id,
-                texture_id,
-            },
-            NetMessage::ChatSend { scope, body, .. } => Self::ChatSend { scope, body },
-            NetMessage::GetPrimScript {
-                request_id,
-                prim_id,
-            } => Self::GetPrimScript {
-                request_id,
-                prim_id,
-            },
-            NetMessage::SetPrimScript {
-                request_id,
-                prim_id,
-                source,
-            } => Self::SetPrimScript {
-                request_id,
-                prim_id,
-                source,
-            },
-            NetMessage::TouchPrim {
-                request_id,
-                prim_id,
-            } => Self::TouchPrim {
-                request_id,
-                prim_id,
-            },
+            NetMessage::TextureRequest(m) => Self::TextureRequest(m),
+            NetMessage::ChatSend(m) => Self::ChatSend(m),
+            NetMessage::GetPrimScript(m) => Self::GetPrimScript(m),
+            NetMessage::SetPrimScript(m) => Self::SetPrimScript(m),
+            NetMessage::TouchPrim(m) => Self::TouchPrim(m),
             NetMessage::HandPose { pose } => Self::HandPose { pose },
-            NetMessage::VoiceFrame {
-                scope,
-                seq,
-                payload,
-            } => Self::VoiceFrame {
-                scope,
-                seq,
-                payload,
-            },
-            NetMessage::SetBlocked {
-                username, blocked, ..
-            } => Self::SetBlocked { username, blocked },
-            NetMessage::ReportUser {
-                request_id,
-                username,
-                reason,
-                note,
-                message,
-                asset,
-            } => Self::ReportUser {
-                request_id,
-                username,
-                reason,
-                note,
-                message,
-                asset,
-            },
-            NetMessage::DeleteAccount {
-                request_id,
-                password,
-            } => Self::DeleteAccount {
-                request_id,
-                password,
-            },
-            NetMessage::E2eeRegisterDevice {
-                request_id,
-                device,
-                key_packages,
-            } => Self::E2eeRegisterDevice {
-                request_id,
-                device,
-                key_packages,
-            },
-            NetMessage::E2eeClaimKeyPackages {
-                request_id,
-                address,
-            } => Self::E2eeClaimKeyPackages {
-                request_id,
-                address,
-            },
-            NetMessage::E2eeCreateGroup {
-                request_id,
-                group,
-                direct_with,
-            } => Self::E2eeCreateGroup {
-                request_id,
-                group,
-                direct_with,
-            },
-            NetMessage::E2eeSend {
-                request_id,
-                group,
-                epoch,
-                commit,
-                message,
-                welcome,
-            } => Self::E2eeSend {
-                request_id,
-                group,
-                epoch,
-                commit,
-                message,
-                welcome,
-            },
-            NetMessage::E2eeSync {
-                request_id,
-                cursors,
-            } => Self::E2eeSync {
-                request_id,
-                cursors,
-            },
-            NetMessage::CallJoin {
-                request_id,
-                group,
-                offer,
-                screen,
-            } => Self::CallJoin {
-                request_id,
-                group,
-                offer,
-                screen,
-            },
-            NetMessage::CallControl { group, action } => Self::CallControl { group, action },
-            NetMessage::CallReact {
-                group,
-                epoch,
-                sealed,
-            } => Self::CallReact {
-                group,
-                epoch,
-                sealed,
-            },
-            NetMessage::CallWatch { group, cameras } => Self::CallWatch { group, cameras },
-            NetMessage::CallAnswer { group, sdp } => Self::CallAnswer { group, sdp },
-            NetMessage::CallLeave { group } => Self::CallLeave { group },
-            NetMessage::CallDecline { group } => Self::CallDecline { group },
-            NetMessage::CallInvite { group } => Self::CallInvite { group },
-            NetMessage::CallKeyDrop {
-                group,
-                participant,
-                sealed,
-            } => Self::CallKeyDrop {
-                group,
-                participant,
-                sealed,
-            },
-            NetMessage::RequestContact {
-                request_id,
-                username,
-                link_code,
-            } => Self::RequestContact {
-                request_id,
-                username,
-                link_code,
-            },
-            NetMessage::AnswerContact {
-                request_id,
-                username,
-                accept,
-            } => Self::AnswerContact {
-                request_id,
-                username,
-                accept,
-            },
-            NetMessage::RemoveContact { username, .. } => Self::RemoveContact { username },
-            NetMessage::SetContactSettings {
-                policy,
-                show_online,
-                notify_requests,
-                separate_new_accounts,
-                reset_link,
-                ..
-            } => Self::SetContactSettings {
-                policy,
-                show_online,
-                notify_requests,
-                separate_new_accounts,
-                reset_link,
-            },
-            NetMessage::LookupPerson {
-                request_id,
-                username,
-                avatar_id,
-            } => Self::LookupPerson {
-                request_id,
-                username,
-                avatar_id,
-            },
-            NetMessage::GetNearbyPeople { request_id } => Self::GetNearbyPeople { request_id },
-            NetMessage::WherePeople {
-                request_id,
-                usernames,
-            } => Self::WherePeople {
-                request_id,
-                usernames,
-            },
+            NetMessage::VoiceFrame(m) => Self::VoiceFrame(m),
+            NetMessage::SetBlocked(m) => Self::SetBlocked(m),
+            NetMessage::ReportUser(m) => Self::ReportUser(m),
+            NetMessage::DeleteAccount(m) => Self::DeleteAccount(m),
+            NetMessage::E2eeRegisterDevice(m) => Self::E2eeRegisterDevice(m),
+            NetMessage::E2eeClaimKeyPackages(m) => Self::E2eeClaimKeyPackages(m),
+            NetMessage::E2eeCreateGroup(m) => Self::E2eeCreateGroup(m),
+            NetMessage::E2eeSend(m) => Self::E2eeSend(m),
+            NetMessage::E2eeSync(m) => Self::E2eeSync(m),
+            NetMessage::CallJoin(m) => Self::CallJoin(m),
+            NetMessage::CallControl(m) => Self::CallControl(m),
+            NetMessage::CallReact(m) => Self::CallReact(m),
+            NetMessage::CallWatch(m) => Self::CallWatch(m),
+            NetMessage::CallAnswer(m) => Self::CallAnswer(m),
+            NetMessage::CallLeave(m) => Self::CallLeave(m),
+            NetMessage::CallDecline(m) => Self::CallDecline(m),
+            NetMessage::CallInvite(m) => Self::CallInvite(m),
+            NetMessage::CallKeyDrop(m) => Self::CallKeyDrop(m),
+            NetMessage::RequestContact(m) => Self::RequestContact(m),
+            NetMessage::AnswerContact(m) => Self::AnswerContact(m),
+            NetMessage::RemoveContact(m) => Self::RemoveContact(m),
+            NetMessage::SetContactSettings(m) => Self::SetContactSettings(m),
+            NetMessage::LookupPerson(m) => Self::LookupPerson(m),
+            NetMessage::GetNearbyPeople(m) => Self::GetNearbyPeople(m),
+            NetMessage::WherePeople(m) => Self::WherePeople(m),
             NetMessage::CommunityList { .. }
             | NetMessage::CommunityCreate { .. }
             | NetMessage::CommunityEdit { .. }
@@ -780,16 +307,16 @@ mod tests {
     /// from a client is handed back rather than acted on.
     #[test]
     fn only_client_messages_become_requests() {
-        let touch = NetMessage::TouchPrim {
+        let touch = NetMessage::TouchPrim(msg::TouchPrim {
             request_id: 7,
             prim_id: 3,
-        };
+        });
         assert!(matches!(
             ClientRequest::try_from(touch),
-            Ok(ClientRequest::TouchPrim {
+            Ok(ClientRequest::TouchPrim(msg::TouchPrim {
                 request_id: 7,
                 prim_id: 3
-            })
+            }))
         ));
         let echo = NetMessage::PrimRemoved { id: 3 };
         assert!(matches!(
@@ -806,22 +333,25 @@ mod tests {
     /// answers are not requests at all.
     #[test]
     fn greetings_are_client_requests_guests_may_not_make() {
-        let offer = ClientRequest::try_from(NetMessage::OfferGreeting {
+        let offer = ClientRequest::try_from(NetMessage::OfferGreeting(msg::OfferGreeting {
             request_id: 1,
             to: 8,
             greeting: cartopolis_core::Greeting::Handshake,
-        })
+        }))
         .expect("a client request");
-        assert!(matches!(offer, ClientRequest::OfferGreeting { to: 8, .. }));
+        assert!(matches!(
+            offer,
+            ClientRequest::OfferGreeting(msg::OfferGreeting { to: 8, .. })
+        ));
         assert!(!offer.guest_may());
-        let accept = ClientRequest::try_from(NetMessage::AcceptGreeting {
+        let accept = ClientRequest::try_from(NetMessage::AcceptGreeting(msg::AcceptGreeting {
             request_id: 2,
             from: 5,
-        })
+        }))
         .expect("a client request");
         assert!(matches!(
             accept,
-            ClientRequest::AcceptGreeting { from: 5, .. }
+            ClientRequest::AcceptGreeting(msg::AcceptGreeting { from: 5, .. })
         ));
         assert!(!accept.guest_may());
         assert!(ClientRequest::try_from(NetMessage::GreetingStarted {
@@ -835,30 +365,30 @@ mod tests {
     /// Picking up and letting go are a client's to send, and a guest's not.
     #[test]
     fn grab_and_release_are_client_requests_guests_may_not_make() {
-        let grab = ClientRequest::try_from(NetMessage::GrabPrim {
+        let grab = ClientRequest::try_from(NetMessage::GrabPrim(msg::GrabPrim {
             request_id: 4,
             prim_id: 9,
-        })
+        }))
         .expect("a client request");
         assert!(matches!(
             grab,
-            ClientRequest::GrabPrim {
+            ClientRequest::GrabPrim(msg::GrabPrim {
                 request_id: 4,
                 prim_id: 9
-            }
+            })
         ));
         assert!(!grab.guest_may());
-        let release = ClientRequest::try_from(NetMessage::ReleasePrim {
+        let release = ClientRequest::try_from(NetMessage::ReleasePrim(msg::ReleasePrim {
             request_id: 5,
             throw: true,
-        })
+        }))
         .expect("a client request");
         assert!(matches!(
             release,
-            ClientRequest::ReleasePrim {
+            ClientRequest::ReleasePrim(msg::ReleasePrim {
                 request_id: 5,
                 throw: true
-            }
+            })
         ));
         assert!(!release.guest_may());
     }

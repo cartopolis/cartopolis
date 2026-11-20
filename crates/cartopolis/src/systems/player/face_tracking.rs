@@ -14,6 +14,7 @@
 //! The models are three `.tflite` files under `assets/models/face`, loaded
 //! the first time a face is wanted. Not on the web, which has no camera here.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 
 use bevy::asset::io::Reader;
@@ -270,7 +271,9 @@ pub(crate) fn show_own_face(
             if let Some(online) = &online {
                 online.send(
                     "face frame",
-                    cartopolis_core::NetMessage::SetFaceFrame { weights: vec![] },
+                    cartopolis_core::NetMessage::SetFaceFrame(msg::SetFaceFrame {
+                        weights: vec![],
+                    }),
                 );
             }
         }
@@ -293,7 +296,7 @@ pub(crate) fn show_own_face(
             .collect();
         if online.send(
             "face frame",
-            cartopolis_core::NetMessage::SetFaceFrame { weights: bytes },
+            cartopolis_core::NetMessage::SetFaceFrame(msg::SetFaceFrame { weights: bytes }),
         ) {
             *sent_any = true;
         }

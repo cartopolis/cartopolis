@@ -12,6 +12,7 @@ use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::{EguiMut, EguiRef};
 use crate::systems::theme;
 use bevy::prelude::*;
+use cartopolis_core::msg;
 
 const MARQUEE_DRAG_THRESHOLD_PX: f32 = 4.0;
 
@@ -195,10 +196,10 @@ pub fn prim_picking(
                 if let Some(session) = online.as_ref() {
                     session.send(
                         "touch prim",
-                        cartopolis_core::NetMessage::TouchPrim {
+                        cartopolis_core::NetMessage::TouchPrim(msg::TouchPrim {
                             request_id: 0,
                             prim_id: prim.id,
-                        },
+                        }),
                     );
                     tracing::debug!(prim_id = prim.id, "prim touched");
                 }

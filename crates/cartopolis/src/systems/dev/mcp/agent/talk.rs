@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 pub(super) const NOT_ONLINE: &str =
     "This client is not signed in to a server, so there is nobody to \
@@ -621,11 +622,11 @@ pub(super) fn say(
         };
         online.send(
             "agent chat",
-            NetMessage::ChatSend {
+            NetMessage::ChatSend(msg::ChatSend {
                 request_id: 0,
                 scope,
                 body: text.clone(),
-            },
+            }),
         );
         return Some((
             reply,

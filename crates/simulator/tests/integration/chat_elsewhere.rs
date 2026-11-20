@@ -5,6 +5,7 @@
 //! `fediverse_allow_private` and `peer_test_bases` let two servers on one
 //! machine reach each other over plain `http`.
 
+use cartopolis_core::msg;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -145,11 +146,11 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     // and his own server says so, in its words, through Alice's.
     send(
         &mut a,
-        &NetMessage::RequestContact {
+        &NetMessage::RequestContact(msg::RequestContact {
             request_id: 20,
             username: "bob@127.0.0.1".into(),
             link_code: None,
-        },
+        }),
     )
     .await;
     let (refusal, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -167,10 +168,10 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     // With no request between them, his keys are not hers to take.
     send(
         &mut a,
-        &NetMessage::E2eeClaimKeyPackages {
+        &NetMessage::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id: 25,
             address: "bob@127.0.0.1".into(),
-        },
+        }),
     )
     .await;
     let (refusal, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -188,25 +189,25 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     // Bob opens up; Alice asks again, and the request reaches him at home.
     send(
         &mut b,
-        &NetMessage::SetContactSettings {
+        &NetMessage::SetContactSettings(msg::SetContactSettings {
             request_id: 21,
             policy: RequestPolicy::Anyone,
             show_online: true,
             notify_requests: false,
             separate_new_accounts: false,
             reset_link: false,
-        },
+        }),
     )
     .await;
     contacts_state(&mut b).await;
     // Her card for him comes from his server, with the button on it.
     send(
         &mut a,
-        &NetMessage::LookupPerson {
+        &NetMessage::LookupPerson(msg::LookupPerson {
             request_id: 24,
             username: Some("bob@127.0.0.1".into()),
             avatar_id: None,
-        },
+        }),
     )
     .await;
     let (card, _) = next_matching(&mut a, PATIENT, |m| match m {
@@ -220,11 +221,11 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     assert!(card.may_request);
     send(
         &mut a,
-        &NetMessage::RequestContact {
+        &NetMessage::RequestContact(msg::RequestContact {
             request_id: 22,
             username: "bob@127.0.0.1".into(),
             link_code: None,
-        },
+        }),
     )
     .await;
     let (_, _, outgoing) = contacts_until(&mut a, |s| !s.2.is_empty()).await;
@@ -235,11 +236,11 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     // He accepts, and both servers know them as contacts.
     send(
         &mut b,
-        &NetMessage::AnswerContact {
+        &NetMessage::AnswerContact(msg::AnswerContact {
             request_id: 23,
             username: "alice@localhost".into(),
             accept: true,
-        },
+        }),
     )
     .await;
     let (contacts, _, _) = contacts_until(&mut b, |s| !s.0.is_empty()).await;
@@ -303,13 +304,13 @@ async fn people_on_two_servers_become_contacts_and_talk_privately() {
     let mut b = online(&sb.addr, &mut bob).await;
     send(
         &mut b,
-        &NetMessage::E2eeSync {
+        &NetMessage::E2eeSync(msg::E2eeSync {
             request_id: 30,
             cursors: vec![cartopolis_core::E2eeCursor {
                 group: group.clone(),
                 after: 3,
             }],
-        },
+        }),
     )
     .await;
     let (message, _) = next_matching(&mut b, PATIENT, |m| match m {
@@ -352,34 +353,34 @@ async fn a_chat_across(sa: &Server, sb: &Server) -> (Device, Device, Client, Cli
     let mut b = online(&sb.addr, &mut bob).await;
     send(
         &mut b,
-        &NetMessage::SetContactSettings {
+        &NetMessage::SetContactSettings(msg::SetContactSettings {
             request_id: 21,
             policy: RequestPolicy::Anyone,
             show_online: true,
             notify_requests: false,
             separate_new_accounts: false,
             reset_link: false,
-        },
+        }),
     )
     .await;
     contacts_state(&mut b).await;
     send(
         &mut a,
-        &NetMessage::RequestContact {
+        &NetMessage::RequestContact(msg::RequestContact {
             request_id: 22,
             username: "bob@127.0.0.1".into(),
             link_code: None,
-        },
+        }),
     )
     .await;
     contacts_until(&mut b, |s| !s.1.is_empty()).await;
     send(
         &mut b,
-        &NetMessage::AnswerContact {
+        &NetMessage::AnswerContact(msg::AnswerContact {
             request_id: 23,
             username: "alice@localhost".into(),
             accept: true,
-        },
+        }),
     )
     .await;
     contacts_until(&mut a, |s| !s.0.is_empty()).await;
@@ -468,9 +469,9 @@ async fn people_on_two_servers_call_each_other_on_the_chats_hub() {
     // He hangs up; she is alone in it.
     send(
         &mut b,
-        &NetMessage::CallLeave {
+        &NetMessage::CallLeave(msg::CallLeave {
             group: group.clone(),
-        },
+        }),
     )
     .await;
     let (alone, _) = next_matching(&mut a, PATIENT, |m| match m {

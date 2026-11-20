@@ -29,6 +29,7 @@
 //! map area, as the pins do), and [`render_plans_card`] is the card a tap
 //! opens, a floating `Area` like the place card.
 
+use cartopolis_core::msg;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -512,9 +513,9 @@ pub fn send_plan_follows(
     if due {
         online.send(
             "followed places",
-            cartopolis_core::NetMessage::FollowPlans {
+            cartopolis_core::NetMessage::FollowPlans(msg::FollowPlans {
                 places: places.clone(),
-            },
+            }),
         );
         tracing::info!(
             places = places.len(),

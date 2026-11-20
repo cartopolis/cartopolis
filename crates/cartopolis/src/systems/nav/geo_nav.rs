@@ -24,6 +24,7 @@ use crate::grid::{
 };
 use crate::platform::sync::{Arc, Mutex};
 use crate::systems::egui_manager::EguiMut;
+use cartopolis_core::msg;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -2593,14 +2594,14 @@ pub fn place_avatar(
         let (latitude, longitude) = world_to_lat_lng(anchor, p.x, p.z);
         sess.send(
             "teleport",
-            cartopolis_core::NetMessage::Teleport {
+            cartopolis_core::NetMessage::Teleport(msg::Teleport {
                 request_id: 0,
                 geo: cartopolis_core::GeoAnchor {
                     latitude,
                     longitude,
                 },
                 alt_m: p.y as f32,
-            },
+            }),
         );
         avatar_state.teleport_hold = Some(web_time::Instant::now());
     }

@@ -21,6 +21,7 @@ use crate::db::{self, SharedConn};
 use crate::reach::{Outbound, Place, TickTable};
 use crate::state::SimWorld;
 use bytes::Bytes;
+use cartopolis_core::msg;
 use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, NetMessage, ProtocolError, PROTOCOL_VERSION,
 };
@@ -1239,7 +1240,7 @@ async fn dispatch<T: FrameTransport>(
             tracing::warn!("duplicate hello ignored");
             Ok(())
         }
-        ClientRequest::Intent {
+        ClientRequest::Intent(msg::ClientIntent {
             move_x,
             move_z,
             display_yaw,
@@ -1248,7 +1249,8 @@ async fn dispatch<T: FrameTransport>(
             expression,
             seated,
             geo,
-        } => {
+            ..
+        }) => {
             avatar::on_intent(
                 ctx,
                 avatar::Intent {
@@ -1264,14 +1266,18 @@ async fn dispatch<T: FrameTransport>(
             )
             .await
         }
-        ClientRequest::Teleport { geo, alt_m } => avatar::on_teleport(ctx, geo, alt_m).await,
-        ClientRequest::SetPresence { active } => {
+        ClientRequest::Teleport(msg::Teleport { geo, alt_m, .. }) => {
+            avatar::on_teleport(ctx, geo, alt_m).await
+        }
+        ClientRequest::SetPresence(msg::SetPresence { active, .. }) => {
             avatar::on_presence(ctx, active);
             Ok(())
         }
-        ClientRequest::SetAvatarLook { look } => look::on_look(ctx, look).await,
-        ClientRequest::SetFaceFrame { weights } => look::on_face(ctx, weights).await,
-        ClientRequest::CreatePrim {
+        ClientRequest::SetAvatarLook(msg::SetAvatarLook { look }) => look::on_look(ctx, look).await,
+        ClientRequest::SetFaceFrame(msg::SetFaceFrame { weights }) => {
+            look::on_face(ctx, weights).await
+        }
+        ClientRequest::CreatePrim(msg::CreatePrim {
             request_id,
             name,
             position,
@@ -1286,7 +1292,7 @@ async fn dispatch<T: FrameTransport>(
             particles,
             model,
             draft,
-        } => {
+        }) => {
             let seed = PrimSeed {
                 position,
                 shape,
@@ -1308,7 +1314,7 @@ async fn dispatch<T: FrameTransport>(
             };
             prims::on_create(ctx, request_id, seed, fields).await
         }
-        ClientRequest::UpdatePrim {
+        ClientRequest::UpdatePrim(msg::UpdatePrim {
             request_id,
             prim_id,
             position,
@@ -1322,7 +1328,7 @@ async fn dispatch<T: FrameTransport>(
             geo,
             particles,
             model,
-        } => {
+        }) => {
             let fields = PrimFields {
                 position,
                 rotation,
@@ -1338,75 +1344,79 @@ async fn dispatch<T: FrameTransport>(
             };
             prims::on_update(ctx, request_id, prim_id, fields).await
         }
-        ClientRequest::DeletePrim {
+        ClientRequest::DeletePrim(msg::DeletePrim {
             request_id,
             prim_id,
-        } => prims::on_delete(ctx, request_id, prim_id).await,
-        ClientRequest::SetPrimVideo {
+        }) => prims::on_delete(ctx, request_id, prim_id).await,
+        ClientRequest::SetPrimVideo(msg::SetPrimVideo {
             request_id,
             prim_id,
             video,
-        } => prims::on_set_video(ctx, request_id, prim_id, video).await,
-        ClientRequest::SetPrimPhysical {
+        }) => prims::on_set_video(ctx, request_id, prim_id, video).await,
+        ClientRequest::SetPrimPhysical(msg::SetPrimPhysical {
             request_id,
             prim_id,
             physical,
-        } => prims::on_set_physical(ctx, request_id, prim_id, physical).await,
-        ClientRequest::GrabPrim {
+        }) => prims::on_set_physical(ctx, request_id, prim_id, physical).await,
+        ClientRequest::GrabPrim(msg::GrabPrim {
             request_id,
             prim_id,
-        } => carry::on_grab(ctx, request_id, prim_id).await,
-        ClientRequest::ReleasePrim { request_id, throw } => {
+        }) => carry::on_grab(ctx, request_id, prim_id).await,
+        ClientRequest::ReleasePrim(msg::ReleasePrim { request_id, throw }) => {
             carry::on_release(ctx, request_id, throw).await
         }
-        ClientRequest::OfferGreeting {
+        ClientRequest::OfferGreeting(msg::OfferGreeting {
             request_id,
             to,
             greeting,
-        } => greet::on_offer(ctx, request_id, to, greeting).await,
-        ClientRequest::AcceptGreeting { request_id, from } => {
+        }) => greet::on_offer(ctx, request_id, to, greeting).await,
+        ClientRequest::AcceptGreeting(msg::AcceptGreeting { request_id, from }) => {
             greet::on_accept(ctx, request_id, from).await
         }
-        ClientRequest::SetPushEndpoint { endpoint } => {
+        ClientRequest::SetPushEndpoint(msg::SetPushEndpoint { endpoint }) => {
             calls::on_set_push_endpoint(ctx, endpoint).await
         }
-        ClientRequest::FollowPlans { places } => plans::on_follow(ctx, places).await,
-        ClientRequest::GetPrimScript {
+        ClientRequest::FollowPlans(msg::FollowPlans { places }) => {
+            plans::on_follow(ctx, places).await
+        }
+        ClientRequest::GetPrimScript(msg::GetPrimScript {
             request_id,
             prim_id,
-        } => prims::on_get_script(ctx, request_id, prim_id).await,
-        ClientRequest::SetPrimScript {
+        }) => prims::on_get_script(ctx, request_id, prim_id).await,
+        ClientRequest::SetPrimScript(msg::SetPrimScript {
             request_id,
             prim_id,
             source,
-        } => prims::on_set_script(ctx, request_id, prim_id, source).await,
-        ClientRequest::TouchPrim {
+        }) => prims::on_set_script(ctx, request_id, prim_id, source).await,
+        ClientRequest::TouchPrim(msg::TouchPrim {
             request_id,
             prim_id,
-        } => prims::on_touch(ctx, request_id, prim_id).await,
+        }) => prims::on_touch(ctx, request_id, prim_id).await,
         ClientRequest::HandPose { pose } => hand::on_hand(ctx, pose).await,
         ClientRequest::TextureCatalogRequest => textures::on_catalog(ctx).await,
-        ClientRequest::TextureRequest {
+        ClientRequest::TextureRequest(msg::TextureRequest {
             request_id,
             texture_id,
-        } => textures::on_texture(ctx, request_id, texture_id).await,
-        ClientRequest::ChatSend { scope, body } => chat::on_send(ctx, scope, body).await,
-        ClientRequest::VoiceFrame {
+        }) => textures::on_texture(ctx, request_id, texture_id).await,
+        ClientRequest::ChatSend(msg::ChatSend { scope, body, .. }) => {
+            chat::on_send(ctx, scope, body).await
+        }
+        ClientRequest::VoiceFrame(msg::VoiceFrame {
             scope,
             seq,
             payload,
-        } => voice::on_frame(ctx, scope, seq, payload).await,
-        ClientRequest::SetBlocked { username, blocked } => {
-            moderation::on_set_blocked(ctx, username, blocked).await
-        }
-        ClientRequest::ReportUser {
+        }) => voice::on_frame(ctx, scope, seq, payload).await,
+        ClientRequest::SetBlocked(msg::SetBlocked {
+            username, blocked, ..
+        }) => moderation::on_set_blocked(ctx, username, blocked).await,
+        ClientRequest::ReportUser(msg::ReportUser {
             request_id,
             username,
             reason,
             note,
             message,
             asset,
-        } => {
+        }) => {
             moderation::on_report(
                 ctx,
                 moderation::Report {
@@ -1420,32 +1430,32 @@ async fn dispatch<T: FrameTransport>(
             )
             .await
         }
-        ClientRequest::DeleteAccount {
+        ClientRequest::DeleteAccount(msg::DeleteAccount {
             request_id,
             password,
-        } => moderation::on_delete_account(ctx, request_id, password).await,
-        ClientRequest::E2eeRegisterDevice {
+        }) => moderation::on_delete_account(ctx, request_id, password).await,
+        ClientRequest::E2eeRegisterDevice(msg::E2eeRegisterDevice {
             request_id,
             device,
             key_packages,
-        } => e2ee::on_register_device(ctx, request_id, device, key_packages).await,
-        ClientRequest::E2eeClaimKeyPackages {
+        }) => e2ee::on_register_device(ctx, request_id, device, key_packages).await,
+        ClientRequest::E2eeClaimKeyPackages(msg::E2eeClaimKeyPackages {
             request_id,
             address,
-        } => e2ee::on_claim_key_packages(ctx, request_id, address).await,
-        ClientRequest::E2eeCreateGroup {
+        }) => e2ee::on_claim_key_packages(ctx, request_id, address).await,
+        ClientRequest::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id,
             group,
             direct_with,
-        } => e2ee::on_create_group(ctx, request_id, group, direct_with).await,
-        ClientRequest::E2eeSend {
+        }) => e2ee::on_create_group(ctx, request_id, group, direct_with).await,
+        ClientRequest::E2eeSend(msg::E2eeSend {
             request_id,
             group,
             epoch,
             commit,
             message,
             welcome,
-        } => {
+        }) => {
             e2ee::on_send(
                 ctx,
                 e2ee::Outgoing {
@@ -1459,65 +1469,72 @@ async fn dispatch<T: FrameTransport>(
             )
             .await
         }
-        ClientRequest::E2eeSync {
+        ClientRequest::E2eeSync(msg::E2eeSync {
             request_id,
             cursors,
-        } => e2ee::on_sync(ctx, request_id, cursors).await,
-        ClientRequest::CallJoin {
+        }) => e2ee::on_sync(ctx, request_id, cursors).await,
+        ClientRequest::CallJoin(msg::CallJoin {
             request_id,
             group,
             offer,
             screen,
-        } => calls::on_join(ctx, request_id, group, offer, screen).await,
-        ClientRequest::CallControl { group, action } => calls::on_control(ctx, group, action).await,
-        ClientRequest::CallReact {
+        }) => calls::on_join(ctx, request_id, group, offer, screen).await,
+        ClientRequest::CallControl(msg::CallControl { group, action }) => {
+            calls::on_control(ctx, group, action).await
+        }
+        ClientRequest::CallReact(msg::CallReact {
             group,
             epoch,
             sealed,
-        } => {
+        }) => {
             calls::on_react(ctx, group, epoch, sealed);
             Ok(())
         }
-        ClientRequest::CallWatch { group, cameras } => {
+        ClientRequest::CallWatch(msg::CallWatch { group, cameras }) => {
             calls::on_watch(ctx, group, cameras);
             Ok(())
         }
-        ClientRequest::CallAnswer { group, sdp } => {
+        ClientRequest::CallAnswer(msg::CallAnswer { group, sdp }) => {
             calls::on_answer(ctx, group, sdp);
             Ok(())
         }
-        ClientRequest::CallLeave { group } => {
+        ClientRequest::CallLeave(msg::CallLeave { group }) => {
             calls::on_leave(ctx, group);
             Ok(())
         }
-        ClientRequest::CallDecline { group } => calls::on_decline(ctx, group).await,
-        ClientRequest::CallInvite { group } => calls::on_invite(ctx, group).await,
-        ClientRequest::CallKeyDrop {
+        ClientRequest::CallDecline(msg::CallDecline { group }) => {
+            calls::on_decline(ctx, group).await
+        }
+        ClientRequest::CallInvite(msg::CallInvite { group }) => calls::on_invite(ctx, group).await,
+        ClientRequest::CallKeyDrop(msg::CallKeyDrop {
             group,
             participant,
             sealed,
-        } => {
+        }) => {
             calls::on_key_drop(ctx, group, participant, sealed);
             Ok(())
         }
-        ClientRequest::RequestContact {
+        ClientRequest::RequestContact(msg::RequestContact {
             request_id,
             username,
             link_code,
-        } => contacts::on_request(ctx, request_id, username, link_code).await,
-        ClientRequest::AnswerContact {
+        }) => contacts::on_request(ctx, request_id, username, link_code).await,
+        ClientRequest::AnswerContact(msg::AnswerContact {
             request_id,
             username,
             accept,
-        } => contacts::on_answer(ctx, request_id, username, accept).await,
-        ClientRequest::RemoveContact { username } => contacts::on_remove(ctx, username).await,
-        ClientRequest::SetContactSettings {
+        }) => contacts::on_answer(ctx, request_id, username, accept).await,
+        ClientRequest::RemoveContact(msg::RemoveContact { username, .. }) => {
+            contacts::on_remove(ctx, username).await
+        }
+        ClientRequest::SetContactSettings(msg::SetContactSettings {
             policy,
             show_online,
             notify_requests,
             separate_new_accounts,
             reset_link,
-        } => {
+            ..
+        }) => {
             contacts::on_settings(
                 ctx,
                 contacts::Settings {
@@ -1530,16 +1547,18 @@ async fn dispatch<T: FrameTransport>(
             )
             .await
         }
-        ClientRequest::LookupPerson {
+        ClientRequest::LookupPerson(msg::LookupPerson {
             request_id,
             username,
             avatar_id,
-        } => contacts::on_lookup(ctx, request_id, username, avatar_id).await,
-        ClientRequest::GetNearbyPeople { request_id } => contacts::on_nearby(ctx, request_id).await,
-        ClientRequest::WherePeople {
+        }) => contacts::on_lookup(ctx, request_id, username, avatar_id).await,
+        ClientRequest::GetNearbyPeople(msg::GetNearbyPeople { request_id }) => {
+            contacts::on_nearby(ctx, request_id).await
+        }
+        ClientRequest::WherePeople(msg::WherePeople {
             request_id,
             usernames,
-        } => contacts::on_where(ctx, request_id, usernames).await,
+        }) => contacts::on_where(ctx, request_id, usernames).await,
         ClientRequest::Community(msg) => communities::dispatch(ctx, msg).await,
     }
 }

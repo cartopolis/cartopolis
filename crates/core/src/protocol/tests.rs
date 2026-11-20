@@ -146,7 +146,7 @@ fn snapshot_frame_matches_encode_app_frame() {
 #[test]
 fn roundtrip_seated_app_frames() {
     for seated in [None, Some([0.42, -1.03])] {
-        let m = NetMessage::ClientIntent {
+        let m = NetMessage::ClientIntent(msg::ClientIntent {
             request_id: 0,
             move_x: 0.0,
             move_z: 0.0,
@@ -159,7 +159,7 @@ fn roundtrip_seated_app_frames() {
             expression: None,
             seated,
             geo: None,
-        };
+        });
         let b = encode_app_frame(&m).unwrap();
         assert_eq!(decode_app_frame(&b).unwrap(), m);
 
@@ -193,11 +193,11 @@ fn roundtrip_seated_app_frames() {
 fn roundtrip_greeting_app_frames() {
     use crate::greet::Greeting;
     for m in [
-        NetMessage::OfferGreeting {
+        NetMessage::OfferGreeting(msg::OfferGreeting {
             request_id: 3,
             to: 7,
             greeting: Greeting::HighFive,
-        },
+        }),
         NetMessage::GreetingOffered {
             from: 2,
             name: "ada".into(),
@@ -208,18 +208,18 @@ fn roundtrip_greeting_app_frames() {
             name: "ada".into(),
             greeting: None,
         },
-        NetMessage::AcceptGreeting {
+        NetMessage::AcceptGreeting(msg::AcceptGreeting {
             request_id: 4,
             from: 2,
-        },
+        }),
         NetMessage::GreetingStarted {
             greeting: Greeting::Handshake,
             partner: 7,
             yaw: -1.25,
         },
-        NetMessage::FollowPlans {
+        NetMessage::FollowPlans(msg::FollowPlans {
             places: vec![[53.2166, 6.5672], [53.2190, 6.5650]],
-        },
+        }),
         NetMessage::WorldSnapshot {
             tick: 9,
             avatars: [Emote::Handshake, Emote::HighFive, Emote::Throw]
@@ -245,18 +245,18 @@ fn roundtrip_greeting_app_frames() {
 #[test]
 fn roundtrip_grab_and_release_app_frames() {
     for m in [
-        NetMessage::GrabPrim {
+        NetMessage::GrabPrim(msg::GrabPrim {
             request_id: 9,
             prim_id: 4_242,
-        },
-        NetMessage::ReleasePrim {
+        }),
+        NetMessage::ReleasePrim(msg::ReleasePrim {
             request_id: 10,
             throw: true,
-        },
-        NetMessage::ReleasePrim {
+        }),
+        NetMessage::ReleasePrim(msg::ReleasePrim {
             request_id: 11,
             throw: false,
-        },
+        }),
         NetMessage::WorldSnapshot {
             tick: 3,
             avatars: vec![AvatarStateDto {
@@ -269,17 +269,17 @@ fn roundtrip_grab_and_release_app_frames() {
         assert_eq!(decode_app_frame(&b).unwrap(), m);
     }
     assert_eq!(
-        message_kind(&NetMessage::GrabPrim {
+        message_kind(&NetMessage::GrabPrim(msg::GrabPrim {
             request_id: 0,
             prim_id: 1
-        }),
+        })),
         MessageKind::GrabPrim
     );
 }
 
 #[test]
 fn roundtrip_create_prim_app_frame() {
-    let m = NetMessage::CreatePrim {
+    let m = NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 123,
         name: "New Prim".into(),
         position: Vec3::new(10.0, 5.0, 20.0),
@@ -297,7 +297,7 @@ fn roundtrip_create_prim_app_frame() {
             longitude: 6.5665,
         },
         particles: Some(crate::particles::ParticleEffect::fire()),
-    };
+    });
     let b = encode_app_frame(&m).unwrap();
     let m2 = decode_app_frame(&b).unwrap();
     assert_eq!(m, m2);
@@ -305,7 +305,7 @@ fn roundtrip_create_prim_app_frame() {
 
 #[test]
 fn roundtrip_update_prim_app_frame() {
-    let m = NetMessage::UpdatePrim {
+    let m = NetMessage::UpdatePrim(msg::UpdatePrim {
         request_id: 124,
         prim_id: 42,
         position: Vec3::new(10.0, 5.0, 20.0),
@@ -322,7 +322,7 @@ fn roundtrip_update_prim_app_frame() {
             longitude: 6.5665,
         },
         particles: None,
-    };
+    });
     let b = encode_app_frame(&m).unwrap();
     let m2 = decode_app_frame(&b).unwrap();
     assert_eq!(m, m2);
@@ -336,7 +336,7 @@ fn roundtrip_avatar_look_app_frames() {
     look.set_face("nose/nose-scale-horiz-decr-incr", 80);
     look.hair_colour = Some([230, 200, 150]);
     for m in [
-        NetMessage::SetAvatarLook { look: look.clone() },
+        NetMessage::SetAvatarLook(msg::SetAvatarLook { look: look.clone() }),
         NetMessage::AvatarLookOf {
             avatar_id: 9,
             look: look.clone(),
@@ -379,16 +379,16 @@ fn a_look_saved_before_skin_tone_still_reads() {
 #[test]
 fn roundtrip_chat_app_frames() {
     for m in [
-        NetMessage::ChatSend {
+        NetMessage::ChatSend(msg::ChatSend {
             request_id: 7,
             scope: ChatScope::Local { shout: true },
             body: "hi".into(),
-        },
-        NetMessage::ChatSend {
+        }),
+        NetMessage::ChatSend(msg::ChatSend {
             request_id: 8,
             scope: ChatScope::Global,
             body: "yo".into(),
-        },
+        }),
         NetMessage::ChatMessage {
             channel: "geo:".into(),
             sender_id: 3,
@@ -406,24 +406,24 @@ fn roundtrip_chat_app_frames() {
 #[test]
 fn roundtrip_moderation_app_frames() {
     for m in [
-        NetMessage::SetBlocked {
+        NetMessage::SetBlocked(msg::SetBlocked {
             request_id: 3,
             username: "loud".into(),
             blocked: true,
-        },
+        }),
         NetMessage::BlockedList {
             usernames: vec!["loud".into(), "louder".into()],
         },
         NetMessage::BlockedList { usernames: vec![] },
-        NetMessage::ReportUser {
+        NetMessage::ReportUser(msg::ReportUser {
             request_id: 4,
             username: "loud".into(),
             reason: ReportReason::Harassment,
             note: "followed me home and would not leave".into(),
             message: Some("the line they sent".into()),
             asset: None,
-        },
-        NetMessage::ReportUser {
+        }),
+        NetMessage::ReportUser(msg::ReportUser {
             request_id: 5,
             username: "loud".into(),
             reason: ReportReason::Other,
@@ -432,15 +432,15 @@ fn roundtrip_moderation_app_frames() {
             // The other shape a report has since protocol 22: raised from an
             // object rather than a chat line.
             asset: Some("d0".repeat(32)),
-        },
+        }),
         NetMessage::ReportAck {
             request_id: 4,
             accepted: true,
         },
-        NetMessage::DeleteAccount {
+        NetMessage::DeleteAccount(msg::DeleteAccount {
             request_id: 6,
             password: "hunter2".into(),
-        },
+        }),
         NetMessage::AccountDeleted,
     ] {
         let b = encode_app_frame(&m).unwrap();
@@ -465,16 +465,16 @@ fn every_report_reason_survives_its_stored_form() {
 #[test]
 fn roundtrip_voice_app_frames() {
     for m in [
-        NetMessage::VoiceFrame {
+        NetMessage::VoiceFrame(msg::VoiceFrame {
             scope: ChatScope::Local { shout: false },
             seq: 42,
             payload: vec![0x00, 0xff, 0x7f],
-        },
-        NetMessage::VoiceFrame {
+        }),
+        NetMessage::VoiceFrame(msg::VoiceFrame {
             scope: ChatScope::Global,
             seq: u32::MAX,
             payload: vec![1; 1500],
-        },
+        }),
         NetMessage::VoiceData {
             channel: "voice:local".into(),
             sender_id: 9,
@@ -499,12 +499,12 @@ fn roundtrip_voice_app_frames() {
 fn roundtrip_call_app_frames() {
     let group = vec![7u8; 16];
     for m in [
-        NetMessage::CallJoin {
+        NetMessage::CallJoin(msg::CallJoin {
             request_id: 3,
             group: group.clone(),
             offer: "v=0\r\n".into(),
             screen: Some("2".into()),
-        },
+        }),
         NetMessage::CallJoined {
             request_id: 3,
             group: group.clone(),
@@ -520,13 +520,13 @@ fn roundtrip_call_app_frames() {
                 kind: CallTrackKind::Screen,
             }],
         },
-        NetMessage::CallAnswer {
+        NetMessage::CallAnswer(msg::CallAnswer {
             group: group.clone(),
             sdp: "v=0\r\n".into(),
-        },
-        NetMessage::CallLeave {
+        }),
+        NetMessage::CallLeave(msg::CallLeave {
             group: group.clone(),
-        },
+        }),
         NetMessage::CallRoster {
             group: group.clone(),
             members: vec![CallMember {
@@ -557,50 +557,50 @@ fn roundtrip_call_app_frames() {
                 may_move: true,
             }),
         },
-        NetMessage::CallControl {
+        NetMessage::CallControl(msg::CallControl {
             group: group.clone(),
             action: CallAction::Role {
                 participant: 4,
                 role: CallRole::CoHost,
             },
-        },
+        }),
         NetMessage::CallEnded {
             group: group.clone(),
             reason: CallEndReason::Removed { by: "bob".into() },
         },
-        NetMessage::CallReact {
+        NetMessage::CallReact(msg::CallReact {
             group: group.clone(),
             epoch: 9,
             sealed: vec![1, 2, 3],
-        },
+        }),
         NetMessage::CallReacted {
             group: group.clone(),
             participant: 4,
             epoch: 9,
             sealed: vec![1, 2, 3],
         },
-        NetMessage::CallWatch {
+        NetMessage::CallWatch(msg::CallWatch {
             group: group.clone(),
             cameras: Some(vec![4, 5]),
-        },
+        }),
         NetMessage::CallWaiting {
             request_id: 3,
             group: group.clone(),
             participant: 13,
         },
-        NetMessage::CallInvite {
+        NetMessage::CallInvite(msg::CallInvite {
             group: group.clone(),
-        },
+        }),
         NetMessage::CallInvited {
             group: group.clone(),
             code: "k7q2m9x4".into(),
             expires_ms: 1_792_000_800_000,
         },
-        NetMessage::CallKeyDrop {
+        NetMessage::CallKeyDrop(msg::CallKeyDrop {
             group: group.clone(),
             participant: 13,
             sealed: vec![9; 40],
-        },
+        }),
         NetMessage::CallKeyDropped {
             group: group.clone(),
             sealed: vec![9; 40],
@@ -612,7 +612,7 @@ fn roundtrip_call_app_frames() {
                 name: "Sanne".into(),
             },
         },
-        NetMessage::CallControl {
+        NetMessage::CallControl(msg::CallControl {
             group: group.clone(),
             action: CallAction::OpenRooms {
                 names: vec!["A".into()],
@@ -620,7 +620,7 @@ fn roundtrip_call_app_frames() {
                 minutes: 10,
                 may_move: false,
             },
-        },
+        }),
     ] {
         let b = encode_app_frame(&m).unwrap();
         assert_eq!(decode_app_frame(&b).unwrap(), m);
@@ -629,10 +629,10 @@ fn roundtrip_call_app_frames() {
 
 #[test]
 fn roundtrip_delete_prim_app_frame() {
-    let m = NetMessage::DeletePrim {
+    let m = NetMessage::DeletePrim(msg::DeletePrim {
         request_id: 125,
         prim_id: 42,
-    };
+    });
     let b = encode_app_frame(&m).unwrap();
     let m2 = decode_app_frame(&b).unwrap();
     assert_eq!(m, m2);
@@ -759,7 +759,20 @@ fn every_request_id_reaches_the_header() {
             .nth(1)
             .and_then(|n| n.split(['{', '(']).next())
             .expect("a variant line names its variant");
-        let has_field = line.contains("{ request_id: U32") || line.contains(", request_id: U32");
+        // "  #8 CreatePrim(CreatePrim)": the field is the `msg` struct's.
+        let inner = line
+            .split_once('(')
+            .map(|(_, t)| t.trim_end_matches(')'))
+            .filter(|t| shape.contains(&format!("\n{t} = struct\n")));
+        let has_field = match inner {
+            Some(t) => shape
+                .split(&format!("\n{t} = struct\n"))
+                .nth(1)
+                .into_iter()
+                .flat_map(|rest| rest.lines().take_while(|l| l.starts_with("  .")))
+                .any(|l| l.ends_with(" request_id: U32")),
+            None => line.contains("{ request_id: U32") || line.contains(", request_id: U32"),
+        };
         let kind = kinds
             .iter()
             .find(|k| format!("{k:?}") == name)

@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 /// Answer whatever was waiting and is now ready.
 pub(super) fn settle(
@@ -123,11 +124,11 @@ pub(super) fn settle(
                         if let (Some(source), Some(online)) = (&item.script, &w.online) {
                             online.send(
                                 "agent build script",
-                                NetMessage::SetPrimScript {
+                                NetMessage::SetPrimScript(msg::SetPrimScript {
                                     request_id: 0,
                                     prim_id: id,
                                     source: source.clone(),
-                                },
+                                }),
                             );
                         }
                         if !state.built.contains(&id) {
@@ -812,11 +813,11 @@ pub(super) fn send_video(w: &AgentWorld, id: i64, asset: Option<String>, looped:
     if let Some(online) = &w.online {
         online.send(
             "agent video",
-            NetMessage::SetPrimVideo {
+            NetMessage::SetPrimVideo(msg::SetPrimVideo {
                 request_id: 0,
                 prim_id: id,
                 video: asset.map(|asset| cartopolis_core::SetVideo { asset, looped }),
-            },
+            }),
         );
     }
 }

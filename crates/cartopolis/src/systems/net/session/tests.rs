@@ -1,4 +1,5 @@
 use super::*;
+use cartopolis_core::msg;
 
 /// An app carrying only what [`drive_session`] touches. Enough to exercise the
 /// state machine without a renderer, a window or a sim.
@@ -711,7 +712,7 @@ fn a_reconnect_puts_the_avatar_back_where_it_was() {
     let drawn = app.world().get::<Transform>(avatar).unwrap().translation;
     assert!(drawn.distance(walked) < 0.01, "avatar drawn at {drawn}");
     match rx.try_recv() {
-        Ok(cartopolis_core::NetMessage::Teleport { geo, alt_m, .. }) => {
+        Ok(cartopolis_core::NetMessage::Teleport(msg::Teleport { geo, alt_m, .. })) => {
             // A place on Earth (protocol 47), which under the test's anchor
             // is the frame position the avatar had walked to.
             let (x, z) =
@@ -766,7 +767,7 @@ fn every_sign_in_goes_where_the_server_says_it_was_left() {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(cartopolis_core::NetMessage::Teleport { .. })
+                Ok(cartopolis_core::NetMessage::Teleport(msg::Teleport { .. }))
             ),
             "the sim was not told where the avatar is"
         );
@@ -810,7 +811,7 @@ fn the_first_sign_in_puts_the_avatar_back_where_it_was_left() {
         let at = Vec3::new(p.x, 0.0, p.z);
         let sent = matches!(
             rx.try_recv(),
-            Ok(cartopolis_core::NetMessage::Teleport { .. })
+            Ok(cartopolis_core::NetMessage::Teleport(msg::Teleport { .. }))
         );
         if expect_moved {
             assert!(

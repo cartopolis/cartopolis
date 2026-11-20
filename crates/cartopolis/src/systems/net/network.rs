@@ -14,6 +14,7 @@ use crate::resources::{
 };
 use crate::systems::user_store::UserStore;
 use bevy::ecs::system::SystemParam;
+use cartopolis_core::msg;
 
 /// Cross-cutting writeback for `apply_network_snapshot` (auth identity, token
 /// persistence, chat, the script editor), grouped so the system stays under
@@ -1555,10 +1556,10 @@ pub fn request_wanted_textures(
         texture_cache.pending.insert(id.clone());
         sess.send(
             "texture request",
-            NetMessage::TextureRequest {
+            NetMessage::TextureRequest(msg::TextureRequest {
                 request_id: 0,
                 texture_id: id,
-            },
+            }),
         );
     }
 }
@@ -1668,7 +1669,7 @@ fn avatar_geo(
 /// An intent that asks for nothing but says where the avatar stands: what
 /// places an avatar the sim has nowhere yet (`NetMessage::ClientIntent::geo`).
 fn standing_intent(yaw: f32, geo: cartopolis_core::GeoAnchor) -> NetMessage {
-    NetMessage::ClientIntent {
+    NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -1681,7 +1682,7 @@ fn standing_intent(yaw: f32, geo: cartopolis_core::GeoAnchor) -> NetMessage {
         expression: None,
         seated: None,
         geo: Some(geo),
-    }
+    })
 }
 
 pub fn send_network_intent(
@@ -1903,22 +1904,24 @@ pub fn send_network_intent(
     // going and not where it is would be two facts arriving out of step.
     let geo = avatar_geo(&map_anchor, &avatar_state);
     *placed |= geo.is_some();
-    let _ = sess.intent_tx.unbounded_send(NetMessage::ClientIntent {
-        request_id: 0,
-        move_x: v.x,
-        move_z: v.z,
-        display_yaw,
-        // Avatar flight was removed (2026-11-14); the fields stay on the wire,
-        // ignored by the sim, so the protocol did not move.
-        flying: false,
-        fly_up: false,
-        fly_down: false,
-        jump,
-        emote,
-        expression,
-        seated,
-        geo,
-    });
+    let _ = sess
+        .intent_tx
+        .unbounded_send(NetMessage::ClientIntent(msg::ClientIntent {
+            request_id: 0,
+            move_x: v.x,
+            move_z: v.z,
+            display_yaw,
+            // Avatar flight was removed (2026-11-14); the fields stay on the wire,
+            // ignored by the sim, so the protocol did not move.
+            flying: false,
+            fly_up: false,
+            fly_down: false,
+            jump,
+            emote,
+            expression,
+            seated,
+            geo,
+        }));
 }
 
 #[cfg(test)]
@@ -2119,7 +2122,9 @@ mod tests {
         }
         app.update();
         let mut sent = Vec::new();
-        while let Ok(NetMessage::TextureRequest { texture_id, .. }) = rx.try_recv() {
+        while let Ok(NetMessage::TextureRequest(msg::TextureRequest { texture_id, .. })) =
+            rx.try_recv()
+        {
             sent.push(texture_id);
         }
         assert_eq!(sent, ["a", "b"]);

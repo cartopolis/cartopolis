@@ -145,6 +145,7 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use cartopolis_core::geo::plane_distance_m;
 use cartopolis_core::motion;
+use cartopolis_core::msg;
 use web_time::Instant;
 
 use crate::components::{Avatar, FreeCamera};
@@ -1678,14 +1679,14 @@ pub(crate) fn place_avatar(
         let (latitude, longitude) = world_to_lat_lng(anchor, wx, wz);
         sess.send(
             "device fix",
-            cartopolis_core::NetMessage::Teleport {
+            cartopolis_core::NetMessage::Teleport(msg::Teleport {
                 request_id: 0,
                 geo: cartopolis_core::GeoAnchor {
                     latitude,
                     longitude,
                 },
                 alt_m: local.y,
-            },
+            }),
         );
         avatar_state.teleport_hold = Some(Instant::now());
     }

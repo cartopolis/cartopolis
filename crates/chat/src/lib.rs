@@ -15,6 +15,7 @@
 
 pub mod backup;
 
+use cartopolis_core::msg;
 use std::collections::BTreeMap;
 
 use cartopolis_core::address;
@@ -697,10 +698,10 @@ impl Engine {
         let request_id = self.request();
         (
             request_id,
-            NetMessage::E2eeSync {
+            NetMessage::E2eeSync(msg::E2eeSync {
                 request_id,
                 cursors,
-            },
+            }),
         )
     }
 
@@ -708,11 +709,11 @@ impl Engine {
     /// of key packages, and ask for everything missed.
     pub fn on_connected(&mut self, out: &mut Vec<NetMessage>) {
         let key_packages = self.key_packages(KEY_PACKAGE_STOCK);
-        out.push(NetMessage::E2eeRegisterDevice {
+        out.push(NetMessage::E2eeRegisterDevice(msg::E2eeRegisterDevice {
             request_id: self.request(),
             device: self.device.identity().device,
             key_packages,
-        });
+        }));
         let (sync_id, sync) = self.sync_for(None);
         out.push(sync);
         // Whatever was half set up belonged to the previous connection's requests.
@@ -775,10 +776,12 @@ impl Engine {
         let mut waiting = Vec::new();
         for person in people {
             let request = self.request();
-            out.push(NetMessage::E2eeClaimKeyPackages {
-                request_id: request,
-                address: person.clone(),
-            });
+            out.push(NetMessage::E2eeClaimKeyPackages(
+                msg::E2eeClaimKeyPackages {
+                    request_id: request,
+                    address: person.clone(),
+                },
+            ));
             waiting.push((request, person));
         }
         self.group_starts.push(GroupStart {
@@ -813,11 +816,11 @@ impl Engine {
             }
         };
         let request = self.request();
-        out.push(NetMessage::E2eeCreateGroup {
+        out.push(NetMessage::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id: request,
             group: group.clone(),
             direct_with: None,
-        });
+        }));
         self.group_starts[i].request = Some(request);
         self.group_starts[i].group = Some(group);
     }
@@ -840,10 +843,12 @@ impl Engine {
             return;
         }
         let request = self.request();
-        out.push(NetMessage::E2eeClaimKeyPackages {
-            request_id: request,
-            address: username.clone(),
-        });
+        out.push(NetMessage::E2eeClaimKeyPackages(
+            msg::E2eeClaimKeyPackages {
+                request_id: request,
+                address: username.clone(),
+            },
+        ));
         self.starting.push(Starting {
             request,
             peer: username,
@@ -1052,11 +1057,11 @@ impl Engine {
             }
         };
         let request = self.request();
-        out.push(NetMessage::E2eeCreateGroup {
+        out.push(NetMessage::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id: request,
             group: group.clone(),
             direct_with: None,
-        });
+        }));
         self.topic_starts.push(TopicStart {
             community,
             name,
@@ -1206,14 +1211,14 @@ impl Engine {
             }
         };
         let request = self.request();
-        out.push(NetMessage::E2eeSend {
+        out.push(NetMessage::E2eeSend(msg::E2eeSend {
             request_id: request,
             group: group.to_vec(),
             epoch: commit.epoch,
             commit: true,
             message: commit.message,
             welcome: None,
-        });
+        }));
         self.removing
             .push((request, group.to_vec(), addresses.to_vec()));
     }
@@ -1334,10 +1339,12 @@ impl Engine {
             return;
         }
         let request = self.request();
-        out.push(NetMessage::E2eeClaimKeyPackages {
-            request_id: request,
-            address: person.clone(),
-        });
+        out.push(NetMessage::E2eeClaimKeyPackages(
+            msg::E2eeClaimKeyPackages {
+                request_id: request,
+                address: person.clone(),
+            },
+        ));
         self.adding.push(Adding {
             group: group.to_vec(),
             person,
@@ -1391,7 +1398,7 @@ impl Engine {
             }
         }
         let request = self.request();
-        out.push(NetMessage::E2eeSend {
+        out.push(NetMessage::E2eeSend(msg::E2eeSend {
             request_id: request,
             group: group.to_vec(),
             epoch: add.epoch,
@@ -1402,7 +1409,7 @@ impl Engine {
                 members,
                 bytes: w,
             }),
-        });
+        }));
         self.device_adds.push((request, group.to_vec()));
     }
 
@@ -1424,14 +1431,14 @@ impl Engine {
             }
         };
         let request = self.request();
-        out.push(NetMessage::E2eeSend {
+        out.push(NetMessage::E2eeSend(msg::E2eeSend {
             request_id: request,
             group: group.to_vec(),
             epoch: commit.epoch,
             commit: true,
             message: commit.message,
             welcome: None,
-        });
+        }));
         self.rotating.push((request, group.to_vec()));
         true
     }
@@ -1637,7 +1644,7 @@ impl Engine {
                 let request = self.request();
                 let a = &mut self.adding[i];
                 a.devices = packages.iter().map(|p| p.device).collect();
-                out.push(NetMessage::E2eeSend {
+                out.push(NetMessage::E2eeSend(msg::E2eeSend {
                     request_id: request,
                     group,
                     epoch: add.epoch,
@@ -1648,7 +1655,7 @@ impl Engine {
                         members: vec![a.person.clone()],
                         bytes: w,
                     }),
-                });
+                }));
                 a.request = request;
                 a.committing = true;
             }
@@ -1683,10 +1690,12 @@ impl Engine {
                 // Somebody else changed the chat first. Their commit is on its
                 // way here; claim again and commit on top of it.
                 let request = self.request();
-                out.push(NetMessage::E2eeClaimKeyPackages {
-                    request_id: request,
-                    address: a.person.clone(),
-                });
+                out.push(NetMessage::E2eeClaimKeyPackages(
+                    msg::E2eeClaimKeyPackages {
+                        request_id: request,
+                        address: a.person.clone(),
+                    },
+                ));
                 self.adding.push(Adding {
                     request,
                     committing: false,
@@ -1987,14 +1996,14 @@ impl Engine {
             .device
             .encrypt(group, payload)
             .map_err(|e| e.to_string())?;
-        out.push(NetMessage::E2eeSend {
+        out.push(NetMessage::E2eeSend(msg::E2eeSend {
             request_id,
             group: group.to_vec(),
             epoch: sealed.epoch,
             commit: false,
             message: sealed.message,
             welcome: None,
-        });
+        }));
         Ok(())
     }
 
@@ -2063,11 +2072,11 @@ impl Engine {
             NetMessage::E2eeDeviceStatus { key_packages, .. } => {
                 if key_packages < KEY_PACKAGE_LOW {
                     let more = self.key_packages(KEY_PACKAGE_STOCK - key_packages);
-                    out.push(NetMessage::E2eeRegisterDevice {
+                    out.push(NetMessage::E2eeRegisterDevice(msg::E2eeRegisterDevice {
                         request_id: self.request(),
                         device: self.device.identity().device,
                         key_packages: more,
-                    });
+                    }));
                 }
             }
             NetMessage::E2eeKeyPackages {
@@ -2275,7 +2284,7 @@ impl Engine {
         match self.device.add(group, &bytes) {
             Ok(add) => {
                 let request = self.request();
-                out.push(NetMessage::E2eeSend {
+                out.push(NetMessage::E2eeSend(msg::E2eeSend {
                     request_id: request,
                     group: group.to_vec(),
                     epoch: add.epoch,
@@ -2286,7 +2295,7 @@ impl Engine {
                         members,
                         bytes: w,
                     }),
-                });
+                }));
                 self.group_starts[i].request = Some(request);
                 self.group_starts[i].committing = true;
             }
@@ -2388,11 +2397,11 @@ impl Engine {
         };
         let request = self.request();
         let peer = self.starting[i].peer.clone();
-        out.push(NetMessage::E2eeCreateGroup {
+        out.push(NetMessage::E2eeCreateGroup(msg::E2eeCreateGroup {
             request_id: request,
             group: group.clone(),
             direct_with: Some(peer),
-        });
+        }));
         self.starting[i].request = request;
         self.starting[i].stage = Stage::Creating { group, packages };
     }
@@ -2445,7 +2454,7 @@ impl Engine {
         match self.device.add(&group, &bytes) {
             Ok(add) => {
                 let request = self.request();
-                out.push(NetMessage::E2eeSend {
+                out.push(NetMessage::E2eeSend(msg::E2eeSend {
                     request_id: request,
                     group: group.clone(),
                     epoch: add.epoch,
@@ -2456,7 +2465,7 @@ impl Engine {
                         members: vec![peer.clone()],
                         bytes: w,
                     }),
-                });
+                }));
                 self.starting[i].request = request;
                 self.starting[i].stage = Stage::Committing { group };
             }
@@ -3278,7 +3287,7 @@ mod loopback {
             alice.engine.handle(msg, &mut out, &mut alice.events);
             committed = out
                 .iter()
-                .any(|m| matches!(m, NetMessage::E2eeSend { commit: true, .. }));
+                .any(|m| matches!(m, NetMessage::E2eeSend(msg::E2eeSend { commit: true, .. })));
             alice.send_all(out).await;
         }
         // Wait for the server's answer, and lose it.

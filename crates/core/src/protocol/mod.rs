@@ -21,6 +21,7 @@ mod frame;
 mod history;
 mod kind;
 mod message;
+pub mod msg;
 mod prims;
 mod reports;
 

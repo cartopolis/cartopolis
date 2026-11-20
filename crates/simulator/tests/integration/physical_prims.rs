@@ -3,6 +3,7 @@
 //! avatar's kick sends it across the pitch, somebody else may not switch it,
 //! and the flag outlives a restart.
 
+use cartopolis_core::msg;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,7 +88,7 @@ pub(super) fn ball_body(m: NetMessage, id: i64) -> Option<PrimBody> {
 
 /// An intent that stands still at `geo`, facing `yaw`, optionally kicking.
 pub(super) fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessage {
-    NetMessage::ClientIntent {
+    NetMessage::ClientIntent(msg::ClientIntent {
         request_id: 0,
         move_x: 0.0,
         move_z: 0.0,
@@ -100,7 +101,7 @@ pub(super) fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessag
         expression: None,
         seated: None,
         geo: Some(geo),
-    }
+    })
 }
 
 #[tokio::test]
@@ -128,7 +129,7 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
     // Alice makes a football two metres up.
     send(
         &mut a,
-        &NetMessage::CreatePrim {
+        &NetMessage::CreatePrim(msg::CreatePrim {
             request_id: 1,
             name: "ball".into(),
             position: glam::Vec3::new(0.0, 2.0, 0.0),
@@ -143,7 +144,7 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
             particles: None,
             model: None,
             draft: false,
-        },
+        }),
     )
     .await;
     let id = next(&mut a, |m| match m {
@@ -155,11 +156,11 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
     // Bob may not make Alice's ball physical.
     send(
         &mut b,
-        &NetMessage::SetPrimPhysical {
+        &NetMessage::SetPrimPhysical(msg::SetPrimPhysical {
             request_id: 2,
             prim_id: id,
             physical: true,
-        },
+        }),
     )
     .await;
     let code = next(&mut b, |m| match m {
@@ -176,11 +177,11 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
     // Alice may, and Bob is told.
     send(
         &mut a,
-        &NetMessage::SetPrimPhysical {
+        &NetMessage::SetPrimPhysical(msg::SetPrimPhysical {
             request_id: 3,
             prim_id: id,
             physical: true,
-        },
+        }),
     )
     .await;
     next(&mut b, |m| match m {
@@ -207,11 +208,11 @@ async fn a_ball_falls_rests_is_kicked_and_stays_physical() {
     let east = std::f32::consts::FRAC_PI_2;
     send(
         &mut b,
-        &NetMessage::Teleport {
+        &NetMessage::Teleport(msg::Teleport {
             request_id: 0,
             geo: beside,
             alt_m: 0.0,
-        },
+        }),
     )
     .await;
     send(&mut b, &stand(beside, east, None)).await;

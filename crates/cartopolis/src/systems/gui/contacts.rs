@@ -26,6 +26,7 @@ use crate::utils::clock::unix_ms;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
+use cartopolis_core::msg;
 use cartopolis_core::{
     ContactDto, ContactRequestDto, ContactSettings, MetDto, NearbyPersonDto, NetMessage, PersonDto,
     Relation, RequestPolicy,
@@ -263,11 +264,12 @@ impl Contacts {
     pub fn request(&mut self, username: &str, link_code: Option<String>) -> u32 {
         let request_id = self.request_id();
         self.error = None;
-        self.outbox.push(NetMessage::RequestContact {
-            request_id,
-            username: username.to_string(),
-            link_code,
-        });
+        self.outbox
+            .push(NetMessage::RequestContact(msg::RequestContact {
+                request_id,
+                username: username.to_string(),
+                link_code,
+            }));
         request_id
     }
 
@@ -287,11 +289,12 @@ impl Contacts {
 
     pub fn answer(&mut self, username: &str, accept: bool) {
         let request_id = self.request_id();
-        self.outbox.push(NetMessage::AnswerContact {
-            request_id,
-            username: username.to_string(),
-            accept,
-        });
+        self.outbox
+            .push(NetMessage::AnswerContact(msg::AnswerContact {
+                request_id,
+                username: username.to_string(),
+                accept,
+            }));
         // Gone from the tray at once: the server's next state confirms it.
         self.incoming
             .retain(|r| !r.username.eq_ignore_ascii_case(username));
@@ -300,23 +303,25 @@ impl Contacts {
     /// Stop being contacts, or withdraw a request you sent.
     pub fn remove(&mut self, username: &str) {
         let request_id = self.request_id();
-        self.outbox.push(NetMessage::RemoveContact {
-            request_id,
-            username: username.to_string(),
-        });
+        self.outbox
+            .push(NetMessage::RemoveContact(msg::RemoveContact {
+                request_id,
+                username: username.to_string(),
+            }));
     }
 
     pub fn push_settings(&mut self, reset_link: bool) {
         let request_id = self.request_id();
         let s = &self.settings;
-        self.outbox.push(NetMessage::SetContactSettings {
-            request_id,
-            policy: s.policy,
-            show_online: s.show_online,
-            notify_requests: s.notify_requests,
-            separate_new_accounts: s.separate_new_accounts,
-            reset_link,
-        });
+        self.outbox
+            .push(NetMessage::SetContactSettings(msg::SetContactSettings {
+                request_id,
+                policy: s.policy,
+                show_online: s.show_online,
+                notify_requests: s.notify_requests,
+                separate_new_accounts: s.separate_new_accounts,
+                reset_link,
+            }));
     }
 
     /// Open the person card for the avatar with this sim id.
@@ -328,11 +333,12 @@ impl Contacts {
             avatar_id: Some(avatar_id),
             ..Card::default()
         });
-        self.outbox.push(NetMessage::LookupPerson {
-            request_id,
-            username: None,
-            avatar_id: Some(avatar_id),
-        });
+        self.outbox
+            .push(NetMessage::LookupPerson(msg::LookupPerson {
+                request_id,
+                username: None,
+                avatar_id: Some(avatar_id),
+            }));
     }
 
     /// Open the person card for a username (a contact link, a nearby row).
@@ -344,11 +350,12 @@ impl Contacts {
             link_code,
             ..Card::default()
         });
-        self.outbox.push(NetMessage::LookupPerson {
-            request_id,
-            username: Some(username.to_string()),
-            avatar_id: None,
-        });
+        self.outbox
+            .push(NetMessage::LookupPerson(msg::LookupPerson {
+                request_id,
+                username: Some(username.to_string()),
+                avatar_id: None,
+            }));
     }
 
     fn search(&mut self) {
@@ -365,11 +372,12 @@ impl Contacts {
         let request_id = self.request_id();
         self.search_request = Some(request_id);
         self.found = None;
-        self.outbox.push(NetMessage::LookupPerson {
-            request_id,
-            username: Some(name),
-            avatar_id: None,
-        });
+        self.outbox
+            .push(NetMessage::LookupPerson(msg::LookupPerson {
+                request_id,
+                username: Some(name),
+                avatar_id: None,
+            }));
     }
 
     /// The waiting request from `username`, if there is one.
@@ -626,7 +634,9 @@ pub fn drive_contacts(
         let request_id = contacts.request_id();
         contacts
             .outbox
-            .push(NetMessage::GetNearbyPeople { request_id });
+            .push(NetMessage::GetNearbyPeople(msg::GetNearbyPeople {
+                request_id,
+            }));
     }
     contacts.want_nearby = false;
 
@@ -662,10 +672,12 @@ pub fn drive_contacts(
         contacts.where_asked_at = Some(now);
         contacts.where_asked_for = wanted.clone();
         let request_id = contacts.request_id();
-        contacts.outbox.push(NetMessage::WherePeople {
-            request_id,
-            usernames: wanted,
-        });
+        contacts
+            .outbox
+            .push(NetMessage::WherePeople(msg::WherePeople {
+                request_id,
+                usernames: wanted,
+            }));
     }
 
     for msg in std::mem::take(&mut contacts.outbox) {
@@ -1122,11 +1134,11 @@ pub fn render_person_card(
         if let Some(online) = online.as_deref() {
             online.send(
                 "set blocked",
-                NetMessage::SetBlocked {
+                NetMessage::SetBlocked(msg::SetBlocked {
                     request_id: 0,
                     username: name,
                     blocked: true,
-                },
+                }),
             );
         }
     }
@@ -1356,11 +1368,11 @@ pub fn screen(
         if let Some(online) = online {
             online.send(
                 "set blocked",
-                NetMessage::SetBlocked {
+                NetMessage::SetBlocked(msg::SetBlocked {
                     request_id: 0,
                     username: name,
                     blocked: true,
-                },
+                }),
             );
         }
         view.sub = (!contacts.incoming.is_empty()).then_some(Sub::Requests);
@@ -2349,7 +2361,10 @@ mod tests {
         let mut c = Contacts::default();
         c.say_hi("bas", "hi there", None);
         assert_eq!(c.hellos.len(), 1);
-        assert!(matches!(c.outbox[0], NetMessage::RequestContact { .. }));
+        assert!(matches!(
+            c.outbox[0],
+            NetMessage::RequestContact(msg::RequestContact { .. })
+        ));
         assert!(!c.sent_to("bas"));
     }
 

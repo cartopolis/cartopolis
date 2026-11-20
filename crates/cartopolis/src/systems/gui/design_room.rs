@@ -24,6 +24,7 @@
 //! ordinary editor, and others see them appear as they are built — the room
 //! is a way of looking, not a draft held apart from the world.
 
+use cartopolis_core::msg;
 use std::sync::{Arc, Mutex};
 
 use bevy::camera::visibility::RenderLayers;
@@ -1964,7 +1965,7 @@ fn duplicate_message(part: SelectedPart) -> cartopolis_core::NetMessage {
     let above = world.y as f32 - crate::systems::prim_geo::lift_to_strip(lift, world);
     let (rx, ry, rz) = tf.rotation.to_euler(EulerRot::XYZ);
     let srgb = prim.color.to_srgba();
-    cartopolis_core::NetMessage::CreatePrim {
+    cartopolis_core::NetMessage::CreatePrim(msg::CreatePrim {
         request_id: 0,
         name: prim.name.clone(),
         position: Vec3::new(0.0, above, 0.0),
@@ -1983,7 +1984,7 @@ fn duplicate_message(part: SelectedPart) -> cartopolis_core::NetMessage {
         particles: prim.particles,
         model: prim.model.clone(),
         draft: true,
-    }
+    })
 }
 
 /// Shift-D in the design room: duplicate the selected part.

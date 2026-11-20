@@ -8,7 +8,8 @@ use super::*;
 ///
 /// One row per message, `Name = number,`, the name a [`NetMessage`] variant's.
 /// A row marked `#[request_id]` puts that variant's `request_id` field in the
-/// frame header; an unmarked one sends 0. The matches it writes are exhaustive,
+/// frame header, `#[request_id_inner]` the field of the [`msg`](super::msg)
+/// struct the variant carries; an unmarked one sends 0. The matches it writes are exhaustive,
 /// so a variant without a row, a row without a variant or a marked variant
 /// without the field fails to compile, and two rows on one number fail as a
 /// duplicate discriminant. `every_request_id_reaches_the_header` catches the one
@@ -57,20 +58,31 @@ macro_rules! message_kinds {
         #[must_use]
         pub fn message_request_id(msg: &NetMessage) -> u32 {
             match msg {
-                $( NetMessage::$name { $($field,)? .. } => request_id_of!(read $($field)?), )*
+                $( NetMessage::$name { .. } => request_id_of!(read msg $name $($field)?), )*
             }
         }
     };
 }
 
-/// One row's request id, for `message_kinds!`: `read` it from the field the
-/// row's mark names (bound by the arm's pattern), or say whether there is one.
+/// One row's request id, for `message_kinds!`: `read` it from `msg`, which the
+/// arm has already matched as `$name` (`#[request_id]`: a field of the variant;
+/// `#[request_id_inner]`: a field of the [`msg`](super::msg) struct the variant
+/// carries), or say whether there is one.
 macro_rules! request_id_of {
-    (read) => {
+    (read $msg:ident $name:ident) => {
         0
     };
-    (read $field:ident) => {
-        *$field
+    (read $msg:ident $name:ident request_id) => {
+        match $msg {
+            NetMessage::$name { request_id, .. } => *request_id,
+            _ => unreachable!(),
+        }
+    };
+    (read $msg:ident $name:ident request_id_inner) => {
+        match $msg {
+            NetMessage::$name(inner) => inner.request_id,
+            _ => unreachable!(),
+        }
     };
     (has) => {
         false
@@ -88,7 +100,7 @@ pub enum MessageKind {
     ServerHelloAck = 2,
     #[request_id]
     ServerError = 3,
-    #[request_id]
+    #[request_id_inner]
     ClientIntent = 4,
     // 5 was `ObserverUpdate`, retired with regions in protocol 23: it existed only
     // to aim the per-region area-of-interest filter, and there is no longer a
@@ -97,72 +109,72 @@ pub enum MessageKind {
     // something else.
     WorldSnapshot = 6,
     PrimRemoved = 7,
-    #[request_id]
+    #[request_id_inner]
     CreatePrim = 8,
-    #[request_id]
+    #[request_id_inner]
     UpdatePrim = 9,
-    #[request_id]
+    #[request_id_inner]
     DeletePrim = 10,
     PrimUpsert = 11,
     TextureCatalogRequest = 12,
     TextureCatalog = 13,
-    #[request_id]
+    #[request_id_inner]
     TextureRequest = 14,
     #[request_id]
     TextureData = 15,
     #[request_id]
     TextureNotFound = 16,
-    #[request_id]
+    #[request_id_inner]
     ChatSend = 17,
     ChatMessage = 18,
-    #[request_id]
+    #[request_id_inner]
     GetPrimScript = 20,
-    #[request_id]
+    #[request_id_inner]
     SetPrimScript = 21,
     PrimScript = 22,
     ScriptOutput = 23,
-    #[request_id]
+    #[request_id_inner]
     TouchPrim = 24,
     WorldCapacity = 25,
     VoiceFrame = 26,
     VoiceData = 27,
-    #[request_id]
+    #[request_id_inner]
     SetBlocked = 28,
     BlockedList = 29,
-    #[request_id]
+    #[request_id_inner]
     ReportUser = 30,
     #[request_id]
     ReportAck = 31,
-    #[request_id]
+    #[request_id_inner]
     DeleteAccount = 32,
     AccountDeleted = 33,
-    #[request_id]
+    #[request_id_inner]
     Teleport = 34,
-    #[request_id]
+    #[request_id_inner]
     SetPresence = 35,
-    #[request_id]
+    #[request_id_inner]
     E2eeRegisterDevice = 36,
     #[request_id]
     E2eeDeviceStatus = 37,
-    #[request_id]
+    #[request_id_inner]
     E2eeClaimKeyPackages = 38,
     #[request_id]
     E2eeKeyPackages = 39,
-    #[request_id]
+    #[request_id_inner]
     E2eeCreateGroup = 40,
     #[request_id]
     E2eeGroupCreated = 41,
-    #[request_id]
+    #[request_id_inner]
     E2eeSend = 42,
     #[request_id]
     E2eeSent = 43,
-    #[request_id]
+    #[request_id_inner]
     E2eeSync = 44,
     #[request_id]
     E2eeSynced = 45,
     E2eeDeliver = 46,
     E2eeInvite = 47,
-    #[request_id]
+    #[request_id_inner]
     CallJoin = 48,
     #[request_id]
     CallJoined = 49,
@@ -171,33 +183,33 @@ pub enum MessageKind {
     CallLeave = 52,
     CallRoster = 53,
     ContactsState = 54,
-    #[request_id]
+    #[request_id_inner]
     RequestContact = 55,
-    #[request_id]
+    #[request_id_inner]
     AnswerContact = 56,
-    #[request_id]
+    #[request_id_inner]
     RemoveContact = 57,
-    #[request_id]
+    #[request_id_inner]
     SetContactSettings = 58,
-    #[request_id]
+    #[request_id_inner]
     LookupPerson = 59,
     #[request_id]
     PersonInfo = 60,
-    #[request_id]
+    #[request_id_inner]
     GetNearbyPeople = 61,
     #[request_id]
     NearbyPeople = 62,
-    #[request_id]
+    #[request_id_inner]
     SetPrimVideo = 63,
     SetPushEndpoint = 64,
-    #[request_id]
+    #[request_id_inner]
     WherePeople = 65,
     #[request_id]
     PeopleWhere = 66,
     CallDecline = 67,
     CallDeclined = 68,
     PrimSound = 69,
-    #[request_id]
+    #[request_id_inner]
     SetPrimPhysical = 70,
     PrimMotion = 71,
     Permissions = 72,
@@ -271,14 +283,14 @@ pub enum MessageKind {
     SetFaceFrame = 123,
     FaceFrameOf = 124,
     PrimOutOfReach = 125,
-    #[request_id]
+    #[request_id_inner]
     GrabPrim = 126,
-    #[request_id]
+    #[request_id_inner]
     ReleasePrim = 127,
-    #[request_id]
+    #[request_id_inner]
     OfferGreeting = 128,
     GreetingOffered = 129,
-    #[request_id]
+    #[request_id_inner]
     AcceptGreeting = 130,
     GreetingStarted = 131,
     FollowPlans = 132,

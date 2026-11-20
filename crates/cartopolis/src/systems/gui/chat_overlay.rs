@@ -57,6 +57,7 @@ use crate::systems::egui_manager::EguiMut;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
+use cartopolis_core::msg;
 
 use crate::components::{Avatar, FreeCamera, RemoteAvatar};
 use crate::resources::{OnlineSession, RightPanel};
@@ -1581,11 +1582,11 @@ fn send(chat: &mut ChatState, online: Option<&OnlineSession>) {
         let scope = crate::systems::chat::scope_for(&channel.key, chat.shout);
         session.send(
             "chat send",
-            NetMessage::ChatSend {
+            NetMessage::ChatSend(msg::ChatSend {
                 request_id: 0,
                 scope,
                 body,
-            },
+            }),
         );
     }
     chat.input.clear();
@@ -1604,11 +1605,11 @@ fn person_act(
             if let Some(session) = online {
                 session.send(
                     "set blocked",
-                    NetMessage::SetBlocked {
+                    NetMessage::SetBlocked(msg::SetBlocked {
                         request_id: 0,
                         username,
                         blocked: true,
-                    },
+                    }),
                 );
             }
         }
