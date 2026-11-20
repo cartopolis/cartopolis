@@ -510,6 +510,19 @@ fn scene_net() -> Result<SceneNet, String> {
             });
         tract_onnx::onnx()
             .model_for_path(&path)
+            .and_then(|m| m.into_typed())
+            // Stored in half precision to halve the file; run in full. An
+            // x86 host has no half-precision arithmetic, and emulating it took
+            // the VPS 25 minutes for one photograph against the M5's ten
+            // seconds (2026-11-20).
+            .and_then(|m| {
+                use tract_onnx::tract_core::transform::ModelTransform;
+                tract_onnx::tract_core::floats::FloatPrecisionTranslator::new(
+                    DatumType::F16,
+                    DatumType::F32,
+                )
+                .transform_into(m)
+            })
             .and_then(|m| m.into_optimized())
             .and_then(|m| m.into_runnable())
             .map_err(|e| format!("scene network {}: {e:#}", path.display()))
