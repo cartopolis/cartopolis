@@ -1,6 +1,6 @@
 ---
 topic: module-graph
-triggers: [crate split, circular dependency, systems/, resources.rs, layers_panel.rs, mcp_access.rs, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
+triggers: [crate split, circular dependency, systems/, resources.rs, layers_panel.rs, mcp_access.rs, layer_state.rs, module-graph.ts, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
 updated: 2026-11-20
 ---
 
@@ -46,18 +46,25 @@ agent bar into `mcp::overlay`, `DiagnosticsRequest` to `resources`. Then single
 helpers (`level_bar` to `theme`, the HDR answer to `quality`, `loop_phase` to
 `utils::math`) and the Layers panel out of `data_layers` into `layers_panel`.
 
-**What is left is the map layer depending on what sits above it**, and it has
-to go all at once: cutting `map → gui`, `map → player` and `map → nav` together
-splits the cycle into 61 and 32 (simulated), any one of them alone gains ≤ 3.
-The load-bearing edges, each necessary: `DataLayers` (17 map modules read it,
-and `data_layers::apply_feature_toggles` in turn reaches into every layer it
-switches), `collision`'s colliders, `free_camera`'s fog and horizon maths (pure
-functions, cheap), `picking::PrimClick`, `traffic::{DriveNetwork, Car}`,
-`transit_live::WorldClock`, `give_way::PED_RED_GLOW`, `geo_nav::percent_encode`.
-All but `DataLayers` are moves; `DataLayers` needs its control inverted — each
-layer reading its own switch rather than one system writing every layer's
-visibility — which is a behaviour change across some twenty layers and wants
-captures to check, not just a compile.
+**2026-11-20, later: 100 → 67 + 34, the world below the app.** The map layer
+depended on what sits above it, and that had to go all at once: cutting
+`map → gui`, `map → player` and `map → nav` together splits the cycle, any one
+alone gains ≤ 3. Simulating each candidate edge left out in turn found eight
+that held it; all of them were types or helpers filed above the map, and all
+moved without a change of behaviour. `DataLayers` and its field types went to
+`layer_state` (its methods stay in `data_layers`; its machinery fields are
+`pub(crate)` for that reason), the fog/horizon/bloom maths from `free_camera`
+to `fog`, `DriveNetwork` to `drive_network`, `PrimClick` and `WorldClock` to
+`resources`, `PED_RED_GLOW` to `street_detail`, `percent_encode` to
+`platform::http`; `collision` reads the ground height from `core::motion`, and
+the globe's sweep excludes traffic by `AgentKind`. Inverting `DataLayers`'
+control, which this note had guessed was needed, was not.
+
+Now: a world cycle of 34 (terrain, buildings, sky, water, streets, colliders)
+that imports nothing of the app, and an app cycle of 67 (panels, avatar,
+navigation, network) over it. **Keep it that way**: a map module that needs a
+type from a panel or the avatar gets the type moved down, not the import.
+`bun tools/module-graph.ts` measures it — run it before and after.
 
 The hubs' machinery is private now (`GlobeState` 13 fields, 5 of them machinery,
 all private; `MapStream` likewise), so the August tables below overstate how
