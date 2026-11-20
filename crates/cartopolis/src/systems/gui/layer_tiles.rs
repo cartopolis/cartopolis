@@ -1,7 +1,7 @@
 //! The Layers panel's widgets: the row of category discs, the layer tile and the
 //! base-map choice (`docs/mockups/layers-and-ring/v1.png`). Only drawing and
 //! hit-testing live here; which layers exist and what they switch is
-//! `data_layers::render_data_layers_panel`.
+//! `layers_panel::render_data_layers_panel`.
 //!
 //! A layer is a row with its switch, whole: the panel used to be ~40 checkboxes
 //! three levels deep, and a checkbox row is a 20 pt target on a phone. A row is

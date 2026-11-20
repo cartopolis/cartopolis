@@ -494,7 +494,7 @@ impl Plugin for GuiPlugin {
                 (
                     systems::ui::render_main_menu,
                     systems::geo_nav::render_search_panel,
-                    systems::data_layers::render_data_layers_panel,
+                    systems::layers_panel::render_data_layers_panel,
                     systems::bookmarks::render_bookmarks_panel,
                     // The route planner draws a floating bottom sheet, not a docked
                     // panel (`navigation::SheetDetent`), so nothing about the shared

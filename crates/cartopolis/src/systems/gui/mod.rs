@@ -36,6 +36,7 @@ pub mod hud;
 pub mod icons;
 pub mod js_highlight;
 pub mod layer_tiles;
+pub mod layers_panel;
 pub mod login_screen;
 pub mod map_osd;
 pub mod model_library;
