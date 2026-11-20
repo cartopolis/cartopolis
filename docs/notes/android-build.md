@@ -595,6 +595,11 @@ What Android allows a sideloaded app, which is the shape of the whole thing:
   build may not open itself from the background, so when the person had tapped
   for it `UpdateReceiver` (on `MY_PACKAGE_REPLACED`) posts "Cartopolis is
   updated — tap to open".
+- **An update on screen looks like a crash.** Install and Update now install
+  while the app is in front, so the installer kills it with the run breadcrumb
+  still down, and the next launch offered a "crash report" after every tapped
+  update (2026-11-20). `offer_last_crash` stays quiet when the newest exit
+  reason is `PACKAGE_UPDATED` and no panic was written.
 - **Only builds from the page update.** A code under 20000 is a hand build
   (`build-apk.sh` falls back to the commit count), signed with a debug key the
   published APK can never install over, so `Updater` never starts.

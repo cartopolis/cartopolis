@@ -1545,6 +1545,16 @@ fn strip_log_noise(text: &str) -> (String, usize) {
 
 /// `ApplicationExitInfo.REASON_ANR`.
 const EXIT_REASON_ANR: i32 = 6;
+/// `ApplicationExitInfo.REASON_PACKAGE_UPDATED`: the installer ended the
+/// process to replace the app, which a self-update does on screen.
+pub const EXIT_REASON_PACKAGE_UPDATED: i32 = 16;
+
+/// What [`recent_exit_reasons`] found: the report text, and the reason code of
+/// the newest death — the previous run's, since the list is newest-first.
+pub struct ExitReasons {
+    pub text: String,
+    pub newest: Option<i32>,
+}
 
 /// How much of an ANR trace the report carries.
 ///
@@ -1576,7 +1586,7 @@ const ANR_TRACE_MAX_BYTES: usize = 64 * 1024;
 ///
 /// API-gated at 30 (`minSdkVersion` is 28), and every failure is silent: this
 /// enriches a report that is worth sending with or without it.
-pub fn recent_exit_reasons() -> Option<String> {
+pub fn recent_exit_reasons() -> Option<ExitReasons> {
     let java_vm = vm().ok()?;
     let mut env = java_vm.attach_current_thread().ok()?;
     let activity = activity();
@@ -1590,7 +1600,7 @@ pub fn recent_exit_reasons() -> Option<String> {
     }
 }
 
-fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<String>, Fail> {
+fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<ExitReasons>, Fail> {
     if sdk_int(env)? < 30 {
         return Ok(None);
     }
@@ -1603,7 +1613,7 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
     // Vec<GlobalRef>)` — strings already copied out of the JVM and *global* refs
     // that outlive any frame by construction — which is exactly the case the plain
     // form is for.
-    let (summary, anr_infos) = env.with_local_frame::<_, _, Fail>(32, |env| {
+    let (summary, anr_infos, newest) = env.with_local_frame::<_, _, Fail>(32, |env| {
         let name: JObject = env.new_string("activity")?.into();
         let manager = env
             .call_method(
@@ -1634,6 +1644,7 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
         let count = env.call_method(&list, "size", "()I", &[])?.i()?;
         let mut lines = Vec::new();
         let mut anr = Vec::new();
+        let mut newest = None;
         for index in 0..count {
             let info = env
                 .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
@@ -1642,6 +1653,7 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
                 continue;
             }
             let reason = env.call_method(&info, "getReason", "()I", &[])?.i()?;
+            newest.get_or_insert(reason);
             let status = env.call_method(&info, "getStatus", "()I", &[])?.i()?;
             let pid = env.call_method(&info, "getPid", "()I", &[])?.i()?;
             let timestamp = env.call_method(&info, "getTimestamp", "()J", &[])?.j()?;
@@ -1663,7 +1675,7 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
                 anr.push(env.new_global_ref(&info)?);
             }
         }
-        Ok((lines, anr))
+        Ok((lines, anr, newest))
     })?;
 
     let mut out = String::from("--- how this app's recent processes ended (ActivityManager) ---\n");
@@ -1687,7 +1699,7 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
             }
         }
     }
-    Ok(Some(out))
+    Ok(Some(ExitReasons { text: out, newest }))
 }
 
 /// `ApplicationExitInfo`'s reason codes, spelled out. The number alone is a
@@ -1709,7 +1721,7 @@ fn reason_name(reason: i32) -> &'static str {
         13 => "OTHER",
         14 => "FREEZER",
         15 => "PACKAGE_STATE_CHANGE",
-        16 => "PACKAGE_UPDATED",
+        EXIT_REASON_PACKAGE_UPDATED => "PACKAGE_UPDATED",
         _ => "unknown reason",
     }
 }

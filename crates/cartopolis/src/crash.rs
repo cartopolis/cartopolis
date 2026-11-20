@@ -174,8 +174,24 @@ pub(crate) fn offer_last_crash() {
     let breadcrumb = run_breadcrumb_path();
     let unclean = breadcrumb.exists();
     let _ = std::fs::remove_file(&breadcrumb);
-    let report = match std::fs::read_to_string(&path) {
-        Ok(text) => {
+    let panic_report = std::fs::read_to_string(&path).ok();
+    if panic_report.is_none() && !unclean {
+        return;
+    }
+    // Read before anything is decided: a run the installer ended to update the
+    // app also leaves the breadcrumb, because tapping Install or Update now
+    // installs on screen. That is no crash, and offering a report for it put a
+    // "crash" in front of the person after every update.
+    let exits = platform::android::recent_exit_reasons();
+    if panic_report.is_none()
+        && exits.as_ref().and_then(|e| e.newest)
+            == Some(platform::android::EXIT_REASON_PACKAGE_UPDATED)
+    {
+        tracing::info!("the previous run was ended by an app update, not a crash");
+        return;
+    }
+    let report = match panic_report {
+        Some(text) => {
             let _ = std::fs::remove_file(&path);
             text
         }
@@ -183,7 +199,7 @@ pub(crate) fn offer_last_crash() {
         // killed rather than unwound. Say exactly that, because "the app closed
         // itself" and "the app panicked" look identical from the outside and are
         // nothing alike to debug.
-        Err(_) if unclean => format!(
+        None if unclean => format!(
             "cartopolis {} ({})\nabi: {}\nThe previous run ended without a Rust panic and \
              without being suspended — the process was killed. That points at the \
              graphics driver, the Vulkan surface, or the OOM killer rather than at \
@@ -195,7 +211,7 @@ pub(crate) fn offer_last_crash() {
             option_env!("CARTO_BUILD_SHA").unwrap_or("unknown build"),
             std::env::consts::ARCH,
         ),
-        Err(_) => return,
+        None => return,
     };
     if report.trim().is_empty() {
         return;
@@ -206,8 +222,8 @@ pub(crate) fn offer_last_crash() {
     // the app stopped, and this says whether it was declared unresponsive, killed
     // for memory, killed by a signal, or simply swiped away. See
     // `platform::android::recent_exit_reasons`.
-    let report = match platform::android::recent_exit_reasons() {
-        Some(exits) => format!("{report}\n{exits}\n"),
+    let report = match exits {
+        Some(exits) => format!("{report}\n{}\n", exits.text),
         None => format!(
             "{report}\n(no exit-reason record — the framework keeps these only from API 30)\n"
         ),
