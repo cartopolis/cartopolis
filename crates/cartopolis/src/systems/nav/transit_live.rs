@@ -1,7 +1,7 @@
 //! Live departure boards for the transit data layer (ADR-024).
 //!
 //! Dutch stops in the transit layer carry an IFOPT quay code (`NL:Q:…` →
-//! [`crate::systems::data_layers::PoiInstance::live_id`]). This module polls
+//! [`crate::systems::layer_state::PoiInstance::live_id`]). This module polls
 //! OVapi (`http://v0.ovapi.nl` — the open, key-free real-time feed covering all
 //! Dutch public transport) for the stops around the camera and mounts a
 //! departure-board display on each stop's pin, like the real sign at a Dutch
@@ -39,7 +39,8 @@ use big_space::prelude::{BigSpace, GridCell};
 
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE};
 use crate::platform::http;
-use crate::systems::data_layers::{DataLayers, PoiInstance, LAYER_DEFS, TRANSIT_LAYER};
+use crate::systems::data_layers::{LAYER_DEFS, TRANSIT_LAYER};
+use crate::systems::layer_state::{DataLayers, PoiInstance};
 
 /// Refresh cadence for the departure data.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -75,17 +76,7 @@ const BOARD_PX_H: usize = 256;
 /// Panel width in texels (quad aspect = PANEL_PX : BOARD_PX_H).
 const PANEL_PX: usize = 432;
 
-/// Real-world wall clock, updated every frame. `now_unix` is seconds since the
-/// Unix epoch; `local_offset_secs` is the UTC offset of the *transit region*
-/// (learned from the OVapi feed), used to print wall-clock times.
-#[derive(Resource, Default)]
-pub struct WorldClock {
-    pub now_unix: f64,
-    pub local_offset_secs: Option<i32>,
-    /// User forced the clock to UTC (HUD toggle next to the time). When false
-    /// the clock shows local time *if* an offset has been learned, UTC otherwise.
-    pub show_utc: bool,
-}
+pub use crate::resources::WorldClock;
 
 impl WorldClock {
     /// Time of day as (h, m, s) plus whether it is being shown as real local

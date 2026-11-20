@@ -1388,7 +1388,7 @@ fn height_in_triangle(t: &[Vec3; 3], p: Vec2) -> Option<f32> {
 /// drawn, or a hidden bench is an invisible wall.
 pub fn sync_prop_colliders(
     places: Res<crate::systems::world_places::WorldPlaces>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut colliders: ResMut<BuildingColliders>,
     mut last: Local<Option<(u32, bool)>>,
 ) {
@@ -1555,7 +1555,7 @@ pub fn convex_hull_xz(mut pts: Vec<Vec2>) -> Vec<Vec2> {
 /// is off.
 pub fn eject_avatar_from_buildings(
     colliders: Res<BuildingColliders>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     online: Option<Res<crate::resources::OnlineSession>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     mut avatar_state: ResMut<AvatarState>,
@@ -1589,7 +1589,7 @@ pub fn eject_avatar_from_buildings(
     // floor it is on rather than of the ground floor's walls.
     let ground_y = terrain.ground_at(tf.translation.x, tf.translation.z) + avatar_state.floor_lift;
     let body = Body::new(
-        tf.translation.y - crate::systems::avatar::GROUND_HEIGHT,
+        tf.translation.y - cartopolis_core::motion::GROUND_Y,
         ground_y,
     );
     let base = Vec2::new(

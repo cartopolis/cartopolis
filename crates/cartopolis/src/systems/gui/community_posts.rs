@@ -1810,7 +1810,7 @@ pub fn answer_post_view(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: crate::grid::AnchoredCamera,
     map_anchor: Res<crate::resources::MapAnchor>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     online: Option<Res<crate::resources::OnlineSession>>,
     mut shot: ResMut<crate::resources::ScreenshotState>,
 ) {

@@ -16,6 +16,7 @@
 //! player standing beside you sees their own cars, held or not by their own
 //! presses.
 
+pub use crate::systems::street_detail::PED_RED_GLOW;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid};
 
@@ -415,9 +416,6 @@ pub fn press_buttons(
 
 // ── Drawing a pressed crossing ───────────────────────────────────────────────
 
-/// The walking man's red, lit — `street_detail`'s `PedRed` material and the
-/// overlay's.
-pub const PED_RED_GLOW: LinearRgba = LinearRgba::rgb(8.0, 0.6, 0.4);
 const AMBER_GLOW: LinearRgba = LinearRgba::rgb(8.0, 4.5, 0.6);
 const GREEN_GLOW: LinearRgba = LinearRgba::rgb(0.8, 8.0, 1.2);
 

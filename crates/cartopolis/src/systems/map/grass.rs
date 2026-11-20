@@ -611,7 +611,7 @@ pub fn update_grass(
     mut commands: Commands,
     mut patches: ResMut<GrassPatches>,
     mut areas: ResMut<GrassAreas>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
+    dl: Res<crate::systems::layer_state::DataLayers>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GrassMaterial>>,
     mut images: ResMut<Assets<Image>>,

@@ -57,10 +57,10 @@ use cartopolis_materials::label_sign::{sign_tag, LabelSignExtension, LabelSignMa
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::GlobeState;
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::label_atlas::{self, LabelAtlasWrites, SlotRaster};
+use crate::systems::layer_state::DataLayers;
 use crate::systems::theme;
 use crate::systems::vector_tiles::StreetLabelLine;
 

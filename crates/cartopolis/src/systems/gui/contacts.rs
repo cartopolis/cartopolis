@@ -500,7 +500,7 @@ pub fn drive_contacts(
     mut contacts: ResMut<Contacts>,
     mut chat: ResMut<ChatState>,
     private: Res<crate::systems::private_chat::PrivateChats>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut launched: Local<bool>,
 ) {
     if !*launched {

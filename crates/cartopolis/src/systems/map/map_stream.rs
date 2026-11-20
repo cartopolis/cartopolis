@@ -523,7 +523,7 @@ pub fn apply_reanchor(
 /// burst with its own rules.
 pub fn apply_aerial_source(
     mut stream: ResMut<MapStream>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     tiles: Query<Entity, With<StreamTile>>,
 ) {
     let want = layers.aerial_enabled;
@@ -903,7 +903,7 @@ pub fn hex_tile(key: TileKey, on: bool) -> Vec4 {
 /// Switch the hex grid on every clipmap tile when the layer is toggled. Rare, so
 /// all at once; compared first, since `get_mut` re-prepares a material.
 pub fn apply_hex_grid(
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     tiles: Query<
         &MeshMaterial3d<crate::systems::ground_detail::GroundMaterial>,
         With<StreamTileReady>,
@@ -2284,7 +2284,7 @@ pub fn apply_stream_textures(
     >,
     time: Res<Time>,
     mut next_report: Local<f64>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
 ) {
     // Decode and upload run on different clocks now (worker pool vs. the render
     // frame), so "the map is filling slowly" has two very different causes and the

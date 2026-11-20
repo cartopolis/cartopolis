@@ -200,7 +200,7 @@ pub fn apply_render_features(
         let mut cmd = commands.entity(cam);
         if want_bloom {
             cmd.insert(Bloom {
-                intensity: crate::systems::free_camera::bloom_intensity(0.0),
+                intensity: crate::systems::fog::bloom_intensity(0.0),
                 ..Bloom::NATURAL
             });
         } else {

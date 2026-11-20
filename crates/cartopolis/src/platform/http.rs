@@ -587,6 +587,20 @@ pub fn is_loopback_host(host: &str) -> bool {
     host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
+/// Percent-encode a URL query component (RFC 3986 unreserved set kept).
+pub(crate) fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

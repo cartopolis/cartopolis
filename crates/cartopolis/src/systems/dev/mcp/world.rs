@@ -110,7 +110,7 @@ pub struct Screen<'w> {
 /// The live feeds: the transit layer and its boards, the vehicles, the notices.
 #[derive(SystemParam)]
 pub struct Feeds<'w> {
-    layers: ResMut<'w, crate::systems::data_layers::DataLayers>,
+    layers: ResMut<'w, crate::systems::layer_state::DataLayers>,
     live: Res<'w, crate::systems::transit_live::TransitLive>,
     vehicles: ResMut<'w, crate::systems::transit_vehicles::TransitVehicles>,
     plans: ResMut<'w, crate::systems::plans::Plans>,
@@ -1214,7 +1214,7 @@ fn departures(
     let radius = args.radius_m.unwrap_or(300.0).clamp(20.0, 800.0);
     let p = xz(anchor, at);
     let layer = &w.feeds.layers.layers[TRANSIT_LAYER];
-    let mut stops: Vec<(f32, &crate::systems::data_layers::PoiInstance, Vec2)> = layer
+    let mut stops: Vec<(f32, &crate::systems::layer_state::PoiInstance, Vec2)> = layer
         .pois
         .values()
         .flatten()

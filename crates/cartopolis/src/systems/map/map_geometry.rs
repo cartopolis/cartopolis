@@ -267,7 +267,7 @@ pub struct CellStores<'w> {
     /// The drivable network (`systems::traffic`). Here for the reason all of
     /// these are: keyed by cell, filled from the same parse, and retired on
     /// exactly the same events.
-    roads: ResMut<'w, crate::systems::traffic::DriveNetwork>,
+    roads: ResMut<'w, crate::systems::drive_network::DriveNetwork>,
     /// The operator's street-object models, for the same reason again: what it
     /// holds per cell is a queue of objects to stand up, which has to be dropped
     /// with the cell it belongs to (`systems::placeholder_models`).
@@ -5226,7 +5226,7 @@ fn road_material_image(class: RoadClass) -> Image {
 /// side of the toggle, so a steady state costs nothing and a newly-streamed class
 /// (created textured by the spawner) is corrected on the next frame.
 pub fn apply_road_texture(
-    dl: Res<crate::systems::data_layers::DataLayers>,
+    dl: Res<crate::systems::layer_state::DataLayers>,
     surfaces: Res<MapSurfaces>,
     mut materials: ResMut<Assets<RoadMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -8032,7 +8032,7 @@ mod tests {
     /// touched anything — and the only symptom would be the framerate.
     #[test]
     fn the_detail_toggles_start_where_the_tier_puts_them() {
-        let dl = crate::systems::data_layers::DataLayers::default();
+        let dl = crate::systems::layer_state::DataLayers::default();
         let tier = crate::quality::budget().detail_layers;
         assert_eq!(dl.trees_enabled, tier, "Trees must start at the tier");
         assert_eq!(

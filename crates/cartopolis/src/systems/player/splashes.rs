@@ -764,7 +764,7 @@ fn spawn_emitter<M: Material>(
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct WaterScene<'w, 's> {
     prefs: Res<'w, AppPrefs>,
-    layers: Res<'w, crate::systems::data_layers::DataLayers>,
+    layers: Res<'w, crate::systems::layer_state::DataLayers>,
     avatar_state: Res<'w, AvatarState>,
     terrain: Res<'w, TerrainField>,
     places: Res<'w, WorldPlaces>,

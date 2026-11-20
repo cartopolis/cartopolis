@@ -24,8 +24,8 @@ use super::{DeviceRequest, McpBridge, Outcome, Reply};
 use crate::resources::{
     AppPrefs, CameraMode, CameraState, DebugSwitches, FrameStats, OsmTileUrlTemplate,
 };
-use crate::systems::data_layers::DataLayers;
 use crate::systems::geo_nav::{GeoNavState, Teleport};
+use crate::systems::layer_state::DataLayers;
 use crate::systems::navigation::DetachedSolve;
 use crate::systems::routing::TravelMode;
 use cartopolis_mcp::args::AgentReply;

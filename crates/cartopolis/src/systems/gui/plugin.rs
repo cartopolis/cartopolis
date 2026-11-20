@@ -51,7 +51,7 @@ impl Plugin for GuiPlugin {
             // (`systems::map_osd`); read by `free_camera::camera_controls`.
             .init_resource::<systems::map_osd::OsdInput>()
             .insert_resource({
-                let mut layers = systems::data_layers::DataLayers::default();
+                let mut layers = crate::systems::layer_state::DataLayers::default();
                 layers.aerial_enabled = self.aerial;
                 layers.sewers = self.sewers;
                 layers.satellites_enabled = self.satellites;
@@ -65,7 +65,7 @@ impl Plugin for GuiPlugin {
                 }
                 layers
             })
-            .watch_stream::<systems::data_layers::DataLayers>()
+            .watch_stream::<crate::systems::layer_state::DataLayers>()
             .init_resource::<systems::bookmarks::BookmarksState>()
             .init_resource::<systems::chat::ChatState>()
             .init_resource::<systems::chat_overlay::ChatOverlay>()

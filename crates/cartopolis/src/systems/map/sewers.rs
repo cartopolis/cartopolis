@@ -388,7 +388,7 @@ impl Sewers {
 /// Is the underground layer wanted? One answer for the streamer, the ground
 /// and the backdrop.
 #[must_use]
-pub fn wanted(layers: &crate::systems::data_layers::DataLayers) -> bool {
+pub fn wanted(layers: &crate::systems::layer_state::DataLayers) -> bool {
     layers.map_enabled && layers.sewers
 }
 
@@ -405,7 +405,7 @@ pub fn update_sewers(
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     terrain: Res<crate::systems::terrain::TerrainField>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
 ) {
     sewers.cells.drain_despawns(&mut commands);
 
@@ -567,7 +567,7 @@ pub fn update_sewers(
 /// ones are read too, because code that rebuilds an extension wholesale puts the
 /// flag back to its default.
 pub fn apply_ground_see_through(
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut ground: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     mut roads: ResMut<Assets<crate::systems::road_depth::RoadMaterial>>,
     mut ground_events: MessageReader<AssetEvent<crate::systems::ground_detail::GroundMaterial>>,
@@ -642,7 +642,7 @@ pub struct BackdropState {
 #[allow(clippy::too_many_arguments)]
 pub fn follow_backdrop(
     mut commands: Commands,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     camera: AnchoredCamera,
     terrain: Res<crate::systems::terrain::TerrainField>,
     bigspace: Query<Entity, With<BigSpace>>,

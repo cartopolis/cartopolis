@@ -46,9 +46,9 @@ use crate::components::FreeCamera;
 use crate::grid::anchored_position_f64;
 use crate::platform::{http, storage};
 use crate::resources::MapAnchor;
-use crate::systems::data_layers::DataLayers;
 use crate::systems::egui_manager::{EguiMut, EguiRef, WorldAnchored};
 use crate::systems::globe::GlobeState;
+use crate::systems::layer_state::DataLayers;
 use crate::systems::place_pins::{map_area, place_delta};
 use crate::systems::{icons, theme};
 
@@ -92,15 +92,7 @@ const WORK_R: f32 = 9.0;
 /// At most this many works a frame.
 const MAX_WORKS: usize = 200;
 
-/// How far back the layer looks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Period {
-    /// Only notices whose response period still runs.
-    Open,
-    #[default]
-    ThreeMonths,
-    Year,
-}
+pub use crate::systems::layer_state::Period;
 
 impl Period {
     pub const ALL: [Self; 3] = [Self::Open, Self::ThreeMonths, Self::Year];
@@ -145,7 +137,7 @@ impl Period {
 /// whether a fresh install shows them. Events and traffic orders are off by
 /// default: they are many, short-lived, and drawn as routes across the whole
 /// centre (the design's v1 note).
-pub const KINDS: [(NoticeKind, &str, bool); 6] = [
+pub const KINDS: [(NoticeKind, &str, bool); crate::systems::layer_state::PLAN_KINDS] = [
     (NoticeKind::Application, "Applications", true),
     (NoticeKind::Decision, "Decisions", true),
     (NoticeKind::Notification, "Notifications", true),

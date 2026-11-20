@@ -685,7 +685,7 @@ pub fn update_tall_structures(
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     terrain: Res<crate::systems::terrain::TerrainField>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
 ) {
     ts.cells.drain_despawns(&mut commands);
 

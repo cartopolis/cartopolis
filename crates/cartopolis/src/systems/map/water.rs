@@ -557,7 +557,7 @@ fn sea_state(wind: Vec2, octave_count: u32) -> (Vec4, Vec4, Vec4, Vec4) {
 /// the wind has actually moved, which is a handful of times an hour.
 pub fn update_water_waves(
     weather: Res<WeatherState>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
+    dl: Res<crate::systems::layer_state::DataLayers>,
     dev: Res<crate::resources::DevPanelState>,
     mut state: ResMut<WaterSeaState>,
     mut materials: ResMut<Assets<WaterMaterial>>,

@@ -22,6 +22,7 @@ use crate::grid::{
     anchored_position_f64, lat_lng_to_world, world_to_lat_lng, AnchoredCamera, WORLD_CELL_EDGE,
     WORLD_SWITCH_THRESHOLD,
 };
+pub(crate) use crate::platform::http::percent_encode;
 use crate::platform::sync::{Arc, Mutex};
 use crate::systems::egui_manager::EguiMut;
 use cartopolis_core::msg;
@@ -985,20 +986,6 @@ pub fn launch_place() -> Option<LocationFix> {
 }
 
 // ─── Nominatim lookup (background thread) ────────────────────────────────────
-
-/// Percent-encode a URL query component (RFC 3986 unreserved set kept).
-pub(crate) fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
 
 fn spawn_geocode(query: String, results: Arc<Mutex<Vec<GeocodeReply>>>) {
     // Detached fetch on the IoTaskPool (ADR-033 seam): no OS thread, so it works
@@ -2210,7 +2197,7 @@ fn hold_for_flight(
     let Ok((cell, tf)) = cameras.single() else {
         return false;
     };
-    let here = (crate::systems::free_camera::cell_origin(cell) + tf.translation.as_dvec3()
+    let here = (crate::grid::cell_origin(cell) + tf.translation.as_dvec3()
         - globe.center_local.as_dvec3())
     .normalize_or_zero();
     let there = globe.direction_local(tp.lat, tp.lng).as_dvec3();

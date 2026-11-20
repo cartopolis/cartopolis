@@ -571,7 +571,7 @@ pub fn feed_dike_labels(
     dikes: Res<Dikes>,
     height: Res<HeightLayer>,
     stream: Res<MapStream>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut store: ResMut<crate::systems::street_labels::StreetLabelStore>,
     mut last: Local<Option<(u32, u32, bool, Option<i32>)>>,
 ) {

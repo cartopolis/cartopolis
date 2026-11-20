@@ -1720,7 +1720,7 @@ pub fn update_street_detail(
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<BuildingColliders>,
     filled: crate::systems::tunnels::FilledTerrain,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     surfaces: ResMut<crate::systems::map_geometry::MapSurfaces>,
     veg_lod: Res<crate::systems::vegetation::VegetationLod>,
     mut tree_models: ResMut<crate::systems::tree_models::TreeModels>,
@@ -2106,7 +2106,7 @@ fn spawn_cell(
                     .get_or_insert_with(|| {
                         materials.add(StandardMaterial {
                             base_color: Color::srgb(0.10, 0.10, 0.10),
-                            emissive: crate::systems::give_way::PED_RED_GLOW,
+                            emissive: PED_RED_GLOW,
                             perceptual_roughness: 0.3,
                             ..default()
                         })
@@ -2423,6 +2423,10 @@ pub fn update_prop_fade(
         }
     }
 }
+
+/// The walking man's red, lit — `street_detail`'s `PedRed` material and the
+/// overlay's.
+pub const PED_RED_GLOW: LinearRgba = LinearRgba::rgb(8.0, 0.6, 0.4);
 
 #[cfg(test)]
 mod tests {

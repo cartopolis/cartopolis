@@ -295,7 +295,7 @@ impl TreeModels {
 /// Follow the setting, and load the models the first time it is on.
 pub fn load_tree_models(
     mut models: ResMut<TreeModels>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     asset_server: Res<AssetServer>,
 ) {
     if models.enabled != layers.tree_models_enabled {

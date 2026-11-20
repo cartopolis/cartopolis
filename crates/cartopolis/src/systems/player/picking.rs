@@ -35,28 +35,7 @@ pub struct PrimPickWorld<'w, 's> {
     camera: Res<'w, crate::resources::CameraState>,
 }
 
-/// Whether the last left click this system processed landed on a prim.
-///
-/// The world behind the prims wants clicks too — `building_select::pick_building`
-/// is the second consumer — and "did the prim layer already take this one?" has to
-/// be answerable *after* [`prim_picking`] has run, for a press that selected a
-/// prim and for one that merely *touched* a scripted one, which deliberately
-/// leaves the selection alone.
-///
-/// The world behind the prims wants clicks too — `building_select::pick_building`
-/// is the second consumer — and "did the prim layer already take this one?" has to
-/// be answerable *after* [`prim_picking`] has run, for a press that selected a
-/// prim and for one that merely *touched* a scripted one, which deliberately
-/// leaves the selection alone.
-///
-/// Written on **every** press [`prim_picking`] evaluates, hit or miss, which is
-/// what keeps it from going stale: the presses it skips are the ones
-/// `pick_building` skips too, for the same reasons (egui has the pointer, there is
-/// no cursor, there is no camera).
-#[derive(Resource, Default)]
-pub struct PrimClick {
-    took: bool,
-}
+pub use crate::resources::PrimClick;
 
 impl PrimClick {
     /// Did a prim take the most recent press?

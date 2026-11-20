@@ -1694,7 +1694,7 @@ pub fn send_network_intent(
     egui_manager: crate::systems::egui_manager::EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     time: Res<Time>,
     map_anchor: Res<crate::resources::MapAnchor>,
     mut last_sent: Local<Option<SentIntent>>,

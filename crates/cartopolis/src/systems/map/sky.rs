@@ -897,7 +897,7 @@ pub(crate) struct HorizonHaze;
 /// clock to Settings ▸ World. Runs before `advance_day_cycle` and
 /// `apply_day_night_cycle`, so the whole sun/moon/fog pipeline sees the value.
 pub(crate) fn apply_sun_mode(
-    clock: Res<systems::transit_live::WorldClock>,
+    clock: Res<crate::resources::WorldClock>,
     globe: Res<systems::globe::GlobeState>,
     mut dev: ResMut<DevPanelState>,
 ) {
@@ -1039,7 +1039,7 @@ pub(crate) fn apply_day_night_cycle(
         .single()
         .ok()
         .map(|(cell, tf, _, _, _, _)| {
-            let from_centre = (systems::free_camera::cell_origin(cell) + tf.translation.as_dvec3()
+            let from_centre = (crate::grid::cell_origin(cell) + tf.translation.as_dvec3()
                 - globe.center_local.as_dvec3())
             .normalize_or_zero()
             .as_vec3();
@@ -1108,7 +1108,7 @@ pub(crate) fn apply_day_night_cycle(
         // read as an atmosphere rather than a drawn outline. Near the ground
         // that much bloom just smears the map.
         if let Some(mut bloom) = bloom {
-            bloom.intensity = systems::free_camera::bloom_intensity(space);
+            bloom.intensity = crate::systems::fog::bloom_intensity(space);
         }
     }
 
@@ -1290,7 +1290,7 @@ pub(crate) fn apply_distance_fog(
     // horizon-haze shell fogs the sky instead (see update_horizon_haze), veiling
     // the whole dome as density rises.
     let altitude = globe.altitude_m(cell, tf) as f32;
-    let density = dev.fog_density * systems::free_camera::fog_altitude_factor(altitude);
+    let density = dev.fog_density * crate::systems::fog::fog_altitude_factor(altitude);
 
     // Assigning through the `Mut` marks `DistanceFog` changed, which re-extracts
     // and re-uploads the camera's fog uniform. This ran unconditionally, so that
@@ -1309,7 +1309,7 @@ pub(crate) fn apply_distance_fog(
         return;
     }
     *applied = Some(next);
-    *fog = systems::free_camera::distance_fog(density, dev.time_of_day, dev.sun_declination_rad);
+    *fog = crate::systems::fog::distance_fog(density, dev.time_of_day, dev.sun_declination_rad);
 }
 
 /// Spawns the star-map night sky: a box centred on the viewer whose custom material
@@ -1586,7 +1586,7 @@ pub(crate) fn update_horizon_haze(
     // The haze thins with altitude alongside the ground fog, so an orbit view
     // sees the map through clear air instead of a grey band at the horizon.
     let altitude = globe.altitude_m(cell, cam_local) as f32;
-    let alt = systems::free_camera::fog_altitude_factor(altitude);
+    let alt = crate::systems::fog::fog_altitude_factor(altitude);
     let d = dev.fog_density * alt;
 
     // Peak alpha is the fog's *own* opacity where the map ends, read off the same
@@ -1597,10 +1597,8 @@ pub(crate) fn update_horizon_haze(
     // sky above it got 53% — a visible grey line at every ordinary altitude.
     // In practice this is ~1.0 for any density worth calling fog (82 km of it
     // against 7–15 km of visibility) and exactly 0 when the fog is off.
-    let peak = systems::free_camera::fog_factor_at(
-        &fog.falloff,
-        systems::free_camera::HORIZON_FOG_DISTANCE,
-    );
+    let peak =
+        crate::systems::fog::fog_factor_at(&fog.falloff, crate::systems::fog::HORIZON_FOG_DISTANCE);
 
     // Stand the shell just inside the distance where the fog has hidden the ground
     // completely, so it draws *over* the far map instead of behind it. Bevy's
@@ -1610,7 +1608,7 @@ pub(crate) fn update_horizon_haze(
     // `fog_saturation_distance`. Capped at the ground disc so a thin, high-altitude
     // haze never pulls the shell in over map the fog has genuinely left visible.
     let radius =
-        systems::free_camera::fog_saturation_distance(&fog.falloff).clamp(1_000.0, 150_000.0);
+        crate::systems::fog::fog_saturation_distance(&fog.falloff).clamp(1_000.0, 150_000.0);
     tf.scale = Vec3::splat(radius);
 
     // Once it carries no haze at all, drop the shell out of the frame rather than
@@ -2120,7 +2118,7 @@ pub(crate) fn update_clouds(
     // the deck darker than the sky behind it and turn it into black holes in the
     // star field — the one place cloud and fog should not agree, and now the only
     // one.
-    let haze = systems::free_camera::cloud_sky_fill(hours, decl);
+    let haze = crate::systems::fog::cloud_sky_fill(hours, decl);
     let sky_rgb = haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
@@ -2163,8 +2161,8 @@ pub(crate) fn update_clouds(
         // shadow after sunset, while toward the sun it stays gold; the deck has
         // no glow term, so it takes the geometric mean of the two, or the far
         // clouds toward a setting sun went dark brown (2026-11-07).
-        let (anti, toward) = systems::free_camera::horizon_sky(hours, decl);
-        let far = (anti * toward).powf(0.5) * systems::free_camera::horizon_to_screen(hours, decl);
+        let (anti, toward) = crate::systems::fog::horizon_sky(hours, decl);
+        let far = (anti * toward).powf(0.5) * crate::systems::fog::horizon_to_screen(hours, decl);
         let far = far.lerp(fog.color.to_linear().to_vec3(), space);
         mat.haze_color = LinearRgba::new(far.x, far.y, far.z, cloud_sky_floor(dev.cloud_cover));
         // World-anchor: the camera's horizontal position in the local anchor
@@ -2426,7 +2424,7 @@ pub(crate) fn update_globe_clouds(
     // Same shape, and for the same reason: a bisecting switch cannot change while
     // the process runs, and `env_flag` takes a process-global lock.
     mut clouds_disabled: Local<Option<bool>>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut globe_clouds_override: Local<Option<Option<crate::resources::GlobeCloudMode>>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
@@ -2512,8 +2510,7 @@ pub(crate) fn update_globe_clouds(
         mat.centre = centre.extend(radius);
         // The light the globe under it is lit by, so Light and Dark do not
         // leave a real night side drawn in the clouds.
-        let from_centre = (systems::free_camera::cell_origin(cell)
-            + cam_local.translation.as_dvec3()
+        let from_centre = (crate::grid::cell_origin(cell) + cam_local.translation.as_dvec3()
             - globe.center_local.as_dvec3())
         .normalize_or_zero()
         .as_vec3();
@@ -2676,7 +2673,7 @@ mod overcast_tests {
 
     /// The sky's fill on the deck at noon (`update_clouds`' `haze`).
     fn noon_haze() -> Vec3 {
-        systems::free_camera::cloud_sky_fill(12.0, 0.0)
+        crate::systems::fog::cloud_sky_fill(12.0, 0.0)
     }
 
     /// The base tone of an opaque core of the low deck at noon, under `cover`:

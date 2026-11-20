@@ -2401,6 +2401,41 @@ pub struct DiagnosticsRequest {
     pub last: Option<String>,
 }
 
+/// Whether the last left click this system processed landed on a prim.
+///
+/// The world behind the prims wants clicks too — `building_select::pick_building`
+/// is the second consumer — and "did the prim layer already take this one?" has to
+/// be answerable *after* [`prim_picking`] has run, for a press that selected a
+/// prim and for one that merely *touched* a scripted one, which deliberately
+/// leaves the selection alone.
+///
+/// The world behind the prims wants clicks too — `building_select::pick_building`
+/// is the second consumer — and "did the prim layer already take this one?" has to
+/// be answerable *after* [`prim_picking`] has run, for a press that selected a
+/// prim and for one that merely *touched* a scripted one, which deliberately
+/// leaves the selection alone.
+///
+/// Written on **every** press [`prim_picking`] evaluates, hit or miss, which is
+/// what keeps it from going stale: the presses it skips are the ones
+/// `pick_building` skips too, for the same reasons (egui has the pointer, there is
+/// no cursor, there is no camera).
+#[derive(Resource, Default)]
+pub struct PrimClick {
+    pub(crate) took: bool,
+}
+
+/// Real-world wall clock, updated every frame. `now_unix` is seconds since the
+/// Unix epoch; `local_offset_secs` is the UTC offset of the *transit region*
+/// (learned from the OVapi feed), used to print wall-clock times.
+#[derive(Resource, Default)]
+pub struct WorldClock {
+    pub now_unix: f64,
+    pub local_offset_secs: Option<i32>,
+    /// User forced the clock to UTC (HUD toggle next to the time). When false
+    /// the clock shows local time *if* an offset has been learned, UTC otherwise.
+    pub show_utc: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

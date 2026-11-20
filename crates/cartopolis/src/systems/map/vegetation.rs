@@ -70,7 +70,7 @@ impl VegetationLod {
 /// sort order and a pass, to fade something that is by then sub-pixel anyway.
 pub fn update_vegetation_lod(
     mut lod: ResMut<VegetationLod>,
-    dl: Res<crate::systems::data_layers::DataLayers>,
+    dl: Res<crate::systems::layer_state::DataLayers>,
     mut materials: ResMut<Assets<crate::systems::ground_detail::GroundMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,

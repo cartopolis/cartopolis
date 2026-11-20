@@ -225,6 +225,11 @@ pub fn world_to_lat_lng(anchor: (f64, f64, u32), wx: f64, wz: f64) -> (f64, f64)
     (frame.lat_at(wz), frame.lng_at(wx))
 }
 
+/// Absolute world position of a big_space grid cell's origin.
+pub(crate) fn cell_origin(cell: &GridCell) -> DVec3 {
+    DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * WORLD_CELL_EDGE as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

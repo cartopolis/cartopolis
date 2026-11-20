@@ -3842,7 +3842,7 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
 /// often than it refuses a connection. The caller re-checks (`fetch_cell_overpass_text`,
 /// `parse_buildings`) so a remark can still never be cached as an empty cell.
 pub(crate) async fn overpass_query(query: &str) -> Result<String, String> {
-    let body = format!("data={}", crate::systems::geo_nav::percent_encode(query)).into_bytes();
+    let body = format!("data={}", crate::platform::http::percent_encode(query)).into_bytes();
     let mut last_err = String::new();
     for (endpoint, (url, attempts)) in overpass_endpoints().into_iter().enumerate() {
         if endpoint > 0 {

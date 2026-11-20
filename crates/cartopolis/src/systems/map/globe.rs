@@ -627,10 +627,8 @@ impl GlobeState {
         // Past the horizon and the far plane's own margin, so the shells sit
         // outside every piece of ground that can be drawn — and still well
         // inside the far plane itself.
-        let horizon = crate::systems::free_camera::horizon_distance_m(
-            self.altitude_m(cell, tf) as f32,
-            self.radius,
-        );
+        let horizon =
+            crate::systems::fog::horizon_distance_m(self.altitude_m(cell, tf) as f32, self.radius);
         Some((horizon * 1.35).max(SKY_SHELL_GROUND_RADIUS))
     }
 }
@@ -1366,7 +1364,8 @@ pub fn update_globe_visibility(
             // Traffic is its own writer every frame (`traffic::drive_traffic`
             // hides an agent until it is placed on a road, and the whole pool
             // above 700 m); this one made the unplaced ones visible at the origin.
-            Without<crate::systems::traffic::Car>,
+            // `AgentKind` rather than `traffic::Car`: every agent carries both.
+            Without<crate::components::AgentKind>,
             Without<crate::components::GroundSkirt>,
         ),
     >,
@@ -1628,12 +1627,12 @@ const NIGHT_SUN_STEP: f32 = 0.009;
 /// spread over frames as [`update_globe_albedo`] is, for its reason.
 pub fn update_globe_night(
     dev: Res<crate::resources::DevPanelState>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut night: ResMut<GlobeNight>,
     tiles: Query<&MeshMaterial3d<GlobeSurfaceMaterial>, With<GlobeMesh>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     mut cursor: Local<usize>,
-    clock: Res<crate::systems::transit_live::WorldClock>,
+    clock: Res<crate::resources::WorldClock>,
     globe: Res<GlobeState>,
 ) {
     let sun = crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad);

@@ -53,8 +53,8 @@ use crate::components::FreeCamera;
 use crate::grid::AnchoredCamera;
 use crate::platform::{http, storage};
 use crate::systems::camera_attach::{AttachKey, AttachRange, CameraAttach};
-use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
+use crate::systems::layer_state::DataLayers;
 use crate::systems::{icons, theme};
 
 pub use cartopolis_materials::satellites::SatelliteMaterial;
@@ -128,7 +128,7 @@ pub struct KindDef {
     pub size_px: f32,
 }
 
-pub const KINDS: [KindDef; 5] = [
+pub const KINDS: [KindDef; crate::systems::layer_state::SATELLITE_KINDS] = [
     KindDef {
         key: "station",
         label: "Crewed stations",

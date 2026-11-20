@@ -25,6 +25,8 @@ pub mod crossings;
 // named for the layer rather than the register the way `surveyed` is.
 pub mod crops;
 pub mod dikes;
+pub mod drive_network;
+pub mod fog;
 pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;
@@ -46,6 +48,7 @@ pub mod load_control;
 // Only the kerbs near the camera go into the shadow maps.
 pub mod kerb_shadows;
 // A lens's areas, meshed once and coloured by a texel an area.
+pub mod layer_state;
 pub mod lens_areas;
 pub mod lod22;
 pub mod lod22_facade;

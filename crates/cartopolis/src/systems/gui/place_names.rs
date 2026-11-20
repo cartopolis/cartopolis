@@ -147,7 +147,7 @@ pub fn stream_place_names(
     map_anchor: Res<MapAnchor>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     tile_url: Res<crate::resources::OsmTileUrlTemplate>,
 ) {
     // Finished fetches first, whatever the camera does.
@@ -296,7 +296,7 @@ pub fn render_place_names(
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     route: Res<crate::systems::navigation::RouteState>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     driver: Res<crate::systems::driver::DriverState>,
     // A name that is clicked opens the map's ring on it (`ui::render_context_menu`),
     // and the ring's Go there comes back here to be flown.

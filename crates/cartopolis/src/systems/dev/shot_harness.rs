@@ -2689,7 +2689,7 @@ pub fn open_scripted_ui(
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut tools: ResMut<crate::systems::dev_panel::DevTools>,
     mut avatar: ResMut<crate::resources::AvatarChooserState>,
-    mut layers: ResMut<crate::systems::data_layers::DataLayers>,
+    mut layers: ResMut<crate::systems::layer_state::DataLayers>,
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut route: ResMut<crate::systems::navigation::RouteState>,
@@ -4693,7 +4693,7 @@ pub struct ShotReadouts<'w, 's> {
     /// The ground materials and the layer switch, for `ShotMetrics::ground_unopened`.
     ground_materials: Res<'w, Assets<crate::systems::ground_detail::GroundMaterial>>,
     road_materials: Res<'w, Assets<crate::systems::road_depth::RoadMaterial>>,
-    layers: Res<'w, crate::systems::data_layers::DataLayers>,
+    layers: Res<'w, crate::systems::layer_state::DataLayers>,
     backdrop: Res<'w, crate::systems::sewers::BackdropState>,
 }
 

@@ -487,7 +487,7 @@ pub(super) fn handle(
             let url = format!(
                 "{}/search?format=jsonv2&limit={limit}&q={}{near}",
                 crate::systems::geo_nav::nominatim_base_url(),
-                crate::systems::geo_nav::percent_encode(&query),
+                crate::platform::http::percent_encode(&query),
             );
             bevy::tasks::IoTaskPool::get()
                 .spawn(async move {
@@ -819,7 +819,7 @@ pub(super) fn handle(
             let query = args.query.unwrap_or_default().trim().to_string();
             let mut path = format!(
                 "/api/library?q={}",
-                crate::systems::geo_nav::percent_encode(&query)
+                crate::platform::http::percent_encode(&query)
             );
             if let Some(c) = args
                 .category
@@ -829,7 +829,7 @@ pub(super) fn handle(
             {
                 path.push_str(&format!(
                     "&category={}",
-                    crate::systems::geo_nav::percent_encode(c)
+                    crate::platform::http::percent_encode(c)
                 ));
             }
             let mine = args.mine.unwrap_or(false);

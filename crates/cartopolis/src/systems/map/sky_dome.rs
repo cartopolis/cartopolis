@@ -389,7 +389,7 @@ pub fn update_sky_dome(
     // unchanged.
     // The mesh is a unit sphere and the transform's scale *is* its radius (see
     // the spawn), so this is metres, not a multiplier.
-    let want_scale = (crate::systems::free_camera::horizon_distance_m(altitude, globe.radius)
+    let want_scale = (crate::systems::fog::horizon_distance_m(altitude, globe.radius)
         * SKY_DOME_HORIZON_MARGIN)
         .max(SKY_DOME_RADIUS);
     if (tf.scale.x - want_scale).abs() > 1e-3 {
@@ -563,7 +563,7 @@ mod tests {
             12_000.0,
             SKY_DOME_MAX_ALT,
         ] {
-            let horizon = crate::systems::free_camera::horizon_distance_m(altitude, radius);
+            let horizon = crate::systems::fog::horizon_distance_m(altitude, radius);
             let shell = (horizon * SKY_DOME_HORIZON_MARGIN).max(SKY_DOME_RADIUS);
             assert!(
                 shell > horizon,

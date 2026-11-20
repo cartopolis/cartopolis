@@ -430,7 +430,7 @@ fn start(key: &str) -> Result<Loading, String> {
 /// Open what the Layers panel asks for, load its areas, follow the camera's
 /// rung, and run the clock.
 pub fn drive_scenario(
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     mut view: ResMut<ScenarioView>,
     time: Res<Time>,
 ) {
@@ -1016,7 +1016,7 @@ struct Asked {
 pub fn render_scenario_chrome(
     mut egui: EguiMut,
     mut view: ResMut<ScenarioView>,
-    mut layers: ResMut<crate::systems::data_layers::DataLayers>,
+    mut layers: ResMut<crate::systems::layer_state::DataLayers>,
     right_panel: Res<crate::resources::RightPanel>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,

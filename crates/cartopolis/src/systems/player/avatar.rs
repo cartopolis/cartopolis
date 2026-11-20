@@ -2112,7 +2112,7 @@ pub fn handle_avatar_movement(
     egui_manager: crate::systems::egui_manager::EguiRef,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     footing: crate::systems::interiors::Footing,
 ) {

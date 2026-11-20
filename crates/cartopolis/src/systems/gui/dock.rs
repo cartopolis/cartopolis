@@ -315,7 +315,7 @@ pub fn render_dock(
     avatars: Query<(), With<crate::components::Avatar>>,
     mut camera: ResMut<crate::systems::camera_screen::CameraScreen>,
     mut lens: ResMut<crate::systems::scenario::ScenarioView>,
-    data_layers: Res<crate::systems::data_layers::DataLayers>,
+    data_layers: Res<crate::systems::layer_state::DataLayers>,
     mut people: People,
     mut chrome: ResMut<MapChrome>,
 ) {

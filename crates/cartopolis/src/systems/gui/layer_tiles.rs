@@ -15,17 +15,7 @@ use egui::{
 use crate::systems::icons;
 use crate::systems::theme;
 
-/// The six places a layer can be: what the panel groups by.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LayerCategory {
-    #[default]
-    Map,
-    City,
-    Places,
-    Moving,
-    Under,
-    Orbit,
-}
+pub use crate::systems::layer_state::LayerCategory;
 
 impl LayerCategory {
     pub const ALL: [Self; 6] = [

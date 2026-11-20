@@ -59,7 +59,9 @@ use bevy::render::mesh::MeshTag;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
-use cartopolis_geo::traffic::{DriveLine, Flow, Pavements, Uses, PAVEMENT_CLEARANCE_M};
+#[cfg(test)]
+use cartopolis_geo::traffic::Pavements;
+use cartopolis_geo::traffic::{DriveLine, Flow, Uses, PAVEMENT_CLEARANCE_M};
 
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::{anchored_xz, AnchoredCamera};
@@ -430,37 +432,7 @@ impl Turn {
 
 // ─── The network ─────────────────────────────────────────────────────────────
 
-/// One drivable line placed in the anchored world-XZ frame.
-pub struct WorldDriveLine {
-    pub points: Vec<Vec2>,
-    pub flow: Flow,
-    pub speed: f32,
-    pub half_width: f32,
-    /// Who may use it — `drive` is the tile's answer ([`Self::kind_drives`]) less
-    /// the streets closed to cars ([`close_car_free_lines`]).
-    pub uses: Uses,
-    /// Whether the tile's road kind takes cars, before any closure. Kept so a
-    /// closure that streams out again reopens the line.
-    pub kind_drives: bool,
-    /// Whether the tile's road kind takes bikes, before a cycle track beside
-    /// it takes them off it ([`ride_the_tracks`]). `uses.cycle` is the answer.
-    pub kind_cycles: bool,
-    /// Cumulative length at each point, so a car can be advanced without walking
-    /// the line from the start every frame.
-    pub cumulative: Vec<f32>,
-    /// Carriageway height at each point through a structure below the ground,
-    /// `NaN` on the ground — see [`cartopolis_geo::traffic::DriveLine::deck`].
-    /// Parallel to `points`, and every operation on one must keep it so.
-    pub deck: Vec<f32>,
-    /// This way is flagged `bridge`, so its height comes from `DeckPlates` —
-    /// which is measured, and so arrives some frames after the cell does.
-    pub on_deck: bool,
-    /// Which sides have a pavement (`cartopolis_geo::traffic::keep_walkers_off`).
-    pub pavements: Pavements,
-    /// The corners of the line's bounding box, so a proximity query can skip
-    /// a line without reading its points.
-    pub bounds: (Vec2, Vec2),
-}
+pub use crate::systems::drive_network::WorldDriveLine;
 
 impl WorldDriveLine {
     fn length(&self) -> f32 {
@@ -585,16 +557,7 @@ fn corner_speed(radius: f32) -> f32 {
     (CORNER_LAT_ACCEL * radius.min(1.0e4)).sqrt()
 }
 
-/// Every drivable line in the streamed world, keyed by the cell that supplied it
-/// so a retired cell takes its roads with it — the same contract
-/// `WorldPlaces` and `StreetLabelStore` hold, and for the same reason.
-#[derive(Resource, Default)]
-pub struct DriveNetwork {
-    cells: HashMap<(i64, i64), Vec<WorldDriveLine>>,
-    /// Bumped whenever the set of lines changes, so a car holding an index into
-    /// a retired cell can notice rather than dereference it.
-    pub revision: u32,
-}
+pub use crate::systems::drive_network::DriveNetwork;
 
 impl DriveNetwork {
     /// Place a finished cell's tile-local lines at the cell's world origin.
@@ -2238,7 +2201,7 @@ pub fn drive_traffic(
     // `--video-fps` movie (`systems::anim_clock`), the virtual clock otherwise.
     time: Res<crate::systems::anim_clock::AnimClock>,
     net: Res<DriveNetwork>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
     globe: Res<crate::systems::globe::GlobeState>,

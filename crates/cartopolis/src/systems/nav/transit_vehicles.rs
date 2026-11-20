@@ -52,8 +52,8 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::{http, storage};
-use crate::systems::data_layers::DataLayers;
 use crate::systems::globe::GlobeState;
+use crate::systems::layer_state::DataLayers;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::lat_lng_to_local;
 use crate::systems::transit_live::WorldClock;

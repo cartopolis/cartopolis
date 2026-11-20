@@ -1192,7 +1192,7 @@ pub fn restore_start_location(
 pub fn restore_layer_prefs(
     mut done: Local<bool>,
     store: Res<UserStore>,
-    mut dl: ResMut<crate::systems::data_layers::DataLayers>,
+    mut dl: ResMut<crate::systems::layer_state::DataLayers>,
 ) {
     if *done {
         return;
@@ -1276,7 +1276,7 @@ pub fn autosave_user_store(
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
     cameras: AnchoredCamera,
-    dl: Res<crate::systems::data_layers::DataLayers>,
+    dl: Res<crate::systems::layer_state::DataLayers>,
     dev: Res<crate::resources::DevPanelState>,
     weather: Res<crate::systems::weather::WeatherState>,
     map_anchor: Res<MapAnchor>,

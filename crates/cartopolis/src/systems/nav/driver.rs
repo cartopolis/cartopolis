@@ -2555,7 +2555,7 @@ pub fn render_driver_hud(
     ahead: Res<RouteAhead>,
     clock: Res<crate::systems::transit_live::WorldClock>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
-    data_layers: Res<crate::systems::data_layers::DataLayers>,
+    data_layers: Res<crate::systems::layer_state::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
 ) {
     if !driver.active {

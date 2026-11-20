@@ -49,9 +49,9 @@ pub struct LayerDef {
 }
 
 /// The layers, in menu order. **Append only**: the index is the slot in
-/// [`DataLayers::underground`](crate::systems::data_layers::DataLayers) and in
+/// [`DataLayers::underground`](crate::systems::layer_state::DataLayers) and in
 /// [`COVERAGE`].
-pub const LAYERS: [LayerDef; 7] = [
+pub const LAYERS: [LayerDef; crate::systems::layer_state::UNDERGROUND_LAYERS] = [
     LayerDef {
         key: "geotop",
         label: "Soil layers",
@@ -510,7 +510,7 @@ impl Underground {
 
 /// Is any underground layer, sewers included, asking for the ground to open?
 #[must_use]
-pub fn opens_ground(layers: &crate::systems::data_layers::DataLayers) -> bool {
+pub fn opens_ground(layers: &crate::systems::layer_state::DataLayers) -> bool {
     layers.map_enabled && (layers.sewers || layers.underground.iter().any(|on| *on))
 }
 
@@ -527,7 +527,7 @@ pub fn update_underground(
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     terrain: Res<crate::systems::terrain::TerrainField>,
-    layers: Res<crate::systems::data_layers::DataLayers>,
+    layers: Res<crate::systems::layer_state::DataLayers>,
 ) {
     let now = time.elapsed_secs_f64();
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
