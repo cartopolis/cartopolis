@@ -1,7 +1,7 @@
 ---
 topic: pre-cut-ground
 triggers: [ground_sheets.rs, surveyed_ground.rs, "pipeline/ground.rs", load_ground_sheets, GROUND_REVISION, PreCut, build_sheets, "ground/coverage.json", "ground/14", fingerprint, "pre-cut", precut, "sheets(atlas)", cut_ground_under_roads_and_paving, gap_fill, map_geometry.rs]
-updated: 2026-10-21
+updated: 2026-11-21
 ---
 
 # Atlas cuts the ground, and the client keeps every way back
@@ -65,6 +65,15 @@ format-2 client refuses a format-3 file and cuts the cell itself, so **atlas's
 `ground` must run again** after the client that reads 3 is out — the same as
 any `GROUND_REVISION` move. What else was tried on this file, and why it was not
 taken, is in `cold-start-bytes.md`.
+
+**The kerb bands were a third of the triangles (2026-11-21).** The same cell
+had 476 k triangles, 103 k of them under a millimetre wide, and nearly all of
+those came out of `paving_edges::refine`: its runs carried a vertex every
+metre down a straight kerb, and the stroke made each one a vertex of the band
+and of the surface's rest. With the runs reduced to the ring's own vertices the
+cell is 340 k triangles and **1.92 MB** Brotli. The revision test's fixture now
+lays its squares side by side so the bands are in the hash — apart, no band
+formed and the revision did not move for this change while every street cell did.
 
 Still a lot for a slow mobile link: the file is fetched in the cell's IO phase,
 so a link slower than the client's own cut makes that cell *later*. Not seen on

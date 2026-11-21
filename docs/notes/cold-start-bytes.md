@@ -1,7 +1,7 @@
 ---
 topic: cold-start-bytes
-triggers: [ground_sheets.rs, "pipeline/ground.rs", "pipeline/buildings.rs", formats/osm_buildings.rs, osm_buildings.rs, terrain_tile.rs, terrain_tiles.rs, "cold start", "first visit", "bytes on the wire", "data over the line", "loads slowly", encode_bin, ".bin.gz", precompressed]
-updated: 2026-11-14
+triggers: [ground_sheets.rs, paving_edges.rs, ground_bytes, ground_stages, "pipeline/ground.rs", "pipeline/buildings.rs", formats/osm_buildings.rs, osm_buildings.rs, terrain_tile.rs, terrain_tiles.rs, "cold start", "first visit", "bytes on the wire", "data over the line", "loads slowly", encode_bin, ".bin.gz", precompressed]
+updated: 2026-11-21
 ---
 
 # What a first visit downloads, and where the bytes can still go
@@ -53,6 +53,48 @@ What was tried on the rest, re-encoding the decoded cell (Brotli q10):
   to one per vertex already — and it hands the triangulation back to the client.
   Not done.
 
+## The encoding is at its floor; the kerb bands were a third of the triangles
+
+Measured 2026-11-21 on the same cell, format 3 as served (2.43 MB Brotli), by
+decoding it and re-encoding each stream on its own
+(`cargo run -p cartopolis_atlas --example ground_bytes -- <url>`):
+
+| stream | Brotli q10 | share |
+|---|---|---|
+| positions (460 k distinct vertices) | 1.59 MB | 66 % |
+| references (1.37 M) | 0.74 MB | 30 % |
+| colours, UVs, rungs | 0.10 MB | 4 % |
+
+What was tried on the encoding, and lost:
+
+- **Brotli q11, 16 MB window**: −0.02 %.
+- **Positions at 1 mm**: −0.2 % after Brotli — the quarter-millimetre bits
+  carry no information Brotli was not already finding. **1 cm**: −15 %, but
+  61 k triangles (13 %) collapse or flip, which is the sliver geometry the
+  earlier note meant.
+- **Vertices in Morton order**: positions −30 %, but the references lose the
+  high-water trick (+95 %) and the colour runs break up: net **+15 %**.
+- **Predicting a vertex from the others of its triangle**: +2 %.
+
+So the bytes follow the vertex and triangle counts, and those were the lever.
+The cell had 476 k triangles of which 93 k were under 10 cm² and 103 k under
+**1 mm wide**; building the cell stage by stage
+(`--example ground_stages -- 8490 5319`) put 96 k of those in the paving as it
+left `paving_edges::refine`, against 574 for the same surfaces with no bands.
+The kerb and worn runs were polylines with a vertex every `PIECE_M` down a
+straight edge, and the stroke in `split` made each of them a vertex on the
+band's inner side, exactly on the line between its neighbours: 151 k of the
+397 k ring vertices after `refine` sat within 1 mm of their chord, against 704
+of the survey's 135 k. A run now keeps only the ring's own vertices and its two
+ends. The cell: 476 k → 340 k triangles, 2.43 → **1.92 MB** Brotli (−21 %);
+the paving 372 k → 235 k triangles, its hairlines 93 k → 8 k. What is left under
+a millimetre is mostly the cut under the roads (D in the stages output) and the
+landuse cut, a few thousand each.
+
+Dropping every triangle under 1 mm wide from the *old* file would have saved
+13 % — but a dropped triangle is a hole with nothing under it, so that is not a
+lever; removing the vertices that made them is.
+
 ## Terrain tiles do not compress further
 
 A 513² tile is 526 KB of `u16` and goes out gzipped by atlas at 170–205 KB.
@@ -74,8 +116,9 @@ binary first and latches to the JSON on a host without it, as for LoD2.2.
 
 ## What is left, largest first
 
-1. The ground file, still ~17 MB for nine street cells after format 3.
+1. The ground file, ~13.5 MB for nine street cells after the kerb-band fix (was
+   21.9 at format 2, ~17 at format 3).
 2. The other JSON layers — BAG places, paving, roofs, registers, ~10 MB together —
-   are full-precision decimal text like the far blocks were, and a binary of each
-   would likely halve them; not measured per layer.
+   are seven-decimal text; a binary of each would take about a third off
+   (estimated 2026-11-21, not built here).
 3. The vector tiles are VersaTiles' own encoding and not ours to change.

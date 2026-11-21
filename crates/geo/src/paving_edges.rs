@@ -191,8 +191,9 @@ fn runs(
         if ring.len() < 3 {
             continue;
         }
-        // Every piece of the ring in order, with what lies beyond it.
-        let mut pieces: Vec<([f32; 2], [f32; 2], Option<EdgeKind>)> = Vec::new();
+        // Every piece of the ring in order, with what lies beyond it and which
+        // ring edge it is a piece of.
+        let mut pieces: Vec<([f32; 2], [f32; 2], Option<EdgeKind>, usize)> = Vec::new();
         for k in 0..ring.len() {
             let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
             let len = dist(a, b);
@@ -216,7 +217,7 @@ fn runs(
                             None
                         }
                     });
-                pieces.push((p, q, class));
+                pieces.push((p, q, class, k));
             }
         }
         // Rotate so the walk starts at a change of class, so no run is split
@@ -226,19 +227,36 @@ fn runs(
         {
             pieces.rotate_left(start);
         }
-        let mut current: Option<(EdgeKind, Vec<[f32; 2]>)> = None;
-        let mut flush = |c: Option<(EdgeKind, Vec<[f32; 2]>)>| {
-            if let Some((kind, line)) = c {
+        // A run, and the ring edge its last piece lies on.
+        let mut current: Option<(EdgeKind, Vec<[f32; 2]>, usize)> = None;
+        let mut flush = |c: Option<(EdgeKind, Vec<[f32; 2]>, usize)>| {
+            if let Some((kind, line, _)) = c {
                 match kind {
                     EdgeKind::Kerb => kerbs.push(line),
                     EdgeKind::Worn => worn.push(line),
                 }
             }
         };
-        for (p, q, class) in pieces {
+        for (p, q, class, edge) in pieces {
             match (&mut current, class) {
-                (Some((k, line)), Some(c)) if *k == c => line.push(q),
-                (_, Some(c)) => flush(current.replace((c, vec![p, q]))),
+                // **A run keeps only the ring's own vertices and its two ends.**
+                // The pieces are cut every [`PIECE_M`] along one edge, and a run
+                // that took every piece's end was a polyline with a vertex per
+                // metre down a straight kerb — each of which the stroke in
+                // [`split`] turned into a vertex on the band's inner side, exactly
+                // on the line between its neighbours, and the surface's rest
+                // inherited the same seam. Over the Grote Markt cell (8490/5319,
+                // 2026-11-21) that was 151 k of the 397 k ring vertices after
+                // `refine`, three times the survey's 135 k, and 96 k paving
+                // triangles under a millimetre wide against 574 without bands.
+                (Some((k, line, last)), Some(c)) if *k == c && *last == edge => {
+                    *line.last_mut().expect("a run has an end") = q;
+                }
+                (Some((k, line, last)), Some(c)) if *k == c => {
+                    line.push(q);
+                    *last = edge;
+                }
+                (_, Some(c)) => flush(current.replace((c, vec![p, q], edge))),
                 (_, None) => flush(current.take()),
             }
         }

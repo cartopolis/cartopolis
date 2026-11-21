@@ -797,7 +797,7 @@ impl Reader<'_> {
 /// file from before the change no longer matches, and the client builds those
 /// cells itself until atlas runs again. Pinned by
 /// `the_revision_names_what_build_sheets_builds`, which prints the new value.
-pub const GROUND_REVISION: u64 = 0x399d_b50f_6836_757e;
+pub const GROUND_REVISION: u64 = 0x0aeb_43ef_3c38_ec24;
 
 /// Build the fixture's sheets and hash them — positions, indices and every
 /// attribute, through [`encode`], which writes the vertex colours in
@@ -819,15 +819,22 @@ fn measure() -> u64 {
 
 /// Paving and parcels laid over the fixture: a square of each paved form that
 /// changes how the cut runs, and two crop parcels.
+///
+/// The squares stand **side by side**, sharing their 60 m edges, so the
+/// pavement gets a kerb band along the street and the parking bay a worn edge
+/// along the verge (`paving_edges::refine`). Apart, as they stood until
+/// 2026-11-21, no band formed and [`GROUND_REVISION`] did not move when the
+/// bands' runs changed, while every street cell did.
 #[cfg(test)]
 fn fixture_inputs() -> (Vec<PavedArea>, Vec<CropParcel>) {
     let square =
         |x: f32, z: f32, w: f32| vec![vec![[x, z], [x + w, z], [x + w, z + w], [x, z + w]]];
     let paved = [
         (PavingKind::Footway, 300.0),
-        (PavingKind::Street, 520.0),
-        (PavingKind::Parking, 740.0),
-        (PavingKind::Garden, 960.0),
+        (PavingKind::Street, 360.0),
+        (PavingKind::Parking, 420.0),
+        (PavingKind::Verge, 480.0),
+        (PavingKind::Garden, 540.0),
     ]
     .into_iter()
     .map(|(kind, x)| PavedArea {
@@ -905,6 +912,17 @@ mod tests {
         let (paved, parcels) = fixture_inputs();
         let tile = crate::testdata::groningen();
         let meshes = build_sheets(&tile, 1460.0, None, &paved, &parcels, None).unwrap();
+        // The fixture exercises the bands, or the revision is blind to them.
+        let pieces = crate::paving_edges::refine(&paved);
+        for kind in [
+            crate::paving_edges::EdgeKind::Kerb,
+            crate::paving_edges::EdgeKind::Worn,
+        ] {
+            assert!(
+                pieces.iter().any(|p| p.edge == Some(kind)),
+                "the fixture lays no {kind:?} band"
+            );
+        }
         assert!(meshes.iter().any(|m| m.group == SurfaceGroup::Paving));
         assert!(meshes
             .iter()
