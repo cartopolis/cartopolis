@@ -24,7 +24,7 @@
 //! **The network** is a SegFormer-B0 fine-tuned on the CMP facade database
 //! (`Xpitfire/segformer-finetuned-segments-cmp-facade` on Hugging Face, MIT),
 //! exported to ONNX at a fixed 512² input and run by tract
-//! (`assets/models/facade_segformer_b0.onnx`). It labels every pixel of a
+//! (`crates/atlas/models/facade_segformer_b0.onnx`). It labels every pixel of a
 //! rectified facade photograph as facade, window, door, cornice, sill and so
 //! on. It was trained on street photographs, not on oblique aerials; on the
 //! city model's clean walls it finds the windows well, and on the walls that
@@ -111,7 +111,7 @@ const DARK_TRIM: f64 = 0.15;
 const BRIGHT_TRIM: f64 = 0.05;
 
 /// The network, exported once from PyTorch (the module note says which).
-const MODEL: &[u8] = include_bytes!("../../../../assets/models/facade_segformer_b0.onnx");
+const MODEL: &[u8] = include_bytes!("../../models/facade_segformer_b0.onnx");
 /// Its input edge, and the edge of the label grid it answers with.
 const NET_IN: usize = 512;
 pub(super) const NET_OUT: usize = 128;

@@ -477,7 +477,7 @@ fn seen_of(ade: usize) -> u8 {
     }
 }
 
-/// The scene network's file name, in `assets/models/` and on a host in its
+/// The scene network's file name, in `crates/atlas/models/` and on a host in its
 /// data directory's `models/`.
 pub const SCENE_MODEL: &str = "scene_upernet_convnext_tiny_fp16.onnx";
 
@@ -505,7 +505,7 @@ fn scene_net() -> Result<SceneNet, String> {
             })
             .unwrap_or_else(|| {
                 Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../assets/models")
+                    .join("models")
                     .join(SCENE_MODEL)
             });
         tract_onnx::onnx()

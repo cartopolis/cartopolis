@@ -26,7 +26,7 @@ testing.
 
 A wall is rectified from its leaf texture and judged by a facade network:
 SegFormer-B0 trained on CMP facades (Xpitfire's, MIT), exported to ONNX at
-512² in, 128² out, run with `tract-onnx` (`assets/models/facade_segformer_b0.onnx`,
+512² in, 128² out, run with `tract-onnx` (`crates/atlas/models/facade_segformer_b0.onnx`,
 LFS). On oblique aerial photos it tells only facade, window and background
 apart. Rejected first: Marco333's CMP model, which labels everything wall.
 
@@ -80,7 +80,7 @@ facade, it calls the street, trees and sky facade too, and the search then
 fills the frame with buildings (tried 2026-11-19: every pose wrong). A scene
 network does it: UperNet with ConvNeXt-T, ADE20K (`openmmlab/upernet-convnext-tiny`,
 **MIT**), exported at 576² in, 144² out, half precision, 119 MB
-(`assets/models/scene_upernet_convnext_tiny_fp16.onnx`, LFS). Too big for the
+(`crates/atlas/models/scene_upernet_convnext_tiny_fp16.onnx`, LFS). Too big for the
 binary: a deployed atlas reads it from `<data_dir>/models/`. Rejected for
 licence: NVIDIA's SegFormer ADE/Cityscapes weights and Mask2Former's
 (non-commercial / unstated).

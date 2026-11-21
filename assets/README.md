@@ -2,6 +2,12 @@
 
 `cartopolis` loads these from the **workspace root** `assets/` directory (see `AssetPlugin` in `crates/cartopolis/src/main.rs`).
 
+**The whole tree ships to every platform**: `build-apk.sh` copies it into the APK
+unread (`aapt2 -A assets`) and Trunk copies it next to the web page. Only what the
+client loads belongs here. A file a server-side pipeline needs — atlas's neural
+networks, 134 MB — goes in that crate (`crates/atlas/models/`); two of them in
+here made the APK 232 MB (2026-11-21).
+
 ## Everything binary lives in Git LFS
 
 `.gitattributes` tracks binary assets **by extension, anywhere in the repo** —
