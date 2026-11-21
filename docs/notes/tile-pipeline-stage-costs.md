@@ -1,7 +1,7 @@
 ---
 topic: performance
-triggers: [build_tunnels, unmeasured_profiles, road_levels.rs, tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
-updated: 2026-10-30
+triggers: [refine_for_terrain_sampled, nearest_tunnel_within, BesideRoads, "surface cell stages", build_tunnels, unmeasured_profiles, road_levels.rs, tessellate_roads, road_stitch, cut_under_roads, stitch_some, print_tile_pipeline_time, perf_budgets.rs, "tile is slow", "map is slow", "streaming is slow", "vector tile performance", Buckets, SPANS_PER_TRI, MIN_BUCKET_M, covered_weight, RoadMask, dilate_mask]
+updated: 2026-11-21
 ---
 
 # What one tile costs, stage by stage — and where the instrument does not reach
@@ -338,6 +338,62 @@ main-thread and show up as stutter, which no hatch here measures:
   compounded across cells (46 % of a 6.4 km box marked as road) and did six
   full 2,049² passes per cell on the main thread. Fixed by making `mark_roads`
   pure and widening once, on the worker, in `bake`.
+
+## A street-level cell is its ground lookups (2026-11-21)
+
+The tile stages above are milliseconds. A whole `map_geometry` cell at street
+level is seconds, and almost none of it is in them. Measured on `mac-2` (dev
+build, so read the shares, not the digits), Grote Markt at 40 m, warm cache,
+`RUST_LOG=cartopolis::systems::map::map_geometry=debug` for the per-cell
+`surface cell stages` line:
+
+- **`surfaces` was 60 % of all worker time** (9 jobs, 105 s busy of 169 s),
+  and a warm cache settled no sooner than a cold one (96 s against 101 s):
+  bytes were not what the street waited for.
+- Within a cell the `ground` stage (refine, drape, normals) was 3.5–28 s;
+  `furniture` ~1 s, everything else tens of milliseconds.
+- **The ground lookups were ~95 % of refine plus drape**: ~5 million
+  `GroundField::at` calls a cell for ~1 million flat vertices. A lookup there
+  is the field corrected by the streets, tunnels and deck ends beside it
+  (`BesideRoads`, `Lidded`, `Landed`), 1 µs in most cells and 3–4 µs in the
+  two southern ones.
+
+Two changes, both exact (the same vertices and triangles, the same heights to
+the bit):
+
+- **Each vertex's height is asked for once.** The crease rule sampled both
+  ends and the middle of every edge it tested, a vertex ends about six edges,
+  and the drape sampled every vertex again.
+  `terrain_refine::refine_for_terrain_sampled` keeps what it sampled and the
+  drape asks only for the rest: 5.0 → 2.9 million lookups a cell.
+- **`BesideRoads` asks for a tunnel only within the distance its fade can
+  reach** (`Tunnels::nearest_tunnel_within`, 20 m), behind per-tunnel boxes.
+  It walked every segment of every tunnel for every vertex beside a street,
+  the same shape as `covered_weight` below.
+
+| | before | after |
+|---|---|---|
+| `surfaces` busy, 9 cells | 105.4 s | 62.5 s |
+| slowest cell's `ground` | 26.0 s | 7.1 s |
+| lookups a cell | 3.2–5.5 M | 2.0–3.1 M |
+| `settled_s` | 50.3 | 43.8 |
+
+What is left is one lookup per crease-tested edge midpoint, ~2 million a cell,
+most of them on the paving's 3 m edges and most answered "flat". Making the
+long-edge rule adaptive the same way (split an edge over 12.5 m only where the
+ground bends under it) was tried and **refuted on a screen**: the surfaces
+stacked in the ground ladder's 10 mm window follow the ground on their own
+triangles, so a 15 cm tolerance put the verge through the Oude Ebbingestraat's
+paving. It took `surfaces` 105 → 70 s and only 15 % of the vertices; it
+would need a tolerance under the ladder's window to be safe, and at that the
+AHN noise splits nearly everything.
+
+**The vertices are not the refinement's.** Of ~1.9 million vertices a cell,
+the refinement adds ~0.35 million; the rest arrive built. By group over the
+nine cells: furniture 6.0 M (mostly the parked cars, one per registered bay,
+up to 400 vertices each), paving 3.3 M, canopies and trunks 3.3 M, built
+ground 1.5 M, kerbs 1.3 M. That is the lever for the cells' ~90 MB of GPU
+memory each, not the terrain.
 
 ## Running any of it
 

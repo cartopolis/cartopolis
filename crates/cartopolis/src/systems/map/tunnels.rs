@@ -155,12 +155,36 @@ struct Cell {
     /// makes a cell with no such stretch one comparison.
     filled: Vec<Option<[f32; 4]>>,
     filled_bbox: Option<[f32; 4]>,
+    /// Each tunnel's carriageway in plan as a box (its centre line grown by its
+    /// half-width), by the same index, for [`Tunnels::nearest_tunnel_within`].
+    carriageway: Vec<[f32; 4]>,
+    /// Their union, so a cell with no tunnel near a point is one comparison.
+    carriageway_bbox: Option<[f32; 4]>,
     openings: Vec<Mouth>,
 }
 
 /// Is `p` inside `b` grown by `pad`?
 fn within(p: [f32; 2], b: [f32; 4], pad: f32) -> bool {
     p[0] >= b[0] - pad && p[0] <= b[2] + pad && p[1] >= b[1] - pad && p[1] <= b[3] + pad
+}
+
+/// A tunnel's carriageway in plan: its centre line's box grown by its half-width.
+fn carriageway_bounds(t: &Tunnel) -> [f32; 4] {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in &t.centre {
+        b = [
+            b[0].min(p[0]),
+            b[1].min(p[1]),
+            b[2].max(p[0]),
+            b[3].max(p[1]),
+        ];
+    }
+    [
+        b[0] - t.half_w,
+        b[1] - t.half_w,
+        b[2] + t.half_w,
+        b[3] + t.half_w,
+    ]
 }
 
 /// The smallest box containing both.
@@ -245,12 +269,16 @@ impl Tunnels {
         // Once, here, while the cell is being installed — see `Cell::filled`.
         let filled: Vec<Option<[f32; 4]>> = moved.iter().map(Tunnel::fill_bounds).collect();
         let filled_bbox = filled.iter().flatten().fold(None, |a, b| union(a, *b));
+        let carriageway: Vec<[f32; 4]> = moved.iter().map(carriageway_bounds).collect();
+        let carriageway_bbox = carriageway.iter().fold(None, |a, b| union(a, *b));
         self.cells.insert(
             cell,
             Cell {
                 tunnels: moved,
                 filled,
                 filled_bbox,
+                carriageway,
+                carriageway_bbox,
                 openings: tunnels
                     .openings
                     .into_iter()
@@ -482,6 +510,29 @@ impl Tunnels {
             .values()
             .flat_map(|c| c.tunnels.iter())
             .map(|b| b.distance_to(at))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    /// [`Self::nearest_tunnel`], for a caller that only cares within `reach`
+    /// metres: the same answer where the nearest is that close, `None` where it
+    /// is not. A tunnel whose carriageway box is further than `reach` from `p`
+    /// cannot be within it, so it is never walked.
+    ///
+    /// **The unbounded walk was most of a street-level ground cell.** The ground
+    /// beside every street asks it per vertex (`map_geometry::BesideRoads`), and
+    /// it measured every segment of every tunnel streamed: in Groningen's two
+    /// southern cells a ground lookup cost 3–4 µs against ~1 µs elsewhere
+    /// (`mac-2`, dev build, 2026-11-21).
+    #[must_use]
+    pub fn nearest_tunnel_within(&self, p: Vec2, reach: f32) -> Option<(f32, f32)> {
+        let at = [p.x, p.y];
+        self.cells
+            .values()
+            .filter(|c| c.carriageway_bbox.is_some_and(|b| within(at, b, reach)))
+            .flat_map(|c| c.tunnels.iter().zip(&c.carriageway))
+            .filter(|(_, b)| within(at, **b, reach))
+            .map(|(t, _)| t.distance_to(at))
+            .filter(|(d, _)| *d <= reach)
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 

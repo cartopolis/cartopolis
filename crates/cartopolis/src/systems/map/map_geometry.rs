@@ -2805,7 +2805,7 @@ fn spawn_geometry_task(
                     crate::systems::drawn_ground::set_cell(cell, Some((*origin, raster)));
                     lap.mark("walk raster");
                 }
-                let split = GROUND_SPLIT.with(|g| g.replace([0; 4]));
+                let split = GROUND_SPLIT.with(|g| g.replace([0; 5]));
                 tracing::debug!(
                     cell = ?cell,
                     placed,
@@ -2814,6 +2814,7 @@ fn spawn_geometry_task(
                     refine_ms = split[0] / 1000,
                     displace_ms = split[1] / 1000,
                     normals_ms = split[2] / 1000,
+                    verts_in = split[4],
                     verts = split[3],
                     "surface cell stages"
                 );
@@ -6632,11 +6633,19 @@ fn stand_on_terrain<G: MeasuredGround>(
     let field: &dyn cartopolis_geo::terrain_refine::GroundField =
         if landings.is_empty() { field } else { &landed };
     let t0 = bevy::platform::time::Instant::now();
+    // The ground under each vertex as the refinement sampled it, NaN where it
+    // did not (`refine_for_terrain_sampled`): the drape below asks only for those.
+    let mut sampled: Vec<f32> = Vec::new();
     if !volumetric {
         // Before the refinement, which mints a midpoint per index pair: the flat
         // fills arrive with every triangle owning its corners (`weld`).
         cartopolis_geo::terrain_refine::weld(positions, indices, uvs, normals, colors, rungs);
-        crate::systems::terrain::refine_for_terrain(
+        GROUND_SPLIT.with(|g| {
+            let mut v = g.get();
+            v[4] += positions.len() as u64;
+            g.set(v);
+        });
+        cartopolis_geo::terrain_refine::refine_for_terrain_sampled(
             positions,
             indices,
             uvs,
@@ -6648,6 +6657,7 @@ fn stand_on_terrain<G: MeasuredGround>(
                 field,
                 origin: origin.to_array(),
             }),
+            &mut sampled,
         );
     }
     let t1 = bevy::platform::time::Instant::now();
@@ -6665,7 +6675,10 @@ fn stand_on_terrain<G: MeasuredGround>(
         for (k, p) in positions.iter_mut().enumerate() {
             p[1] += match laid.get(k).copied().flatten() {
                 Some(level) => level,
-                None => field.at(origin.x + p[0], origin.y + p[2]),
+                None => match sampled.get(k) {
+                    Some(h) if !h.is_nan() => *h,
+                    _ => field.at(origin.x + p[0], origin.y + p[2]),
+                },
             };
         }
     }
@@ -6805,7 +6818,12 @@ impl BesideRoads<'_> {
         }
         let tunnel = self
             .tunnels
-            .nearest_tunnel(Vec2::new(x, z))
+            // Past the fade the answer is 1 whatever the distance, so only a
+            // tunnel nearer than that needs finding.
+            .nearest_tunnel_within(
+                Vec2::new(x, z),
+                STREET_TUNNEL_CLEAR_M + STREET_TUNNEL_FADE_M,
+            )
             .map_or(1.0, |(d, _)| {
                 smoothstep(0.0, 1.0, (d - STREET_TUNNEL_CLEAR_M) / STREET_TUNNEL_FADE_M)
             });
@@ -6836,8 +6854,9 @@ impl cartopolis_geo::terrain_refine::GroundField for BesideRoads<'_> {
 
 thread_local! {
     /// Where `stand_on_terrain`'s time goes on this worker, µs: refine, displace,
-    /// normals, and the vertex count out. Read and reset per cell job.
-    static GROUND_SPLIT: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+    /// normals, the vertex count out, and the flat vertices into the refinement.
+    /// Read and reset per cell job.
+    static GROUND_SPLIT: std::cell::Cell<[u64; 5]> = const { std::cell::Cell::new([0; 5]) };
 }
 
 /// How far below a registered water surface a tunnel's roof and walls are held.

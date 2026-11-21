@@ -255,7 +255,47 @@ pub fn refine_for_terrain(
     crease: Option<Crease<'_>>,
 ) {
     refine_mesh(
-        positions, indices, uvs, normals, colors, rungs, max_edge, crease, true,
+        positions,
+        indices,
+        uvs,
+        normals,
+        colors,
+        rungs,
+        max_edge,
+        crease,
+        true,
+        &mut Vec::new(),
+    );
+}
+
+/// [`refine_for_terrain`], handing back the ground height it sampled under each
+/// vertex: `heights[i]` is `crease.field.at` at vertex `i`, or NaN where the
+/// refinement never had to ask. Empty with no `crease`.
+///
+/// **The refinement already asks for most of them, and the caller asks again.**
+/// The crease rule samples both ends and the middle of every edge it tests, a
+/// vertex is the end of about six edges, and the drape afterwards samples every
+/// vertex once more. Over Groningen at street level (`mac-2`, 2026-11-21) that
+/// was ~5 million lookups for ~1 million ground vertices a cell, and a lookup
+/// there is the field corrected by the streets, tunnels and deck ends beside it,
+/// 1–5 µs in a dev build: ~95 % of the refinement and drape together. Each
+/// height is now asked for once, and a split edge's middle is the new vertex, so
+/// its sample is that vertex's height. The same arithmetic on the same floats as
+/// the caller's own `field.at(origin + p)`, so the drape comes out bit-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_for_terrain_sampled(
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
+    max_edge: f32,
+    crease: Option<Crease<'_>>,
+    heights: &mut Vec<f32>,
+) {
+    refine_mesh(
+        positions, indices, uvs, normals, colors, rungs, max_edge, crease, true, heights,
     );
 }
 
@@ -272,6 +312,7 @@ fn refine_mesh(
     max_edge: f32,
     crease: Option<Crease<'_>>,
     skip_settled: bool,
+    heights: &mut Vec<f32>,
 ) {
     type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<EdgeHasher>>;
 
@@ -283,6 +324,13 @@ fn refine_mesh(
     // the driver, and three passes each spending it in full is the burst it exists
     // to stop.
     let mut spent = 0usize;
+    // The ground under each vertex, asked for at most once (see
+    // `refine_for_terrain_sampled`); one entry per vertex while there is a field
+    // to ask, none without.
+    heights.clear();
+    if crease.is_some() {
+        heights.resize(positions.len(), f32::NAN);
+    }
     // **Across every pass, for the same reason it is keyed on positions.** The
     // answer is a pure function of the two quantised endpoints and the field, and
     // neither moves between passes — so an edge the crease rule refused in pass 1
@@ -344,7 +392,8 @@ fn refine_mesh(
                      rungs: &mut Vec<f32>,
                      midpoints: &mut HashMap<(u32, u32), u32>,
                      decided: &mut HashMap<Words<6>, bool>,
-                     spent: &mut usize|
+                     spent: &mut usize,
+                     heights: &mut Vec<f32>|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
             if let Some(m) = midpoints.get(&key) {
@@ -360,6 +409,8 @@ fn refine_mesh(
             let edge = Words([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]].map(|v| v as u32));
             let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
             let len_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            // The new vertex's ground, when the crease test below sampled it.
+            let mut mid_height = f32::NAN;
             if len_sq <= limit_sq {
                 // Short enough for the long-edge rule. The crease rule gets its say,
                 // and it is the only one that can ask for a vertex down here.
@@ -383,8 +434,18 @@ fn refine_mesh(
                         // the mesh — the displacement has not happened yet, and on a
                         // road the mesh's own y is a depth rung rather than a height.
                         let (ox, oz) = (c.origin[0], c.origin[1]);
-                        let ha = c.field.at(ox + pa[0], oz + pa[2]);
-                        let hb = c.field.at(ox + pb[0], oz + pb[2]);
+                        let mut ground = |i: u32, p: [f32; 3]| {
+                            let have = heights[i as usize];
+                            if have.is_nan() {
+                                let h = c.field.at(ox + p[0], oz + p[2]);
+                                heights[i as usize] = h;
+                                h
+                            } else {
+                                have
+                            }
+                        };
+                        let ha = ground(a, pa);
+                        let hb = ground(b, pb);
                         let hm = c
                             .field
                             .at(ox + (pa[0] + pb[0]) * 0.5, oz + (pa[2] + pb[2]) * 0.5);
@@ -392,6 +453,7 @@ fn refine_mesh(
                             decided.insert(edge, false);
                             return None;
                         }
+                        mid_height = hm;
                         decided.insert(edge, true);
                         *spent += 1;
                     }
@@ -403,6 +465,9 @@ fn refine_mesh(
                 (pa[1] + pb[1]) * 0.5,
                 (pa[2] + pb[2]) * 0.5,
             ]);
+            if crease.is_some() {
+                heights.push(mid_height);
+            }
             if !uvs.is_empty() {
                 let (ua, ub) = (uvs[a as usize], uvs[b as usize]);
                 uvs.push([(ua[0] + ub[0]) * 0.5, (ua[1] + ub[1]) * 0.5]);
@@ -446,11 +511,11 @@ fn refine_mesh(
                 continue;
             }
             #[rustfmt::skip]
-            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
+            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent, heights);
             #[rustfmt::skip]
-            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
+            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent, heights);
             #[rustfmt::skip]
-            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent);
+            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints, &mut decided, &mut spent, heights);
             let cut = ab.is_some() || bc.is_some() || ca.is_some();
             any |= cut;
             let before = out.len();
@@ -663,6 +728,7 @@ mod tests {
                     origin: [0.0, 0.0],
                 }),
                 skip,
+                &mut Vec::new(),
             );
             let bits = |v: &[[f32; 3]]| v.iter().flatten().map(|f| f.to_bits()).collect::<Vec<_>>();
             let cbits =
@@ -803,6 +869,55 @@ mod tests {
         );
     }
 
+    /// The heights handed back are the field's own answers, to the bit, and asking
+    /// for them changes nothing about the mesh — which is what lets the drape use
+    /// them in place of its own lookup.
+    #[test]
+    fn a_sampled_height_is_the_fields_answer() {
+        let origin = [37.0, -12.0];
+        let crease = Crease {
+            field: &Bumpy,
+            origin,
+        };
+        let (mut p0, mut i0) = square(120.0);
+        let (mut p1, mut i1) = (p0.clone(), i0.clone());
+        refine_for_terrain(
+            &mut p0,
+            &mut i0,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            12.5,
+            Some(crease),
+        );
+        let mut heights = Vec::new();
+        refine_for_terrain_sampled(
+            &mut p1,
+            &mut i1,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            12.5,
+            Some(crease),
+            &mut heights,
+        );
+        assert_eq!(i0, i1);
+        assert_eq!(p0, p1);
+        assert_eq!(heights.len(), p1.len());
+        let sampled = heights.iter().filter(|h| !h.is_nan()).count();
+        assert!(
+            sampled > p1.len() / 2,
+            "only {sampled} of {} sampled",
+            p1.len()
+        );
+        for (p, h) in p1.iter().zip(&heights).filter(|(_, h)| !h.is_nan()) {
+            let fresh = Bumpy.at(origin[0] + p[0], origin[1] + p[2]);
+            assert_eq!(h.to_bits(), fresh.to_bits(), "at {p:?}");
+        }
+    }
+
     /// Wall-clock for a cell-sized mesh, printed rather than asserted (see
     /// `perf`'s module note on timers). Sized to what a city cell's refinement
     /// adds, ~500k vertices: 24.5 m quads, so the long-edge rule splits every one,
@@ -846,6 +961,7 @@ mod tests {
                         origin: [0.0, 0.0],
                     }),
                     skip,
+                    &mut Vec::new(),
                 );
                 println!(
                     "{name}, skip {skip}: refined to {} vertices, {} triangles in {:?}",
