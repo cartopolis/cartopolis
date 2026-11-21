@@ -461,11 +461,17 @@ fn main() -> anyhow::Result<()> {
     if let Some(Command::PackJson { out }) = &cli.command {
         let done = cartopolis_atlas::packed_tree::pack_tree(out)?;
         eprintln!(
-            "{} cells, {} packed: {:.1} MB of JSON, {:.1} MB packed",
+            "{} cells, {} packed, {} already up to date: {:.1} MB of JSON, {:.1} MB packed; {} failed{}",
             done.cells,
             done.packed,
+            done.kept,
             done.json_bytes as f64 / 1e6,
-            done.packed_bytes as f64 / 1e6
+            done.packed_bytes as f64 / 1e6,
+            done.failed,
+            done.first_failure
+                .as_deref()
+                .map(|f| format!(" (first: {f})"))
+                .unwrap_or_default()
         );
         return Ok(());
     }
