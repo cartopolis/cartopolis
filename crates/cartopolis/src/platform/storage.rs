@@ -282,7 +282,66 @@ mod imp {
     }
 
     pub async fn get(ns: Namespace, key: &str) -> Option<Vec<u8>> {
-        std::fs::read(path(ns, key)).ok()
+        read(ns, key)
+    }
+
+    /// One stored entry, as it was put: a cache entry is marked read
+    /// (`utils::cache::touch`, which the sweep orders by) and a packed one
+    /// unpacked ([`pack`]).
+    fn read(ns: Namespace, key: &str) -> Option<Vec<u8>> {
+        use std::io::Read as _;
+        let mut file = std::fs::File::open(path(ns, key)).ok()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        if ns == Namespace::Cache {
+            crate::utils::cache::touch(&file);
+            return unpack(key, bytes);
+        }
+        Some(bytes)
+    }
+
+    /// Whether a cache entry is kept deflated on disk: the per-cell JSON layers
+    /// (BAG, BGT, roofs, registers), which were ~110 MB of a ~300 MB street-level
+    /// visit (Grote Markt, 2026-11-21) in a tree the sweep caps at 512 MiB. The
+    /// rest is PNG, vector tiles and binary cells that are compressed already.
+    fn packs(key: &str) -> bool {
+        key.ends_with(".json")
+    }
+
+    /// Smaller than this is stored as it is: not worth a deflate stream.
+    const PACK_MIN_BYTES: usize = 8 * 1024;
+
+    /// A cache entry as it goes to disk. Deflated at the fastest level: this runs
+    /// once per file, on the thread that fetched it, and JSON of numbers and
+    /// repeated keys gives most of its ratio away at level 1 already.
+    pub(super) fn pack<'a>(key: &str, bytes: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        use std::io::Write as _;
+        if !packs(key) || bytes.len() < PACK_MIN_BYTES {
+            return std::borrow::Cow::Borrowed(bytes);
+        }
+        let mut z = flate2::write::GzEncoder::new(
+            Vec::with_capacity(bytes.len() / 4),
+            flate2::Compression::fast(),
+        );
+        match z.write_all(bytes).and_then(|()| z.finish()) {
+            Ok(packed) => std::borrow::Cow::Owned(packed),
+            Err(_) => std::borrow::Cow::Borrowed(bytes),
+        }
+    }
+
+    /// The inverse of [`pack`], told apart by the gzip magic: JSON text never
+    /// starts with `0x1f`, so an entry stored before packing existed reads as it
+    /// is. A packed entry that will not inflate is a miss, as a torn file is.
+    pub(super) fn unpack(key: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        use std::io::Read as _;
+        if !packs(key) || !bytes.starts_with(&[0x1f, 0x8b]) {
+            return Some(bytes);
+        }
+        let mut out = Vec::with_capacity(bytes.len() * 4);
+        flate2::read::GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut out)
+            .ok()?;
+        Some(out)
     }
 
     pub async fn put(ns: Namespace, key: &str, bytes: &[u8]) {
@@ -299,9 +358,9 @@ mod imp {
     }
 
     pub fn read_now(ns: Namespace, key: &str) -> Cached {
-        match std::fs::read(path(ns, key)) {
-            Ok(bytes) => Cached::Ready(bytes),
-            Err(_) => Cached::Missing,
+        match read(ns, key) {
+            Some(bytes) => Cached::Ready(bytes),
+            None => Cached::Missing,
         }
     }
 
@@ -319,7 +378,12 @@ mod imp {
         // `.mvt` is a tile that fails to decode on every launch until something
         // happens to call `remove` on it, and a torn `.png` is a texture that never
         // appears. See `utils::cache::write_atomic` for why the flush matters too.
-        crate::utils::cache::write_atomic(&p, bytes).map_err(|e| e.to_string())
+        let bytes = if ns == Namespace::Cache {
+            pack(key, bytes)
+        } else {
+            std::borrow::Cow::Borrowed(bytes)
+        };
+        crate::utils::cache::write_atomic(&p, &bytes).map_err(|e| e.to_string())
     }
 
     pub fn remove_now(ns: Namespace, key: &str) {
@@ -852,6 +916,44 @@ mod tests {
     /// A key nothing else uses, removed by the test that made it.
     fn scratch(name: &str) -> String {
         format!("storage-selftest/{name}")
+    }
+
+    /// A cell's JSON goes to disk deflated and comes back as it went in; an entry
+    /// written before packing existed, and anything that is not JSON, are read
+    /// as they are.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_packed_cell_reads_back_as_it_was_written() {
+        let json: Vec<u8> = (0..4000)
+            .flat_map(|i| {
+                format!(r#"{{"lat":53.{i:07},"lon":6.5{i:06},"id":"0014100000{i}"}},"#).into_bytes()
+            })
+            .collect();
+        let key = "bgt/v3/14/8490/5319.surfaces.json";
+        let packed = imp::pack(key, &json);
+        assert!(
+            packed.len() * 3 < json.len(),
+            "{} of {}",
+            packed.len(),
+            json.len()
+        );
+        assert_eq!(
+            imp::unpack(key, packed.into_owned()).as_deref(),
+            Some(json.as_slice())
+        );
+        assert_eq!(
+            imp::unpack(key, json.clone()).as_deref(),
+            Some(json.as_slice())
+        );
+        let tile = "tiles/osm/14/8490/5319.mvt";
+        assert!(matches!(
+            imp::pack(tile, &json),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            imp::pack(key, b"{}"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     /// The round trip every caller depends on, through the real roots.

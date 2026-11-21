@@ -319,11 +319,8 @@ fn sweep(root: &Path, cap: u64) -> u64 {
     if total <= cap {
         return 0;
     }
-    // Oldest first — a least-recently-*written* approximation of LRU. Reads do not
-    // touch mtime and asking for atime is a mount option we do not control, so this
-    // is the only ordering the filesystem offers for free. It is the right one
-    // anyway: a tile that has not been re-fetched in weeks is one nobody is flying
-    // over. Files whose mtime is unreadable sort as ancient and go first.
+    // Least recently used first ([`last_used`]). Files whose times are unreadable
+    // sort as ancient and go first.
     files.sort_by_key(|(_, modified, _)| *modified);
 
     let mut freed = 0;
@@ -338,9 +335,30 @@ fn sweep(root: &Path, cap: u64) -> u64 {
     freed
 }
 
-/// Every file under `root`, with its mtime and size. Iterative rather than
+/// Every file under `root`, with when it was last used ([`last_used`]) and its
+/// size. Iterative rather than
 /// recursive: the tree is `tiles/<z>/<x>/<y>` deep today, but a cache root that
 /// someone points at the wrong directory should cost a big `Vec`, not a blown stack.
+/// When a cache file was last written or read: the later of its mtime and its
+/// atime, which `platform::storage` sets on every read ([`touch`]).
+///
+/// **The mtime alone evicted the wrong place.** It is when the file was
+/// fetched, so a city opened every day for a month sorted as a month old, and
+/// a street-level visit is ~300 MB of this tree (Grote Markt, 2026-11-21): two
+/// other places and the sweep took the one the person lives in. The mtime is
+/// also what `storage::age_secs` reads for "is this feed stale", which is why
+/// a read moves the atime and leaves the mtime alone.
+fn last_used(meta: &std::fs::Metadata) -> std::time::SystemTime {
+    let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+    meta.accessed().map_or(modified, |read| read.max(modified))
+}
+
+/// Mark a cache file as read now, for [`last_used`]. Best-effort: a file system
+/// that keeps no access time leaves the order as it was.
+pub fn touch(file: &std::fs::File) {
+    let _ = file.set_times(std::fs::FileTimes::new().set_accessed(std::time::SystemTime::now()));
+}
+
 fn cache_files(root: &Path) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -355,8 +373,7 @@ fn cache_files(root: &Path) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
             if meta.is_dir() {
                 stack.push(entry.path());
             } else if meta.is_file() {
-                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                out.push((entry.path(), modified, meta.len()));
+                out.push((entry.path(), last_used(&meta), meta.len()));
             }
         }
     }
@@ -411,6 +428,35 @@ mod tests {
         assert!(freed >= 550, "freed {freed} bytes");
         assert!(total_bytes(&root) <= 450, "still over the cap");
         assert!(!cache_files(&root).is_empty(), "the whole cache was wiped");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What goes first is what was least recently *used*: a file fetched long ago
+    /// and read since outlives one fetched later and never read again.
+    #[test]
+    fn a_file_read_since_outlives_one_fetched_later() {
+        let root = scratch("sweep-used");
+        let dir = root.join("tiles").join("14");
+        let day = std::time::Duration::from_secs(86_400);
+        let now = std::time::SystemTime::now();
+        let put = |name: &str, written: std::time::SystemTime, read: std::time::SystemTime| {
+            let p = dir.join(name);
+            std::fs::write(&p, [1u8; 100]).unwrap();
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(written)
+                    .set_accessed(read),
+            )
+            .unwrap();
+        };
+        put("home.mvt", now - day * 30, now - day * 30);
+        put("elsewhere.mvt", now - day * 2, now - day * 2);
+        // Opened again today, as a launch over home does.
+        touch(&std::fs::File::open(dir.join("home.mvt")).unwrap());
+        sweep(&root, 150);
+        assert!(dir.join("home.mvt").exists(), "the place in use was swept");
+        assert!(!dir.join("elsewhere.mvt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

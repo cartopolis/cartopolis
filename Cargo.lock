@@ -2594,6 +2594,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "ehttp",
+ "flate2",
  "fontdue",
  "futures-channel",
  "futures-lite",

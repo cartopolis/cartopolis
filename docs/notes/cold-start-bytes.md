@@ -1,6 +1,6 @@
 ---
 topic: cold-start-bytes
-triggers: [ground_sheets.rs, paving_edges.rs, ground_bytes, ground_stages, "pipeline/ground.rs", "pipeline/buildings.rs", formats/osm_buildings.rs, osm_buildings.rs, terrain_tile.rs, terrain_tiles.rs, "cold start", "first visit", "bytes on the wire", "data over the line", "loads slowly", encode_bin, ".bin.gz", precompressed]
+triggers: ["utils/cache.rs", MAX_CACHE_BYTES, sweep_cache_root, "disk cache", ground_sheets.rs, paving_edges.rs, ground_bytes, ground_stages, "pipeline/ground.rs", "pipeline/buildings.rs", formats/osm_buildings.rs, osm_buildings.rs, terrain_tile.rs, terrain_tiles.rs, "cold start", "first visit", "bytes on the wire", "data over the line", "loads slowly", encode_bin, ".bin.gz", precompressed]
 updated: 2026-11-21
 ---
 
@@ -145,6 +145,29 @@ rings. Packing a cell takes 160–220 ms in atlas, unpacking 6–17 ms in the
 client. A document that already holds the token, or that would not come back
 as the same values, is served as JSON only; a string's bytes are copied as
 bytes, which is what keeps `Curaçaostraat` whole.
+
+## What a visit keeps on disk (2026-11-21)
+
+The same street-level visit leaves **~300 MB** in the disk cache, against the
+55 MB it fetched compressed: what is stored is the decoded body. One visit to
+the Grote Markt at 40 m (`mac-2`, a fresh `CARTO_CACHE_DIR`): finished basemap
+tiles 79 MB (`rendered*`, PNG already), the JSON layers 111 MB (roofs 38, BGT
+34, BAG 32, registers 6), vector tiles 30, ground 22, terrain 15. The sweep
+caps the tree at 512 MiB (`utils::cache::MAX_CACHE_BYTES`), so that was under
+two places.
+
+Two changes, native only (the web build's store is IndexedDB, bounded by the
+browser, and inflating there would be on the frame's thread):
+
+- **Cache entries ending `.json` are deflated on disk** (`platform::storage`,
+  level 1, over 8 KiB), told apart from older plain entries by the gzip
+  magic. The visit: 293 → **200 MB**, the JSON layers 111 → ~40 MB. A warm
+  start was no slower (39.4 s).
+- **The sweep evicts the least recently *used*, not the least recently
+  fetched.** A cache read sets the file's atime (`utils::cache::touch`) and the
+  sweep orders by the later of atime and mtime. The mtime is left alone: it is
+  what `storage::age_secs` reads for a feed's staleness. Before, the city a
+  person opened every day sorted as old as the day it was first fetched.
 
 ## What is left, largest first
 

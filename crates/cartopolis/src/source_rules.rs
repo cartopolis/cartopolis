@@ -248,6 +248,7 @@ fn the_clock_is_web_time_where_the_web_runs() {
         "systems/gui/camera_screen.rs", // its `mod native`
         "systems/gui/camera_screen/recorder.rs", // `cfg(not(wasm32))`
         "systems/player/face_tracking.rs", // `cfg(not(wasm32))`
+        "utils/cache.rs",          // `cfg(not(wasm32))` in utils/mod.rs
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut bad = Vec::new();
