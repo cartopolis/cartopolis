@@ -101,6 +101,14 @@ enum Command {
         /// The BAG identificatie.
         pand: String,
     },
+    /// Write the packed sibling (`x.pj`, `cartopolis_geo::formats::packed`) of
+    /// every JSON cell already in a served tree, as a pipeline run does for the
+    /// cells it writes — for a tree extracted before the siblings existed.
+    PackJson {
+        /// The served site tree.
+        #[arg(long, default_value = "site")]
+        out: PathBuf,
+    },
     /// Rebuild a landmark from measurements and photographs
     /// (`landmark`, `docs/notes/landmark-kit.md`).
     Landmark {
@@ -447,6 +455,17 @@ fn main() -> anyhow::Result<()> {
         eprintln!(
             "{}",
             cartopolis_atlas::countries::write(from.as_deref(), out)?
+        );
+        return Ok(());
+    }
+    if let Some(Command::PackJson { out }) = &cli.command {
+        let done = cartopolis_atlas::packed_tree::pack_tree(out)?;
+        eprintln!(
+            "{} cells, {} packed: {:.1} MB of JSON, {:.1} MB packed",
+            done.cells,
+            done.packed,
+            done.json_bytes as f64 / 1e6,
+            done.packed_bytes as f64 / 1e6
         );
         return Ok(());
     }

@@ -42,6 +42,7 @@ pub mod gnss_raw;
 pub mod gnss_receiver;
 pub mod heap;
 pub mod http;
+pub mod packed_json;
 // The display held awake while the app is in front.
 pub mod keep_awake;
 // A call's video encoded by the phone's own codecs (`MediaCodec`).

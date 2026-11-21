@@ -39,6 +39,7 @@ pub mod facades;
 pub mod galaxies;
 pub mod lod22;
 pub mod osm_buildings;
+pub mod packed;
 pub mod registers;
 pub mod roofs;
 pub mod sewers;

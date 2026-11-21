@@ -22,6 +22,7 @@ pub mod ocean_depth;
 pub mod official_areas;
 pub mod osm;
 pub mod overrides;
+pub mod packed_tree;
 pub mod pipeline;
 pub mod plans;
 pub mod satellites;

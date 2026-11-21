@@ -148,6 +148,11 @@ it silently (reported by the tunnel/bridge work, 2026-09-23):
   (`formats::osm_buildings::encode_bin`) beside the JSON, asked for first by a
   client from then on, latched off on a host that has not re-run `buildings`
   (`cold-start-bytes.md`).
+- **Every JSON cell gets a packed sibling since 2026-11-21**: `x.pj` beside
+  `x.json` (`formats::packed`, written by `Ctx::write_json` and `write_doc`),
+  asked for first by a client from then on and unpacked to the same text;
+  `atlas pack-json --out site` writes them for a tree extracted before
+  (`cold-start-bytes.md`).
 
 ## The LoD2.2 cells are binary as well as JSON
 

@@ -272,7 +272,36 @@ impl Ctx {
     /// writer of these files used — this is megabytes per cell.
     pub fn write_json(&self, relative: &str, value: &serde_json::Value) -> Outcome<()> {
         let body = serde_json::to_vec(value).map_err(|e| PipelineError::Failed(e.to_string()))?;
-        self.write_bytes(relative, &body)
+        self.write_json_bytes(relative, &body)
+    }
+
+    /// A JSON cell file and, where it is worth it, its packed form beside it
+    /// (`cartopolis_geo::formats::packed`): `x.json` and `x.pj`, each with its
+    /// Brotli copy. The client asks for the `.pj` first and falls back to the
+    /// JSON, so the JSON is still written for every installed client, and last,
+    /// so a reader who finds it also finds the sibling. A document that does
+    /// not pack smaller — one without coordinates — removes any old sibling,
+    /// which would otherwise be served for ever beside a newer JSON.
+    fn write_json_bytes(&self, relative: &str, body: &[u8]) -> Outcome<()> {
+        if let Some(sibling) = cartopolis_geo::formats::packed::packed_path(relative) {
+            let packed = std::str::from_utf8(body)
+                .ok()
+                .and_then(cartopolis_geo::formats::packed::pack)
+                .filter(|p| p.len() < body.len());
+            match packed {
+                Some(packed) => self.write_bytes(&sibling, &packed)?,
+                None => {
+                    for path in [format!("{sibling}.br"), sibling] {
+                        match std::fs::remove_file(self.out_root.join(&path)) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => return Err(PipelineError::Failed(format!("{path}: {e}"))),
+                        }
+                    }
+                }
+            }
+        }
+        self.write_bytes(relative, body)
     }
 
     /// Write one of the per-cell documents in `cartopolis_geo::formats`, the same
@@ -285,7 +314,7 @@ impl Ctx {
     pub fn write_doc<T: serde::Serialize>(&self, relative: &str, doc: &T) -> Outcome<()> {
         let body = cartopolis_geo::formats::to_vec(doc)
             .map_err(|e| PipelineError::Failed(format!("{relative}: {e}")))?;
-        self.write_bytes(relative, &body)
+        self.write_json_bytes(relative, &body)
     }
 
     /// Write a dataset's `coverage.json` (`cartopolis_geo::formats::coverage`),

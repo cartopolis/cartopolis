@@ -35,8 +35,8 @@ use bevy::tasks::IoTaskPool;
 use cartopolis_core::ring::point_in_ring_f64;
 
 use crate::grid::AnchoredCamera;
+use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
-use crate::platform::{http, storage};
 use crate::services::tdbag_url;
 use crate::systems::cell_ring;
 use crate::systems::coverage::CoverageSlot;
@@ -755,8 +755,9 @@ async fn download_bag_text(cx: i64, cy: i64, part: BagPart, key: &str) -> Result
         cy,
         part.suffix()
     );
-    let bytes = http::fetch(http::Request::get(url)).await?;
-    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    // Packed where the host has it (`platform::packed_json`), the JSON otherwise;
+    // what is stored is the text either way.
+    let text = crate::platform::packed_json::fetch_text(url, None).await?;
     storage::put(storage::Namespace::Cache, key, text.as_bytes()).await;
     Ok(text)
 }

@@ -114,11 +114,43 @@ JSON, 10⁻⁷° grid, tags as an interned string table) is 537 KB raw and
 itself from the live JSON, 2026-11-14). The client asks for the
 binary first and latches to the JSON on a host without it, as for LoD2.2.
 
+## The other JSON layers travel packed (2026-11-21)
+
+The BAG facts and places, the BGT paving and objects, the roof colours and the
+registers were seven-decimal JSON — already short, unlike the far blocks — and
+what Brotli left on the table was the numbers. Estimated first by splitting the
+decoded documents into a coordinate-delta stream, an id stream and the text
+skeleton (64–85 % of the JSON's Brotli size per layer), then built as **one
+transform for every JSON cell file** rather than a codec per layer:
+`formats::packed` takes every two-element array of ≤7-decimal numbers out of
+the text as zigzag varint deltas and leaves the token `-0.0` in its place.
+atlas writes `x.pj` beside every `x.json` it writes (`Ctx::write_json`,
+`write_doc`), `atlas pack-json --out site` does it for a tree extracted before;
+the client asks for the `.pj` first through `platform::packed_json` (one latch
+per host, as `lod22` has for its binary), unpacks it to the same JSON text off
+the frame and stores that under the layer's old cache key, so no parser and no
+key changed. Measured on the dense cell, as served (Brotli q10):
+
+| layer | JSON | packed | |
+|---|---|---|---|
+| `bag/…json` | 316 KB | 225 KB | 71 % |
+| `bag/…places.json` | 148 KB | 128 KB | 86 % |
+| `bgt/…surfaces.json` | 444 KB | 321 KB | 72 % |
+| `bgt/…json` | 25 KB | 17 KB | 68 % |
+| `roofs/…json` | 375 KB | 315 KB | 84 % |
+| `registers/…json` | 197 KB | 147 KB | 74 % |
+
+1.5 MB → 1.15 MB for the cell (−23 %), about 2.5 MB over a first visit's
+rings. Packing a cell takes 160–220 ms in atlas, unpacking 6–17 ms in the
+client. A document that already holds the token, or that would not come back
+as the same values, is served as JSON only; a string's bytes are copied as
+bytes, which is what keeps `Curaçaostraat` whole.
+
 ## What is left, largest first
 
 1. The ground file, ~13.5 MB for nine street cells after the kerb-band fix (was
    21.9 at format 2, ~17 at format 3).
-2. The other JSON layers — BAG places, paving, roofs, registers, ~10 MB together —
-   are seven-decimal text; a binary of each would take about a third off
-   (estimated 2026-11-21, not built here).
+2. The other JSON layers, ~10 MB together, now travel packed (above, −23 %);
+   what is left in them is their text — keys, ids, names — and the roofs'
+   per-surface colour objects.
 3. The vector tiles are VersaTiles' own encoding and not ours to change.

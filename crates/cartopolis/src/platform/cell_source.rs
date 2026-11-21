@@ -209,13 +209,10 @@ impl<T: 'static> CellSource<T> {
     }
 }
 
-/// One `GET`, as text, with everything that can go wrong flattened to `None`.
+/// One `GET`, as text, with everything that can go wrong flattened to `None` —
+/// packed first where the host has the cell packed (`super::packed_json`).
 async fn fetch_one(url: String, timeout: Option<Duration>) -> Option<String> {
-    let mut request = http::Request::get(url);
-    if let Some(timeout) = timeout {
-        request = request.timeout(timeout);
-    }
-    http::fetch_string(request).await.ok()
+    super::packed_json::fetch_text(url, timeout).await.ok()
 }
 
 #[cfg(test)]
