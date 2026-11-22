@@ -140,6 +140,13 @@ role: The bark of the tree models: oak and willow from Poly Haven, birch and pin
 license: CC0-1.0
 url: https://polyhaven.com/a/bark_brown_02
 
+## Graffiti photographs (Wikimedia Commons)
+
+role: The graffiti on the walls of narrow streets (`assets/textures/graffiti.png`), cut out of photographs of graffiti in Groningen by `tools/graffiti/gen.ts`; every photograph and its licence is listed in `assets/textures/graffiti.md`
+license: CC-BY-SA-3.0 and CC-BY-SA-4.0 (one photograph public domain); the sheet is shared under the same terms
+url: https://commons.wikimedia.org/wiki/Category:Graffiti_in_Groningen_(city)
+notice: Graffiti photographs by Wutsje and Kris Roderburg (CC BY-SA 3.0/4.0) and Geespotter (public domain), via Wikimedia Commons; the paint is the work of its writers.
+
 ## ProRail Spoorwegen (PDOK)
 
 role: Level crossings — where they are, and what installation stands on each
