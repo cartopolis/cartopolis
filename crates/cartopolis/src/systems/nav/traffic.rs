@@ -675,6 +675,17 @@ impl DriveNetwork {
                 if !kind.may_use(l.uses) {
                     continue;
                 }
+                // The box first, as `drivable_near` does: this runs four times a
+                // frame over every line of the ring, and most lines are a cell
+                // away from the disc.
+                let (lo, hi) = l.bounds;
+                if near.x < lo.x - radius
+                    || near.x > hi.x + radius
+                    || near.y < lo.y - radius
+                    || near.y > hi.y + radius
+                {
+                    continue;
+                }
                 if l.points.iter().any(|p| p.distance_squared(near) <= r2) {
                     out.push(LineKey { cell: *cell, index });
                 }
