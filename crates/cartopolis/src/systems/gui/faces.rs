@@ -1,7 +1,7 @@
 //! People's pictures: the face a person's disc shows instead of their initial,
 //! in every list, call and map marker (`docs/notes/profile-pictures.md`).
 //!
-//! **Every disc already goes through one function**, `chats::paint_avatar`, and
+//! **Every disc already goes through one function**, `discs::paint_avatar`, and
 //! it takes a painter and a name — no `World`, no resource. So the pictures
 //! reach it through [`texture_for`], a small shared table this module rewrites
 //! every frame, and a disc asking for a name it has no picture for is how this
@@ -534,11 +534,11 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
             egui::Stroke::new(1.5, theme::p().text_dim.gamma_multiply(0.4)),
         );
         let name = if me.is_empty() { "?" } else { me };
-        crate::systems::chats::paint_avatar(
+        crate::systems::discs::paint_avatar(
             ui.painter(),
             rect.center(),
             name,
-            crate::systems::chats::ChatKind::Private,
+            crate::systems::discs::ChatKind::Private,
             90.0,
         );
         ui.add_space(6.0);
@@ -621,7 +621,7 @@ fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
     p.rect_filled(
         rect,
         egui::CornerRadius::same(2),
-        crate::systems::chats::POLAROID_WHITE,
+        crate::systems::discs::POLAROID_WHITE,
     );
     let photo =
         egui::Rect::from_min_size(rect.min + egui::vec2(EDGE, EDGE), egui::Vec2::splat(PHOTO));
@@ -631,7 +631,7 @@ fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
         egui::Align2::CENTER_CENTER,
         me,
         egui::FontId::proportional(15.0),
-        crate::systems::chats::POLAROID_INK,
+        crate::systems::discs::POLAROID_INK,
     );
 }
 
@@ -646,7 +646,7 @@ pub fn render_face_viewfinder(
     avatar: Query<&Transform, (With<Avatar>, Without<FreeCamera>)>,
     mut screenshot: ResMut<crate::resources::ScreenshotState>,
     mut right_panel: ResMut<RightPanel>,
-    mut chats_view: ResMut<crate::systems::chats::ChatsView>,
+    #[cfg(feature = "comms")] mut chats_view: ResMut<crate::systems::chats::ChatsView>,
 ) {
     if !faces.viewfinder {
         return;
@@ -733,7 +733,10 @@ pub fn render_face_viewfinder(
     if done {
         faces.viewfinder = false;
         *right_panel = RightPanel::Chat;
-        chats_view.you = true;
+        #[cfg(feature = "comms")]
+        {
+            chats_view.you = true;
+        }
     }
 }
 

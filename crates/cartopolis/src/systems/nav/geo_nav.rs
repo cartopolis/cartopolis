@@ -1491,7 +1491,9 @@ fn view_actions_ui(
             }
             // Only with somebody to send it to: chats and posts need a session,
             // and Copy link above is the rest of what the sheet does.
+            // The app's only (`comms`): on the web the page holds the chats.
             if can_send
+                && cfg!(feature = "comms")
                 && theme::menu_entry_enabled(ui, enabled, icons::SHARE, "Share this view…")
                     .on_hover_text(
                         "Send this place and this view to a chat or a community. Whoever \
@@ -1820,7 +1822,7 @@ pub fn render_search_panel(
     mut flash: Local<Option<(ViewAction, Instant)>>,
     online: Option<Res<crate::resources::OnlineSession>>,
     // "Share this view…" opens the Share sheet (`bridges`).
-    mut bridges: ResMut<crate::systems::bridges::Bridges>,
+    #[cfg(feature = "comms")] mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
@@ -1903,6 +1905,7 @@ pub fn render_search_panel(
             ));
             *flash = Some((ViewAction::CopyLink, Instant::now()));
         }
+        #[cfg(feature = "comms")]
         (Some(ViewAction::Share), Some(((lat, lng), alt))) => {
             // The same view the link would carry. Named after where history
             // says the camera is, when it arrived by a named jump.

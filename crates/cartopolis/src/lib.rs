@@ -1,3 +1,10 @@
+// Without `comms` (the web build) the shared modules keep the helpers only the
+// talking half calls — a chat state's accessors, a store's chat fields — and
+// `cfg`-ing each of them would scatter the split over every module it touches.
+// Dead code is still denied in every build that has `comms`, which is every
+// build but that one; unused imports are denied in all of them.
+#![cfg_attr(not(feature = "comms"), allow(dead_code))]
+
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::light::DirectionalLightShadowMap;
 // Used on every target except wasm, but for opposite reasons: desktop disables it
@@ -139,8 +146,10 @@ pub fn run() {
         .await;
         // Private-chat keys are read on the frame a session comes up, which
         // cannot wait on IndexedDB either.
+        #[cfg(feature = "comms")]
         storage::preload(systems::private_chat::STATE_PREFIX, "").await;
         // And the calendar kept beside them, read on the same frame.
+        #[cfg(feature = "comms")]
         storage::preload(systems::calendar::STORE_PREFIX, "").await;
         run_client();
     });
@@ -1138,6 +1147,7 @@ fn run_client() {
     // driver's first request and applied on frame one, which is the same path the
     // sign-in screen uses at any later moment. A flag is an instruction for this
     // launch, so it wins over the remembered session and is not written back.
+    #[cfg(feature = "comms")]
     let screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
     // The web build used to be excluded here outright — it was the Phase-1 viewer
     // with no transport to a sim at all. It has one now (a WebSocket carrier), so
@@ -1175,6 +1185,10 @@ fn run_client() {
                 persist_token: login.persist_token,
             }),
             None if !session_prefs.auto_enter => None,
+            // The web build enters only the session the page around it hands
+            // over (`framed_session`), never one it remembers: that may be a
+            // different account from the one the page is signed in as.
+            None if !cfg!(feature = "comms") => None,
             None => match session_prefs.kind {
                 SessionKind::Offline => None,
                 // A remembered server with no address is not a session.
@@ -1204,6 +1218,7 @@ fn run_client() {
                 .request(request);
         }
     }
+    #[cfg(feature = "comms")]
     app.insert_resource(screen);
 
     // The three registrations only some launches have, each carrying what the

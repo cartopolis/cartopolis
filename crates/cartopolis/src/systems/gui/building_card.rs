@@ -98,20 +98,24 @@ pub fn render_building_card(
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
     identity: Res<crate::resources::AuthIdentity>,
     mut last_shown: Local<Option<std::sync::Arc<str>>>,
-    mut bridges: ResMut<crate::systems::bridges::Bridges>,
+    #[cfg(feature = "comms")] mut bridges: ResMut<crate::systems::bridges::Bridges>,
     mut facade: ResMut<crate::systems::facade_check::FacadeCheck>,
 ) {
     // The dock's suppression rules, and the place card's — each of these owns the
     // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
     // not cleared: the building is still the subject, and its glass is still on
     // the map, when the keyboard or the panel goes away.
+    // The Share sheet stands where the card does, and is about it.
+    #[cfg(feature = "comms")]
+    let sharing = bridges.share.is_some();
+    #[cfg(not(feature = "comms"))]
+    let sharing = false;
     let hidden = driver.active
         || menu.open
         || keyboard.is_open()
         || (egui.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
-        // The Share sheet stands where the card does, and is about it.
-        || bridges.share.is_some();
+        || sharing;
     // The card rises from the dock and sinks back (`motion::linger`): the
     // building it was showing is still drawn, untouchable, for the last
     // `motion::LEAVE` after the selection is cleared.
@@ -238,7 +242,13 @@ pub fn render_building_card(
                     Wrong,
                     Photo,
                 }
-                let mut acts = vec![Act::Share];
+                // Share hands the building to a chat, which only the app has
+                // (`comms`): on the web the page around the World tab does.
+                let mut acts = if cfg!(feature = "comms") {
+                    vec![Act::Share]
+                } else {
+                    Vec::new()
+                };
                 if has_inside {
                     acts.push(Act::Inside);
                 }
@@ -423,6 +433,9 @@ pub fn render_building_card(
     if cancel_photo {
         facade.cancel();
     }
+    #[cfg(not(feature = "comms"))]
+    let _ = (share, middle);
+    #[cfg(feature = "comms")]
     if let (true, Some((lat, lng))) = (share, middle) {
         let name = addresses
             .iter()

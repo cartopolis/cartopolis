@@ -32,45 +32,9 @@ use crate::resources::RightPanel;
 use crate::systems::egui_manager::EguiRef;
 use crate::systems::{icons, theme};
 
-/// Where a marker's card opens in Community.
-#[derive(Clone, Debug, PartialEq)]
-pub enum OpenIn {
-    /// A chat, by channel key: a person sharing their location, a chat's point.
-    Chat(String),
-    /// A community's post, on its community's page.
-    Post { community: Uuid, post: Uuid },
-}
-
-impl OpenIn {
-    /// The card's main button: it says where it goes.
-    #[must_use]
-    pub fn verb(&self) -> &'static str {
-        match self {
-            Self::Chat(_) => "Open chat",
-            Self::Post { .. } => "Open in Community",
-        }
-    }
-
-    #[must_use]
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Self::Chat(_) => icons::CHAT,
-            Self::Post { .. } => icons::GROUP,
-        }
-    }
-}
-
-/// Where a place card's place comes from, when a Community marker opened it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Origin {
-    /// Over the name: "Garage 44 · post", "sanne · sharing location".
-    pub line: String,
-    pub open: OpenIn,
-    /// A person sharing their location: Route here follows them
-    /// (`GeoNavState::route_to_person`), as the chat's Route does. The chat's
-    /// key and the person.
-    pub person: Option<(String, String)>,
-}
+// The two a place card carries live with it (`place_card`), so the web
+// build, which has no bridges, still has the card.
+pub use crate::systems::place_card::{OpenIn, Origin};
 
 /// The Community screen Show in world left, to go back to exactly.
 #[derive(Clone, Debug, Default, PartialEq)]

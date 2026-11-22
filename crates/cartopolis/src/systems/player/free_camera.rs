@@ -3617,7 +3617,7 @@ pub fn update_first_person_avatar(
     mut commands: Commands,
     camera_state: Res<CameraState>,
     driver: Res<crate::systems::driver::DriverState>,
-    screen: Res<crate::systems::camera_screen::CameraScreen>,
+    #[cfg(feature = "comms")] screen: Res<crate::systems::camera_screen::CameraScreen>,
     avatars: Query<Entity, With<crate::components::Avatar>>,
     children: Query<&Children>,
     visibility: Query<&Visibility>,
@@ -3626,8 +3626,12 @@ pub fn update_first_person_avatar(
     if driver.active {
         return;
     }
-    let want = (camera_state.first_person && camera_state.mode == CameraMode::Avatar)
-        || screen.phone_hold() == Some(false);
+    // The camera screen's selfie, which only the app has (`comms`).
+    #[cfg(feature = "comms")]
+    let selfie = screen.phone_hold() == Some(false);
+    #[cfg(not(feature = "comms"))]
+    let selfie = false;
+    let want = (camera_state.first_person && camera_state.mode == CameraMode::Avatar) || selfie;
     if !want && !*hidden {
         return;
     }

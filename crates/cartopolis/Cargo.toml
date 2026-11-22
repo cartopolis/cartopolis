@@ -41,7 +41,7 @@ test = false
 # cartopolis_simulator` plus a sign-in to 127.0.0.1:4747, the same online path
 # every server uses. The simulator crate survives here as a dev-dependency, so
 # the loopback tests still boot the real thing.
-default = ["audio"]
+default = ["audio", "comms"]
 # `audio`: the avatar soundscape (`systems::soundscape` — footsteps, landings,
 # wind). On by default, because a city you can walk through in silence reads as a
 # viewer rather than as a place.
@@ -78,6 +78,20 @@ default = ["audio"]
 # feature because it links the same ALSA on Linux: a headless build that opts out
 # of `bevy_audio` must not be given an alsa-sys dependency by the back door.
 audio = ["bevy/bevy_audio", "bevy/wav", "bevy/vorbis", "dep:cpal"]
+# `comms`: everything that talks rather than shows the world — private chats,
+# communities, contacts, the calendar, calls, the sign-in screen and Admin, and
+# the two crates that hold keys (`docs/notes/web-client-is-the-world.md`). The
+# desktop app and the APK carry it; the web build does not, because there the
+# page does all of that in HTML and the framed client is only the World tab,
+# signed in by the page. On by default, and the APK names it back explicitly
+# for the reason `audio` gives above. `cartopolis_calls` rides it too, though
+# native video on prims uses its codecs: no native build is without `comms`.
+comms = [
+    "dep:cartopolis_e2ee",
+    "dep:cartopolis_chat",
+    "dep:cartopolis_calls",
+    "dep:qrcodegen",
+]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # The performance suite's deep instruments (`systems::perf`, `cargo perf`).
@@ -156,13 +170,13 @@ cartopolis_vio = { path = "../vio" }
 cartopolis_materials = { path = "../materials" }
 # Private chats (`systems::private_chat`). The only crate that can open a
 # sealed message; the simulator links it for tests only.
-cartopolis_e2ee = { path = "../e2ee" }
+cartopolis_e2ee = { path = "../e2ee", optional = true }
 # The private-chat engine (`systems::private_chat` re-exports it).
-cartopolis_chat = { path = "../chat" }
+cartopolis_chat = { path = "../chat", optional = true }
 # Calls in private chats (`systems::calls`, `docs/notes/calls.md`): the
 # `client` half only — sealing, Opus and a device's session. The forwarder is
 # the simulator's. Pure Rust on every target this crate builds for.
-cartopolis_calls = { path = "../calls", features = ["client"] }
+cartopolis_calls = { path = "../calls", features = ["client"], optional = true }
 # The private-chat state blob (`systems::private_chat`); already built for core.
 postcard = { workspace = true }
 bytes.workspace = true
@@ -170,7 +184,7 @@ egui.workspace = true
 egui-wgpu.workspace = true
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
 # dependencies of its own, so it builds on every lane, Android and wasm included.
-qrcodegen = "1.8"
+qrcodegen = { version = "1.8", optional = true }
 futures-util = { workspace = true, features = ["sink", "async-await"] }
 # The client-intent channel behind `OnlineSession` — pure-Rust and wasm-safe,
 # unlike tokio's `sync::mpsc`, so the online session type compiles on the web

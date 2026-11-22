@@ -13,19 +13,55 @@ pub struct NetPlugin;
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<systems::greet::GreetInbox>()
+            .init_resource::<systems::prim_sound::PrimSoundInbox>()
+            .init_resource::<systems::voice::VoiceState>();
+        // Private chats, contacts and calls: the app's, not the web build's
+        // (`comms`), where the page around the World tab holds them.
+        #[cfg(feature = "comms")]
         app.init_resource::<systems::private_chat::PrivateInbox>()
             .init_resource::<systems::private_chat::PrivateChats>()
             .init_resource::<systems::chat_pictures::ChatPictures>()
             .init_resource::<systems::calls::CallInbox>()
             .init_resource::<systems::calls::Calls>()
             .init_resource::<systems::contacts::ContactsInbox>()
-            .init_resource::<systems::greet::GreetInbox>()
-            .init_resource::<systems::prim_sound::PrimSoundInbox>()
             .init_resource::<systems::contacts::Contacts>()
-            .init_resource::<systems::voice::VoiceState>();
+            .add_systems(
+                Update,
+                (
+                    // After the network system has sorted this frame's
+                    // private-chat traffic into the inbox it drains.
+                    systems::private_chat::drive_private_chats
+                        .after(network::apply_network_snapshot)
+                        .after(systems::geo_nav::answer_view_requests),
+                    // Fetches and decodes of chat pictures, folded in before the
+                    // panels that draw them.
+                    systems::chat_pictures::poll_chat_pictures,
+                    // After the chats: a call reads the chat's epoch, which a
+                    // commit applied there this frame has just moved.
+                    systems::calls::drive_calls.after(systems::private_chat::drive_private_chats),
+                    // Contacts, between the two: its first messages become
+                    // private-chat starts the same frame their request is on record.
+                    systems::contacts::drive_contacts
+                        .after(network::apply_network_snapshot)
+                        .after(systems::place_link::take_new_link)
+                        .before(systems::private_chat::drive_private_chats),
+                )
+                    .in_set(ClientPhase::Input),
+            )
+            .add_systems(
+                Update,
+                // The call screen: a call ringing, or the one you are in, full
+                // screen or folded to a bar (`systems::call_screen`). Its own
+                // `Foreground` areas, so it is not in the panel chain; after the
+                // pins only so it is drawn over them.
+                systems::call_screen::render_call_screen
+                    .after(systems::place_pins::render_place_pins)
+                    .in_set(ClientPhase::Present),
+            );
         // Headless call tests (`CARTO_CALL`, `CARTO_ANSWER`): writes the request
         // `drive_calls` takes, so it runs first.
-        #[cfg(not(target_os = "android"))]
+        #[cfg(all(not(target_os = "android"), feature = "comms"))]
         app.add_systems(
             Update,
             systems::calls::drive_call_harness
@@ -33,7 +69,7 @@ impl Plugin for NetPlugin {
                 .in_set(ClientPhase::Input),
         );
         // Where the simulator wakes this phone for a call while the app is closed.
-        #[cfg(target_os = "android")]
+        #[cfg(all(target_os = "android", feature = "comms"))]
         app.add_systems(
             Update,
             systems::push::send_push_endpoint.in_set(ClientPhase::Input),
@@ -55,6 +91,16 @@ impl Plugin for NetPlugin {
             // Prim tones' synthesiser, for the same reason.
             app.add_audio_source::<systems::prim_tone::ToneStream>();
         }
+        // The web build is signed in by the page around it, not by a screen of
+        // its own (`framed_session`): its token is taken before the driver
+        // applies it, in the same frame.
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(
+            Update,
+            systems::framed_session::follow_framed_session
+                .before(systems::session::drive_session)
+                .in_set(ClientPhase::Input),
+        );
         // Read by `run_client` right after this plugin is added: the launch's
         // session request is written into it before the first frame.
         app.init_resource::<systems::session::SessionState>();
@@ -65,26 +111,14 @@ impl Plugin for NetPlugin {
                 network::apply_network_snapshot,
                 network::request_wanted_textures.after(network::apply_network_snapshot),
                 network::create_egui_texture_handles.after(network::apply_network_snapshot),
-                // After the network system has sorted this frame's private-chat
-                // traffic into the inbox it drains.
-                systems::private_chat::drive_private_chats.after(network::apply_network_snapshot),
-                // Fetches and decodes of chat pictures, folded in before the
-                // panels that draw them.
-                systems::chat_pictures::poll_chat_pictures,
-                // After the chats: a call reads the chat's epoch, which a commit
-                // applied there this frame has just moved.
-                systems::calls::drive_calls.after(systems::private_chat::drive_private_chats),
-                // Contacts, between the two: its first messages become private-chat
-                // starts the same frame their request is on record.
-                systems::contacts::drive_contacts
-                    .after(network::apply_network_snapshot)
-                    .before(systems::private_chat::drive_private_chats),
                 // The session — which world this client is in (`systems::session`).
                 // The driver runs after the sign-in screen so a mode picked this
                 // frame is applied this frame: a sign-in that visibly waits a frame
                 // for its own spinner reads as a stutter on the one screen whose
-                // whole job is to say what is happening.
-                systems::session::drive_session.after(systems::login_screen::render_login_screen),
+                // whole job is to say what is happening. (The screen is ordered
+                // before it from its own side, `gui::plugin`; the web build has
+                // none, and is signed in by the page around it instead.)
+                systems::session::drive_session,
                 // After the driver, which is what adds and removes `OnlineSession`
                 // — half of the want this reconciles. Ordered so that leaving a
                 // session takes the service down on the same frame rather than
@@ -148,25 +182,17 @@ impl Plugin for NetPlugin {
         )
         .add_systems(
             Update,
-            (
-                // The call screen: a call ringing, or the one you are in, full
-                // screen or folded to a bar (`systems::call_screen`). Its own
-                // `Foreground` areas, so it is not in the panel chain; after the
-                // pins only so it is drawn over them.
-                systems::call_screen::render_call_screen
-                    .after(systems::place_pins::render_place_pins),
-                systems::user_store::autosave_user_store
-                    // Never before a restore has read the document this overwrites:
-                    // its first deadline is time zero, so without this it wrote the
-                    // launch defaults over the saved sky and layers on frame one and
-                    // the restores then read back its own output.
-                    .after(systems::user_store::Restore)
-                    .run_if(not(systems::shot_harness::harness_active)),
-            )
+            systems::user_store::autosave_user_store
+                // Never before a restore has read the document this overwrites:
+                // its first deadline is time zero, so without this it wrote the
+                // launch defaults over the saved sky and layers on frame one and
+                // the restores then read back its own output.
+                .after(systems::user_store::Restore)
+                .run_if(not(systems::shot_harness::harness_active))
                 .in_set(ClientPhase::Present),
         );
 
-        #[cfg(feature = "audio")]
+        #[cfg(all(feature = "audio", feature = "comms"))]
         app.add_systems(Startup, systems::call_tones::setup_call_tones);
         // The output half, behind the `audio` feature with the rest of the
         // soundscape (ALSA headers on Linux — see Cargo.toml).
@@ -180,6 +206,13 @@ impl Plugin for NetPlugin {
                 // whatever this build can play, so a no-audio build still reports
                 // who is talking rather than pretending nobody is.
                 systems::voice::update_voice_playback.after(network::apply_network_snapshot),
+            )
+                .in_set(ClientPhase::Present),
+        );
+        #[cfg(all(feature = "audio", feature = "comms"))]
+        app.add_systems(
+            Update,
+            (
                 // A call's voices, through the same output.
                 systems::calls::play_calls.after(systems::calls::drive_calls),
                 // Its ringtone, ringback and cues.

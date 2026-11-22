@@ -425,11 +425,11 @@ pub fn render_map_osd(
     right_panel: Res<RightPanel>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
-    camera: Res<crate::systems::camera_screen::CameraScreen>,
+    #[cfg(feature = "comms")] camera: Res<crate::systems::camera_screen::CameraScreen>,
     mut body: BodyControls,
     mut rail: RailView,
     chrome: Res<crate::systems::dock::MapChrome>,
-    sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
+    #[cfg(feature = "comms")] sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
     room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
@@ -438,6 +438,12 @@ pub fn render_map_osd(
     // `set_if_neq` at the end so a resting control does not mark the resource
     // changed sixty times a second.
     let mut next = OsdInput::default();
+    // The app's camera and chat sheet (`comms`) cover the controls; the web
+    // build has neither.
+    #[cfg(feature = "comms")]
+    let (camera_open, composing) = (camera.is_open(), sheet.composing);
+    #[cfg(not(feature = "comms"))]
+    let (camera_open, composing) = (false, false);
     // The same applies to the claimed regions, and more sharply: a rect left
     // published over a control that is no longer drawn is a piece of the map
     // that silently swallows fingers.
@@ -448,10 +454,10 @@ pub fn render_map_osd(
         driver.active,
         // The camera is the whole screen, exactly as a panel is. A chat's
         // World view is not: it keeps the touch controls.
-        !right_panel.is(RightPanel::None) || camera.is_open() || room.spot.is_some(),
+        !right_panel.is(RightPanel::None) || camera_open || room.spot.is_some(),
         // The chat sheet on a phone takes the bottom of the screen as the
         // keys do, and the controls there would draw under it.
-        keyboard.is_open() || (sheet.composing && egui.compact()),
+        keyboard.is_open() || (composing && egui.compact()),
         theme::touch_layout() || touch.ever(),
     ) {
         let ui_scale = egui.ui_scale();
@@ -502,7 +508,7 @@ pub fn render_map_osd(
     let rail_on = camera_state.mode == CameraMode::Orbit
         && !driver.active
         && right_panel.is(RightPanel::None)
-        && !camera.is_open()
+        && !camera_open
         && room.spot.is_none()
         && !keyboard.is_open();
     if rail_on {

@@ -37,10 +37,13 @@ pub struct AuthWriteback<'w, 's> {
     voice: ResMut<'w, crate::systems::voice::VoiceState>,
     /// Private-chat traffic, handed on to `private_chat::drive_private_chats`
     /// for the same reason voice is decoded here: one drain of one queue.
+    #[cfg(feature = "comms")]
     private: ResMut<'w, crate::systems::private_chat::PrivateInbox>,
     /// Call signalling, handed on to `calls::drive_calls` likewise.
+    #[cfg(feature = "comms")]
     calls: ResMut<'w, crate::systems::calls::CallInbox>,
     /// Contacts and message requests, handed on to `contacts::drive_contacts`.
+    #[cfg(feature = "comms")]
     contacts: ResMut<'w, crate::systems::contacts::ContactsInbox>,
     /// Greetings (protocol 49), handed on to `greet::drive_greetings`.
     greet: ResMut<'w, crate::systems::greet::GreetInbox>,
@@ -776,15 +779,20 @@ pub fn apply_network_snapshot(
         }
         // Before the match: a private-chat refusal is a `ServerError` whose 403
         // would otherwise land in the prim-edit arm below and deselect a prim.
+        // A build without `comms` asks for none of these, so is refused none;
+        // what the server pushes unasked falls to the match's `_` arm.
+        #[cfg(feature = "comms")]
         if crate::systems::private_chat::PrivateInbox::wants(&msg) {
             auth.private.0.push(msg);
             continue;
         }
         // The same for a call's refusal, and for the rest of its signalling.
+        #[cfg(feature = "comms")]
         if crate::systems::calls::CallInbox::wants(&msg) {
             auth.calls.0.push(msg);
             continue;
         }
+        #[cfg(feature = "comms")]
         if crate::systems::contacts::ContactsInbox::wants(&msg) {
             auth.contacts.0.push(msg);
             continue;

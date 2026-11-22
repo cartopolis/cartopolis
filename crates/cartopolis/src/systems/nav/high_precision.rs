@@ -518,7 +518,7 @@ pub fn drive_high_precision(
     mut log: ResMut<HighPrecisionLog>,
     mut tracking: ResMut<LocateTracking>,
     mut precise: ResMut<PreciseHand>,
-    screen: Res<crate::systems::camera_screen::CameraScreen>,
+    #[cfg(feature = "comms")] screen: Res<crate::systems::camera_screen::CameraScreen>,
 ) {
     if !HighPrecision::available() {
         high.on = false;
@@ -530,7 +530,10 @@ pub fn drive_high_precision(
     // Only one camera can be open: while the camera screen has one, the mode
     // stands aside (staying on) and the phone in the avatar's hand is placed
     // by how the phone is turned (`held_phone`).
+    #[cfg(feature = "comms")]
     let wanted = high.on && screen.phone_hold().is_none();
+    #[cfg(not(feature = "comms"))]
+    let wanted = high.on;
     match (wanted, running) {
         (true, false) => {
             // The map follows too, where there is an avatar to move.

@@ -67,12 +67,8 @@ impl Plugin for NavPlugin {
             (
                 // A chat's "+ → Send this view": the camera's view, as a point,
                 // queued for the sealing in `private_chat` to pick up on its next
-                // pass.
-                systems::geo_nav::answer_view_requests
-                    .before(systems::private_chat::drive_private_chats),
-                // A chat's "+ → Meet up": where to propose, halfway along the
-                // walk when the other person is sharing (`systems::meetup`).
-                systems::meetup::answer_meetup_requests,
+                // pass (which is ordered after it from its own side).
+                systems::geo_nav::answer_view_requests,
                 systems::geo_nav::drive_geocode,
                 systems::navigation::drive_route_geocoding,
                 // Before `Move`, so a receiver switched on this frame is the
@@ -124,10 +120,26 @@ impl Plugin for NavPlugin {
         app.init_resource::<systems::place_link::NewLink>();
         app.add_systems(
             Update,
-            systems::place_link::take_new_link
-                .before(systems::communities::sync_device)
-                .before(systems::contacts::drive_contacts)
-                .in_set(ClientPhase::Input),
+            // (`communities::sync_device` and `contacts::drive_contacts`, which
+            // open its contact or invite, are ordered after it from their side.)
+            systems::place_link::take_new_link.in_set(ClientPhase::Input),
+        );
+        // Meet-ups, inside private chats (`systems::meetup`): the app's, not
+        // the web build's (`comms`).
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            Update,
+            (
+                // A chat's "+ → Meet up": where to propose, halfway along the
+                // walk when the other person is sharing.
+                systems::meetup::answer_meetup_requests.in_set(ClientPhase::Input),
+                // Arriving at a meet-up ends its location share: after both
+                // arrival latches have been set this frame.
+                systems::meetup::finish_on_arrival
+                    .after(systems::walk_guide::drive_walk_guide)
+                    .after(systems::driver::drive_driver_mode)
+                    .in_set(ClientPhase::Move),
+            ),
         );
 
         // The web UI's World moving this app's camera (`place_link`). Before the
@@ -201,11 +213,6 @@ impl Plugin for NavPlugin {
                     .after(systems::driver::drive_driver_mode)
                     .after(avatar::handle_avatar_movement)
                     .before(systems::navigation::drive_route_solver),
-                // Arriving at a meet-up ends its location share: after both
-                // arrival latches have been set this frame.
-                systems::meetup::finish_on_arrival
-                    .after(systems::walk_guide::drive_walk_guide)
-                    .after(systems::driver::drive_driver_mode),
             )
                 .in_set(ClientPhase::Move),
         )

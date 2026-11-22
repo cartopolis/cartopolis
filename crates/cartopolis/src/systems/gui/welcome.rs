@@ -14,12 +14,18 @@
 
 use bevy::prelude::*;
 
+#[cfg(feature = "comms")]
 use crate::resources::{AppPrefs, RightPanel};
+#[cfg(feature = "comms")]
 use crate::systems::egui_manager::EguiRef;
+#[cfg(feature = "comms")]
 use crate::systems::login_screen::LoginScreen;
+#[cfg(feature = "comms")]
 use crate::systems::session::SessionState;
+#[cfg(feature = "comms")]
 use crate::systems::theme;
 
+#[cfg(feature = "comms")]
 /// Width of the card, fixed for the reason [`crate::systems::place_card`]'s is:
 /// an anchored, size-to-content `Area` grows a little every frame otherwise.
 const CARD_WIDTH: f32 = 300.0;
@@ -37,7 +43,9 @@ pub struct Welcome {
     pub community: bool,
 }
 
-/// The card, while it has not been answered.
+/// The card, while it has not been answered. The app's only (`comms`): in
+/// the web build signing in is the page's around the World tab.
+#[cfg(feature = "comms")]
 #[allow(clippy::too_many_arguments)]
 pub fn render_welcome(
     egui: EguiRef,

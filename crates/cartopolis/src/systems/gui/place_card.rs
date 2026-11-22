@@ -33,6 +33,7 @@ use crate::resources::{CameraState, RightPanel};
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
 use crate::systems::icons;
 use crate::systems::theme;
+use uuid::Uuid;
 use web_time::Instant;
 
 /// A place the card can show: what the user picked, where it is, and the words
@@ -49,7 +50,47 @@ pub struct CardPlace {
     pub lng: f64,
     /// A Community marker opened it (bridge ①, `bridges`): where it comes
     /// from, said on top, and Open chat / Open in Community as its main verb.
-    pub from: Option<crate::systems::bridges::Origin>,
+    pub from: Option<Origin>,
+}
+
+/// Where a marker's card opens in Community.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OpenIn {
+    /// A chat, by channel key: a person sharing their location, a chat's point.
+    Chat(String),
+    /// A community's post, on its community's page.
+    Post { community: Uuid, post: Uuid },
+}
+
+impl OpenIn {
+    /// The card's main button: it says where it goes.
+    #[must_use]
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::Chat(_) => "Open chat",
+            Self::Post { .. } => "Open in Community",
+        }
+    }
+
+    #[must_use]
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Chat(_) => icons::CHAT,
+            Self::Post { .. } => icons::GROUP,
+        }
+    }
+}
+
+/// Where a place card's place comes from, when a Community marker opened it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Origin {
+    /// Over the name: "Garage 44 · post", "sanne · sharing location".
+    pub line: String,
+    pub open: OpenIn,
+    /// A person sharing their location: Route here follows them
+    /// (`GeoNavState::route_to_person`), as the chat's Route does. The chat's
+    /// key and the person.
+    pub person: Option<(String, String)>,
 }
 
 /// The card's state: the place being shown, if any.
@@ -93,7 +134,7 @@ pub fn render_place_card(
     camera: AnchoredCamera,
     camera_state: Res<CameraState>,
     mut saved_at: Local<Option<Instant>>,
-    mut bridges: ResMut<crate::systems::bridges::Bridges>,
+    #[cfg(feature = "comms")] mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     // A pick made in the Search panel: take it, close the panel that made it.
     // The panel closing here rather than in `search_ui` is what keeps the rule
@@ -117,13 +158,17 @@ pub fn render_place_card(
     // on top of each other. Hidden rather than closed, as above — "Route to" is
     // a verb on *this* place, and it is still the subject when the planner goes
     // away.
+    // The Share sheet stands where the card does, and is about it.
+    #[cfg(feature = "comms")]
+    let sharing = bridges.share.is_some();
+    #[cfg(not(feature = "comms"))]
+    let sharing = false;
     let hidden = driver.active
         || keyboard.is_open()
         || menu.open
         || (egui.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
-        // The Share sheet stands where the card does, and is about it.
-        || bridges.share.is_some();
+        || sharing;
     // The card rises from the dock and sinks back (`motion::linger`): the place
     // it was showing is still drawn, untouchable, for the last `motion::LEAVE`
     // after `card.place` is cleared.
@@ -257,7 +302,10 @@ pub fn render_place_card(
                     )
                     .clicked()
                     {
-                        bridges.open = Some(from.open.clone());
+                        #[cfg(feature = "comms")]
+                        {
+                            bridges.open = Some(from.open.clone());
+                        }
                     }
                     ui.add_space(2.0);
                     if theme::secondary_button(ui, icons::ROUTE, "Route here", w).clicked() {
@@ -280,7 +328,9 @@ pub fn render_place_card(
                 }
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    let cell = theme::equal_width(ui, 3);
+                    // Save, Share and More; the web build has no Share, whose
+                    // chats are the page's (`comms`).
+                    let cell = theme::equal_width(ui, if cfg!(feature = "comms") { 3 } else { 2 });
                     let save_icon = if saved {
                         icons::CHECK
                     } else {
@@ -309,8 +359,8 @@ pub fn render_place_card(
                     // Share (bridge ③): the one way a place goes to people.
                     // No orange dot on it, as N2 drew one: the person asked
                     // for little colour, and the word says it (2026-11-11).
-                    let share = theme::secondary_button(ui, icons::SHARE, "Share", cell);
-                    if share
+                    #[cfg(feature = "comms")]
+                    if theme::secondary_button(ui, icons::SHARE, "Share", cell)
                         .on_hover_text("Send this place to a chat or community")
                         .clicked()
                     {

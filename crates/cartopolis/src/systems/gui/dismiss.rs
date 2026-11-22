@@ -49,7 +49,6 @@ use bevy::prelude::*;
 
 use crate::resources::{ContextMenuState, EditDialogState, RightPanel};
 use crate::systems::driver::DriverState;
-use crate::systems::login_screen::LoginScreen;
 use crate::systems::navigation::RouteState;
 use crate::systems::onscreen_keyboard::OnScreenKeyboard;
 use crate::systems::ui::MainMenu;
@@ -63,18 +62,13 @@ use crate::systems::ui::MainMenu;
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Dismissable<'w> {
     pub keyboard: ResMut<'w, OnScreenKeyboard>,
-    pub login: ResMut<'w, LoginScreen>,
     pub dialog: ResMut<'w, EditDialogState>,
     pub context_menu: ResMut<'w, ContextMenuState>,
     pub route: ResMut<'w, RouteState>,
     pub menu: ResMut<'w, MainMenu>,
     pub driver: ResMut<'w, DriverState>,
     pub panel: ResMut<'w, RightPanel>,
-    pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
-    pub calls: ResMut<'w, crate::systems::calls::Calls>,
-    pub camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
     pub place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
-    pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     pub building: ResMut<'w, crate::systems::building_select::BuildingSelection>,
     pub spaces: Spaces<'w>,
 }
@@ -84,9 +78,24 @@ pub struct Dismissable<'w> {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Spaces<'w> {
     pub welcome: ResMut<'w, crate::systems::welcome::Welcome>,
-    pub bridges: ResMut<'w, crate::systems::bridges::Bridges>,
     /// The design room: a press goes back to the map, as its close does.
     pub room: ResMut<'w, crate::systems::design_room::DesignRoom>,
+    #[cfg(feature = "comms")]
+    pub talk: Talk<'w>,
+}
+
+/// The rungs only the app has (`comms`): the call, the camera, the composer,
+/// the sign-in card, the person card and the bridges. In the web build every
+/// one of them is the page's, and reads as closed here.
+#[cfg(feature = "comms")]
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Talk<'w> {
+    pub login: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+    pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
+    pub calls: ResMut<'w, crate::systems::calls::Calls>,
+    pub camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
+    pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    pub bridges: ResMut<'w, crate::systems::bridges::Bridges>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -266,29 +275,38 @@ impl Dismissable<'_> {
     /// a field held the keyboard when the frame *began*.
     #[must_use]
     pub fn surfaces(&self, text_focused: bool, ctx: &egui::Context) -> OpenSurfaces {
-        OpenSurfaces {
+        let world = OpenSurfaces {
             keyboard: self.keyboard.is_open(),
             text_focused,
-            call_screen: self.calls.screen_up(),
-            camera: self.camera.is_open(),
             texture_picker: self.dialog.texture_picker_open,
             edit_dialog: self.dialog.visible,
             context_menu: self.context_menu.visible,
             route_pick: self.route.picking.is_some(),
-            chat_composer: self.composer.composing,
-            sign_in: self.login.open && !self.login.is_busy(),
             main_menu: self.menu.open,
-            share_sheet: self.spaces.bridges.share.is_some(),
             design_room: self.spaces.room.spot.is_some(),
             driver_mode: self.driver.active,
             right_panel: *self.panel != RightPanel::None,
             panel_page: crate::systems::theme::page_back_shown(ctx),
-            person_card: self.contacts.card.is_some(),
             place_card: self.place_card.place.is_some(),
             building_card: self.building.selected.is_some(),
-            back_to_community: self.spaces.bridges.back.is_some(),
             signed_out_community: self.spaces.welcome.community,
-        }
+            ..OpenSurfaces::default()
+        };
+        #[cfg(feature = "comms")]
+        let world = {
+            let t = &self.spaces.talk;
+            OpenSurfaces {
+                call_screen: t.calls.screen_up(),
+                camera: t.camera.is_open(),
+                chat_composer: t.composer.composing,
+                sign_in: t.login.open && !t.login.is_busy(),
+                share_sheet: t.bridges.share.is_some(),
+                person_card: t.contacts.card.is_some(),
+                back_to_community: t.bridges.back.is_some(),
+                ..world
+            }
+        };
+        world
     }
 
     /// Put away the innermost open thing, and only that one. Returns the rung
@@ -296,34 +314,52 @@ impl Dismissable<'_> {
     /// and decide whether to quit.
     pub fn dismiss_innermost(&mut self, text_focused: bool, ctx: &egui::Context) -> Option<Rung> {
         let rung = self.surfaces(text_focused, ctx).innermost()?;
+        #[cfg(feature = "comms")]
+        let t = &mut self.spaces.talk;
         match rung {
             Rung::Keyboard => self.keyboard.dismiss(),
             // egui already did it; claiming the press is the whole point.
             Rung::TextFocus => {}
-            Rung::CallScreen => self.calls.minimized = true,
+            #[cfg(feature = "comms")]
+            Rung::CallScreen => t.calls.minimized = true,
+            #[cfg(feature = "comms")]
             Rung::Camera => {
-                self.camera.back();
+                t.camera.back();
             }
             Rung::TexturePicker => self.dialog.texture_picker_open = false,
             Rung::EditDialog => self.dialog.visible = false,
             Rung::ContextMenu => self.context_menu.visible = false,
             Rung::RoutePick => self.route.picking = None,
-            Rung::ChatComposer => self.composer.close(),
-            Rung::SignIn => self.login.open = false,
+            #[cfg(feature = "comms")]
+            Rung::ChatComposer => t.composer.close(),
+            #[cfg(feature = "comms")]
+            Rung::SignIn => t.login.open = false,
             Rung::MainMenu => self.menu.open = false,
-            Rung::ShareSheet => self.spaces.bridges.share = None,
+            #[cfg(feature = "comms")]
+            Rung::ShareSheet => t.bridges.share = None,
             Rung::DesignRoom => self.spaces.room.close(),
             Rung::DriverMode => self.driver.exit(),
             Rung::PanelPage => crate::systems::theme::press_page_back(ctx),
             Rung::RightPanel => *self.panel = RightPanel::None,
+            #[cfg(feature = "comms")]
             Rung::PersonCard => {
-                self.contacts.card = None;
-                self.contacts.error = None;
+                t.contacts.card = None;
+                t.contacts.error = None;
             }
             Rung::PlaceCard => self.place_card.place = None,
             Rung::BuildingCard => self.building.clear(),
-            Rung::BackToCommunity => self.spaces.bridges.back_pressed = true,
+            #[cfg(feature = "comms")]
+            Rung::BackToCommunity => t.bridges.back_pressed = true,
             Rung::SignedOutCommunity => self.spaces.welcome.community = false,
+            // Never open without `comms`: `surfaces` reads them as closed.
+            #[cfg(not(feature = "comms"))]
+            Rung::CallScreen
+            | Rung::Camera
+            | Rung::ChatComposer
+            | Rung::SignIn
+            | Rung::ShareSheet
+            | Rung::PersonCard
+            | Rung::BackToCommunity => {}
         }
         Some(rung)
     }

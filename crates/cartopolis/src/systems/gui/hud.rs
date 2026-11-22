@@ -803,7 +803,7 @@ pub fn render_map_controls(
     avatars: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
-    camera_screen: Res<crate::systems::camera_screen::CameraScreen>,
+    #[cfg(feature = "comms")] camera_screen: Res<crate::systems::camera_screen::CameraScreen>,
     mut high: ResMut<crate::systems::high_precision::HighPrecision>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     room: Res<crate::systems::design_room::DesignRoom>,
@@ -816,7 +816,11 @@ pub fn render_map_controls(
     }
     // The camera is the whole screen. A chat's World view keeps these: its
     // header is one slim pill at the top centre (`chats::render_chat_world`).
-    if camera_screen.is_open() && !driver.active {
+    #[cfg(feature = "comms")]
+    let camera_open = camera_screen.is_open();
+    #[cfg(not(feature = "comms"))]
+    let camera_open = false;
+    if camera_open && !driver.active {
         return;
     }
     // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui

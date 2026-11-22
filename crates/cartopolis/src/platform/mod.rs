@@ -70,7 +70,9 @@ pub mod release_key;
 pub mod update;
 pub mod warm;
 pub mod watchdog;
-#[cfg(target_arch = "wasm32")]
+// A call in the browser's own WebRTC, for a wasm build with calls in it; the
+// published web build has none (`comms`), the page around it calls instead.
+#[cfg(all(target_arch = "wasm32", feature = "comms"))]
 pub mod web_call;
 pub mod work;
 pub mod workers;

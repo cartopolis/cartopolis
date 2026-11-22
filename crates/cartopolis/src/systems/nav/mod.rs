@@ -13,6 +13,7 @@ pub mod gnss_receiver;
 // localiser is to be developed against.
 pub mod high_precision;
 pub mod locate;
+#[cfg(feature = "comms")]
 pub mod meetup;
 pub mod navigation;
 pub mod place_link;

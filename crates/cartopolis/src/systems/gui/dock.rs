@@ -282,11 +282,23 @@ pub enum Space {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct People<'w> {
     chat: Res<'w, crate::systems::chat::ChatState>,
-    view: ResMut<'w, crate::systems::chats::ChatsView>,
     identity: Res<'w, crate::resources::AuthIdentity>,
-    contacts: Res<'w, crate::systems::contacts::Contacts>,
     welcome: ResMut<'w, crate::systems::welcome::Welcome>,
+    #[cfg(feature = "comms")]
+    talk: Talk<'w>,
+}
+
+/// What only the app's chrome has (`comms`): the Community side of the
+/// switch, Say, the camera and the way back from Show in world. The web
+/// build's World tab has none of them — the page around it is Community.
+#[cfg(feature = "comms")]
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Talk<'w> {
+    view: ResMut<'w, crate::systems::chats::ChatsView>,
+    contacts: Res<'w, crate::systems::contacts::Contacts>,
     bridges: ResMut<'w, crate::systems::bridges::Bridges>,
+    say: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
+    camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
 }
 
 /// What owns the screen instead of the map's chrome, bundled for the same
@@ -311,26 +323,34 @@ pub fn render_dock(
     session: Res<crate::systems::session::SessionState>,
     online: Option<Res<OnlineSession>>,
     covers: Covers,
-    mut say: ResMut<crate::systems::chat_overlay::ChatOverlay>,
     avatars: Query<(), With<crate::components::Avatar>>,
-    mut camera: ResMut<crate::systems::camera_screen::CameraScreen>,
     mut lens: ResMut<crate::systems::scenario::ScenarioView>,
     data_layers: Res<crate::systems::layer_state::DataLayers>,
     mut people: People,
     mut chrome: ResMut<MapChrome>,
 ) {
+    #[cfg(feature = "comms")]
     let has_camera = crate::systems::camera_screen::available();
+    #[cfg(not(feature = "comms"))]
+    let has_camera = false;
+    #[cfg(feature = "comms")]
+    let camera_open = people.talk.camera.is_open();
+    #[cfg(not(feature = "comms"))]
+    let camera_open = false;
     let has_avatar = !avatars.is_empty();
     let viewport = egui.viewport_pts();
     chrome.right_bottom = right_column(viewport, has_avatar, has_camera).bottom;
     // Driving owns the screen, and so do the camera and the design room.
-    if covers.driver.active || camera.is_open() || covers.room.spot.is_some() {
+    if covers.driver.active || camera_open || covers.room.spot.is_some() {
         crate::systems::place_pins::set_chrome_holes(egui.ctx(), Vec::new());
         menu.open = false;
         return;
     }
     let has_session = online.is_some();
-    let demo = people.view.demo;
+    #[cfg(feature = "comms")]
+    let demo = people.talk.view.demo;
+    #[cfg(not(feature = "comms"))]
+    let demo = false;
     let signed_in = has_session || demo;
     // A panel other than Community opening ends the signed-out Community card:
     // the person went somewhere else.
@@ -359,16 +379,24 @@ pub fn render_dock(
         .filter(|n| !n.is_empty())
         .or_else(|| demo.then(|| "jeroen".to_string()));
     let me = me.filter(|_| signed_in);
+    #[cfg(feature = "comms")]
     let waiting = signed_in
-        && (!people.contacts.incoming.is_empty() || people.view.admin.is_some_and(|n| n > 0));
+        && (!people.talk.contacts.incoming.is_empty()
+            || people.talk.view.admin.is_some_and(|n| n > 0));
+    #[cfg(not(feature = "comms"))]
+    let waiting = false;
 
     // ── The switch ───────────────────────────────────────────────────────
     // Over Community on a phone too — it is the way back — but not inside a
     // chat, whose composer has the bottom edge, nor over the keys.
     // Nor under the map's chat sheet on a phone, which has it too.
+    // The web build has no switch at all: the page around it is the switch.
+    #[cfg(feature = "comms")]
     let switch_shown = !keyboard
-        && !(compact && say.composing)
-        && (!covered || (community_open && people.view.open.is_none()));
+        && !(compact && people.talk.say.composing)
+        && (!covered || (community_open && people.talk.view.open.is_none()));
+    #[cfg(not(feature = "comms"))]
+    let switch_shown = false;
     let mut picked = None;
     // It comes and goes with `motion` when a panel, the keyboard or a chat
     // takes the bottom edge, as the cards there do.
@@ -382,11 +410,14 @@ pub fn render_dock(
         };
         let width = (right - left - 2.0 * theme::OSD_MARGIN).min(SWITCH_MAX_W);
         let centre = (left + right) / 2.0;
+        #[cfg(feature = "comms")]
         let unread = if signed_in {
-            people.view.unread_total(&people.chat)
+            people.talk.view.unread_total(&people.chat)
         } else {
             0
         };
+        #[cfg(not(feature = "comms"))]
+        let unread = 0;
         egui::Area::new(egui::Id::new("space_switch"))
             .interactable(switch_pres.open)
             .anchor(
@@ -421,12 +452,13 @@ pub fn render_dock(
             .show(&ctx, |ui| {
                 // After Show in world, the way back stands where the search
                 // field was, with your face still at its end (bridge ②, N7).
-                if let Some(back) = people.bridges.back.as_ref().map(|b| b.label.clone()) {
+                #[cfg(feature = "comms")]
+                if let Some(back) = people.talk.bridges.back.as_ref().map(|b| b.label.clone()) {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         let chip_w = if with_face { width - FACE - 8.0 } else { width };
                         if crate::systems::bridges::back_chip(ui, chip_w, SEARCH_H, &back) {
-                            people.bridges.back_pressed = true;
+                            people.talk.bridges.back_pressed = true;
                         }
                         if with_face {
                             let resp = face_button(ui, SEARCH_H, me.as_deref(), waiting, menu.open);
@@ -459,6 +491,8 @@ pub fn render_dock(
     // are: on a desktop the panel docks to the right edge they stand on.
     let mut clicked: Option<RightPanel> = None;
     let mut camera_clicked = false;
+    // Say is the app's only (`comms`).
+    #[cfg_attr(not(feature = "comms"), allow(unused_mut))]
     let mut say_clicked = false;
     let mut holes = Vec::new();
     if !panel_open && !keyboard {
@@ -466,7 +500,9 @@ pub fn render_dock(
         // What the map's overlays keep off (`place_pins::clear_of_chrome`):
         // both sets, edge to edge of their discs and words.
         holes.push(col.rect(viewport));
-        holes.push(left_rect(viewport, if has_session { 4 } else { 3 }));
+        // Say is the fourth disc on the left, in a session of the app.
+        let say_disc = has_session && cfg!(feature = "comms");
+        holes.push(left_rect(viewport, if say_disc { 4 } else { 3 }));
         let disc = |id: &str, at: egui::Vec2| {
             egui::Area::new(egui::Id::new(id))
                 .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-at.x, at.y))
@@ -491,13 +527,9 @@ pub fn render_dock(
                 // The camera, dressed like every other disc: it wore the brand
                 // orange from 2026-10-18 and read as switched on when nothing
                 // was (2026-11-03).
-                camera_clicked = theme::round_button(
-                    ui,
-                    crate::systems::icons::CAMERA,
-                    "Camera",
-                    camera.is_open(),
-                )
-                .clicked();
+                camera_clicked =
+                    theme::round_button(ui, crate::systems::icons::CAMERA, "Camera", camera_open)
+                        .clicked();
             });
         }
 
@@ -525,13 +557,14 @@ pub fn render_dock(
         });
         // Say — the composer over the map (`systems::chat_overlay`), only in
         // a session. It carries the accent while the composer is up.
-        if has_session {
+        #[cfg(feature = "comms")]
+        if say_disc {
             left("say_disc", 3).show(&ctx, |ui| {
                 say_clicked = theme::round_button(
                     ui,
                     crate::systems::icons::CHAT,
                     "Say something to the people near you",
-                    say.composing,
+                    people.talk.say.composing,
                 )
                 .clicked();
             });
@@ -552,8 +585,11 @@ pub fn render_dock(
         Some(Space::Community) => {
             if signed_in {
                 *right_panel = RightPanel::Chat;
-                people.view.open = None;
-                people.view.you = false;
+                #[cfg(feature = "comms")]
+                {
+                    people.talk.view.open = None;
+                    people.talk.view.you = false;
+                }
             } else {
                 // Signed out, Community is what signing in is for, with the
                 // way in and a way back to the map (`systems::welcome`).
@@ -575,18 +611,22 @@ pub fn render_dock(
         right_panel.toggle(panel);
         menu.open = false;
     }
+    #[cfg(feature = "comms")]
     if camera_clicked {
-        camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
+        people.talk.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
         menu.open = false;
     }
+    #[cfg(feature = "comms")]
     if say_clicked {
-        if say.composing {
-            say.close();
+        if people.talk.say.composing {
+            people.talk.say.close();
         } else {
-            say.open();
+            people.talk.say.open();
         }
         menu.open = false;
     }
+    #[cfg(not(feature = "comms"))]
+    let _ = (camera_clicked, say_clicked);
 }
 
 /// The World | Community switch: a pill track, the chosen side the accent
@@ -839,11 +879,11 @@ pub(crate) fn paint_face(
 ) {
     let r = size / 2.0;
     match me {
-        Some(name) => crate::systems::chats::paint_avatar(
+        Some(name) => crate::systems::discs::paint_avatar(
             p,
             c,
             name,
-            crate::systems::chats::ChatKind::Private,
+            crate::systems::discs::ChatKind::Private,
             size,
         ),
         None => {

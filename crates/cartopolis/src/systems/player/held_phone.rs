@@ -302,14 +302,18 @@ fn facing(at: Vec3, eyes: Vec3) -> Quat {
 pub fn track_held_phone(
     precise: Res<PreciseHand>,
     store: Res<crate::systems::user_store::UserStore>,
-    screen: Res<crate::systems::camera_screen::CameraScreen>,
+    #[cfg(feature = "comms")] screen: Res<crate::systems::camera_screen::CameraScreen>,
     mut held: ResMut<HeldPhone>,
     avatars: Query<(), With<Avatar>>,
     holders: Query<(&ChildOf, &GlobalTransform, &HumanArms), With<AvatarHolder>>,
 ) {
     let side = store.data.hand.side();
     held.side = side;
+    // Only the app's camera screen raises a phone (`comms`).
+    #[cfg(feature = "comms")]
     let hold = screen.phone_hold();
+    #[cfg(not(feature = "comms"))]
+    let hold: Option<bool> = None;
     held.selfie = hold == Some(true);
     let Some((_, body, arms)) = holders
         .iter()

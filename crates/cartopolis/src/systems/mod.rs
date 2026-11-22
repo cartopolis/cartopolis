@@ -57,13 +57,18 @@ pub use cartopolis_geo::{
     road_texture, routing, scatter, texcomp, turf, vector_tiles,
 };
 pub use gui::{
-    access_tokens, action_ring, admin, app_update, avatar_designer, bookmarks, bridges,
-    building_card, calendar, call_screen, camera_screen, chat, chat_overlay, chat_people, chats,
-    communities, community_posts, contacts, cosmos, data_layers, design_room, dismiss, dock,
-    egui_manager, external_signin, facade_check, faces, floor_picker, hud, icons, js_highlight,
-    layer_tiles, layers_panel, login_screen, map_osd, model_library, motion, onscreen_keyboard,
+    action_ring, app_update, avatar_designer, bookmarks, building_card, chat, cosmos, data_layers,
+    design_room, discs, dismiss, dock, egui_manager, facade_check, faces, floor_picker, hud, icons,
+    js_highlight, layer_tiles, layers_panel, map_osd, model_library, motion, onscreen_keyboard,
     place_card, place_names, place_pins, plans, scenario, script_editor, settings, splash,
     text_touch, theme, ui, ui_theme, welcome, zoom_rail,
+};
+// What talks rather than shows the world: the app's, not the web build's
+// (`comms` in Cargo.toml).
+#[cfg(feature = "comms")]
+pub use gui::{
+    access_tokens, admin, bridges, calendar, call_screen, camera_screen, chat_overlay, chat_people,
+    chats, communities, community_posts, contacts, external_signin, login_screen,
 };
 pub use map::prim_hand;
 pub use map::prim_sound;
@@ -83,18 +88,21 @@ pub use map::{
     tall_structures, terrain, terrain_tiles, tile_loader, tile_source, tree_models, tunnels,
     underground, vegetation, water, water_levels, weather, wet_surfaces, world_places,
 };
+#[cfg(feature = "comms")]
+pub use nav::meetup;
 pub use nav::{
-    crowd, crowd_react, crows, driver, geo_nav, give_way, gnss_receiver, locate, meetup,
-    navigation, place_link, route_ahead, traffic, traffic_hours, traffic_physics, transit_live,
+    crowd, crowd_react, crows, driver, geo_nav, give_way, gnss_receiver, locate, navigation,
+    place_link, route_ahead, traffic, traffic_hours, traffic_physics, transit_live,
     transit_vehicles, walk_guide,
 };
 pub use nav::{high_precision, precise_tracker};
-#[cfg(target_os = "android")]
+#[cfg(target_arch = "wasm32")]
+pub use net::framed_session;
+#[cfg(all(target_os = "android", feature = "comms"))]
 pub use net::push;
-pub use net::{
-    background, call_tones, calls, chat_pictures, lifecycle, network, private_chat, session,
-    user_store, voice,
-};
+pub use net::{background, lifecycle, network, session, user_store, voice};
+#[cfg(feature = "comms")]
+pub use net::{call_tones, calls, chat_pictures, private_chat};
 #[cfg(not(target_arch = "wasm32"))]
 pub use player::avatar_video;
 #[cfg(not(target_arch = "wasm32"))]

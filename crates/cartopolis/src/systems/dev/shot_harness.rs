@@ -2437,7 +2437,6 @@ pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::E
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct ScriptedCards<'w, 's> {
     menu: ResMut<'w, crate::systems::ui::MainMenu>,
-    sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
     /// The map's ring of actions, for `--ui ring`.
     context_menu: ResMut<'w, crate::resources::ContextMenuState>,
@@ -2445,12 +2444,11 @@ pub struct ScriptedCards<'w, 's> {
     plans: ResMut<'w, crate::systems::plans::Plans>,
     /// Nested rather than added beside: the ceiling this type exists to work
     /// around is a *parameter* count, so a second bundle would hit it again.
-    chat: ScriptedChat<'w, 's>,
-    /// The Admin pages (`--ui admin` / `adminreports` / `adminreport` /
-    /// `adminaccount`).
-    admin: ResMut<'w, crate::systems::admin::AdminState>,
-    /// Settings ▸ Access tokens (`--ui tokens`).
-    tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
+    #[cfg(feature = "comms")]
+    talk: ScriptedTalk<'w, 's>,
+    /// Holds `'s` when there is no `talk` to (the web build).
+    #[cfg(not(feature = "comms"))]
+    no_talk: std::marker::PhantomData<&'s ()>,
     /// The first-launch card (`--ui welcome`), kept off every other shot.
     welcome: ResMut<'w, crate::systems::welcome::Welcome>,
     /// The place card, closed on every shot that does not ask for it: once
@@ -2458,10 +2456,25 @@ pub struct ScriptedCards<'w, 's> {
     place_card: ResMut<'w, crate::systems::place_card::PlaceCard>,
     /// The app's update pill and too-old card (`--ui updateready` …).
     app_update: ResMut<'w, crate::systems::app_update::AppUpdate>,
+}
+
+/// The cards only the app has (`comms`): the sign-in card, Admin, the access
+/// tokens, the bridges and the messenger. The web build stages none of them.
+#[cfg(feature = "comms")]
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ScriptedTalk<'w, 's> {
+    sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+    chat: ScriptedChat<'w, 's>,
+    /// The Admin pages (`--ui admin` / `adminreports` / `adminreport` /
+    /// `adminaccount`).
+    admin: ResMut<'w, crate::systems::admin::AdminState>,
+    /// Settings ▸ Access tokens (`--ui tokens`).
+    tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
     /// The bridges between World and Community (`--ui share`, `showworld`).
     bridges: ResMut<'w, crate::systems::bridges::Bridges>,
 }
 
+#[cfg(feature = "comms")]
 /// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
 ///
 /// The spawned speaker is here rather than in a system of its own because it has
@@ -2730,7 +2743,10 @@ pub fn open_scripted_ui(
     // so it is written before the panels below rather than beside them — and it
     // is here for the reason `--ui menu` is: a card nothing can screenshot is a
     // card nobody reviews, and this one is a form that only opens by hand.
-    cards.sign_in.open = want("signin");
+    #[cfg(feature = "comms")]
+    {
+        cards.talk.sign_in.open = want("signin");
+    }
     // `--ui welcome`: the first-launch card. Forced either way, since a
     // scripted run reads no `user.json` and would otherwise show it on every
     // shot as a fresh install does.
@@ -2805,8 +2821,12 @@ pub fn open_scripted_ui(
     // empty form is the *disabled* state of the button, which is the one state
     // this capture should not be documenting. Seed it with the address the docs
     // hand out so `--ui signin` photographs the card somebody actually looks at.
+    #[cfg(feature = "comms")]
     if want("signin") {
-        cards.sign_in.seed_for_capture("cartopolis.org", "jeroen");
+        cards
+            .talk
+            .sign_in
+            .seed_for_capture("cartopolis.org", "jeroen");
     }
     // `--ui face` (or `menu`) opens your face's sheet. It only ever opens
     // from a tap otherwise, and a control nothing can screenshot is a control
@@ -2891,7 +2911,8 @@ pub fn open_scripted_ui(
         } else if want("world") {
             Some(SettingsTab::World)
         } else if want("tokens") {
-            crate::systems::access_tokens::seed_demo(&mut cards.tokens);
+            #[cfg(feature = "comms")]
+            crate::systems::access_tokens::seed_demo(&mut cards.talk.tokens);
             Some(SettingsTab::Tokens)
         } else if want("safety") {
             Some(SettingsTab::Privacy)
@@ -2902,239 +2923,10 @@ pub fn open_scripted_ui(
     } else {
         crate::resources::RightPanel::None
     };
-    // `--ui chats` is the chat list, `--ui chatthread` one chat's Chat view and
-    // `--ui chatworld` its World view (`systems::chats`), seeded with demo chats
-    // for `chat_overlay`'s reason: every scripted run is offline, and these
-    // screens need a session to draw at all.
-    let messenger = if want("chatswitch") {
-        Some("switch")
-    } else if want("chatworld") {
-        Some("world")
-    } else if want("chatmeeting") {
-        Some("meeting")
-    } else if want("chatplan") {
-        Some("plan")
-    } else if want("chatpoll") {
-        Some("poll")
-    } else if want("chatthread") || want("chatattach") {
-        Some("chat")
-    } else if want("community") {
-        Some("community")
-    } else if want("communitytopics") {
-        Some("communitytopics")
-    } else if want("communitypost") {
-        Some("communitypost")
-    } else if want("communitymap") {
-        Some("communitymap")
-    } else if want("findcommunity") {
-        Some("find")
-    } else if want("newchat") {
-        Some("new")
-    } else if want("chats")
-        || want("communities")
-        || want("you")
-        || want("youadmin")
-        || want("admin")
-        || want("adminreports")
-        || want("adminreport")
-        || want("adminaccount")
-        || CALENDAR_PAGES.iter().any(|p| want(p))
-        || want("share")
-    {
-        Some("list")
-    } else {
-        None
-    };
-    match messenger {
-        Some(screen) => {
-            let base = if matches!(
-                screen,
-                "community" | "communitytopics" | "communitypost" | "communitymap" | "find" | "new"
-            ) {
-                "list"
-            } else {
-                screen
-            };
-            *right_panel = crate::systems::chats::seed_demo_chats(
-                &mut cards.chat.state,
-                &mut cards.chat.chats,
-                base,
-            );
-            crate::systems::communities::seed_demo(
-                &mut cards.chat.communities,
-                &mut cards.chat.state,
-                &mut cards.chat.chats,
-                screen,
-            );
-            // The posts pinned on the map read with the panel shut.
-            if screen == "communitymap" {
-                *right_panel = crate::resources::RightPanel::None;
-            }
-            // The World view's people (`chat_people`): a scripted run has no
-            // server to say where anybody is.
-            if screen == "world" {
-                crate::systems::contacts::seed_demo_whereabouts(&mut cards.chat.contacts);
-            } else {
-                cards.chat.contacts.whereabouts.clear();
-            }
-        }
-        None => {
-            crate::systems::chats::clear_demo_chats(&mut cards.chat.state, &mut cards.chat.chats);
-            crate::systems::communities::clear_demo(&mut cards.chat.communities);
-            // `--ui friends`: the Friends layer's markers, no chat open.
-            if want("friends") {
-                crate::systems::contacts::seed_demo_friends(&mut cards.chat.contacts);
-            } else {
-                cards.chat.contacts.whereabouts.clear();
-            }
-        }
-    }
-    // The bridges (`systems::bridges`), seeded as a tap would leave them: a
-    // scripted run has nobody sharing and no post on the map to tap. The
-    // Share sheet goes over the demo chats, with their panel shut.
-    {
-        use crate::systems::bridges::{Back, OpenIn, Origin, Return, SharePlace};
-        let card =
-            |name: &str, line: &str, open: OpenIn, person| crate::systems::place_card::CardPlace {
-                name: name.into(),
-                kind: None,
-                context: String::new(),
-                lat: 53.2165,
-                lng: 6.5640,
-                from: Some(Origin {
-                    line: line.into(),
-                    open,
-                    person,
-                }),
-            };
-        if want("markerperson") {
-            nav.pending_card = Some(card(
-                "sanne",
-                "Sharing location · 60 min left",
-                OpenIn::Chat("private:sanne".into()),
-                Some(("private:sanne".into(), "sanne".into())),
-            ));
-        } else if want("markerpost") {
-            nav.pending_card = Some(card(
-                "Bring a drill, we fix bikes",
-                "Garage 44 · post",
-                OpenIn::Post {
-                    community: uuid::Uuid::nil(),
-                    post: uuid::Uuid::nil(),
-                },
-                None,
-            ));
-        }
-        cards.bridges.back = want("showworld").then(|| Back {
-            label: "Vismarkt dinner".into(),
-            to: Return::default(),
-            lat: 53.2165,
-            lng: 6.5640,
-            arrived: false,
-        });
-        if want("showworld") {
-            nav.pending_card = Some(crate::systems::place_card::CardPlace {
-                name: "Vismarkt".into(),
-                kind: Some("square".into()),
-                context: "Groningen".into(),
-                lat: 53.2165,
-                lng: 6.5640,
-                from: None,
-            });
-        }
-        cards.bridges.share = want("share").then(|| SharePlace {
-            name: "Martinitoren".into(),
-            lat: 53.2194,
-            lng: 6.5681,
-            view: None,
-        });
-        if want("share") {
-            *right_panel = crate::resources::RightPanel::None;
-        }
-    }
-    // The calendar's pages over the demo chats, its "Coming up" card on every
-    // messenger screen, and its reminder over the map (`systems::calendar`).
-    crate::systems::calendar::seed_demo(
-        &mut cards.chat.calendar,
-        CALENDAR_PAGES.iter().copied().find(|p| want(p)),
-        messenger.is_some(),
-        want("reminder"),
-    );
-    // The You page, over the demo chats and contacts; `youadmin` as an admin
-    // sees it, with the Admin row and its waiting reports.
-    cards.chat.chats.you = want("you") || want("youadmin");
-    // The Admin pages: stand-in reports, accounts, roles and claims.
-    let admin_screen = ["adminreports", "adminreport", "adminaccount", "admin"]
-        .into_iter()
-        .find(|k| want(k));
-    match admin_screen {
-        Some(screen) => {
-            crate::systems::admin::seed_demo(&mut cards.admin, screen);
-            *right_panel = crate::resources::RightPanel::Admin;
-        }
-        None if want("youadmin") => crate::systems::admin::seed_demo(&mut cards.admin, "admin"),
-        None if cards.admin.demo => *cards.admin = default(),
-        None => {}
-    }
-    // The call screens (`systems::call_screen`): a call ringing, a voice call, a
-    // video call, a group, and a call folded to its bar — seeded, since a
-    // scripted run is offline and has nobody to call.
-    let call_screen = [
-        "callincoming",
-        "callvideo",
-        "callgroup",
-        "callfolded",
-        "call",
-    ]
-    .into_iter()
-    .find(|k| !all && want(k));
-    cards.chat.calls.seed_demo(call_screen);
-    // The contacts screens (`systems::contacts`), over the same demo chats.
-    // `Some(None)` is the person card over the map rather than a panel screen.
-    use crate::systems::contacts::Sub;
-    let contacts_screen = if want("personcard") {
-        Some(None)
-    } else if want("privacy") {
-        Some(Some(Sub::Privacy))
-    } else if want("addcontact") {
-        Some(Some(Sub::Add))
-    } else if want("request") {
-        Some(Some(Sub::Request("jeroen".into())))
-    } else if want("requests") {
-        Some(Some(Sub::Requests))
-    } else if want("contacts") {
-        Some(Some(Sub::Contacts))
-    } else {
-        None
-    };
-    match contacts_screen {
-        Some(sub) => {
-            *right_panel = crate::systems::chats::seed_demo_chats(
-                &mut cards.chat.state,
-                &mut cards.chat.chats,
-                "list",
-            );
-            crate::systems::contacts::seed_demo(&mut cards.chat.contacts, &mut cards.chat.state);
-            cards.chat.chats.open = None;
-            if sub.is_none() {
-                *right_panel = crate::resources::RightPanel::None;
-                crate::systems::contacts::seed_demo_card(&mut cards.chat.contacts);
-            } else {
-                cards.chat.contacts.card = None;
-            }
-            cards.chat.chats.sub = sub;
-        }
-        None => {
-            if cards.chat.contacts.demo {
-                *cards.chat.contacts = crate::systems::contacts::Contacts::default();
-                cards.chat.chats.sub = None;
-            }
-        }
-    }
-    // The You page counts contacts and requests, so it wants them seeded.
-    if want("you") || want("youadmin") {
-        crate::systems::contacts::seed_demo(&mut cards.chat.contacts, &mut cards.chat.state);
-    }
+    // The messenger's screens, the calls, the contacts and Admin: the app's
+    // (`comms`), staged in [`open_scripted_talk`].
+    #[cfg(feature = "comms")]
+    open_scripted_talk(&want, all, &mut cards.talk, &mut right_panel, &mut nav);
     if panels.is_empty() {
         return;
     }
@@ -3205,33 +2997,36 @@ pub fn open_scripted_ui(
             from: None,
         });
     }
-    // `--ui chat` is the only way to photograph `systems::chat_overlay` at all:
-    // the bubbles, the transcript and the composer all need a session, and every
-    // scripted run is offline (`--shot` implies it). So this seeds an exchange,
-    // claims `my_id` for the local avatar — whose bubble then needs no entity a
-    // `--offline` run does not already have — and stands one more speaker beside
-    // it. Pair it with `--shot-mode avatar`, or the camera is somewhere the
-    // avatar is not and the bubbles are off screen with it.
-    seed_scripted_chat(want("chat"), want("chatrest"), &mut cards.chat);
-    // A chat's World view reads its lines from the map's transcript, which
-    // draws only with a session or this.
-    if want("chatworld") {
-        cards.chat.overlay.demo = true;
-    }
-    cards.chat.chats.attach = want("chatattach");
-    let result = want("cameraresult");
-    let (video, mixed) = (want("cameravideo"), want("cameramixed"));
-    let selfie = want("cameraselfie");
-    if !want("camera") && !result && !video && !mixed && !selfie {
-        cards.chat.camera.dismiss();
-    } else if !cards.chat.camera.is_open() {
-        cards.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
-        cards.chat.camera.demo_result = result;
-        cards.chat.camera.demo_selfie = selfie;
-        cards.chat.camera.video = video;
-        if mixed {
-            cards.chat.camera.mode = crate::systems::camera_screen::Mode::Mixed;
-            cards.chat.camera.demo_mixed = true;
+    #[cfg(feature = "comms")]
+    {
+        // `--ui chat` is the only way to photograph `systems::chat_overlay` at all:
+        // the bubbles, the transcript and the composer all need a session, and every
+        // scripted run is offline (`--shot` implies it). So this seeds an exchange,
+        // claims `my_id` for the local avatar — whose bubble then needs no entity a
+        // `--offline` run does not already have — and stands one more speaker beside
+        // it. Pair it with `--shot-mode avatar`, or the camera is somewhere the
+        // avatar is not and the bubbles are off screen with it.
+        seed_scripted_chat(want("chat"), want("chatrest"), &mut cards.talk.chat);
+        // A chat's World view reads its lines from the map's transcript, which
+        // draws only with a session or this.
+        if want("chatworld") {
+            cards.talk.chat.overlay.demo = true;
+        }
+        cards.talk.chat.chats.attach = want("chatattach");
+        let result = want("cameraresult");
+        let (video, mixed) = (want("cameravideo"), want("cameramixed"));
+        let selfie = want("cameraselfie");
+        if !want("camera") && !result && !video && !mixed && !selfie {
+            cards.talk.chat.camera.dismiss();
+        } else if !cards.talk.chat.camera.is_open() {
+            cards.talk.chat.camera.request = Some(crate::systems::camera_screen::Target::Anywhere);
+            cards.talk.chat.camera.demo_result = result;
+            cards.talk.chat.camera.demo_selfie = selfie;
+            cards.talk.chat.camera.video = video;
+            if mixed {
+                cards.talk.chat.camera.mode = crate::systems::camera_screen::Mode::Mixed;
+                cards.talk.chat.camera.demo_mixed = true;
+            }
         }
     }
 
@@ -3244,7 +3039,254 @@ pub fn open_scripted_ui(
     tracing::info!(shot = progress.index + 1, ui = ?panels, "shot harness: opened scripted UI panels");
 }
 
+/// The `--ui` screens of the app's talking half (`comms`): the messenger,
+/// communities, the bridges, the calendar, the You page, Admin, the calls and
+/// the contacts, each seeded with stand-ins since a scripted run is offline.
+#[cfg(feature = "comms")]
+fn open_scripted_talk(
+    want: &dyn Fn(&str) -> bool,
+    all: bool,
+    talk: &mut ScriptedTalk,
+    right_panel: &mut crate::resources::RightPanel,
+    nav: &mut crate::systems::geo_nav::GeoNavState,
+) {
+    // `--ui chats` is the chat list, `--ui chatthread` one chat's Chat view and
+    // `--ui chatworld` its World view (`systems::chats`), seeded with demo chats
+    // for `chat_overlay`'s reason: every scripted run is offline, and these
+    // screens need a session to draw at all.
+    let messenger = if want("chatswitch") {
+        Some("switch")
+    } else if want("chatworld") {
+        Some("world")
+    } else if want("chatmeeting") {
+        Some("meeting")
+    } else if want("chatplan") {
+        Some("plan")
+    } else if want("chatpoll") {
+        Some("poll")
+    } else if want("chatthread") || want("chatattach") {
+        Some("chat")
+    } else if want("community") {
+        Some("community")
+    } else if want("communitytopics") {
+        Some("communitytopics")
+    } else if want("communitypost") {
+        Some("communitypost")
+    } else if want("communitymap") {
+        Some("communitymap")
+    } else if want("findcommunity") {
+        Some("find")
+    } else if want("newchat") {
+        Some("new")
+    } else if want("chats")
+        || want("communities")
+        || want("you")
+        || want("youadmin")
+        || want("admin")
+        || want("adminreports")
+        || want("adminreport")
+        || want("adminaccount")
+        || CALENDAR_PAGES.iter().any(|p| want(p))
+        || want("share")
+    {
+        Some("list")
+    } else {
+        None
+    };
+    match messenger {
+        Some(screen) => {
+            let base = if matches!(
+                screen,
+                "community" | "communitytopics" | "communitypost" | "communitymap" | "find" | "new"
+            ) {
+                "list"
+            } else {
+                screen
+            };
+            *right_panel = crate::systems::chats::seed_demo_chats(
+                &mut talk.chat.state,
+                &mut talk.chat.chats,
+                base,
+            );
+            crate::systems::communities::seed_demo(
+                &mut talk.chat.communities,
+                &mut talk.chat.state,
+                &mut talk.chat.chats,
+                screen,
+            );
+            // The posts pinned on the map read with the panel shut.
+            if screen == "communitymap" {
+                *right_panel = crate::resources::RightPanel::None;
+            }
+            // The World view's people (`chat_people`): a scripted run has no
+            // server to say where anybody is.
+            if screen == "world" {
+                crate::systems::contacts::seed_demo_whereabouts(&mut talk.chat.contacts);
+            } else {
+                talk.chat.contacts.whereabouts.clear();
+            }
+        }
+        None => {
+            crate::systems::chats::clear_demo_chats(&mut talk.chat.state, &mut talk.chat.chats);
+            crate::systems::communities::clear_demo(&mut talk.chat.communities);
+            // `--ui friends`: the Friends layer's markers, no chat open.
+            if want("friends") {
+                crate::systems::contacts::seed_demo_friends(&mut talk.chat.contacts);
+            } else {
+                talk.chat.contacts.whereabouts.clear();
+            }
+        }
+    }
+    // The bridges (`systems::bridges`), seeded as a tap would leave them: a
+    // scripted run has nobody sharing and no post on the map to tap. The
+    // Share sheet goes over the demo chats, with their panel shut.
+    {
+        use crate::systems::bridges::{Back, OpenIn, Origin, Return, SharePlace};
+        let card =
+            |name: &str, line: &str, open: OpenIn, person| crate::systems::place_card::CardPlace {
+                name: name.into(),
+                kind: None,
+                context: String::new(),
+                lat: 53.2165,
+                lng: 6.5640,
+                from: Some(Origin {
+                    line: line.into(),
+                    open,
+                    person,
+                }),
+            };
+        if want("markerperson") {
+            nav.pending_card = Some(card(
+                "sanne",
+                "Sharing location · 60 min left",
+                OpenIn::Chat("private:sanne".into()),
+                Some(("private:sanne".into(), "sanne".into())),
+            ));
+        } else if want("markerpost") {
+            nav.pending_card = Some(card(
+                "Bring a drill, we fix bikes",
+                "Garage 44 · post",
+                OpenIn::Post {
+                    community: uuid::Uuid::nil(),
+                    post: uuid::Uuid::nil(),
+                },
+                None,
+            ));
+        }
+        talk.bridges.back = want("showworld").then(|| Back {
+            label: "Vismarkt dinner".into(),
+            to: Return::default(),
+            lat: 53.2165,
+            lng: 6.5640,
+            arrived: false,
+        });
+        if want("showworld") {
+            nav.pending_card = Some(crate::systems::place_card::CardPlace {
+                name: "Vismarkt".into(),
+                kind: Some("square".into()),
+                context: "Groningen".into(),
+                lat: 53.2165,
+                lng: 6.5640,
+                from: None,
+            });
+        }
+        talk.bridges.share = want("share").then(|| SharePlace {
+            name: "Martinitoren".into(),
+            lat: 53.2194,
+            lng: 6.5681,
+            view: None,
+        });
+        if want("share") {
+            *right_panel = crate::resources::RightPanel::None;
+        }
+    }
+    // The calendar's pages over the demo chats, its "Coming up" card on every
+    // messenger screen, and its reminder over the map (`systems::calendar`).
+    crate::systems::calendar::seed_demo(
+        &mut talk.chat.calendar,
+        CALENDAR_PAGES.iter().copied().find(|p| want(p)),
+        messenger.is_some(),
+        want("reminder"),
+    );
+    // The You page, over the demo chats and contacts; `youadmin` as an admin
+    // sees it, with the Admin row and its waiting reports.
+    talk.chat.chats.you = want("you") || want("youadmin");
+    // The Admin pages: stand-in reports, accounts, roles and claims.
+    let admin_screen = ["adminreports", "adminreport", "adminaccount", "admin"]
+        .into_iter()
+        .find(|k| want(k));
+    match admin_screen {
+        Some(screen) => {
+            crate::systems::admin::seed_demo(&mut talk.admin, screen);
+            *right_panel = crate::resources::RightPanel::Admin;
+        }
+        None if want("youadmin") => crate::systems::admin::seed_demo(&mut talk.admin, "admin"),
+        None if talk.admin.demo => *talk.admin = default(),
+        None => {}
+    }
+    // The call screens (`systems::call_screen`): a call ringing, a voice call, a
+    // video call, a group, and a call folded to its bar — seeded, since a
+    // scripted run is offline and has nobody to call.
+    let call_screen = [
+        "callincoming",
+        "callvideo",
+        "callgroup",
+        "callfolded",
+        "call",
+    ]
+    .into_iter()
+    .find(|k| !all && want(k));
+    talk.chat.calls.seed_demo(call_screen);
+    // The contacts screens (`systems::contacts`), over the same demo chats.
+    // `Some(None)` is the person card over the map rather than a panel screen.
+    use crate::systems::contacts::Sub;
+    let contacts_screen = if want("personcard") {
+        Some(None)
+    } else if want("privacy") {
+        Some(Some(Sub::Privacy))
+    } else if want("addcontact") {
+        Some(Some(Sub::Add))
+    } else if want("request") {
+        Some(Some(Sub::Request("jeroen".into())))
+    } else if want("requests") {
+        Some(Some(Sub::Requests))
+    } else if want("contacts") {
+        Some(Some(Sub::Contacts))
+    } else {
+        None
+    };
+    match contacts_screen {
+        Some(sub) => {
+            *right_panel = crate::systems::chats::seed_demo_chats(
+                &mut talk.chat.state,
+                &mut talk.chat.chats,
+                "list",
+            );
+            crate::systems::contacts::seed_demo(&mut talk.chat.contacts, &mut talk.chat.state);
+            talk.chat.chats.open = None;
+            if sub.is_none() {
+                *right_panel = crate::resources::RightPanel::None;
+                crate::systems::contacts::seed_demo_card(&mut talk.chat.contacts);
+            } else {
+                talk.chat.contacts.card = None;
+            }
+            talk.chat.chats.sub = sub;
+        }
+        None => {
+            if talk.chat.contacts.demo {
+                *talk.chat.contacts = crate::systems::contacts::Contacts::default();
+                talk.chat.chats.sub = None;
+            }
+        }
+    }
+    // The You page counts contacts and requests, so it wants them seeded.
+    if want("you") || want("youadmin") {
+        crate::systems::contacts::seed_demo(&mut talk.chat.contacts, &mut talk.chat.state);
+    }
+}
+
 /// Seed or clear `--ui chat`. Written unconditionally, like every other element.
+#[cfg(feature = "comms")]
 fn seed_scripted_chat(open: bool, rest: bool, chat: &mut ScriptedChat) {
     if !open && !rest {
         for e in chat.seeded.iter() {
@@ -3765,6 +3807,7 @@ pub fn hold_scripted_design_room(
 ///
 /// Runs every frame rather than once with the seed, because the camera is placed
 /// by a different system and the settle loop moves it afterwards.
+#[cfg(feature = "comms")]
 pub fn hold_scripted_chat(
     mut chat: ResMut<crate::systems::chat::ChatState>,
     overlay: Res<crate::systems::chat_overlay::ChatOverlay>,

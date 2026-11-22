@@ -55,6 +55,7 @@ bevy = { workspace = true, features = ["debug"] }
 # `classes.dex`. `platform::audio`'s *capture* half stays off here on its own cfg.
 cartopolis = { path = "../cartopolis", default-features = false, features = [
     "audio",
+    "comms",
 ] }
 
 [lints]

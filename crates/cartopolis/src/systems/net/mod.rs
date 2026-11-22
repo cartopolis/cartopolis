@@ -9,18 +9,25 @@ pub use plugin::NetPlugin;
 /// foreground service).
 pub mod background;
 /// The sounds of a call: ringtone, ringback, call waiting, join and leave cues.
+#[cfg(feature = "comms")]
 pub mod call_tones;
 /// Private chats: this installation's encryption keys and the conversations
 /// they open (protocol 25).
+#[cfg(feature = "comms")]
 pub mod calls;
 /// Pictures in private chats: encrypted, stored on the server, opened here.
+#[cfg(feature = "comms")]
 pub mod chat_pictures;
 /// The app leaving the screen and coming back (registered by `ShellPlugin`).
+/// The web build's session, handed over by the page that frames it.
+#[cfg(target_arch = "wasm32")]
+pub mod framed_session;
 pub mod lifecycle;
 pub mod network;
+#[cfg(feature = "comms")]
 pub mod private_chat;
 /// Where the simulator wakes this phone when the app is closed (UnifiedPush).
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "comms"))]
 pub mod push;
 pub mod session;
 pub mod user_store;

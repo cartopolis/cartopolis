@@ -118,6 +118,7 @@ pub enum SettingsTab {
 impl SettingsTab {
     /// Every page, in the list's order: the account's, then the app's. The
     /// list is drawn from this, so a page left out of it cannot be reached.
+    #[cfg(feature = "comms")]
     const ALL: [Self; 7] = [
         Self::Privacy,
         Self::Tokens,
@@ -127,6 +128,10 @@ impl SettingsTab {
         Self::Graphics,
         Self::World,
     ];
+    /// The web build's: the account's pages are the page's around it, which
+    /// signed it in (`comms`).
+    #[cfg(not(feature = "comms"))]
+    const ALL: [Self; 4] = [Self::General, Self::Audio, Self::Graphics, Self::World];
 
     /// Under "Account" in the list, rather than "App".
     fn about_the_account(self) -> bool {
@@ -177,10 +182,14 @@ impl SettingsTab {
 /// sixteen.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct PeopleSettings<'w, 's> {
+    #[cfg(feature = "comms")]
     chat: ResMut<'w, crate::systems::chat::ChatState>,
+    #[cfg(feature = "comms")]
     contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     voice: ResMut<'w, crate::systems::voice::VoiceState>,
+    #[cfg(feature = "comms")]
     tokens: ResMut<'w, crate::systems::access_tokens::AccessTokens>,
+    #[cfg(feature = "comms")]
     view: ResMut<'w, crate::systems::chats::ChatsView>,
     windows: Query<'w, 's, &'static Window>,
 }
@@ -391,10 +400,19 @@ pub fn render_settings_panel(
     if was_open && !open {
         // Closed: the next time it opens, it opens on the list.
         state.page = None;
-        people.view.settings_from_you = false;
-        people.tokens.forget();
+        #[cfg(feature = "comms")]
+        {
+            people.view.settings_from_you = false;
+            people.tokens.forget();
+        }
     }
+    #[cfg(feature = "comms")]
+    let from_you = people.view.settings_from_you;
+    #[cfg(not(feature = "comms"))]
+    let from_you = false;
     let signed_in = identity.username.is_some() && online.is_some();
+    // For the access tokens' page, which is the app's (`comms`).
+    #[cfg(feature = "comms")]
     let may_elevate = identity
         .permissions
         .iter()
@@ -403,6 +421,7 @@ pub fn render_settings_panel(
     let mut close = false;
     let mut back_to_you = false;
     let mut to_about = false;
+    #[cfg_attr(not(feature = "comms"), allow(unused_mut))]
     let mut unblock: Option<String> = None;
     if open {
         let compact = egui.compact();
@@ -418,7 +437,7 @@ pub fn render_settings_panel(
             // opened from the You page, a way back there. A page's title leads
             // back to the list.
             match state.page {
-                None if people.view.settings_from_you => {
+                None if from_you => {
                     back_to_you = theme::back_title(ui, "Settings");
                 }
                 None => {
@@ -483,9 +502,14 @@ pub fn render_settings_panel(
                                 delete_account =
                                     account_tab(ui, &mut state, &mut identity, online.is_some());
                             }
+                            #[cfg(feature = "comms")]
                             Some(SettingsTab::Privacy) => {
                                 unblock = privacy_tab(ui, &mut people, signed_in);
                             }
+                            // Not in the web build's list (`ALL`).
+                            #[cfg(not(feature = "comms"))]
+                            Some(SettingsTab::Privacy | SettingsTab::Tokens) => {}
+                            #[cfg(feature = "comms")]
                             Some(SettingsTab::Tokens) => {
                                 if signed_in || people.tokens.demo {
                                     crate::systems::access_tokens::page(
@@ -510,7 +534,10 @@ pub fn render_settings_panel(
         }
     }
     if back_to_you {
-        people.view.you = true;
+        #[cfg(feature = "comms")]
+        {
+            people.view.you = true;
+        }
         *right_panel = RightPanel::Chat;
     }
     if to_about {
@@ -657,6 +684,7 @@ fn settings_home(
 
 /// Privacy and safety: who may message you, who you blocked, and how to
 /// report somebody. Answers a person to unblock.
+#[cfg(feature = "comms")]
 fn privacy_tab(ui: &mut egui::Ui, people: &mut PeopleSettings, signed_in: bool) -> Option<String> {
     let mut unblock = None;
     if signed_in {

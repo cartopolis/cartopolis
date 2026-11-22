@@ -213,14 +213,20 @@ impl Plugin for MapPlugin {
                 // The buildings behind the prims. **After** `prim_picking`, which
                 // is what gets to say whether the click was already spent — see
                 // `picking::PrimClick`.
-                // A tap on another person's avatar opens their card; between the
-                // prims (which keep a tap on a prim in front) and the buildings
-                // (which must not take a tap the avatar took).
-                systems::contacts::tap_avatar
-                    .after(systems::picking::prim_picking)
-                    .before(systems::building_select::pick_building),
                 systems::building_select::pick_building.after(systems::picking::prim_picking),
             )
+                .in_set(ClientPhase::Input),
+        );
+        // A tap on another person's avatar opens their card; between the
+        // prims (which keep a tap on a prim in front) and the buildings
+        // (which must not take a tap the avatar took). The card is the app's
+        // (`comms`).
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            Update,
+            systems::contacts::tap_avatar
+                .after(systems::picking::prim_picking)
+                .before(systems::building_select::pick_building)
                 .in_set(ClientPhase::Input),
         );
 

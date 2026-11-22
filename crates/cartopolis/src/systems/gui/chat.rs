@@ -107,6 +107,7 @@ pub struct ChatState {
     /// Pictures to send into private chats. Drained by
     /// `systems::private_chat`, which hands them to `chat_pictures` to encrypt
     /// and upload before the line goes out.
+    #[cfg(feature = "comms")]
     pub private_pictures: Vec<crate::systems::chat_pictures::OutgoingPicture>,
     /// A view waiting for the person to pick which private chat it goes to —
     /// set by "Send this view to a chat" and offered at the top of the panel.
@@ -233,6 +234,7 @@ pub struct ChatLine {
     pub point: Option<cartopolis_core::point::Point>,
     /// A picture that came with the line (private chats only): where it is
     /// stored and the key that opens it. `body` is then its caption.
+    #[cfg(feature = "comms")]
     pub picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Something a meeting left (private chats only): a plan, an answer, a
     /// poll, a vote, a note, a record. `body` is then its caption. Answers
@@ -310,6 +312,7 @@ impl Default for ChatState {
             private_input: String::new(),
             private_points: Vec::new(),
             private_meetings: Vec::new(),
+            #[cfg(feature = "comms")]
             private_pictures: Vec::new(),
             point_draft: None,
             point_text: String::new(),
@@ -539,6 +542,7 @@ impl ChatState {
             distance,
             arrived,
             point,
+            #[cfg(feature = "comms")]
             picture: None,
             meeting: None,
             at_ms: web_time::SystemTime::now()
@@ -683,11 +687,15 @@ impl ChatState {
             line.removed = true;
             line.body.clear();
             line.point = None;
-            line.picture = None;
+            #[cfg(feature = "comms")]
+            {
+                line.picture = None;
+            }
         }
     }
 
     /// [`Self::receive`], for a line that is a picture.
+    #[cfg(feature = "comms")]
     pub fn receive_picture(
         &mut self,
         channel: &str,

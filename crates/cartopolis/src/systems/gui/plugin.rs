@@ -40,7 +40,6 @@ impl Plugin for GuiPlugin {
             // The dock's mark disc and the card it opens (`systems::ui`).
             .init_resource::<systems::ui::MainMenu>()
             .init_resource::<systems::dock::MapChrome>()
-            .init_resource::<systems::bridges::Bridges>()
             // The place card a picked search result opens (`systems::place_card`).
             .init_resource::<systems::place_card::PlaceCard>()
             .init_resource::<systems::welcome::Welcome>()
@@ -68,21 +67,25 @@ impl Plugin for GuiPlugin {
             .watch_stream::<crate::systems::layer_state::DataLayers>()
             .init_resource::<systems::bookmarks::BookmarksState>()
             .init_resource::<systems::chat::ChatState>()
-            .init_resource::<systems::chat_overlay::ChatOverlay>()
-            .init_resource::<systems::chats::ChatsView>()
-            .init_resource::<systems::communities::Communities>()
             .init_resource::<systems::faces::Faces>()
             .init_resource::<systems::script_editor::ScriptEditorState>()
             .init_resource::<systems::model_library::ModelLibraryState>()
             // Drawn over everything until the first tiles are up. Mirrors the
             // splash in index.html, which covers the wasm load this cannot.
             .init_resource::<systems::splash::BootSplash>()
+            .init_resource::<systems::app_update::AppUpdate>();
+        // The app's talking half (`comms`). The web build has none of it: the
+        // page around the World tab does all of that in HTML.
+        #[cfg(feature = "comms")]
+        app.init_resource::<systems::bridges::Bridges>()
+            .init_resource::<systems::chat_overlay::ChatOverlay>()
+            .init_resource::<systems::chats::ChatsView>()
+            .init_resource::<systems::communities::Communities>()
             .init_resource::<systems::chats::ScreenRestore>()
             .init_resource::<systems::camera_screen::CameraScreen>()
             .init_resource::<systems::admin::AdminState>()
             .init_resource::<systems::access_tokens::AccessTokens>()
-            .init_resource::<systems::calendar::Calendar>()
-            .init_resource::<systems::app_update::AppUpdate>();
+            .init_resource::<systems::calendar::Calendar>();
 
         // The chrome's palette follows the light (`systems::ui_theme`): settled
         // in Input, before anything paints, so a frame is one theme throughout.
@@ -101,8 +104,8 @@ impl Plugin for GuiPlugin {
         // card's veil lies over every other area.
         app.add_systems(
             Update,
+            // After the calendar's reminder too, which that one says.
             systems::app_update::render_app_update
-                .after(systems::calendar::render_reminder)
                 .after(systems::place_pins::render_place_pins)
                 .in_set(ClientPhase::Present),
         );
@@ -118,7 +121,9 @@ impl Plugin for GuiPlugin {
 
         // The calendar (`systems::calendar`): its book takes in what the chats
         // hold before the Community panel draws it, and its reminder is its own
-        // `Foreground` area over everything, so not in the panel chain.
+        // `Foreground` area over everything, so not in the panel chain — but
+        // under the app's update card.
+        #[cfg(feature = "comms")]
         app.add_systems(
             Update,
             (
@@ -130,6 +135,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::chats::render_chats_panel),
                 systems::calendar::render_reminder
                     .after(systems::place_pins::render_place_pins)
+                    .before(systems::app_update::render_app_update)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -212,6 +218,7 @@ impl Plugin for GuiPlugin {
         // the rotation, and its screen is drawn over everything, as the call
         // screen is — its own `Foreground` area, so not in the panel chain. A
         // picture for a post is handed to the composer after it.
+        #[cfg(feature = "comms")]
         app.add_systems(
             Update,
             (
@@ -277,13 +284,14 @@ impl Plugin for GuiPlugin {
         // Chats or World, and the open chat, kept across Android stopping the
         // app (`chats::remember_screen`). Before the panels, so a restored tab
         // is drawn on the frame it is restored.
+        #[cfg(feature = "comms")]
         app.add_systems(
             Update,
             (
                 systems::chats::restore_screen,
                 systems::chats::remember_screen,
                 systems::chats::apply_sign_out,
-                systems::communities::sync_device,
+                systems::communities::sync_device.after(systems::place_link::take_new_link),
                 // Public posts' answers, and the camera's view for the one
                 // being written.
                 systems::community_posts::answer_post_view,
@@ -313,19 +321,6 @@ impl Plugin for GuiPlugin {
                 // panel, and doing it before the chain runs means the panel never
                 // draws a frame over the card it just opened.
                 systems::place_card::render_place_card.before(systems::ui::render_main_menu),
-                // The bridges between World and Community (`systems::bridges`):
-                // after the place card, whose Open chat / Open in Community it
-                // carries out in the same frame, and before every panel, which
-                // then draws the screen it switched to.
-                systems::bridges::drive_bridges
-                    .after(systems::place_card::render_place_card)
-                    .before(systems::ui::render_main_menu),
-                // The first-launch card (`systems::welcome`): floating above the
-                // dock on the place card's terms. After it, since it stands
-                // aside for an open card.
-                systems::welcome::render_welcome
-                    .after(systems::place_card::render_place_card)
-                    .before(systems::ui::render_main_menu),
                 // The building card, on the same terms and for the same reasons: a
                 // floating `Area` above the dock, outside the panel chain,
                 // suppressed by whatever owns the bottom of the screen. **After**
@@ -357,13 +352,6 @@ impl Plugin for GuiPlugin {
                 systems::camera_attach::render_attach_chip
                     .after(systems::satellites::render_satellite_menu)
                     .before(systems::ui::render_main_menu),
-                // The sign-in screen (`systems::login_screen`). It draws into its
-                // own floating `Area` (a modal must sit above the main menu, which
-                // is itself a `Foreground` area), so it is deliberately *not* in
-                // the panel chain — it never touches the shared root `Ui`. It still
-                // runs after the main menu, which is where it is opened from; the
-                // session driver it feeds runs after it (`net::plugin`).
-                systems::login_screen::render_login_screen.after(systems::ui::render_main_menu),
                 // The screenshot driver runs after the dev panel so a button click
                 // is seen the same frame it's captured.
                 systems::ui::drive_screenshots.after(systems::dev_panel::render_dev_panel),
@@ -453,6 +441,38 @@ impl Plugin for GuiPlugin {
                 .in_set(ClientPhase::Camera),
         );
 
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            Update,
+            (
+                // The bridges between World and Community (`systems::bridges`):
+                // after the place card, whose Open chat / Open in Community it
+                // carries out in the same frame, and before every panel, which
+                // then draws the screen it switched to.
+                systems::bridges::drive_bridges
+                    .after(systems::place_card::render_place_card)
+                    .before(systems::ui::render_main_menu),
+                // The first-launch card (`systems::welcome`): floating above the
+                // dock on the place card's terms. After it, since it stands
+                // aside for an open card.
+                systems::welcome::render_welcome
+                    .after(systems::place_card::render_place_card)
+                    .before(systems::ui::render_main_menu),
+                // The sign-in screen (`systems::login_screen`). It draws into its
+                // own floating `Area` (a modal must sit above the main menu, which
+                // is itself a `Foreground` area), so it is deliberately *not* in
+                // the panel chain — it never touches the shared root `Ui`. It still
+                // runs after the main menu, which is where it is opened from; the
+                // session driver it feeds runs after it (`net::plugin`). Its
+                // fields are drawn before the on-screen keyboard looks for them.
+                systems::login_screen::render_login_screen
+                    .after(systems::ui::render_main_menu)
+                    .before(systems::session::drive_session)
+                    .before(systems::onscreen_keyboard::render_onscreen_keyboard),
+            )
+                .in_set(ClientPhase::Input),
+        );
+
         // The right-hand panel chain — ONE ordered declaration.
         //
         // Every system here draws into the *same* shared root `Ui`, so their call
@@ -514,13 +534,7 @@ impl Plugin for GuiPlugin {
                     .chain()
                     .in_set(ClientPhase::Input),
                 (
-                    // The messenger: the chat list and one chat's Chat view
-                    // (`systems::chats`). Its World view and the Chats | World
-                    // switch are drawn over the map, after the composer below.
-                    systems::chats::render_chats_panel,
-                    // The Admin pages (`systems::admin`), in the same
-                    // right-hand slot as the Community panel.
-                    systems::admin::render_admin_panel,
+                    // (The messenger and Admin go here: `comms` below.)
                     systems::script_editor::render_script_panel,
                     systems::model_library::render_model_library_panel,
                     systems::ui::render_avatar_chooser,
@@ -531,24 +545,7 @@ impl Plugin for GuiPlugin {
                     // space, which is only the map once the side panels have taken
                     // their width.
                     systems::interact::render_interaction_prompt,
-                    // Chat over the map (`systems::chat_overlay`). In the chain
-                    // because the bubbles cull against the root `Ui`'s leftover
-                    // space exactly as the pins do; near the end because that space
-                    // is only the map once every panel has taken its width. The
-                    // sheet draws last of the three, and — being ordered before the
-                    // on-screen keyboard — its field is registered in time for the
-                    // keyboard to find it.
-                    // And after the other people have been moved this frame: the
-                    // two were unordered, so a balloon hung over where its speaker
-                    // was on whichever frames the scheduler ran it first.
-                    systems::chat_overlay::render_chat_bubbles
-                        .after(systems::free_camera::camera_controls)
-                        .after(systems::avatar::smooth_remote_avatars),
-                    systems::chat_overlay::render_chat_chip,
-                    systems::chat_overlay::render_chat_sheet,
-                    // A chat's World view has a text field, so it is ordered before
-                    // the on-screen keyboard for the composer's reason.
-                    systems::chats::render_chat_world,
+                    // (Chat over the map goes here: `comms` below.)
                     // The map's chrome (`systems::dock`): the World | Community
                     // switch, the search bar with your face, the round buttons.
                     // In the chain because the bar and the switch sit over the
@@ -558,9 +555,7 @@ impl Plugin for GuiPlugin {
                     // sheet leaves a tap on last frame's face to it
                     // (`ui::MainMenu::face`).
                     systems::dock::render_dock,
-                    // The person card and the first-message sheet
-                    // (`systems::contacts`): the sheet is a text field too.
-                    systems::contacts::render_person_card,
+                    // (The person card goes here: `comms` below.)
                     // Layers ▸ Places ▸ Plans (`systems::plans`): dots over the
                     // map, culled against the leftover space as the pins are, and
                     // under them — a saved place stays on top of a notice.
@@ -599,6 +594,58 @@ impl Plugin for GuiPlugin {
             )
                 .chain(),
         );
+        // The talking half's panels (`comms`), each run pinned between the two
+        // neighbours in the chain above it stood between when it was one tuple,
+        // so the order is still total: the web build simply has the chain
+        // without them. A `cfg` cannot sit on a tuple element, which is why
+        // they are not written in place.
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            Update,
+            (
+                (
+                    // The messenger: the chat list and one chat's Chat view
+                    // (`systems::chats`). Its World view and the Chats | World
+                    // switch are drawn over the map, after the composer below.
+                    systems::chats::render_chats_panel,
+                    // The Admin pages (`systems::admin`), in the same
+                    // right-hand slot as the Community panel.
+                    systems::admin::render_admin_panel,
+                )
+                    .chain()
+                    .after(systems::navigation::render_route_sheet)
+                    .before(systems::script_editor::render_script_panel),
+                (
+                    // Chat over the map (`systems::chat_overlay`). In the chain
+                    // because the bubbles cull against the root `Ui`'s leftover
+                    // space exactly as the pins do; near the end because that
+                    // space is only the map once every panel has taken its
+                    // width. The sheet draws last of the three, and — being
+                    // ordered before the on-screen keyboard — its field is
+                    // registered in time for the keyboard to find it.
+                    // And after the other people have been moved this frame: the
+                    // two were unordered, so a balloon hung over where its
+                    // speaker was on whichever frames the scheduler ran it first.
+                    systems::chat_overlay::render_chat_bubbles
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::avatar::smooth_remote_avatars),
+                    systems::chat_overlay::render_chat_chip,
+                    systems::chat_overlay::render_chat_sheet,
+                    // A chat's World view has a text field, so it is ordered
+                    // before the on-screen keyboard for the composer's reason.
+                    systems::chats::render_chat_world,
+                )
+                    .chain()
+                    .after(systems::interact::render_interaction_prompt)
+                    .before(systems::dock::render_dock),
+                // The person card and the first-message sheet
+                // (`systems::contacts`): the sheet is a text field too.
+                systems::contacts::render_person_card
+                    .after(systems::dock::render_dock)
+                    .before(systems::scenario::render_scenario_map),
+            )
+                .in_set(ClientPhase::Present),
+        );
         // panel-chain:end
 
         app.add_systems(
@@ -635,25 +682,29 @@ impl Plugin for GuiPlugin {
                 // Three anchors, because the fields are spread over three places:
                 // the panel chain (geo search, chat, assistant, bookmark rename,
                 // route), the sign-in card, and the prim edit dialog.
+                // (The sign-in card is ordered before it from its own side.)
                 systems::onscreen_keyboard::render_onscreen_keyboard
                     .after(systems::place_pins::render_place_pins)
-                    .after(systems::login_screen::render_login_screen)
                     .after(systems::ui::render_edit_dialog),
                 // Escape's single dismissal ladder. It reads state every panel has
                 // already written this frame, so it runs after the panel chain —
                 // which used to hold only because it was registered after it; the
                 // edge to the chain's last system says so now.
                 systems::dismiss::handle_escape.after(systems::locate::render_locate_arrow),
-                // The clock every chat line is aged against. Its own system rather
-                // than a line at the top of one of the drawing ones, which return
-                // early on half a dozen conditions — a clock that stops whenever
-                // nothing is drawn makes every line on screen immortal. A frame's
-                // lag against the network apply is deliberate and irrelevant: the
-                // shortest thing measured off it is a 1.5 s fade.
-                systems::chat_overlay::advance_chat_clock,
                 systems::splash::boot_splash,
             )
                 .in_set(ClientPhase::Present),
+        );
+        // The clock every chat line is aged against. Its own system rather
+        // than a line at the top of one of the drawing ones, which return
+        // early on half a dozen conditions — a clock that stops whenever
+        // nothing is drawn makes every line on screen immortal. A frame's
+        // lag against the network apply is deliberate and irrelevant: the
+        // shortest thing measured off it is a 1.5 s fade.
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            Update,
+            systems::chat_overlay::advance_chat_clock.in_set(ClientPhase::Present),
         );
     }
 }

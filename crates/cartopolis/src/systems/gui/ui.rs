@@ -65,10 +65,13 @@ fn sheet_width(viewport_w: f32, compact: bool) -> f32 {
 /// sign-in card: it is one entry with one outcome.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SignInMenu<'w> {
-    screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
     session: ResMut<'w, crate::systems::session::SessionState>,
     identity: Res<'w, crate::resources::AuthIdentity>,
+    #[cfg(feature = "comms")]
+    screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+    #[cfg(feature = "comms")]
     chats: ResMut<'w, crate::systems::chats::ChatsView>,
+    #[cfg(feature = "comms")]
     contacts: Res<'w, crate::systems::contacts::Contacts>,
 }
 
@@ -124,7 +127,10 @@ pub fn render_main_menu(
     let compact = egui.compact();
     let viewport = egui.viewport_pts();
     let width = sheet_width(viewport.x, compact);
+    #[cfg(feature = "comms")]
     let demo = sign_in.chats.demo;
+    #[cfg(not(feature = "comms"))]
+    let demo = false;
     let signed_in = sign_in.session.is_online() || demo;
     let me = sign_in
         .identity
@@ -136,8 +142,14 @@ pub fn render_main_menu(
         None if demo => "cartopolis.org".to_string(),
         other => other.unwrap_or_default().to_string(),
     };
+    #[cfg(feature = "comms")]
     let admin = sign_in.chats.admin.filter(|_| signed_in);
+    #[cfg(feature = "comms")]
     let waiting = signed_in && !sign_in.contacts.incoming.is_empty();
+    // In the web build the page around the World tab is who you are: its
+    // profile, its requests, its Admin and its sign-in (`comms`).
+    #[cfg(not(feature = "comms"))]
+    let (admin, waiting) = (None, false);
     let ctx = egui.ctx_mut().clone();
     let mut act: Option<SheetAct> = None;
     let mut close = false;
@@ -236,6 +248,7 @@ pub fn render_main_menu(
             right_panel.toggle(panel);
             close = true;
         }
+        #[cfg(feature = "comms")]
         Some(SheetAct::Profile) => {
             // Your profile is the Community's You page.
             let chats = &mut sign_in.chats;
@@ -245,6 +258,7 @@ pub fn render_main_menu(
             *right_panel = RightPanel::Chat;
             close = true;
         }
+        #[cfg(feature = "comms")]
         Some(SheetAct::ShareLink) => {
             let chats = &mut sign_in.chats;
             chats.open = None;
@@ -254,10 +268,14 @@ pub fn render_main_menu(
             *right_panel = RightPanel::Chat;
             close = true;
         }
+        #[cfg(feature = "comms")]
         Some(SheetAct::SignIn) => {
             sign_in.screen.open = true;
             close = true;
         }
+        // The sheet offers none of them without `comms` (`sheet_body`).
+        #[cfg(not(feature = "comms"))]
+        Some(SheetAct::Profile | SheetAct::ShareLink | SheetAct::SignIn) => {}
         Some(SheetAct::DevTools) => {
             dev_state.open = !dev_state.open;
             close = true;
@@ -371,7 +389,10 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
     });
     ui.add_space(8.0);
 
-    if s.signed_in {
+    if !cfg!(feature = "comms") {
+        // The web build: who you are, what to do about it and signing out
+        // are the page's around the World tab.
+    } else if s.signed_in {
         // Your profile, and your link: the two things about you that are not
         // a setting (`v2-account`, A3).
         ui.horizontal(|ui| {
@@ -509,7 +530,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             }
         });
     }
-    if s.signed_in {
+    if s.signed_in && cfg!(feature = "comms") {
         ui.add_space(4.0);
         // Arms in place, as `theme::confirm_button` does: the first tap asks,
         // the second signs out, and a stray tap times out.
@@ -742,7 +763,7 @@ pub fn drive_screenshots(
     // A clip's picture (`camera_screen::recorder`): the window as it is, UI and
     // all, and nothing hidden, so it goes beside any other capture and does
     // not return.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "comms"))]
     if std::mem::take(&mut shot.camera_frame) {
         commands.spawn(Screenshot::primary_window()).observe(
             |captured: On<bevy::render::view::screenshot::ScreenshotCaptured>,
@@ -752,6 +773,9 @@ pub fn drive_screenshots(
             },
         );
     }
+    // The three below hand their pixels to the app's chats, posts and camera
+    // (`comms`); the web build never asks for them.
+    #[cfg(feature = "comms")]
     if std::mem::take(&mut shot.post_snapshot) {
         // A public post's polaroid (`community_posts`): the same chrome-free
         // capture as a chat's snapshot, its pixels handed to the post being
@@ -776,6 +800,7 @@ pub fn drive_screenshots(
         );
         return;
     }
+    #[cfg(feature = "comms")]
     if std::mem::take(&mut shot.camera_snapshot) {
         // The camera's world: the window with no UI, for a polaroid or, in
         // Mixed, from the pose the camera is holding the view on, handed back
@@ -822,6 +847,7 @@ pub fn drive_screenshots(
         );
         return;
     }
+    #[cfg(feature = "comms")]
     if let Some(channel) = shot.chat_snapshot.take() {
         // The pixels go to the chat as raw RGBA: encoding a full window here
         // would stall the frame, and `chat_pictures` re-encodes on a worker
