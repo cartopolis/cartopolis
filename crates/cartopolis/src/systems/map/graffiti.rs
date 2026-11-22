@@ -176,7 +176,8 @@ fn ray_hit(o: Vec2, dir: Vec2, a: Vec2, b: Vec2) -> Option<f32> {
 /// The graffiti sheet the shader paints from: real graffiti from Groningen, cut
 /// out of Commons photographs by `tools/graffiti/gen.ts` (the credits are in
 /// `assets/textures/graffiti.md`). Loaded once, given a mip chain on a worker —
-/// a sheet seen from down an alley is minified hard — and put in place of the
+/// a sheet seen from down an alley is minified hard — and block-compressed like
+/// the map's tiles, then put in place of the
 /// clear texel every building material has bound until then.
 #[derive(Resource)]
 pub struct GraffitiSheet {
@@ -224,6 +225,12 @@ pub fn finish_graffiti_sheet(mut sheet: ResMut<GraffitiSheet>, mut images: ResMu
     let Some(handle) = sheet.loading.as_ref() else {
         return;
     };
+    // Whether the device decodes a block format is known once the renderer
+    // has answered (`quality::capabilities`); until then wait, or the sheet
+    // would go up uncompressed on a device that has one.
+    if crate::quality::capabilities().is_none() {
+        return;
+    }
     let Some(decoded) = images.get(handle) else {
         return;
     };
@@ -240,13 +247,22 @@ pub fn finish_graffiti_sheet(mut sheet: ResMut<GraffitiSheet>, mut images: ResMu
             use bevy::image::{
                 ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor,
             };
-            let (chain, mips) = cartopolis_geo::mip::build_mip_chain(size.x, size.y, data);
+            // One upload, so bounded like any (`stream_ledger`, and the gate's
+            // `upload_peak_asset_kb`): block-compressed as the map's tiles are,
+            // 2048² and its mips are 5.6 MB; uncompressed they would be 22, so a
+            // device with no block format gets the sheet at half the size.
+            let (w, h, data) = if crate::quality::tile_compression().is_some() {
+                (size.x, size.y, data)
+            } else {
+                (size.x / 2, size.y / 2, halve(size.x, size.y, &data))
+            };
+            let (texels, mips) = crate::systems::tile_loader::tile_texels(w, h, data);
             let image = crate::systems::tile_loader::image_from_mip_chain(
-                size.x,
-                size.y,
-                chain,
+                w,
+                h,
+                texels.data,
                 mips,
-                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                texels.format,
                 bevy::asset::RenderAssetUsages::RENDER_WORLD,
                 ImageSampler::Descriptor(ImageSamplerDescriptor {
                     address_mode_u: ImageAddressMode::ClampToEdge,
@@ -263,6 +279,24 @@ pub fn finish_graffiti_sheet(mut sheet: ResMut<GraffitiSheet>, mut images: ResMu
             }
         }),
     );
+}
+
+/// An RGBA8 image at half its size, each texel the mean of four.
+fn halve(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let (hw, hh) = ((w / 2) as usize, (h / 2) as usize);
+    let w = w as usize;
+    let mut out = vec![0u8; hw * hh * 4];
+    for y in 0..hh {
+        for x in 0..hw {
+            for c in 0..4 {
+                let at =
+                    |dx: usize, dy: usize| u32::from(rgba[((2 * y + dy) * w + 2 * x + dx) * 4 + c]);
+                out[(y * hw + x) * 4 + c] =
+                    ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
