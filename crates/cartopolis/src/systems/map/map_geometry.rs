@@ -238,6 +238,9 @@ type Tessellated = (
     // The streets' solved heights (`road_levels`), for the decks laid flat:
     // they stand on the road they carry, which atlas solved across tile borders.
     Option<Arc<cartopolis_geo::road_levels::LevelMap>>,
+    // The detail the cell was built with. A cell rebuilt in place lands only if
+    // this is still what the ring wants (`rebuild_in_place`).
+    DetailWants,
 );
 
 /// The ground a cell job builds on: the field in place now, or — while atlas's
@@ -1003,6 +1006,21 @@ pub struct MapSurfaces {
     /// retears them ([`DetailWants`]). `None` until the first pass, which is what
     /// makes the very first frame a build rather than a rebuild.
     detail_wants: Option<DetailWants>,
+    /// Live cells whose detail or ground is no longer what the ring wants, kept
+    /// drawn until the cell built to replace them lands ([`rebuild_in_place`]).
+    /// Until 2026-11-22 a band change cleared the ring instead, and the basemap
+    /// showed through the city for the seconds each rebuild took — the flicker
+    /// of a zoom (`docs/mockups/streaming-and-rendering/`).
+    stale: HashSet<Cell>,
+    /// The old entities of a cell whose replacement has landed, retired once the
+    /// replacement's last mesh is on the GPU ([`Self::finish_swap`]), so the
+    /// ground is never the basemap in between.
+    replaced: HashMap<Cell, Vec<Entity>>,
+    /// Entities retired this frame, to be taken off every view at once
+    /// ([`retired_layers`]). The despawn queue frees them a few a frame, and
+    /// until 2026-11-22 they were drawn while they waited: a street ring was
+    /// still on screen, shadows and all, half a minute after a climb to 200 km.
+    hide: Vec<Entity>,
     /// The shared ground-finish roughness map ([`ground_finish_uv`]), minted on
     /// first use and held so every group that takes it gets the same image rather
     /// than its own copy of identical texels.
@@ -1177,6 +1195,9 @@ impl Default for MapSurfaces {
             pending_meshes: VecDeque::new(),
             awaiting_complete: HashSet::new(),
             detail_wants: None,
+            stale: HashSet::new(),
+            replaced: HashMap::new(),
+            hide: Vec::new(),
             ground_finish: None,
             coverage_wait: None,
             climb: ClimbRate::default(),
@@ -1393,6 +1414,25 @@ impl DetailWants {
             flat_ground: self.flat_ground && now.flat_ground,
             ..self
         }
+    }
+
+    /// Whether `self` asks for anything `was` did not: a band entered on the way
+    /// down, a layer switched on, a different set of modelled forms. Such a
+    /// change rebuilds the ring in place, the old cells drawn until the new ones
+    /// land ([`rebuild_in_place`]). A change that only takes detail *away* — a
+    /// band left on the way up, a layer switched off — retires the cells at once
+    /// instead: what they hold is more than the view wants, the basemap under
+    /// them is the picture at that height, and holding a street ring to 200 km
+    /// would keep its ~4,000 entities drawn and resident for nothing (measured
+    /// 2026-11-22; `near-ground-layers-at-altitude.md` has the memory).
+    fn gains_over(self, was: DetailWants) -> bool {
+        (self.trees && !was.trees)
+            || (self.furniture && !was.furniture)
+            || (self.shore && !was.shore)
+            || (self.grass && !was.grass)
+            || (self.flat_ground && !was.flat_ground)
+            || (self.tree_models && !was.tree_models)
+            || self.modelled != was.modelled
     }
 }
 
@@ -2859,6 +2899,7 @@ fn spawn_geometry_task(
                             built_rev,
                             atlas_decks,
                             levels,
+                            wants,
                         ),
                     ));
                 }
@@ -3230,12 +3271,29 @@ impl MapSurfaces {
             };
             // A reserved handle cannot be stale: nothing else inserts into it.
             let _ = meshes.insert(&handle, mesh);
-            if self.awaiting_complete.contains(&cell)
-                && !self.pending_meshes.iter().any(|(c, ..)| *c == cell)
-            {
-                self.awaiting_complete.remove(&cell);
-                self.complete.insert(cell);
+            if !self.pending_meshes.iter().any(|(c, ..)| *c == cell) {
+                self.finish_swap(cell);
             }
+        }
+    }
+
+    /// Retire a cell's entities: off every view this frame ([`Self::hide`]),
+    /// freed under the despawn cap.
+    fn retire_entities(&mut self, entities: Vec<Entity>) {
+        self.hide.extend(entities.iter().copied());
+        self.stream.retire_all(entities);
+    }
+
+    /// The moment a landed cell's last mesh is on the GPU: the cell it replaced
+    /// goes, and the cell is complete ground if its flat sheets are among them.
+    fn finish_swap(&mut self, c: Cell) {
+        if let Some(old) = self.replaced.remove(&c) {
+            self.retire_entities(old);
+        }
+        if self.awaiting_complete.remove(&c) {
+            self.complete.insert(c);
+        } else {
+            self.complete.remove(&c);
         }
     }
 
@@ -3248,9 +3306,16 @@ impl MapSurfaces {
             RING_RETEARS.fetch_add(1, Relaxed);
             CELLS_DISCARDED.fetch_add(thrown as u64, Relaxed);
         }
-        for (_, entities) in self.loaded.drain() {
-            self.stream.retire_all(entities);
+        let old: Vec<Vec<Entity>> = self
+            .loaded
+            .drain()
+            .chain(self.replaced.drain())
+            .map(|(_, entities)| entities)
+            .collect();
+        for entities in old {
+            self.retire_entities(entities);
         }
+        self.stale.clear();
         self.cell_bytes.clear();
         self.cell_cost.clear();
         self.built_rev.clear();
@@ -3313,8 +3378,12 @@ fn within_ceiling(
 /// in the ring is asked for again.
 fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     if let Some(entities) = surfaces.loaded.remove(&c) {
-        surfaces.stream.retire_all(entities);
+        surfaces.retire_entities(entities);
     }
+    if let Some(entities) = surfaces.replaced.remove(&c) {
+        surfaces.retire_entities(entities);
+    }
+    surfaces.stale.remove(&c);
     surfaces.cell_bytes.remove(&c);
     surfaces.built_rev.remove(&c);
     surfaces.built_digest.remove(&c);
@@ -3331,6 +3400,44 @@ fn retire_cell(surfaces: &mut MapSurfaces, stores: &mut CellStores, c: Cell) {
     stores.tunnels.drop_cell(c);
     stores.colliders.remove_quay_cell(c);
     stores.placeholders.forget_cell(c);
+}
+
+/// Rebuild every live cell for what the ring wants now — a detail band crossed,
+/// a new field, a coverage answer — **keeping each one drawn until the cell
+/// built to replace it has landed.** The ring used to be cleared here, and a
+/// zoom from 40 km to the street then showed the basemap through the city twice
+/// over, for the seconds each rebuild took, with the traffic gone with its
+/// roads (measured 2026-11-22, `docs/mockups/streaming-and-rendering/`). Now a
+/// stale cell is asked for again ([`dispatch_cells`]), lands over the old one
+/// ([`upload_finished_cells`]) and swaps the moment its meshes are in
+/// ([`MapSurfaces::finish_swap`]); what the old cell put in the stores is
+/// replaced cell by cell, so the roads never leave the network.
+///
+/// Work in flight was built for the old wants: `reset` orphans its sink and
+/// tears the jobs at their next stage (`torn()`), and the cells are asked for
+/// again. That is the one thing still thrown away, and what
+/// [`CELLS_DISCARDED`] counts.
+fn rebuild_in_place(surfaces: &mut MapSurfaces) {
+    let in_flight = surfaces.stream.in_flight();
+    if !surfaces.loaded.is_empty() || in_flight > 0 {
+        use std::sync::atomic::Ordering::Relaxed;
+        RING_RETEARS.fetch_add(1, Relaxed);
+        CELLS_DISCARDED.fetch_add(in_flight as u64, Relaxed);
+    }
+    surfaces.stale.extend(surfaces.loaded.keys().copied());
+    // A rebuild changes what a cell is built with, so what it cost says nothing
+    // about what it will cost (`cell_cost`).
+    surfaces.cell_cost.clear();
+    surfaces.stream.reset();
+}
+
+/// What a retired entity is given so that no camera and no light draws it
+/// while it waits in the despawn queue: no render layer at all. Not
+/// `Visibility::Hidden` — `globe::update_globe_visibility` writes `Inherited`
+/// to every `HideInSpace` entity below the space tier each frame, and would
+/// have it back on screen the next.
+fn retired_layers() -> bevy::camera::visibility::RenderLayers {
+    bevy::camera::visibility::RenderLayers::none()
 }
 
 /// Stream vector surface meshes around the camera.
@@ -3353,6 +3460,11 @@ pub fn update_map_surfaces(
     // Always drain the despawn queue, even on the early returns below — a source
     // switch or a climb into space must still clear steadily rather than stall.
     surfaces.stream.drain_despawns(&mut commands);
+    // What last frame retired is taken off the views now, whatever the queue
+    // has got round to (`MapSurfaces::hide`).
+    for e in surfaces.hide.drain(..) {
+        commands.entity(e).try_insert(retired_layers());
+    }
     // …and the upload queue, for the same reason: a cell that landed just below
     // the space tier still finishes arriving.
     surfaces.upload_pending(&mut meshes);
@@ -3465,9 +3577,9 @@ pub fn update_map_surfaces(
             "surface cells retear"
         );
         surfaces.terrain_revision = terrain.revision;
-        for c in old {
-            retire_cell(&mut surfaces, &mut stores, c);
-        }
+        // Kept drawn on the old ground until the cell rebuilt on the new one
+        // lands — `rebuild_in_place`'s rule, cell by cell.
+        surfaces.stale.extend(old);
     }
     if surfaces.terrain_revision != terrain.revision || surfaces.bgt_revision != bgt_revision {
         // **What a retear costs, and why it is worth a line in the log.** Each one
@@ -3487,15 +3599,7 @@ pub fn update_map_surfaces(
         );
         surfaces.terrain_revision = terrain.revision;
         surfaces.bgt_revision = bgt_revision;
-        surfaces.clear();
-        stores.places.clear();
-        stores.labels.clear();
-        stores.decks.clear();
-        stores.grass.clear();
-        stores.roads.clear();
-        stores.tunnels.clear();
-        stores.colliders.clear_quays();
-        stores.placeholders.clear_queue();
+        rebuild_in_place(&mut surfaces);
     }
 
     // The cells hold whatever detail was wanted when their worker ran, so turning
@@ -3554,7 +3658,8 @@ pub fn update_map_surfaces(
     };
     if surfaces.detail_wants != Some(wants) {
         // Said for the reason the two retears above are: a descent crosses three
-        // of these bands, and each one re-runs every cell's job.
+        // of these bands, and each one re-runs every cell's job — in place, the
+        // old cell drawn until the new one is in (`rebuild_in_place`).
         if was.is_some() {
             tracing::info!(
                 cells = surfaces.loaded.len(),
@@ -3566,15 +3671,21 @@ pub fn update_map_surfaces(
             );
         }
         surfaces.detail_wants = Some(wants);
-        surfaces.clear();
-        stores.places.clear();
-        stores.labels.clear();
-        stores.decks.clear();
-        stores.grass.clear();
-        stores.roads.clear();
-        stores.tunnels.clear();
-        stores.colliders.clear_quays();
-        stores.placeholders.clear_queue();
+        if was.is_some_and(|was| wants.gains_over(was)) {
+            rebuild_in_place(&mut surfaces);
+        } else {
+            // Detail only taken away (`DetailWants::gains_over`): the cells go
+            // now and are rebuilt without it once the zoom slows.
+            surfaces.clear();
+            stores.places.clear();
+            stores.labels.clear();
+            stores.decks.clear();
+            stores.grass.clear();
+            stores.roads.clear();
+            stores.tunnels.clear();
+            stores.colliders.clear_quays();
+            stores.placeholders.clear_queue();
+        }
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -3638,6 +3749,10 @@ pub fn update_map_surfaces(
     );
     // In the frame the cell landed, as far as the ledger allows.
     surfaces.upload_pending(&mut meshes);
+    // Whatever this frame retired — a cell swapped, a cell off the ring.
+    for e in surfaces.hide.drain(..) {
+        commands.entity(e).try_insert(retired_layers());
+    }
 }
 
 /// Step 1 of a frame of surface streaming: the ring of cells the camera wants,
@@ -3700,15 +3815,17 @@ fn dispatch_cells(
     // (`VIEW_FIRST_CELLS`). One that failed for good does not hold the rest.
     surfaces.in_view = cells_in_view(wanted, at);
     let view_pending = view_first_enabled()
-        && surfaces
-            .in_view
-            .iter()
-            .any(|c| !surfaces.loaded.contains_key(c) && !surfaces.stream.exhausted(c));
+        && surfaces.in_view.iter().any(|c| {
+            (!surfaces.loaded.contains_key(c) || surfaces.stale.contains(c))
+                && !surfaces.stream.exhausted(c)
+        });
     for c in wanted {
         if view_pending && !surfaces.in_view.contains(c) {
             continue;
         }
-        if !surfaces.loaded.contains_key(c) {
+        // Missing, or live but built for other detail or other ground
+        // (`rebuild_in_place`): either way a job.
+        if !surfaces.loaded.contains_key(c) || surfaces.stale.contains(c) {
             let rank = crate::platform::fetch_gate::ring_distance(*c, ccx, ccy);
             surfaces.stream.request_ranked(*c, rank, now);
         }
@@ -3821,6 +3938,7 @@ fn upload_finished_cells(
             built_rev,
             atlas_decks,
             road_levels,
+            built_wants,
         ),
     ) in ready
     {
@@ -3835,15 +3953,41 @@ fn upload_finished_cells(
             surfaces.stream.forget(&c);
             continue;
         }
+        // Built for the detail the ring wanted then, not now: the same again.
+        if built_wants != wants {
+            tracing::debug!(cell = ?c, "surface cell built for other detail; again");
+            surfaces.stream.forget(&c);
+            continue;
+        }
         tracing::debug!(cell = ?c, built_rev, replaces = surfaces.loaded.contains_key(&c), "surface cell arrived");
         let Some(surface_meshes) = outcome else {
             // Not in `loaded`, and marked failed so it is not retried every frame;
-            // the ring moving off it forgets the cell.
+            // the ring moving off it forgets the cell. A stale cell that fails
+            // keeps what it has: old ground over no ground.
             surfaces.stream.failed(&c, now);
             continue;
         };
         surfaces.stream.succeeded(&c);
         surfaces.built_rev.insert(c, built_rev);
+        // A cell rebuilt in place (`rebuild_in_place`): the old entities stay
+        // drawn until the new ones are on the GPU (`finish_swap`), and what the
+        // old cell put in the stores is replaced below, cell by cell — every
+        // store's `insert_cell` is a replacement.
+        surfaces.stale.remove(&c);
+        let replacing = match surfaces.loaded.remove(&c) {
+            Some(old) => {
+                if let Some(older) = surfaces.replaced.insert(c, old) {
+                    surfaces.retire_entities(older);
+                }
+                true
+            }
+            None => false,
+        };
+        if replacing {
+            // Queued for the old cell and not yet stood up: the new cell queues
+            // its own below.
+            stores.placeholders.forget_cell(c);
+        }
 
         // Cell's north-west corner in world metres — the origin the tessellator's
         // tile-local coordinates are relative to.
@@ -3930,6 +4074,8 @@ fn upload_finished_cells(
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {
             stores.grass.insert_cell(c, Vec2::new(wx, wz), tile_m, area);
+        } else if replacing {
+            stores.grass.remove_cell(&c);
         }
 
         // One water material per cell — it carries that cell's shore field, so it
@@ -4155,12 +4301,20 @@ fn upload_finished_cells(
             });
         surfaces.cell_bytes.insert(c, built_bytes);
         surfaces.cell_cost.insert(c, built_bytes);
-        // Complete once its ground is in, not when it lands (`awaiting_complete`).
-        surfaces.complete.remove(&c);
+        // Complete once its ground is in, not when it lands (`awaiting_complete`);
+        // a cell being replaced keeps the old cell's answer until then.
+        if !replacing {
+            surfaces.complete.remove(&c);
+        }
         if complete {
             surfaces.awaiting_complete.insert(c);
         } else {
             surfaces.awaiting_complete.remove(&c);
+        }
+        // Nothing to upload (a cell of open water, say): the swap is now. The
+        // rest swap when their last mesh is in (`upload_pending`).
+        if !surfaces.pending_meshes.iter().any(|(cell, ..)| *cell == c) {
+            surfaces.finish_swap(c);
         }
         if !decks.is_empty() {
             // Measured by atlas while it graded this ground: nothing to ask PDOK.
