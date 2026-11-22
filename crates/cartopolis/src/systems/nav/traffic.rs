@@ -2268,8 +2268,17 @@ pub fn drive_traffic(
     let (Some((cam_cell, cam_tf)), Ok(grid)) = (camera.get(), grids.single()) else {
         return;
     };
-    // The camera's absolute world XZ, which is the frame the network is in.
-    let cam = anchored_xz(cam_cell, cam_tf.translation);
+    // Where the pools are placed and recycled: the ring's centre
+    // (`grid::StreamCentre`), which is the orbit focus in Earth mode and the
+    // camera elsewhere, in the anchored world XZ the network is in. Until
+    // 2026-11-22 this was the camera itself, so a tilted view from a few
+    // hundred metres up had its 260 m disc under or behind the camera and the
+    // streets in view empty — and every zoom step, which moves the camera but
+    // not the focus, recycled the pool.
+    let cam = camera.stream_xz_at(cam_cell, cam_tf);
+    // The eye itself, for what is about being *seen*: out of sight, the level
+    // of detail, leaving unnoticed.
+    let viewer = anchored_xz(cam_cell, cam_tf.translation);
     // Which way the camera looks on the ground; zero looking straight down.
     let cam_ahead = {
         let f = cam_tf.forward();
@@ -3149,7 +3158,7 @@ pub fn drive_traffic(
             if let (Some(k), Some(l), Some((p, travel, from_y))) = (key, line, pose) {
                 // Past its pool's quota for the hour, and out of the way of
                 // the camera: it goes home here rather than on.
-                let off_duty = !on_duty && p.distance(cam) > OFF_DUTY_M;
+                let off_duty = !on_duty && p.distance(viewer) > OFF_DUTY_M;
                 if car.s > l.length() && off_duty {
                     key = None;
                     line = None;
@@ -3230,7 +3239,7 @@ pub fn drive_traffic(
                 let (centre, heading) = l.at(along);
                 let travel = heading * dir;
                 let p = centre + right_of(travel) * kind.offset(l);
-                let rel = p - cam;
+                let rel = p - viewer;
                 let near = rel.length() < unseen_m(kind);
                 if !filling
                     && near
@@ -3499,7 +3508,7 @@ pub fn drive_traffic(
         }
         // `CARTO_TRAFFIC_OVERLAPS`'s smoothness count: how much the drawn
         // step changes frame to frame, for whoever is near the camera.
-        if jitter.on && dt > 0.0 && pos.distance(cam) < 60.0 && car.drawn != Vec2::ZERO {
+        if jitter.on && dt > 0.0 && pos.distance(viewer) < 60.0 && car.drawn != Vec2::ZERO {
             let step = pos - car.drawn;
             if step.length() < 3.0 {
                 let j = (step - car.drawn_step).length() / dt;
@@ -3528,7 +3537,7 @@ pub fn drive_traffic(
         }
         car.drawn = pos;
         // The stuck report: a vehicle standing near the camera, and why.
-        if jitter.on && kind.drives() && pos.distance(cam) < 60.0 {
+        if jitter.on && kind.drives() && pos.distance(viewer) < 60.0 {
             if car.speed < 0.2 {
                 car.stuck += dt;
                 let s = car.stuck;
@@ -3606,7 +3615,7 @@ pub fn drive_traffic(
                 let stride = body.stride * tf.scale.y;
                 car.phase =
                     (car.phase + stepped / stride * std::f32::consts::TAU) % std::f32::consts::TAU;
-                let near = crowd::wants_near(&figure, (pos - cam).length());
+                let near = crowd::wants_near(&figure, (pos - viewer).length());
                 if near != figure.near {
                     figure.near = near;
                     (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
@@ -3700,7 +3709,7 @@ pub fn drive_traffic(
                         t.rotation = Quat::from_rotation_x(car.roll);
                     }
                 }
-                let near = crowd::wants_near(&figure, (pos - cam).length());
+                let near = crowd::wants_near(&figure, (pos - viewer).length());
                 if near != figure.near {
                     figure.near = near;
                     (mesh.0, material.0) = body.wear(if near { 0 } else { usize::MAX }, &figure);
