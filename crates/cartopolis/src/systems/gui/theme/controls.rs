@@ -258,11 +258,23 @@ pub(super) fn flat_button(
 /// The frame is handed to egui whole (`TextEdit::frame`), which egui then
 /// paints as given: no pressed-button plate, no `expansion`.
 pub fn text_field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    text_field_inset(ui, edit, 0.0)
+}
+
+/// [`text_field`] whose text stops `right_inset` short of the right edge, for
+/// a control drawn inside the field there (the password's eye).
+pub(super) fn text_field_inset(
+    ui: &mut egui::Ui,
+    edit: egui::TextEdit<'_>,
+    right_inset: f32,
+) -> egui::Response {
+    let mut margin = Margin::symmetric(12, 9);
+    margin.right = margin.right.saturating_add(right_inset.round() as i8);
     let frame = egui::Frame::new()
         .fill(p().card)
         .stroke(Stroke::new(1.0, p().control_edge))
         .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::symmetric(12, 9));
+        .inner_margin(margin);
     let resp = crate::systems::text_touch::field(
         ui,
         edit.frame(frame)
@@ -326,4 +338,121 @@ pub fn labelled<R>(
         r
     })
     .inner
+}
+
+/// An on/off setting as the web's `FieldSwitch`: the words, and at the row's
+/// end a 38×22 track with a round knob that slides to the accent when on. A
+/// checkbox asks to be ticked; a switch states what is on, which is what a
+/// setting is ("Stay signed in on this device").
+pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let (track_w, track_h, knob) = (38.0, 22.0, 16.0);
+    let height = control_height_small().max(track_h);
+    let (rect, mut resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let is_on = *on;
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), is_on, label)
+    });
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let enabled = ui.is_enabled();
+    let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
+    let painter = ui.painter();
+    // The words give way to the track, cut with an ellipsis, never under it.
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        label.to_string(),
+        FontId::proportional(SIZE_BODY),
+        dim(p().text),
+    );
+    job.wrap =
+        egui::text::TextWrapping::truncate_at_width((rect.width() - track_w - 12.0).max(0.0));
+    let words = painter.layout_job(job);
+    painter.galley(
+        egui::pos2(rect.left(), rect.center().y - words.size().y / 2.0),
+        words,
+        dim(p().text),
+    );
+    let track = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - track_w / 2.0, rect.center().y),
+        egui::vec2(track_w, track_h),
+    );
+    // The knob eases across in the state time every other toggle uses.
+    let t = crate::systems::motion::toggle(
+        ui.ctx(),
+        resp.id.with("knob"),
+        is_on,
+        crate::systems::motion::STATE,
+    );
+    let (fill, line) = if is_on {
+        (p().accent, p().accent_ring)
+    } else {
+        (p().surface_hover, p().control_edge)
+    };
+    painter.rect(
+        track,
+        CornerRadius::same(RADIUS_PILL),
+        dim(fill),
+        Stroke::new(1.0, dim(line)),
+        egui::StrokeKind::Inside,
+    );
+    let x0 = track.left() + track_h / 2.0;
+    let x1 = track.right() - track_h / 2.0;
+    painter.circle_filled(
+        egui::pos2(x0 + (x1 - x0) * t, track.center().y),
+        knob / 2.0,
+        dim(p().knob_on),
+    );
+    paint_focus_ring(ui, &resp, track, false);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A hairline with a word in it — "or with" between the password form and
+/// the other ways to sign in, as the sign-in mockup draws it
+/// (`docs/mockups/redesign`, A2).
+pub fn divider_with(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        FontId::proportional(SIZE_SUB),
+        p().text_dim,
+    );
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), galley.size().y.max(16.0)),
+        egui::Sense::hover(),
+    );
+    let gap = 10.0;
+    let half = galley.size().x / 2.0 + gap;
+    let y = rect.center().y;
+    let line = Stroke::new(1.0, p().overlay_line);
+    let painter = ui.painter();
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), y),
+            egui::pos2(rect.center().x - half, y),
+        ],
+        line,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(rect.center().x + half, y),
+            egui::pos2(rect.right(), y),
+        ],
+        line,
+    );
+    painter.galley(
+        egui::pos2(
+            rect.center().x - galley.size().x / 2.0,
+            y - galley.size().y / 2.0,
+        ),
+        galley,
+        p().text_dim,
+    );
+    ui.add_space(6.0);
 }

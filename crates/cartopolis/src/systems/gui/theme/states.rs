@@ -851,24 +851,33 @@ pub fn checkbox(
 /// system runs before it, by construction (`gui::plugin`, the on-screen keyboard's `.after` edges).
 pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
     let eye = close_button_size();
-    let gap = ui.spacing().item_spacing.x;
     ui.horizontal(|ui| {
-        // The eye is paid for out of the field, not added to the row: these sit
-        // in a labelled two-column layout on a 274 pt phone viewport, and a row
-        // that grows by its own button pushes the field off the card.
-        let width = (ui.available_width() - eye - gap).max(40.0);
+        // The eye sits *inside* the field's right end, as the sign-in mockup
+        // draws it: the field keeps the card's full width and the text stops
+        // short of the eye (`text_field_inset`). Beside the field it took a
+        // sixth of a 275 pt phone and left the password narrower than the
+        // account name over it.
+        let width = ui.available_width();
         // Keyed off this row's own `Ui`, not the field's auto-id: the field's id
         // is only known after it has been shown, and this has to be read before.
         let id = ui.id().with("password_shown");
         let shown = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
-        let field = text_field(
+        let field = super::controls::text_field_inset(
             ui,
             egui::TextEdit::singleline(text)
                 .password(!shown)
                 .desired_width(width),
+            eye + 6.0,
         );
 
-        let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(eye), egui::Sense::click());
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(
+                field.rect.right() - eye - 8.0,
+                field.rect.center().y - eye / 2.0,
+            ),
+            egui::Vec2::splat(eye),
+        );
+        let resp = ui.interact(rect, field.id.with("eye"), egui::Sense::click());
         resp.widget_info(|| {
             egui::WidgetInfo::selected(
                 egui::WidgetType::Checkbox,

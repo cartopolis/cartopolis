@@ -611,78 +611,34 @@ fn card_ui(
                     26.0
                 };
                 theme::wordmark_ui(ui, brand);
-                ui.label(
-                    egui::RichText::new("Meet people, chat and join communities")
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
-                );
             });
         });
     });
 
-    ui.add_space(12.0);
-    status_line(ui, session, identity);
+    // The card's one heading, as the sign-in mockup draws it
+    // (`docs/mockups/redesign`, A2): wordmark, "Sign in", the two fields.
+    // The blurb and the "Not signed in" dot went with it — the card is open,
+    // so you are not. The status line stays for what it alone says: a
+    // handshake under way, or the world you are already in.
     ui.add_space(10.0);
-
-    // ── The one question ─────────────────────────────────────────────────────
-    // Folded to a line once there is a server, with a way to change it: the
-    // field was the card's first question, and only somebody running their own
-    // server has a different answer to it than the one filled in.
-    if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
-        field_line(ui, "Server", |ui| {
-            // Change takes its corner first and the name what is left, for
-            // the reason the header gives: laid out the other way round the
-            // two were drawn over each other on a phone.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::header_action(ui, "Change").clicked() {
-                    screen.edit_server = true;
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(screen.server.trim())
-                                .size(theme::SIZE_BODY)
-                                .color(theme::p().cream),
-                        )
-                        .truncate(),
-                    );
-                });
-            });
-        });
-    } else {
-        field(ui, "Server", |ui| {
-            crate::systems::theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut screen.server)
-                    // A bare hostname, because that is now what works and what
-                    // the docs hand out. A hint carrying `:4747` taught the one
-                    // shape that cannot reach a TLS sim.
-                    //
-                    // **"e.g." is not decoration.** egui paints a hint in
-                    // `weak_text_color`, which this palette sets to `TEXT_DIM` —
-                    // 15 % darker than body text, and at this size on this surface
-                    // that is not a difference anybody reads as "empty". The hint
-                    // was *exactly* the string a filled field would hold, so an
-                    // untouched Server field was indistinguishable from one
-                    // containing the right answer, and the button below it then
-                    // refused the form without a word (`build_request` returns
-                    // `None`). A hint that is an example rather than an impostor
-                    // cannot be mistaken for a value however dim the theme is.
-                    .hint_text("e.g. cartopolis.org")
-                    .desired_width(f32::INFINITY),
-            );
-        });
+    ui.label(
+        egui::RichText::new("Sign in")
+            .font(egui::FontId::new(
+                theme::SIZE_PANEL_TITLE,
+                theme::brand_family(),
+            ))
+            .color(theme::p().cream),
+    );
+    if !matches!(session.status, SessionStatus::Offline) {
+        ui.add_space(6.0);
+        status_line(ui, session, identity);
     }
 
-    // ── Other ways in ────────────────────────────────────────────────────────
     // While the browser is out, the card is about that and nothing else: the
     // password form under it would be a second, contradictory question.
     if screen.external.busy() {
         external_waiting(ui, screen);
         return close;
-    }
-    if !screen.external.offered.is_empty() {
-        external_buttons(ui, screen, session.status.is_busy());
     }
 
     field(ui, "Account name", |ui| {
@@ -696,8 +652,8 @@ fn card_ui(
     field(ui, "Password", |ui| {
         theme::password_field(ui, &mut screen.password);
     });
-    ui.add_space(6.0);
-    theme::checkbox(ui, &mut screen.remember, "Stay signed in on this device")
+    ui.add_space(10.0);
+    theme::switch(ui, &mut screen.remember, "Stay signed in on this device")
         .on_hover_text("Keep the session token this server issues, so it stops asking — and come back to this world on the next launch");
     ui.add_space(12.0);
 
@@ -769,6 +725,15 @@ fn card_ui(
         );
     }
 
+    // ── Other ways in ────────────────────────────────────────────────────────
+    // Under the form, behind "or with": the account name is the way in that
+    // every server has, the providers are what this one has set up.
+    if !screen.external.offered.is_empty() {
+        ui.add_space(6.0);
+        theme::divider_with(ui, "or with");
+        external_buttons(ui, screen, busy);
+    }
+
     // ── A way in for somebody with no account ────────────────────────────────
     // The card assumed one: "User" with nothing to say where an account comes
     // from. The server's own web page signs people up (`/register`, the atlas
@@ -786,27 +751,66 @@ fn card_ui(
             }
         });
     }
+
+    // ── The server, last ─────────────────────────────────────────────────────
+    // A fact at the foot of the card with a way to change it, not the first
+    // question: only somebody running their own server has a different answer
+    // than the one filled in. Asked to be changed, it becomes a field here.
+    ui.add_space(14.0);
+    if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("Server: {}", screen.server.trim()))
+                        .size(theme::SIZE_SUB)
+                        .color(theme::p().text_dim),
+                )
+                .truncate(),
+            );
+            if theme::header_action(ui, "Change").clicked() {
+                screen.edit_server = true;
+            }
+        });
+    } else {
+        field(ui, "Server", |ui| {
+            crate::systems::theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut screen.server)
+                    // A bare hostname, because that is now what works and what
+                    // the docs hand out. A hint carrying `:4747` taught the one
+                    // shape that cannot reach a TLS sim.
+                    //
+                    // **"e.g." is not decoration.** egui paints a hint in
+                    // `weak_text_color`, which this palette sets to `TEXT_DIM` —
+                    // 15 % darker than body text, and at this size on this surface
+                    // that is not a difference anybody reads as "empty". The hint
+                    // was *exactly* the string a filled field would hold, so an
+                    // untouched Server field was indistinguishable from one
+                    // containing the right answer, and the button below it then
+                    // refused the form without a word (`build_request` returns
+                    // `None`). A hint that is an example rather than an impostor
+                    // cannot be mistaken for a value however dim the theme is.
+                    .hint_text("e.g. cartopolis.org")
+                    .desired_width(f32::INFINITY),
+            );
+        });
+    }
     close
 }
 
-/// The providers this server offers, two to a row, and the line that says the
-/// form below is the other way in.
+/// The providers this server offers, one to a row, the card's full width, as
+/// the sign-in mockup lists them under "or with".
 fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
-    ui.add_space(10.0);
     let mut chosen = None;
     ui.add_enabled_ui(!busy, |ui| {
-        for pair in screen.external.offered.chunks(2) {
-            ui.horizontal(|ui| {
-                let w = theme::equal_width(ui, 2);
-                for p in pair {
-                    // The name's first letter stands in for the provider's
-                    // mark: the app's fonts carry none of them.
-                    let mark: String = p.name.chars().take(1).collect();
-                    if theme::secondary_button(ui, &mark, &p.name, w).clicked() {
-                        chosen = Some(p.clone());
-                    }
-                }
-            });
+        for p in &screen.external.offered {
+            // The name's first letter stands in for the provider's mark: the
+            // app's fonts carry none of them.
+            let mark: String = p.name.chars().take(1).collect();
+            let w = ui.available_width();
+            if theme::secondary_button(ui, &mark, &p.name, w).clicked() {
+                chosen = Some(p.clone());
+            }
             ui.add_space(4.0);
         }
     });
@@ -820,14 +824,6 @@ fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
                 .color(theme::p().error),
         );
     }
-    ui.add_space(4.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new("or with your account name")
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-        );
-    });
 }
 
 /// The card while the browser is signing in: the code to compare, a way back
@@ -933,21 +929,6 @@ fn field(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
     theme::labelled(ui, label, "", |ui| {
         ui.horizontal(add);
-    });
-}
-
-/// A value already answered, on one line: its label, then the value. The
-/// folded server row, which is a fact with a "Change" beside it rather than a
-/// question, so it does not take a field's two lines.
-fn field_line(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-        );
-        add(ui);
     });
 }
 
