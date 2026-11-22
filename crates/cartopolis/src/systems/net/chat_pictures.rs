@@ -274,6 +274,29 @@ pub fn demo_picture() -> PictureRef {
     }
 }
 
+/// The same picture on its side, 360×480: what the phone's camera gives a post
+/// held upright (`community_posts::seed_demo`, `--ui communitypost`).
+pub const DEMO_HASH_PORTRAIT: &str = "demo-picture-portrait";
+
+/// The demo picture's JPEG, for a cache that draws the demo hashes itself.
+pub(crate) fn demo_jpeg_for(hash: &str) -> Option<Result<Vec<u8>, String>> {
+    match hash {
+        DEMO_HASH => Some(demo_jpeg()),
+        DEMO_HASH_PORTRAIT => Some(demo_jpeg().and_then(|jpeg| {
+            let img = image::load_from_memory(&jpeg).map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            img.rotate90()
+                .write_to(
+                    &mut std::io::Cursor::new(&mut out),
+                    image::ImageFormat::Jpeg,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(out)
+        })),
+        _ => None,
+    }
+}
+
 /// A city at dusk in four colours: sky, a low sun, rooftops and a canal.
 fn demo_jpeg() -> Result<Vec<u8>, String> {
     let (w, h) = (480u32, 360u32);

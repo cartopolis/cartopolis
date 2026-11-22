@@ -355,7 +355,11 @@ impl Communities {
         let slot = self.pictures.entry(hash.to_string()).or_insert_with(|| {
             let h = hash.to_string();
             Picture::Loading(IoTaskPool::get().spawn(async move {
-                let jpeg = crate::systems::model_assets::fetch_picture(&h).await?;
+                // A scripted capture's picture is drawn here, never fetched.
+                let jpeg = match crate::systems::chat_pictures::demo_jpeg_for(&h) {
+                    Some(demo) => demo?,
+                    None => crate::systems::model_assets::fetch_picture(&h).await?,
+                };
                 crate::utils::photo::decode_rgba(&jpeg)
             }))
         });
@@ -557,6 +561,17 @@ fn people(s: &str) -> Vec<String> {
 /// post's pin on the map is the case that showed it, because the person is
 /// looking at the map and has no reason to think of the list at all.
 fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
+    title_row_with(ui, title, out, |_| {})
+}
+
+/// [`title_row`] plus the page's own action beside the close, laid out
+/// right-to-left from it (the composer's Post).
+fn title_row_with(
+    ui: &mut egui::Ui,
+    title: &str,
+    out: &mut Out,
+    extra: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let mut back = false;
     ui.horizontal(|ui| {
         let chevron = ui.add(
@@ -585,6 +600,7 @@ fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
             if theme::close_button(ui).clicked() {
                 out.close = true;
             }
+            extra(ui);
         });
     });
     ui.add_space(8.0);
@@ -1294,7 +1310,33 @@ fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
 
 #[allow(clippy::too_many_lines)]
 fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
-    if title_row(ui, "", out) {
+    use crate::systems::community_posts as posts;
+    // Writing a post is the page: its title row, then the text field first
+    // (`posts::compose_page`). Post sits in the row, as the mockup draws it
+    // (`docs/mockups/communities/`, B), so it is in sight from the start.
+    let composing = posts::composing(cs, id);
+    if composing {
+        let ready = posts::ready_to_post(cs);
+        let mut send = false;
+        let label = if cs.posts.sending {
+            "Posting…"
+        } else {
+            "Post"
+        };
+        let back = title_row_with(ui, "New post", out, |ui| {
+            send = ui
+                .add_enabled_ui(ready, |ui| theme::header_action(ui, label))
+                .inner
+                .clicked();
+        });
+        if back {
+            posts::leave_compose_page(cs);
+            return;
+        }
+        if send {
+            posts::send_post(cs);
+        }
+    } else if title_row(ui, "", out) {
         cs.screen = None;
         return;
     }
@@ -1302,6 +1344,10 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         theme::note(ui, "You are no longer in this community.");
         return;
     };
+    if composing {
+        posts::compose_page(ui, cs, &c);
+        return;
+    }
     let picture = cs.picture(ui.ctx(), c.settings.picture.as_deref());
     let Some(role) = c.role else {
         hero(

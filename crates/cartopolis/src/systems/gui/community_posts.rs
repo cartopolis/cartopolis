@@ -90,6 +90,10 @@ pub struct Posts {
     thread: Option<PostThread>,
     thread_open: Option<Uuid>,
     pub draft: Option<Draft>,
+    /// Whether the draft is open as the community's page (`compose_page`).
+    /// Off, a draft with something in it waits behind "Continue your post",
+    /// so looking round the map for a better view does not cost the text.
+    pub composing: bool,
     reply: String,
     /// The reply being answered, when it is one rather than the post: its id
     /// and its author's name.
@@ -121,7 +125,7 @@ pub struct Posts {
     pub only: Option<Uuid>,
     /// The community whose page last asked for its posts.
     loaded: Option<Uuid>,
-    sending: bool,
+    pub sending: bool,
     settings_open: bool,
     /// The post whose actions are open.
     menu_for: Option<Uuid>,
@@ -222,6 +226,7 @@ impl Posts {
         let place = self.from_view.take();
         self.want_view = place.is_none();
         self.tab = Tab::Posts;
+        self.composing = true;
         self.draft = Some(Draft {
             community,
             text: String::new(),
@@ -563,10 +568,6 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
             }
         });
     }
-    if cs.posts.draft.as_ref().is_some_and(|d| d.community == id) {
-        composer(ui, cs, c);
-        return;
-    }
     if let Some(post) = cs.posts.thread_open {
         thread_view(ui, cs, c, post, out);
         return;
@@ -604,11 +605,38 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
     }
     ui.add_space(6.0);
     if info.may_post {
-        let width = ui.available_width();
-        if theme::primary_button_sized(ui, &format!("{}  Write a post", icons::RENAME), width)
-            .clicked()
-        {
-            cs.posts.compose(id);
+        let waiting = cs.posts.draft.as_ref().is_some_and(|d| d.community == id);
+        if waiting {
+            // A draft left by Back: pick it up, or let it go.
+            ui.horizontal(|ui| {
+                let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
+                let gap = ui.spacing().item_spacing.x;
+                let wide = (ui.available_width() - side - gap).floor();
+                if theme::primary_button_sized(
+                    ui,
+                    &format!("{}  Continue your post", icons::RENAME),
+                    wide,
+                )
+                .clicked()
+                {
+                    cs.posts.composing = true;
+                }
+                let drop = theme::secondary_button(ui, icons::CLEAR, "", side);
+                if theme::named(ui, drop, "Discard the draft")
+                    .on_hover_text("Discard the draft")
+                    .clicked()
+                {
+                    cs.posts.draft = None;
+                    cs.picture_for_post = false;
+                }
+            });
+        } else {
+            let width = ui.available_width();
+            if theme::primary_button_sized(ui, &format!("{}  Write a post", icons::RENAME), width)
+                .clicked()
+            {
+                cs.posts.compose(id);
+            }
         }
         ui.add_space(4.0);
     }
@@ -780,7 +808,7 @@ fn draft_extras(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, has_pi
                 .id(egui::Id::new(("post_alt", community)))
                 .desired_width(ui.available_width())
                 .char_limit(MAX_PICTURE_ALT)
-                .hint_text("What the photo shows, for people who can't see it"),
+                .hint_text("What the photo shows, in words"),
         );
         theme::checkbox(
             ui,
@@ -1373,9 +1401,17 @@ fn thread_view(
     );
 }
 
+/// The composer over the map (`render_floating_composer`), with its own title
+/// row — Post, and a ✕ that discards: over the map there is no page to go
+/// back to.
 fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
-    let followers = cs.posts.info.get(&c.id).map_or(0, |i| i.followers);
-    let federating = cs.posts.info.get(&c.id).is_some_and(|i| i.federating);
+    let ready = ready_to_post(cs);
+    let label = if cs.posts.sending {
+        "Posting…"
+    } else {
+        "Post"
+    };
+    let mut send = false;
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("New post")
@@ -1387,12 +1423,99 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                 cs.posts.draft = None;
                 cs.picture_for_post = false;
             }
+            send = ui
+                .add_enabled_ui(ready, |ui| theme::header_action(ui, label))
+                .inner
+                .clicked();
         });
     });
+    if send {
+        send_post(cs);
+    }
+    ui.add_space(4.0);
+    compose_page(ui, cs, c);
+}
+
+/// Whether the draft can go: text and a place, nothing still uploading.
+#[must_use]
+pub fn ready_to_post(cs: &Communities) -> bool {
+    cs.posts
+        .draft
+        .as_ref()
+        .is_some_and(|d| !d.text.trim().is_empty() && d.place.is_some())
+        && !cs.posts.sending
+        && cs.picture_for_post_idle()
+        && !cs.posts.snapshot_busy
+}
+
+/// Send the draft (`Done::Posted` takes it off the page when the server has
+/// it). Does nothing without a place.
+pub fn send_post(cs: &mut Communities) {
+    let Some(d) = cs.posts.draft.clone() else {
+        return;
+    };
+    let Some(place) = d.place else {
+        return;
+    };
+    cs.posts.sending = true;
+    let body = serde_json::to_string(&NewPost {
+        text: d.text.trim().to_string(),
+        sensitive: d.sensitive && d.picture.is_some(),
+        picture_alt: Some(d.alt.trim().to_string())
+            .filter(|a| !a.is_empty() && d.picture.is_some()),
+        warning: d
+            .warning
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty()),
+        picture: d.picture,
+        snapshot: d.snapshot,
+        place,
+    })
+    .unwrap_or_default();
+    let community = d.community;
+    cs.posts.spawn(async move {
+        Done::Posted(
+            community,
+            json(api_post(&format!("/api/communities/{community}/posts"), Some(body)).await),
+        )
+    });
+}
+
+/// Whether the community's page is the composer: a draft for it, open.
+#[must_use]
+pub fn composing(cs: &Communities, community: Uuid) -> bool {
+    cs.posts.composing
+        && cs
+            .posts
+            .draft
+            .as_ref()
+            .is_some_and(|d| d.community == community)
+}
+
+/// Back from the composer page: an empty draft goes, one with something in it
+/// waits on the community's page behind "Continue your post".
+pub fn leave_compose_page(cs: &mut Communities) {
+    cs.posts.composing = false;
+    let empty =
+        cs.posts.draft.as_ref().is_none_or(|d| {
+            d.text.trim().is_empty() && d.picture.is_none() && d.snapshot.is_none()
+        });
+    if empty {
+        cs.posts.draft = None;
+        cs.picture_for_post = false;
+    }
+}
+
+/// The composer as the community's own page, under the page's title row
+/// (`communities::community_screen`). It used to sit in the Posts tab, under
+/// the community's picture, name, action strip and tabs: on a phone that is a
+/// whole screen before the text field, and Post was two screens down.
+pub fn compose_page(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
+    let followers = cs.posts.info.get(&c.id).map_or(0, |i| i.followers);
+    let federating = cs.posts.info.get(&c.id).is_some_and(|i| i.federating);
     let Some(draft) = cs.posts.draft.as_mut() else {
         return;
     };
-    ui.add_space(4.0);
     crate::systems::text_touch::field(
         ui,
         egui::TextEdit::multiline(&mut draft.text)
@@ -1426,7 +1549,16 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
             40.0,
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if theme::secondary_button(ui, icons::HERE, "Use view", 0.0)
+                // On a phone the words leave the place one line of three
+                // letters; the icon alone, square, as the review row does.
+                let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
+                let (word, w) = if ui.available_width() < 300.0 {
+                    ("", side)
+                } else {
+                    ("Use view", 0.0)
+                };
+                let again = theme::secondary_button(ui, icons::HERE, word, w);
+                if theme::named(ui, again, "Use view")
                     .on_hover_text("Close the panel, look somewhere else, come back and press this")
                     .clicked()
                 {
@@ -1481,12 +1613,12 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         .as_deref()
         .and_then(|h| cs.picture(ui.ctx(), Some(h)))
     {
+        // As wide as the text, or as tall as the text field for an upright
+        // picture from a phone, which at the width would take the screen.
         let w = ui.available_width();
-        let size = t.size_vec2();
-        let h = (w * size.y / size.x.max(1.0)).min(180.0);
         let shown = ui.add(
             egui::Image::new(&t)
-                .fit_to_exact_size(egui::vec2(w, h))
+                .fit_to_exact_size(egui::vec2(w, 200.0))
                 .corner_radius(10.0),
         );
         if remove_badge(ui, shown.rect, "Remove the picture") {
@@ -1500,17 +1632,42 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
     // Camera and Upload, the same two round buttons wherever a picture can be
     // added (`docs/mockups/social-camera/`). The camera's In world mode is
     // the polaroid this row used to have a button of its own for.
+    // With a picture on the post, the same two buttons replace it. The words
+    // under them say so; a sentence beside them ran off a phone's edge and,
+    // being unwrapped, widened everything under it past the screen too.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 18.0;
         let busy = !cs.picture_for_post_idle() || cs.posts.snapshot_busy;
         for (icon, label, hint) in [
-            (icons::CAMERA, "Camera", "Take a picture for this post"),
-            (icons::UPLOAD, "Upload", "A picture from this device"),
+            (
+                icons::CAMERA,
+                if picture.is_some() {
+                    "Retake"
+                } else {
+                    "Camera"
+                },
+                "Take a picture for this post",
+            ),
+            (
+                icons::UPLOAD,
+                if picture.is_some() {
+                    "Replace"
+                } else {
+                    "Upload"
+                },
+                "A picture from this device",
+            ),
         ] {
-            ui.vertical_centered(|ui| {
-                ui.set_width(theme::ROUND_BUTTON_SIZE + 24.0);
+            // An exact cell at the cursor: `vertical_centered` with a
+            // `set_width` inside centres the narrowed cell in the rest of the
+            // row, which put Camera mid-screen and Upload at the right edge.
+            let cell = egui::vec2(
+                theme::ROUND_BUTTON_SIZE + 24.0,
+                theme::ROUND_BUTTON_SIZE + 22.0,
+            );
+            ui.allocate_ui_with_layout(cell, egui::Layout::top_down(egui::Align::Center), |ui| {
                 if theme::round_button(ui, icon, hint, false).clicked() && !busy {
-                    if label == "Camera" {
+                    if icon == icons::CAMERA {
                         cs.posts.want_camera = true;
                     } else {
                         cs.picture_for_post = true;
@@ -1519,13 +1676,6 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
                 }
                 ui.label(egui::RichText::new(label).size(12.0).color(theme::p().text));
             });
-        }
-        if picture.is_some() {
-            ui.label(
-                egui::RichText::new("Another replaces the picture.")
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-            );
         }
     });
     if let Some(note) = &cs.picture_note {
@@ -1552,69 +1702,13 @@ fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
         )
         .wrap(),
     );
-    let ready = cs
-        .posts
-        .draft
-        .as_ref()
-        .is_some_and(|d| !d.text.trim().is_empty() && d.place.is_some())
-        && !cs.posts.sending
-        && cs.picture_for_post_idle()
-        && !cs.posts.snapshot_busy;
-    ui.add_space(6.0);
-    let label = if cs.posts.sending {
-        "Posting…".to_string()
-    } else {
-        format!("{}  Post", icons::SEND)
-    };
-    let width = ui.available_width();
-    if ui
-        .add_enabled_ui(ready, |ui| theme::primary_button_sized(ui, &label, width))
-        .inner
-        .clicked()
-    {
-        if let Some(d) = cs.posts.draft.clone() {
-            if let Some(place) = d.place {
-                cs.posts.sending = true;
-                let body = serde_json::to_string(&NewPost {
-                    text: d.text.trim().to_string(),
-                    sensitive: d.sensitive && d.picture.is_some(),
-                    picture_alt: Some(d.alt.trim().to_string())
-                        .filter(|a| !a.is_empty() && d.picture.is_some()),
-                    warning: d
-                        .warning
-                        .map(|w| w.trim().to_string())
-                        .filter(|w| !w.is_empty()),
-                    picture: d.picture,
-                    snapshot: d.snapshot,
-                    place,
-                })
-                .unwrap_or_default();
-                let community = d.community;
-                cs.posts.spawn(async move {
-                    Done::Posted(
-                        community,
-                        json(
-                            api_post(&format!("/api/communities/{community}/posts"), Some(body))
-                                .await,
-                        ),
-                    )
-                });
-            }
-        }
-    }
     if cs
         .posts
         .draft
         .as_ref()
         .is_some_and(|d| d.text.trim().is_empty())
     {
-        ui.vertical_centered(|ui| {
-            ui.label(
-                egui::RichText::new("Write something to post")
-                    .size(theme::SIZE_TINY)
-                    .color(theme::p().text_dim),
-            );
-        });
+        theme::note(ui, "Write something, and Post above goes live.");
     }
 }
 
@@ -1633,16 +1727,20 @@ fn row<R>(
 
 /// A small round ✕ over the top-right corner of an attachment's preview.
 /// Answers whether it was pressed.
+///
+/// Drawn in a child `Ui` that allocates nothing in the parent: `scope_builder`
+/// hands the badge's rect back to the parent as a widget of its own, and a
+/// top-down layout then puts its cursor under *that* — 50 pt below the top of
+/// the picture — so the warning box, the alt field and the sensitive tick were
+/// written over the picture (seen on the phone, 2026-11-22).
 fn remove_badge(ui: &mut egui::Ui, over: egui::Rect, tooltip: &str) -> bool {
     let side = theme::ROUND_BUTTON_SIZE;
     let rect = egui::Rect::from_min_size(
         over.right_top() + egui::vec2(-side - 6.0, 6.0),
         egui::Vec2::splat(side),
     );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        theme::round_button(ui, icons::CLEAR, tooltip, false).clicked()
-    })
-    .inner
+    let mut badge = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    theme::round_button(&mut badge, icons::CLEAR, tooltip, false).clicked()
 }
 
 fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info: &PublicInfo) {
@@ -2166,6 +2264,7 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
         posts.on_map = Some(community);
     }
     if screen == "communitypost" {
+        posts.composing = true;
         posts.draft = Some(Draft {
             community,
             text: "Street party on the Grote Markt tonight, from 8. Bring a chair!".into(),
@@ -2175,7 +2274,8 @@ pub fn seed_demo(posts: &mut Posts, community: Uuid, screen: &str) {
                 name: Some("Grote Markt, Groningen".into()),
                 view: view(-30.0, 0.0),
             }),
-            picture: None,
+            // A picture, as the camera leaves one: upright, from a phone.
+            picture: Some(crate::systems::chat_pictures::DEMO_HASH_PORTRAIT.into()),
             snapshot: None,
             warning: None,
             alt: String::new(),
