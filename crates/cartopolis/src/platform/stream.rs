@@ -39,6 +39,10 @@ use bevy::prelude::{Commands, Entity};
 use super::fetch_gate;
 use super::work::Dispatcher;
 
+/// The most frames a despawn backlog may take to drain, whatever its size
+/// ([`CellStream::drain_despawns`]): half a second at 60 fps.
+const DRAIN_WITHIN_FRAMES: usize = 30;
+
 /// How a stream admits work and retries failures. All of it is per-streamer
 /// policy, so it is stated at the construction site next to the reason.
 #[derive(Debug, Clone, Copy)]
@@ -406,7 +410,18 @@ where
         if self.despawn_queue.is_empty() {
             return;
         }
-        let n = self.despawn_queue.len().min(self.policy.despawns_per_frame);
+        // The cap is per frame, so a backlog is a time: at 4 a frame the 4,361
+        // ground entities of a street ring took 30 s to go after a climb to
+        // 200 km, drawn and casting shadows all the while (mac-2, 2026-11-22).
+        // A backlog therefore drains within `DRAIN_WITHIN_FRAMES` whatever its
+        // size — a share of it a frame, never fewer than the cap — which keeps
+        // the small retirements gentle and bounds the large ones in frames
+        // rather than in entities.
+        let share = self.despawn_queue.len().div_ceil(DRAIN_WITHIN_FRAMES);
+        let n = self
+            .despawn_queue
+            .len()
+            .min(self.policy.despawns_per_frame.max(share));
         for e in self.despawn_queue.drain(..n) {
             commands.entity(e).despawn();
         }
