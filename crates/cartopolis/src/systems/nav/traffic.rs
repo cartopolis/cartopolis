@@ -2317,6 +2317,14 @@ pub fn drive_traffic(
         Vec::new()
     };
     if roads.is_empty() && paths.is_empty() && lanes.is_empty() && rides.is_empty() {
+        // No way within reach — over water, a park, or a cell that has not
+        // landed. Until 2026-11-22 this returned with the pool drawn where it
+        // stood, so agents placed a moment earlier froze in view ("traffic
+        // hangs"). Hidden now, as above; they resume where they were once a
+        // way is back in reach.
+        for (.., mut vis) in &mut cars {
+            vis.set_if_neq(Visibility::Hidden);
+        }
         return;
     }
     // How much of the pool each candidate deserves — see `weigh`. Built once per
