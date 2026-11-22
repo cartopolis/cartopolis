@@ -1178,9 +1178,12 @@ fn suggestion_row_inner(
                 if route_action {
                     // The icon the Route panel itself wears, so the button and the
                     // panel it opens are recognisably one thing.
-                    routed = theme::action_button(ui, RightPanel::Route.icon())
-                        .on_hover_text("Route here — make this the destination")
-                        .clicked();
+                    routed = theme::icon_button_small(
+                        ui,
+                        RightPanel::Route.icon(),
+                        "Route here — make this the destination",
+                    )
+                    .clicked();
                 }
                 let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
                 ui.allocate_ui_with_layout(
@@ -1387,27 +1390,42 @@ fn history_row(
 ) -> bool {
     let mut acted = false;
     ui.horizontal(|ui| {
-        if theme::action_enabled(ui, nav.can_go_back(), icons::BACK)
-            .on_hover_text("Back to the previous location")
-            .on_disabled_hover_text("No previous location")
+        // Three outlined squares (`theme::icon_button`), as the web draws a
+        // row of icon-only buttons.
+        let square = |ui: &mut egui::Ui, on: bool, icon: &str, name: &str, off: &str| {
+            ui.add_enabled_ui(on, |ui| {
+                theme::icon_button(ui, icon, name).on_disabled_hover_text(off)
+            })
+            .inner
             .clicked()
-        {
+        };
+        if square(
+            ui,
+            nav.can_go_back(),
+            icons::BACK,
+            "Back to the previous location",
+            "No previous location",
+        ) {
             nav.go_back();
             acted = true;
         }
-        if theme::action_enabled(ui, nav.can_go_forward(), icons::FORWARD)
-            .on_hover_text("Forward to the next location")
-            .on_disabled_hover_text("No next location")
-            .clicked()
-        {
+        if square(
+            ui,
+            nav.can_go_forward(),
+            icons::FORWARD,
+            "Forward to the next location",
+            "No next location",
+        ) {
             nav.go_forward();
             acted = true;
         }
-        if theme::action_enabled(ui, home.is_some(), icons::HOME)
-            .on_hover_text("Go to your Home location")
-            .on_disabled_hover_text("No Home set — use Set Home here, below")
-            .clicked()
-        {
+        if square(
+            ui,
+            home.is_some(),
+            icons::HOME,
+            "Go to your Home location",
+            "No Home set — use Set Home here, below",
+        ) {
             if let Some(h) = home {
                 nav.pending_teleport = Some(Teleport {
                     lat: h.lat,
@@ -1526,11 +1544,10 @@ fn view_actions_ui(
 /// the bottom half of the screen and a dropdown anchored to a corner card had
 /// nowhere left to be.
 pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
-    let field = crate::systems::text_touch::field(
+    let field = theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut nav.query)
             .desired_width(ui.available_width())
-            .margin(egui::Margin::symmetric(8, 6))
             .hint_text("Search place, or paste \"lat, lng\"…"),
     );
     // Ctrl+L from the top bar asks the field to grab focus this frame.
@@ -1665,10 +1682,10 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
             let width = ui.available_width();
             let entries: Vec<&GeoSuggestion> =
                 coord_entry.iter().chain(nav.suggestions.iter()).collect();
+            // No rules between the rows: each is a pane with its own hover
+            // plate, as the web's list rows are; the hairlines made eight
+            // results read as a form.
             for (i, s) in entries.iter().enumerate() {
-                if i > 0 {
-                    ui.separator();
-                }
                 // The coordinate entry is never stale — it is derived from what
                 // is in the field this instant, not from an answer.
                 let dim = stale && !(i == 0 && coord_entry.is_some());
@@ -1682,10 +1699,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
             }
             if !recents.is_empty() {
                 ui.label(egui::RichText::new("Recent").small().weak());
-                for (n, (idx, s)) in recents.iter().enumerate() {
-                    if n > 0 {
-                        ui.separator();
-                    }
+                for (idx, s) in recents.iter() {
                     let row = destination_row(ui, s, viewer, width, false);
                     if row.clicked() {
                         picked_recent = Some(*idx);

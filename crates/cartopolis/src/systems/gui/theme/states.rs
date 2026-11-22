@@ -747,16 +747,10 @@ pub fn confirm_button(ui: &mut egui::Ui, id: egui::Id, label: &str, confirm_labe
     let armed_at: Option<f64> = ui.memory(|m| m.data.get_temp(id));
     let armed = armed_at.is_some_and(|t| now - t < CONFIRM_ARMED_S);
 
+    // Armed, it is the web's danger button: the error tone's soft fill and
+    // ink, the same height as the word it replaced.
     let resp = if armed {
-        ui.add(
-            egui::Button::new(
-                egui::RichText::new(confirm_label)
-                    .color(p().on_status)
-                    .strong(),
-            )
-            .fill(p().error)
-            .corner_radius(CornerRadius::same(RADIUS_SM)),
-        )
+        danger_button(ui, "", confirm_label)
     } else {
         action_button(ui, label)
     };
@@ -867,7 +861,7 @@ pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
         // is only known after it has been shown, and this has to be read before.
         let id = ui.id().with("password_shown");
         let shown = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
-        let field = crate::systems::text_touch::field(
+        let field = text_field(
             ui,
             egui::TextEdit::singleline(text)
                 .password(!shown)

@@ -1218,7 +1218,7 @@ fn touch_sizes_clear_the_minimum_target() {
         let small_dp = style_for(true).text_styles[&TextStyle::Small].size * dp_per_pt;
         assert!(
             small_dp < MIN_TOUCH_TARGET_DP,
-            "{name}: a small button is {small_dp:.0} dp, so `actions_are_small` \
+            "{name}: a small button is {small_dp:.0} dp, so a small egui button \
                  has nothing left to protect against"
         );
     }

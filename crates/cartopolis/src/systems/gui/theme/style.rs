@@ -159,10 +159,19 @@ pub fn style_for(touch: bool) -> egui::Style {
     s.icon_spacing = 6.0;
     s.slider_width = 120.0;
     s.combo_width = 120.0;
+    // **Solid, not floating.** egui's default bar floats over the content, so
+    // a row's right-hand button sat under it and could not be pressed (the
+    // Search panel's route buttons, 2026-11-22); a solid bar takes its own
+    // column and the rows are laid out beside it, as the web's are.
+    s.scroll = egui::style::ScrollStyle::solid();
     // A 10 pt scrollbar is a 15 dp drag handle; a finger needs the same 48 dp
     // everything else does, and a bar it cannot grab is a panel that only scrolls
     // by fling.
-    s.scroll.bar_width = if touch { 16.0 } else { 10.0 };
+    s.scroll.bar_width = if touch { 14.0 } else { 8.0 };
+    s.scroll.bar_inner_margin = 6.0;
+    // Always there to be grabbed, faint until the pointer comes near.
+    s.scroll.dormant_handle_opacity = 0.25;
+    s.scroll.dormant_background_opacity = 0.0;
 
     style.text_styles = [
         (

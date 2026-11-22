@@ -97,6 +97,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::systems::icons;
 
 mod brand;
+mod controls;
 mod frames;
 mod header;
 mod map_controls;
@@ -106,6 +107,7 @@ mod states;
 mod style;
 
 pub use brand::*;
+pub use controls::*;
 pub use frames::*;
 pub use header::*;
 pub use map_controls::*;

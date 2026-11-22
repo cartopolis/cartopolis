@@ -25,34 +25,6 @@ pub(super) fn header_height() -> f32 {
     44.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
 }
 
-/// Should an icon action beside a field be drawn `small()`?
-///
-/// The answer is "only for a pointer", and the reason is that
-/// `egui::Button::small()` is not merely a smaller button: it **zeroes the
-/// vertical padding** and drops to the `Small` text style, so the widget's
-/// height collapses to the glyph's. On the touch tier that is a ~21 dp target
-/// against a 48 dp guideline — a third of the area of the row it sits in, on
-/// controls that are anything but incidental (pick this point on the map, use my
-/// position, clear the field, rename this place).
-///
-/// Split out as a predicate so the policy is testable without a `Context`.
-#[must_use]
-pub fn actions_are_small() -> bool {
-    !touch_layout()
-}
-
-/// Horizontal padding for a finger-sized icon action, against the style's own
-/// 11 pt.
-///
-/// **The height is the guideline; the width is a negotiation.** A bookmark row
-/// carries four of these (route here, update, rename, delete) beside a name that
-/// has to stay readable, and at full padding they take two-thirds of a phone's
-/// panel. A fingertip contact patch is taller than it is wide, so trading width
-/// for the row's *height* is the same bargain `onscreen_keyboard` makes when ten
-/// key columns will not fit in 393 dp — and it is the one that keeps the target
-/// hittable while leaving the row legible.
-pub(super) const ACTION_PAD_X: f32 = 6.0;
-
 /// A word that is an action beside a panel's title — Map layers' Reset: the
 /// accent's text, no frame, a soft plate under the pointer. A small outlined
 /// button there read as "unstyled" (2026-11-10).
@@ -81,15 +53,35 @@ pub fn action_enabled(
     enabled: bool,
     label: impl Into<egui::WidgetText>,
 ) -> egui::Response {
-    if actions_are_small() {
-        return ui.add_enabled(enabled, egui::Button::new(label).small());
-    }
-    // A scope so the padding change cannot leak into the rest of the row; it
-    // inherits the enclosing layout, so a single widget inside it lands exactly
-    // where the widget alone would have.
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding.x = ACTION_PAD_X;
-        ui.add_enabled(enabled, egui::Button::new(label))
+    // The web's small ghost button (`Button size=sm variant=ghost`), painted
+    // by `controls::flat_button` — until 2026-11-22 an `egui::Button`, which
+    // beside the painted controls read as egui's: a grey pill at rest, a
+    // greyer one disabled. A one-glyph label in the icon font's private-use
+    // block is the icon; anything else is the word.
+    let label: egui::WidgetText = label.into();
+    let text = label.text().to_string();
+    let is_icon = {
+        let mut chars = text.chars();
+        matches!(
+            (chars.next(), chars.next()),
+            (Some(c), None) if ('\u{e000}'..='\u{f8ff}').contains(&c)
+        )
+    };
+    let (icon, word) = if is_icon {
+        (text.as_str(), "")
+    } else {
+        ("", text.as_str())
+    };
+    ui.add_enabled_ui(enabled, |ui| {
+        super::controls::flat_button(
+            ui,
+            icon,
+            word,
+            super::control_height_small(),
+            0.0,
+            false,
+            super::controls::Dress::Ghost,
+        )
     })
     .inner
 }
@@ -129,7 +121,7 @@ pub fn menu_row_height() -> f32 {
 /// [`round_button`] is painted: the icon column has to be a *column*, and a
 /// label containing a glyph and two spaces is not one.
 pub fn menu_entry(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
-    menu_entry_full(ui, icon, label, false, true)
+    menu_entry_full(ui, icon, label, false, true, false)
 }
 
 /// [`menu_entry`] for a row that shows whether the thing it opens is open — the
@@ -140,7 +132,7 @@ pub fn menu_entry_selected(
     icon: &str,
     label: &str,
 ) -> egui::Response {
-    menu_entry_full(ui, icon, label, selected, true)
+    menu_entry_full(ui, icon, label, selected, true, false)
 }
 
 /// [`menu_entry`] for a row that is conditionally live — Home with no Home set,
@@ -151,7 +143,15 @@ pub fn menu_entry_enabled(
     icon: &str,
     label: &str,
 ) -> egui::Response {
-    menu_entry_full(ui, icon, label, false, enabled)
+    menu_entry_full(ui, icon, label, false, enabled, false)
+}
+
+/// [`menu_entry`] for a row that takes something away — remove, block,
+/// delete: the error ink, as the web's `data-tone=danger` entry. The red was
+/// a `RichText` colour on a raw `ui.button` until 2026-11-22, which
+/// `menu_entry` could not carry.
+pub fn menu_entry_danger(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    menu_entry_full(ui, icon, label, false, true, true)
 }
 
 pub(super) fn menu_entry_full(
@@ -160,6 +160,7 @@ pub(super) fn menu_entry_full(
     label: &str,
     selected: bool,
     enabled: bool,
+    danger: bool,
 ) -> egui::Response {
     // Full width whatever the layout: these live inside a fixed-width card, and a
     // row that sized to its own text would put the hover highlight on the words
@@ -179,6 +180,7 @@ pub(super) fn menu_entry_full(
     let hovered = enabled && resp.hovered();
     let ink = match (enabled, selected, hovered) {
         (false, _, _) => p().text_dim.gamma_multiply(0.6),
+        _ if danger => p().error,
         (_, true, _) => p().accent_text,
         (_, false, true) => p().cream,
         _ => p().text,

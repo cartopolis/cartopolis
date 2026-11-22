@@ -634,17 +634,7 @@ fn card_ui(
             // the reason the header gives: laid out the other way round the
             // two were drawn over each other on a phone.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Change")
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p().accent),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
+                if theme::header_action(ui, "Change").clicked() {
                     screen.edit_server = true;
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -661,7 +651,7 @@ fn card_ui(
         });
     } else {
         field(ui, "Server", |ui| {
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut screen.server)
                     // A bare hostname, because that is now what works and what
@@ -696,7 +686,7 @@ fn card_ui(
     }
 
     field(ui, "Account name", |ui| {
-        crate::systems::text_touch::field(
+        crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(&mut screen.username)
                 .hint_text("your account name")
@@ -791,17 +781,7 @@ fn card_ui(
                     .size(theme::SIZE_SUB)
                     .color(theme::p().text_dim),
             );
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Create an account")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().accent),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
+            if theme::header_action(ui, "Create an account").clicked() {
                 crate::systems::data_layers::open_url(&url);
             }
         });
@@ -951,13 +931,9 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
 /// form looking like a settings table (2026-11-08, `docs/mockups/redesign`).
 fn field(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
-    ui.label(
-        egui::RichText::new(label)
-            .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
-    );
-    ui.add_space(2.0);
-    ui.horizontal(add);
+    theme::labelled(ui, label, "", |ui| {
+        ui.horizontal(add);
+    });
 }
 
 /// A value already answered, on one line: its label, then the value. The

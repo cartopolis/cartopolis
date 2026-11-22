@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [systems/gui/theme, ui_theme.rs, dismiss.rs, UiTheme, ui_theme, "Appearance", map_disc, round_button, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
-updated: 2026-11-10
+updated: 2026-11-22
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -88,7 +88,8 @@ asked for midas's colours as midas lays them out — solid `SURFACE` cards on an
 `INK` page, the hub's `#2A3536` hairline (`PANEL_RIM`), and more room (rows 28
 / 40 pt, menu rows 36 / 48, `monochrome-chrome.md`). Inside it the widgets follow the
 hub's component library (`@garage44/mithril`): a segmented control's choice is
-a raised card, not an accent plate; section heads are sentence case with the
+the accent plate cartopolis.org's `depth.css` gives it (the library's own is a
+raised card; the app follows the site, 2026-11-22); section heads are sentence case with the
 count in the faint tone ("Asking to join 1"); a panel title has no medallion; a
 secondary button is a dark surface with an icon in the text tone. One place
 deliberately departs from the hub: a button's hairline is `LINE`, not the hub's
@@ -288,6 +289,58 @@ One subtlety that is not obvious and will bite anyone reordering the ladder:
 decides.** So "a text field had focus when the frame began" is a rung the ladder
 *declines* to act on. Without it, one press blurs the search box and closes the
 panel the box lives in.
+
+## The controls are the web's
+
+Decided 2026-11-22, shown the Search panel in the light web build: "those
+buttons and input fields are really badly styled — is egui hard to handle?"
+Half yes. egui has **one `WidgetVisuals` per state for every widget type**
+(a button, a text field, a checkbox and a slider share one fill, one stroke,
+one radius), no per-widget styling and no selectors, measure-after-place
+layout, and a scroll bar that floats over the content by default. A focused
+`TextEdit` therefore wore the pressed button's dark plate and `expansion`
+(the thick black rim in the screenshot), a row's right-hand button sat under
+the scroll bar, and every raw `ui.button` beside the painted ones was egui's
+grey pill. The other half was ours: 73 raw `egui::Button` sites beside 172
+`theme::` ones, every text field egui's own.
+
+The answer is **one widget set, in `theme::controls`, drawn to the web
+component library's measurements** (`@garage44/mithril/components`, what
+cartopolis.org is built from — `atlas-web-ui.md`), so the app and the site
+are one design. The table at the top of `theme/controls.rs` maps each web
+component to its function here; the numbers are the web's `--m-control-height`
+(38 px, 44 under a finger → `control_height()`, 40 / 40), radius 8, padding 16
+(12 in a field), a 1 px hairline, a 3 px soft focus ring, `size=sm` 30 px
+(`control_height_small()`, 30 / the 40 pt touch row — this app's floor is
+`MIN_TOUCH_TARGET_DP`, not the web's 36).
+
+- **`theme::text_field`** is the field: a card well with a hairline, the
+  control height, 12 pt of side padding; the hairline firms on hover, takes
+  the accent and the ring with focus. It hands egui a whole `Frame`
+  (`TextEdit::frame`), which egui paints as given and never restyles — that
+  is the only way past the shared pressed-plate visuals.
+- **Four buttons**: `primary_button_sized`, `secondary_button`,
+  `ghost_button` (the web's most used, 97 of 280: no frame at rest),
+  `danger_button` (the error tone's soft fill; `confirm_button` arms into
+  it); `icon_button` / `icon_button_small` for an icon alone. `action_button`
+  and `action_enabled` are the small ghost, painted; a one-glyph label in the
+  icon font's private-use block is drawn as the icon.
+- **Scroll bars are solid** (`ScrollStyle::solid()`): they take their own
+  column and rows are laid out beside them, as the web's are.
+- **`theme::labelled`** is the web's `Field`: label over the control, help
+  under it.
+- **Three source rules hold it** (`source_rules.rs`): a `TextEdit` within
+  three lines of `text_field(`, no `ui.button` / `egui::Button::new` /
+  `small_button`, no `ui.checkbox`, outside `theme/` and the controls that
+  are custom by design (`EGUI_OWN_FILES`; a line earns an exception with an
+  `// egui's own:` comment saying why). `systems/dev/` is exempt until it is
+  touched.
+
+Judge a panel against the web page beside it, both at phone width
+(`docs/phone-ui-shots.toml`, 1.5×). Two places where the *web* departs from
+its own library and the app follows the web: a segmented control's chosen
+option is a teal plate (`depth.css`), and the current nav item an accent-soft
+bar.
 
 ## A menu row is not a button
 
