@@ -1,7 +1,7 @@
 ---
 topic: quay-walls
-triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, parapet, TERRACE_APRON_M, wet_the_aprons, Ramp, ramps, QUAY_BRICK, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs]
-updated: 2026-11-05
+triggers: [quay wall, kademuur, canal edge, "the canal has no walls", "the street sags into the canal", lower quay, Terrace, terraces, lower_quay, parapet, TERRACE_APRON_M, wet_the_aprons, Ramp, ramps, QUAY_BRICK, pipeline/lower_quay.rs, land_at, sunk_at, bank_flags, quay_walls, QuayWall, water level, WET, BANK, systems/map/terrain.rs, systems/map/map_geometry.rs, water_levels.rs, Banks, Banked, "oever", ondersteunendwaterdeel, "sloping bank", pond, vijver]
+updated: 2026-11-22
 ---
 
 # A canal is drawn as two surfaces and a wall, not one sheet
@@ -132,3 +132,42 @@ an OSM bench placed on a lower quay stand on the field (between the walk and the
 street) and the shot harness's `on_ground` counts from it too. The surveyed
 paving is binned by its first vertex and dropped by a cell it leaves, and so is
 a terrace.
+
+## A pond has a slope, not a wall (2026-11-22)
+
+Everything above assumed every edge of the water is a quay. The Gorechtvijvers
+by the Linnaeusplein are ponds in a park: AHN reads the lawn at +0.75 m NAP,
+falling over 8–10 m to the water at −0.85 m on both long sides, roughly 1 : 6,
+and the BGT surveys no `kademuur`, `damwand` or `walbescherming` anywhere along
+them. The map drew them as canals — the lawn level to the edge (`land_at`), a
+brick wall 1.6 m down to the water, and boats moored along it — reported from
+the phone with "the slope and the grass are wrong and there are no boats in
+that water".
+
+What tells a pond from a canal is the register, not the tile. The shortbread
+tile calls both `kind: water`, and the half-width test the moorings use passes a
+25 m pond as a canal. The BGT draws the water to the waterline (`waterdeel`
+`watervlakte`, `vijver` here) and the grass between it and the top of the slope
+as its own object: `ondersteunendwaterdeel` `oever, slootkant`, ~9.5 m wide on
+each side of these ponds. The inner city's canals have `kademuur` and no
+`oever`; the two did not overlap in the three places checked.
+
+So atlas ships each `oever` as a `banks` entry of the paving file (rings only,
+simplified to 0.5 m — a rural square kilometre has some 130 of them, one per
+ditch side, 11 000 vertices before simplifying), written to every cell it
+touches. The client (`map_geometry::Banks`) gives each outline edge that has
+registered water just outside it that water's level, and lays any ground point
+on a bank at `water + (land − water) · d_water / (d_water + d_top)`; an edge
+shared with the next bank is neither, so two banks meeting across a slope make
+no ridge. The strip between the register's waterline and the map's water, out
+to `BANK_APRON_M`, is the water's level, but only straight out from a waterline
+edge — never round its end, the trap the lower quay's apron fell into. It is a
+`GroundField` wrapper (`Banked`), so the refinement sees the slope and gives it
+vertices even on a handset's 12.5 m field. It is never drawn under the basemap
+(`sunk_at`). `quay_walls` tops a wall on a bank at the slope where the map's
+water stops, a lip of centimetres (`BANK_LIP_M`), and the moorings skip any
+point within 3 m of a bank (`canal-moorings.md`).
+
+A bank with no registered water level in reach is left as before: there is no
+level for its foot. Not done: `TerrainSnapshot::at` (the avatar, trees, the
+shot harness's `on_ground`) still reads the field on a bank, not the slope.

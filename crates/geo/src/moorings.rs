@@ -71,6 +71,9 @@ const BOAT_PAINTS: &[u32] = &[
 
 /// Read a tile's water polygons as moored boats.
 ///
+/// `on_bank` answers whether a tile-local point on the water's outline lies on
+/// a surveyed bank sloping down to it (`formats::bgt::Bank`): no boat there.
+///
 /// `seed` must be stable for the cell, so a canal that streams out and back is
 /// moored identically — a boat that moves when you look away is worse than no
 /// boat, and `crate::scatter` documents why a reshuffle is instantly visible.
@@ -78,6 +81,7 @@ pub fn extract_moorings(
     tile: &TileData,
     tile_m: f32,
     seed: u64,
+    on_bank: &dyn Fn([f32; 2]) -> bool,
 ) -> Result<Vec<FurnitureInstance>, String> {
     use geo_types::Geometry;
 
@@ -124,6 +128,7 @@ pub fn extract_moorings(
                         inward,
                         tile_m,
                         fseed ^ (ri as u64) << 32,
+                        on_bank,
                         &mut out,
                         &mut truncated,
                     );
@@ -156,6 +161,7 @@ fn moor_along_ring(
     inward: f32,
     tile_m: f32,
     seed: u64,
+    on_bank: &dyn Fn([f32; 2]) -> bool,
     out: &mut Vec<FurnitureInstance>,
     truncated: &mut bool,
 ) {
@@ -190,6 +196,11 @@ fn moor_along_ring(
             let at = s;
             s += MOORING_PITCH_M;
             if rand01(h, 0) < MOORING_VACANCY {
+                continue;
+            }
+            // Nothing moors along a grass slope: a pond in a park has the
+            // shape of a canal and no boats (the Gorechtvijvers, 2026-11-22).
+            if on_bank([a[0] + ux * at, a[1] + uz * at]) {
                 continue;
             }
             let x = a[0] + ux * at + nx * MOORING_INSET_M;
@@ -653,7 +664,7 @@ mod tests {
     /// cell, under the cap, and every one of them a boat.
     #[test]
     fn the_fixture_moors_boats_on_its_canals() {
-        let boats = extract_moorings(&fixture(), TILE_M, 5).expect("extract");
+        let boats = extract_moorings(&fixture(), TILE_M, 5, &|_| false).expect("extract");
         assert!(!boats.is_empty(), "a canal city should have boats");
         assert!(boats.len() <= MAX_BOATS_PER_CELL);
         for b in &boats {
@@ -716,7 +727,7 @@ mod tests {
             let mut out = Vec::new();
             let mut trunc = false;
             // A tile far larger than the ring, so nothing is taken for a border.
-            moor_along_ring(&ring, inward, 5000.0, 99, &mut out, &mut trunc);
+            moor_along_ring(&ring, inward, 5000.0, 99, &|_| false, &mut out, &mut trunc);
             assert!(!out.is_empty(), "no boats laid at all");
             for b in &out {
                 assert!(
@@ -727,6 +738,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A pond has a canal's shape; its grass banks are what say it is not one.
+    #[test]
+    fn nothing_moors_along_a_bank() {
+        let ring = vec![
+            [0.0, 0.0],
+            [200.0, 0.0],
+            [200.0, 16.0],
+            [0.0, 16.0],
+            [0.0, 0.0],
+        ];
+        let inward = if signed_area(&ring) > 0.0 { 1.0 } else { -1.0 };
+        let (mut out, mut trunc) = (Vec::new(), false);
+        // The south bank (z = 0) slopes; the north one is a quay.
+        let on_bank = |p: [f32; 2]| p[1] < 1.0;
+        moor_along_ring(&ring, inward, 5000.0, 99, &on_bank, &mut out, &mut trunc);
+        assert!(!out.is_empty(), "the quay keeps its boats");
+        assert!(out.iter().all(|b| b.z > 8.0), "a boat moored on the bank");
     }
 
     /// A canal crossing a cell edge has a straight ring edge along the seam that
@@ -744,8 +774,8 @@ mod tests {
     /// Same determinism contract every placed layer here holds.
     #[test]
     fn mooring_is_deterministic() {
-        let a = extract_moorings(&fixture(), TILE_M, 3).expect("extract");
-        let b = extract_moorings(&fixture(), TILE_M, 3).expect("extract");
+        let a = extract_moorings(&fixture(), TILE_M, 3, &|_| false).expect("extract");
+        let b = extract_moorings(&fixture(), TILE_M, 3, &|_| false).expect("extract");
         assert_eq!(a.len(), b.len());
         for (p, q) in a.iter().zip(&b) {
             assert_eq!((p.x, p.z, p.paint), (q.x, q.z, q.paint));

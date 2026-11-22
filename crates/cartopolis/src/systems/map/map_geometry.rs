@@ -1728,6 +1728,12 @@ fn spawn_geometry_task(
                     .collect(),
                 None => Vec::new(),
             };
+            // …and the banks sloping down to the water, each edge on the water
+            // given its level.
+            let banks = Banks::new(
+                cartopolis_geo::surveyed_ground::surveyed_banks(&paving, cell.0, cell.1, tile_m),
+                ground.as_ref().map(|(g, origin)| (g, *origin)),
+            );
             // Torn down while it fetched or waited (`CellStream::live`): stop
             // before the meshing, which is the expensive half.
             if !live.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2486,7 +2492,9 @@ fn spawn_geometry_task(
                                 // water polygons this same parse already
                                 // tessellated (`systems::moorings`). Same group,
                                 // same material, same toggle.
-                                match moorings::extract_moorings(&tile, tile_m, veg_seed(cell)) {
+                                match moorings::extract_moorings(&tile, tile_m, veg_seed(cell), &|p| {
+                                    banks.near(p)
+                                }) {
                                     Ok(items) => {
                                         // **A boat floats**: built at the water's
                                         // surface under its own centre, and kept
@@ -2851,6 +2859,7 @@ fn spawn_geometry_task(
                     &landings,
                     &terraces,
                     &ramps,
+                    &banks,
                 );
                 lap.mark("ground");
                 // What is walked on is what was just stood: the sheets'
@@ -3046,6 +3055,7 @@ fn stand_cell_on_ground(
     landings: &[Landing],
     terraces: &[Terrace],
     ramps: &[Ramp],
+    banks: &Banks,
 ) -> bool {
     let mut placed = false;
     if let (Some(meshes), Some((ground, origin))) = (outcome.as_mut(), ground) {
@@ -3081,6 +3091,7 @@ fn stand_cell_on_ground(
                 landings,
                 terraces,
                 ramps,
+                banks,
             );
         }
         // **No water climbs a bridge's abutment.** Where the register's water
@@ -3122,7 +3133,7 @@ fn stand_cell_on_ground(
             }
         }
         if let Some(walls) = quay_walls(
-            meshes, tile_m, *origin, ground, terraces, landings, levels, &tunnels,
+            meshes, tile_m, *origin, ground, terraces, landings, levels, &tunnels, banks,
         ) {
             meshes.push(walls);
         }
@@ -5581,6 +5592,7 @@ fn stand_surface(sm: SurfaceMesh, wx: f32, wz: f32, stand: Stand<'_>) -> (Surfac
                 &[],
                 &[],
                 &[],
+                &Banks::default(),
             );
         }
     }
@@ -6261,6 +6273,293 @@ impl Ramp {
     }
 }
 
+/// **A bank sloping down to the water, laid as the slope it is.** The register
+/// surveys the grass between a pond's waterline and the top of its bank
+/// (`formats::bgt::Bank`); the field cannot hold it — the Gorechtvijvers' banks
+/// fall 1.6 m over 8–10 m (AHN, 2026-11-22), one sample on a handset — and
+/// `land_at` levels every sample beside the water with the land behind it, so
+/// a pond in a park was drawn as a canal: the lawn level to the edge and a
+/// brick wall down to the water. Here a point on a bank runs from the water's
+/// level at the waterline to the land at the top, by its distance from each;
+/// the ground between the waterline and the map's water is the water's level;
+/// and no quay wall and no boat stands along it. Tile-local, heights in the
+/// field's frame.
+#[derive(Default)]
+pub(crate) struct Banks {
+    shapes: Vec<BankShape>,
+    edges: Vec<BankEdge>,
+    /// Bank and edge indices by [`BANK_GRID_M`] square.
+    grid: HashMap<(i32, i32), (Vec<u32>, Vec<u32>)>,
+}
+
+struct BankShape {
+    rings: Vec<Vec<[f32; 2]>>,
+    min: [f32; 2],
+    max: [f32; 2],
+}
+
+struct BankEdge {
+    a: Vec2,
+    b: Vec2,
+    /// Away from the bank.
+    out: Vec2,
+    /// The water's level along a waterline edge; `None` at the top of the slope.
+    water: Option<f32>,
+}
+
+/// The grid [`Banks`] looks its edges up in, metres.
+const BANK_GRID_M: f32 = 16.0;
+/// How far a bank's nearest edges are looked for, in grid squares either way:
+/// the register's widest banks are under 30 m.
+const BANK_GRID_REACH: i32 = 2;
+/// How far out of a bank its waterline is looked for in the registered water,
+/// metres: the register's water and the levels' rings are one survey,
+/// simplified apart.
+const BANK_WATER_PROBES_M: [f32; 3] = [0.5, 1.5, 2.5];
+/// How far past a bank's waterline the ground is the water's level, metres:
+/// the map's water (OSM) stops one or two metres off the register's.
+const BANK_APRON_M: f32 = 2.5;
+/// How near a bank a mooring is one on the bank, metres.
+const BANK_MOORING_REACH_M: f32 = 3.0;
+/// The least step a quay wall closes along a bank, metres: the lip where the
+/// map's water stops on the slope, which `QUAY_WALL_MIN_M` would leave open.
+const BANK_LIP_M: f32 = 0.05;
+
+impl Banks {
+    /// The banks, with each outline edge that faces registered water given that
+    /// water's level. Without `ground` there is no level to lay a slope to, and
+    /// the banks only answer [`Self::near`].
+    pub(crate) fn new<G: MeasuredGround>(
+        banks: Vec<Vec<Vec<[f32; 2]>>>,
+        ground: Option<(&G, Vec2)>,
+    ) -> Self {
+        let mut out = Self::default();
+        for rings in banks {
+            let Some(outer) = rings.first().filter(|r| r.len() >= 3) else {
+                continue;
+            };
+            let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in outer {
+                min = [min[0].min(p[0]), min[1].min(p[1])];
+                max = [max[0].max(p[0]), max[1].max(p[1])];
+            }
+            out.shapes.push(BankShape { rings, min, max });
+        }
+        for (k, shape) in out.shapes.iter().enumerate() {
+            Self::grid_cover(&mut out.grid, shape.min, shape.max, |cell| {
+                cell.0.push(k as u32)
+            });
+        }
+        let mut edges = Vec::new();
+        for (k, shape) in out.shapes.iter().enumerate() {
+            let outer = &shape.rings[0];
+            for i in 0..outer.len() {
+                let (a, b) = (
+                    Vec2::from(outer[i]),
+                    Vec2::from(outer[(i + 1) % outer.len()]),
+                );
+                let along = b - a;
+                if along.length() < 0.05 {
+                    continue;
+                }
+                // Its outward side by probing 5 cm off it, never by winding.
+                let mid = (a + b) * 0.5;
+                let mut out_n = along.perp().normalize();
+                if rings_contain(&shape.rings, (mid + out_n * 0.05).to_array()) {
+                    out_n = -out_n;
+                }
+                // An edge shared with the next bank along is neither the
+                // waterline nor the top: the slope carries on across it.
+                let next = mid + out_n * 0.3;
+                if out
+                    .shapes
+                    .iter()
+                    .enumerate()
+                    .any(|(j, s)| j != k && s.contains(next.to_array()))
+                {
+                    continue;
+                }
+                let water = ground.and_then(|(g, origin)| {
+                    BANK_WATER_PROBES_M.iter().find_map(|&d| {
+                        let q = origin + mid + out_n * d;
+                        if g.in_water(q.x, q.y) {
+                            g.water_surface_at(q.x, q.y)
+                        } else {
+                            None
+                        }
+                    })
+                });
+                edges.push(BankEdge {
+                    a,
+                    b,
+                    out: out_n,
+                    water,
+                });
+            }
+        }
+        for (i, e) in edges.iter().enumerate() {
+            let (lo, hi) = (e.a.min(e.b), e.a.max(e.b));
+            Self::grid_cover(&mut out.grid, lo.to_array(), hi.to_array(), |cell| {
+                cell.1.push(i as u32)
+            });
+        }
+        out.edges = edges;
+        out
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.shapes.is_empty()
+    }
+
+    fn grid_cover(
+        grid: &mut HashMap<(i32, i32), (Vec<u32>, Vec<u32>)>,
+        min: [f32; 2],
+        max: [f32; 2],
+        mut add: impl FnMut(&mut (Vec<u32>, Vec<u32>)),
+    ) {
+        let (c0, c1) = (Self::square(min), Self::square(max));
+        for x in c0.0..=c1.0 {
+            for z in c0.1..=c1.1 {
+                add(grid.entry((x, z)).or_default());
+            }
+        }
+    }
+
+    fn square(p: [f32; 2]) -> (i32, i32) {
+        (
+            (p[0] / BANK_GRID_M).floor() as i32,
+            (p[1] / BANK_GRID_M).floor() as i32,
+        )
+    }
+
+    /// The banks and edges filed within `reach` squares of a point.
+    fn around(&self, p: [f32; 2], reach: i32) -> (Vec<u32>, Vec<u32>) {
+        let (cx, cz) = Self::square(p);
+        let (mut shapes, mut edges) = (Vec::new(), Vec::new());
+        for x in cx - reach..=cx + reach {
+            for z in cz - reach..=cz + reach {
+                if let Some((s, e)) = self.grid.get(&(x, z)) {
+                    shapes.extend_from_slice(s);
+                    edges.extend_from_slice(e);
+                }
+            }
+        }
+        (shapes, edges)
+    }
+
+    /// Whether a point lies on a bank or within [`BANK_MOORING_REACH_M`] of one.
+    pub(crate) fn near(&self, p: [f32; 2]) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let (shapes, _) = self.around(p, 1);
+        shapes.iter().any(|&k| {
+            let s = &self.shapes[k as usize];
+            let pad = BANK_MOORING_REACH_M;
+            p[0] >= s.min[0] - pad
+                && p[0] <= s.max[0] + pad
+                && p[1] >= s.min[1] - pad
+                && p[1] <= s.max[1] + pad
+                && (s.contains(p) || ring_distance(&s.rings[0], p) <= pad)
+        })
+    }
+
+    /// The ground at a tile-local point given `land` there, or `None` where no
+    /// bank changes it. `floor` is the basemap's height, which the slope is
+    /// never drawn under.
+    fn height_at(&self, p: [f32; 2], land: f32, floor: impl Fn() -> f32) -> Option<f32> {
+        if self.edges.is_empty() {
+            return None;
+        }
+        let (shapes, edges) = self.around(p, BANK_GRID_REACH);
+        if edges.is_empty() {
+            return None;
+        }
+        let q = Vec2::from(p);
+        let (mut foot, mut top) = ((f32::MAX, 0.0f32, 0u32), f32::MAX);
+        for &i in &edges {
+            let e = &self.edges[i as usize];
+            let ab = e.b - e.a;
+            let t = ((q - e.a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+            let d = (e.a + ab * t).distance(q);
+            match e.water {
+                Some(w) if d < foot.0 => foot = (d, w, i),
+                Some(_) => {}
+                None => top = top.min(d),
+            }
+        }
+        // A bank with no registered water in reach is not laid at all: there
+        // is no level for its foot.
+        let (d_foot, water, nearest) = foot;
+        if d_foot == f32::MAX || land <= water {
+            return None;
+        }
+        // On its outline too: a vertex on the waterline or the top is the bank's.
+        let on = shapes.iter().any(|&k| self.shapes[k as usize].holds(p));
+        if on {
+            // A bank with no top in reach is all slope from the water up.
+            let t = if top == f32::MAX {
+                1.0
+            } else {
+                d_foot / (d_foot + top).max(1e-3)
+            };
+            return Some((water + (land - water) * t).max(floor()).min(land));
+        }
+        // Off the bank: the strip between its waterline and the map's water,
+        // only straight out from the waterline — never round its end, where the
+        // street carries on.
+        let e = &self.edges[nearest as usize];
+        let ab = e.b - e.a;
+        let t = (q - e.a).dot(ab) / ab.length_squared();
+        let beyond = (q - e.a).dot(e.out);
+        (d_foot <= BANK_APRON_M && d_foot < top && (0.0..=1.0).contains(&t) && beyond >= 0.0)
+            .then_some(water.min(land))
+    }
+}
+
+impl BankShape {
+    fn contains(&self, p: [f32; 2]) -> bool {
+        p[0] >= self.min[0]
+            && p[0] <= self.max[0]
+            && p[1] >= self.min[1]
+            && p[1] <= self.max[1]
+            && rings_contain(&self.rings, p)
+    }
+
+    /// [`Self::contains`], or within a centimetre of the outline.
+    fn holds(&self, p: [f32; 2]) -> bool {
+        const EPS: f32 = 0.01;
+        p[0] >= self.min[0] - EPS
+            && p[0] <= self.max[0] + EPS
+            && p[1] >= self.min[1] - EPS
+            && p[1] <= self.max[1] + EPS
+            && (rings_contain(&self.rings, p) || ring_distance(&self.rings[0], p) < EPS)
+    }
+}
+
+/// A ground field with every bank laid as its slope ([`Banks`]).
+struct Banked<'a> {
+    under: &'a dyn cartopolis_geo::terrain_refine::GroundField,
+    banks: &'a Banks,
+    origin: Vec2,
+    floor: &'a dyn Fn(f32, f32) -> f32,
+}
+
+impl cartopolis_geo::terrain_refine::GroundField for Banked<'_> {
+    fn min_ground_edge_m(&self) -> f32 {
+        self.under.min_ground_edge_m()
+    }
+
+    fn at(&self, x: f32, z: f32) -> f32 {
+        let land = self.under.at(x, z);
+        self.banks
+            .height_at([x - self.origin.x, z - self.origin.y], land, || {
+                (self.floor)(x, z)
+            })
+            .unwrap_or(land)
+    }
+}
+
 /// Distance from a point to a closed ring's outline.
 fn ring_distance(ring: &[[f32; 2]], p: [f32; 2]) -> f32 {
     let n = ring.len();
@@ -6446,6 +6745,7 @@ fn quay_walls<G: MeasuredGround>(
     landings: &[Landing],
     levels: Option<&cartopolis_geo::road_levels::LevelMap>,
     tunnels: &crate::systems::tunnels::Tunnels,
+    banks: &Banks,
 ) -> Option<SurfaceMesh> {
     if !terrain.has_banks() {
         return None;
@@ -6543,18 +6843,31 @@ fn quay_walls<G: MeasuredGround>(
             // under a flat deck's landing stopped at the field's height and
             // left a slit along the canal's outline through the H.N.
             // Werkmanbrug's landing (2026-11-06).
-            let street = |p: [f32; 3]| {
+            // On a bank, up to the slope where the map's water stops on it — a
+            // lip, not the street at the top (`Banks`).
+            let mut on_bank = false;
+            let mut street = |p: [f32; 3]| {
                 walk.unwrap_or_else(|| {
-                    landed(landings, [p[0], p[2]], {
-                        let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                    let (x, z) = (origin.x + p[0], origin.y + p[2]);
+                    let land = landed(
+                        landings,
+                        [p[0], p[2]],
                         terrain.land_at(x, z)
-                            + beside_roads.as_ref().map_or(0.0, |b| b.correction(x, z))
-                    })
+                            + beside_roads.as_ref().map_or(0.0, |b| b.correction(x, z)),
+                    );
+                    match banks.height_at([p[0], p[2]], land, || terrain.sunk_at(x, z)) {
+                        Some(h) => {
+                            on_bank = true;
+                            h
+                        }
+                        None => land,
+                    }
                 })
             };
             let (ta, tb) = (street(pa), street(pb));
             let (ha, hb) = (ta - pa[1], tb - pb[1]);
-            if ha.max(hb) < QUAY_WALL_MIN_M || ha.min(hb) > QUAY_WALL_MAX_M {
+            let least = if on_bank { BANK_LIP_M } else { QUAY_WALL_MIN_M };
+            if ha.max(hb) < least || ha.min(hb) > QUAY_WALL_MAX_M {
                 continue;
             }
             let top = |t: f32, water_y: f32| t.clamp(water_y, water_y + QUAY_WALL_MAX_M);
@@ -6697,6 +7010,7 @@ fn stand_on_terrain<G: MeasuredGround>(
     landings: &[Landing],
     terraces: &[Terrace],
     ramps: &[Ramp],
+    banks: &Banks,
 ) {
     // Volumetric things keep their own normals and are not refined against the
     // field: a tree's normals describe the tree, and a tunnel's walls are vertical.
@@ -6806,6 +7120,21 @@ fn stand_on_terrain<G: MeasuredGround>(
     };
     let field: &dyn cartopolis_geo::terrain_refine::GroundField =
         if landings.is_empty() { field } else { &landed };
+    // …and the banks laid as their slopes, in the field the refinement reads, so
+    // a slope narrower than the field's spacing still gets the vertices to show.
+    let floor = |x: f32, z: f32| terrain.sunk_at(x, z);
+    let banked = Banked {
+        under: field,
+        banks,
+        origin,
+        floor: &floor,
+    };
+    let field: &dyn cartopolis_geo::terrain_refine::GroundField = if banks.is_empty() || volumetric
+    {
+        field
+    } else {
+        &banked
+    };
     let t0 = bevy::platform::time::Instant::now();
     // The ground under each vertex as the refinement sampled it, NaN where it
     // did not (`refine_for_terrain_sampled`): the drape below asks only for those.
@@ -7389,6 +7718,7 @@ mod tests {
             &[],
             None,
             &Default::default(),
+            &Banks::default(),
         )
         .expect("walls");
         assert_eq!(walls.group, SurfaceGroup::QuayWall);
@@ -7427,6 +7757,7 @@ mod tests {
             &[],
             None,
             &Default::default(),
+            &Banks::default(),
         )
         .expect("walls");
         assert!(
@@ -7443,7 +7774,8 @@ mod tests {
             &[],
             &[],
             None,
-            &Default::default()
+            &Default::default(),
+            &Banks::default(),
         )
         .is_none());
     }
@@ -7473,6 +7805,7 @@ mod tests {
             &[],
             None,
             &Default::default(),
+            &Banks::default(),
         )
         .expect("walls");
         assert_eq!(walls.positions.len(), 4, "only the far bank keeps its wall");
@@ -7487,6 +7820,7 @@ mod tests {
             &[],
             None,
             &Default::default(),
+            &Banks::default(),
         );
         assert_eq!(walls.expect("walls").positions.len(), 8);
     }
@@ -7581,6 +7915,32 @@ mod tests {
         // …and a flight with no walk at its foot is not laid at all.
         let far = vec![vec![[30.0, 30.0], [32.0, 30.0], [32.0, 33.0], [30.0, 33.0]]];
         assert!(Ramp::new(far, -1.4, 0.0, &[walk()]).is_none());
+    }
+
+    /// A bank 100 m long and 10 m wide, the water south of z = 0 at −1 m and the
+    /// land at +0.6 m: the slope runs between them, the strip off its waterline
+    /// is the water's level, and the street past its end is left alone.
+    #[test]
+    fn a_bank_slopes_from_the_water_to_the_top() {
+        let ring = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 10.0], [0.0, 10.0]];
+        let mut banks =
+            Banks::new::<crate::systems::terrain::GroundPlacement>(vec![vec![ring]], None);
+        for e in &mut banks.edges {
+            if e.a.y == 0.0 && e.b.y == 0.0 {
+                e.water = Some(-1.0);
+            }
+        }
+        let at = |p: [f32; 2]| banks.height_at(p, 0.6, || -10.0);
+        assert!((at([50.0, 5.0]).unwrap() - -0.2).abs() < 1e-3);
+        assert!((at([50.0, 10.0]).unwrap() - 0.6).abs() < 1e-3);
+        assert!((at([50.0, 0.0]).unwrap() - -1.0).abs() < 1e-3);
+        assert_eq!(at([50.0, -1.5]), Some(-1.0), "the strip off the waterline");
+        assert_eq!(at([-1.0, -1.0]), None, "round the bank's end");
+        assert_eq!(at([50.0, 14.0]), None, "the land behind the top");
+        // The basemap is never drawn over.
+        assert!((banks.height_at([50.0, 5.0], 0.6, || 0.1).unwrap() - 0.1).abs() < 1e-3);
+        // Moorings: on the bank and a little off it, not across the water.
+        assert!(banks.near([50.0, -2.0]) && !banks.near([50.0, -12.0]));
     }
 
     /// A square deck, `span` metres on a side, with its south-west corner at the

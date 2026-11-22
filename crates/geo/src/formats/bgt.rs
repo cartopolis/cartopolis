@@ -106,6 +106,19 @@ pub struct Terrace(
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ramp(pub Vec<Vec<LatLng>>, pub f64, pub f64);
 
+/// A bank sloping down to the water, `[[ring, …]]` — the BGT's
+/// `ondersteunendwaterdeel` `oever, slootkant`, rings outer first. Written to
+/// **every cell its outline's bounds touch** that is written anyway, as a
+/// [`Wood`] is: the client asks of each ground vertex whether it stands on one.
+///
+/// The register's water stops at the waterline and the bank runs from there
+/// to the top of the slope; the map's water (OSM) has no slope at all. Without
+/// this a pond in a park was drawn as a canal: the lawn level to the edge, a
+/// brick wall down to the water, and boats moored along it (the
+/// Gorechtvijvers, 2026-11-22).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Bank(pub Vec<Vec<LatLng>>);
+
 /// The paving file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Paving {
@@ -115,6 +128,8 @@ pub struct Paving {
     pub terraces: Vec<Terrace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ramps: Vec<Ramp>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub banks: Vec<Bank>,
 }
 
 /// Parse an objects file.
@@ -184,6 +199,7 @@ mod tests {
             ],
             terraces: Vec::new(),
             ramps: Vec::new(),
+            banks: Vec::new(),
         }
     }
 

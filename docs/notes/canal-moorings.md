@@ -1,8 +1,8 @@
 ---
 topic: canal-moorings
 triggers: [moorings.rs, "boats", "canal", "moored", "water polygons", furniture.rs,
-  "waterway", signed_area, "which side is the water"]
-updated: 2026-08-26
+  "waterway", signed_area, "which side is the water", on_bank, pond]
+updated: 2026-11-22
 ---
 
 # Boats moored along the canal banks
@@ -77,3 +77,13 @@ A capture over the Lopende Diep (2026-08-26) shows boats on both banks, in the
 water rather than on the quay, aligned with the bank, irregularly spaced by the
 vacancy hash and varied in colour. `MOORING_VACANCY` is 0.55 because a boat at
 every pitch is a fence rather than a canal.
+
+## A grass bank is not a mooring (2026-11-22)
+
+The half-width test lets a park pond through: the Gorechtvijvers are ~25 m
+across and long, so they read as canals and were lined with boats where there
+are none. The register's sloping banks (`formats::bgt::Bank`, see
+`quay-walls.md`) are what tell them apart, so `extract_moorings` takes an
+`on_bank` test and skips every slot whose point on the outline lies on or within
+3 m of one. A quay keeps its boats; a canal with a grass bank on one side moors
+only along the other.

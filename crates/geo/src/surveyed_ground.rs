@@ -78,6 +78,10 @@ pub struct SurveyedPaving {
     /// The steps up from them (`formats::bgt::Ramp`): a surface's rings, and
     /// the heights of its foot and top, metres above NAP.
     pub ramps: Vec<(Vec<Vec<(f64, f64)>>, f32, f32)>,
+    /// The banks sloping down to the water (`formats::bgt::Bank`), rings outer
+    /// first. Not surfaces: they reach into every cell they touch, and the
+    /// ground there is drawn as before and only laid at another height.
+    pub banks: Vec<Vec<Vec<(f64, f64)>>>,
 }
 
 /// Parse a cell's paving file: `{"surfaces":[[kind,[ring,…],material?],…]}`.
@@ -137,10 +141,17 @@ pub fn parse_surveyed_paving(text: &str) -> Result<SurveyedPaving, String> {
         })
         .map(|r| (r.0, r.1 as f32, r.2 as f32))
         .collect();
+    let banks = wire
+        .banks
+        .into_iter()
+        .map(|b| b.0)
+        .filter(|rings| rings.first().is_some_and(|r| r.len() >= 3))
+        .collect();
     Ok(SurveyedPaving {
         areas,
         terraces,
         ramps,
+        banks,
     })
 }
 
@@ -272,6 +283,34 @@ pub fn surveyed_ramps(
             let mut local = vec![to_local(rings.first()?)?];
             local.extend(rings[1..].iter().filter_map(to_local));
             Some((local, *low, *high))
+        })
+        .collect()
+}
+
+/// This cell's banks in the local metre frame, outer ring first — **unclamped**,
+/// since a bank reaching into the cell from the next one still slopes here.
+#[must_use]
+pub fn surveyed_banks(
+    paving: &SurveyedPaving,
+    cx: i64,
+    cy: i64,
+    tile_m: f32,
+) -> Vec<Vec<Vec<[f32; 2]>>> {
+    paving
+        .banks
+        .iter()
+        .map(|rings| {
+            rings
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|&(lat, lng)| {
+                            let (x, z) = cell_local_unclamped(lat, lng, cx, cy, BGT_ZOOM, tile_m);
+                            [x, z]
+                        })
+                        .collect()
+                })
+                .collect()
         })
         .collect()
 }

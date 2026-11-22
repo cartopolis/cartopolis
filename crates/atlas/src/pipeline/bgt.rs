@@ -235,6 +235,11 @@ const SIMPLIFY_M: f64 = 0.1;
 /// Below this a polygon is an invisible sliver that still costs a triangle.
 const MIN_AREA_M2: f64 = 1.0;
 
+/// How far a bank's outline is simplified, metres (`formats::bgt::Bank`).
+const BANK_SIMPLIFY_M: f64 = 0.5;
+/// A bank under this is a corner between two others, metres².
+const BANK_MIN_AREA_M2: f64 = 4.0;
+
 /// A GeoJSON polygon (`[lng, lat]` rings) as `[lat, lng]` rings simplified to
 /// [`SIMPLIFY_M`], holes after the outer ring. Empty when the outer ring is a
 /// sliver under [`MIN_AREA_M2`].
@@ -316,8 +321,9 @@ fn cells_touched(ring: &[[f64; 2]]) -> Vec<Cell> {
 }
 
 /// The object types the extract is asked for.
-const FEATURETYPES: [&str; 10] = [
+const FEATURETYPES: [&str; 11] = [
     "begroeidterreindeel",
+    "ondersteunendwaterdeel",
     "vegetatieobject",
     "paal",
     "straatmeubilair",
@@ -728,6 +734,8 @@ struct CellData {
     ramps: Vec<bgt::Ramp>,
     /// The woods that reach into the cell (`formats::bgt::Wood`).
     woods: Vec<bgt::Wood>,
+    /// The banks that reach into it (`formats::bgt::Bank`).
+    banks: Vec<bgt::Bank>,
 }
 
 pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
@@ -930,6 +938,41 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         cells.entry(home).or_default().woods.push(wood);
     }
 
+    // The banks sloping down to the water, on the woods' rule: the cell of the
+    // first corner, and every other cell they touch that is written anyway.
+    ctx.log("oevers…");
+    let mut n_banks = 0;
+    let mut banks: Vec<(Cell, Vec<Cell>, bgt::Bank)> = Vec::new();
+    items(ctx, extract, "ondersteunendwaterdeel", |feat| {
+        let props = &feat["properties"];
+        if js_str(&props["type"]) != "oever, slootkant" || truthy(&props["relatieve_hoogteligging"])
+        {
+            return;
+        }
+        for poly in polygon_rings(&feat["geometry"]) {
+            // Half a metre: every ditch in the country has two, and the client
+            // only asks how far a point is from the water and from the top.
+            let out_rings = lat_lng_rings(&poly, BANK_SIMPLIFY_M, BANK_MIN_AREA_M2);
+            let Some(outer) = out_rings.first().filter(|r| r.len() >= 3) else {
+                continue;
+            };
+            banks.push((
+                lat_lng_to_cell(outer[0][0], outer[0][1]),
+                cells_touched(outer),
+                bgt::Bank(ring_pairs(&out_rings)),
+            ));
+            n_banks += 1;
+        }
+    })?;
+    for (home, touched, bank) in banks {
+        for cell in touched {
+            if cell != home && cells.contains_key(&cell) {
+                cells.get_mut(&cell).unwrap().banks.push(bank.clone());
+            }
+        }
+        cells.entry(home).or_default().banks.push(bank);
+    }
+
     let written: Vec<(Cell, CellData)> = cells
         .into_iter()
         .filter(|(_, c)| {
@@ -941,6 +984,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 || !c.ramps.is_empty()
                 || !c.bridges.is_empty()
                 || !c.woods.is_empty()
+                || !c.banks.is_empty()
         })
         .collect();
     let covered = sorted_cells(written.iter().map(|(c, _)| *c));
@@ -956,6 +1000,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             terraces,
             ramps,
             woods,
+            banks,
         } = data;
         // Two files, as the BAG splits its own: the paving is the heavy part.
         if !trees.is_empty()
@@ -975,13 +1020,14 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
                 },
             )?;
         }
-        if !surfaces.is_empty() || !terraces.is_empty() || !ramps.is_empty() {
+        if !surfaces.is_empty() || !terraces.is_empty() || !ramps.is_empty() || !banks.is_empty() {
             ctx.write_doc(
                 &format!("bgt/{CACHE_ZOOM}/{cx}/{cy}.surfaces.json"),
                 &bgt::Paving {
                     surfaces,
                     terraces,
                     ramps,
+                    banks,
                 },
             )?;
         }
@@ -1008,6 +1054,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
             .with("measured_line_count", n_measured)
             .with("surface_count", n_surf)
             .with("terrace_count", n_terraces)
+            .with("bank_count", n_banks)
             .with("bridge_count", n_bridges),
     )?;
     ctx.log(format!(
@@ -1020,6 +1067,7 @@ pub fn run(ctx: &Ctx) -> Outcome<DatasetResult> {
         counts: vec![
             Count::new("trees", n_trees),
             Count::new("woods", n_woods),
+            Count::new("banks", n_banks),
             Count::new("props", n_props),
             Count::new("lines", n_lines),
             Count::new("surfaces", n_surf),
