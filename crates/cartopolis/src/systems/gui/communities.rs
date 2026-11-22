@@ -564,6 +564,69 @@ fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
     title_row_with(ui, title, out, |_| {})
 }
 
+/// A community's page head: the back chevron, its picture, its name over a
+/// line of facts, and the close — one row, as the communities mockup draws
+/// it. Answers whether back was pressed.
+fn page_head(
+    ui: &mut egui::Ui,
+    name: &str,
+    picture: Option<&egui::TextureHandle>,
+    facts: &str,
+    out: &mut Out,
+) -> bool {
+    let mut back = false;
+    let face_size = 40.0;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), face_size + 4.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let chevron = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(icons::CHEVRON_LEFT)
+                        .size(26.0)
+                        .color(theme::p().text),
+                )
+                .sense(egui::Sense::click()),
+            );
+            let clicked = theme::named(ui, chevron, "Back")
+                .on_hover_text("Back")
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
+            back = theme::page_back(ui.ctx(), clicked);
+            face(ui, name, ChatKind::Community, picture, face_size);
+            ui.add_space(2.0);
+            // The close takes its corner first; the name and facts get what
+            // is left and truncate, as every title row here does.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::close_button(ui).clicked() {
+                    out.close = true;
+                }
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(name)
+                                .font(egui::FontId::new(theme::SIZE_TITLE, theme::brand_family()))
+                                .color(theme::p().cream),
+                        )
+                        .truncate(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(facts)
+                                .size(theme::SIZE_SUB)
+                                .color(theme::p().text_dim),
+                        )
+                        .truncate(),
+                    );
+                });
+            });
+        },
+    );
+    ui.add_space(8.0);
+    back
+}
+
 /// [`title_row`] plus the page's own action beside the close, laid out
 /// right-to-left from it (the composer's Post).
 fn title_row_with(
@@ -1336,11 +1399,12 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         if send {
             posts::send_post(cs);
         }
-    } else if title_row(ui, "", out) {
-        cs.screen = None;
-        return;
     }
     let Some(c) = cs.get(id).cloned() else {
+        if title_row(ui, "", out) {
+            cs.screen = None;
+            return;
+        }
         theme::note(ui, "You are no longer in this community.");
         return;
     };
@@ -1350,6 +1414,10 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     }
     let picture = cs.picture(ui.ctx(), c.settings.picture.as_deref());
     let Some(role) = c.role else {
+        if title_row(ui, "", out) {
+            cs.screen = None;
+            return;
+        }
         hero(
             ui,
             &c.settings.name,
@@ -1365,29 +1433,42 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         return;
     };
     let moderates = role.moderates();
+    // The page's head as the communities mockup draws it (`docs/mockups/
+    // communities/`, A): the picture beside the name with the facts under
+    // it, in one row with the back chevron and the close — not a 64 pt
+    // portrait centred over three lines, which on a phone was the whole first
+    // screen before the first post (the composer had the same fault).
     let place = c
         .settings
         .place
         .as_ref()
-        .map(|p| format!("\n{} {}", icons::PIN, place_words(p)))
+        .map(|p| format!(" · {} {}", icons::PIN, place_words(p)))
         .unwrap_or_default();
-    hero(
-        ui,
-        &c.settings.name,
-        picture.as_ref(),
-        &c.settings.about,
-        &format!(
-            "{} people · {} · {}{place}",
-            c.members.len(),
-            rule_word(c.settings.join),
-            if c.settings.listed {
-                "listed"
-            } else {
-                "unlisted"
-            }
-        ),
+    let facts = format!(
+        "{} people · {} · {}{place}",
+        c.members.len(),
+        rule_word(c.settings.join),
+        if c.settings.listed {
+            "listed"
+        } else {
+            "unlisted"
+        }
     );
-    ui.add_space(4.0);
+    if page_head(ui, &c.settings.name, picture.as_ref(), &facts, out) {
+        cs.screen = None;
+        return;
+    }
+    if !c.settings.about.trim().is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(c.settings.about.trim())
+                    .size(theme::SIZE_SUB)
+                    .color(theme::p().text_dim),
+            )
+            .wrap(),
+        );
+        ui.add_space(4.0);
+    }
     let may_start = moderates || c.settings.members_start_topics;
     // One card of actions (`theme::action_strip`), each an icon over its word.
     // "Invite", not "People": two cells that read "People" did two different
