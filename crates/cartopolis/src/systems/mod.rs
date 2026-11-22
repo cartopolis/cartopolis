@@ -78,8 +78,8 @@ pub use map::prim_video;
 pub use map::{
     aerial, atmosphere_patch, building_designs, building_facts, building_fade, building_select,
     building_windows, cache_reset, cell_ring, coverage, crops, crossings, cutaway, dikes,
-    drawn_ground, drive_network, facade_colours, fog, globe, globe_ocean, globe_weather, grass,
-    ground_detail, ground_probe, height, interiors, kerb_shadows, label_atlas, layer_state,
+    drawn_ground, drive_network, facade_colours, fog, globe, globe_ocean, globe_weather, graffiti,
+    grass, ground_detail, ground_probe, height, interiors, kerb_shadows, label_atlas, layer_state,
     lens_areas, light_shafts, load_control, load_timing, lod22, lod22_facade, lod3, map_geometry,
     map_stream, mesh_format, model_assets, municipal, nav_marks, osm_buildings, particles,
     placeholder_models, render_features, render_scale, rendering, road_depth, roof_colours,

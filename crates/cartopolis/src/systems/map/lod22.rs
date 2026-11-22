@@ -2135,8 +2135,51 @@ fn build_lod22_from_body(
             }
         }
     }
+    // Every building's outline and the tile's lanes and paths, for the walls on
+    // a narrow street that the facade shader paints (`graffiti`). Near cells
+    // only, like the doors: nobody reads a tag from a street away. Every
+    // element, the neighbours' too, so a steeg on the cell's edge still has its
+    // other side.
+    let alleys = match streets {
+        Some(t) if detail == load_control::Detail::Near => {
+            let rings: Vec<Vec<Vec2>> = elements
+                .iter()
+                .map(|b| {
+                    let fact = (!b.id.is_empty()).then(|| facts.building(&b.id)).flatten();
+                    let ring: Vec<Vec2> = fact
+                        .map(|f| f.footprint.as_slice())
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                        .collect();
+                    if ring.len() >= 3 {
+                        ring
+                    } else {
+                        crate::systems::collision::convex_hull_xz(
+                            b.p.iter()
+                                .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                                .collect(),
+                        )
+                    }
+                })
+                .collect();
+            use cartopolis_geo::road_texture::RoadClass;
+            let lanes = cartopolis_geo::road_levels::street_runs(t, cell_m)
+                .into_iter()
+                .filter(|r| r.level == 0 && matches!(r.class, RoadClass::Minor | RoadClass::Path))
+                .map(|r| {
+                    r.points
+                        .iter()
+                        .map(|p| Vec2::new(p[0] + cell_nw.x, p[1] + cell_nw.y))
+                        .collect::<Vec<_>>()
+                });
+            crate::systems::graffiti::Alleys::new(rings.iter().map(Vec::as_slice), lanes)
+        }
+        _ => crate::systems::graffiti::Alleys::default(),
+    };
+    let mut sprayed_faces = 0usize;
     let mut facades_drawn: HashSet<&str> = HashSet::new();
-    for b in &elements {
+    for (bi, b) in elements.iter().enumerate() {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
         let (blat, blng, _) = b.p[0];
@@ -2227,6 +2270,7 @@ fn build_lod22_from_body(
                 crate::systems::building_windows::condition(f.status)
             }),
             material: walled.map_or(0, |f| crate::systems::building_windows::wall_material(f.m)),
+            graffiti: false,
         };
         let lit = crate::systems::building_windows::pack_facade(facade);
         // A roof's vertices carry the occupancy and, where measured, the
@@ -2363,6 +2407,24 @@ fn build_lod22_from_body(
                 }
             }
         }
+        // The faces on a narrow street, and the code they carry instead of the
+        // building's: the same facade with its graffiti bit set.
+        let sprayed: Vec<bool> = if alleys.is_empty() || design.is_some() {
+            Vec::new()
+        } else {
+            faces
+                .faces
+                .iter()
+                .map(|f| alleys.sprayed(bi as u32, f))
+                .collect()
+        };
+        sprayed_faces += sprayed.iter().filter(|&&s| s).count();
+        let sprayed_code = crate::systems::building_windows::pack_facade(
+            crate::systems::building_windows::Facade {
+                graffiti: true,
+                ..facade
+            },
+        );
         let placed: Vec<(Option<usize>, Vec2)> = doors
             .iter()
             .filter_map(|&d| {
@@ -2581,17 +2643,22 @@ fn build_lod22_from_body(
             // nothing about the alley between two blocks. It is the one cue that
             // stops an extrusion looking like it is hovering, which is the thing
             // you see first.
-            let tone = |v: Vec3| {
+            let tone = |v: Vec3, code: f32| {
                 let d = crate::systems::osm_buildings::wall_shade(wall_h, v.y - base);
-                [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
+                [wall[0] * d, wall[1] * d, wall[2] * d, code]
             };
             match faces.of_triangle.get(ti).copied().flatten() {
                 Some(fi) => {
                     let face = &faces.faces[fi as usize];
+                    let code = if sprayed.get(fi as usize).copied().unwrap_or(false) {
+                        sprayed_code
+                    } else {
+                        wall[3]
+                    };
                     buf.set_windows(face.windows());
                     buf.tri_graded_uv(
                         [a, bb, c],
-                        [tone(a), tone(bb), tone(c)],
+                        [tone(a, code), tone(bb, code), tone(c, code)],
                         [
                             face.uv(world_xz[i]),
                             face.uv(world_xz[j]),
@@ -2600,7 +2667,12 @@ fn build_lod22_from_body(
                     );
                     buf.set_windows([0.0, 0.0]);
                 }
-                None => buf.tri_graded(a, bb, c, [tone(a), tone(bb), tone(c)]),
+                None => buf.tri_graded(
+                    a,
+                    bb,
+                    c,
+                    [tone(a, wall[3]), tone(bb, wall[3]), tone(c, wall[3])],
+                ),
             }
         }
     }
@@ -2610,6 +2682,14 @@ fn build_lod22_from_body(
             cy,
             struck,
             "BAG: skipped buildings the register has struck off"
+        );
+    }
+    if sprayed_faces > 0 {
+        tracing::debug!(
+            cx,
+            cy,
+            sprayed_faces,
+            "lod22: walls on a narrow street, painted"
         );
     }
     if in_a_mouth > 0 {

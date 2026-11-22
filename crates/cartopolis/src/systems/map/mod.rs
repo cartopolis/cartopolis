@@ -28,8 +28,10 @@ pub mod dikes;
 pub mod drive_network;
 pub mod fog;
 pub mod globe;
+// Which walls stand on a narrow street, for the facade shader's graffiti.
 pub mod globe_ocean;
 pub mod globe_weather;
+pub mod graffiti;
 pub mod grass;
 pub mod ground_detail;
 pub mod height;

@@ -46,10 +46,10 @@ use cartopolis_materials::building_windows::{BLOCK_M, BLOCK_PERIOD, WINDOW_LATTI
 /// the rest beside it, exactly:
 ///
 /// `alpha = occupancy + 4 × code`, occupancy quantised to sixteenths in [0, 4),
-/// and `code = shop | era << 1 | eave << 4 | material << 13`, eave in 20 cm steps
-/// (0 = unknown, up to 102 m) and material two bits (0 = unmeasured). The
-/// largest alpha is 2¹⁷, and a sixteenth of that is still exact in an `f32`'s
-/// 24 bits. **Code 0 is "nothing known"**, and `1.0` —
+/// and `code = shop | era << 1 | eave << 4 | material << 13 | graffiti << 15`, eave
+/// in 20 cm steps (0 = unknown, up to 102 m), material two bits (0 = unmeasured)
+/// and graffiti one, set per wall face. The largest alpha is 2¹⁸, and a sixteenth
+/// of that is still exact in an `f32`'s 24 bits. **Code 0 is "nothing known"**, and `1.0` —
 /// what every building off the BAG, and the OSM lane, has always carried —
 /// decodes to occupancy 1 and code 0, which is exactly the old look.
 ///
@@ -76,6 +76,9 @@ pub struct Facade {
     /// What atlas measured its walls to be made of ([`wall_material`]), 0 when
     /// nothing was measured and the shader reads the material off the colour.
     pub material: u8,
+    /// This wall stands on a narrow street and is painted (`systems::graffiti`).
+    /// Per wall face, not per building: set on the faces it holds for.
+    pub graffiti: bool,
 }
 
 /// The shader's code for a measured roof covering
@@ -185,7 +188,8 @@ pub fn pack_facade(f: Facade) -> f32 {
     let code = u32::from(f.shop)
         | (u32::from(f.era.min(7)) << 1)
         | (eave << 4)
-        | (u32::from(f.material.min(3)) << 13);
+        | (u32::from(f.material.min(3)) << 13)
+        | (u32::from(f.graffiti) << 15);
     occupancy + 4.0 * code as f32
 }
 
@@ -210,6 +214,7 @@ fn unpack_facade(a: f32) -> Facade {
         eave_m: (eave > 0).then(|| eave as f32 * EAVE_STEP_M),
         condition,
         material: ((code >> 13) & 3) as u8,
+        graffiti: (code >> 15) & 1 == 1,
     }
 }
 
@@ -681,6 +686,7 @@ mod tests {
                     condition,
                     // The largest code there is: every bit of it set.
                     material: 3,
+                    graffiti: true,
                 };
                 let a = super::pack_facade(f);
                 for wobble in [-0.02, 0.0, 0.02] {
@@ -688,6 +694,7 @@ mod tests {
                     assert_eq!(back.condition, condition, "{f:?} at {wobble}");
                     assert_eq!((back.shop, back.era), (true, 4), "{f:?} at {wobble}");
                     assert_eq!(back.material, 3, "{f:?} at {wobble}");
+                    assert!(back.graffiti, "{f:?} at {wobble}");
                     assert!((back.eave_m.unwrap() - 102.2).abs() <= 0.1, "{back:?}");
                     if condition == Condition::Kept {
                         assert!((back.occupancy - occupancy).abs() < 0.05, "{back:?}");
@@ -719,6 +726,7 @@ mod tests {
             eave_m: Some(102.2),
             condition: super::Condition::Kept,
             material: 3,
+            graffiti: false,
         };
         for covering in 0..=10u8 {
             let a = super::pack_roof(f, covering);
@@ -752,6 +760,7 @@ mod tests {
                 eave_m: Some(9.4),
                 condition: super::Condition::Kept,
                 material: 1,
+                graffiti: false,
             },
             super::Facade {
                 occupancy: 0.25,
@@ -760,6 +769,7 @@ mod tests {
                 eave_m: Some(102.2),
                 condition: super::Condition::Kept,
                 material: 0,
+                graffiti: false,
             },
             super::Facade {
                 occupancy: 0.5,
@@ -768,6 +778,7 @@ mod tests {
                 eave_m: Some(12.0),
                 condition: super::Condition::Kept,
                 material: 2,
+                graffiti: false,
             },
         ] {
             let back = super::unpack_facade(super::pack_facade(f));

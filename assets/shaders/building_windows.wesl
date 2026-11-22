@@ -988,6 +988,192 @@ fn grimed(c: vec3<f32>, u: f32, v: f32, neglect: f32, fade: f32) -> vec3<f32> {
     return out * mix(0.92, 0.85, neglect - 1.0);
 }
 
+// ─── Graffiti ────────────────────────────────────────────────────────────────
+//
+// A wall on a narrow street (`systems::graffiti`, bit 15 of the code) is
+// painted along its foot: pieces — fat letters with an outline and a drop
+// shadow — and tags, the quick scribbles over and between them. Which stretch
+// of the wall carries what is a hash, keyed to the stretch's own block of the
+// city so that two alleys do not repeat each other; it is decoration, not a
+// survey of anybody's paint (the module note says who asked for it).
+
+/// Pieces are laid one to a stretch this long, tags on their own lattice.
+const SPRAY_STRETCH_M: f32 = 3.4;
+const TAG_STRETCH_M: f32 = 1.9;
+/// As high as somebody standing in the street reaches with a can.
+const SPRAY_TOP_M: f32 = 2.6;
+
+/// A rattle can's colour, linear RGB: loud, because that is what sells.
+fn spray_colour(k: f32) -> vec3<f32> {
+    switch u32(floor(fract(k) * 9.0)) {
+        case 0u: { return vec3<f32>(0.62, 0.02, 0.32); }
+        case 1u: { return vec3<f32>(0.02, 0.12, 0.65); }
+        case 2u: { return vec3<f32>(0.85, 0.55, 0.01); }
+        case 3u: { return vec3<f32>(0.70, 0.03, 0.02); }
+        case 4u: { return vec3<f32>(0.03, 0.40, 0.08); }
+        case 5u: { return vec3<f32>(0.22, 0.04, 0.50); }
+        case 6u: { return vec3<f32>(0.01, 0.45, 0.55); }
+        case 7u: { return vec3<f32>(0.85, 0.30, 0.02); }
+        default: { return vec3<f32>(0.55, 0.40, 0.75); }
+    }
+}
+
+fn sd_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+/// The seed of the stretch `x` falls in: its index along the wall, and the
+/// block of the city its centre stands in. `dir` is the world direction `x`
+/// grows in. The block is taken the way the windows' occupancy is
+/// (`facade.block`), so it survives a floating-origin jump.
+fn spray_seed(xz: vec2<f32>, dir: vec2<f32>, x: f32, len: f32) -> f32 {
+    let k = floor(x / len);
+    let centre = xz + dir * ((k + 0.5) * len - x);
+    let b = floor(centre / facade.block.x);
+    let key = b - floor(b / facade.block.y) * facade.block.y;
+    return k + 61.0 * floor(hash2(key + vec2<f32>(71.0, 29.0)) * 97.0);
+}
+
+/// One fat letter's skeleton: a stem and two strokes off it, `size` metres.
+/// Enough to read as lettering from across a steeg, which is all a piece is to
+/// somebody walking past it.
+fn letter_sd(p: vec2<f32>, size: vec2<f32>, seed: f32) -> f32 {
+    let r1 = hash2(vec2<f32>(seed, 1.0));
+    let r2 = hash2(vec2<f32>(seed, 2.0));
+    let r3 = hash2(vec2<f32>(seed, 3.0));
+    let stem = mix(0.15, 0.4, r1);
+    let top = vec2<f32>(mix(0.55, 0.95, r2), mix(0.55, 0.95, r3));
+    let low = vec2<f32>(mix(0.6, 0.95, r3), mix(0.05, 0.4, r1));
+    var d = sd_capsule(p, vec2<f32>(stem, 0.1) * size, vec2<f32>(stem + (r2 - 0.5) * 0.3, 0.9) * size);
+    d = min(d, sd_capsule(p, vec2<f32>(stem, 0.85) * size, top * size));
+    d = min(d, sd_capsule(p, mix(vec2<f32>(stem, 0.5), top, 0.4 * r3) * size, low * size));
+    return d;
+}
+
+/// A piece in its stretch: `x` metres into it, `v` up the wall, `px` metres a
+/// pixel. Colour and coverage.
+fn spray_piece(x: f32, v: f32, seed: f32, px: f32) -> vec4<f32> {
+    let n = 3.0 + floor(hash2(vec2<f32>(seed, 11.0)) * 3.0);
+    let h = mix(0.75, 1.2, hash2(vec2<f32>(seed, 12.0)));
+    let lw = h * 0.6;
+    let pitch = lw * 0.8;
+    let wide = n * pitch + lw * 0.2;
+    let x0 = 0.15 + hash2(vec2<f32>(seed, 13.0)) * max(SPRAY_STRETCH_M - wide - 0.3, 0.0);
+    let y0 = mix(0.3, 0.75, hash2(vec2<f32>(seed, 14.0)));
+    let p = vec2<f32>(x - x0, v - y0);
+    let fat = h * 0.12;
+    let line = fat + 0.035;
+    if p.x < -line - 0.1 || p.x > wide + line + 0.1 || p.y < -line - 0.1 || p.y > h + line {
+        return vec4<f32>(0.0);
+    }
+    let drop = vec2<f32>(0.06, -0.05);
+    var d = 1e3;
+    var ds = 1e3;
+    for (var i = 0; i < 5; i++) {
+        if f32(i) >= n {
+            break;
+        }
+        let fi = f32(i);
+        let q = p - vec2<f32>(fi * pitch, (hash2(vec2<f32>(seed, 20.0 + fi)) - 0.5) * 0.12 * h);
+        let s = seed * 7.0 + fi;
+        d = min(d, letter_sd(q, vec2<f32>(lw, h), s));
+        ds = min(ds, letter_sd(q - drop, vec2<f32>(lw, h), s));
+    }
+    let aa = max(px, 0.004);
+    let fill_m = 1.0 - smoothstep(fat - aa, fat + aa, d);
+    let line_m = 1.0 - smoothstep(line - aa, line + aa, d);
+    let drop_m = 1.0 - smoothstep(line - aa, line + aa, ds);
+    let fill = mix(
+        spray_colour(hash2(vec2<f32>(seed, 31.0))),
+        spray_colour(hash2(vec2<f32>(seed, 30.0))),
+        smoothstep(0.1 * h, 0.9 * h, p.y),
+    );
+    let outline = select(vec3<f32>(0.015), vec3<f32>(0.8, 0.8, 0.78), hash2(vec2<f32>(seed, 32.0)) < 0.3);
+    // A highlight along each letter's upper edge, as the can's white catches it.
+    let shine = (1.0 - smoothstep(0.0, 0.25 * fat + aa, abs(d - fat * 0.45)))
+        * smoothstep(0.55, 0.8, hash2(vec2<f32>(floor(p.x / 0.08), seed)));
+    var c = mix(vec3<f32>(0.01), outline, line_m);
+    c = mix(c, fill, fill_m);
+    c = mix(c, vec3<f32>(0.85), 0.6 * shine * fill_m);
+    return vec4<f32>(c, max(drop_m, line_m) * 0.95);
+}
+
+/// A tag in its stretch: a name written in one looping line, leaning on, and
+/// now and then underlined. Mostly black, some silver, some a colour.
+fn spray_tag(x: f32, v: f32, seed: f32, px: f32) -> vec4<f32> {
+    let w = mix(0.6, 1.5, hash2(vec2<f32>(seed, 40.0)));
+    let h = mix(0.2, 0.42, hash2(vec2<f32>(seed, 41.0)));
+    let x0 = 0.1 + hash2(vec2<f32>(seed, 42.0)) * max(TAG_STRETCH_M - w - 0.2, 0.0);
+    let y0 = mix(0.8, 1.9, hash2(vec2<f32>(seed, 43.0)));
+    let p = vec2<f32>(x - x0, v - y0);
+    if p.x < -0.2 || p.x > w + 0.2 || p.y < -0.15 || p.y > h + 0.1 {
+        return vec4<f32>(0.0);
+    }
+    // Handwriting: a looped line, one loop a letter — a point running along
+    // while it circles, fast enough that it runs back on itself — leaning
+    // forward, each loop its own height.
+    let letters = 3.0 + floor(hash2(vec2<f32>(seed, 48.0)) * 4.0);
+    let turn = letters * 6.2831853;
+    let r = 1.25 * w / turn;
+    let phase = hash2(vec2<f32>(seed, 49.0)) * 6.2831853;
+    let lean = 0.3 * h;
+    var prev = vec2<f32>(0.0);
+    var d = 1e3;
+    for (var i = 0; i <= 28; i++) {
+        let t = f32(i) / 28.0;
+        let a = turn * t + phase;
+        let tall = mix(0.55, 1.0, hash2(vec2<f32>(seed, 50.0 + floor(t * letters))));
+        let y = h * (0.5 + 0.5 * tall * cos(a));
+        let next = vec2<f32>(t * w - r * sin(a) + (y / h - 0.5) * lean, y);
+        if i > 0 {
+            d = min(d, sd_capsule(p, prev, next));
+        }
+        prev = next;
+    }
+    if hash2(vec2<f32>(seed, 46.0)) < 0.4 {
+        d = min(d, sd_capsule(p, vec2<f32>(-0.05, -0.07), vec2<f32>(w * 0.95, -0.02)));
+    }
+    let width = mix(0.012, 0.03, hash2(vec2<f32>(seed, 44.0)));
+    let aa = max(px, 0.003);
+    // Past a pixel a line this thin is a fraction of one, not a blur of it.
+    let m = (1.0 - smoothstep(width - aa, width + aa, d)) * clamp(2.0 * width / px, 0.0, 1.0);
+    let pick = hash2(vec2<f32>(seed, 45.0));
+    var ink = vec3<f32>(0.012);
+    if pick > 0.8 {
+        ink = spray_colour(hash2(vec2<f32>(seed, 47.0)));
+    } else if pick > 0.6 {
+        ink = vec3<f32>(0.6, 0.6, 0.62);
+    }
+    return vec4<f32>(ink, m * 0.9);
+}
+
+/// Everything sprayed at `x` metres along a wall (left to right as you face
+/// it) and `v` up it. `xz`, `dir` as [`spray_seed`]'s.
+fn graffiti(xz: vec2<f32>, dir: vec2<f32>, x: f32, v: f32, px: f32) -> vec4<f32> {
+    if v > SPRAY_TOP_M || v < 0.15 {
+        return vec4<f32>(0.0);
+    }
+    var out = vec4<f32>(0.0);
+    let ps = spray_seed(xz, dir, x, SPRAY_STRETCH_M);
+    if hash2(vec2<f32>(ps, 7.0)) < 0.55 {
+        let lx = x - floor(x / SPRAY_STRETCH_M) * SPRAY_STRETCH_M;
+        out = spray_piece(lx, v, ps + 0.5, px);
+    }
+    // Tags on a lattice of their own, half a stretch out, so they run over the
+    // pieces' edges and into the gaps as real ones do.
+    let tx = x + 0.5 * SPRAY_STRETCH_M;
+    let ts = spray_seed(xz, dir, tx, TAG_STRETCH_M);
+    if hash2(vec2<f32>(ts, 9.0)) < 0.6 {
+        let lx = tx - floor(tx / TAG_STRETCH_M) * TAG_STRETCH_M;
+        let t = spray_tag(lx, v, ts + 0.25, px);
+        out = vec4<f32>(mix(out.rgb, t.rgb, t.a), max(out.a, t.a));
+    }
+    return out;
+}
+
 /// How far to tilt the normal on a window frame's bevel, as (along the wall,
 /// up): towards the glass on the inner 40 % of the frame.
 fn frame_bevel(pm: vec2<f32>, hs: vec2<f32>, era: u32, shop: bool) -> vec2<f32> {
@@ -1199,6 +1385,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let eave = f32((code >> 4u) & 511u) * 0.2;
     let era = (code >> 1u) & 7u;
     wall_material = (code >> 13u) & 3u;
+    // A wall on a narrow street (`systems::graffiti`). Walls only, and only a
+    // laid-out face: a roof's covering uses this bit too (`pack_roof`).
+    let sprayed_bit = ((code >> 15u) & 1u) == 1u;
     // A shop front needs a ground floor to stand in.
     let shop = (code & 1u) == 1u && eave > SHOP_FLOOR_M + 2.0;
 
@@ -1276,6 +1465,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             door_u = f32(door_step) * DOOR_STEP_M;
         }
     }
+    let sprayed = sprayed_bit && laid_out && is_wall;
     // A face too short for a window says so with a 1 cm bay.
     let windowless = laid_out && bay < 0.5;
     // An imported model's walls carry the windowless marker with no layout
@@ -1328,6 +1518,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         1.0,
         dot(vec2<f32>(dpdx(along), dpdy(along)), vec2<f32>(dpdx(u), dpdy(u))) >= 0.0,
     );
+    // Graffiti's frame (`graffiti`): metres along the wall left to right as
+    // you face it, the world direction that runs, and metres a pixel spans.
+    // Derivatives, so here.
+    let spray_right = select(-1.0, 1.0, dpdx(along) >= 0.0);
+    let spray_x = along * spray_right;
+    let spray_dir = tangent * along_sign * spray_right;
+    let spray_px = max(fwidth(spray_x), fwidth(v));
     // A pale block's cladding slabs, laid from the face's own corner.
     let slab = vec2<f32>(along, v) / SLAB_M;
     let slab_px = sqrt(fwidth(slab.x) * fwidth(slab.y));
@@ -1403,6 +1600,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                     brick,
                     wall_kinds(plain).x * (1.0 - clamp(brick_px * 3.0 - 0.3, 0.0, 1.0)),
                 ),
+                pbr_input.material.base_color.a,
+            );
+        }
+        // Graffiti on a wall along a narrow street, under the relief so the
+        // brick shows through the paint, and kept off the door.
+        if sprayed && abs(along - door_u) > DOOR_CLEAR_M {
+            let paint = graffiti(in.world_position.xz, spray_dir, spray_x, v, spray_px);
+            // A tag is gone long before a wall is; a piece holds on as colour.
+            let keep = 1.0 - smoothstep(0.08, 0.3, spray_px);
+            pbr_input.material.base_color = vec4<f32>(
+                mix(pbr_input.material.base_color.rgb, paint.rgb, paint.a * keep),
                 pbr_input.material.base_color.a,
             );
         }
