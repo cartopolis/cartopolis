@@ -63,7 +63,7 @@ use crate::systems::vector_tiles::SurfaceGroup;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom for fetch + cache, matching the building cells so one mental
-/// model covers both. Cache keys are versioned (`features/v2/…`) because the
+/// model covers both. Cache keys are versioned (`features/v3/…`) because the
 /// combined query *will* grow tags over time, and a cached cell fetched under an
 /// older query would silently lack the new features forever.
 const DETAIL_ZOOM: u32 = 14;
@@ -179,16 +179,18 @@ struct DetailData {
     lamps: Vec<(f64, f64, Option<f32>)>,
     /// (node id, lat, lng, `button_operated=yes`).
     signals: Vec<(i64, f64, f64, bool)>,
-    /// (node id, lat, lng, a zebra traffic must stop for — [`zebra_priority`]).
-    crossings: Vec<(i64, f64, f64, bool)>,
+    /// (node id, lat, lng, a zebra traffic must stop for — [`zebra_priority`],
+    /// the paint on the road — [`crossing_paint`]).
+    crossings: Vec<(i64, f64, f64, bool, CrossingPaint)>,
     barriers: Vec<(BarrierKind, Option<f32>, Vec<(f64, f64)>)>,
     piers: Vec<Vec<(f64, f64)>>,
     waterway: Vec<(WaterKind, Vec<(f64, f64)>)>,
     racks: Vec<(f64, f64)>,
     billboards: Vec<(f64, f64)>,
     bollards: Vec<(f64, f64)>,
-    /// Highway ways fetched as node context: (node ids, geometry, width m).
-    roads: Vec<(Vec<i64>, Vec<(f64, f64)>, f32, bool)>,
+    /// Highway ways fetched as node context: (node ids, geometry, width m, what
+    /// the way is to a crossing on it).
+    roads: Vec<(Vec<i64>, Vec<(f64, f64)>, f32, WayRole)>,
     /// Highway ways whose access tags keep cars off (`traffic::cars_barred`).
     car_free: Vec<Vec<(f64, f64)>>,
 }
@@ -201,7 +203,8 @@ fn detail_query(bbox: &str) -> String {
         concat!(
             "[out:json][timeout:25];",
             "node[\"highway\"=\"traffic_signals\"]({bb})->.sig;",
-            "node[\"highway\"=\"crossing\"][\"crossing\"~\"^(zebra|marked|uncontrolled)$\"]({bb})->.zeb;",
+            "(node[\"highway\"=\"crossing\"][\"crossing\"~\"^(zebra|marked|uncontrolled)$\"]({bb});",
+            "node[\"highway\"=\"crossing\"][\"crossing:markings\"]({bb}););->.zeb;",
             "(",
             "node[\"natural\"=\"tree\"]({bb});",
             "way[\"natural\"=\"tree_row\"]({bb});",
@@ -226,7 +229,7 @@ fn detail_query(bbox: &str) -> String {
 }
 
 fn cache_key(cx: i64, cy: i64) -> String {
-    format!("features/v2/{}/{}/{}.json", DETAIL_ZOOM, cx, cy)
+    format!("features/v3/{}/{}/{}.json", DETAIL_ZOOM, cx, cy)
 }
 
 /// Fetch one cell's text: disk cache, else the combined Overpass query
@@ -312,17 +315,92 @@ fn road_width(tags: Option<&serde_json::Value>) -> f32 {
         "tertiary" => 6.5,
         "residential" | "unclassified" | "living_street" => 5.0,
         "service" => 4.0,
+        "cycleway" => 3.0,
         _ => 4.5,
     }
 }
 
-/// True for the ways that are the *pedestrian* half of a crossing — usable for
-/// orientation only as a fallback, and rotated 90°.
-fn is_footway(tags: Option<&serde_json::Value>) -> bool {
-    matches!(
-        tag_str(tags, "highway").unwrap_or(""),
-        "footway" | "path" | "cycleway" | "steps" | "pedestrian"
-    )
+/// What a highway way is to a signal or crossing node on it, in the order a
+/// node's ways are preferred for its direction (`build_cell`'s road index).
+///
+/// Measured over the nine z14 cells round IKEA Groningen (2026-11-22): of 223
+/// crossing nodes, 45 stand on no carriageway at all, and the commonest of
+/// those (23) sit where a `footway=crossing` meets a cycleway. With the
+/// cycleway and the footway both "a footway", whichever came first in the
+/// response set the direction, so about half of them were turned 90°.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum WayRole {
+    /// A path that is not the crossing itself: rotated 90°, the last resort.
+    Path,
+    /// A cycleway: the road being crossed when a footway crosses it.
+    Cycleway,
+    /// The crossing way (`footway=crossing`, `cycleway=crossing`): it runs
+    /// the walking direction, so the road is across it.
+    Crossing,
+    /// A carriageway: the road itself.
+    Carriageway,
+}
+
+fn way_role(tags: Option<&serde_json::Value>) -> WayRole {
+    let highway = tag_str(tags, "highway").unwrap_or("");
+    if tag_str(tags, "footway") == Some("crossing")
+        || tag_str(tags, "cycleway") == Some("crossing")
+        || tag_str(tags, "path") == Some("crossing")
+    {
+        return WayRole::Crossing;
+    }
+    match highway {
+        "cycleway" => WayRole::Cycleway,
+        "footway" | "path" | "steps" | "pedestrian" | "bridleway" | "corridor" => WayRole::Path,
+        _ => WayRole::Carriageway,
+    }
+}
+
+/// The paint a crossing node puts on the road.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CrossingPaint {
+    /// A zebra: bars parallel to the road, side by side across it.
+    Zebra,
+    /// Two rows of square blocks either side of the crossing
+    /// (`crossing:markings=dashes|dots`) — the Dutch *blokmarkering* of most
+    /// cycle crossings.
+    Blocks,
+    /// Two solid lines either side of the crossing (`lines`).
+    Lines,
+}
+
+/// Which paint a crossing node carries, or none. `crossing:markings` decides
+/// when it is there; without it the old scheme's `crossing=zebra`, an
+/// `uncontrolled` one with `crossing_ref=zebra`, and a bare `marked` paint a
+/// zebra, as they always did here.
+///
+/// **The commonest zebra in Groningen is `crossing=uncontrolled` +
+/// `crossing:markings=zebra`** (98 of the 223 crossing nodes round IKEA,
+/// 2026-11-22), and until then this layer dropped it for lacking the ref. The
+/// 64 `marked` nodes with `dashes`, `dots`, `surface` or `yes` were all painted
+/// as zebras.
+pub(crate) fn crossing_paint<'a>(tag: impl Fn(&str) -> Option<&'a str>) -> Option<CrossingPaint> {
+    if let Some(m) = tag("crossing:markings") {
+        let style = m.split(':').next().unwrap_or("");
+        return match style {
+            "zebra" | "ladder" => Some(CrossingPaint::Zebra),
+            "dashes" | "dots" => Some(CrossingPaint::Blocks),
+            "lines" => Some(CrossingPaint::Lines),
+            // `yes`: painted, style unsaid — fall through to the crossing type.
+            "yes" => crossing_paint_by_type(&tag),
+            // `no`, `surface` (a coloured surface, no paint), anything unknown.
+            _ => None,
+        };
+    }
+    crossing_paint_by_type(&tag)
+}
+
+fn crossing_paint_by_type<'a>(tag: &impl Fn(&str) -> Option<&'a str>) -> Option<CrossingPaint> {
+    match tag("crossing") {
+        Some("zebra" | "marked") => Some(CrossingPaint::Zebra),
+        Some("uncontrolled") if tag("crossing_ref") == Some("zebra") => Some(CrossingPaint::Zebra),
+        _ => None,
+    }
 }
 
 /// True for a feature that is not on the surface — a tunnel, a covered way, or
@@ -402,15 +480,16 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                     let button = tag_str(tags, "button_operated") == Some("yes");
                     out.signals.push((id, lat, lng, button));
                 } else if tag_str(tags, "highway") == Some("crossing") {
-                    // `uncontrolled` counts only when the ref says zebra; the
-                    // query pre-filters the rest.
-                    let c = tag_str(tags, "crossing").unwrap_or("");
-                    if c == "zebra"
-                        || c == "marked"
-                        || (c == "uncontrolled" && tag_str(tags, "crossing_ref") == Some("zebra"))
-                    {
-                        out.crossings
-                            .push((id, lat, lng, zebra_priority(|k| tag_str(tags, k))));
+                    // The query pre-filters to painted-looking crossing types;
+                    // the markings decide what, if anything, is painted.
+                    if let Some(paint) = crossing_paint(|k| tag_str(tags, k)) {
+                        out.crossings.push((
+                            id,
+                            lat,
+                            lng,
+                            zebra_priority(|k| tag_str(tags, k)),
+                            paint,
+                        ));
                     }
                 } else if tag_str(tags, "amenity") == Some("bicycle_parking") {
                     out.racks.push((lat, lng));
@@ -464,7 +543,7 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                         .unwrap_or_default();
                     if ids.len() == line.len() {
                         out.roads
-                            .push((ids, line, road_width(tags), is_footway(tags)));
+                            .push((ids, line, road_width(tags), way_role(tags)));
                     }
                 }
             }
@@ -764,6 +843,13 @@ const LAMP_POST: u32 = 0x4A_4E_52;
 const SIGNAL_POST: u32 = 0x3F_44_48;
 const PILE: u32 = 0x6E_66_5C;
 
+/// Crossing paint, after the Dutch road-marking sizes (CROW): marks 0.5 m
+/// wide with 0.5 m between them, so a 1 m pitch across the road; zebra bars
+/// 3 m long; the block rows of a dashed crossing 3 m apart.
+const CROSSING_PITCH_M: f32 = 1.0;
+const ZEBRA_BAR_M: f32 = 3.0;
+const CROSSING_EDGE_M: f32 = 1.5;
+
 /// Everything the worker needs, captured by value.
 struct BuildCtx {
     ax: i64,
@@ -955,10 +1041,20 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
     }
 
     // ── Road context index (for signals + crossings) ─────────────────────
-    // node id → (direction of the containing way at that node, width, footway).
-    let mut road_at: HashMap<i64, (Vec2, f32, bool)> = HashMap::new();
-    for (ids, line, width, footway) in &data.roads {
+    // node id → (direction of the containing way at that node, width, role).
+    let mut road_at: HashMap<i64, (Vec2, f32, WayRole)> = HashMap::new();
+    for (ids, line, width, role) in &data.roads {
         let pts: Vec<Vec2> = line.iter().map(|&(la, lo)| local(la, lo)).collect();
+        // A crossing way spans the road it crosses, so its length is a better
+        // width than any tag on it.
+        let width = if *role == WayRole::Crossing {
+            pts.windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .sum::<f32>()
+                .clamp(3.0, 15.0)
+        } else {
+            *width
+        };
         for (i, id) in ids.iter().enumerate() {
             let prev = if i > 0 { pts[i - 1] } else { pts[i] };
             let next = if i + 1 < pts.len() {
@@ -970,23 +1066,21 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
             if dir == Vec2::ZERO {
                 continue;
             }
-            // A road beats a footway; among roads, the wider wins (the zebra
-            // crosses the carriageway, not the side street).
-            let e = road_at.entry(*id).or_insert((dir, *width, *footway));
-            let better = (!*footway && e.2) || (*footway == e.2 && *width > e.1);
-            if better {
-                *e = (dir, *width, *footway);
+            // By role (`WayRole`'s order); within one, the wider wins (the
+            // zebra crosses the carriageway, not the side street).
+            let e = road_at.entry(*id).or_insert((dir, width, *role));
+            if (*role, width) > (e.2, e.1) {
+                *e = (dir, width, *role);
             }
         }
     }
     let road_for = |id: i64| {
-        road_at.get(&id).map(|&(dir, w, footway)| {
-            if footway {
-                // The footway *is* the walking direction; the road runs across it.
-                (Vec2::new(-dir.y, dir.x), w.max(5.0))
-            } else {
-                (dir, w)
-            }
+        road_at.get(&id).map(|&(dir, w, role)| match role {
+            WayRole::Carriageway | WayRole::Cycleway => (dir, w),
+            // The crossing way *is* the walking direction; the road runs
+            // across it.
+            WayRole::Crossing => (Vec2::new(-dir.y, dir.x), w),
+            WayRole::Path => (Vec2::new(-dir.y, dir.x), w.max(5.0)),
         })
     };
 
@@ -1146,7 +1240,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         ));
     }
 
-    for &(id, lat, lng, zebra) in &data.crossings {
+    for &(id, lat, lng, zebra, kind) in &data.crossings {
         if !ctx.owns(lat, lng) {
             continue;
         }
@@ -1163,22 +1257,47 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         }
         let walk = Vec2::new(-dir.y, dir.x);
         let y0 = ground_at(p) + 0.02;
-        // Stripes elongated in the walking direction, repeating along the
-        // road: five bars, 0.5 m wide on a 0.9 m pitch.
-        for i in 0..5 {
-            let c = p + dir * ((i as f32 - 2.0) * 0.9);
-            let half_w = width * 0.5 - 0.2;
-            let a = c - walk * half_w;
-            let b = c + walk * half_w;
-            let n = dir * 0.25;
+        // One painted rectangle: `along` metres either side of `c` with the
+        // road, `across` metres either side in the walking direction.
+        let mut rect = |c: Vec2, along: f32, across: f32| {
+            let (r, w) = (dir * along, walk * across);
+            let corner = |q: Vec2| Vec3::new(q.x, y0, q.y);
             paint.quad_facing(
-                Vec3::new(a.x - n.x, y0, a.y - n.y),
-                Vec3::new(b.x - n.x, y0, b.y - n.y),
-                Vec3::new(b.x + n.x, y0, b.y + n.y),
-                Vec3::new(a.x + n.x, y0, a.y + n.y),
+                corner(c - r - w),
+                corner(c + r - w),
+                corner(c + r + w),
+                corner(c - r + w),
                 white,
                 Vec3::Y,
             );
+        };
+        // The paint spans the road less a margin at each kerb; its marks sit
+        // on a 1 m pitch across it, centred on the node.
+        let span = (width - 0.4).max(1.0);
+        let marks = ((span + 0.5) / CROSSING_PITCH_M).floor().max(2.0) as usize;
+        let offset = |i: usize| (i as f32 - (marks - 1) as f32 * 0.5) * CROSSING_PITCH_M;
+        match kind {
+            // Bars as long as the crossing is wide, lying *with* the road,
+            // side by side across it: the walker steps from bar to bar.
+            CrossingPaint::Zebra => {
+                for i in 0..marks {
+                    rect(p + walk * offset(i), ZEBRA_BAR_M * 0.5, 0.25);
+                }
+            }
+            // Square blocks in a row along each edge of the crossing.
+            CrossingPaint::Blocks => {
+                for side in [-1.0, 1.0] {
+                    let edge = p + dir * (side * CROSSING_EDGE_M);
+                    for i in 0..marks {
+                        rect(edge + walk * offset(i), 0.25, 0.25);
+                    }
+                }
+            }
+            CrossingPaint::Lines => {
+                for side in [-1.0, 1.0] {
+                    rect(p + dir * (side * CROSSING_EDGE_M), 0.08, span * 0.5);
+                }
+            }
         }
     }
 
@@ -2472,7 +2591,10 @@ mod tests {
         assert_eq!(data.trees[0].2, Some(12.0));
         assert_eq!(data.lamps.len(), 1);
         assert_eq!(data.signals, vec![(3, 53.212, 6.562, false)]);
-        assert_eq!(data.crossings, vec![(4, 53.213, 6.563, true)]);
+        assert_eq!(
+            data.crossings,
+            vec![(4, 53.213, 6.563, true, CrossingPaint::Zebra)]
+        );
         assert_eq!(data.bollards.len(), 1);
         assert_eq!(data.barriers.len(), 1);
         assert_eq!(data.barriers[0].0, BarrierKind::Hedge);
@@ -2550,16 +2672,26 @@ mod tests {
         assert!(parse_detail(text).is_err());
     }
 
+    /// An `uncontrolled` crossing is painted when its ref or its markings say
+    /// so — the markings are how most of Groningen's zebras are tagged.
     #[test]
-    fn an_uncontrolled_crossing_needs_the_zebra_ref() {
+    fn an_uncontrolled_crossing_is_painted_by_its_ref_or_markings() {
         let text = r#"{"elements":[
             {"type":"node","id":1,"lat":1.0,"lon":1.0,"tags":{"highway":"crossing","crossing":"uncontrolled"}},
-            {"type":"node","id":2,"lat":1.0,"lon":1.1,"tags":{"highway":"crossing","crossing":"uncontrolled","crossing_ref":"zebra"}}
+            {"type":"node","id":2,"lat":1.0,"lon":1.1,"tags":{"highway":"crossing","crossing":"uncontrolled","crossing_ref":"zebra"}},
+            {"type":"node","id":3,"lat":1.0,"lon":1.2,"tags":{"highway":"crossing","crossing":"uncontrolled","crossing:markings":"zebra","crossing:signals":"no"}},
+            {"type":"node","id":4,"lat":1.0,"lon":1.3,"tags":{"highway":"crossing","crossing":"uncontrolled","crossing:markings":"no"}}
         ]}"#;
         let data = parse_detail(text).unwrap();
-        assert_eq!(data.crossings.len(), 1);
-        assert_eq!(data.crossings[0].0, 2);
-        assert!(data.crossings[0].3, "a zebra by its ref is one to stop for");
+        let got: Vec<(i64, bool, CrossingPaint)> =
+            data.crossings.iter().map(|c| (c.0, c.3, c.4)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, true, CrossingPaint::Zebra),
+                (3, true, CrossingPaint::Zebra)
+            ]
+        );
     }
 
     /// Only a zebra gives the walker priority: `marked` with other markings
@@ -2576,8 +2708,18 @@ mod tests {
             {"type":"node","id":6,"lat":1.0,"lon":1.5,"tags":{"highway":"traffic_signals","button_operated":"no"}}
         ]}"#;
         let data = parse_detail(text).unwrap();
-        let zebra: Vec<(i64, bool)> = data.crossings.iter().map(|c| (c.0, c.3)).collect();
-        assert_eq!(zebra, vec![(1, true), (2, false), (3, false), (4, false)]);
+        let zebra: Vec<(i64, bool, CrossingPaint)> =
+            data.crossings.iter().map(|c| (c.0, c.3, c.4)).collect();
+        assert_eq!(
+            zebra,
+            vec![
+                (1, true, CrossingPaint::Zebra),
+                // Dashes are blocks, not a zebra.
+                (2, false, CrossingPaint::Blocks),
+                (3, false, CrossingPaint::Zebra),
+                (4, false, CrossingPaint::Zebra)
+            ]
+        );
         let button: Vec<(i64, bool)> = data.signals.iter().map(|s| (s.0, s.3)).collect();
         assert_eq!(button, vec![(5, true), (6, false)]);
     }
@@ -2648,39 +2790,117 @@ mod tests {
         assert!(plain.model_trees.is_empty() && plain.crown_pieces.is_empty());
     }
 
-    #[test]
-    fn zebra_stripes_span_the_road() {
-        // A zebra on a straight east-west road: stripes must extend along the
-        // walking (north-south) axis by the road's half width.
-        let text = r#"{"elements":[
-            {"type":"node","id":4,"lat":53.2130,"lon":6.5630,"tags":{"highway":"crossing","crossing":"zebra"}},
-            {"type":"way","id":10,"nodes":[8,4,9],
-             "geometry":[{"lat":53.2130,"lon":6.5620},{"lat":53.2130,"lon":6.5630},{"lat":53.2130,"lon":6.5640}],
-             "tags":{"highway":"residential","width":"6"}}
-        ]}"#;
-        let (cx, cy) = lat_lng_to_tile(53.213, 6.563, DETAIL_ZOOM);
+    /// The paint quads of one built cell, as (x, z) corner quadruples.
+    fn paint_quads(text: &str, lat: f64, lng: f64) -> Vec<[[f32; 2]; 4]> {
+        let (cx, cy) = lat_lng_to_tile(lat, lng, DETAIL_ZOOM);
         let build = build_cell(text, cx, cy, &ctx()).unwrap().unwrap();
         let paint = build
             .meshes
             .iter()
             .find(|(c, _)| *c == PropClass::Paint)
-            .expect("zebra paint mesh");
+            .expect("crossing paint mesh");
         let positions = paint
             .1
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .unwrap()
             .as_float3()
             .unwrap();
-        // 5 stripes × 4 corners.
-        assert_eq!(positions.len(), 20);
-        // The road runs east–west (local +x), so stripes span north–south (z):
-        // z-extent ≈ road width − margin, x-extent ≈ stripe pitch span.
-        let (mut zmin, mut zmax) = (f32::MAX, f32::MIN);
-        for p in positions {
-            zmin = zmin.min(p[2]);
-            zmax = zmax.max(p[2]);
+        assert_eq!(positions.len() % 4, 0);
+        positions
+            .chunks(4)
+            .map(|q| std::array::from_fn(|i| [q[i][0], q[i][2]]))
+            .collect()
+    }
+
+    /// (x extent, z extent) of one quad.
+    fn extent(q: &[[f32; 2]; 4]) -> (f32, f32) {
+        let span = |k: usize| {
+            let (lo, hi) = q.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p[k]), hi.max(p[k]))
+            });
+            hi - lo
+        };
+        (span(0), span(1))
+    }
+
+    /// **A zebra's bars lie with the road and stand side by side across it**
+    /// (look at a photo: the walker steps over them). Until 2026-11-22 they
+    /// were drawn the other way, five rungs of a ladder lying along the road.
+    #[test]
+    fn zebra_bars_lie_with_the_road_across_its_width() {
+        // A straight east-west road (local x), 6 m wide.
+        let text = r#"{"elements":[
+            {"type":"node","id":4,"lat":53.2130,"lon":6.5630,"tags":{"highway":"crossing","crossing":"zebra"}},
+            {"type":"way","id":10,"nodes":[8,4,9],
+             "geometry":[{"lat":53.2130,"lon":6.5620},{"lat":53.2130,"lon":6.5630},{"lat":53.2130,"lon":6.5640}],
+             "tags":{"highway":"residential","width":"6"}}
+        ]}"#;
+        let quads = paint_quads(text, 53.213, 6.563);
+        // 5.6 m of paint on a 1 m pitch: six bars.
+        assert_eq!(quads.len(), 6);
+        for q in &quads {
+            let (x, z) = extent(q);
+            assert!((x - ZEBRA_BAR_M).abs() < 0.05, "bar {x} m along the road");
+            assert!((z - 0.5).abs() < 0.05, "bar {z} m across it");
         }
-        assert!((zmax - zmin) > 4.0, "stripes too short: {}", zmax - zmin);
+        // Together they span the road north to south.
+        let zs: Vec<f32> = quads.iter().flatten().map(|p| p[1]).collect();
+        let span = zs.iter().cloned().fold(f32::MIN, f32::max)
+            - zs.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(span > 5.0 && span < 6.0, "the zebra spans {span} m");
+    }
+
+    /// A crossing node where a `footway=crossing` meets a cycleway takes its
+    /// direction from the crossing way, whichever the response lists first:
+    /// the cycleway is the road, the footway the walk.
+    #[test]
+    fn a_zebra_over_a_cycleway_follows_the_crossing_way() {
+        for cycleway_first in [true, false] {
+            // The cycleway runs east-west, the crossing way north-south.
+            let cycleway = r#"{"type":"way","id":10,"nodes":[8,4,9],
+             "geometry":[{"lat":53.2130,"lon":6.5620},{"lat":53.2130,"lon":6.5630},{"lat":53.2130,"lon":6.5640}],
+             "tags":{"highway":"cycleway"}}"#;
+            let crossing = r#"{"type":"way","id":11,"nodes":[6,4,7],
+             "geometry":[{"lat":53.21299,"lon":6.5630},{"lat":53.2130,"lon":6.5630},{"lat":53.21301,"lon":6.5630}],
+             "tags":{"highway":"footway","footway":"crossing"}}"#;
+            let (a, b) = if cycleway_first {
+                (cycleway, crossing)
+            } else {
+                (crossing, cycleway)
+            };
+            let text = format!(
+                r#"{{"elements":[
+                {{"type":"node","id":4,"lat":53.2130,"lon":6.5630,"tags":{{"highway":"crossing","crossing":"uncontrolled","crossing:markings":"zebra"}}}},
+                {a},{b}]}}"#
+            );
+            for q in paint_quads(&text, 53.213, 6.563) {
+                let (x, z) = extent(&q);
+                assert!(
+                    x > z,
+                    "a bar {x} m east-west by {z} m north-south (cycleway first: {cycleway_first})"
+                );
+            }
+        }
+    }
+
+    /// A dashed crossing is two rows of blocks either side, not a zebra.
+    #[test]
+    fn dashes_are_two_rows_of_blocks() {
+        let text = r#"{"elements":[
+            {"type":"node","id":4,"lat":53.2130,"lon":6.5630,"tags":{"highway":"crossing","crossing":"marked","crossing:markings":"dashes"}},
+            {"type":"way","id":10,"nodes":[8,4,9],
+             "geometry":[{"lat":53.2130,"lon":6.5620},{"lat":53.2130,"lon":6.5630},{"lat":53.2130,"lon":6.5640}],
+             "tags":{"highway":"residential","width":"6"}}
+        ]}"#;
+        let quads = paint_quads(text, 53.213, 6.563);
+        assert_eq!(quads.len(), 12, "two rows of six");
+        for q in &quads {
+            let (x, z) = extent(q);
+            assert!(
+                (x - 0.5).abs() < 0.05 && (z - 0.5).abs() < 0.05,
+                "{x} × {z}"
+            );
+        }
     }
 
     #[test]

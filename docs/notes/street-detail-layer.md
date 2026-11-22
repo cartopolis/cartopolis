@@ -1,7 +1,7 @@
 ---
 topic: street-detail-layer
 triggers: [street detail, overpass features, surveyed trees, street lamps, traffic signals, zebra, barriers, piers, wind turbines, windmills, building parts, street_detail.rs, systems::street_detail, tall_structures.rs, systems::tall_structures, tall.rs, pipeline/tall.rs, systems/map/osm_buildings.rs]
-updated: 2026-10-17
+updated: 2026-11-22
 ---
 
 # The Overpass street-detail layer
@@ -28,8 +28,8 @@ Standing facts, several of which a diff will not explain:
   cells never reach Overpass at all (`fetch_cell_text` short-circuits to the
   static host), so anything appended to that query would silently not exist in
   exactly the covered Dutch cities the client is pointed at. Hence a separate
-  query family with its own cache namespace (`cache/features/v2/…` since the
-  query grew the streets closed to cars, `ambient-traffic.md`;
+  query family with its own cache namespace (`cache/features/v3/…` since the query grew the crossings mapped by their markings alone, 2026-11-22; v2 since it
+  grew the streets closed to cars, `ambient-traffic.md`;
   `cache/features/tall/v1/…`). The building cache moved to `buildings/v2/…`
   when the query grew `building:part` — an old cached cell would otherwise
   lack parts forever, because the cache key carries no query hash.
@@ -38,10 +38,25 @@ Standing facts, several of which a diff will not explain:
   node, and the node id's position in the way gives the exact road direction
   and a width estimate. A crossing node mapped only on the footway is handled
   by rotating 90° (the footway is the walking direction). Nearest-road
-  distance search was never needed.
-- **Zebra stripes are elongated along the walking direction** and repeat along
-  the road axis (five bars, 0.9 m pitch) — look at a photo before "fixing"
-  this; both orientations look plausible in code.
+  distance search was never needed. A node's ways are ranked carriageway >
+  the `footway=crossing` way (rotated) > cycleway > other path (rotated):
+  23 of 223 crossing nodes round IKEA Groningen sit where a crossing way
+  meets a cycleway, and while both counted as "footway" the response order
+  turned about half of them 90°.
+- **Zebra bars lie with the road and stand side by side across it** — 0.5 m
+  bars on a 1 m pitch, 3 m long, the walker stepping from bar to bar. Until
+  2026-11-22 this note said the opposite and the code drew a ladder along the
+  road; the owner's photo of the zebra by IKEA Groningen settled it.
+- **The markings decide the paint, not `crossing=*`.** Round IKEA Groningen
+  (2026-11-22) the commonest zebra is `crossing=uncontrolled` +
+  `crossing:markings=zebra` (98 of 223 nodes), which the layer once dropped,
+  and `marked` + `dashes`/`dots` (45) is the *blokmarkering* of a cycle
+  crossing — two rows of blocks, not a zebra. `surface` and `no` paint
+  nothing (`crossing_paint`). The zebras of the IKEA junction itself carry
+  `crossing:markings=zebra` and **no `crossing=*` at all**, so the query and
+  atlas's `street::joining` take any crossing with markings; atlas's `street`
+  cells have to be cut again (`atlas run --datasets street`) before they hold
+  them.
 - **Signals are six materials, not per-entity state.** Every signal lamp ball
   is meshed into one of six per-cell meshes — (phase group A|B) × (red, amber,
   green) — and `update_signal_cycle` writes six emissives on phase

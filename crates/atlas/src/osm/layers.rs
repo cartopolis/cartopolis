@@ -87,11 +87,15 @@ pub mod street {
     pub const ZOOM: u32 = 14;
 
     /// `node["highway"="traffic_signals"]->.sig;
-    /// node["highway"="crossing"]["crossing"~"^(zebra|marked|uncontrolled)$"]->.zeb;`
+    /// node["highway"="crossing"]["crossing"~"^(zebra|marked|uncontrolled)$"]->.zeb;
+    /// node["highway"="crossing"]["crossing:markings"]->.zeb;` — a crossing
+    /// mapped with its markings alone carries no `crossing=*` at all (the
+    /// zebras by IKEA Groningen, 2026-11-22).
     pub fn joining(tags: &TagView<'_>) -> bool {
         tag(tags, "highway") == Some("traffic_signals")
             || (tag(tags, "highway") == Some("crossing")
-                && is(tags, "crossing", &["zebra", "marked", "uncontrolled"]))
+                && (is(tags, "crossing", &["zebra", "marked", "uncontrolled"])
+                    || tag(tags, "crossing:markings").is_some()))
     }
 
     /// `node["natural"="tree"]`, `node["highway"="street_lamp"]`,
@@ -431,6 +435,20 @@ mod tests {
             .collect();
         assert_eq!(ids, [1, 10, 12]);
         assert_eq!(doc["elements"][1]["nodes"], serde_json::json!([3, 1, 4]));
+    }
+
+    /// A crossing tagged only by its markings joins its roads like one tagged
+    /// `crossing=*`; an unmarked one does not.
+    #[test]
+    fn a_crossing_mapped_by_its_markings_alone_joins() {
+        let j = |pairs: &[(&str, &str)]| street::joining(&view(&tags(pairs)));
+        assert!(j(&[
+            ("highway", "crossing"),
+            ("crossing:markings", "zebra")
+        ]));
+        assert!(j(&[("highway", "crossing"), ("crossing", "uncontrolled")]));
+        assert!(!j(&[("highway", "crossing"), ("crossing", "unmarked")]));
+        assert!(!j(&[("crossing:markings", "zebra")]));
     }
 
     #[test]
