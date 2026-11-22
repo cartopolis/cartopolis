@@ -2613,7 +2613,7 @@ fn attached_mode(
         }
         if touch.pair() {
             rot.x += touch.twist / ORBIT_ROT_SENS;
-            rot.y += touch.two_drag.y;
+            rot.y += touch.tilt;
             rig.distance_target /= f64::from(touch.pinch.max(1e-3));
         } else {
             rot += touch.drag;
@@ -2893,9 +2893,11 @@ fn earth_mode(ctx: ModeCtx) {
         // that the mouse puts on the middle button is the two-finger
         // twist and the two-finger vertical drag.
         //
-        // Only `two_drag.y` is used: a twist that isn't perfectly
-        // centred moves the centroid sideways, so a horizontal reading
-        // would double-count every rotation as a pan.
+        // A pair is either a tilt or the map gesture, never both
+        // (`touch::PairLock`): the map gesture's centroid motion steers
+        // the pinch — it pans the surface, and grabs the globe in space,
+        // where the cursor already sits between the fingers — and the
+        // pinch itself is anchored there below (`pinch_anchor`).
         //
         // The twist divides by `ORBIT_ROT_SENS` so the multiplication
         // by it below cancels: a twist is measured in radians and lands
@@ -2904,9 +2906,12 @@ fn earth_mode(ctx: ModeCtx) {
         if touch.pair() {
             if space {
                 heading_delta += touch.twist / ORBIT_ROT_SENS;
+                rot_delta += touch.two_drag;
+                grabbing = true;
             } else {
                 rot_delta.x += touch.twist / ORBIT_ROT_SENS;
-                rot_delta.y += touch.two_drag.y;
+                rot_delta.y += touch.tilt;
+                pan_delta += touch.two_drag;
             }
         } else if space {
             rot_delta += touch.drag;
@@ -3049,6 +3054,17 @@ fn earth_mode(ctx: ModeCtx) {
     }
     if osd.zoom != 0.0 || key_zoom != 0.0 || (touch.pair() && touch.pinch != 1.0) {
         camera_state.rail_goal = None;
+    }
+    // The pinch's anchor follows the fingers; any other zoom lets go of it, so
+    // a wheel notch after a pinch zooms about the middle as it always did.
+    if touch.pair() && touch.pinch != 1.0 {
+        camera_state.pinch_anchor = window.and_then(|w| w.cursor_position());
+    } else if osd.zoom != 0.0
+        || key_zoom != 0.0
+        || camera_state.rail_goal.is_some()
+        || (zoom_mul != 1.0 && !touch.pair())
+    {
+        camera_state.pinch_anchor = None;
     }
     // The scale the zoom is held in follows a jump to its goal, and any other
     // move that left it (a teleport, a shot's height, a jump taken over
@@ -3303,6 +3319,38 @@ fn earth_mode(ctx: ModeCtx) {
     // Per-frame zoom fraction (< 1 while flying in), which also paces the
     // cursor homing so it tracks the glide rather than the wheel notches.
     let zoom_factor = camera_state.orbit_distance / old_d;
+
+    // Zoom about the pinch (surface): the ground under the point between the
+    // fingers stays under it. The camera sits at `focus + offset · d`, so
+    // moving the focus to `P + (focus − P) · k` as `d` scales by `k` scales
+    // the whole rig about `P` — exact for any tilt, the ground point read
+    // through last frame's view, the one the fingers were placed on.
+    if !space {
+        if let Some(at) = camera_state.pinch_anchor {
+            let ground = cam_render.and_then(|(cam, cam_gt)| {
+                let ray = cam.viewport_to_world(cam_gt, at).ok()?;
+                let origin = ray.origin.as_dvec3() + cell_origin(&camera_cell);
+                let dir = ray.direction.as_vec3().as_dvec3();
+                let t = -origin.y / dir.y;
+                (dir.y < -1e-3 && t > 0.0).then(|| origin + dir * t)
+            });
+            if let Some(p) = ground {
+                // Held short of the horizon: a pinch over the sky would move
+                // the focus kilometres away for a point no one can see.
+                let p = camera_state.orbit_focus
+                    + (p - camera_state.orbit_focus)
+                        .clamp_length_max(camera_state.orbit_distance * 2.0);
+                camera_state.orbit_focus = p + (camera_state.orbit_focus - p) * zoom_factor;
+                camera_state.orbit_focus.y = 0.0;
+            }
+            let settled = (camera_state.orbit_distance_target / camera_state.orbit_distance - 1.0)
+                .abs()
+                < 1e-3;
+            if settled && !touch.pair() {
+                camera_state.pinch_anchor = None;
+            }
+        }
+    }
 
     // Zoom-toward-cursor (space): scrolling in homes the orbit onto the
     // point under the cursor — cast the cursor ray onto the sphere and

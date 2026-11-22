@@ -2107,7 +2107,7 @@ fn read_gesture(input: &mut DriveInput, egui: &EguiManager, drag: &mut Option<Ve
         // the view in, which is `1/pinch` on a distance.
         g.zoom /= input.touch.pinch;
         g.turn -= input.touch.twist;
-        g.tilt -= input.touch.two_drag.y * PEEK_DRAG_RATE;
+        g.tilt -= input.touch.tilt * PEEK_DRAG_RATE;
     } else if input.touch.drag != Vec2::ZERO && !ui_has_pointer {
         g.turn -= input.touch.drag.x * PEEK_DRAG_RATE;
         g.tilt -= input.touch.drag.y * PEEK_DRAG_RATE;

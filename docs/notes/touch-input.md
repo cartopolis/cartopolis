@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
-updated: 2026-11-14
+updated: 2026-11-22
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -198,17 +198,29 @@ Phone-map convention, not the mouse's:
 | Gesture | Earth surface | Earth space | Follow | Fly |
 |---|---|---|---|---|
 | one finger | pan | spin the globe | orbit | look |
-| pinch | zoom | zoom | follow distance | — |
+| pinch | zoom about the fingers | zoom toward the fingers | follow distance | — |
+| pinch, moving | pan while zooming | spin the globe while zooming | — | — |
 | twist | yaw | compass heading | azimuth | — |
-| two-finger vertical | tilt | — | — | — |
+| two fingers side by side, sliding up/down | tilt | — | tilt | — |
 
 A twist is 1:1 in radians — turn the fingers 90° and the view turns 90°. Drags
 stay in points and keep the mouse's sensitivity constants, since `TouchInput`
 and `CursorMoved` both report logical points.
 
-**Only the vertical component of the two-finger drag is read.** A twist that
-isn't perfectly centred moves the centroid sideways, so taking the horizontal
-component too would double-count every rotation as a pan.
+**A pair is a tilt or a map gesture, decided once (`touch::PairLock`).** Until
+2026-11-22 the two-finger centroid's vertical motion always tilted, its
+horizontal motion was dropped, and the surface pinch zoomed about the middle of
+the screen — so a pinch could not be aimed ("tijdens het pinchen is het niet
+mogelijk om de richting van de zoom bij te sturen"). Now, after the pair has
+moved 10 points (`PAIR_LOCK_PTS`), it is a **tilt** if the fingers lie side by
+side and slid vertically together without spreading or turning, and otherwise
+the **map gesture**: pinch, twist and centroid pan together. Nothing is reported
+while deciding, and the held-back motion is handed over whole at the verdict. On
+the surface the pinch's glide is anchored on the ground under the point between
+the fingers (`CameraState::pinch_anchor`, an exact homothety of the rig); in
+space the centroid is the cursor, so the existing zoom-toward-cursor and the
+globe grab already follow it. The twist still turns about the screen's middle,
+not about the fingers, so a twist pivoted on one finger drifts a little.
 
 **Fly's column is empty on purpose, and it used to be full.** Pinch was W/S,
 the two-finger drag was A/D + E/Q, and only the **sign** of each was read — so

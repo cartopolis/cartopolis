@@ -699,3 +699,88 @@ fn three_fingers_report_nothing() {
         .collect();
     assert_eq!(step(&from, &to), Read::default());
 }
+
+/// Feed a pair's frames through [`recognize`] and [`lock_pair`], as the system
+/// does, and add up what came out.
+fn locked(frames: &[[Vec2; 2]]) -> (Vec2, f32, f32, f32) {
+    let mut lock = PairLock::Off;
+    let mut previous: Vec<(u64, Vec2)> = Vec::new();
+    let (mut drag, mut pinch, mut twist, mut tilt) = (Vec2::ZERO, 1.0, 0.0, 0.0);
+    for [a, b] in frames {
+        let now = vec![(0, *a), (1, *b)];
+        let read = lock_pair(&mut lock, &now, recognize(&previous, &now));
+        drag += read.two_drag;
+        pinch *= read.pinch;
+        twist += read.twist;
+        tilt += read.tilt;
+        previous = now;
+    }
+    (drag, pinch, twist, tilt)
+}
+
+/// The fingers spread while they slide right: the zoom is steered, so the
+/// slide arrives as the map gesture's pan — and none of it as a tilt.
+#[test]
+fn a_pinch_that_moves_pans_as_it_zooms() {
+    let frames: Vec<[Vec2; 2]> = (0..10)
+        .map(|i| {
+            let (half, x) = (50.0 + 3.0 * i as f32, 200.0 + 4.0 * i as f32);
+            [Vec2::new(x - half, 300.0), Vec2::new(x + half, 300.0)]
+        })
+        .collect();
+    let (drag, pinch, _, tilt) = locked(&frames);
+    assert!((drag.x - 36.0).abs() < 1e-3, "drag = {drag}");
+    assert!((pinch - 77.0 / 50.0).abs() < 1e-3, "pinch = {pinch}");
+    assert_eq!(tilt, 0.0);
+}
+
+/// A pinch moved vertically is still a pinch: a slide up while spreading must
+/// not tilt the view, which is what made a pinch impossible to aim.
+#[test]
+fn a_pinch_that_moves_up_does_not_tilt() {
+    let frames: Vec<[Vec2; 2]> = (0..10)
+        .map(|i| {
+            let (half, y) = (50.0 + 3.0 * i as f32, 300.0 - 4.0 * i as f32);
+            [Vec2::new(200.0 - half, y), Vec2::new(200.0 + half, y)]
+        })
+        .collect();
+    let (drag, _, _, tilt) = locked(&frames);
+    assert_eq!(tilt, 0.0);
+    assert!((drag.y + 36.0).abs() < 1e-3, "drag = {drag}");
+}
+
+/// Side by side, sliding down together without spreading: a tilt, handed over
+/// whole once it is told — including the frames spent deciding.
+#[test]
+fn fingers_side_by_side_sliding_together_tilt() {
+    let frames: Vec<[Vec2; 2]> = (0..10)
+        .map(|i| {
+            let y = 300.0 + 4.0 * i as f32;
+            [Vec2::new(150.0, y), Vec2::new(250.0, y)]
+        })
+        .collect();
+    let (drag, pinch, twist, tilt) = locked(&frames);
+    assert!((tilt - 36.0).abs() < 1e-3, "tilt = {tilt}");
+    assert_eq!((drag, pinch, twist), (Vec2::ZERO, 1.0, 0.0));
+}
+
+/// The verdict holds for the pair: a tilt that starts spreading later is still
+/// a tilt, and lifting a finger lets go of it.
+#[test]
+fn the_verdict_holds_until_the_pair_breaks_up() {
+    let mut lock = PairLock::Off;
+    let mut previous: Vec<(u64, Vec2)> = Vec::new();
+    for i in 0..6 {
+        let y = 300.0 + 4.0 * i as f32;
+        let now = vec![(0, Vec2::new(150.0, y)), (1, Vec2::new(250.0, y))];
+        lock_pair(&mut lock, &now, recognize(&previous, &now));
+        previous = now;
+    }
+    assert!(matches!(lock, PairLock::Tilt { .. }), "{lock:?}");
+    let spread = vec![(0, Vec2::new(130.0, 320.0)), (1, Vec2::new(270.0, 320.0))];
+    let read = lock_pair(&mut lock, &spread, recognize(&previous, &spread));
+    assert_eq!(read.pinch, 1.0);
+    let one = vec![(0, Vec2::new(130.0, 320.0))];
+    lock_pair(&mut lock, &one, recognize(&spread, &one));
+    assert_eq!(lock, PairLock::Off);
+}

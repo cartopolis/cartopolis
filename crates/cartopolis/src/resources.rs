@@ -1883,6 +1883,11 @@ pub struct CameraState {
     /// from the Earth's centre the orbit eases onto while the zoom glides in.
     /// `None` once it arrives, and on any drag.
     pub globe_aim: Option<bevy::math::DVec3>,
+    /// Where the last pinch was held (window points, between the fingers), on
+    /// the surface tier: the zoom it set going glides about the ground under
+    /// that point rather than the middle of the screen, so a pinch lands where
+    /// the fingers were. `None` once the glide settles, and on any other zoom.
+    pub pinch_anchor: Option<Vec2>,
     /// The last mouse press on the globe, in window points and seconds of
     /// [`Self::globe_clock`], so a second one can be told to be a double click.
     pub globe_last_click: Option<(Vec2, f32)>,
@@ -2091,6 +2096,7 @@ impl Default for CameraState {
             orbit_north_lock: false,
             globe_fling: bevy::math::DVec3::ZERO,
             globe_aim: None,
+            pinch_anchor: None,
             globe_last_click: None,
             globe_clock: 0.0,
             rail_goal: None,

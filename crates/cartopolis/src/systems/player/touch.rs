@@ -147,9 +147,9 @@ pub struct TouchGestures {
     /// second finger arriving ends the drag rather than jumping it to the
     /// centroid.
     pub drag: Vec2,
-    /// Motion of the two-finger centroid this frame. The tilt gesture: only the
-    /// vertical component is used by the camera, because the horizontal one
-    /// cannot be told apart from a slightly off-centre twist.
+    /// Motion of the two-finger centroid this frame, while the pair is a
+    /// map gesture (`PairLock::Map`): the pan that steers a pinch. Zero while it is
+    /// a tilt, which reads [`TouchGestures::tilt`] instead.
     pub two_drag: Vec2,
     /// Spread ratio this frame — `>1` fingers moving apart (zoom in), `<1`
     /// together. Exactly `1.0` when there is no pair, which is the identity for
@@ -159,6 +159,12 @@ pub struct TouchGestures {
     /// points down). Chosen to carry the same sign as a rightward turn-drag, so
     /// the two gestures agree about which way "turn the view right" is.
     pub twist: f32,
+    /// Vertical motion of the pair this frame (points, down positive), while
+    /// the pair is a tilt (`PairLock::Tilt`) — both fingers side by side,
+    /// sliding up or down together. Zero otherwise.
+    pub tilt: f32,
+    /// What the current pair has been recognised as. See [`PairLock`].
+    lock: PairLock,
 
     /// Fingers an on-screen control owns, and where each is now — claimed at the
     /// moment it landed inside a [`UiClaimRegions`] rect and held until it
@@ -248,6 +254,8 @@ impl Default for TouchGestures {
             // Multiplicative identity, not zero — see the field's doc.
             pinch: 1.0,
             twist: 0.0,
+            tilt: 0.0,
+            lock: PairLock::Off,
             ui_held: Vec::new(),
             ui_released: Vec::new(),
             seen: Vec::new(),
@@ -384,7 +392,7 @@ pub fn recognize_touch_gestures(
         &regions,
     );
 
-    let read = recognize(&previous, &free);
+    let read = lock_pair(&mut gestures.lock, &free, recognize(&previous, &free));
 
     gestures.fingers = free.len();
     gestures.ever_touched |= !fingers.is_empty();
@@ -392,6 +400,7 @@ pub fn recognize_touch_gestures(
     gestures.pinch = read.pinch;
     gestures.twist = read.twist;
     gestures.two_drag = read.two_drag;
+    gestures.tilt = read.tilt;
     gestures.ui_held = ui_held;
     gestures.ui_released = ui_released;
 
@@ -514,6 +523,13 @@ struct Read {
     two_drag: Vec2,
     pinch: f32,
     twist: f32,
+    /// Only ever set by [`lock_pair`]; [`recognize`] reports the pair's motion
+    /// in `two_drag` and leaves the verdict to it.
+    tilt: f32,
+    /// The distance between the pair's fingers this frame (points), zero
+    /// without a pair — what turns a spread ratio and a twist angle into
+    /// distances a finger travelled, for [`lock_pair`].
+    separation: f32,
 }
 
 impl Default for Read {
@@ -525,6 +541,8 @@ impl Default for Read {
             two_drag: Vec2::ZERO,
             pinch: 1.0,
             twist: 0.0,
+            tilt: 0.0,
+            separation: 0.0,
         }
     }
 }
@@ -562,10 +580,125 @@ fn recognize(previous: &[(u64, Vec2)], fingers: &[(u64, Vec2)]) -> Read {
             // step and not a full turn of the view.
             read.twist = wrap_pi(now.to_angle() - was.to_angle());
             read.two_drag = (da + db) * 0.5;
+            read.separation = now.length();
         }
         _ => {}
     }
     read
+}
+
+/// How far (points) a pair must move — together, apart or round — before it is
+/// told to be a tilt or a map gesture. A few frames of an ordinary pinch; held
+/// back rather than guessed, and handed over whole once decided, so nothing the
+/// fingers did in the meantime is lost.
+const PAIR_LOCK_PTS: f32 = 10.0;
+
+/// What a two-finger gesture is, decided once per pair.
+///
+/// Two readings want the same motion. A pinch is steered by moving the fingers
+/// *together* while they spread — the map follows the point between them, as in
+/// every phone map — and the tilt is the very same together-motion, made
+/// vertically. Until 2026-11-22 the camera took both: the centroid's vertical
+/// motion tilted, its horizontal motion was dropped, and a pinch went to the
+/// middle of the screen whatever the fingers did, so a zoom could not be aimed.
+///
+/// So the pair is classified once, the way phone maps do it: **two fingers side
+/// by side sliding up or down together, without spreading or turning, is a
+/// tilt**; anything else is the map gesture (zoom, turn and pan at once). The
+/// verdict holds until the pair breaks up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PairLock {
+    /// No pair down.
+    Off,
+    /// A pair down, not yet moved far enough to tell; what it did so far.
+    Deciding {
+        ids: (u64, u64),
+        drag: Vec2,
+        pinch: f32,
+        twist: f32,
+    },
+    Tilt {
+        ids: (u64, u64),
+    },
+    Map {
+        ids: (u64, u64),
+    },
+}
+
+impl PairLock {
+    fn ids(&self) -> Option<(u64, u64)> {
+        match *self {
+            PairLock::Off => None,
+            PairLock::Deciding { ids, .. } | PairLock::Tilt { ids } | PairLock::Map { ids } => {
+                Some(ids)
+            }
+        }
+    }
+}
+
+/// Gate a frame's [`Read`] through the pair's [`PairLock`]: a tilt reports only
+/// `tilt`, a map gesture only pinch, twist and `two_drag`, and a pair still
+/// being decided reports nothing until the verdict, which then hands over all
+/// it held back at once. One-finger reads pass through untouched.
+fn lock_pair(lock: &mut PairLock, fingers: &[(u64, Vec2)], read: Read) -> Read {
+    let [(id_a, a), (id_b, b)] = fingers else {
+        *lock = PairLock::Off;
+        return read;
+    };
+    let ids = (*id_a, *id_b);
+    if lock.ids() != Some(ids) {
+        *lock = PairLock::Deciding {
+            ids,
+            drag: Vec2::ZERO,
+            pinch: 1.0,
+            twist: 0.0,
+        };
+    }
+    let held = |two_drag: Vec2, pinch: f32, twist: f32, tilt: f32| Read {
+        two_drag,
+        pinch,
+        twist,
+        tilt,
+        ..read
+    };
+    match *lock {
+        PairLock::Off => read,
+        PairLock::Tilt { .. } => held(Vec2::ZERO, 1.0, 0.0, read.two_drag.y),
+        PairLock::Map { .. } => read,
+        PairLock::Deciding {
+            ids,
+            drag,
+            pinch,
+            twist,
+        } => {
+            let (drag, pinch, twist) =
+                (drag + read.two_drag, pinch * read.pinch, twist + read.twist);
+            // How far the fingers went, each way of moving them, in points.
+            let gap = read.separation.max(MIN_PAIR_SEPARATION_PTS);
+            let spread = (gap - gap / pinch).abs();
+            let round = twist.abs() * gap * 0.5;
+            let moved = drag.length().max(spread).max(round);
+            if moved < PAIR_LOCK_PTS {
+                *lock = PairLock::Deciding {
+                    ids,
+                    drag,
+                    pinch,
+                    twist,
+                };
+                return held(Vec2::ZERO, 1.0, 0.0, 0.0);
+            }
+            let side_by_side = (*b - *a).x.abs() >= (*b - *a).y.abs();
+            let vertical = drag.y.abs() > 2.0 * drag.x.abs();
+            let rigid = spread.max(round) < 0.5 * drag.length();
+            if side_by_side && vertical && rigid {
+                *lock = PairLock::Tilt { ids };
+                held(Vec2::ZERO, 1.0, 0.0, drag.y)
+            } else {
+                *lock = PairLock::Map { ids };
+                held(drag, pinch, twist, 0.0)
+            }
+        }
+    }
 }
 
 /// Drive the emulated mouse from the primary finger: the window cursor tracks
