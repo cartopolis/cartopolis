@@ -56,6 +56,27 @@ impl Solution {
         }
     }
 
+    /// The 1σ error of `altitude_m`, metres, or `None` when the height is not a
+    /// measurement (dead reckoning, no fix).
+    ///
+    /// From GST when the receiver gave a height sigma. Otherwise the typical
+    /// figure for the kind of solution: a carrier-phase height is centimetres
+    /// to decimetres; a code solution's vertical error runs 1.5–2× its
+    /// horizontal (the satellites are all above the antenna, so the geometry
+    /// is weaker vertically), taken as twice [`Self::accuracy_m`].
+    #[must_use]
+    pub fn height_sigma_m(&self) -> Option<f64> {
+        if let Some((_, _, Some(height))) = self.sigma_m {
+            return Some(height.max(0.005));
+        }
+        match self.quality {
+            FixQuality::RtkFixed => Some(0.03),
+            FixQuality::RtkFloat => Some(0.5),
+            FixQuality::Dgps | FixQuality::Single => Some(2.0 * self.accuracy_m()),
+            FixQuality::Estimated | FixQuality::None => None,
+        }
+    }
+
     /// Ellipsoidal height (WGS84), when both parts are known.
     #[must_use]
     pub fn ellipsoid_height_m(&self) -> Option<f64> {
@@ -177,6 +198,8 @@ mod tests {
         // The GST's ellipse (0.02 × 0.01 m) is what the accuracy comes from.
         assert!((s.accuracy_m() - 0.02f64.hypot(0.01)).abs() < 1e-12);
         assert_eq!(s.ellipsoid_height_m(), Some(8.1 + 40.5));
+        // And its height sigma.
+        assert_eq!(s.height_sigma_m(), Some(0.021));
     }
 
     #[test]

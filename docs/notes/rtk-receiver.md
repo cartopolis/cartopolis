@@ -1,7 +1,7 @@
 ---
 topic: rtk-receiver
 triggers: [gnss_receiver, cartopolis_gnss, UsbSerial.java, RTK, NTRIP, UM980, RTCM, NMEA, ttyUSB, "external receiver", "serial port", FT230X, crates/gnss]
-updated: 2026-11-05
+updated: 2026-11-22
 ---
 
 # An external RTK receiver as the position
@@ -29,21 +29,43 @@ compare like for like.
 
 ## Its height stands the avatar on a roof
 
-The GGA height is the antenna above the receiver's mean sea level, and with an
-RTK float or fixed solution it is good to centimetres, so it is the one height
-the client trusts: `GpsFix::height_m` is set from it and from nothing else (the
-phone's own was ~10 m off, `high-precision-mode.md`). On the Forum's roof on
+The GGA height is the antenna above the receiver's mean sea level. With an RTK
+float or fixed solution it is good to centimetres; on the Forum's roof on
 2026-11-05 it read 53.60 m against 3DBAG's 52.15 m NAP for the roof terrace —
 the roof plus a phone held at the chest. Until then the app dropped the height
 and stood the avatar in the street under the person.
 
+**Every height travels with its error** (`GpsFix::height`, a `GpsHeight`:
+metres above sea level and a 1σ, from GST when the receiver sends one, else by
+fix quality — `Solution::height_sigma_m`; a code solution's vertical is taken
+as twice its horizontal). Android's own `getMslAltitudeMeters` (API 34, with
+its accuracy) is passed the same way; the browser's ellipsoid height is not.
+Until 2026-11-22 only carrier-phase heights were passed at all, and on the
+Forum's roof without an RTK fix (a single solution, ±4 m) the avatar stood in
+the street inside the building's shell.
+
 `locate` turns it into metres above the ground there (minus
 `PHONE_HEIGHT_M`, against the terrain's `datum_m`) as
-`AvatarState::measured_level`, and while that is set `Footing::step` takes the
-floor from it instead of the step rule: the street or an interior storey when
-one is within `MEASURED_SNAP_M`, else the measurement itself — a roof, which
-nothing models as a floor and whose collider top is the ridge, metres over a
-flat roof's terrace. The offline eject backstop stands down meanwhile, and
+`AvatarState::measured_level`, and `Footing::step` takes the floor from it
+instead of the step rule, as far as the error allows:
+
+- **Precise** (σ ≤ `PRECISE_SIGMA_M`, 0.6 m — RTK): the street or an interior
+  storey when one is within `MEASURED_SNAP_M`, else the measurement itself —
+  a roof, which nothing models as a floor and whose collider top is the ridge,
+  metres over a flat roof's terrace (`measured_floor`).
+- **Rough** (a code solution's, a phone's): only a choice among the floors that
+  exist under the point — the street, the interior storeys, the roof the
+  colliders hold — and only when the nearest is nearer than the runner-up by
+  more than σ (`coarse_floor`). A ±8 m height tells the Forum's terrace from
+  its street and says nothing between a house's storeys, where the step rule
+  carries on as if nothing had been measured. The floor already stood on stays
+  while no other is clearly nearer, so a measurement wandering about the
+  midpoint does not bounce the avatar. Its limit is the horizontal error: on a
+  terrace's edge a fix that drifts off the footprint has only the street under
+  it, and the avatar goes down with it.
+
+`AvatarState::floor_measured` says whether the floor came from the measurement
+this frame; while it did the offline eject backstop stands down, and
 `track_indoors` does not count a level over the top storey as inside.
 **Online the lift is the client's alone**: the sim is flat, so other people
 still see the avatar at street level.

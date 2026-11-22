@@ -63,7 +63,7 @@ use bevy::android::ANDROID_APP;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
-use super::location::{GpsFix, Slot};
+use super::location::{GpsFix, GpsHeight, Slot};
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -2674,6 +2674,31 @@ fn read_provider(
         let nanos = env
             .call_method(&location, "getElapsedRealtimeNanos", "()J", &[])?
             .j()?;
+        // The height above sea level the platform works out itself (API 34,
+        // EGM2008 — decimetres from NAP), with its own error. `getAltitude` is
+        // the WGS84 ellipsoid height, 40-odd metres over NAP here, and is not
+        // used. A phone's height is metres off (`GpsHeight`), and it is passed
+        // with that error rather than dropped, which until 2026-11-22 it was.
+        let height = if sdk_int(env)? >= 34
+            && env
+                .call_method(&location, "hasMslAltitude", "()Z", &[])?
+                .z()?
+            && env
+                .call_method(&location, "hasMslAltitudeAccuracy", "()Z", &[])?
+                .z()?
+        {
+            Some(GpsHeight {
+                msl_m: env
+                    .call_method(&location, "getMslAltitudeMeters", "()D", &[])?
+                    .d()?,
+                sigma_m: f64::from(
+                    env.call_method(&location, "getMslAltitudeAccuracyMeters", "()F", &[])?
+                        .f()?,
+                ),
+            })
+        } else {
+            None
+        };
 
         Ok(Some(Reading {
             fix: GpsFix {
@@ -2682,7 +2707,7 @@ fn read_provider(
                 accuracy_m,
                 speed_ms,
                 heading_deg,
-                height_m: None,
+                height,
             },
             nanos,
         }))

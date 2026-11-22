@@ -85,9 +85,11 @@ use crate::components::{Avatar, FreeCamera};
 use crate::grid::cell_origin;
 use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::location::{GpsFix, LocationWatch};
+use crate::platform::location::{GpsFix, GpsHeight, LocationWatch};
 use crate::platform::orientation::{DeviceAttitude, OrientationWatch};
-use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
+use crate::resources::{
+    AvatarState, CameraMode, CameraState, MapAnchor, MeasuredLevel, OnlineSession,
+};
 use crate::systems::driver::{DriverState, FixGlide};
 use crate::systems::geo_nav::{GeoNavState, Teleport};
 
@@ -147,16 +149,19 @@ const PHONE_HEIGHT_M: f64 = 1.3;
 /// few decimetres from NAP (NLGEO2018, `high-precision-mode.md`); the terrain's
 /// zero is `datum_m` above NAP.
 fn measured_level(
-    height_m: f64,
+    height: GpsHeight,
     terrain: &crate::systems::terrain::TerrainField,
     x: f32,
     z: f32,
-) -> Option<f32> {
+) -> Option<MeasuredLevel> {
     if !terrain.is_ready() {
         return None;
     }
-    let feet_nap = height_m - PHONE_HEIGHT_M;
-    Some((feet_nap - f64::from(terrain.datum_m) - f64::from(terrain.ground_at(x, z))) as f32)
+    let feet_nap = height.msl_m - PHONE_HEIGHT_M;
+    Some(MeasuredLevel {
+        level: (feet_nap - f64::from(terrain.datum_m) - f64::from(terrain.ground_at(x, z))) as f32,
+        sigma_m: height.sigma_m as f32,
+    })
 }
 
 /// Let the avatar's body follow one frame of a GPS walk from `from` to `to`
@@ -1110,7 +1115,7 @@ pub fn track_device_pose(
             );
             carry_avatar(&mut avatar_state, glided_from, (gx, gz), time.delta_secs());
             carried = true;
-            measured = fix.height_m.and_then(|h| {
+            measured = fix.height.and_then(|h| {
                 let p = avatar_state.position;
                 measured_level(h, &terrain, p.x, p.z)
             });

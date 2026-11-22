@@ -66,6 +66,7 @@ mod native {
     use cartopolis_gnss::{Config, Opener, Receiver, Status};
 
     use super::{Caster, GpsFix, Setup};
+    use crate::platform::location::GpsHeight;
 
     /// A solution older than this is not a position any more: the receiver
     /// writes several a second, so this is a cable pulled or a receiver that
@@ -217,13 +218,16 @@ mod native {
             heading_deg: s
                 .course_deg
                 .filter(|_| s.speed_ms.is_some_and(|v| v > MOVING_MS)),
-            // Carrier-phase solutions only: a code fix's height is metres off,
-            // which is a storey, and a storey wrong is worse than none.
-            height_m: s.altitude_m.filter(|_| {
-                matches!(
-                    s.quality,
-                    cartopolis_gnss::FixQuality::RtkFixed | cartopolis_gnss::FixQuality::RtkFloat
-                )
+            // With its error, so a code fix's height — metres off, a storey —
+            // is not stood on as an RTK height is, but can still say "the
+            // roof, not the street" (`interiors::Footing::step`). Until
+            // 2026-11-22 only carrier-phase heights were passed, and without
+            // an RTK fix the avatar stood in the street under the Forum's roof.
+            height: s.altitude_m.and_then(|msl_m| {
+                Some(GpsHeight {
+                    msl_m,
+                    sigma_m: s.height_sigma_m()?,
+                })
             }),
         }
     }

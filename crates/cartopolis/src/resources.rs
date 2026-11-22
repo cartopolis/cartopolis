@@ -1460,6 +1460,17 @@ pub struct Seated {
     pub edge: bool,
 }
 
+/// The level a receiver measured the avatar's feet at, metres above the ground
+/// under it, and how far that may be off — the fix's own figure
+/// (`platform::location::GpsHeight`), which is what decides whether the level
+/// is stood on as measured or only used to choose a floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredLevel {
+    pub level: f32,
+    /// 1σ, metres.
+    pub sigma_m: f32,
+}
+
 #[derive(Resource)]
 pub struct AvatarState {
     /// Authoritative sim position (from server when online).
@@ -1497,15 +1508,19 @@ pub struct AvatarState {
     /// that has to drop. Under the same gravity, so a storey and a kerb fall at
     /// the same rate.
     pub floor_drop_speed: f32,
-    /// The level a receiver *measured* the avatar's feet at, metres above the
-    /// ground under it — set by `locate` while it follows an RTK fix with a
-    /// height (`GpsFix::height_m`), `None` otherwise.
+    /// The level a receiver *measured* the avatar's feet at — set by `locate`
+    /// while it follows a fix with a height (`GpsFix::height`), `None`
+    /// otherwise.
     ///
     /// While it is set it decides the floor (`interiors::Footing::step`) instead
-    /// of the step rule: somebody who took the lift to a roof did not climb a
-    /// ramp, and a floor reachable only by walking up to it would keep them in
-    /// the street forever.
-    pub measured_level: Option<f32>,
+    /// of the step rule, as far as its error allows: somebody who took the lift
+    /// to a roof did not climb a ramp, and a floor reachable only by walking up
+    /// to it would keep them in the street forever.
+    pub measured_level: Option<MeasuredLevel>,
+    /// Whether `floor_lift` came from `measured_level` on the last step, rather
+    /// than from the step rule — which a poor measurement falls back to when
+    /// no floor stands out (`interiors::Footing::step`).
+    pub floor_measured: bool,
     /// The camera's `auto_yaw` when the movement input now held was pressed, and
     /// that input's direction on screen — what keeps a recentring camera from
     /// steering the walk it is following (`avatar::steer_azimuth`). `None` while
@@ -1682,6 +1697,7 @@ impl Default for AvatarState {
             floor_lift: 0.0,
             floor_drop_speed: 0.0,
             measured_level: None,
+            floor_measured: false,
             steer_latch: None,
             predicted_velocity: Vec3::ZERO,
             velocity: Vec3::ZERO,

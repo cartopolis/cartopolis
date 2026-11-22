@@ -2366,7 +2366,7 @@ mod tests {
                 accuracy_m: 4.0,
                 speed_ms: Some(1.5),
                 heading_deg: None,
-                height_m: None,
+                height: None,
             }),
             source: FixSource::Link,
             age: Some((3.2, true)),

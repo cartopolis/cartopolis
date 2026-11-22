@@ -54,12 +54,27 @@ pub struct GpsFix {
     pub speed_ms: Option<f64>,
     /// Course over ground, degrees clockwise from true north.
     pub heading_deg: Option<f64>,
-    /// The antenna's height above mean sea level, metres — only from an
-    /// external receiver with an RTK solution, whose height is good to
-    /// centimetres. A phone's own height is 2–3× worse than its horizontal and
-    /// was ~10 m off on the OnePlus (`docs/notes/high-precision-mode.md`), so the
-    /// platform providers leave this `None` rather than put a storey on a guess.
-    pub height_m: Option<f64>,
+    /// The antenna's height, when the provider measured one and can say how
+    /// good it is. `None` from a provider that has no height, or no error for
+    /// it: a height without an error cannot be told from a guess.
+    pub height: Option<GpsHeight>,
+}
+
+/// A measured height and how far it may be off, so a floor chosen from it can
+/// be chosen as carefully as it deserves (`interiors::Footing::step`).
+///
+/// An RTK receiver's is centimetres and stands the avatar on the measurement;
+/// a code solution's or a phone's own is metres — the OnePlus was ~10 m off
+/// once (`docs/notes/high-precision-mode.md`) — and that is still enough to
+/// tell a roof terrace 45 m up from the street under it, which is the one
+/// question a height that poor is asked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpsHeight {
+    /// Above mean sea level, metres: the receiver's own geoid, which in
+    /// Groningen is within decimetres of NAP.
+    pub msl_m: f64,
+    /// Its 1σ error, metres.
+    pub sigma_m: f64,
 }
 
 /// The slot a provider writes into. `Result` so a permission denial reaches the
@@ -292,7 +307,9 @@ mod wasm {
                     accuracy_m: c.accuracy(),
                     speed_ms: c.speed(),
                     heading_deg: c.heading(),
-                    height_m: None,
+                    // The browser gives a WGS84 ellipsoid height, not sea level:
+                    // 40-odd metres off NAP here, and nothing to correct it by.
+                    height: None,
                 };
                 if let Ok(mut g) = sink.lock() {
                     *g = Some(Ok(fix));

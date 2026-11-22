@@ -1564,10 +1564,11 @@ pub fn eject_avatar_from_buildings(
     if online.is_some() || !layers.buildings_enabled || colliders.is_empty() {
         return;
     }
-    // A receiver measured where the person is, height and all (`locate`): on a
-    // roof below the building's ridge — the collider's top — this would push
-    // them off the roof every frame and the next fix would put them back.
-    if avatar_state.measured_level.is_some() {
+    // A receiver measured where the person is, height and all (`locate`), and
+    // the floor is standing on that measurement: on a roof below the building's
+    // ridge — the collider's top — this would push them off the roof every
+    // frame and the next fix would put them back.
+    if avatar_state.floor_measured {
         return;
     }
     // Climbing, the avatar is on its way over a wall (`systems::climb`): its

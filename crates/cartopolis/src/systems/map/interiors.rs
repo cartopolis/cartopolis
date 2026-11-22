@@ -51,7 +51,7 @@ use cartopolis_geo::building_design::{self as bd, BuildingDesign, Compiled};
 use crate::components::HideInSpace;
 use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::resources::{AvatarState, MapAnchor};
+use crate::resources::{AvatarState, MapAnchor, MeasuredLevel};
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::collision::{BuildingColliders, Footprint};
 use crate::systems::map_stream::MapStream;
@@ -595,6 +595,21 @@ impl InteriorFloors {
     /// you is something to walk under, not something to be raised onto. Reaching
     /// the storey above is therefore only ever possible up the flight, whose ramp
     /// rises continuously out of the floor you are on.
+    /// Every interior floor under `p`, metres above the ground plane, whatever
+    /// level the avatar is at — what a measured height chooses among
+    /// (`Footing::step`). [`Self::support`] answers only what a step reaches.
+    pub fn levels_at(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
+        self.rooms
+            .iter()
+            .filter(move |room| point_in_ring(&room.outline, p))
+            .flat_map(move |room| {
+                room.floors
+                    .iter()
+                    .filter(move |f| f.polygons.iter().any(|poly| floor_polygon_holds(poly, p)))
+                    .map(|f| f.y)
+            })
+    }
+
     pub fn support(&self, p: Vec2, from: f32) -> f32 {
         let mut best = 0.0f32;
         let mut take = |level: f32| {
@@ -607,10 +622,7 @@ impl InteriorFloors {
                 continue;
             }
             for f in &room.floors {
-                if f.polygons.iter().any(|poly| {
-                    poly.first().is_some_and(|outer| point_in_ring(outer, p))
-                        && !poly[1..].iter().any(|h| point_in_ring(h, p))
-                }) {
+                if f.polygons.iter().any(|poly| floor_polygon_holds(poly, p)) {
                     take(f.y);
                 }
             }
@@ -705,6 +717,12 @@ impl InteriorFloors {
     }
 }
 
+/// Whether a floor polygon — its outer ring, then its holes — has `p` on it.
+fn floor_polygon_holds(poly: &[Vec<Vec2>], p: Vec2) -> bool {
+    poly.first().is_some_and(|outer| point_in_ring(outer, p))
+        && !poly[1..].iter().any(|h| point_in_ring(h, p))
+}
+
 /// The two things that decide how high the ground is, in one parameter.
 ///
 /// Both movement systems were at Bevy's 16-parameter ceiling, and the floor is
@@ -757,17 +775,14 @@ impl Footing<'_> {
     /// [`Self::roof_floor`] for the roof under `feet`.
     pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32, feet: Feet) -> f32 {
         if let Some(measured) = avatar.measured_level {
-            // The measurement is from `ground_at`, the floor from `feet.ground`,
-            // which over water is the swimmer's level a metre or two under the
-            // land: under a viaduct over a canal the two differ, and the feet
-            // went that far under the deck.
-            let base = self.terrain.ground_at(at.x, at.y);
-            let deck = self.decks.top_under(feet.world, f32::INFINITY);
-            avatar.floor_lift =
-                measured_floor(&self.floors, at, base, feet.ground, deck, measured) - feet.ground;
-            avatar.floor_drop_speed = 0.0;
-            return avatar.floor_lift;
+            if let Some(floor) = self.measured_floor(avatar.floor_lift, at, feet, measured) {
+                avatar.floor_lift = floor;
+                avatar.floor_drop_speed = 0.0;
+                avatar.floor_measured = true;
+                return floor;
+            }
         }
+        avatar.floor_measured = false;
         let roof = self.roof_floor(avatar.floor_lift, feet);
         step_floor_lift(&self.floors, &self.tunnels, &self.terrain, avatar, at, dt);
         if let Some(r) = roof.filter(|&r| r >= avatar.floor_lift) {
@@ -793,7 +808,7 @@ impl Footing<'_> {
     /// (`avatar::FLOOR_FREEZE_ABOVE_M`): held, but raised by a roof coming up
     /// under a descent, which starts metres up.
     pub fn hold(&self, avatar: &mut AvatarState, feet: Feet) -> f32 {
-        if avatar.measured_level.is_some() {
+        if avatar.floor_measured {
             return avatar.floor_lift;
         }
         if let Some(r) = self
@@ -832,6 +847,48 @@ impl Footing<'_> {
             lift,
             feet,
         )
+    }
+
+    /// The floor a measured level stands the avatar on, given the floor `lift`
+    /// it has now — or `None` when the measurement is too poor to pick one,
+    /// and the step rule decides as if nothing had been measured.
+    ///
+    /// A precise height (RTK) is stood on as measured ([`measured_floor`]). A
+    /// rough one — a code solution's, a phone's own, metres off — may only
+    /// choose among the floors that exist under the point: the ground, the
+    /// storeys of an interior, a roof or a lifted bridge deck ([`coarse_floor`]).
+    ///
+    /// The measurement is from `ground_at`, the floor from `feet.ground`, which
+    /// over water is the swimmer's level a metre or two under the land: under a
+    /// viaduct over a canal the two differ, and the feet went that far under
+    /// the deck. So both work in heights and the lift is taken off at the end.
+    fn measured_floor(
+        &self,
+        lift: f32,
+        at: Vec2,
+        feet: Feet,
+        measured: MeasuredLevel,
+    ) -> Option<f32> {
+        let base = self.terrain.ground_at(at.x, at.y);
+        let deck = self.decks.top_under(feet.world, f32::INFINITY);
+        if measured.sigma_m <= PRECISE_SIGMA_M {
+            return Some(
+                measured_floor(&self.floors, at, base, feet.ground, deck, measured.level)
+                    - feet.ground,
+            );
+        }
+        let roof = self.colliders.roof_under(feet.world, f32::INFINITY);
+        coarse_floor(
+            feet.ground,
+            self.floors.levels_at(at).map(|y| base + y),
+            roof.into_iter().chain(deck),
+            feet.ground + lift,
+            MeasuredLevel {
+                level: base + measured.level,
+                sigma_m: measured.sigma_m,
+            },
+        )
+        .map(|floor| floor - feet.ground)
     }
 }
 
@@ -881,6 +938,63 @@ fn measured_floor(
         .filter(|f| (f - feet).abs() <= MEASURED_SNAP_M)
         .min_by(|a, b| (a - feet).abs().total_cmp(&(b - feet).abs()))
         .unwrap_or(feet.max(ground))
+}
+
+/// The 1σ error (m) up to which a measured level is stood on as measured
+/// ([`measured_floor`]): an RTK float height at worst. Over it the level only
+/// chooses among known floors ([`coarse_floor`]), because standing on the
+/// measurement itself would hang the avatar in the air between storeys.
+const PRECISE_SIGMA_M: f32 = 0.6;
+
+/// The floor a rough measurement puts the avatar on: the nearest of the
+/// `ground`, the interior `storeys` under the point and the `roofs` over it (a
+/// building's, a lifted deck's), as heights in one frame, when that is clear —
+/// or `None` when it is not.
+///
+/// **Clear means nearer by more than the error.** The runner-up must be
+/// farther from the measurement than the nearest by at least `sigma_m`: a
+/// phone's ±8 m tells the Forum's roof terrace, 45 m up, from the street under
+/// it, and says nothing between storeys 3.2 m apart, where the answer is
+/// `None` and the step rule carries on as if nothing had been measured. The
+/// floor already stood on (`current`) keeps the benefit of the doubt: it stays
+/// while no other floor is clearly nearer, so a measurement wandering about the
+/// midpoint does not bounce the avatar between the two. Floors within a step of
+/// each other (the street and a ground-floor slab) are one candidate.
+fn coarse_floor(
+    ground: f32,
+    storeys: impl IntoIterator<Item = f32>,
+    roofs: impl IntoIterator<Item = f32>,
+    current: f32,
+    measured: MeasuredLevel,
+) -> Option<f32> {
+    let mut candidates: Vec<f32> = std::iter::once(ground)
+        .chain(storeys)
+        .chain(roofs.into_iter().filter(|r| *r > ground + STEP_UP_M))
+        .collect();
+    candidates.sort_by(f32::total_cmp);
+    candidates.dedup_by(|next, last| {
+        let same = *next - *last < STEP_UP_M;
+        if same {
+            *last = *next;
+        }
+        same
+    });
+    let distance = |floor: f32| (floor - measured.level).abs();
+    candidates.sort_by(|a, b| distance(*a).total_cmp(&distance(*b)));
+    let nearest = candidates[0];
+    if let Some(current) = candidates
+        .iter()
+        .copied()
+        .find(|c| (c - current).abs() <= STEP_UP_M)
+    {
+        if distance(current) - distance(nearest) < measured.sigma_m {
+            return Some(current);
+        }
+    }
+    match candidates.get(1) {
+        Some(&runner_up) if distance(runner_up) - distance(nearest) < measured.sigma_m => None,
+        _ => Some(nearest),
+    }
 }
 
 /// Advance the avatar's interior floor level one frame, and answer where it now
@@ -1350,6 +1464,44 @@ mod tests {
         assert_eq!(measured_floor(&floors, at, 2.0, -0.5, deck, -2.4), -0.5);
         // On the street under a viaduct, the street.
         assert_eq!(measured_floor(&floors, at, 0.0, 0.0, deck, 0.3), 0.0);
+    }
+
+    /// A rough height — a phone's, ±8 m — chooses a floor only where one is
+    /// clearly the nearest: the Forum's roof against its street, never one
+    /// storey of a house against the next. The floor already stood on stays
+    /// while nothing else is clearly nearer.
+    #[test]
+    fn a_rough_height_picks_a_floor_only_when_it_is_clear() {
+        let m = |level, sigma_m| MeasuredLevel { level, sigma_m };
+        // The Forum: the street and a terrace 45 m up, nothing else.
+        let forum = |current, measured| coarse_floor(0.0, [], [45.0], current, measured);
+        assert_eq!(forum(0.0, m(44.0, 8.0)), Some(45.0), "up on the roof");
+        assert_eq!(forum(45.0, m(10.0, 8.0)), Some(0.0), "back in the street");
+        // Near the midpoint nothing is clear: the floor stood on stays…
+        assert_eq!(forum(45.0, m(21.0, 8.0)), Some(45.0));
+        assert_eq!(forum(0.0, m(21.0, 8.0)), Some(0.0));
+        // …and off any floor (falling), the step rule decides.
+        assert_eq!(forum(10.0, m(23.0, 8.0)), None);
+        // Beside the building, with only the street under the point: the street.
+        assert_eq!(coarse_floor(0.0, [], [], 45.0, m(44.0, 8.0)), Some(0.0));
+        // A house's storeys are 3.2 m apart: an 8 m error never picks one, and
+        // the ground-floor slab counts as the street.
+        let storeys = [FLOOR_Y, STOREY_M + FLOOR_Y, 2.0 * STOREY_M + FLOOR_Y];
+        let house = |current, measured| coarse_floor(0.0, storeys, [], current, measured);
+        assert_eq!(house(0.0, m(3.0, 8.0)), Some(FLOOR_Y), "stays");
+        assert_eq!(
+            house(STOREY_M + FLOOR_Y, m(0.5, 8.0)),
+            Some(STOREY_M + FLOOR_Y),
+            "stays upstairs"
+        );
+        assert_eq!(house(20.0, m(3.0, 8.0)), None);
+        // The same house under an RTK float's half metre is clear.
+        assert_eq!(house(0.0, m(STOREY_M + 0.3, 0.8)), Some(STOREY_M + FLOOR_Y));
+        // Over the canal under a viaduct, in heights: the swimmer's level is
+        // the ground, the deck 6 m up, and a ±4 m height picks the deck; a
+        // ±6 m one is not clear enough to leave the water for it.
+        assert_eq!(coarse_floor(-0.5, [], [6.0], -0.5, m(5.0, 4.0)), Some(6.0));
+        assert_eq!(coarse_floor(-0.5, [], [6.0], -0.5, m(5.0, 6.0)), Some(-0.5));
     }
 
     /// Walking the flight from the bottom arrives *at* the floor above, and the
