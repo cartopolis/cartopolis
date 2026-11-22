@@ -47,6 +47,7 @@ import {ADMIN, COMMUNITY} from '@/lib/base'
 import {playerSignIn, playerSignOut} from '@/lib/signup'
 import {adoptSession, dropOperator} from '@/lib/accounts'
 import {layout} from '@/lib/layout'
+import {WorldSession, worldGpu} from '@/lib/world-frame'
 import {loadSiteMenu, setSiteLang, site} from '@/lib/site-menu'
 import {SiteBar, type Step} from '@/cms/sitebar'
 import {siteText} from '@/cms/tree'
@@ -1355,6 +1356,8 @@ export class Chat extends MithrilComponent {
     worldOpened = false
     /** The place the World frame was last sent to, so a redraw does not send it again. */
     worldPlace: string | null = null
+    /** The World frame's sign-in, which is this page's (`lib/world-frame`). */
+    worldSession = new WorldSession(() => $s.signup.token)
 
     /** A public post's place that asked to be opened in World, as a link's `place=` value. */
     postPlace: string | null = null
@@ -1380,20 +1383,36 @@ export class Chat extends MithrilComponent {
      *
      * Signed in, the topic open in Community stays beside it; signed out, it is
      * the map alone.
+     *
+     * The frame is signed in as this page is (`WorldSession`), and is only
+     * loaded in a browser with WebGPU: without it, World says so, and
+     * Community goes on working.
      */
     worldFrame(shown: boolean, signedIn: boolean) {
         const place = signedIn ? this.spacePlace() : null
         const pane = this.s.pane
+        const gpu = worldGpu()
         return (
             <div class={shown ? 'home-world' : 'home-world is-hidden'}>
-                <iframe
+                {gpu === 'no' && (
+                    <div class="home-world-frame home-world-none">
+                        <p>This browser cannot show the world: it needs WebGPU.</p>
+                        <p>Chats, calls and communities work here as they are. To walk around the world, open
+                            cartopolis.org in Chrome or Edge, or use the app.</p>
+                        <a href="/apk/">Get the app</a>
+                    </div>
+                )}
+                {gpu === 'yes' && <iframe
                     allow="fullscreen; geolocation; microphone; camera; clipboard-write"
                     class="home-world-frame"
                     oncreate={(v: m.VnodeDOM) => {
                         this.worldPlace = place
+                        this.worldSession.attach(v.dom as HTMLIFrameElement)
                         ;(v.dom as HTMLIFrameElement).src = place ? `/viewer/?place=${place}` : '/viewer/'
                     }}
                     onupdate={(v: m.VnodeDOM) => {
+                        // Signing in or out on the page signs the world in or out.
+                        this.worldSession.sync()
                         if (!shown || !place || place === this.worldPlace) return
                         this.worldPlace = place
                         ;(v.dom as HTMLIFrameElement).contentWindow?.postMessage(
@@ -1402,7 +1421,7 @@ export class Chat extends MithrilComponent {
                         )
                     }}
                     title="The world"
-                />
+                />}
                 {shown && signedIn && (
                     <aside class="chat home-world-chat">
                         {pane.kind === 'chat'

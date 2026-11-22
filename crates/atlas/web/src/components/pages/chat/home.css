@@ -300,6 +300,24 @@
     min-width: 0;
 }
 
+/* World in a browser without WebGPU: what it needs, where it does run. */
+.home-world-none {
+    align-items: center;
+    background: var(--m-surface);
+    color: var(--m-text);
+    display: flex;
+    flex-direction: column;
+    gap: var(--m-space-2);
+    justify-content: center;
+    padding: var(--m-space-4);
+    text-align: center;
+}
+
+.home-world-none p {
+    margin: 0;
+    max-width: 32rem;
+}
+
 .home-world-chat.chat {
     border-left: 1px solid var(--m-border);
     display: flex;
