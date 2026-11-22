@@ -12,11 +12,14 @@
 //! narrow and have no graffiti; a tile with no streets (a raster source) gives
 //! no face any.
 //!
-//! Which stretches of a chosen wall carry a piece or a tag, and what they look
-//! like, is the shader's hash, not a placement anybody surveyed: the person
-//! asked for it (2026-11-22) knowing it would not be the real walls' paint.
+//! Which stretches of a chosen wall carry a piece or a tag is the shader's hash,
+//! not a placement anybody surveyed: the person asked for it (2026-11-22)
+//! knowing it would not be the real walls' paint. The pieces themselves are
+//! real Groningen graffiti, photographed for Commons ([`GraffitiSheet`]).
 
 use bevy::math::Vec2;
+use bevy::prelude::*;
+use cartopolis_materials::building_windows::GRAFFITI_SHEET;
 use std::collections::HashMap;
 
 use crate::systems::building_windows::WallFace;
@@ -168,6 +171,98 @@ fn ray_hit(o: Vec2, dir: Vec2, a: Vec2, b: Vec2) -> Option<f32> {
     let t = ao.perp_dot(e) / denom;
     let s = ao.perp_dot(dir) / denom;
     (t > 0.0 && (0.0..=1.0).contains(&s)).then_some(t)
+}
+
+/// The graffiti sheet the shader paints from: real graffiti from Groningen, cut
+/// out of Commons photographs by `tools/graffiti/gen.ts` (the credits are in
+/// `assets/textures/graffiti.md`). Loaded once, given a mip chain on a worker —
+/// a sheet seen from down an alley is minified hard — and put in place of the
+/// clear texel every building material has bound until then.
+#[derive(Resource)]
+pub struct GraffitiSheet {
+    loading: Option<Handle<Image>>,
+    built: std::sync::Arc<std::sync::Mutex<Option<Image>>>,
+}
+
+impl FromWorld for GraffitiSheet {
+    fn from_world(world: &mut World) -> Self {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+        let clear = Image::new_fill(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        world
+            .resource_mut::<Assets<Image>>()
+            .insert(&GRAFFITI_SHEET, clear)
+            .expect("an asset id without a generation cannot be stale");
+        let loading = world
+            .resource::<AssetServer>()
+            .load("textures/graffiti.png");
+        Self {
+            loading: Some(loading),
+            built: Default::default(),
+        }
+    }
+}
+
+/// Once the sheet has decoded: mip it on a worker, then swap it in.
+pub fn finish_graffiti_sheet(mut sheet: ResMut<GraffitiSheet>, mut images: ResMut<Assets<Image>>) {
+    if let Some(image) = sheet.built.lock().ok().and_then(|mut b| b.take()) {
+        if images.insert(&GRAFFITI_SHEET, image).is_err() {
+            tracing::warn!("graffiti sheet: could not replace the placeholder");
+        }
+        return;
+    }
+    let Some(handle) = sheet.loading.as_ref() else {
+        return;
+    };
+    let Some(decoded) = images.get(handle) else {
+        return;
+    };
+    let size = decoded.size();
+    let Some(data) = decoded.data.clone() else {
+        sheet.loading = None;
+        return;
+    };
+    sheet.loading = None;
+    let out = sheet.built.clone();
+    crate::platform::workers::submit(
+        "graffiti",
+        Box::new(move || {
+            use bevy::image::{
+                ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor,
+            };
+            let (chain, mips) = cartopolis_geo::mip::build_mip_chain(size.x, size.y, data);
+            let image = crate::systems::tile_loader::image_from_mip_chain(
+                size.x,
+                size.y,
+                chain,
+                mips,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+                ImageSampler::Descriptor(ImageSamplerDescriptor {
+                    address_mode_u: ImageAddressMode::ClampToEdge,
+                    address_mode_v: ImageAddressMode::ClampToEdge,
+                    mag_filter: ImageFilterMode::Linear,
+                    min_filter: ImageFilterMode::Linear,
+                    mipmap_filter: ImageFilterMode::Linear,
+                    anisotropy_clamp: 8,
+                    ..Default::default()
+                }),
+            );
+            if let Ok(mut b) = out.lock() {
+                *b = Some(image);
+            }
+        }),
+    );
 }
 
 #[cfg(test)]

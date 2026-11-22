@@ -140,6 +140,9 @@ impl Plugin for MapPlugin {
             // Before any ground or water material can prepare: they all bind the
             // cloud deck's buffer (`sky::CLOUD_FIELD_BUFFER`), which this inserts.
             .init_resource::<systems::sky::CloudField>()
+            // Before any building material prepares: they all bind the graffiti
+            // sheet (`building_windows::GRAFFITI_SHEET`), whose placeholder this inserts.
+            .init_resource::<systems::graffiti::GraffitiSheet>()
             // Must come after the `WaterMaterial` plugin (in `lib.rs`): it mints
             // the shared handle out of `Assets<WaterMaterial>`.
             .init_resource::<systems::water::WaterSeaState>()
@@ -518,6 +521,8 @@ impl Plugin for MapPlugin {
                 systems::underground::update_underground,
                 systems::sewers::apply_ground_see_through,
                 systems::sewers::follow_backdrop,
+                // The graffiti sheet, mipped and swapped in once it has loaded.
+                systems::graffiti::finish_graffiti_sheet,
             )
                 .in_set(ClientPhase::Stream),
         );

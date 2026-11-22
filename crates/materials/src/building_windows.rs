@@ -156,6 +156,11 @@ pub struct BuildingWindows {
     /// — the one buffer the ground's materials bind for theirs.
     #[storage(102, read_only, visibility(fragment))]
     pub clouds: Handle<ShaderBuffer>,
+    /// The graffiti sheet the walls of narrow streets are painted from
+    /// ([`GRAFFITI_SHEET`]; `cartopolis::systems::graffiti`).
+    #[texture(103)]
+    #[sampler(104)]
+    pub graffiti: Handle<Image>,
     /// Always compile the [`BuildingKey::cutaway`] variant: set on the material
     /// the scaffold netting and site fences are drawn with, whose holes are
     /// `discard`s. Every other building material compiles it only while
@@ -191,6 +196,14 @@ impl From<&BuildingWindows> for BuildingWindowsGpu {
     }
 }
 
+/// The graffiti sheet (`assets/textures/graffiti.png`), at a fixed id for the
+/// reason [`CLOUD_FIELD_BUFFER`](crate::sky::CLOUD_FIELD_BUFFER) has one: every
+/// building material names it in its `Default`, and a texture that does not
+/// exist is a material that never prepares. `cartopolis::systems::graffiti`
+/// puts a clear texel there at startup and the sheet over it once it loads.
+pub const GRAFFITI_SHEET: Handle<Image> =
+    bevy::asset::uuid_handle!("5b1f6c2e-8d43-4a7b-9e0c-3f2a71d4c8b6");
+
 /// How many `vec4`s the ghost ring is packed into — two points each, so 32
 /// points. See [`BuildingWindows::ghost_ring`]; the shader's `GHOST_MAX_POINTS`
 /// is the same number and they must agree.
@@ -221,6 +234,7 @@ impl Default for BuildingWindows {
             // Never `Handle::default()`, which names no asset: a material whose
             // storage buffer does not exist never prepares, and draws nothing.
             clouds: crate::sky::CLOUD_FIELD_BUFFER,
+            graffiti: GRAFFITI_SHEET,
             screen_door: false,
         }
     }

@@ -52,6 +52,7 @@ import bevy_pbr::render::{
 };
 import super::ground_bounce;
 import super::cloud_field as cf;
+import super::graffiti_cells as gc;
 import bevy_pbr::render::mesh_view_bindings as view_bindings;
 
 // x: column pitch (m). y: floor pitch (m). z: window width (m). w: window height (m).
@@ -106,6 +107,10 @@ struct Facade {
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> facade: Facade;
 // The cloud deck, for the clouds' shadows (`cloud_field::sun_shadow`).
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var<storage, read> clouds: cf::Deck;
+// Real graffiti from Groningen, cut out of Commons photographs
+// (`tools/graffiti/gen.ts`; its cells in `graffiti_cells.wesl`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var graffiti_sheet: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var graffiti_sampler: sampler;
 
 /// Ring points this shader can hold. A BAG outline simplified at 10 cm is about
 /// nine points; anything longer is simplified again on the CPU before it is sent,
@@ -991,13 +996,13 @@ fn grimed(c: vec3<f32>, u: f32, v: f32, neglect: f32, fade: f32) -> vec3<f32> {
 // ─── Graffiti ────────────────────────────────────────────────────────────────
 //
 // A wall on a narrow street (`systems::graffiti`, bit 15 of the code) is
-// painted along its foot the way a steeg is: a piece or a throw-up here and
-// there — fat letters, an outline, a drop shadow — some of it faded and some
-// of it rolled over in a patch of other paint, and over all of it layer on
-// layer of tags, mostly black and white, small and large, a few dripping.
-// Sprayed, not printed: every stroke has a ragged edge and a mist of
-// overspray, and the brick and its joints show through the paint (the caller
-// multiplies the wall's own texture back in).
+// painted along its foot the way a steeg is: pieces and tags of real Groningen
+// graffiti off a sheet cut from Commons photographs (`graffiti_sheet`), some
+// faded and some rolled over in a patch of other paint, and over all of it
+// layer on layer of drawn tags, mostly black and white, small and large, a few
+// dripping: sprayed, with a ragged edge and a mist of overspray. The brick and
+// its joints show through all of it (the caller multiplies the wall's own
+// texture back in).
 //
 // Which stretch of a wall carries what is a hash, keyed to the stretch's own
 // block of the city so that two alleys do not repeat each other; it is
@@ -1071,9 +1076,8 @@ fn spray_seed(xz: vec2<f32>, dir: vec2<f32>, x: f32, len: f32) -> f32 {
     return k + 61.0 * floor(hash2(key + vec2<f32>(71.0, 29.0)) * 97.0);
 }
 
-/// One fat letter's skeleton: a stem and two strokes off it, `size` metres.
-/// Enough to read as lettering from across a steeg, which is all a piece is to
-/// somebody walking past it.
+/// One letter's skeleton, for a drawn tag: a stem and two strokes off it,
+/// `size` metres. Enough to read as a handstyle from across a steeg.
 fn letter_sd(p: vec2<f32>, size: vec2<f32>, seed: f32) -> f32 {
     let r1 = hash2(vec2<f32>(seed, 1.0));
     let r2 = hash2(vec2<f32>(seed, 2.0));
@@ -1087,59 +1091,38 @@ fn letter_sd(p: vec2<f32>, size: vec2<f32>, seed: f32) -> f32 {
     return d;
 }
 
-/// A piece in its stretch: `x` metres into it, `v` up the wall, `px` metres a
-/// pixel, `grain` the edge noise. Colour and coverage. A third are throw-ups —
-/// one quick silver or white fill in a black outline — and the rest two loud
-/// colours split along a wave; all of them some years old, some more.
-fn spray_piece(x: f32, v: f32, seed: f32, px: f32, grain: f32) -> vec4<f32> {
-    let n = 3.0 + floor(hash2(vec2<f32>(seed, 11.0)) * 3.0);
-    let h = mix(0.75, 1.25, hash2(vec2<f32>(seed, 12.0)));
-    let lw = h * 0.6;
-    let pitch = lw * 0.8;
-    let wide = n * pitch + lw * 0.2;
-    let x0 = 0.15 + hash2(vec2<f32>(seed, 13.0)) * max(SPRAY_STRETCH_M - wide - 0.3, 0.0);
-    let y0 = mix(0.25, 0.8, hash2(vec2<f32>(seed, 14.0)));
-    let p = vec2<f32>(x - x0, v - y0);
-    let fat = h * 0.12;
-    if p.x < -fat - 0.2 || p.x > wide + fat + 0.2 || p.y < -fat - 0.2 || p.y > h + fat + 0.1 {
+/// Cell `cell` of the graffiti sheet laid on the wall `size` metres, `p` metres
+/// from its lower left corner: colour and coverage. `dx`, `dy` are how far
+/// (along, up) the wall one pixel steps across and down the screen, for the mip
+/// — this runs in a branch, where the sampler cannot take its own derivatives.
+fn sheet_at(cell: u32, p: vec2<f32>, size: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    let q = p / size;
+    if q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0 {
         return vec4<f32>(0.0);
     }
-    let drop = vec2<f32>(0.05, -0.045);
-    var d = 1e3;
-    var ds = 1e3;
-    for (var i = 0; i < 5; i++) {
-        if f32(i) >= n {
-            break;
-        }
-        let fi = f32(i);
-        let q = p - vec2<f32>(fi * pitch, (hash2(vec2<f32>(seed, 20.0 + fi)) - 0.5) * 0.14 * h);
-        let s = seed * 7.0 + fi;
-        d = min(d, letter_sd(q, vec2<f32>(lw, h), s));
-        ds = min(ds, letter_sd(q - drop, vec2<f32>(lw, h), s));
-    }
-    // The outline is sprayed by hand too: thicker here, thinner there.
-    let line = fat + mix(0.02, 0.055, value_noise(p / 0.35 + vec2<f32>(seed, 3.0)));
-    let fill_m = spray_cover(d, fat, px, grain);
-    let line_m = spray_cover(d, line, px, grain);
-    let drop_m = spray_cover(ds, line, px, grain) * 0.85;
-    let throw_up = hash2(vec2<f32>(seed, 33.0)) < 0.35;
-    let split = h * (0.45 + 0.15 * sin(p.x * 5.0 + seed));
-    var fill = mix(
-        spray_colour(hash2(vec2<f32>(seed, 31.0))),
-        spray_colour(hash2(vec2<f32>(seed, 30.0))),
-        smoothstep(split - 0.04, split + 0.04, p.y),
-    );
-    var outline = select(vec3<f32>(0.015), vec3<f32>(0.8, 0.8, 0.78), hash2(vec2<f32>(seed, 32.0)) < 0.3);
-    if throw_up {
-        fill = select(vec3<f32>(0.5, 0.5, 0.52), vec3<f32>(0.75, 0.75, 0.73), hash2(vec2<f32>(seed, 34.0)) < 0.4);
-        outline = vec3<f32>(0.012);
-    }
-    // Uneven where the can went over it once and not twice.
-    fill = fill * mix(0.8, 1.08, value_noise(p / 0.12 + vec2<f32>(seed, 7.0)));
-    var c = mix(vec3<f32>(0.01), outline, line_m);
-    c = mix(c, fill, fill_m);
-    let age = mix(0.5, 0.95, hash2(vec2<f32>(seed, 35.0)));
-    return vec4<f32>(c, max(drop_m, line_m) * age);
+    // A function-scope copy: a `const` array cannot be indexed at run time.
+    var cells = gc::CELLS;
+    let fill = cells[cell].xy;
+    let corner = vec2<f32>(f32(cell % 4u), f32(cell / 4u));
+    // Centred in its cell; the texture's rows run down, the wall's up.
+    let inside = vec2<f32>(0.5 + (q.x - 0.5) * fill.x, 0.5 - (q.y - 0.5) * fill.y);
+    let uv = (corner + inside) / gc::GRID;
+    let per_m = vec2<f32>(fill.x / size.x, -fill.y / size.y) / gc::GRID;
+    return textureSampleGrad(graffiti_sheet, graffiti_sampler, uv, dx * per_m, dy * per_m);
+}
+
+/// A cell of the sheet's at its own width (and a little either way), its
+/// height from the cut-out's shape. `lift` is where its foot may be.
+fn sheet_piece(cell: u32, x: f32, v: f32, seed: f32, room: f32, lift: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    var cells = gc::CELLS;
+    let c = cells[cell];
+    let w = min(c.z * mix(0.8, 1.15, hash2(vec2<f32>(seed, 81.0))), room - 0.2);
+    let h = w * c.y / c.x;
+    let x0 = 0.1 + hash2(vec2<f32>(seed, 82.0)) * max(room - w - 0.2, 0.0);
+    let y0 = mix(lift.x, lift.y, hash2(vec2<f32>(seed, 83.0)));
+    let s = sheet_at(cell, vec2<f32>(x - x0, v - y0), vec2<f32>(w, h), dx, dy);
+    // Some of it older than the rest.
+    return vec4<f32>(s.rgb, s.a * mix(0.7, 1.0, hash2(vec2<f32>(seed, 84.0))));
 }
 
 /// A stretch of wall somebody rolled over to hide what was on it, in a paint
@@ -1267,29 +1250,50 @@ fn tag_layer(
 /// Everything sprayed at `x` metres along a wall (left to right as you face
 /// it) and `v` up it, over a wall of colour `wall`. `xz`, `dir` as
 /// [`spray_seed`]'s.
-fn graffiti(xz: vec2<f32>, dir: vec2<f32>, x: f32, v: f32, px: f32, wall: vec3<f32>) -> vec4<f32> {
+fn graffiti(
+    xz: vec2<f32>,
+    dir: vec2<f32>,
+    x: f32,
+    v: f32,
+    px: f32,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+    wall: vec3<f32>,
+) -> vec4<f32> {
     if v > SPRAY_TOP_M || v < 0.1 {
         return vec4<f32>(0.0);
     }
     // Spray's grain, gone to its average once a pixel spans it.
     let grain = mix(value_noise(vec2<f32>(x, v) / 0.015), 0.5, clamp(px / 0.015, 0.0, 1.0));
     var out = vec4<f32>(0.0);
+    // A piece off the sheet on most stretches, and on some of them a patch
+    // rolled over it.
     let ps = spray_seed(xz, dir, x, SPRAY_STRETCH_M);
     let lx = x - floor(x / SPRAY_STRETCH_M) * SPRAY_STRETCH_M;
-    if hash2(vec2<f32>(ps, 7.0)) < 0.6 {
-        out = spray_piece(lx, v, ps + 0.5, px, grain);
+    if hash2(vec2<f32>(ps, 7.0)) < 0.7 {
+        let cell = min(u32(hash2(vec2<f32>(ps, 6.0)) * f32(gc::PIECES)), gc::PIECES - 1u);
+        out = sheet_piece(cell, lx, v, ps, SPRAY_STRETCH_M, vec2<f32>(0.15, 0.6), dx, dy);
     }
-    if hash2(vec2<f32>(ps, 8.0)) < 0.25 {
+    if hash2(vec2<f32>(ps, 8.0)) < 0.2 {
         out = spray_over(out, spray_buff(lx, v, ps, wall));
     }
-    // Then the tags, three lattices of them slid against the pieces and each
-    // other, so they run over the pieces' edges and into every gap: the
-    // middle-sized ones at eye height, the small ones anywhere, and a few
-    // big ones high up, out of the next writer's reach.
-    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 2.7, 1.1, 0.55, vec2<f32>(0.3, 0.6), vec2<f32>(1.9, 2.7)));
-    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.9, 1.7, 0.85, vec2<f32>(0.18, 0.42), vec2<f32>(0.7, 2.0)));
-    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.3, 0.4, 0.75, vec2<f32>(0.1, 0.25), vec2<f32>(0.3, 2.4)));
-    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.1, 0.75, 0.65, vec2<f32>(0.08, 0.2), vec2<f32>(0.9, 1.9)));
+    // The sheet's own tags, on a lattice slid half a stretch along.
+    let tx = x + 0.5 * SPRAY_STRETCH_M;
+    let tlen = 2.3;
+    let ts = spray_seed(xz, dir, tx, tlen) + 7.0;
+    if hash2(vec2<f32>(ts, 9.0)) < 0.5 {
+        let cell = gc::PIECES + min(u32(hash2(vec2<f32>(ts, 6.0)) * f32(gc::TAGS)), gc::TAGS - 1u);
+        let t = sheet_piece(cell, tx - floor(tx / tlen) * tlen, v, ts, tlen, vec2<f32>(0.5, 1.6), dx, dy);
+        out = spray_over(out, t);
+    }
+    // Then the drawn tags, four lattices of them slid against the pieces and
+    // each other, so they run over the pieces' edges and into every gap: the
+    // middle-sized ones at eye height, the small ones anywhere, and a few big
+    // ones high up, out of the next writer's reach.
+    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 2.7, 1.1, 0.45, vec2<f32>(0.3, 0.6), vec2<f32>(1.9, 2.7)));
+    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.9, 1.7, 0.7, vec2<f32>(0.18, 0.42), vec2<f32>(0.7, 2.0)));
+    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.3, 0.4, 0.6, vec2<f32>(0.1, 0.25), vec2<f32>(0.3, 2.4)));
+    out = spray_over(out, tag_layer(xz, dir, x, v, px, grain, 1.1, 0.75, 0.5, vec2<f32>(0.08, 0.2), vec2<f32>(0.9, 1.9)));
     return out;
 }
 
@@ -1644,6 +1648,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let spray_x = along * spray_right;
     let spray_dir = tangent * along_sign * spray_right;
     let spray_px = max(fwidth(spray_x), fwidth(v));
+    let spray_dx = vec2<f32>(dpdx(spray_x), dpdx(v));
+    let spray_dy = vec2<f32>(dpdy(spray_x), dpdy(v));
     // A pale block's cladding slabs, laid from the face's own corner.
     let slab = vec2<f32>(along, v) / SLAB_M;
     let slab_px = sqrt(fwidth(slab.x) * fwidth(slab.y));
@@ -1726,7 +1732,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // brick shows through the paint, and kept off the door.
         if sprayed && abs(along - door_u) > DOOR_CLEAR_M {
             let wall_now = pbr_input.material.base_color.rgb;
-            let paint = graffiti(in.world_position.xz, spray_dir, spray_x, v, spray_px, plain);
+            let paint = graffiti(
+                in.world_position.xz,
+                spray_dir,
+                spray_x,
+                v,
+                spray_px,
+                spray_dx,
+                spray_dy,
+                plain,
+            );
             // Paint lies on the brick, not in front of it: the wall's own
             // light and dark — its bricks, its joints, its damp — come
             // through, as a share of how far it strays from its plain tone.
