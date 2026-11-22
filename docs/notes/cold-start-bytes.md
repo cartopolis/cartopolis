@@ -1,7 +1,7 @@
 ---
 topic: cold-start-bytes
 triggers: ["utils/cache.rs", MAX_CACHE_BYTES, sweep_cache_root, "disk cache", ground_sheets.rs, paving_edges.rs, ground_bytes, ground_stages, "pipeline/ground.rs", "pipeline/buildings.rs", formats/osm_buildings.rs, osm_buildings.rs, terrain_tile.rs, terrain_tiles.rs, "cold start", "first visit", "bytes on the wire", "data over the line", "loads slowly", encode_bin, ".bin.gz", precompressed]
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 
 # What a first visit downloads, and where the bytes can still go
@@ -151,7 +151,7 @@ bytes, which is what keeps `Curaçaostraat` whole.
 The same street-level visit leaves **~300 MB** in the disk cache, against the
 55 MB it fetched compressed: what is stored is the decoded body. One visit to
 the Grote Markt at 40 m (`mac-2`, a fresh `CARTO_CACHE_DIR`): finished basemap
-tiles 79 MB (`rendered*`, PNG already), the JSON layers 111 MB (roofs 38, BGT
+tiles 79 MB (`rendered*`, PNG then; since 2026-11-22 the BC3 chain, ~0.3× the bytes, `keeping-what-was-expensive.md`), the JSON layers 111 MB (roofs 38, BGT
 34, BAG 32, registers 6), vector tiles 30, ground 22, terrain 15. The sweep
 caps the tree at 512 MiB (`utils::cache::MAX_CACHE_BYTES`), so that was under
 two places.

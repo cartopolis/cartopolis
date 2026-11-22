@@ -1,7 +1,7 @@
 ---
 topic: keeping-what-was-expensive
 triggers: [warm.rs, "WarmStore", "WarmSize", warm_bytes, warm_gpu_bytes, warm_ceiling, warm_gpu_ceiling, CARTO_WARM_MB, CARTO_WARM_GPU_MB, take_shed, SHED_AFTER_S, "retained", "warm_tile_hits", "warm_cell_restores", "map reloads slowly", "revisit", "cache the mesh", platform::warm, load_control.rs, map_stream.rs, lod22.rs, quality.rs]
-updated: 2026-10-17
+updated: 2026-11-22
 ---
 
 # Caching the finished thing, not the bytes it was made from
@@ -79,6 +79,34 @@ stays over its ceiling. What actually gives a shed its chance is the residency
 *falling*, which ends the run of over-ceiling samples on its own. The shed is now
 once per run of pressure and leaves the countdown alone
 (`pressure_that_outlives_the_shed_still_tightens` is the regression).
+
+## Across launches: the disk keeps the uploaded chain, not a picture
+
+The warm store lives only for the session. Between launches the finished tiles
+(flat, painted twin, globe) are kept in the disk cache under
+`tile_loader::rendered_cache_key` and its two siblings. Until 2026-11-22 an entry
+was a PNG, and a hit paid the PNG decode, the mip chain and the block
+compression again, per tile, every launch. Since `RENDERED_FORMAT` 5 an entry is
+the chain exactly as it is uploaded (`encode_texels`: a header per chain, then
+its bytes, deflated at level 1). The globe's R8 city lights ride along as a
+second chain. A hit is one inflate; an entry in a format the device does not
+sample now (forced `CARTO_TILE_COMPRESSION`, a tile kept before the renderer
+answered) is a miss.
+
+Measured on `mac-2` (release build, a 512² tile of the Groningen fixture, median
+of 9, `tile_loader`'s ignored `a_stored_tile_against_the_png`):
+
+| entry | on disk | a hit costs |
+|---|---|---|
+| PNG (before) | 583 KB | 10.5 ms (decode + mips + BC3) |
+| BC3 chain | 170 KB | 0.8 ms |
+| RGBA8 chain (no block format) | 645 KB | 4.5 ms |
+
+**The web keeps them too, since the same change.** The worker that packs a tile
+hands the entry back to the task that fetched it (`rendered_entry`, a oneshot),
+and that task writes it with `storage::put` on the page thread. A worker's
+`write_now` would have pinned every tile in the synchronous view, the wasm heap
+(`web-persistence.md`). The inflate runs on the worker, as the drawing did.
 
 ## What this does not fix
 

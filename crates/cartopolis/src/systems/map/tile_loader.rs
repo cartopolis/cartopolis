@@ -328,7 +328,9 @@ fn pack_land_alpha(img: &mut image::RgbaImage, mask: Result<Vec<u8>, String>) {
 /// side of the seam.
 ///
 /// 4: the painted sea is coloured by its depth (`tint_sea`), also on this side.
-const RENDERED_FORMAT: u32 = 4;
+///
+/// 5: an entry is the uploaded mip chain ([`encode_texels`]), not a PNG.
+const RENDERED_FORMAT: u32 = 5;
 
 /// Where a finished basemap tile is kept on disk, or `None` when it is not kept.
 ///
@@ -337,7 +339,8 @@ const RENDERED_FORMAT: u32 = 4;
 /// tiles and rasterises them, ~30–70 ms a tile, and a warm *byte* cache buys 2 s of
 /// a 27.8 s fill because the bytes were never what was slow
 /// (`docs/notes/keeping-what-was-expensive.md`). So the finished pixels are kept
-/// too, as a PNG, and a return visit decodes one instead of drawing it.
+/// too, in the form they are uploaded in ([`encode_texels`]), and a return visit
+/// inflates one instead of drawing it.
 ///
 /// The key carries everything the pixels depend on, so a hit can never be a stale
 /// picture: the renderer's revision (`cartopolis_geo::render_revision`, a hash
@@ -346,13 +349,10 @@ const RENDERED_FORMAT: u32 = 4;
 /// body it was drawn from — a server that re-publishes the tile publishes a
 /// different body, and the old entry is simply never asked for again.
 ///
-/// Native only: the web's storage is IndexedDB behind the main thread, and the
-/// write happens on a worker.
+/// The web keeps them too, in IndexedDB: the worker that packs a tile hands the
+/// entry back to the task that fetched it ([`rendered_entry`]).
 #[must_use]
 pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option<String> {
-    if cfg!(target_arch = "wasm32") {
-        return None;
-    }
     let TilePayload::Vector {
         bytes,
         crops,
@@ -382,7 +382,7 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
     }
     use std::hash::Hasher;
     Some(format!(
-        "rendered/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.tex",
         cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
@@ -401,9 +401,6 @@ pub fn rendered_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Op
 /// kept, because the entry cannot say whether it has one and a read assumes it.
 #[must_use]
 pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> Option<String> {
-    if cfg!(target_arch = "wasm32") {
-        return None;
-    }
     let GlobeTilePayload::Vector {
         bytes, underlay, ..
     } = payload
@@ -415,7 +412,7 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
     bytes.hash(&mut h);
     hash_fills(&mut h, underlay);
     Some(format!(
-        "rendered-globe/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered-globe/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.tex",
         cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
@@ -429,9 +426,6 @@ pub fn globe_cache_key(key: &TileKey, payload: &GlobeTilePayload, size: u32) -> 
 /// what the twin is drawn from.
 #[must_use]
 pub fn twin_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option<String> {
-    if cfg!(target_arch = "wasm32") {
-        return None;
-    }
     let TilePayload::Vector {
         bytes,
         twin: Some(twin),
@@ -446,7 +440,7 @@ pub fn twin_cache_key(key: &TileKey, payload: &TilePayload, size: u32) -> Option
     hash_fills(&mut h, &twin.underlay);
     hash_far(&mut h, &twin.far);
     Some(format!(
-        "rendered-painted/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.png",
+        "rendered-painted/{:016x}-{RENDERED_FORMAT}/{size}/{}/{}/{}-{:016x}.tex",
         cartopolis_geo::render_revision::RENDER_REVISION,
         key.z,
         key.x,
@@ -483,47 +477,191 @@ fn hash_fills(h: &mut impl std::hash::Hasher, fills: &[vector_tiles::OverlayFill
     }
 }
 
-/// A stored tile back to pixels, if it decodes to the size that was asked for.
-/// Anything else — a torn file, a stray entry — is a miss, and the tile is drawn.
-#[must_use]
-pub fn decode_rendered(bytes: &[u8], size: u32) -> Option<image::RgbaImage> {
-    decode_tile_image(bytes)
-        .ok()
-        .filter(|img| img.width() == size && img.height() == size)
+/// One mip chain as it goes to the GPU: the bytes of every level, smallest last,
+/// in `format`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredChain {
+    pub format: bevy::render::render_resource::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub mip_count: u32,
+    pub data: Vec<u8>,
 }
 
-/// Keep a freshly drawn tile under `cache_key`. Best-effort, like every cache
-/// write: a failure is a future miss.
-///
-/// PNG at the fastest setting, because the encode is paid on the cold path: a
-/// basemap tile is large areas of flat colour, which that setting still packs
-/// well, and a slower one would tax the fill it is meant to speed up later.
-pub fn store_rendered(cache_key: &str, img: &image::RgbaImage) {
-    if let Some(png) = encode_rendered(img) {
-        let _ = crate::platform::storage::write_now(
-            crate::platform::storage::Namespace::Cache,
-            cache_key,
-            &png,
-        );
+/// The first four bytes of an inflated [`encode_texels`] entry.
+const TEXELS_MAGIC: &[u8; 4] = b"CTX1";
+
+/// A chain's format as one byte on disk, for the formats a tile is uploaded in.
+fn format_code(format: bevy::render::render_resource::TextureFormat) -> Option<u8> {
+    use bevy::render::render_resource::TextureFormat as F;
+    match format {
+        F::Rgba8UnormSrgb => Some(0),
+        F::Bc3RgbaUnormSrgb => Some(1),
+        F::Etc2Rgba8UnormSrgb => Some(2),
+        F::R8Unorm => Some(3),
+        _ => None,
     }
 }
 
-fn encode_rendered(img: &image::RgbaImage) -> Option<Vec<u8>> {
-    use image::ImageEncoder;
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new_with_quality(
-        &mut png,
-        image::codecs::png::CompressionType::Fast,
-        image::codecs::png::FilterType::Adaptive,
+fn format_from_code(code: u8) -> Option<bevy::render::render_resource::TextureFormat> {
+    use bevy::render::render_resource::TextureFormat as F;
+    Some(match code {
+        0 => F::Rgba8UnormSrgb,
+        1 => F::Bc3RgbaUnormSrgb,
+        2 => F::Etc2Rgba8UnormSrgb,
+        3 => F::R8Unorm,
+        _ => return None,
+    })
+}
+
+/// Bytes a chain of `format` with these levels occupies, halving as
+/// `build_mip_chain` does.
+fn chain_len(
+    format: bevy::render::render_resource::TextureFormat,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Option<usize> {
+    use crate::systems::texcomp::{compressed_chain_len, BlockFormat};
+    use bevy::render::render_resource::TextureFormat as F;
+    let texel = match format {
+        F::Bc3RgbaUnormSrgb => {
+            return Some(compressed_chain_len(
+                BlockFormat::Bc3,
+                width,
+                height,
+                mip_count,
+            ));
+        }
+        F::Etc2Rgba8UnormSrgb => {
+            return Some(compressed_chain_len(
+                BlockFormat::Etc2Rgba8,
+                width,
+                height,
+                mip_count,
+            ));
+        }
+        F::Rgba8UnormSrgb => 4,
+        F::R8Unorm => 1,
+        _ => return None,
+    };
+    Some(
+        (0..mip_count)
+            .map(|l| {
+                let w = width.checked_shr(l).unwrap_or(0).max(1) as usize;
+                let h = height.checked_shr(l).unwrap_or(0).max(1) as usize;
+                w * h * texel
+            })
+            .sum(),
     )
-    .write_image(
-        img.as_raw(),
-        img.width(),
-        img.height(),
-        image::ExtendedColorType::Rgba8,
-    )
-    .ok()?;
-    Some(png)
+}
+
+/// A finished tile's chains as a cache entry: a small header per chain and its
+/// bytes, deflated at the fastest level.
+///
+/// **The uploaded form, not a picture of it.** Until `RENDERED_FORMAT` 5 an entry
+/// was a PNG, and a hit paid the PNG decode, the mip chain (~10 ms at 512²) and
+/// the block compression (BC3 6–14 ms, ETC2 14–22 ms) again on every reuse, per
+/// tile, for the 200–400 tiles of a ring. Now a hit is one inflate. Deflate and
+/// not nothing because a basemap tile is mostly flat colour, and its blocks repeat.
+#[must_use]
+pub fn encode_texels(chains: &[&StoredChain]) -> Option<Vec<u8>> {
+    use std::io::Write as _;
+    let mut raw = Vec::with_capacity(8 + chains.iter().map(|c| 16 + c.data.len()).sum::<usize>());
+    raw.extend_from_slice(TEXELS_MAGIC);
+    raw.push(u8::try_from(chains.len()).ok()?);
+    for c in chains {
+        if chain_len(c.format, c.width, c.height, c.mip_count)? != c.data.len() {
+            return None;
+        }
+        raw.push(format_code(c.format)?);
+        raw.push(u8::try_from(c.mip_count).ok()?);
+        raw.extend_from_slice(&c.width.to_le_bytes());
+        raw.extend_from_slice(&c.height.to_le_bytes());
+        raw.extend_from_slice(&c.data);
+    }
+    let mut z = flate2::write::GzEncoder::new(
+        Vec::with_capacity(raw.len() / 4),
+        flate2::Compression::fast(),
+    );
+    z.write_all(&raw).ok()?;
+    z.finish().ok()
+}
+
+/// The inverse of [`encode_texels`]. Anything that does not read back whole and
+/// self-consistent — a torn file, an entry from another build — is `None`, a
+/// miss, and the tile is drawn again.
+#[must_use]
+pub fn decode_texels(bytes: &[u8]) -> Option<Vec<StoredChain>> {
+    use std::io::Read as _;
+    let mut raw = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(64 << 20)
+        .read_to_end(&mut raw)
+        .ok()?;
+    let rest = raw.strip_prefix(TEXELS_MAGIC.as_slice())?;
+    let (&count, mut rest) = rest.split_first()?;
+    let mut chains = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let (head, tail) = rest.split_at_checked(10)?;
+        let format = format_from_code(head[0])?;
+        let mip_count = u32::from(head[1]);
+        let width = u32::from_le_bytes(head[2..6].try_into().ok()?);
+        let height = u32::from_le_bytes(head[6..10].try_into().ok()?);
+        if width == 0 || height == 0 || width > MAX_TILE_EDGE_PX || height > MAX_TILE_EDGE_PX {
+            return None;
+        }
+        let (data, tail) = tail.split_at_checked(chain_len(format, width, height, mip_count)?)?;
+        chains.push(StoredChain {
+            format,
+            width,
+            height,
+            mip_count,
+            data: data.to_vec(),
+        });
+        rest = tail;
+    }
+    rest.is_empty().then_some(chains)
+}
+
+/// A stored entry whose first chain is a `size`² tile in the format
+/// [`tile_texels`] would pack one in now. A tile kept before the renderer said
+/// which block format the device decodes, or by a build that forced another
+/// (`CARTO_TILE_COMPRESSION`), is a miss rather than an upload in a format this
+/// device may not sample.
+#[must_use]
+pub fn decode_rendered(bytes: &[u8], size: u32) -> Option<Vec<StoredChain>> {
+    decode_texels(bytes).filter(|chains| {
+        chains.first().is_some_and(|c| {
+            c.width == size && c.height == size && c.format == tile_texel_format(size, size)
+        })
+    })
+}
+
+/// A freshly packed tile as the entry to keep under `cache_key`, for the task
+/// that fetched it to write ([`keep_rendered`]).
+///
+/// **Handed back rather than written here**, because this runs on a worker and
+/// the web's store is IndexedDB on the page thread: a worker's `write_now` would
+/// also have kept every tile in the synchronous view, the wasm heap
+/// (`docs/notes/web-persistence.md`).
+#[must_use]
+pub fn rendered_entry(
+    cache_key: &Option<String>,
+    chains: &[&StoredChain],
+) -> Option<(String, Vec<u8>)> {
+    Some((cache_key.clone()?, encode_texels(chains)?))
+}
+
+/// Write what a worker packed ([`rendered_entry`]), once it says. Best-effort,
+/// like every cache write: a failure, or a job that ended without packing, is a
+/// future miss.
+pub async fn keep_rendered(packed: futures_channel::oneshot::Receiver<Vec<(String, Vec<u8>)>>) {
+    let Ok(entries) = packed.await else { return };
+    for (key, bytes) in entries {
+        crate::platform::storage::put(crate::platform::storage::Namespace::Cache, &key, &bytes)
+            .await;
+    }
 }
 
 /// Largest edge a served tile image may declare before we refuse to decode it.
@@ -1094,15 +1232,141 @@ mod tests {
             "{:016x}",
             cartopolis_geo::render_revision::RENDER_REVISION
         )));
-        let drawn = payload.decode(size).expect("fixture draws");
-        let png = encode_rendered(&drawn).expect("encodes");
-        let back = decode_rendered(&png, size).expect("decodes");
-        assert!(
-            drawn.as_raw() == back.as_raw(),
-            "the stored tile is not the drawn one"
-        );
+        let chain = tile_chain(payload.decode(size).expect("fixture draws"));
+        let stored = encode_texels(&[&chain]).expect("encodes");
+        let back = decode_rendered(&stored, size).expect("decodes");
+        assert_eq!(back, vec![chain], "the stored tile is not the packed one");
         // …and at the wrong size it is a miss, not a stretched picture.
-        assert!(decode_rendered(&png, size * 2).is_none());
+        assert!(decode_rendered(&stored, size * 2).is_none());
+    }
+
+    /// A globe tile keeps a second chain, its R8 lights, and it comes back too.
+    #[test]
+    fn a_stored_entry_keeps_every_chain() {
+        let surface = tile_chain(image::RgbaImage::from_pixel(
+            64,
+            64,
+            image::Rgba([10, 20, 30, 255]),
+        ));
+        let lights = StoredChain {
+            format: bevy::render::render_resource::TextureFormat::R8Unorm,
+            width: 64,
+            height: 64,
+            mip_count: 7,
+            data: vec![
+                7;
+                chain_len(
+                    bevy::render::render_resource::TextureFormat::R8Unorm,
+                    64,
+                    64,
+                    7
+                )
+                .unwrap()
+            ],
+        };
+        let stored = encode_texels(&[&surface, &lights]).expect("encodes");
+        assert_eq!(decode_texels(&stored), Some(vec![surface, lights]));
+    }
+
+    /// A torn file, a foreign one, or a chain whose bytes do not match its
+    /// header is a miss — never an upload of the wrong length, which wgpu
+    /// answers with a validation error that ends the app.
+    #[test]
+    fn a_damaged_entry_is_a_miss() {
+        let chain = tile_chain(image::RgbaImage::from_pixel(
+            32,
+            32,
+            image::Rgba([1, 2, 3, 4]),
+        ));
+        let stored = encode_texels(&[&chain]).expect("encodes");
+        assert!(decode_texels(&stored[..stored.len() - 9]).is_none());
+        assert!(decode_texels(b"\x89PNG\r\n\x1a\n").is_none());
+        let mut short = chain.clone();
+        short.data.pop();
+        assert!(encode_texels(&[&short]).is_none());
+    }
+
+    /// What the entry costs on disk and on a hit, against the PNG it replaced:
+    /// `cargo test -p cartopolis --release a_stored_tile_against_the_png --
+    /// --ignored --nocapture`. A 512² tile of the Groningen fixture, RGBA8 and
+    /// BC3 (the desktop's block format), median of 9.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn a_stored_tile_against_the_png() {
+        use crate::systems::texcomp::{compress_chain, BlockFormat};
+        use bevy::render::render_resource::TextureFormat;
+        use image::ImageEncoder;
+        let key = TileKey::new(8431, 5374, 14);
+        let payload = TilePayload::Vector {
+            bytes: Arc::new(fixture()),
+            sub: crate::systems::vector_tiles::SubTile::WHOLE,
+            source: key,
+            crops: Arc::default(),
+            underlay: Arc::default(),
+            survey: Arc::default(),
+            far: Arc::default(),
+            twin: None,
+        };
+        let size = 512;
+        let drawn = payload.decode(size).expect("fixture draws");
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut png,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(drawn.as_raw(), size, size, image::ExtendedColorType::Rgba8)
+        .expect("png");
+        let median = |f: &mut dyn FnMut()| {
+            let mut t: Vec<f64> = (0..9)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    f();
+                    s.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            t.sort_by(f64::total_cmp);
+            t[4]
+        };
+        let (rgba_chain, mips) = crate::systems::mip::build_mip_chain(size, size, drawn.to_vec());
+        let bc3 = StoredChain {
+            format: TextureFormat::Bc3RgbaUnormSrgb,
+            width: size,
+            height: size,
+            mip_count: mips,
+            data: compress_chain(BlockFormat::Bc3, size, size, mips, &rgba_chain),
+        };
+        let rgba = StoredChain {
+            format: TextureFormat::Rgba8UnormSrgb,
+            width: size,
+            height: size,
+            mip_count: mips,
+            data: rgba_chain,
+        };
+        let png_hit = median(&mut || {
+            let img = decode_tile_image(&png).expect("png decodes");
+            let (chain, mips) = crate::systems::mip::build_mip_chain(size, size, img.into_raw());
+            std::hint::black_box(compress_chain(BlockFormat::Bc3, size, size, mips, &chain));
+        });
+        println!(
+            "png (fast): {} KB on disk, hit {png_hit:.1} ms (decode + mips + BC3)",
+            png.len() / 1024
+        );
+        for chain in [&rgba, &bc3] {
+            let stored = encode_texels(&[chain]).expect("encodes");
+            let encode = median(&mut || {
+                std::hint::black_box(encode_texels(&[chain]));
+            });
+            let hit = median(&mut || {
+                std::hint::black_box(decode_texels(&stored));
+            });
+            println!(
+                "{:?}: {} KB raw, {} KB on disk, encode {encode:.1} ms, hit {hit:.1} ms",
+                chain.format,
+                chain.data.len() / 1024,
+                stored.len() / 1024
+            );
+        }
     }
 
     /// Two bodies for one tile are two entries: a re-published tile must not be
@@ -1403,23 +1667,60 @@ pub struct TileTexels {
 /// `quality::tile_compression` — read here, per tile, so a tile fetched before
 /// the renderer answered simply goes up as RGBA8.
 pub fn tile_texels(width: u32, height: u32, rgba: Vec<u8>) -> (TileTexels, u32) {
-    use crate::systems::texcomp::{compress_chain, BlockFormat};
-    use bevy::render::render_resource::TextureFormat;
     let (chain, mip_count) = crate::systems::mip::build_mip_chain(width, height, rgba);
-    let texels = match crate::quality::tile_compression() {
-        // Block formats need a whole number of blocks at level 0. Every tile size
-        // in use is a power of two ≥ 256, so this only ever refuses a test's toy.
-        Some(format) if width % 4 == 0 && height % 4 == 0 => TileTexels {
-            data: compress_chain(format, width, height, mip_count, &chain),
-            format: match format {
-                BlockFormat::Bc3 => TextureFormat::Bc3RgbaUnormSrgb,
-                BlockFormat::Etc2Rgba8 => TextureFormat::Etc2Rgba8UnormSrgb,
-            },
-        },
-        _ => TileTexels {
-            data: chain,
-            format: TextureFormat::Rgba8UnormSrgb,
-        },
+    // Read once: the device's answer can arrive between two reads.
+    let block = tile_block_format(width, height);
+    let (data, format) = match block {
+        Some(b) => (
+            crate::systems::texcomp::compress_chain(b, width, height, mip_count, &chain),
+            block_texture_format(b),
+        ),
+        None => (
+            chain,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        ),
     };
-    (texels, mip_count)
+    (TileTexels { data, format }, mip_count)
+}
+
+/// [`tile_texels`] as a [`StoredChain`], the form a finished tile is kept in.
+#[must_use]
+pub fn tile_chain(rgba: image::RgbaImage) -> StoredChain {
+    let (width, height) = (rgba.width(), rgba.height());
+    let (texels, mip_count) = tile_texels(width, height, rgba.into_raw());
+    StoredChain {
+        format: texels.format,
+        width,
+        height,
+        mip_count,
+        data: texels.data,
+    }
+}
+
+/// The block format [`tile_texels`] compresses a `width`×`height` tile into now,
+/// or `None` for RGBA8. Block formats need a whole number of blocks at level 0;
+/// every tile size in use is a power of two ≥ 256, so that only ever refuses a
+/// test's toy.
+fn tile_block_format(width: u32, height: u32) -> Option<crate::systems::texcomp::BlockFormat> {
+    crate::quality::tile_compression().filter(|_| width % 4 == 0 && height % 4 == 0)
+}
+
+/// The texture format [`tile_texels`] packs a `width`×`height` tile in now.
+#[must_use]
+pub fn tile_texel_format(width: u32, height: u32) -> bevy::render::render_resource::TextureFormat {
+    tile_block_format(width, height).map_or(
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        block_texture_format,
+    )
+}
+
+fn block_texture_format(
+    block: crate::systems::texcomp::BlockFormat,
+) -> bevy::render::render_resource::TextureFormat {
+    use crate::systems::texcomp::BlockFormat;
+    use bevy::render::render_resource::TextureFormat;
+    match block {
+        BlockFormat::Bc3 => TextureFormat::Bc3RgbaUnormSrgb,
+        BlockFormat::Etc2Rgba8 => TextureFormat::Etc2Rgba8UnormSrgb,
+    }
 }

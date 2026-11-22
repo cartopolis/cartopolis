@@ -183,6 +183,19 @@ struct DecodedTile {
     painted: Option<Box<DecodedTile>>,
 }
 
+impl From<crate::systems::tile_loader::StoredChain> for DecodedTile {
+    fn from(c: crate::systems::tile_loader::StoredChain) -> Self {
+        Self {
+            data: c.data,
+            width: c.width,
+            height: c.height,
+            mip_count: c.mip_count,
+            format: c.format,
+            painted: None,
+        }
+    }
+}
+
 impl crate::platform::warm::WarmSize for DecodedTile {
     fn warm_bytes(&self) -> usize {
         // The mip chain is the whole of it — the other fields are its shape. A
@@ -793,6 +806,9 @@ fn spawn_map_tile(
                     let live_gen = live_gen.clone();
                     add_stage(0, fetched);
                     let submitted = bevy::platform::time::Instant::now();
+                    // What the worker packs comes back here to be kept: the store is the
+                    // page thread's on the web (`tile_loader::rendered_entry`).
+                    let (keep, packed) = futures_channel::oneshot::channel();
                     crate::platform::workers::submit_ranked("map_tiles", crate::platform::workers::BASEMAP, Box::new(move || {
                         add_stage(1, submitted);
                         // Checked again on the worker: the job may have waited behind
@@ -800,60 +816,50 @@ fn spawn_map_tile(
                         if !tile_still_wanted(key, gen, &live_gen, &wanted) {
                             return;
                         }
+                        use crate::systems::tile_loader as tl;
                         let drawing = bevy::platform::time::Instant::now();
-                        let reused = stored.and_then(|png| {
-                            crate::systems::tile_loader::decode_rendered(&png, tile_px)
-                        });
-                        let drawn = match reused {
-                            Some(img) => Ok(img),
-                            None => {
-                                let drawn = payload.decode(tile_px);
-                                if let (Ok(img), Some(k)) = (&drawn, &cache_key) {
-                                    crate::systems::tile_loader::store_rendered(k, img);
-                                }
-                                drawn
-                            }
+                        // A tile kept on an earlier visit is its finished chain:
+                        // neither drawn nor packed again.
+                        let reuse = |stored: Option<Vec<u8>>| {
+                            stored
+                                .and_then(|bytes| tl::decode_rendered(&bytes, tile_px))
+                                .and_then(|chains| chains.into_iter().next())
                         };
+                        let reused = reuse(stored);
+                        let drawn = reused.is_none().then(|| payload.decode(tile_px));
                         // The painted twin, the same way: read back, or drawn and kept.
-                        let twin = stored_twin
-                            .and_then(|png| {
-                                crate::systems::tile_loader::decode_rendered(&png, tile_px)
-                            })
-                            .or_else(|| match payload.decode_twin(tile_px) {
-                                Some(Ok(img)) => {
-                                    if let Some(k) = &twin_key {
-                                        crate::systems::tile_loader::store_rendered(k, &img);
-                                    }
-                                    Some(img)
-                                }
+                        let reused_twin = reuse(stored_twin);
+                        let drawn_twin = if reused_twin.is_none() {
+                            match payload.decode_twin(tile_px) {
+                                Some(Ok(img)) => Some(img),
                                 Some(Err(e)) => {
                                     tracing::warn!(tile = %key.to_path(), error = %e, "painted twin failed; the tile fades to nothing");
                                     None
                                 }
                                 None => None,
-                            });
+                            }
+                        } else {
+                            None
+                        };
                         add_stage(2, drawing);
                         let packing = bevy::platform::time::Instant::now();
-                        let pack = |rgba: image::RgbaImage| {
-                            let (width, height) = (rgba.width(), rgba.height());
-                            let (texels, mip_count) = crate::systems::tile_loader::tile_texels(
-                                width,
-                                height,
-                                rgba.into_raw(),
-                            );
-                            DecodedTile {
-                                data: texels.data,
-                                width,
-                                height,
-                                mip_count,
-                                format: texels.format,
-                                painted: None,
-                            }
+                        let mut entries = Vec::new();
+                        let mut pack = |rgba: image::RgbaImage, keep: &Option<String>| {
+                            let chain = tl::tile_chain(rgba);
+                            entries.extend(tl::rendered_entry(keep, &[&chain]));
+                            chain
                         };
-                        let decoded = match drawn {
-                            Ok(rgba) => {
-                                let mut tile = pack(rgba);
-                                tile.painted = twin.map(|t| Box::new(pack(t)));
+                        let twin = reused_twin.or_else(|| drawn_twin.map(|t| pack(t, &twin_key)));
+                        let chain = match (reused, drawn) {
+                            (Some(chain), _) => Ok(chain),
+                            (None, Some(Ok(rgba))) => Ok(pack(rgba, &cache_key)),
+                            (None, Some(Err(e))) => Err(e),
+                            (None, None) => Err("tile neither kept nor drawn".to_string()),
+                        };
+                        let decoded = match chain {
+                            Ok(chain) => {
+                                let mut tile = DecodedTile::from(chain);
+                                tile.painted = twin.map(|t| Box::new(DecodedTile::from(t)));
                                 add_stage(3, packing);
                                 STAGE_N.fetch_add(1, Ordering::Relaxed);
                                 Some(tile)
@@ -866,7 +872,9 @@ fn spawn_map_tile(
                         if let Ok(mut g) = results.lock() {
                             g.push((key, decoded));
                         }
+                        let _ = keep.send(entries);
                     }));
+                    crate::systems::tile_loader::keep_rendered(packed).await;
                 }
                 Err(e) => {
                     tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");

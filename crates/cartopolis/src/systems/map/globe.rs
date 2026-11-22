@@ -695,19 +695,71 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 /// Build a decoded tile's mipmap chain. Pure CPU work, called on the fetch workers
 /// (the fetch + decode/render itself is `tile_loader::fetch_globe_tile_payload`).
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
-    let (width, height) = (rgba.width(), rgba.height());
     let lights = lights_mask(&rgba, has_ocean_mask);
-    let (texels, mip_count) =
-        crate::systems::tile_loader::tile_texels(width, height, rgba.into_raw());
+    let c = crate::systems::tile_loader::tile_chain(rgba);
     DecodedTile {
-        data: texels.data,
-        width,
-        height,
-        mip_count,
-        format: texels.format,
+        data: c.data,
+        width: c.width,
+        height: c.height,
+        mip_count: c.mip_count,
+        format: c.format,
         has_ocean_mask,
         lights,
     }
+}
+
+/// A globe tile as its cache entry keeps it: the surface chain, then the lights
+/// chain where it has one. Only a tile with a real ocean mask is ever kept
+/// (`tile_loader::globe_cache_key`).
+fn globe_tile_chains(
+    tile: &DecodedTile,
+) -> (
+    crate::systems::tile_loader::StoredChain,
+    Option<crate::systems::tile_loader::StoredChain>,
+) {
+    let surface = crate::systems::tile_loader::StoredChain {
+        format: tile.format,
+        width: tile.width,
+        height: tile.height,
+        mip_count: tile.mip_count,
+        data: tile.data.clone(),
+    };
+    let lights =
+        tile.lights
+            .as_ref()
+            .map(|(data, mips)| crate::systems::tile_loader::StoredChain {
+                format: TextureFormat::R8Unorm,
+                width: tile.width,
+                height: tile.height,
+                mip_count: *mips,
+                data: data.clone(),
+            });
+    (surface, lights)
+}
+
+/// The inverse of [`globe_tile_chains`]: a kept tile back to what the worker
+/// hands the main thread, or `None` when the entry is not one.
+fn globe_tile_from_chains(
+    chains: Vec<crate::systems::tile_loader::StoredChain>,
+) -> Option<DecodedTile> {
+    let mut chains = chains.into_iter();
+    let surface = chains.next()?;
+    let lights = match chains.next() {
+        Some(l) if l.format == TextureFormat::R8Unorm && l.width == surface.width => {
+            Some((l.data, l.mip_count))
+        }
+        Some(_) => return None,
+        None => None,
+    };
+    Some(DecodedTile {
+        data: surface.data,
+        width: surface.width,
+        height: surface.height,
+        mip_count: surface.mip_count,
+        format: surface.format,
+        has_ocean_mask: true,
+        lights,
+    })
 }
 
 /// Where a globe tile's ground is built up, as an R8 mip chain (mip count with
@@ -1758,7 +1810,7 @@ fn spawn_globe_tile(
             // runs on the main thread, so doing that here was the frame loop.
             match fetch_globe_tile_payload(&key, &template).await {
                 Ok(payload) => {
-                    // A tile drawn on an earlier visit comes back as a PNG instead
+                    // A tile drawn on an earlier visit comes back finished instead
                     // of being drawn again (`tile_loader::globe_cache_key`).
                     let cache_key =
                         crate::systems::tile_loader::globe_cache_key(&key, &payload, GLOBE_TILE_PX);
@@ -1772,6 +1824,9 @@ fn spawn_globe_tile(
                         }
                         None => None,
                     };
+                    // What the worker packs comes back here to be kept: the store is the
+                    // page thread's on the web (`tile_loader::rendered_entry`).
+                    let (keep, packed) = futures_channel::oneshot::channel();
                     // Far: a globe tile is never more urgent than the map under
                     // the camera, and ageing keeps it from starving.
                     crate::platform::workers::submit_ranked(
@@ -1784,19 +1839,23 @@ fn spawn_globe_tile(
                             let stage = crate::platform::heap::labels::set;
                             #[cfg(not(heap_labels))]
                             let stage = |_: &'static str| {};
-                            stage("globe: stored png");
-                            let reused = stored.and_then(|png| {
-                                crate::systems::tile_loader::decode_rendered(&png, GLOBE_TILE_PX)
-                            });
+                            stage("globe: stored tile");
+                            let reused = stored
+                                .and_then(|bytes| {
+                                    crate::systems::tile_loader::decode_rendered(
+                                        &bytes,
+                                        GLOBE_TILE_PX,
+                                    )
+                                })
+                                .and_then(globe_tile_from_chains);
                             stage("globe: mip chain");
-                            if let Some(rgba) = reused {
+                            if let Some(tile) = reused {
                                 // Decoded *before* the lock. As a `push` argument it
                                 // ran with the sink held, mip chain and all, and the
                                 // main thread's `take_results` queued behind it: 7 ms a
                                 // frame of `update_globe_tiles` asleep on this mutex
                                 // while the camera turned and cached tiles came back
                                 // (`cargo perf`'s `turn` window, 2026-10-16).
-                                let tile = decode_globe_tile(rgba, true);
                                 if let Ok(mut g) = results.lock() {
                                     g.push((key, TileFetch::Ok(tile)));
                                 }
@@ -1810,12 +1869,19 @@ fn spawn_globe_tile(
                             stage("globe: render payload");
                             let outcome = match payload.decode(GLOBE_TILE_PX) {
                                 Ok((rgba, masked)) => {
-                                    stage("globe: store rendered");
-                                    if let (true, Some(k)) = (masked, &cache_key) {
-                                        crate::systems::tile_loader::store_rendered(k, &rgba);
-                                    }
                                     stage("globe: mip chain");
-                                    TileFetch::Ok(decode_globe_tile(rgba, masked))
+                                    let tile = decode_globe_tile(rgba, masked);
+                                    stage("globe: store rendered");
+                                    if masked {
+                                        let (surface, lights) = globe_tile_chains(&tile);
+                                        let mut chains = vec![&surface];
+                                        chains.extend(lights.as_ref());
+                                        let entry = crate::systems::tile_loader::rendered_entry(
+                                            &cache_key, &chains,
+                                        );
+                                        let _ = keep.send(entry.into_iter().collect());
+                                    }
+                                    TileFetch::Ok(tile)
                                 }
                                 Err(e) => {
                                     tracing::error!(
@@ -1831,6 +1897,7 @@ fn spawn_globe_tile(
                             }
                         }),
                     );
+                    crate::systems::tile_loader::keep_rendered(packed).await;
                 }
                 Err(e) if crate::platform::http::is_absent(&e) => {
                     tracing::debug!(tile = %key.to_path(), "globe tile not served");

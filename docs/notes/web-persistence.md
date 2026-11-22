@@ -1,7 +1,7 @@
 ---
 topic: web-persistence
 triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs, platform::storage, crates/cartopolis/src/lib.rs, std::fs]
-updated: 2026-10-20
+updated: 2026-11-22
 ---
 
 # Everything the client keeps goes through one seam, IndexedDB-backed on the web
@@ -113,6 +113,8 @@ A cache entry that `read_now` or `write_now` touched is still kept;
   it by size; in a browser the quota is the browser's, and a refused write is
   taken as "the cache is full", latched for the session so the tile streamers do
   not pay an exception per tile. Tiles simply stop being cached; nothing breaks.
+  Since 2026-11-22 the finished map tiles are kept there too, ~170 KB each at
+  512² BC3 (`keeping-what-was-expensive.md`): the largest share a visit writes.
 - **A write queued on the web is lost if the tab closes in the same frame.**
   There is no API that would have prevented it — the in-memory view is updated
   first, so nothing in the running app is inconsistent.
