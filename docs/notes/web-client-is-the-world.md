@@ -1,6 +1,6 @@
 ---
 topic: web-client-is-the-world
-triggers: [framed_session.rs, world-frame.ts, discs.rs, comms, "feature = \"comms\"", "cartopolis.session", "cartopolis.ready", crates/cartopolis/index.html, chat.tsx]
+triggers: [framed_session.rs, world-frame.ts, world-browser.ts, discs.rs, comms, "feature = \"comms\"", "cartopolis.session", "cartopolis.ready", crates/cartopolis/index.html, chat.tsx]
 updated: 2026-11-22
 ---
 
@@ -59,6 +59,20 @@ The web build needs WebGPU (`crates/cartopolis/Cargo.toml` has why WebGL2 is no
 fallback), so World asks `navigator.gpu.requestAdapter()` first, and without an
 adapter shows what it needs and a link to the app instead of the frame.
 Community works in any browser.
+
+`crates/atlas/web/world-browser.ts` drives both against a real simulator, on
+a build node with `--chromium /usr/bin/chromium`: a browser without WebGPU
+gets the message and no frame; one with SwiftShader's adapter gets the frame,
+which logs that it took the page's session, and the simulator authenticates the
+account twice (the chat worker and the world). First run 2026-11-22: signed in
+5 s after the frame was made. The world then loses its device on SwiftShader,
+as every canvas does there (`web-device-loss.md`): a node proves the sign-in,
+not the picture.
+
+Size, 2026-11-22, `deploy/build/wasm.sh` on vps-1: the module is 100.3 MB
+(15.3 MB as trunk's `.br`), against 108.8 MB (16.5 MB brotli as served) for
+the build published that morning, which was cut from an older `main` — so
+about 8 MB of the module, not a measurement of `comms` alone.
 
 ## Not done yet
 

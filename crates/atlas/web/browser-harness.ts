@@ -95,10 +95,11 @@ export class Browser {
     /** Its user-data directory: launch another with it to reopen the same browser. */
     profile = ''
 
-    async launch(url: string, profile?: string): Promise<void> {
+    /** `flags` go to Chromium before the defaults, as `world-browser.ts`'s WebGPU ones do. */
+    async launch(url: string, profile?: string, flags: string[] = ['--disable-gpu']): Promise<void> {
         const port = freePort()
         this.profile = profile ?? mkdtempSync(path.join(tmpdir(), `chat-${this.name}-`))
-        procs.push(Bun.spawn([chromium, '--headless=new', '--no-sandbox', '--disable-gpu',
+        procs.push(Bun.spawn([chromium, '--headless=new', '--no-sandbox', ...flags,
             `--remote-debugging-port=${port}`, `--user-data-dir=${this.profile}`, '--window-size=1400,860',
             // A camera and microphone that need no hardware and no permission prompt.
             '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
