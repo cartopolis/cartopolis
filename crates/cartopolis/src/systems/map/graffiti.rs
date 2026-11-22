@@ -204,8 +204,15 @@ impl FromWorld for GraffitiSheet {
             .resource_mut::<Assets<Image>>()
             .insert(&GRAFFITI_SHEET, clear)
             .expect("an asset id without a generation cannot be stale");
+        // Decoded for this module alone, never uploaded as it is: the GPU gets
+        // the compressed chain built from it, and the raw sheet is 16 MB in one
+        // upload (the gate's `upload_peak_asset_kb`).
         let loading = world
             .resource::<AssetServer>()
+            .load_builder()
+            .with_settings(|s: &mut bevy::image::ImageLoaderSettings| {
+                s.asset_usage = RenderAssetUsages::MAIN_WORLD;
+            })
             .load("textures/graffiti.png");
         Self {
             loading: Some(loading),

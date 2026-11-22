@@ -385,8 +385,16 @@ pub fn measure_uploads(
         };
         // `data` is `None` for a render target or a texture bevy fills on the GPU;
         // nothing is uploaded for those, which is also what `byte_len` answers.
+        // Nor for an image kept in the main world only (`MAIN_WORLD` without
+        // `RENDER_WORLD`), decoded for the CPU to read — the graffiti sheet's
+        // source, which goes up compressed as an image of its own.
         let asset = images
             .get(id)
+            .filter(|image| {
+                image
+                    .asset_usage
+                    .contains(bevy::asset::RenderAssetUsages::RENDER_WORLD)
+            })
             .and_then(|image| image.data.as_ref().map(Vec::len))
             .unwrap_or(0);
         if asset >= OVERSIZE_ASSET_BYTES {
