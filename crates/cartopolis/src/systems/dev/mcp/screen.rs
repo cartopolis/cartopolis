@@ -1283,7 +1283,7 @@ mod tests {
         if r.long_touched() {
             p.long_touches += 1;
         }
-        ui.checkbox(&mut p.on, "Show buildings");
+        crate::systems::theme::checkbox(ui, &mut p.on, "Show buildings");
         ui.add(egui::TextEdit::singleline(&mut p.text).hint_text("Message"));
     }
 

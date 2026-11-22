@@ -368,7 +368,7 @@ pub fn page(ui: &mut egui::Ui, tokens: &mut AccessTokens, may_elevate: bool) {
     }
 
     theme::section(ui, "New token");
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut tokens.label)
             .id(egui::Id::new("token_label"))

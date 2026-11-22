@@ -581,6 +581,7 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
 }
 
 fn pill(icon: &str, text: &str) -> egui::Button<'static> {
+    // egui's own: the camera's rounded pill, placed by the caller over the viewfinder.
     egui::Button::new(
         egui::RichText::new(format!("{icon} {text}"))
             .size(12.5)
@@ -711,6 +712,7 @@ pub fn render_face_viewfinder(
                         faces.note = Some("Sign in to stand somewhere first.".into());
                     }
                 }
+                // egui's own: the camera shutter, a round accent pill over the viewfinder.
                 let shutter = egui::Button::new(
                     egui::RichText::new(format!("{}  Take it", icons::CAMERA))
                         .size(15.0)

@@ -121,10 +121,7 @@ pub fn render_welcome(
                         answered = true;
                     }
                     if let Some(url) = &register {
-                        let resp = ui.add_sized(
-                            egui::vec2(half, theme::PRIMARY_BUTTON_HEIGHT),
-                            egui::Button::new("Create account"),
-                        );
+                        let resp = theme::secondary_button(ui, "", "Create account", half);
                         if resp.clicked() {
                             crate::systems::data_layers::open_url(url);
                             // Back from the browser with an account, the card
@@ -136,17 +133,7 @@ pub fn render_welcome(
                 });
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Not now, just the map")
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                            )
-                            .frame(false),
-                        )
-                        .clicked()
-                    {
+                    if theme::ghost_button(ui, "", "Not now, just the map").clicked() {
                         answered = true;
                         not_now = true;
                     }

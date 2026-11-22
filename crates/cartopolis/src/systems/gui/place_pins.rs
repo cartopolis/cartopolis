@@ -118,12 +118,14 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
                                 ))
                                 .color(theme::DARK.ink),
                             );
-                            if ui
-                                .add(egui::Button::new(
-                                    egui::RichText::new("Stop").color(theme::DARK.ink).strong(),
-                                ))
-                                .clicked()
-                            {
+                            // A word on the location-sharing chip, whose fill is one
+                            // colour in both themes, so its ink is the dark theme's
+                            // whatever the palette.
+                            // egui's own: the theme's buttons would take the palette's ink.
+                            let word = egui::Button::new(
+                                egui::RichText::new("Stop").color(theme::DARK.ink).strong(),
+                            );
+                            if ui.add(word).clicked() {
                                 stop = Some(share.channel.clone());
                             }
                         });

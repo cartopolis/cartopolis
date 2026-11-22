@@ -1240,7 +1240,7 @@ fn list_screen(
                 ))
                 .color(theme::p().cream),
             );
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.point_text)
                     .id(egui::Id::new("chats_point_text"))
@@ -1271,7 +1271,7 @@ fn list_screen(
                         .size(17.0)
                         .color(theme::p().line),
                 );
-                crate::systems::text_touch::field(
+                crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut view.search)
                         .id(egui::Id::new("chats_search"))
@@ -1760,7 +1760,7 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
                     .color(theme::p().cream),
             );
             ui.add_space(4.0);
-            let field = crate::systems::text_touch::field(
+            let field = crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.private_input)
                     .id(egui::Id::new("chats_new_private"))
@@ -1792,14 +1792,14 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
                     .color(theme::p().cream),
             );
             ui.add_space(4.0);
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.group_name_input)
                     .id(egui::Id::new("chats_group_name"))
                     .desired_width(ui.available_width())
                     .hint_text("Group name"),
             );
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut chat.group_members_input)
                     .id(egui::Id::new("chats_group_members"))
@@ -1863,17 +1863,7 @@ fn you_screen(
                 ui.add_space(12.0);
                 // The two pills, centred as a pair.
                 let pill = |ui: &mut egui::Ui, icon: &str, text: &str| {
-                    ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("{icon}  {text}"))
-                                .size(13.5)
-                                .color(theme::p().text),
-                        )
-                        .fill(theme::p().surface_raised)
-                        .stroke(egui::Stroke::new(1.0, gline()))
-                        .corner_radius(egui::CornerRadius::same(12))
-                        .min_size(egui::vec2(0.0, 36.0)),
-                    )
+                    theme::secondary_button(ui, icon, text, 0.0)
                 };
                 let w = 300.0_f32.min(ui.available_width());
                 ui.allocate_ui_with_layout(
@@ -2966,13 +2956,7 @@ fn meetup_card(
                 {
                     act.go_to = Some(point.clone());
                 }
-                if ui
-                    .add_sized(
-                        egui::vec2(half, theme::row_height()),
-                        egui::Button::new(format!("{}  Route", icons::ROUTE)),
-                    )
-                    .clicked()
-                {
+                if theme::secondary_button(ui, icons::ROUTE, "Route", half).clicked() {
                     act.route_to = Some((point.latitude, point.longitude, place.clone()));
                 }
             });
@@ -4040,12 +4024,22 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
         return;
     };
     let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, rows: usize| {
-        let edit = if rows > 1 {
-            egui::TextEdit::multiline(text).desired_rows(rows)
+        if rows > 1 {
+            theme::text_field(
+                ui,
+                egui::TextEdit::multiline(text)
+                    .desired_rows(rows)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY),
+            );
         } else {
-            egui::TextEdit::singleline(text)
-        };
-        ui.add(edit.hint_text(hint).desired_width(f32::INFINITY));
+            theme::text_field(
+                ui,
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY),
+            );
+        }
     };
     let mut close = false;
     raised_frame().show(ui, |ui| {
@@ -4217,7 +4211,7 @@ fn compose_row(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, id: &str, act
                                     act.view_to = Some(key.to_string());
                                 }
                             }
-                            crate::systems::text_touch::field(
+                            crate::systems::theme::text_field(
                                 ui,
                                 egui::TextEdit::singleline(&mut view.draft)
                                     .id(egui::Id::new(id))

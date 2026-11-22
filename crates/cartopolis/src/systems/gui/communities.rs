@@ -856,7 +856,7 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
         cs.screen = None;
         return;
     }
-    let field = crate::systems::text_touch::field(
+    let field = crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut cs.query)
             .id(egui::Id::new("communities_find"))
@@ -932,7 +932,7 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
     }
     theme::section(ui, "Have an invite?");
     ui.horizontal(|ui| {
-        crate::systems::text_touch::field(
+        crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(&mut cs.invite_input)
                 .id(egui::Id::new("communities_invite_input"))
@@ -1112,7 +1112,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
                     ui,
                     "Say who you are; they see your name and this message, nothing else.",
                 );
-                crate::systems::text_touch::field(
+                crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut cs.join_message)
                         .id(egui::Id::new("communities_join_message"))
@@ -1137,7 +1137,7 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
             .size(12.5)
             .color(theme::p().text_dim),
     );
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut d.name)
             .id(egui::Id::new("communities_name"))
@@ -1150,7 +1150,7 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
             .size(12.5)
             .color(theme::p().text_dim),
     );
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut d.about)
             .id(egui::Id::new("communities_about"))
@@ -1176,12 +1176,12 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
         },
     );
     ui.add_space(4.0);
-    ui.checkbox(&mut d.listed, "Show in Find a community");
+    theme::checkbox(ui, &mut d.listed, "Show in Find a community");
     theme::note(
         ui,
         "Listed: its name, description, topic names, moderators and size are public on this server.",
     );
-    ui.checkbox(&mut d.members_start_topics, "Members may start topics");
+    theme::checkbox(ui, &mut d.members_start_topics, "Members may start topics");
 }
 
 /// The picture and the place, under the settings when starting or editing.
@@ -1217,7 +1217,7 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
         Some(mut p) => {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(icons::PIN).color(theme::BRAND));
-                crate::systems::text_touch::field(
+                crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut p.name)
                         .id(egui::Id::new("communities_place_name"))
@@ -1266,7 +1266,7 @@ fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
     settings_form(ui, &mut cs.draft);
     picture_and_place(ui, cs);
     theme::section(ui, "Topics to start with");
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut cs.draft.topics)
             .id(egui::Id::new("communities_topics"))
@@ -1274,7 +1274,7 @@ fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
             .hint_text("general, meet-ups (separated by commas)"),
     );
     theme::section(ui, "People");
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut cs.draft.people)
             .id(egui::Id::new("communities_people"))
@@ -1430,7 +1430,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     }
     if cs.adding {
         raised_frame().show(ui, |ui| {
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut cs.add_people)
                     .id(egui::Id::new("communities_add_people"))
@@ -1484,7 +1484,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     }
     if cs.starting_topic {
         raised_frame().show(ui, |ui| {
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut cs.new_topic)
                     .id(egui::Id::new("communities_new_topic"))
@@ -1762,13 +1762,13 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out)
         for (i, t) in cs.draft.topic_edits.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("#").color(theme::p().text_dim));
-                crate::systems::text_touch::field(
+                crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut t.name)
                         .id(egui::Id::new(("communities_topic_edit", i)))
                         .desired_width(ui.available_width() - 110.0),
                 );
-                ui.checkbox(&mut t.archived, "Archived");
+                theme::checkbox(ui, &mut t.archived, "Archived");
             });
         }
     }
@@ -1837,12 +1837,14 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
             row.context_menu(|ui| {
                 ui.label(egui::RichText::new(&who).strong().color(theme::p().cream));
                 ui.separator();
-                if ui.button("Message").clicked() {
+                if theme::menu_entry(ui, icons::CHAT, "Message").clicked() {
                     out.message = Some(m.address.clone());
                     ui.close();
                 }
                 if mine == CommunityRole::Owner {
-                    if m.role == CommunityRole::Member && ui.button("Make moderator").clicked() {
+                    if m.role == CommunityRole::Member
+                        && theme::menu_entry(ui, icons::HOST, "Make moderator").clicked()
+                    {
                         cs.ops.push(CommunityOp::SetRole(
                             id,
                             m.address.clone(),
@@ -1851,7 +1853,7 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                         ui.close();
                     }
                     if m.role == CommunityRole::Moderator
-                        && ui.button("Stop being a moderator").clicked()
+                        && theme::menu_entry(ui, icons::HOST, "Stop being a moderator").clicked()
                     {
                         cs.ops.push(CommunityOp::SetRole(
                             id,
@@ -1860,7 +1862,7 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                         ));
                         ui.close();
                     }
-                    if ui.button("Hand the community over").clicked() {
+                    if theme::menu_entry(ui, icons::KEY, "Hand the community over").clicked() {
                         cs.ops.push(CommunityOp::SetRole(
                             id,
                             m.address.clone(),
@@ -1877,12 +1879,12 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                 if may_remove {
                     ui.separator();
                     for t in c.topics.iter().filter(|t| !t.archived) {
-                        if ui
-                            .button(
-                                egui::RichText::new(format!("Remove from # {}", t.name))
-                                    .color(theme::p().error),
-                            )
-                            .clicked()
+                        if theme::menu_entry_danger(
+                            ui,
+                            icons::PERSON_REMOVE,
+                            &format!("Remove from # {}", t.name),
+                        )
+                        .clicked()
                         {
                             cs.ops.push(CommunityOp::Remove {
                                 id,
@@ -1893,12 +1895,12 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                             ui.close();
                         }
                     }
-                    if ui
-                        .button(
-                            egui::RichText::new("Remove from the community")
-                                .color(theme::p().error),
-                        )
-                        .clicked()
+                    if theme::menu_entry_danger(
+                        ui,
+                        icons::PERSON_REMOVE,
+                        "Remove from the community",
+                    )
+                    .clicked()
                     {
                         cs.ops.push(CommunityOp::Remove {
                             id,
@@ -1908,12 +1910,12 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                         });
                         ui.close();
                     }
-                    if ui
-                        .button(
-                            egui::RichText::new("Remove and block from rejoining")
-                                .color(theme::p().error),
-                        )
-                        .clicked()
+                    if theme::menu_entry_danger(
+                        ui,
+                        icons::PERSON_REMOVE,
+                        "Remove and block from rejoining",
+                    )
+                    .clicked()
                     {
                         cs.ops.push(CommunityOp::Remove {
                             id,

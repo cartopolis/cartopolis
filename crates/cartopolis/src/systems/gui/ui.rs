@@ -666,7 +666,10 @@ pub fn render_avatar_chooser(
                     let changed = *d != *saved;
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(changed, egui::Button::new("Apply"))
+                            .add_enabled_ui(changed, |ui| {
+                                theme::primary_button_sized(ui, "Apply", 0.0)
+                            })
+                            .inner
                             .clicked()
                         {
                             apply = true;
@@ -1499,7 +1502,7 @@ fn basics_tab(
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             ui.label("Name");
-            ui.text_edit_singleline(&mut edit_dialog.name);
+            theme::text_field(ui, egui::TextEdit::singleline(&mut edit_dialog.name));
             ui.end_row();
 
             ui.label("Tool");
@@ -1730,11 +1733,13 @@ fn surface_tab(
                         "None"
                     });
                     if crate::platform::model_file::is_available()
-                        && ui.button("Choose video…").clicked()
+                        && theme::secondary_button(ui, "", "Choose video…", 0.0).clicked()
                     {
                         edit_dialog.video_action = Some(crate::resources::VideoAction::Choose);
                     }
-                    if edit_dialog.playing_video && ui.button("Stop").clicked() {
+                    if edit_dialog.playing_video
+                        && theme::ghost_button(ui, icons::STOP, "Stop").clicked()
+                    {
                         edit_dialog.video_action = Some(crate::resources::VideoAction::Stop);
                     }
                     if let Some(note) = &edit_dialog.video_note {
@@ -1753,10 +1758,14 @@ fn surface_tab(
             ui.label("Texture");
             ui.horizontal(|ui| {
                 ui.label(edit_dialog.texture_id.as_deref().unwrap_or("None"));
-                if !texture_lib.entries.is_empty() && ui.button("Pick…").clicked() {
+                if !texture_lib.entries.is_empty()
+                    && theme::secondary_button(ui, "", "Pick…", 0.0).clicked()
+                {
                     edit_dialog.texture_picker_open = !edit_dialog.texture_picker_open;
                 }
-                if edit_dialog.texture_id.is_some() && ui.button("Clear").clicked() {
+                if edit_dialog.texture_id.is_some()
+                    && theme::ghost_button(ui, "", "Clear").clicked()
+                {
                     edit_dialog.texture_id = None;
                 }
             });
@@ -1839,7 +1848,9 @@ fn surface_tab(
                 .range(0.0..=10.0)
                 .max_decimals(3),
         );
-        if ui.button("Apply").clicked() && edit_dialog.repeats_per_meter > 0.0 {
+        if theme::secondary_button(ui, "", "Apply", 0.0).clicked()
+            && edit_dialog.repeats_per_meter > 0.0
+        {
             let rpm = edit_dialog.repeats_per_meter;
             edit_dialog.surface.repeat_u = rpm * edit_dialog.scale[0];
             edit_dialog.surface.repeat_v = rpm * edit_dialog.scale[1];
@@ -1876,19 +1887,27 @@ fn dialog_buttons(
 ) {
     // Dialog buttons — always visible regardless of active tab
     ui.horizontal(|ui| {
-        if ui.button("Save").clicked() {
+        if theme::primary_button_sized(ui, "Save", 0.0).clicked() {
             game_state.pending_prim_save = Some(edit_dialog.clone());
             edit_dialog.visible = false;
             game_state.editing_prim_id = None;
         }
 
-        if ui.button("Cancel").clicked() {
+        if theme::ghost_button(ui, "", "Cancel").clicked() {
             push_revert(&mut game_state, &edit_dialog);
             edit_dialog.visible = false;
             game_state.editing_prim_id = None;
         }
 
-        if !edit_dialog.is_new && ui.button("Delete").clicked() {
+        // Two presses: a deleted prim has no undo.
+        if !edit_dialog.is_new
+            && theme::confirm_button(
+                ui,
+                egui::Id::new("edit_dialog_delete"),
+                "Delete",
+                "Really delete",
+            )
+        {
             if let Some(id) = edit_dialog.prim_id {
                 game_state.prims_to_delete.push(id);
             }
@@ -1973,10 +1992,12 @@ fn render_texture_picker(
                                                 resp.clicked()
                                             } else {
                                                 // Fallback text tile while egui handle is pending.
-                                                let resp = ui.add_sized(
-                                                    [72.0, 72.0],
-                                                    egui::Button::new(&entry.name)
-                                                        .selected(selected),
+                                                let resp = theme::secondary_toggle(
+                                                    ui,
+                                                    "",
+                                                    &entry.name,
+                                                    72.0,
+                                                    selected,
                                                 );
                                                 // Fetched once scrolled into view, so
                                                 // opening the picker is not a request

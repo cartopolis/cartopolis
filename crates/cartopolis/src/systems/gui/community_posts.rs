@@ -563,7 +563,7 @@ pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out:
                     .color(theme::p().error)
                     .size(theme::SIZE_SUB),
             );
-            if ui.small_button(icons::CLEAR).clicked() {
+            if theme::icon_button_small(ui, icons::CLEAR, "Dismiss").clicked() {
                 cs.posts.note = None;
             }
         });
@@ -792,7 +792,7 @@ fn draft_extras(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, has_pi
         d.warning = warn.then(String::new);
     }
     if let Some(w) = d.warning.as_mut() {
-        crate::systems::text_touch::field(
+        crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(w)
                 .id(egui::Id::new(("post_warning", community)))
@@ -802,7 +802,7 @@ fn draft_extras(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, has_pi
         );
     }
     if has_picture {
-        crate::systems::text_touch::field(
+        crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(&mut d.alt)
                 .id(egui::Id::new(("post_alt", community)))
@@ -905,7 +905,7 @@ fn report_box(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) {
         return;
     };
     ui.separator();
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::multiline(reason)
             .id(egui::Id::new(("post_report", p.id)))
@@ -1274,7 +1274,7 @@ fn edit_box(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, post: Uuid
     let Some((_, text)) = cs.posts.editing.as_mut() else {
         return;
     };
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::multiline(text)
             .id(egui::Id::new(("post_edit", post)))
@@ -1317,9 +1317,7 @@ fn thread_view(
     post: Uuid,
     out: &mut Out,
 ) {
-    let clicked = ui
-        .add(egui::Button::new(format!("{}  Posts", icons::CHEVRON_LEFT)).frame(false))
-        .clicked();
+    let clicked = theme::ghost_button(ui, icons::CHEVRON_LEFT, "Posts").clicked();
     if theme::page_back(ui.ctx(), clicked) {
         cs.posts.thread_open = None;
         cs.posts.thread = None;
@@ -1363,7 +1361,7 @@ fn thread_view(
             }
         });
     }
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::multiline(&mut cs.posts.reply)
             .id(egui::Id::new(("post_reply", post)))
@@ -1516,7 +1514,7 @@ pub fn compose_page(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
     let Some(draft) = cs.posts.draft.as_mut() else {
         return;
     };
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::multiline(&mut draft.text)
             .id(egui::Id::new(("post_text", c.id)))
@@ -1753,7 +1751,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
                 cs.posts.handle = suggest_handle(&c.settings.name);
             }
             ui.label(egui::RichText::new("The community's fediverse address").color(theme::p().cream));
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut cs.posts.handle)
                     .id(egui::Id::new(("post_handle", id)))
@@ -1824,7 +1822,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
                 let state = if f.accepted { "" } else { " · waiting for their server" };
                 ui.label(egui::RichText::new(format!("{}  {}", icons::SHARE, f.address)).color(theme::PUBLIC));
                 ui.label(egui::RichText::new(format!("{kind}{state}")).size(theme::SIZE_SUB).color(theme::p().text_dim));
-                if ui.small_button(icons::CLEAR).on_hover_text("Stop following").clicked() {
+                if theme::icon_button_small(ui, icons::CLEAR, "Stop following").clicked() {
                     let address = f.address.clone();
                     cs.posts.spawn(async move {
                         let r = api_delete(&format!("/api/communities/{id}/follows/{address}")).await;
@@ -1833,7 +1831,7 @@ fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info
                 }
             });
         }
-        crate::systems::text_touch::field(
+        crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(&mut cs.posts.follow)
                 .id(egui::Id::new(("post_follow", id)))
@@ -2375,9 +2373,7 @@ mod tests {
 /// own over the chat list. A notice about a post opens that post's thread on
 /// its community's page.
 pub fn activity_screen(ui: &mut egui::Ui, cs: &mut Communities) {
-    let clicked = ui
-        .add(egui::Button::new(format!("{}  Chats", icons::CHEVRON_LEFT)).frame(false))
-        .clicked();
+    let clicked = theme::ghost_button(ui, icons::CHEVRON_LEFT, "Chats").clicked();
     if theme::page_back(ui.ctx(), clicked) {
         cs.screen = None;
         return;

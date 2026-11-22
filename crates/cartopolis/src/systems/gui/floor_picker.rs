@@ -109,10 +109,7 @@ pub fn render_floor_picker(
                 }
                 if cutaway.picked.is_some() && cutaway.avatar_storey.is_some() {
                     ui.add_space(2.0);
-                    if ui
-                        .add(egui::Button::new("Follow me").min_size(egui::vec2(WIDTH, 0.0)))
-                        .clicked()
-                    {
+                    if theme::secondary_button(ui, "", "Follow me", WIDTH).clicked() {
                         pick = Some(None);
                     }
                 }
@@ -127,11 +124,10 @@ pub fn render_floor_picker(
                     .color(theme::p().text_dim),
                 );
                 if ui
-                    .add_enabled(
-                        open_url_supported(),
-                        egui::Button::new(format!("Floor plan {}", icons::OPEN_EXTERNAL))
-                            .min_size(egui::vec2(WIDTH, 0.0)),
-                    )
+                    .add_enabled_ui(open_url_supported(), |ui| {
+                        theme::secondary_button(ui, icons::OPEN_EXTERNAL, "Floor plan", WIDTH)
+                    })
+                    .inner
                     .on_hover_text("Open this building in the floor-plan editor")
                     .clicked()
                 {

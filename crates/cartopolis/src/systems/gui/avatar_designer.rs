@@ -1132,7 +1132,10 @@ fn history_row(
 ) {
     ui.horizontal_wrapped(|ui| {
         if ui
-            .add_enabled(!state.history.is_empty(), egui::Button::new("Undo"))
+            .add_enabled_ui(!state.history.is_empty(), |ui| {
+                theme::ghost_button(ui, "", "Undo")
+            })
+            .inner
             .clicked()
         {
             if let Some(prev) = state.history.pop() {
@@ -1141,7 +1144,10 @@ fn history_row(
             }
         }
         if ui
-            .add_enabled(!state.future.is_empty(), egui::Button::new("Redo"))
+            .add_enabled_ui(!state.future.is_empty(), |ui| {
+                theme::ghost_button(ui, "", "Redo")
+            })
+            .inner
             .clicked()
         {
             if let Some(next) = state.future.pop() {
@@ -1150,7 +1156,7 @@ fn history_row(
             }
         }
         if let Some(saved) = saved.filter(|s| *s != look) {
-            if ui.button("Back to saved").clicked() {
+            if theme::ghost_button(ui, "", "Back to saved").clicked() {
                 // A step like any other, so it can itself be undone.
                 state.history.push(std::mem::replace(look, saved.clone()));
                 state.future.clear();

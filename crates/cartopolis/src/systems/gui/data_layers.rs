@@ -1369,13 +1369,15 @@ pub fn render_poi_popup(
                                 "Opening links isn't available on this platform";
                             if let Some(url) = &popup.website {
                                 if ui
-                                    .add_enabled(
-                                        can_open,
-                                        egui::Button::new(format!(
-                                            "Website {}",
-                                            icons::OPEN_EXTERNAL
-                                        )),
-                                    )
+                                    .add_enabled_ui(can_open, |ui| {
+                                        theme::secondary_button(
+                                            ui,
+                                            icons::OPEN_EXTERNAL,
+                                            "Website",
+                                            0.0,
+                                        )
+                                    })
+                                    .inner
                                     .on_disabled_hover_text(NO_BROWSER)
                                     .clicked()
                                 {
@@ -1383,7 +1385,8 @@ pub fn render_poi_popup(
                                 }
                             }
                             if ui
-                                .add_enabled(can_open, egui::Button::new("OSM"))
+                                .add_enabled_ui(can_open, |ui| theme::ghost_button(ui, "", "OSM"))
+                                .inner
                                 .on_disabled_hover_text(NO_BROWSER)
                                 .clicked()
                             {

@@ -468,12 +468,13 @@ fn skip_list(
     );
     for (label, along) in targets {
         let gap = format_distance((along - progress.along_m).max(0.0));
-        if ui
-            .add_sized(
-                egui::vec2(ui.available_width(), theme::row_height()),
-                egui::Button::new(format!("{label}   ·   {gap}")),
-            )
-            .clicked()
+        if theme::ghost_button_wide(
+            ui,
+            "",
+            &format!("{label}   ·   {gap}"),
+            ui.available_width(),
+        )
+        .clicked()
         {
             act.skip_to = Some(along);
         }

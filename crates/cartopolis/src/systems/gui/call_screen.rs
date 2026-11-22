@@ -1415,6 +1415,7 @@ fn more_sheet(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for r in REACTIONS {
+            // egui's own: a dial-pad key, a 48 pt square around one large glyph.
             let b = egui::Button::new(egui::RichText::new(r).size(26.0))
                 .min_size(egui::vec2(48.0, 48.0))
                 .corner_radius(12);
@@ -1913,7 +1914,8 @@ fn notes_sheet(
             }
         }
     });
-    let edit = ui.add(
+    let edit = theme::text_field(
+        ui,
         egui::TextEdit::multiline(&mut st.note_draft)
             .desired_rows(2)
             .desired_width(f32::INFINITY)

@@ -833,7 +833,7 @@ pub fn person_menu(
         .show(|ui| {
             ui.label(egui::RichText::new(sender).strong().color(theme::p().cream));
             ui.separator();
-            if ui.button("Message privately").clicked() {
+            if theme::menu_entry(ui, icons::CHAT, "Message privately").clicked() {
                 act(PersonAction::Message);
                 ui.close();
             }
@@ -845,14 +845,14 @@ pub fn person_menu(
                 ui.close();
             }
             if extras.community.is_some() && message.is_some() {
-                if ui.button("Report to the moderators…").clicked() {
+                if theme::menu_entry(ui, icons::FLAG, "Report to the moderators…").clicked() {
                     act(PersonAction::ReportToModerators(
                         message.map(str::to_string),
                     ));
                     ui.close();
                 }
             }
-            if ui.button("Report to the server…").clicked() {
+            if theme::menu_entry(ui, icons::FLAG, "Report to the server…").clicked() {
                 act(PersonAction::Report(message.map(str::to_string)));
                 ui.close();
             }
@@ -874,19 +874,17 @@ pub fn person_menu(
                     act(PersonAction::DeleteForEveryone);
                     ui.close();
                 }
-                if ui
-                    .button(
-                        egui::RichText::new(format!("Remove from {topic}")).color(theme::p().error),
-                    )
-                    .clicked()
+                if theme::menu_entry_danger(
+                    ui,
+                    icons::PERSON_REMOVE,
+                    &format!("Remove from {topic}"),
+                )
+                .clicked()
                 {
                     act(PersonAction::RemoveFromTopic);
                     ui.close();
                 }
-                if ui
-                    .button(
-                        egui::RichText::new("Remove from the community").color(theme::p().error),
-                    )
+                if theme::menu_entry_danger(ui, icons::PERSON_REMOVE, "Remove from the community")
                     .clicked()
                 {
                     act(PersonAction::RemoveFromCommunity);
@@ -909,10 +907,7 @@ pub fn person_menu(
                     act(PersonAction::Suspend);
                     ui.close();
                 }
-                if ui
-                    .button(egui::RichText::new("Delete account…").color(theme::p().error))
-                    .clicked()
-                {
+                if theme::menu_entry_danger(ui, icons::DELETE, "Delete account…").clicked() {
                     act(PersonAction::DeleteAccount);
                     ui.close();
                 }
@@ -985,6 +980,7 @@ pub(crate) fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::Vo
         // accurately while walking.
         let talk = ui.add_sized(
             egui::vec2(ui.available_width(), 34.0),
+            // egui's own: push-to-talk is held, not clicked, and read from the press.
             egui::Button::new(if voice.transmitting {
                 // A microphone, which is what this control is about. It was `◉`
                 // out of a `first_drawable` ladder because U+25CF is in none of
@@ -1071,7 +1067,8 @@ pub(crate) fn render_report_dialog(
                 ui.radio_value(&mut draft.reason, *reason, reason.label());
             }
             ui.add_space(6.0);
-            ui.add(
+            theme::text_field(
+                ui,
                 egui::TextEdit::multiline(&mut draft.note)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)

@@ -1015,23 +1015,17 @@ pub fn render_interaction_prompt(
                         // A button to take it — E's job on a keyboard, the only
                         // way on a phone — and one to let it go unanswered.
                         let hint = if compact { "" } else { "   [E]" };
-                        if ui
-                            .button(
-                                egui::RichText::new(format!(
-                                    "{}  {}{hint}",
-                                    crate::systems::icons::HAND,
-                                    o.line()
-                                ))
-                                .color(theme::p().text)
-                                .strong(),
-                            )
-                            .clicked()
+                        if theme::secondary_button(
+                            ui,
+                            crate::systems::icons::HAND,
+                            &format!("{}{hint}", o.line()),
+                            0.0,
+                        )
+                        .clicked()
                         {
                             greet = true;
                         }
-                        if ui
-                            .button(crate::systems::icons::CLEAR)
-                            .on_hover_text("Not now")
+                        if theme::icon_button_small(ui, crate::systems::icons::CLEAR, "Not now")
                             .clicked()
                         {
                             ignore = true;
@@ -1044,12 +1038,7 @@ pub fn render_interaction_prompt(
                         // takes you off it are visibly the same control.
                         let glyph = target.as_ref().map_or("", |t| t.glyph);
                         let hint = if compact { "" } else { "   [E]" };
-                        if ui
-                            .button(
-                                egui::RichText::new(format!("{glyph}  Stand up{hint}"))
-                                    .color(theme::p().text)
-                                    .strong(),
-                            )
+                        if theme::secondary_button(ui, glyph, &format!("Stand up{hint}"), 0.0)
                             .clicked()
                         {
                             acted = true;
@@ -1067,28 +1056,23 @@ pub fn render_interaction_prompt(
                         } else {
                             ("   [E]", "   [G]")
                         };
-                        if ui
-                            .button(
-                                egui::RichText::new(format!(
-                                    "{}  Throw {what}{throw_hint}",
-                                    crate::systems::icons::SEND
-                                ))
-                                .color(theme::p().text)
-                                .strong(),
-                            )
-                            .clicked()
+                        if theme::secondary_button(
+                            ui,
+                            crate::systems::icons::SEND,
+                            &format!("Throw {what}{throw_hint}"),
+                            0.0,
+                        )
+                        .clicked()
                         {
                             acted = true;
                         }
-                        if ui
-                            .button(
-                                egui::RichText::new(format!(
-                                    "{}  Put down{down_hint}",
-                                    crate::systems::icons::DOWNLOAD
-                                ))
-                                .color(theme::p().text),
-                            )
-                            .clicked()
+                        if theme::secondary_button(
+                            ui,
+                            crate::systems::icons::DOWNLOAD,
+                            &format!("Put down{down_hint}"),
+                            0.0,
+                        )
+                        .clicked()
                         {
                             put_down = true;
                         }
@@ -1100,31 +1084,25 @@ pub fn render_interaction_prompt(
                         // phone.
                         let hint = if compact { "" } else { "   [E]" };
                         if e.climb.is_some()
-                            && ui
-                                .button(
-                                    egui::RichText::new(format!(
-                                        "{}  Climb up{hint}",
-                                        crate::systems::icons::LANDSCAPE
-                                    ))
-                                    .color(theme::p().text)
-                                    .strong(),
-                                )
-                                .clicked()
+                            && theme::secondary_button(
+                                ui,
+                                crate::systems::icons::LANDSCAPE,
+                                &format!("Climb up{hint}"),
+                                0.0,
+                            )
+                            .clicked()
                         {
                             climb_up = true;
                         }
                         if e.sit.is_some() {
                             let hint = if e.climb.is_some() { "" } else { hint };
-                            if ui
-                                .button(
-                                    egui::RichText::new(format!(
-                                        "{}  Sit{hint}",
-                                        crate::systems::icons::BENCH
-                                    ))
-                                    .color(theme::p().text)
-                                    .strong(),
-                                )
-                                .clicked()
+                            if theme::secondary_button(
+                                ui,
+                                crate::systems::icons::BENCH,
+                                &format!("Sit{hint}"),
+                                0.0,
+                            )
+                            .clicked()
                             {
                                 sit_down = true;
                             }
@@ -1142,22 +1120,19 @@ pub fn render_interaction_prompt(
                     // The key hint is a fact about the *input*, not about the
                     // action, so it is only stated where a keyboard is plausible.
                     let hint = if compact { "" } else { "   [E]" };
-                    if ui
-                        .button(
-                            egui::RichText::new(format!("{}  {}{hint}", t.glyph, t.line()))
-                                .color(theme::p().text)
-                                .strong(),
-                        )
+                    if theme::secondary_button(ui, t.glyph, &format!("{}{hint}", t.line()), 0.0)
                         .clicked()
                     {
                         acted = true;
                     }
                     // The Route panel's own icon, so the button and the panel it
                     // opens read as one thing.
-                    if ui
-                        .button(RightPanel::Route.icon())
-                        .on_hover_text("Route here — make this the destination")
-                        .clicked()
+                    if theme::icon_button_small(
+                        ui,
+                        RightPanel::Route.icon(),
+                        "Route here — make this the destination",
+                    )
+                    .clicked()
                     {
                         routed = true;
                     }

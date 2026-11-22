@@ -2483,14 +2483,13 @@ fn action_row(
     let full = ui.available_width();
     let mut below = false;
     ui.horizontal(|ui| {
-        if ui.button("Clear").clicked() {
+        if theme::ghost_button(ui, "", "Clear").clicked() {
             actions.clear = true;
         }
         // Walking yourself is the secondary act beside being walked there.
         if mode == TravelMode::Foot
             && avatar
-            && ui
-                .button("Walk")
+            && theme::ghost_button(ui, "", "Walk")
                 .on_hover_text("Walk it yourself, with the route drawn in the street")
                 .clicked()
         {
@@ -2812,10 +2811,10 @@ fn endpoint_line(
             |ui| {
                 ui.set_min_height(h);
                 ui.add_space(RAIL_PTS);
-                let clear = theme::close_button_size();
+                let clear = theme::control_height_small();
                 let trailing = if wp.label.is_empty() { 0.0 } else { clear }
                     + if wp.in_flight { 22.0 } else { 0.0 };
-                let field = crate::systems::text_touch::field(
+                let field = crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut wp.label)
                         .frame(egui::Frame::NONE)
@@ -2834,18 +2833,7 @@ fn endpoint_line(
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !wp.label.is_empty()
-                        && ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(icons::CLEAR)
-                                        .size(theme::SIZE_VALUE)
-                                        .color(theme::p().text_dim),
-                                )
-                                .frame(false)
-                                .min_size(egui::vec2(clear, clear)),
-                            )
-                            .on_hover_text("Clear")
-                            .clicked()
+                        && theme::icon_button_small(ui, icons::CLEAR, "Clear").clicked()
                     {
                         actions.cleared = Some(end);
                     }

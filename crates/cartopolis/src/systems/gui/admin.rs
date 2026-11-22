@@ -868,7 +868,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                 return;
             }
             theme::section(ui, "What was done");
-            crate::systems::text_touch::field(
+            crate::systems::theme::text_field(
                 ui,
                 egui::TextEdit::singleline(&mut admin.resolution)
                     .id(egui::Id::new("admin_resolution"))
@@ -876,18 +876,8 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                     .hint_text("e.g. \"warned in chat\", \"suspended\""),
             );
             ui.add_space(8.0);
-            let handled = ui
-                .add_sized(
-                    [ui.available_width(), 42.0],
-                    egui::Button::new(
-                        egui::RichText::new("Mark handled")
-                            .size(14.5)
-                            .color(theme::p().on_status),
-                    )
-                    .fill(gold())
-                    .corner_radius(egui::CornerRadius::same(14)),
-                )
-                .clicked();
+            let handled =
+                theme::primary_button_sized(ui, "Mark handled", ui.available_width()).clicked();
             if handled {
                 let body = serde_json::json!({ "resolution": admin.resolution.trim() }).to_string();
                 let path = format!("/api/admin/reports/{id}");
@@ -960,7 +950,7 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
         admin.page = Page::Home;
         return;
     }
-    crate::systems::text_touch::field(
+    crate::systems::theme::text_field(
         ui,
         egui::TextEdit::singleline(&mut admin.search)
             .id(egui::Id::new("admin_account_search"))

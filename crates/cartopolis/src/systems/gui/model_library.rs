@@ -587,11 +587,7 @@ pub fn render_model_library_panel(
 
             // Refresh first, from the right, so the two tabs take what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button(icons::REFRESH)
-                    .on_hover_text("fetch both lists again")
-                    .clicked()
-                {
+                if theme::icon_button(ui, icons::REFRESH, "Fetch both lists again").clicked() {
                     want_refresh = true;
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -603,7 +599,10 @@ pub fn render_model_library_panel(
                 });
             });
             ui.add_space(4.0);
-            ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search"));
+            theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut search).hint_text("Search"),
+            );
             ui.add_space(4.0);
             ui.separator();
 
@@ -619,7 +618,8 @@ pub fn render_model_library_panel(
                     ui.separator();
                     if model_file::is_available() {
                         if has_bytes {
-                            ui.add(
+                            theme::text_field(
+                                ui,
                                 egui::TextEdit::singleline(&mut upload_name)
                                     .hint_text("What is it?"),
                             );
@@ -633,13 +633,15 @@ pub fn render_model_library_panel(
                                 ui.radio_value(&mut upload_licence, licence, licence.label());
                             }
                             if upload_licence.needs_attribution() {
-                                ui.add(
+                                theme::text_field(
+                                    ui,
                                     egui::TextEdit::singleline(&mut upload_attribution)
                                         .hint_text("Credit line, e.g. “Bench by A. N. Other”"),
                                 );
                             }
                             if upload_licence.may_share() {
-                                ui.checkbox(
+                                theme::checkbox(
+                                    ui,
                                     &mut upload_share,
                                     "Share it with everyone on this server",
                                 );
@@ -656,11 +658,11 @@ pub fn render_model_library_panel(
                                     .color(theme::p().text_dim),
                                 );
                             }
-                            if ui.button("Upload").clicked() {
+                            if theme::primary_button_sized(ui, "Upload", 0.0).clicked() {
                                 want_upload = true;
                             }
                         } else {
-                            if ui.button("Add a model…").clicked() {
+                            if theme::primary_button_sized(ui, "Add a model…", 0.0).clicked() {
                                 want_pick = true;
                             }
                             // What to export before opening the dialog, because a
@@ -725,12 +727,11 @@ pub fn render_model_library_panel(
                             }
                         });
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Place").clicked() {
+                            if theme::secondary_button(ui, "", "Place", 0.0).clicked() {
                                 place = Some((item.asset.clone(), item.name.clone()));
                             }
                             if item.shared.is_some() {
-                                if ui
-                                    .button("Unshare")
+                                if theme::ghost_button(ui, "", "Unshare")
                                     .on_hover_text(
                                         "take it out of the shared library; anyone who \
                                          already took a copy keeps theirs",
@@ -745,7 +746,11 @@ pub fn render_model_library_panel(
                                 // not to offer a button that is going to be
                                 // refused, and to say why it is not offering it.
                                 let allowed = item.licence != "other";
-                                let button = ui.add_enabled(allowed, egui::Button::new("Share"));
+                                let button = ui
+                                    .add_enabled_ui(allowed, |ui| {
+                                        theme::ghost_button(ui, "", "Share")
+                                    })
+                                    .inner;
                                 let button = if allowed {
                                     button.on_hover_text("publish it to everyone on this server")
                                 } else {
@@ -758,10 +763,12 @@ pub fn render_model_library_panel(
                                     share_item = Some((item.id, item.name.clone()));
                                 }
                             }
-                            if ui
-                                .button(icons::DELETE)
-                                .on_hover_text("remove it from your inventory")
-                                .clicked()
+                            if theme::icon_button_small(
+                                ui,
+                                icons::DELETE,
+                                "Remove it from your inventory",
+                            )
+                            .clicked()
                             {
                                 discard_item = Some((item.id, item.name.clone()));
                             }
@@ -807,11 +814,10 @@ pub fn render_model_library_panel(
                             );
                         }
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Place").clicked() {
+                            if theme::secondary_button(ui, "", "Place", 0.0).clicked() {
                                 place = Some((entry.asset.clone(), entry.name.clone()));
                             }
-                            if ui
-                                .button("Keep")
+                            if theme::ghost_button(ui, "", "Keep")
                                 .on_hover_text("copy it into your inventory")
                                 .clicked()
                             {

@@ -405,11 +405,11 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
     // size from its content rect, so the panel grew by that much *every frame*
     // for as long as the field was open.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        commit = ui.button(icons::CHECK).on_hover_text("Apply").clicked();
+        commit = theme::icon_button_small(ui, icons::CHECK, "Apply").clicked();
         // `desired_width` is the field's *text* width; its frame padding and
         // stroke sit outside that, so they have to come off too.
         let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
-        let field = crate::systems::text_touch::field(
+        let field = crate::systems::theme::text_field(
             ui,
             egui::TextEdit::singleline(&mut edit.buf)
                 .id(id)
@@ -500,18 +500,17 @@ pub fn render_bookmarks_panel(
                 // nowhere to save *yet*, and a button that comes and goes is harder to
                 // find again than one that is greyed.
                 if ui
-                    .add_enabled(
-                        has_place,
-                        egui::Button::new(format!("{} Place", icons::BOOKMARK_ADD)),
-                    )
+                    .add_enabled_ui(has_place, |ui| {
+                        theme::secondary_button(ui, icons::BOOKMARK_ADD, "Place", 0.0)
+                    })
+                    .inner
                     .on_hover_text("Save where you are now, with this view")
                     .on_disabled_hover_text("No position yet — the world is still loading")
                     .clicked()
                 {
                     act.new_place = true;
                 }
-                if ui
-                    .button(format!("{} Folder", icons::NEW_FOLDER))
+                if theme::secondary_button(ui, icons::NEW_FOLDER, "Folder", 0.0)
                     .on_hover_text("New folder — drag places into it to group them")
                     .clicked()
                 {
@@ -893,16 +892,10 @@ fn place_row(
             });
 
             fill_remaining(ui, |ui| {
-                // The name is the drag handle (see `drag_handle`): sensing both
-                // click and drag, egui waits to see whether the press turns into a
-                // drag, so a click still jumps.
-                let name_response = ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(name).size(13.0))
-                            .wrap_mode(egui::TextWrapMode::Truncate)
-                            .min_size(egui::vec2(ui.available_width(), 0.0))
-                            .sense(egui::Sense::click_and_drag()),
-                    )
+                // The name is the drag handle (see `drag_handle`): one widget
+                // that senses click and drag, never a drag-only layer over a
+                // click widget (the module docs say what that did).
+                let name_response = theme::ghost_row_handle(ui, name, ui.available_width())
                     // No longer spells out how to reach the actions: the button at
                     // the end of the row does that, and it says so itself. The
                     // dots cannot appear in this string in any case — the font
@@ -968,7 +961,7 @@ fn place_menu(
     // it the important one on a phone. It wears the Route panel's own icon, so
     // the entry and the panel it opens read as one thing.
     let flag = crate::resources::RightPanel::Route.icon();
-    if ui.button(format!("{flag}  Route here")).clicked() {
+    if theme::menu_entry(ui, flag, "Route here").clicked() {
         act.route = Some((name.to_string(), lat, lng));
         ui.close();
     }
@@ -983,13 +976,13 @@ fn place_menu(
         // (`theme::tests::no_painted_glyph_is_tofu` catches it), and there is no
         // near-enough substitute that is — so the entry is words, which a menu
         // can afford in a way a 20 pt button could not.
-        if ui.button(label).clicked() {
+        if theme::menu_entry(ui, "", label).clicked() {
             act.take_photo = Some(id);
             ui.close();
         }
     }
     if let Some(stem) = photo {
-        if ui.button("View the photo").clicked() {
+        if theme::menu_entry(ui, "", "View the photo").clicked() {
             act.view_photo = Some((id, name.to_string(), stem.to_string()));
             ui.close();
         }
@@ -1010,17 +1003,13 @@ fn place_menu(
     }
 
     ui.separator();
-    if ui
-        .add_enabled(
-            can_update,
-            egui::Button::new(format!("{}  Update to the current view", icons::REFRESH)),
-        )
+    if theme::menu_entry_enabled(ui, can_update, icons::REFRESH, "Update to the current view")
         .clicked()
     {
         act.update = Some(id);
         ui.close();
     }
-    if ui.button(format!("{}  Rename", icons::RENAME)).clicked() {
+    if theme::menu_entry(ui, icons::RENAME, "Rename").clicked() {
         *editing = Some(Rename {
             item: Item::Place(id),
             buf: name.to_string(),

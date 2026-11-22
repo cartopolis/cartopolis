@@ -836,7 +836,7 @@ pub fn render_person_card(
                             });
                         });
                         ui.add_space(8.0);
-                        let field = crate::systems::text_touch::field(
+                        let field = crate::systems::theme::text_field(
                             ui,
                             egui::TextEdit::multiline(&mut compose.text)
                                 .id(egui::Id::new("contacts_compose_text"))
@@ -1809,11 +1809,13 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                         act.open_chat = Some(c.username.clone());
                     }
                     resp.context_menu(|ui| {
-                        if ui.button("Message").clicked() {
+                        if theme::menu_entry(ui, icons::CHAT, "Message").clicked() {
                             act.open_chat = Some(c.username.clone());
                             ui.close();
                         }
-                        if ui.button("Remove contact").clicked() {
+                        if theme::menu_entry_danger(ui, icons::PERSON_REMOVE, "Remove contact")
+                            .clicked()
+                        {
                             act.remove = Some(c.username.clone());
                             ui.close();
                         }
@@ -1935,7 +1937,7 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
             ui.add_space(12.0);
             ui.label(egui::RichText::new("Or find a username").color(theme::p().cream));
             ui.horizontal(|ui| {
-                let field = crate::systems::text_touch::field(
+                let field = crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut contacts.search)
                         .id(egui::Id::new("contacts_search"))

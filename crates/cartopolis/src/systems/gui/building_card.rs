@@ -380,7 +380,7 @@ pub fn render_building_card(
                             )
                             .wrap(),
                         );
-                        if facade.capturing() && ui.small_button("Cancel").clicked() {
+                        if facade.capturing() && theme::ghost_button(ui, "", "Cancel").clicked() {
                             cancel_photo = true;
                         }
                     });
@@ -395,10 +395,15 @@ pub fn render_building_card(
                     /// POI popup states the same thing the same way.
                     const NO_BROWSER: &str = "Opening links isn't available on this platform";
                     if ui
-                        .add_enabled(
-                            can_open,
-                            egui::Button::new(format!("Official record {}", icons::OPEN_EXTERNAL)),
-                        )
+                        .add_enabled_ui(can_open, |ui| {
+                            theme::secondary_button(
+                                ui,
+                                icons::OPEN_EXTERNAL,
+                                "Official record",
+                                0.0,
+                            )
+                        })
+                        .inner
                         .on_disabled_hover_text(NO_BROWSER)
                         .clicked()
                     {

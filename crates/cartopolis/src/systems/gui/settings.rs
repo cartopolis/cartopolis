@@ -1156,10 +1156,7 @@ fn receiver_section(
     // pasting into a bug report. The clipboard works on the phone too
     // (`platform::android::copy_text`), and this is what a phone's rolling
     // log cannot be relied on to still hold.
-    if ui
-        .button(format!("{}  Copy receiver report", icons::COPY))
-        .clicked()
-    {
+    if theme::secondary_button(ui, icons::COPY, "Copy receiver report", 0.0).clicked() {
         crate::utils::clipboard::set_text(&crate::systems::gnss_receiver::report(prefs));
     }
     ui.add_space(6.0);
@@ -1250,7 +1247,8 @@ fn receiver_section(
     if draft.ntrip.enabled {
         let n = &mut draft.ntrip;
         let field = |ui: &mut egui::Ui, id: &str, text: &mut String, hint: &str, secret: bool| {
-            ui.add(
+            theme::text_field(
+                ui,
                 egui::TextEdit::singleline(text)
                     .id(egui::Id::new(id))
                     .hint_text(hint)
@@ -1262,8 +1260,7 @@ fn receiver_section(
         // The Netherlands' national reference stations, free and without an
         // account: the one choice most people here would otherwise have to
         // research, and whose port (443, TLS only) nobody would guess.
-        if ui
-            .button("Kadaster — free, Netherlands")
+        if theme::ghost_button(ui, "", "Kadaster — free, Netherlands")
             .on_hover_text(crate::systems::gnss_receiver::KADASTER_HOST)
             .clicked()
         {
@@ -1271,7 +1268,8 @@ fn receiver_section(
         }
         ui.horizontal(|ui| {
             let mut port = n.port.to_string();
-            ui.add(
+            theme::text_field(
+                ui,
                 egui::TextEdit::singleline(&mut port)
                     .id(egui::Id::new("ntrip_port"))
                     .desired_width(56.0),
@@ -1314,10 +1312,10 @@ fn receiver_section(
     if *draft != *prefs {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Apply").clicked() {
+            if theme::primary_button_sized(ui, "Apply", 0.0).clicked() {
                 *prefs = draft.clone();
             }
-            if ui.button("Revert").clicked() {
+            if theme::ghost_button(ui, "", "Revert").clicked() {
                 *draft = prefs.clone();
             }
         });
@@ -1475,10 +1473,7 @@ fn desktop_listener_rows(ui: &mut egui::Ui, prefs: &mut AppPrefs, serving: &Edit
                 )
                 .truncate(),
             );
-            if ui
-                .add(egui::Button::new(format!("{}  Copy", icons::COPY)))
-                .clicked()
-            {
+            if theme::secondary_button(ui, icons::COPY, "Copy", 0.0).clicked() {
                 crate::utils::clipboard::set_text(&value);
             }
         });
@@ -1516,7 +1511,8 @@ fn allow_list_rows(ui: &mut egui::Ui, editor: &mut EditorRow) {
         theme::note(ui, "Set by --mcp-allow for this run.");
     } else {
         let mut text = editor.allow.clone();
-        let edit = ui.add(
+        let edit = theme::text_field(
+            ui,
             egui::TextEdit::singleline(&mut text)
                 .id(egui::Id::new("mcp_allow"))
                 .hint_text("usernames, separated by commas")
@@ -1747,7 +1743,7 @@ fn world_tab(
     // the space-tier shell at all (see `DevPanelState::clouds_enabled`).
     let clouds_forced_off = crate::env_flag("CARTO_NO_CLOUDS");
     ui.add_enabled_ui(!clouds_forced_off, |ui| {
-        ui.checkbox(&mut dev.clouds_enabled, "Clouds");
+        theme::checkbox(ui, &mut dev.clouds_enabled, "Clouds");
     });
     pending(
         ui,
@@ -1760,7 +1756,7 @@ fn world_tab(
         },
     );
     ui.add_enabled_ui(!clouds_forced_off && dev.clouds_enabled, |ui| {
-        ui.checkbox(&mut dev.cloud_shadows, "Cloud shadows");
+        theme::checkbox(ui, &mut dev.cloud_shadows, "Cloud shadows");
     });
     pending(
         ui,
@@ -1936,7 +1932,7 @@ fn graphics_tab(
         .color(theme::p().text_dim),
     );
     ui.add_space(6.0);
-    ui.checkbox(&mut prefs.water_effects, "Splashes and spray");
+    theme::checkbox(ui, &mut prefs.water_effects, "Splashes and spray");
     ui.label(
         egui::RichText::new(
             "Water that reacts: a splash where someone goes in, rings as they \
@@ -2262,10 +2258,10 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     // live and do nothing at all in a build with no audio backend, which reads as
     // a broken speaker rather than as a build without one.
     if ui
-        .add_enabled(
-            cfg!(feature = "audio"),
-            egui::Button::new(format!("{}  Sound test", icons::PLAY)),
-        )
+        .add_enabled_ui(cfg!(feature = "audio"), |ui| {
+            theme::secondary_button(ui, icons::PLAY, "Sound test", 0.0)
+        })
+        .inner
         .clicked()
     {
         play_tone = true;
@@ -2338,14 +2334,13 @@ fn microphone_section(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut 
 
     let running = state.mic.is_some();
     ui.horizontal(|ui| {
-        if ui
-            .button(if running {
-                format!("{}  Stop microphone", icons::STOP)
-            } else {
-                format!("{}  Test microphone", icons::MIC)
-            })
-            .clicked()
-        {
+        // One shape in both states, so the control does not jump when pressed.
+        let (icon, label) = if running {
+            (icons::STOP, "Stop microphone")
+        } else {
+            (icons::MIC, "Test microphone")
+        };
+        if theme::secondary_button(ui, icon, label, 0.0).clicked() {
             if running {
                 state.stop_mic();
             } else {
@@ -2398,14 +2393,12 @@ fn camera_section(ui: &mut egui::Ui, state: &mut SettingsState) {
     {
         use crate::platform::camera;
         let running = state.camera_running();
-        if ui
-            .button(if running {
-                format!("{}  Stop camera", icons::STOP)
-            } else {
-                format!("{}  Test camera", icons::CAMERA)
-            })
-            .clicked()
-        {
+        let (icon, label) = if running {
+            (icons::STOP, "Stop camera")
+        } else {
+            (icons::CAMERA, "Test camera")
+        };
+        if theme::secondary_button(ui, icon, label, 0.0).clicked() {
             if running {
                 state.stop_camera();
             } else {
@@ -2646,15 +2639,11 @@ pub fn render_about_panel(
                             // Disabled where nothing can open it, rather than dead —
                             // the same contract the POI popup's `Website ↗` follows.
                             let can_open = crate::systems::data_layers::open_url_supported();
-                            let button = ui.add_enabled(
-                                can_open,
-                                egui::Button::new(
-                                    egui::RichText::new(&record.url)
-                                        .size(theme::SIZE_CHIP)
-                                        .color(theme::p().accent_text),
-                                )
-                                .frame(false),
-                            );
+                            let button = ui
+                                .add_enabled_ui(can_open, |ui| {
+                                    theme::ghost_button(ui, "", &record.url)
+                                })
+                                .inner;
                             if button.clicked() {
                                 crate::systems::data_layers::open_url(&record.url);
                             }

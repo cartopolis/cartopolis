@@ -1321,16 +1321,10 @@ fn month(
                 let n = i32::from(y) * 12 + i32::from(m) - 1 + dir;
                 ((n.div_euclid(12)) as i16, (n.rem_euclid(12) + 1) as i8)
             };
-            if ui
-                .button(egui::RichText::new(icons::CHEVRON_RIGHT).size(18.0))
-                .clicked()
-            {
+            if theme::icon_button_small(ui, icons::CHEVRON_RIGHT, "Next month").clicked() {
                 cal.month = Some(step(1));
             }
-            if ui
-                .button(egui::RichText::new(icons::CHEVRON_LEFT).size(18.0))
-                .clicked()
-            {
+            if theme::icon_button_small(ui, icons::CHEVRON_LEFT, "Previous month").clicked() {
                 cal.month = Some(step(-1));
             }
         });
@@ -1948,20 +1942,7 @@ pub fn coming_up(
                             .color(theme::p().text_dim),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "Calendar {}",
-                                        icons::CHEVRON_RIGHT
-                                    ))
-                                    .size(13.0)
-                                    .color(theme::p().accent),
-                                )
-                                .frame(false),
-                            )
-                            .clicked()
-                        {
+                        if theme::ghost_button(ui, icons::CHEVRON_RIGHT, "Calendar").clicked() {
                             open = true;
                         }
                     });

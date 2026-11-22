@@ -997,7 +997,8 @@ pub fn render_design_room_bar(
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add(
+                theme::text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut name)
                         .hint_text("Name it to keep it")
                         .desired_width(ui.available_width() - 90.0),
@@ -1044,18 +1045,21 @@ pub fn render_design_room_bar(
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui
-                                            .button(icons::DELETE)
-                                            .on_hover_text(
-                                                "remove it from your objects; copies \
-                                                 already placed stay",
-                                            )
-                                            .clicked()
+                                        if theme::icon_button_small(
+                                            ui,
+                                            icons::DELETE,
+                                            "Remove it from your objects; copies already \
+                                             placed stay",
+                                        )
+                                        .clicked()
                                         {
                                             forget = Some((d.id, d.name.clone()));
                                         }
                                         if ui
-                                            .add_enabled(!busy, egui::Button::new("Place here"))
+                                            .add_enabled_ui(!busy, |ui| {
+                                                theme::secondary_button(ui, "", "Place here", 0.0)
+                                            })
+                                            .inner
                                             .on_hover_text("a copy of it on this spot, as a draft")
                                             .clicked()
                                         {
@@ -1199,7 +1203,7 @@ pub fn render_design_room_outliner(
                             ui.horizontal(|ui| {
                                 ui.add_space(depth as f32 * 16.0);
                                 let mut all = members.iter().all(|id| picked.contains(id));
-                                if ui.checkbox(&mut all, "").changed() {
+                                if theme::checkbox(ui, &mut all, "").changed() {
                                     for id in &members {
                                         if all {
                                             picked.insert(*id);
@@ -1220,10 +1224,10 @@ pub fn render_design_room_outliner(
                                     |ui| {
                                         if signed_in
                                             && ui
-                                                .add_enabled(
-                                                    !busy,
-                                                    egui::Button::new("Ungroup").small(),
-                                                )
+                                                .add_enabled_ui(!busy, |ui| {
+                                                    theme::ghost_button(ui, "", "Ungroup")
+                                                })
+                                                .inner
                                                 .on_hover_text(
                                                     "dissolve this group; its parts stay in the \
                                              groups around it",
@@ -1250,7 +1254,7 @@ pub fn render_design_room_outliner(
                                 ui.horizontal(|ui| {
                                     ui.add_space(row.groups.len() as f32 * 16.0);
                                     let mut tick = on;
-                                    if ui.checkbox(&mut tick, "").changed() {
+                                    if theme::checkbox(ui, &mut tick, "").changed() {
                                         if tick {
                                             picked.insert(row.id);
                                         } else {
@@ -1276,7 +1280,8 @@ pub fn render_design_room_outliner(
             if signed_in {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.add(
+                    theme::text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut group_name)
                             .hint_text("Group name")
                             .desired_width(ui.available_width() - 90.0),
@@ -1530,8 +1535,7 @@ pub fn render_design_room_scripts(
                     };
                     pill(ui, state, colour);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button("Edit")
+                        if theme::ghost_button(ui, "", "Edit")
                             .on_hover_text("open it in the script editor")
                             .clicked()
                         {

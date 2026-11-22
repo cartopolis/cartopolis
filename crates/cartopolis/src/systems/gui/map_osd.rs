@@ -1361,7 +1361,10 @@ fn hand_button(
                     }
                 });
                 if ui
-                    .add_enabled(body.high.on, egui::Button::new("Start again"))
+                    .add_enabled_ui(body.high.on, |ui| {
+                        theme::secondary_button(ui, "", "Start again", 0.0)
+                    })
+                    .inner
                     .clicked()
                 {
                     body.high.restart();
@@ -1460,9 +1463,7 @@ fn face_picker(
             theme::overlay_frame().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 for e in cartopolis_core::Expression::ALL {
-                    let resp = ui.add(
-                        egui::Button::new(expression_label(e)).min_size(egui::vec2(120.0, 32.0)),
-                    );
+                    let resp = theme::secondary_button(ui, "", expression_label(e), 120.0);
                     if resp.clicked() || fingers.lifted_in(resp.rect) {
                         picked = Some(e);
                     }
