@@ -153,12 +153,18 @@ pub fn update_building_fade(
     );
     let ids: Vec<AssetId<FarBuildingMaterial>> = materials.ids().collect();
     for id in ids {
-        let Some(mut material) = materials.get_mut(id) else {
+        // Read, compare, and only then `get_mut`: taking the mutable borrow first
+        // marks the asset changed whatever is written through it, and these five
+        // were re-prepared on the render thread every frame of a still view
+        // (`material_modified_per_frame` read 6.3–6.8 wherever the far ring stood,
+        // 2026-11-22). The rule of `render-performance-survey.md`.
+        let differs = materials
+            .get(id)
+            .is_some_and(|material| material.extension.ring != ring);
+        if !differs {
             continue;
-        };
-        // Compared before it is written: `get_mut` marks the asset changed, and an
-        // unconditional write would re-prepare five bind groups every frame.
-        if material.extension.ring != ring {
+        }
+        if let Some(mut material) = materials.get_mut(id) {
             material.extension.ring = ring;
         }
     }
