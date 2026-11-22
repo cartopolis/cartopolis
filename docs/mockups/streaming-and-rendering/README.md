@@ -23,7 +23,8 @@ omdat elk ervan een *stilstaand* beeld meet en de drie klachten alle drie over
 *beweging* gaan.
 
 Alles hieronder is op 2026-11-22 gemeten of uit `main` (d377b421) gelezen, met
-regelnummers. Niets is gebouwd.
+regelnummers. §1 tot §6 beschrijven de toestand vóór de wijzigingen van die
+middag; §7a zegt wat daarvan gebouwd is en wat het mat.
 
 ## 0. Samenvatting
 
@@ -585,7 +586,7 @@ de maat van §0/§5.1, gemeten op dezelfde node vóór en na.
 | 1 | **Vasthouden bij een bandwissel**: geen `clear()`; de oude cellen blijven getekend en `complete` tot de nieuwe geland zijn; `stores.roads` overleeft de wissel | §3.2.1, §4.2.1 | `ground_retears` blijft, maar `view_ground_s` bij aankomst en de film tonen geen bruine basiskaart meer; verkeer verdwijnt niet in het log | klein–middel: `map_geometry` kent al `retire_cell` per cel en `built_rev`; de wissel wordt "herbouw per cel, vervang bij landen" |
 | 2 | **Verkeer: kijkpunt, in beeld vullen, verbergen bij lege straal, boxtest in `near`** | §4.2.2–5 | `traffic_cars` placed én een telling *in frustum* (nieuw veld); `why`-regels van `CARTO_TRAFFIC_OVERLAPS` | klein |
 | 3 | **`get` vóór `get_mut` in `building_fade`** | §5.2.4 | `material_modified_per_frame` 6,8 → ~0 in stille vensters | triviaal |
-| 4 | **Byteplafond op desktop (32–64 MB) en despawns in bytes of tijd, niet in aantallen** | §5.2.1, §5.2.3 | `upload_peak_kb` ≤ plafond; de climb-census leeg binnen 2 s na 500 m; slechtste frame van de descent | klein |
+| 4 | **Byteplafond op desktop (32–64 MB) en despawns in bytes of tijd, niet in aantallen** | §5.2.1, §5.2.3 | `upload_peak_kb` ≤ plafond; de climb-census leeg binnen 2 s na 500 m; slechtste frame van de descent | klein — gebouwd 2026-11-22: de despawns wel, het plafond gemeten en niet genomen (§7a) |
 | 5 | **Tijdsbudget per frame op de hoofddraad** (§6.5) | §5 breed, §4.2.5 | `frame_ms_max` van descent/climb; `stalls` | middel: één module, zes aanroepers |
 | 6 | **Hysterese-banden op 50 km en 2 km, atmosfeer-crossfade** | §3.2.3–4 | film: geen omslag >10 % in één interval buiten de camerabeweging | klein–middel |
 | 7 | **Pipelines opwarmen** (§6.8) | §5.2.6 | `pipelines building` 0 na de start; geen frame >200 ms bij aankomst op de straat | middel |
@@ -597,11 +598,58 @@ de maat van §0/§5.1, gemeten op dezelfde node vóór en na.
 | 13 | **Eén boom voor alles** (§6.1) | alles | de zes drempels bestaan niet meer; `ground_retears` is per definitie 0 | groot, in stappen: grond op z14 als boomknoop eerst |
 | 14 | **Cellen uit atlas** (§6.6), **schaduwcache** (§6.4, na telefoonmeting) | koude start, straat-frame | werkertijd per cel; `street` GPU-wait | groot |
 
-Stap 1 tot 4 zijn samen een paar dagen en nemen de drie klachten voor het
-grootste deel weg; 5 tot 11 maken het robuust en meetbaar; 12 tot 14 zijn de
+Stap 1 tot 4 zijn samen een paar dagen (gebouwd dezelfde dag, §7a) en nemen
+de drie klachten voor het grootste deel weg; 5 tot 11 maken het robuust en
+meetbaar; 12 tot 14 zijn de
 verbouwing waarop een metaverse kan staan — een wereld die per tegel streamt,
 op elk apparaat dezelfde cel laadt, nooit iets weggooit voordat het vervangen
 is, en per frame nooit meer doet dan het frame toelaat.
+
+## 7a. Gebouwd op 2026-11-22: stappen 1 tot 4
+
+Dezelfde middag, zes commits op `session/s811`, gemeten met dezelfde
+scenario's op dezelfde node (ontwikkelprofiel, 1280×800, warme cache; vóór
+één vlucht, ná twee, mediaan en [bereik]):
+
+| | vóór | ná |
+|---|---|---|
+| afdaling 40 km → 150 m: alles rustig na aankomst | 28,5 s | 16–18 s |
+| idem: grond in beeld compleet | 11,1 s | 5,5–6,4 s |
+| idem: slechtste frame tijdens de zoom | 965 ms | 433 [133..733] ms |
+| afdaling → 40 m: alles rustig na aankomst | 25,2 s | 16,3 s |
+| klim 150 m → 200 km: gemiddeld frame tijdens de klim | 56,6 ms | 40 [35..46] ms |
+| idem: alles rustig na aankomst | 25,4 s | 1,8 s |
+| idem: slechtste frame na aankomst | 230 ms | 58 ms |
+| draws tijdens de afdaling | 661 | ~2 200 |
+
+- **Stap 1, vasthouden** (`map_geometry::rebuild_in_place`): een bandwissel
+  die detail *toevoegt* markeert de cellen als verouderd en vraagt ze
+  opnieuw; de oude cel blijft getekend en `complete` tot de laatste mesh van
+  de nieuwe op de GPU staat, dan wisselt hij (`finish_swap`). Elke
+  `insert_cell` van de stores is een vervanging, dus het wegennet blijft. Een
+  wissel die alleen detail *wegneemt* (klimmen, een laag uit) ruimt meteen op
+  zoals voorheen: de eerste versie hield ook op de klim vast en kwam op 200 km
+  aan met 3 907 draws straat. Een teruggetrokken entiteit gaat het frame zelf
+  van elk beeld af (`RenderLayers::none()`; `Visibility::Hidden` wordt door de
+  globe elk frame teruggedraaid). De prijs staat in de laatste rij: tijdens de
+  zoom wordt de oude ring getekend in plaats van weggegooid.
+- **Stap 2, verkeer**: middelpunt op `stream_xz_at` (het oog alleen nog voor
+  "uit het zicht", het detailniveau en het ongezien vertrekken), verbergen
+  als geen weg binnen bereik is, en de boxtest in `near()`.
+- **Stap 3**: `get` vóór `get_mut` in `building_fade`.
+- **Stap 4, half**: een despawn-achterstand loopt binnen 30 frames leeg,
+  hoe groot ook (`platform::stream::DRAIN_WITHIN_FRAMES`); dat is de klim-rij
+  hierboven. **Het desktop-byteplafond is gemeten en niet genomen**: 64 MB per
+  frame tegen geen plafond, twee vluchten elk, bewoog het slechtste frame van
+  de afdaling niet in zijn voordeel (560 tegen 433 ms) en het gemiddelde
+  evenmin; §5.2.1's redenering hield op deze machine niet. De eerste toelating
+  van een frame gaat altijd heel door, dus de grote frames bij de start
+  (900–1 100 ms) raakt een plafond toch niet; wat die nodig hebben is het
+  tijdsbudget van §6.5.
+
+Niet veranderd: de 2 km-omslag (§3.2.4), het gemiddelde frame van de
+afdaling zelf (71 vóór, 55–83 ná, binnen de spreiding van deze VM) en alles
+vanaf stap 5.
 
 ## 8. Wat niet gemeten is, en hoe wel
 
