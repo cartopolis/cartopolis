@@ -1,7 +1,7 @@
 ---
 topic: hands near a prim, and tones
 triggers: [sense_hands, on_hand, set_tone, stop_tone, HandPose, PrimTone, ToneSpec, SoundingTone, SensesHands, hand_range, prim_hand, prim_tone, "tone.rs", theremin, "high precision", PreciseHand, CARTO_HAND_FROM_CAMERA, held_phone, HeldPhone, HumanArms, CARTO_HELD_PHONE, "reach.rs", phone_grip, PhoneGrip, hand_button, hand_card, HandPrefs, phone_hold, SELFIE_REACH_M]
-updated: 2026-10-29
+updated: 2026-11-22
 ---
 
 # Hands near a prim, and tones
@@ -19,8 +19,27 @@ Two generic script features (protocol 36), added so a theremin could be built
 The engine maps nothing to pitch or volume and decides nothing about who
 plays. `crates/simulator/content/theremin.js` (the `theremin` content pack)
 takes the first hand to arrive as its player, ignores everybody else's until
-the player's stops arriving for a second, turns the hand's distance to a rod
-and to a loop into `set_tone` calls, and shows who is playing in its name.
+the player's stops arriving for a second, turns the hand's movement into
+`set_tone` calls, and shows who is playing in its name, a glow and rising
+particles.
+
+**The theremin plays how the hand moves, not where it is (2026-11-22).** Until
+then it read the hand's distance to the rod (5–60 cm: C6 to C3) and to the loop
+(3–40 cm: silent to full), within 1.5 m of the cabinet. On the phone it was
+silent when the person stood beside it, or played one corner of its range for
+the whole arm's sweep — **with an RTK fix good to a centimetre**. A good fix is
+not enough, because of how `high_precision.rs` anchors the tracked hand: once,
+at the lock, on the fix (the antenna's place, not the phone's), at a fixed
+`HAND_HEIGHT_M`, and turned to the map by the **phone's compass**. Everything
+after the lock is the tracker's motion turned by that heading, so walking from
+where the mode locked to the instrument carries the compass's error out with
+the distance — 10° over 10 m is 1.7 m — plus whatever the tracker drifts.
+Building matching, which would pin it, is not built. The hand's place is
+therefore metres off while its movement is right to centimetres. Now the first hand is the middle note at full
+volume wherever it is reported; 60 cm of travel from the loop toward the rod
+spans the three octaves, and carried past an end the range follows the hand;
+lowering it 30 cm fades the note out. `sense_hands` asks for the full 5 m, so a
+hand reported metres off still arrives. Not yet tried on the phone.
 
 ## Decisions, and what lost
 

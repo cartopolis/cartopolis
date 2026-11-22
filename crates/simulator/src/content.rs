@@ -357,8 +357,9 @@ const THEREMIN_AT: (f64, f64) = (53.21858, 6.56750);
 /// Height of the cabinet's centre — waist high, played standing.
 const THEREMIN_CABINET_Y: f32 = 1.0;
 /// The two antennas, metres from the cabinet's centre (east, up, south). The
-/// same numbers are `ROD` and `LOOP` in `theremin.js`; a test holds them
-/// together, because the rod you see and the rod you play must be one rod.
+/// same numbers are `ROD` and `LOOP` in `theremin.js`, which plays the hand's
+/// movement from the loop toward the rod; a test holds them together, because
+/// the way you see the rod and the way you play toward it must be one way.
 const THEREMIN_ROD: [f32; 3] = [0.35, 0.45, 0.0];
 const THEREMIN_LOOP: [f32; 3] = [-0.4, 0.05, 0.0];
 
@@ -366,9 +367,9 @@ const THEREMIN_LOOP: [f32; 3] = [-0.4, 0.05, 0.0];
 /// and volume loop. Everything that makes it an instrument is `theremin.js`,
 /// built on `sense_hands`, `on_hand` and `set_tone`.
 ///
-/// The rod and the loop are prims of their own, placed where the cabinet's
-/// script measures the hand against — they are what the player reaches for,
-/// and antennas nobody can see are antennas nobody can learn.
+/// The rod and the loop are prims of their own, on the sides the cabinet's
+/// script measures the hand's movement toward — they are what the player
+/// reaches for, and antennas nobody can see are antennas nobody can learn.
 fn theremin() -> Pack {
     let (lat, lng) = THEREMIN_AT;
     let (_, per_lng) = cartopolis_core::degree_scale_m(lat);

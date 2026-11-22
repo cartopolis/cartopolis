@@ -462,14 +462,13 @@ mod virtual_player {
     type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
     const SCRIPT: &str = include_str!("../../../../simulator/content/theremin.js");
-    /// `ROD`, `LOW`, `HIGH`, `PITCH_NEAR` and `PITCH_FAR` in `theremin.js`,
-    /// read back here to place the hand. Change them there and the notes
-    /// asserted below move off their pitches.
+    /// `ROD`, `LOW`, `HIGH` and `SPAN` in `theremin.js`, read back here to
+    /// place the hand. Change them there and the notes asserted below move off
+    /// their pitches.
     const ROD: [f32; 3] = [0.35, 0.45, 0.0];
     const LOW: f32 = 130.81;
     const HIGH: f32 = 1046.5;
-    const PITCH_NEAR: f32 = 0.05;
-    const PITCH_FAR: f32 = 0.6;
+    const SPAN: f32 = 0.6;
     /// Where the listener stands from the cabinet.
     const LISTENER_AT_M: f32 = 2.0;
     /// How long the hand takes to move from one note of the melody to the next.
@@ -481,12 +480,13 @@ mod virtual_player {
 
     /// Note, beats at 100 bpm, and seconds the hand takes to get there.
     ///
-    /// A melody moves the hand little: three octaves span the rod's 55 cm, so
-    /// Ode to Joy's fifth is 11 cm. So the hand first comes in far from the rod,
-    /// sweeps up to it and back — the whole reach, and the whole idea of the
-    /// instrument — and at the end sinks away from it again.
+    /// A melody moves the hand little: three octaves span 60 cm, so Ode to
+    /// Joy's fifth is 12 cm. The hand comes in on the middle note, where the
+    /// script starts every player, sweeps up to the top and back — the whole
+    /// reach, and the whole idea of the instrument — and at the end sinks away
+    /// from the rod again.
     const MELODY: &[(&str, f32, f32)] = &[
-        ("A#3", 0.8, 0.0),
+        ("F#4", 0.8, 0.0),
         ("C6", 2.0, 1.0),
         ("E5", 1.0, 0.4),
         ("E5", 1.0, SLIDE_S),
@@ -551,13 +551,13 @@ mod virtual_player {
         Some((from.ln() + (n.hz.ln() - from.ln()) * k).exp())
     }
 
-    /// Where the hand must be for the script to sound `hz`: to the right of the
-    /// rod, at the distance `theremin.js` maps to that pitch, out of the
-    /// loop's reach so it plays at full volume.
+    /// Where the hand must be for the script to sound `hz`: in front of the
+    /// rod, as far toward it from the first note's place (the middle of the
+    /// range) as `theremin.js` maps to that pitch, at one height so it plays
+    /// at full volume. No note goes past an end, so the range never moves.
     fn hand_for(hz: f32) -> [f32; 3] {
         let t = (hz / LOW).ln() / (HIGH / LOW).ln();
-        let d = PITCH_FAR - t * (PITCH_FAR - PITCH_NEAR);
-        [ROD[0] + d, ROD[1], ROD[2]]
+        [ROD[0] + (t - 0.5) * SPAN, ROD[1], ROD[2] + 0.3]
     }
 
     async fn connect(addr: &str) -> Client {

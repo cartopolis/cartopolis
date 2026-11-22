@@ -999,8 +999,9 @@ fn hands_waiting_for_the_script_coalesce_per_person() {
 }
 
 /// The theremin pack's script, end to end: the first hand plays and a second
-/// is ignored; a hand at the rod plays the top of the range and one on the loop
-/// is silent; and a player whose hand stops arriving is let go of.
+/// is ignored; the hand starts on the middle note, moving it toward the rod
+/// raises the note, past the top the range follows it, and lowering it fades
+/// the note out; and a player whose hand stops arriving is let go of.
 #[test]
 fn the_theremin_script_turns_a_hand_into_a_tone() {
     let host = super::bun_tests::host();
@@ -1015,32 +1016,39 @@ fn the_theremin_script_turns_a_hand_into_a_tone() {
         "{started:?}"
     );
 
-    // Ada at the rod, far from the loop; Bob arriving after her is ignored.
-    b.host.event(1, hand(7, "ada", [0.35, 0.45, 0.0]));
-    b.host.event(1, hand(8, "bob", [-0.4, 0.05, 0.0]));
-    let set = tones(&b.run(4));
-    assert_eq!(set.len(), 1, "only the player's hand plays: {set:?}");
-    let at_rod = set[0].expect("a tone");
-    assert!(
-        (at_rod.pitch_hz - 1046.5).abs() < 1.0,
-        "{}",
-        at_rod.pitch_hz
-    );
-    assert!(at_rod.gain > 0.99, "{}", at_rod.gain);
+    let play = |b: &mut Bench, id: u64, at: [f32; 3]| {
+        b.host
+            .event(1, hand(id, if id == 7 { "ada" } else { "bob" }, at));
+        let out = b.run(2);
+        assert_eq!(errors(&out), vec![]);
+        let set = tones(&out);
+        assert_eq!(set.len(), 1, "{set:?}");
+        set[0].expect("a tone")
+    };
+    let near = |hz: f32, want: f32| (hz - want).abs() < 1.0;
 
-    // Ada on the loop: silent.
-    b.host.event(1, hand(7, "ada", [-0.4, 0.05, 0.0]));
-    let on_loop = tones(&b.run(2));
-    assert_eq!(on_loop.len(), 1, "{on_loop:?}");
-    assert!(on_loop[0].expect("a tone").gain < 0.01);
+    // Ada's first hand, metres from the cabinet as tracking may put it, is
+    // the middle note at full volume; Bob arriving after her is ignored.
+    let first = play(&mut b, 7, [1.5, 0.3, 2.0]);
+    assert!(near(first.pitch_hz, 370.0), "{}", first.pitch_hz);
+    assert!(first.gain > 0.99, "{}", first.gain);
+    b.host.event(1, hand(8, "bob", [0.0, 0.0, 0.0]));
+    assert_eq!(tones(&b.run(2)), vec![], "only the player's hand plays");
+
+    // 30 cm toward the rod is the top; 30 cm more is still the top, and from
+    // there 30 cm back is the middle again.
+    assert!(near(play(&mut b, 7, [1.8, 0.3, 2.0]).pitch_hz, 1046.5));
+    assert!(near(play(&mut b, 7, [2.1, 0.3, 2.0]).pitch_hz, 1046.5));
+    assert!(near(play(&mut b, 7, [1.8, 0.3, 2.0]).pitch_hz, 370.0));
+
+    // Lowered 30 cm: silent.
+    assert!(play(&mut b, 7, [1.8, 0.0, 2.0]).gain < 0.01);
 
     // Ada's hand stops arriving: within a few seconds a timer lets her go...
     b.dt = 0.5;
     assert_eq!(tones(&b.run(6)), vec![None]);
-    // ...and Bob plays.
+    // ...and Bob plays, from the middle of his own range.
     b.dt = 0.05;
-    b.host.event(1, hand(8, "bob", [0.35, 0.45, 0.0]));
-    let out = b.run(2);
-    assert_eq!(tones(&out).len(), 1, "{out:?}");
-    assert_eq!(errors(&out), vec![]);
+    let bob = play(&mut b, 8, [0.35, 0.45, 0.0]);
+    assert!(near(bob.pitch_hz, 370.0), "{}", bob.pitch_hz);
 }
