@@ -1992,7 +1992,15 @@ pub fn smooth_online_avatar_display(
             dt,
         );
         // `flat.y` is the height above the sim's ground; see `airborne_lift`.
-        let (ground, swimming) = ground_or_water(&terrain, flat.x, flat.z);
+        let on_deck = footing.on_deck(
+            Vec2::new(flat.x, flat.z),
+            avatar_state.terrain_lift + avatar_state.floor_lift,
+        );
+        let (ground, swimming) = if on_deck {
+            (terrain.ground_at(flat.x, flat.z), false)
+        } else {
+            ground_or_water(&terrain, flat.x, flat.z)
+        };
         let lift = airborne_lift(avatar_state.terrain_lift, ground, flat.y, dt);
         avatar_state.terrain_lift = if swimming || avatar_state.swimming {
             water_lift(avatar_state.terrain_lift, lift, dt)
@@ -2509,14 +2517,22 @@ pub fn handle_avatar_movement(
     // is asked in the colliders' frame, absolute world XZ.
     // In water the ground is where a swimmer's feet hang (`ground_or_water`),
     // and gravity takes the avatar down to it off a quay.
-    let (ground, swimming) =
-        ground_or_water(&terrain, transform.translation.x, transform.translation.z);
+    // Not on a viaduct over it, though (`Footing::on_deck`).
+    let world = Vec2::new(
+        grid_cell.x as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.x,
+        grid_cell.z as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.z,
+    );
+    let (ground, swimming) = if footing.on_deck(world, transform.translation.y - GROUND_HEIGHT) {
+        (
+            terrain.ground_at(transform.translation.x, transform.translation.z),
+            false,
+        )
+    } else {
+        ground_or_water(&terrain, transform.translation.x, transform.translation.z)
+    };
     avatar_state.swimming = swimming;
     let feet = crate::systems::interiors::Feet {
-        world: Vec2::new(
-            grid_cell.x as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.x,
-            grid_cell.z as f32 * crate::grid::WORLD_CELL_EDGE + transform.translation.z,
-        ),
+        world,
         ground,
         above: transform.translation.y - GROUND_HEIGHT - ground - avatar_state.floor_lift,
         carried: 0.0,

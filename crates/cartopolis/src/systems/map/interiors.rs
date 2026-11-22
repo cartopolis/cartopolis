@@ -725,6 +725,11 @@ pub struct Footing<'w> {
     /// The roofs, which are a floor too: the buildings' collider footprints carry
     /// the surfaces on their tops (`collision::surfaces_of`).
     pub colliders: Res<'w, crate::systems::collision::BuildingColliders>,
+    /// The lifted bridge decks, which are a floor the way a roof is: stepped
+    /// onto off their approach, overhead from the street beneath. The ground
+    /// under a viaduct is the street or the canal it spans, and a deck laid
+    /// flat is already in `ground_at` (`map_geometry::walk_deck_top`).
+    pub decks: Res<'w, crate::systems::map_geometry::DeckPlates>,
 }
 
 /// Where the avatar's feet are, for the roof under them.
@@ -752,7 +757,14 @@ impl Footing<'_> {
     /// [`Self::roof_floor`] for the roof under `feet`.
     pub fn step(&self, avatar: &mut AvatarState, at: Vec2, dt: f32, feet: Feet) -> f32 {
         if let Some(measured) = avatar.measured_level {
-            avatar.floor_lift = measured_floor(&self.floors, at, measured);
+            // The measurement is from `ground_at`, the floor from `feet.ground`,
+            // which over water is the swimmer's level a metre or two under the
+            // land: under a viaduct over a canal the two differ, and the feet
+            // went that far under the deck.
+            let base = self.terrain.ground_at(at.x, at.y);
+            let deck = self.decks.top_under(feet.world, f32::INFINITY);
+            avatar.floor_lift =
+                measured_floor(&self.floors, at, base, feet.ground, deck, measured) - feet.ground;
             avatar.floor_drop_speed = 0.0;
             return avatar.floor_lift;
         }
@@ -763,6 +775,18 @@ impl Footing<'_> {
             avatar.floor_drop_speed = 0.0;
         }
         avatar.floor_lift
+    }
+
+    /// Whether soles at `feet_y` (the ground's frame) over `world` (the
+    /// colliders' frame) stand on a lifted bridge deck. Then the ground under
+    /// them is the land, never the canal the deck spans: a floor measured from
+    /// a swimmer's level jumped by the quay's height at each bank, and the body
+    /// swam along the deck.
+    #[must_use]
+    pub fn on_deck(&self, world: Vec2, feet_y: f32) -> bool {
+        self.decks
+            .top_under(world, feet_y + STEP_UP_M)
+            .is_some_and(|top| top >= feet_y - STEP_UP_M)
     }
 
     /// The floor of a flier well off it, which [`Self::step`] does not move
@@ -794,13 +818,16 @@ impl Footing<'_> {
     ///
     /// The top of a wall the avatar climbed is a roof here too
     /// (`BuildingColliders::ledge_under`): standing on it holds the floor
-    /// there, and walking off its edge is the fall off a roof.
+    /// there, and walking off its edge is the fall off a roof. So is a lifted
+    /// bridge deck (`DeckPlates::top_under`), reached up its approach, whose
+    /// end the ground is held level with.
     fn roof_floor(&self, lift: f32, feet: Feet) -> Option<f32> {
         roof_floor(
             |reach| {
                 let roof = self.colliders.roof_under(feet.world, reach);
                 let ledge = self.colliders.ledge_under(feet.world, reach);
-                roof.into_iter().chain(ledge).reduce(f32::max)
+                let deck = self.decks.top_under(feet.world, reach);
+                roof.into_iter().chain(ledge).chain(deck).reduce(f32::max)
             },
             lift,
             feet,
@@ -823,21 +850,37 @@ fn roof_floor(roof_under: impl FnOnce(f32) -> Option<f32>, lift: f32, feet: Feet
 /// never picks the floor above or below.
 const MEASURED_SNAP_M: f32 = 1.2;
 
-/// The floor under `at` for a receiver that measured the feet at `measured`
-/// metres above the ground: the street or a storey when one is within
-/// [`MEASURED_SNAP_M`], else the measurement itself.
+/// The floor under `at`, as a height, for a receiver that measured the feet at
+/// `measured` metres above `base` (`ground_at` there): the ground, a storey or
+/// a lifted bridge deck's top when one is within [`MEASURED_SNAP_M`], else the
+/// measurement itself. `ground` is what the avatar stands on or swims at
+/// there, which over water is not `base`.
+///
+/// **The deck is one of them** because nothing else holds a walker on a
+/// viaduct: unsnapped, the receiver's geoid and the hand's height left the
+/// feet decimetres under its top, and where the bank fell away under its end
+/// the ground came within the snap first and stood them under it (2026-11-22).
 ///
 /// **A roof is the "else".** Nothing here models a roof as a floor, and the
 /// collider's top is the ridge (3DBAG's maximum), metres over a flat roof's
 /// terrace on the Forum; the measurement is better than either. It is never
 /// below the ground: a tunnel's deck is the step rule's business.
-fn measured_floor(floors: &InteriorFloors, at: Vec2, measured: f32) -> f32 {
-    let storey = floors.support(at, measured);
-    [0.0, storey]
+fn measured_floor(
+    floors: &InteriorFloors,
+    at: Vec2,
+    base: f32,
+    ground: f32,
+    deck: Option<f32>,
+    measured: f32,
+) -> f32 {
+    let storey = base + floors.support(at, measured);
+    let feet = base + measured;
+    [ground, storey]
         .into_iter()
-        .filter(|f| (f - measured).abs() <= MEASURED_SNAP_M)
-        .min_by(|a, b| (a - measured).abs().total_cmp(&(b - measured).abs()))
-        .unwrap_or(measured.max(0.0))
+        .chain(deck)
+        .filter(|f| (f - feet).abs() <= MEASURED_SNAP_M)
+        .min_by(|a, b| (a - feet).abs().total_cmp(&(b - feet).abs()))
+        .unwrap_or(feet.max(ground))
 }
 
 /// Advance the avatar's interior floor level one frame, and answer where it now
@@ -1279,16 +1322,34 @@ mod tests {
         let floors = InteriorFloors { rooms: vec![room] };
         let middle = to_world.point([3.0, 6.0]);
         let first = STOREY_M + FLOOR_Y;
-        assert!((measured_floor(&floors, middle, first + 0.4) - first).abs() < 1e-4);
-        assert!((measured_floor(&floors, middle, FLOOR_Y + 0.5) - FLOOR_Y).abs() < 1e-4);
+        let on = |at: Vec2, measured: f32| measured_floor(&floors, at, 0.0, 0.0, None, measured);
+        assert!((on(middle, first + 0.4) - first).abs() < 1e-4);
+        assert!((on(middle, FLOOR_Y + 0.5) - FLOOR_Y).abs() < 1e-4);
         let outdoors = Vec2::new(-500.0, -500.0);
-        assert_eq!(measured_floor(&floors, outdoors, 0.8), 0.0, "the street");
-        assert_eq!(measured_floor(&floors, outdoors, 48.4), 48.4, "a roof");
-        assert_eq!(
-            measured_floor(&floors, outdoors, -3.0),
-            0.0,
-            "never underground"
-        );
+        assert_eq!(on(outdoors, 0.8), 0.0, "the street");
+        assert_eq!(on(outdoors, 48.4), 48.4, "a roof");
+        assert_eq!(on(outdoors, -3.0), 0.0, "never underground");
+    }
+
+    /// On a viaduct the measurement stands the feet on the deck, not a few
+    /// decimetres under it, and not on the bank falling away under its end;
+    /// over the canal it is measured from the land beside, the floor from the
+    /// swimmer's level, and the deck is still where the feet go.
+    #[test]
+    fn a_measured_level_stands_on_a_lifted_deck() {
+        let floors = InteriorFloors::default();
+        let at = Vec2::new(-500.0, -500.0);
+        let deck = Some(6.0);
+        // Over land, the ground 3 m: measured 2.6 m over it reads 5.6.
+        assert_eq!(measured_floor(&floors, at, 3.0, 3.0, deck, 2.6), 6.0);
+        // Where the bank under the end is within the snap, the deck still wins.
+        assert_eq!(measured_floor(&floors, at, 5.2, 5.2, deck, 0.6), 6.0);
+        // Over the canal: the land 2 m, the swimmer at -0.5.
+        assert_eq!(measured_floor(&floors, at, 2.0, -0.5, deck, 3.7), 6.0);
+        // In the canal under it, the water.
+        assert_eq!(measured_floor(&floors, at, 2.0, -0.5, deck, -2.4), -0.5);
+        // On the street under a viaduct, the street.
+        assert_eq!(measured_floor(&floors, at, 0.0, 0.0, deck, 0.3), 0.0);
     }
 
     /// Walking the flight from the bottom arrives *at* the floor above, and the

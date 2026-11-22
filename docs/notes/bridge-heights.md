@@ -1,7 +1,7 @@
 ---
 topic: bridge-heights
 triggers: [road_levels.rs, conform_to_roads, "road heights", height.rs, map_geometry.rs, vector_tiles/bridges.rs, road_stitch.rs, AHN, PDOK, bridge, deck, viaduct, "grey slab", "markings stop", elevation, "EPSG:28992", RD New, terrain, railing, parapet, railing_runs, abutment, spanned_water, "pipeline/water.rs", land_at, BesideRoads, walk_beside_roads, CARTO_PROBE]
-updated: 2026-11-08
+updated: 2026-11-22
 ---
 
 # Where a bridge's height comes from, and what it costs
@@ -516,6 +516,32 @@ stopped at the outline. It now carries an end over either, so the lip reaches
 the wall the street rises to. The check for this is a camera at 1.6 m on the
 street 9 m off each end and 5 m aside, looking back at the joint — from above
 neither the slit nor the step shows.
+
+## A lifted deck is a floor, like a roof (2026-11-22)
+
+"Hard to get the avatar onto the bridge, and once on it walks a bit low", from
+the phone with the RTK receiver at ±1 cm. Only *flat* decks were walkable
+(`walk_deck_top`, in `ground_at`); a lifted deck (`DeckPlates`) was drawn and
+driven on but nobody stood on it. `ground_at` under it is the canal or the
+street it spans — probed on the client, 2.9 m under the Berlagebrug's top,
+6.4 m under the Hoge Euvelgunnerbrug's, 5.5 m under the Emmaviaduct's. So a
+walker went under the deck, and the RTK path (`interiors::measured_floor`),
+which snapped only to the ground and storeys, stood the feet at the raw
+measurement — the receiver's geoid and the hand's height off — or, where the
+bank under an end came within `MEASURED_SNAP_M`, on the bank under the deck.
+
+It cannot go into `ground_at`: the street under a viaduct, its cars and the
+swimmers in its canal stand there. It is a floor reached the way a roof is
+(`Footing::roof_floor`, `DeckPlates::top_under`): stepped onto off the
+approach, whose ground meets the deck within 3–17 cm at the Berlagebrug's
+ends, and overhead from beneath. A measured height snaps to it too. On it the
+ground is the land, never the water (`Footing::on_deck`), or the floor jumps
+by a quay at each bank and the body swims along the deck; and the RTK floor
+is measured from `ground_at` but stood on `feet.ground`, which over water is
+the swimmer's level — the two are reconciled in `measured_floor`. `probe`
+reports a lifted deck's top (`raised_deck_m`). Online the lift is the
+client's only, as for storeys: other people see the walker at the sim's
+height, under the deck.
 
 ## Storage, if the raster is ever baked instead of proxied
 

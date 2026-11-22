@@ -819,6 +819,26 @@ impl DeckPlates {
             .reduce(f32::max)
     }
 
+    /// The drawn top of the tallest deck over `p` no higher than `reach`, in
+    /// world `y` — what a walker whose soles are a step under `reach` can stand
+    /// on. The ceiling is what leaves the street under a viaduct to the people
+    /// on it: from there the deck is metres overhead and is not a floor.
+    #[must_use]
+    pub fn top_under(&self, p: Vec2, reach: f32) -> Option<f32> {
+        self.plates
+            .values()
+            .flatten()
+            .filter_map(|plate| {
+                let local = [p.x - plate.world.x, p.y - plate.world.y];
+                plate
+                    .deck
+                    .contains(local)
+                    .then(|| plate.world_top_at(local))
+            })
+            .filter(|&top| top <= reach)
+            .reduce(f32::max)
+    }
+
     /// How far above the ground plane a deck carries this world-XZ point, or 0
     /// where none does.
     ///

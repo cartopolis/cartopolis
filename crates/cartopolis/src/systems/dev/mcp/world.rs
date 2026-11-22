@@ -84,6 +84,7 @@ pub struct Ground<'w, 's> {
     facts: Res<'w, BuildingFacts>,
     lod: Res<'w, crate::systems::lod22::Lod22Buildings>,
     floors: Res<'w, crate::systems::interiors::InteriorFloors>,
+    decks: Res<'w, crate::systems::map_geometry::DeckPlates>,
     prims: Query<
         'w,
         's,
@@ -303,6 +304,12 @@ fn probe(w: &WorldWorld, anchor: (f64, f64, u32), at: (f64, f64)) -> AgentReply 
     if let Some(deck) = crate::systems::map_geometry::walk_deck_top(p.x, p.y) {
         lines.push(format!("A bridge deck, its top at {deck:+.2} m."));
         data["deck_m"] = json!(deck);
+    }
+    if let Some(deck) = g.decks.top_under(p, f32::INFINITY) {
+        lines.push(format!(
+            "A raised bridge deck overhead or underfoot, its top at {deck:+.2} m."
+        ));
+        data["raised_deck_m"] = json!(deck);
     }
     if let Some(road) = g.tunnels.road_under(p) {
         lines.push(format!("A tunnel underneath, its road at {road:+.2} m."));
