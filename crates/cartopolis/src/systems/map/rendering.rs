@@ -7,7 +7,7 @@ use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use bevy::shape::{Cuboid, Cylinder, Sphere, Torus};
+use bevy::shape::{Cone, Cuboid, Cylinder, Sphere, Torus};
 use cartopolis_core::PrimSurface;
 use std::collections::HashMap;
 
@@ -359,13 +359,7 @@ fn prim_mesh_handle(prim: &Prim, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
 
     // No deformation at all → use the cheap built-in primitive meshes.
     if !has_cut && !has_slice && !has_warp {
-        return match prim.shape {
-            PrimShape::Box => meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-            PrimShape::Sphere => meshes.add(Sphere::new(0.5)),
-            PrimShape::Cylinder => meshes.add(Cylinder::new(0.5, 1.0)),
-            PrimShape::Cone => meshes.add(Cylinder::new(0.0, 1.0)),
-            PrimShape::Torus => meshes.add(Torus::default()),
-        };
+        return meshes.add(plain_mesh(prim.shape));
     }
 
     let mut mesh = match prim.shape {
@@ -1180,5 +1174,46 @@ fn finish_mesh(
     mesh
 }
 
+/// An undeformed prim's unit mesh, centred on the origin.
+fn plain_mesh(shape: PrimShape) -> Mesh {
+    match shape {
+        PrimShape::Box => Cuboid::new(1.0, 1.0, 1.0).into(),
+        PrimShape::Sphere => Sphere::new(0.5).into(),
+        PrimShape::Cylinder => Cylinder::new(0.5, 1.0).into(),
+        // Not `Cylinder::new(0.0, 1.0)`: a cylinder has one radius, so that was a
+        // line, and every plain cone in the world drew nothing.
+        PrimShape::Cone => Cone::new(0.5, 1.0).into(),
+        PrimShape::Torus => Torus::default().into(),
+    }
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_plain_shape_fills_its_unit_box() {
+        for shape in [
+            PrimShape::Box,
+            PrimShape::Sphere,
+            PrimShape::Cylinder,
+            PrimShape::Cone,
+        ] {
+            let mesh = plain_mesh(shape);
+            let Some(VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("{shape:?} has no positions");
+            };
+            let (lo, hi) = positions.iter().fold(
+                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                |(lo, hi), p| (lo.min(Vec3::from(*p)), hi.max(Vec3::from(*p))),
+            );
+            let size = hi - lo;
+            assert!(
+                (size - Vec3::ONE).abs().max_element() < 0.01,
+                "{shape:?} spans {size:?}"
+            );
+        }
+    }
+}
