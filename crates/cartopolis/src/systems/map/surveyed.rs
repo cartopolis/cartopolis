@@ -256,9 +256,11 @@ fn objects_cache_key(cx: i64, cy: i64) -> String {
     format!("bgt/v5/{BGT_ZOOM}/{cx}/{cy}.json")
 }
 
-/// The paving half's key: `v3` since it carries the lower quays' levels.
+/// The paving half's key: `v4` since it carries the banks sloping down to the
+/// water (`v3` the lower quays' levels); a cell cached before would keep its
+/// ponds walled in.
 fn paving_cache_key(cx: i64, cy: i64) -> String {
-    format!("bgt/v3/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
+    format!("bgt/v4/{BGT_ZOOM}/{cx}/{cy}.surfaces.json")
 }
 
 /// Fetch one cell's **paving**, through the storage cache.
