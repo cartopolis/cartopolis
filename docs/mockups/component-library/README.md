@@ -1,6 +1,6 @@
 ---
 topic: component-library
-triggers: ["component library", "componentbibliotheek", "jsx", "rsx", "view!", "replace egui", "egui vervangen", "egui weg", "Dioxus", "Leptos", "Yew", "Xilem", "Masonry", "Vello", "bevy_ui", "bevy_feathers", "bevy_ui_widgets", "bevy_flair", "signals", "reactive", "design tokens", "@garage44/mithril", "mithril", "components.css", "web_theme.rs", "theme/controls.rs", "ui-vocabulary", "one design", "same style", "dezelfde stijl", "toolkit"]
+triggers: ["component library", "componentbibliotheek", "jsx", "rsx", "view!", "replace egui", "egui vervangen", "egui weg", "Dioxus", "Leptos", "Yew", "Xilem", "Masonry", "Vello", "bevy_ui", "bevy_feathers", "bevy_ui_widgets", "bevy_flair", "signals", "reactive", "design tokens", "@garage44/mithril", "mithril", "components.css", "web_theme.rs", "theme/controls.rs", "ui-vocabulary", "one design", "same style", "dezelfde stijl", "toolkit", "ui_probe", "CARTO_UI_PROBE", "ui-probe"]
 updated: 2026-11-23
 ---
 
@@ -54,13 +54,15 @@ het voorstel.
   (Masonry). Wat we wél overnemen: Bevy's eigen `bevy_ui` + `bevy_ui_widgets`
   als native backend, `bevy_flair` als voorbeeld van CSS-op-`Node`, en de
   renderer-agnostische template-gedachte van Dioxus voor de macro.
-- **Eerst meten, dan bouwen.** Twee feiten beslissen of `bevy_ui` nu al kan:
-  Bevy 0.20 verloor sub-pixelpositionering van tekst bij de overgang naar
-  Parley (hersteld op `main` 2026-11-17 voor 0.21) en legt de hele UI-boom
-  elke frame opnieuw uit (incrementeel in 0.21). Fase 0 fotografeert
-  `bevy_ui`-tekst naast egui 0.36 op 412×900 / 1,5× en meet de bouwkosten van
-  de features. Daarna fase 1: kern + macro + DOM-backend, bewezen op één
-  atlas-webpagina die pixelgelijk uit Rust komt.
+- **Eerst meten, dan bouwen — gemeten (§9).** Twee feiten beslisten of
+  `bevy_ui` nu al kan: Bevy 0.20 verloor sub-pixelpositionering van tekst bij
+  de overgang naar Parley (hersteld op `main` 2026-11-17 voor 0.21) en legt de
+  hele UI-boom elke frame opnieuw uit (incrementeel in 0.21). Fase 0
+  fotografeerde `bevy_ui`-tekst naast egui 0.36 op 412×900 / 1,5× en 1600×900:
+  op de telefoon vrijwel gelijk, op desktop 1× iets lichter; 6.000 knopen
+  kosten ≤ 3 ms; de features kosten ~9 min CPU eenmalig per schone build.
+  **De Bevy-backend kan op 0.20 beginnen.** Dan fase 1: kern + macro +
+  DOM-backend, bewezen op één atlas-webpagina die pixelgelijk uit Rust komt.
 - **Omvang.** De client heeft 78.012 regels in `systems/gui`, 4.847
   `egui::`-verwijzingen in 118 bestanden en 41 schermen; atlas-web 15.894 regels
   TSX. egui vervangen is een programma van maanden, paneel voor paneel, waarbij
@@ -382,10 +384,9 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
 
 ## 8. Fasering — elke stap landt alleen en laat iets zien
 
-0. **Meten** (een sessie): `bevy_ui`-tekst naast egui op de telefoon- en
-   desktopmaat (mac-2), `--timings` met de UI-features aan, en een
-   `bevy_ui`-proef met 2.000 knopen op de telefoon-tier voor de lay-outkost.
-   Uitkomst: Bevy 0.20 nu, of de Bevy-backend wacht op 0.21.
+0. **Meten** — gedaan 2026-11-23, §9: `bevy_ui`-tekst naast egui op de
+   telefoon- en desktopmaat (mac-2), `--timings` met de UI-features aan, en
+   2.000 rijen voor de lay-outkost. Uitkomst: Bevy 0.20 nu.
 1. **Kern + macro + DOM-backend + tokens** (eigen repository, zoals de
    mithril-fork; crate-naam open). Bewijs: één bestaande atlas-webpagina
    (`/tokens` of `/register`, klein, formulier-zwaar) in Rust/wasm, die in
@@ -411,6 +412,66 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
 Fase 0 en 1 kosten enkele sessies en veranderen niets aan wat live staat.
 Fase 3–5 is het programma van maanden; elke landing is een scherm dat er in
 app én web hetzelfde uitziet.
+
+## 9. Fase 0 — gemeten op 2026-11-23
+
+Besloten dezelfde middag: richting §4 (eigen bibliotheek over `bevy_ui` en de
+DOM), en fase 0 meteen. Gemeten op **mac-2** (Apple M5 Pro, een VM met echte
+GPU) met `systems::dev::ui_probe`: een dev-only sonde achter de cargo-feature
+`ui-probe` (die `bevy_ui`, `bevy_ui_render`, `bevy_ui_widgets`, `ui_picking`
+en `bevy_input_focus` aanzet), die op `CARTO_UI_PROBE=1` de eerste
+Settings-controls als `Node`-boom tekent — titel, sectiekop, gelabeld
+tekstveld met `TextInput`, alinea, primaire en ghost-knop, schakelaar, drie
+lijstrijen — met de maten en kleuren van `theme::controls`, en op
+`CARTO_UI_PROBE=2000` zoveel rijen in één scrollende kolom.
+
+```bash
+# dezelfde foto's: egui's Settings, dan de sonde met egui verborgen
+CARTO_UI_THEME=dark CARTO_UI_SCALE=1.5 cargo run -p cartopolis --features ui-probe -- \
+    --shots docs/phone-ui-shots.toml --only settings
+CARTO_UI_PROBE=1 CARTO_UI_THEME=dark CARTO_UI_SCALE=1.5 cargo run -p cartopolis --features ui-probe -- \
+    --shots <manifest met hide_ui = true> --only none
+```
+
+**Tekst.** Op de telefoonmaat (412×900 @1,5) is het verschil op pixelniveau
+klein: egui 0.36 (hinting via vello_cpu) zet iets scherper en zwaarder,
+Parley in Bevy 0.20 iets zachter — zonder sub-pixelpositionering — maar
+even leesbaar. Op desktop 1× bij 12,5–14 pt is Bevy's tekst lichter van
+gewicht dan egui's; niet onleesbaar, wel zichtbaar naast elkaar. **Besluit:
+de Bevy-backend kan op 0.20 beginnen**; de overgang naar 0.21 (sub-pixel
+terug, incrementele lay-out) is een upgrade onderweg, geen voorwaarde.
+
+![telefoon](fase0-telefoon.png)
+![desktop](fase0-desktop.png)
+![tekst op 300 %](fase0-tekst-300pct.png)
+
+**Bouwkosten.** `cargo build -p cartopolis --timings`, dev-profiel, mac-2:
+
+| | wandklok | eenheden |
+|---|---|---|
+| zonder feature, warm | 70,8 s | 4 |
+| met `ui-probe`, na de wissel | 556,1 s | 115 (2.681 s CPU) |
+| waarvan de **nieuwe** crates (23) | — | **518 s CPU**: `bevy_ui` 113, `bevy_sprite_render` 111, `bevy_ui_widgets` 61, `bevy_picking` 59, `bevy_text` 57, `bevy_ui_render` 55, `bevy_sprite` 32, `swash` 16, parley+fontique+taffy+icu samen < 15 |
+
+De rest van de 556 s is de feature-*wissel*: een feature op de `bevy`-paraplu
+hercompileert `bevy_render`, `bevy_pbr` en alles erboven, cartopolis zelf
+incluis (142,7 s). Dat is eenmalig; met de features vast aan kost een schone
+build ~9 min CPU extra over alle kernen (~1–2 min wandklok), en een edit in
+de client niets extra's tot er `Query<&Node…>`-systemen bij komen
+(`client-build-cost.md`).
+
+**Lay-outkost.** 2.000 rijen (6.001 knopen: rij, stip, tekst) in één
+scrollende kolom, telefoonmaat, `CARTO_FPS_CAP=0` zodat de stille-frame-rem
+niet meeweegt, veertig seconden per run, twee runs elk: de beste seconden
+liggen voor de basis op 27–30 ms per frame en met 2.000 rijen op 30 ms;
+500 rijen 31 ms. Het verschil valt binnen de ruis van een frame dat de
+wereld zelf al 30 ms kost op deze VM, dus **≤ 3 ms voor 6.000 knopen die
+elke frame opnieuw gelegd worden**; de telefoon is niet gemeten (geen APK met
+de feature). Fijner meten kan met de `perf`-feature per systeem
+(`ui_layout_system`), als het ooit het verschil maakt.
+
+Wat de sonde níet is: een component. Hij schrijft de controls nog eens als
+`Node`s; de bibliotheek van §4 is wat ze één keer definieert.
 
 ## Bronnen
 
