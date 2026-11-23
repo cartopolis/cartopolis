@@ -1593,12 +1593,21 @@ pub fn update_globe_visibility(
 /// full brightness at the tier boundary, so the globe matches the flat map tiles
 /// it replaces there, darkening to a planetary tone as you climb to orbit. Writes
 /// the shared [`GlobeSurfaceAlbedo`] (read at tile spawn) and rewrites the live
-/// tile + backstop materials when it drifts past [`ALBEDO_UPDATE_STEP`].
+/// tile + backstop materials that have fallen behind it.
 ///
-/// The ocean gloss (`systems::globe_ocean`) rides the same ramp and the same
-/// throttle: both are functions of `space_factor`, and they must reach the tier
-/// boundary together — the flat map tiles just below it are matte and at full
-/// albedo, so anything that arrives early puts a step in the middle of a climb.
+/// The ocean gloss (`systems::globe_ocean`) rides the same ramp: both are
+/// functions of `space_factor`, and they must reach the tier boundary together —
+/// the flat map tiles just below it are matte and at full albedo, so anything that
+/// arrives early puts a step in the middle of a climb.
+///
+/// **Each tile is compared with the ramp, not swept when the albedo steps.** The
+/// sweep used to start only when the *albedo* drifted by [`ALBEDO_UPDATE_STEP`],
+/// and the albedo has been constant since [`GLOBE_DEEP_ALBEDO`] became 1.0: from
+/// then on a tile kept the gloss it was spawned with. A zoom-out left blocks of
+/// tiles spawned lower down pale and matte among the dark glossy sea of the tiles
+/// spawned higher up — a lighter rectangle over the North Sea, reported from the
+/// phone 2026-11-23. A cursor walking a query was also blind to the tiles a
+/// despawn moved behind it.
 pub fn update_globe_albedo(
     globe: Res<GlobeState>,
     camera: crate::grid::AnchoredCamera,
@@ -1606,10 +1615,7 @@ pub fn update_globe_albedo(
     mut gloss: ResMut<GlobeOceanGloss>,
     tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<GlobeSurfaceMaterial>), With<GlobeMesh>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
-    mut applied: Local<Option<f32>>,
-    // How far through the live tile set the current step has got. The rewrite is
-    // spread over frames (see below), so it has to remember where it was.
-    mut cursor: Local<usize>,
+    mut last_space: Local<Option<f32>>,
 ) {
     let Some((cell, tf)) = camera.get() else {
         return;
@@ -1618,42 +1624,52 @@ pub fn update_globe_albedo(
     let a = 1.0f32.lerp(GLOBE_DEEP_ALBEDO, space);
     albedo.0 = a;
     gloss.0 = space;
-    // A step begins when the ramp has drifted far enough, and *ends* only when the
-    // cursor has walked the whole set — so the two conditions are separate.
-    if *cursor == 0 && applied.is_some_and(|p| (a - p).abs() < ALBEDO_UPDATE_STEP) {
-        return;
-    }
+    // While the ramp moves, a tile within a step of it is close enough (and a
+    // write per frame per tile would re-upload every uniform through a climb);
+    // once it holds still, every tile is brought to it exactly, so no residue of
+    // up to a step is left between tiles written then and tiles spawned since.
+    let settled = *last_space == Some(space);
+    *last_space = Some(space);
+    let tolerance = if settled { 0.0 } else { ALBEDO_UPDATE_STEP };
     // Amortised, because the alternative is a burst at the worst possible moment.
     // A step touches every live tile material — ~450 of them at low orbit, each
     // write dirtying a uniform for re-upload — and it fires during exactly the
     // climbs when the tile build and despawn queues are already at their own
-    // per-frame caps. Those two have been budgeted since the device-loss work;
-    // this was the third burst in the same frames and the only one without a cap.
-    //
-    // A tile a few frames behind the ramp is invisible: `ALBEDO_UPDATE_STEP` is
-    // 0.03 of a range that takes a whole climb to traverse, and new tiles read the
-    // current `GlobeSurfaceAlbedo` at spawn rather than waiting for a sweep.
+    // per-frame caps. The reads are a hash lookup each; only the writes count.
     let budget = crate::quality::budget().per_frame(MAX_GLOBE_ALBEDO_WRITES_PER_FRAME);
     let mut done = 0;
-    for (tint, mat) in tinted.iter().skip(*cursor) {
+    for (tint, mat) in &tinted {
         if done >= budget {
-            *cursor += done;
             return;
+        }
+        let colour = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
+        // Compared first: `get_mut` re-prepares the material even unchanged.
+        let stale = materials.get(&mat.0).is_some_and(|m| {
+            let (have, want) = (m.base.base_color.to_srgba(), colour.to_srgba());
+            let off = (have.red - want.red)
+                .abs()
+                .max((have.green - want.green).abs())
+                .max((have.blue - want.blue).abs());
+            // Only the masked surfaces have an ocean at all; the backstop
+            // sphere's inert extension is left alone.
+            let ocean_off = if m.extension.ocean.y > 0.0 {
+                (m.extension.ocean.x - space).abs()
+            } else {
+                0.0
+            };
+            off.max(ocean_off) > tolerance
+        });
+        if !stale {
+            continue;
         }
         done += 1;
         if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.base.base_color = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
-            // Only the masked surfaces have an ocean at all; leave the backstop
-            // sphere's inert extension alone.
+            m.base.base_color = colour;
             if m.extension.ocean.y > 0.0 {
                 m.extension.ocean.x = space;
             }
         }
     }
-    // The sweep completed: bank the value that was being applied, so the next
-    // drift past `ALBEDO_UPDATE_STEP` starts a fresh one.
-    *cursor = 0;
-    *applied = Some(a);
 }
 
 /// The globe's night side as every tile material should carry it
@@ -1914,6 +1930,79 @@ fn spawn_globe_tile(
             }
         })
         .detach();
+}
+
+/// The quadtree's leaves: split from `roots` while `measure` asks to, the tile
+/// largest on screen first, until a split would take the set past `cap`.
+///
+/// `measure` answers `None` for a tile not drawn at all (over the horizon), else
+/// its size on screen in pixels and whether it wants splitting.
+///
+/// **Largest first, so a binding cap leaves the view even.** The walk was a
+/// depth-first stack, and the cap binds through most of the globe's band (160
+/// leaves on the phone): the branches popped first went down to their finest
+/// tiles and the rest stopped wherever the cap found them, so one square of the
+/// view was sharp beside a blurred one, and which square won changed as the view
+/// panned — refetching and redrawing both on every change. Refining the biggest
+/// tile on screen first spends the cap where a texel is largest, so the leaves
+/// end within one zoom of each other for a given distance.
+fn select_leaves(
+    roots: impl IntoIterator<Item = TileKey>,
+    cap: usize,
+    mut measure: impl FnMut(&TileKey) -> Option<(f32, bool)>,
+) -> Vec<TileKey> {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+
+    struct Open {
+        px: f32,
+        split: bool,
+        key: TileKey,
+    }
+    impl PartialEq for Open {
+        fn eq(&self, other: &Self) -> bool {
+            self.cmp(other) == Ordering::Equal
+        }
+    }
+    impl Eq for Open {}
+    impl PartialOrd for Open {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for Open {
+        fn cmp(&self, other: &Self) -> Ordering {
+            // The largest on screen first; then by key, so a tie does not make
+            // the selection depend on the heap's history.
+            let key = |o: &Self| (o.key.z, o.key.x, o.key.y);
+            self.px
+                .total_cmp(&other.px)
+                .then_with(|| key(other).cmp(&key(self)))
+        }
+    }
+
+    let mut open = BinaryHeap::new();
+    let mut push = |open: &mut BinaryHeap<Open>, key: TileKey| {
+        if let Some((px, split)) = measure(&key) {
+            open.push(Open { px, split, key });
+        }
+    };
+    for key in roots {
+        push(&mut open, key);
+    }
+    let mut leaves = Vec::new();
+    while let Some(tile) = open.pop() {
+        // A split turns one leaf into four.
+        if tile.split && leaves.len() + open.len() + 4 <= cap {
+            let k = &tile.key;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                push(&mut open, TileKey::new(k.x * 2 + dx, k.y * 2 + dy, k.z + 1));
+            }
+        } else {
+            leaves.push(tile.key);
+        }
+    }
+    leaves
 }
 
 pub fn update_globe_tiles(
@@ -2205,12 +2294,10 @@ pub fn update_globe_tiles(
     let covered_to = (altitude <= GLOBE_SHOW_ALT as f64)
         .then(|| crate::systems::map_stream::clipmap_reach_m(globe.anchor_lat));
 
-    let mut desired: Vec<TileKey> = Vec::new();
     let n0 = 1i64 << QT_MIN_Z;
-    let mut stack: Vec<TileKey> = (0..n0 * n0)
-        .map(|i| TileKey::new(i % n0, i / n0, QT_MIN_Z))
-        .collect();
-    while let Some(key) = stack.pop() {
+    let roots = (0..n0 * n0).map(|i| TileKey::new(i % n0, i / n0, QT_MIN_Z));
+    let cap = crate::quality::budget().per_frame(QT_MAX_TILES);
+    let desired = select_leaves(roots, cap, |key| {
         let c_lat = tile_frac_to_lat(key.y as f64 + 0.5, key.z);
         let c_lng = tile_frac_to_lng(key.x as f64 + 0.5, key.z);
         let centre = geodetic_to_local(&frame, c_lat, c_lng, 0.0).as_dvec3();
@@ -2218,7 +2305,7 @@ pub fn update_globe_tiles(
         let normal = (centre - earth_c).normalize_or_zero();
         let to_cam = (cam - centre).normalize_or_zero();
         if over_the_horizon(normal, to_cam, gs, globe.radius as f64) {
-            continue;
+            return None;
         }
         // Projected size: ground edge over distance, mapped to pixels.
         let d = (cam - centre).length().max(1.0);
@@ -2241,19 +2328,9 @@ pub fn update_globe_tiles(
             let horizontal = DVec3::new(centre.x, 0.0, centre.z).length();
             horizontal + gs * 0.75 < reach
         });
-        if px > QT_SPLIT_PX
-            && key.z < QT_MAX_Z
-            && in_view
-            && !hidden_by_clipmap
-            && desired.len() + stack.len() < crate::quality::budget().per_frame(QT_MAX_TILES)
-        {
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                stack.push(TileKey::new(key.x * 2 + dx, key.y * 2 + dy, key.z + 1));
-            }
-        } else {
-            desired.push(key);
-        }
-    }
+        let split = px > QT_SPLIT_PX && key.z < QT_MAX_Z && in_view && !hidden_by_clipmap;
+        Some((px, split))
+    });
 
     // Expand each *not-yet-loaded* leaf with its full ancestor chain (leaf →
     // parent → … → z2).
@@ -2400,6 +2477,47 @@ mod tests {
     use super::*;
 
     const R: f64 = 6_378_137.0;
+
+    /// Every tile equally far away, so each zoom is half the size on screen of
+    /// the one above: a cap that binds must leave the leaves within one zoom of
+    /// each other, where the depth-first walk took one branch to its finest
+    /// level and left its neighbours coarse.
+    #[test]
+    fn a_binding_cap_leaves_the_view_even() {
+        let roots = (0..16).map(|i| TileKey::new(i % 4, i / 4, QT_MIN_Z));
+        let cap = 160;
+        let leaves = select_leaves(roots, cap, |k| {
+            let px = 100_000.0 / (1u32 << k.z) as f32;
+            Some((px, px > QT_SPLIT_PX && k.z < QT_MAX_Z))
+        });
+        assert!(leaves.len() <= cap, "{} leaves", leaves.len());
+        assert!(
+            leaves.len() > cap - 4,
+            "the cap was spent: {}",
+            leaves.len()
+        );
+        let zs: Vec<u32> = leaves.iter().map(|k| k.z).collect();
+        let (lo, hi) = (zs.iter().min().unwrap(), zs.iter().max().unwrap());
+        assert!(hi - lo <= 1, "leaves from z{lo} to z{hi}");
+    }
+
+    /// Below the cap the walk is the plain split rule, and a tile `measure`
+    /// drops (over the horizon) is not a leaf.
+    #[test]
+    fn under_the_cap_every_wanted_split_is_made() {
+        let roots = [0, 1, 2].map(|x| TileKey::new(x, 0, QT_MIN_Z));
+        let leaves = select_leaves(roots, 320, |k| {
+            if k.z == QT_MIN_Z && k.x == 2 {
+                return None;
+            }
+            // Only root (0, 0) and its own first child want splitting.
+            Some((1000.0, k.x == 0 && k.y == 0 && k.z <= QT_MIN_Z + 1))
+        });
+        // Root (1, 0) is a leaf; root (0, 0) splits into four, of which the
+        // one at x = 0 splits again: 1 + 3 + 4.
+        assert_eq!(leaves.len(), 8, "{leaves:?}");
+        assert!(leaves.contains(&TileKey::new(1, 0, QT_MIN_Z)));
+    }
 
     /// The drop is the sagitta, and the schoolbook `d²/2R` is only its first
     /// term. Pinned at the two ends that matter: a city block, where the two

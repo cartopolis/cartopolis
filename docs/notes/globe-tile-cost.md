@@ -1,7 +1,7 @@
 ---
 topic: globe-tile-cost
 triggers: [globe.rs, update_globe_tiles, qt_segs, GLOBE_TILE_PX, QT_LIFT_PER_Z, QT_MAX_TILES, tile_px, "globe is slow", "globe artifacts", "flat globe", "tile grid", "zoom out"]
-updated: 2026-10-17
+updated: 2026-11-23
 ---
 
 # What the globe quadtree actually costs, and the three ways it showed
@@ -28,9 +28,14 @@ the whole planet is 80 tiles. The load is concentrated in 60 km–1,000 km, whic
 is exactly the band a globe→street zoom passes through.
 
 `QT_MAX_TILES` is **binding** across that band (294–323 leaves against a cap of
-320). The cap stops refinement mid-traversal, so which regions reach z11 and
-which stop at z7 depends on `stack.pop()` order rather than on anything visual.
-Raising it raises everything in the table with it.
+320, and the phone tier halves it). The cap stops refinement mid-traversal, and
+until 2026-11-23 the traversal was a depth-first stack, so which regions reached
+z11 and which stopped at z7 depended on `stack.pop()` order rather than on
+anything visual: on the phone a square of the view sat sharp beside a blurred
+one, and the winner changed as the view panned. `select_leaves` now splits the
+tile largest on screen first, so a binding cap leaves the view within one zoom
+(`a_binding_cap_leaves_the_view_even`). Raising the cap raises everything in the
+table with it.
 
 ## Three costs, one cause
 
