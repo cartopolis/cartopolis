@@ -404,9 +404,20 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    in fase 2. Het ontwerp staat in de repository's `docs/notes/rust.md`.
 
    ![pariteit](fase1-pariteit.png)
-2. **Componentstijlen in Rust → `components.css` gegenereerd**, component
-   voor component, met de fork's sandbox als vergelijkingsbeeld. Daarna is
-   de TS-fork alleen nog renderer; zijn CSS komt uit Rust.
+2. **Componentstijlen in Rust → `components.css` gegenereerd** — gebouwd
+   2026-11-23. `crates/style` houdt de tokens getypt (`Tokens`, elke kleur
+   een licht/donker-paar) en de regels als `css!`-blokken, data die een
+   native backend kan doorlopen; `gen-css` schrijft de vijf stylesheets van
+   de TS-editie en de poort faalt op een verouderd bestand. De eerste
+   generatie was na minificatie byte-gelijk aan de handgeschreven files.
+   Daarna de rest van de bibliotheek: validatie (`mithril_validation`),
+   FieldTags, Table, Tabs, Collapse, Dialog, Toaster, ThemeSwitch, Shell —
+   elk component heeft nu zijn tweeling, 34 specimens gelijk in HTML en de
+   twee pagina's **pixelgelijk** (0 van 3,36 miljoen pixels, animaties uit).
+   Nog niet: cartopolis' eigen `Tokens` in plaats van `web_theme.rs` (komt
+   met fase 4, als cartopolis de bibliotheek gaat gebruiken).
+
+   ![pariteit fase 2](fase2-pariteit.png)
 3. **Bevy-backend** op het gekozen Bevy: primitieven → `Node`, picking,
    `TextInput`, `Layer`, `Scroll` met traagheid. Eerste scherm: **Settings**
    (formulieren, geen painter), naast egui, gefotografeerd met
