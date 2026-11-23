@@ -24,7 +24,7 @@ pub(super) const BRAND_FAMILY: &str = "cartopolis-brand";
 /// and next to a Jakarta heading it was a second, unrelated typeface. One
 /// family at two weights is what makes a heading and its rows read as one
 /// voice. Ubuntu stays behind it in the stack for the glyphs Jakarta lacks.
-pub(super) const BODY_TTF: &[u8] = include_bytes!(concat!(
+pub const BODY_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/PlusJakartaSans-Regular.ttf"
 ));

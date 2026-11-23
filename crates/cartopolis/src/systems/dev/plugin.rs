@@ -17,6 +17,8 @@ pub struct DevPlugin;
 
 impl Plugin for DevPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+        app.add_plugins(systems::ui_probe::UiProbePlugin);
         // Which screen of the developer panel is showing (`systems::dev_panel`) —
         // a resource so `--ui profiler` can name one.
         app.init_resource::<systems::dev_panel::DevTools>()

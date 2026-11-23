@@ -50,5 +50,10 @@ pub mod shot_replay;
 /// Per-system CPU time, counted in process and read per perf window.
 #[cfg(feature = "perf")]
 pub mod system_timings;
+/// The component-library study's phase-0 probe: a card drawn with `bevy_ui`
+/// beside egui (`docs/mockups/component-library/`). Only with `--features
+/// ui-probe`, which is what switches `bevy_ui` on at all.
+#[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+pub mod ui_probe;
 pub mod upload_meter;
 pub mod window_icon;

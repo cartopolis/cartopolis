@@ -37,6 +37,8 @@ pub mod player;
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use dev::light_compare;
+#[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+pub use dev::ui_probe;
 #[cfg(not(target_arch = "wasm32"))]
 pub use dev::{aerial_reference, midas_link, release_approval, release_review, shot_replay};
 pub use dev::{

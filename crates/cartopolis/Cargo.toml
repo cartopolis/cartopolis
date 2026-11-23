@@ -132,6 +132,18 @@ perf = [
 # codegen bug, or a host that really does predate AVX2 — not for shipped builds,
 # where it silently costs several times the tile raster throughput.
 scalar-fallback = []
+# Bevy's own UI stack, for the component-library study's phase 0
+# (`docs/mockups/component-library/`): `systems::dev::ui_probe` draws one card
+# with `bevy_ui` beside egui's Settings panel, and a long list for the layout
+# cost. Off by default — nothing in the client reads these crates otherwise,
+# and a shipped build must not carry a second UI toolkit for a measurement.
+ui-probe = [
+    "bevy/bevy_ui",
+    "bevy/bevy_ui_render",
+    "bevy/bevy_ui_widgets",
+    "bevy/ui_picking",
+    "bevy/bevy_input_focus",
+]
 
 [dependencies]
 # The disk cache keeps the per-cell JSON layers deflated (`platform::storage`),
