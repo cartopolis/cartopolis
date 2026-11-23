@@ -1,0 +1,181 @@
+<!doctype html><html lang="nl"><head><meta charset="utf-8">
+<style>
+@font-face { font-family: Jakarta; font-weight: 400; src: url(../../../assets/fonts/PlusJakartaSans-Regular.ttf); }
+@font-face { font-family: Jakarta; font-weight: 600; src: url(../../../assets/fonts/PlusJakartaSans-SemiBold.ttf); }
+:root { --brand:#FD6012; --sheet:#0b1012; --text:#DBE2E5; --dim:#93A2A7; --cream:#F3F7F9; --line:rgba(255,255,255,.1);
+  --surface:#151F22; --raised:#1C282B; --accent:#5ED0C2; --on-accent:#06201D; --warn:#F2A65A; --danger:#F07A6E; --ok:#7BC96F; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--sheet); color:var(--text); font:15px/1.45 Jakarta, system-ui, sans-serif; padding:48px 56px 64px; width:1840px; }
+h1 { font-size:38px; color:var(--cream); letter-spacing:-.5px; font-weight:600; }
+h1 b { color:var(--brand); font-weight:inherit; }
+h2 { font-size:24px; color:var(--cream); font-weight:600; margin:50px 0 8px; }
+h2 span { color:var(--brand); margin-right:8px; }
+.lede { color:var(--dim); font-size:17px; max-width:1400px; margin:10px 0 26px; }
+.lede b { color:var(--cream); font-weight:600; }
+.tag { display:inline-block; font-size:12px; padding:1px 8px; border-radius:6px; background:rgba(253,96,18,.18); color:#FF9A66; vertical-align:2px; }
+code { font:13px/1.4 ui-monospace, Menlo, monospace; background:rgba(255,255,255,.06); padding:1px 5px; border-radius:4px; color:#CFE3E0; }
+
+/* today vs proposal */
+.two { display:grid; grid-template-columns: 1fr 1.25fr; gap:40px; align-items:start; }
+.panel { background:#0F1618; border:1px solid var(--line); border-radius:16px; padding:22px 24px; }
+.panel h3 { font-size:18px; color:var(--cream); font-weight:600; margin-bottom:14px; }
+.panel h3 i { font-style:normal; color:var(--dim); font-weight:400; font-size:14px; margin-left:8px; }
+.flow { display:flex; flex-direction:column; gap:10px; }
+.row { display:flex; gap:12px; align-items:stretch; }
+.box { flex:1; border-radius:12px; padding:12px 14px; background:var(--surface); border:1px solid var(--line); }
+.box b { display:block; color:var(--cream); font-weight:600; font-size:15px; margin-bottom:3px; }
+.box small { color:var(--dim); font-size:13px; display:block; line-height:1.35; }
+.box.core { background:#13272A; border-color:rgba(94,208,194,.45); }
+.box.core b { color:var(--accent); }
+.box.gen { background:#2A1F13; border-color:rgba(253,96,18,.4); }
+.box.gen b { color:#FF9A66; }
+.box.dead { opacity:.55; border-style:dashed; }
+.arrow { text-align:center; color:var(--dim); font-size:13px; padding:2px 0; }
+.arrow.hand { color:var(--danger); }
+.arrow.gen { color:#FF9A66; }
+.cols { display:grid; gap:12px; }
+.c3 { grid-template-columns:repeat(3,1fr); }
+.c2 { grid-template-columns:repeat(2,1fr); }
+.c4 { grid-template-columns:repeat(4,1fr); }
+.note { color:var(--dim); font-size:13px; margin-top:12px; }
+.note b { color:var(--text); font-weight:600; }
+
+/* table */
+table { border-collapse:collapse; width:100%; font-size:14px; }
+th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--cream); font-weight:600; font-size:13px; }
+td:first-child { color:var(--cream); font-weight:600; white-space:nowrap; }
+.y { color:var(--ok); } .n { color:var(--danger); } .h { color:var(--warn); }
+tr.pick td { background:rgba(94,208,194,.07); }
+
+/* code */
+.codes { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+pre { background:#0F1618; border:1px solid var(--line); border-radius:14px; padding:18px 20px; font:13px/1.5 ui-monospace, Menlo, monospace; color:#CFE3E0; overflow:hidden; }
+pre .k { color:#7BC96F; } pre .t { color:#5ED0C2; } pre .s { color:#F2A65A; } pre .c { color:#6F8287; }
+.codecap { color:var(--dim); font-size:13px; margin-top:8px; }
+
+/* phases */
+.phases { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; }
+.ph { background:#0F1618; border:1px solid var(--line); border-radius:14px; padding:14px 16px; min-height:170px; }
+.ph .n { color:var(--brand); font-weight:600; font-size:22px; display:block; margin-bottom:4px; }
+.ph b { color:var(--cream); font-weight:600; display:block; margin-bottom:6px; }
+.ph p { color:var(--dim); font-size:13px; line-height:1.4; }
+.ph.now { border-color:rgba(94,208,194,.5); }
+</style></head><body>
+
+<h1>Eén componentbibliotheek · <b>web en Bevy</b></h1>
+<p class="lede">Gevraagd 2026-11-23: de mithril-library ombouwen tot een JSX-achtige bibliotheek waarvan de componenten óók in Cartopolis
+werken, zodat de wasm-wereld en de web-UI één stijl delen en egui op termijn weggaat. Alles op dit blad is <span class="tag">voorstel</span>;
+het linkerpaneel onder 1 is de stand van nu, gelezen uit <code>main</code> d0103e24.</p>
+
+<h2><span>1</span>Vandaag twee helften, met de hand gelijk gehouden — het voorstel: één bron, twee backends</h2>
+<div class="two">
+  <div class="panel">
+    <h3>Zo is het nu <i>twee implementaties van elk component</i></h3>
+    <div class="flow">
+      <div class="row">
+        <div class="box"><b>@garage44/mithril</b><small>TypeScript · 31 componenten · signalen · 2.232 regels CSS met de hand</small></div>
+        <div class="box"><b>systems::theme + egui 0.36</b><small>Rust · controls.rs tekent de web-maten na (38/44 px, radius 8) · 78.012 regels UI</small></div>
+      </div>
+      <div class="arrow hand">↑ handmatig nagetekend ↑ &nbsp;·&nbsp; alleen kleuren + 3 radii gegenereerd (web_theme.rs → theme.css)</div>
+      <div class="row">
+        <div class="box"><b>cartopolis.org</b><small>Mithril, 15.894 regels TSX; CMS via Bun-SSR</small></div>
+        <div class="box"><b>midas hub</b><small>Mithril; kopieert theme.css met de hand (4 waarden afgedreven)</small></div>
+        <div class="box"><b>wereldframe (wasm)</b><small>egui op het canvas: eigen toetsenbord, non-send, dpr-foefjes</small></div>
+        <div class="box"><b>native app</b><small>egui: één WidgetVisuals per staat, 92 Area's, 216 painter()-sites</small></div>
+      </div>
+    </div>
+    <p class="note"><b>Wat het kost:</b> elk component bestaat twee keer met twee gedragingen; "dezelfde stijl" is discipline, geen eigenschap.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Het voorstel <i>één keer gedefinieerd in Rust, gegenereerd naar het web, gespawnd in Bevy</i></h3>
+    <div class="flow">
+      <div class="row">
+        <div class="box core"><b>Componenten</b><small>de 31 van de fork, naam voor naam, zelfde <code>model</code>-conventie + Sheet, Page, Segmented, Pin</small></div>
+        <div class="box core"><b>Stijlbron</b><small>alle tokens + per-component stijl in een kleine subset (gap, padding, radius, border, font, toestanden)</small></div>
+        <div class="box core"><b>Signalen</b><small>signal · computed · effect · state(); synchroon, één flush per frame</small></div>
+        <div class="box core"><b>view!</b><small>JSX-syntaxis → bouwer-aanroepen; TSX zet regel voor regel over</small></div>
+      </div>
+      <div class="arrow">↓ zes primitieven: <code>Box</code> <code>Text</code> <code>Image</code> <code>Input</code> <code>Scroll</code> <code>Layer</code> (+ <code>Canvas</code> voor de painter-schermen) · één <code>Renderer</code>-trait ↓</div>
+      <div class="row">
+        <div class="box"><b>DOM-backend</b><small>web-sys · dezelfde <code>m-</code>-klassen · <code>&lt;input&gt;</code>, <code>&lt;dialog&gt;</code>, <code>&lt;select&gt;</code> van de browser · ook als HTML-string (SSR)</small></div>
+        <div class="box gen"><b>components.css</b><small><b>gegenereerd</b> uit de stijlbron, zoals theme.css nu; test bewaakt de file</small></div>
+        <div class="box"><b>Bevy-backend</b><small>bevy_ui <code>Node</code>-entiteiten · Parley-tekst · picking-observers · TextInput/EditableText · GlobalZIndex</small></div>
+        <div class="box dead"><b>Pinnacle</b><small>later, optioneel: kern zonder afhankelijkheden op zijn eigen gfx/layout</small></div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="row">
+        <div class="box"><b>cartopolis.org</b><small>pagina voor pagina Rust/wasm; wat TS blijft, deelt de CSS</small></div>
+        <div class="box"><b>midas hub</b><small>blijft Mithril, krijgt dezelfde gegenereerde CSS</small></div>
+        <div class="box"><b>wereldframe (wasm)</b><small><b>DOM boven het canvas</b>: echte tekstvelden, toetsenbord, één stijl met de site</small></div>
+        <div class="box"><b>native app</b><small>Bevy-backend; desktop, Android; a11y via AccessKit</small></div>
+      </div>
+    </div>
+    <p class="note"><b>Wat het geeft:</b> één component, één stijl, per ontwerp gelijk; het web houdt de browser's tekst en toetsenbord — wat geen enkele canvas-toolkit kan.</p>
+  </div>
+</div>
+
+<h2><span>2</span>Waarom niet adopteren — het landschap op 2026-11-23</h2>
+<p class="lede">Niets in Rust tekent één component zowel in de DOM als op een GPU-canvas. Elke kandidaat valt op één van drie dingen: geen tweede
+backend, een zware bèta-renderer in de client, of stilstand. De volledige feiten met bronnen: <code>landscape-2026-11.md</code>.</p>
+<table>
+<tr><th></th><th>DOM</th><th>In Bevy</th><th>Eén componentcode</th><th>Reactief</th><th>Tekstinvoer web · Android</th><th>Toegankelijk</th><th>Stand</th><th>Licentie</th></tr>
+<tr><td>Dioxus + Blitz (bedina)</td><td class="y">ja</td><td class="h">voorbeeld, 19 bestanden, Dioxus 0.8-alpha / Blitz 0.3-bèta</td><td class="y">ja — echte CSS via Stylo</td><td class="h">per component</td><td class="h">web ja · Blitz-IME sinds nov</td><td class="h">ARIA compleet nov 2026</td><td class="n">bèta, 18–24 ms frames, ~12 MB</td><td class="h">Stylo MPL</td></tr>
+<tr><td>Leptos</td><td class="y">ja, kleinste wasm</td><td class="n">renderer-generiek verwijderd vóór 0.7</td><td class="n">nee</td><td class="y">fijnmazig</td><td class="y">web ja</td><td class="y">web ja</td><td class="h">0.9-rc, één onderhouder</td><td class="y">MIT</td></tr>
+<tr><td>Yew</td><td class="y">ja, VDOM</td><td class="n">geen renderer-trait</td><td class="n">nee</td><td class="n">VDOM</td><td class="y">web ja</td><td class="y">web ja</td><td class="n">onderhoud, geen ontwikkeling</td><td class="y">MIT/Apache</td></tr>
+<tr><td>Xilem / Masonry + Vello</td><td class="h">xilem_web, andere elementen</td><td class="h">masonry_core zonder winit/wgpu; nooit elders gehost</td><td class="n">twee vocabulaires</td><td class="h">view-boom herbouwd</td><td class="y">Parley, IME</td><td class="y">AccessKit</td><td class="n">geen release sinds 2025-10; wasm kapot</td><td class="y">Apache</td></tr>
+<tr><td>iced</td><td class="n">canvas</td><td class="y">integration-voorbeeld</td><td class="n">nee</td><td class="h">Elm</td><td class="n">geen Android</td><td class="n">geen</td><td class="h">0.14, één reviewer</td><td class="y">MIT</td></tr>
+<tr><td>GPUI</td><td class="n">canvas zonder tekst</td><td class="n">bezit venster en swapchain</td><td class="n">nee</td><td class="h">hybride</td><td class="n">geen mobiel</td><td class="h">gemerged, uit</td><td class="n">gemeenschapswerk gestopt 2025-12</td><td class="y">Apache</td></tr>
+<tr><td>egui (nu)</td><td class="n">canvas</td><td class="y">eigen brug</td><td class="n">nee</td><td class="h">immediate</td><td class="h">eigen toetsenbord</td><td class="h">alleen voor MCP</td><td class="y">0.36, hinting sinds 0.34</td><td class="y">MIT/Apache</td></tr>
+<tr class="pick"><td>Eigen: bevy_ui + DOM</td><td class="h">te bouwen</td><td class="y">Node, picking, TextInput, focus, a11y</td><td class="y">ja, per ontwerp</td><td class="y">fijnmazig, klein, eigen</td><td class="y">DOM op web · EditableText + IME op Android</td><td class="y">DOM web · AccessKit native</td><td class="h">0.20 tekst zonder sub-pixel; 0.21 herstelt</td><td class="y">eigen</td></tr>
+</table>
+
+<h2><span>3</span>Hoe het leest — hetzelfde formulier, vandaag in TSX en straks in Rust</h2>
+<div class="codes">
+<div><pre><span class="c">// elements/signin/signin.tsx:46-70, vandaag</span>
+&lt;<span class="t">form</span> class=<span class="s">"buildings-signin"</span> onsubmit={this.submit}&gt;
+  &lt;<span class="t">Card</span> title={vnode.attrs.title}&gt;
+    &lt;<span class="t">p</span> class=<span class="s">"buildings-page__hint"</span>&gt;{vnode.attrs.hint}&lt;/<span class="t">p</span>&gt;
+    &lt;<span class="t">FieldText</span> autocomplete=<span class="s">"username"</span> disabled={s.busy}
+      label=<span class="s">"Username"</span> model={bind(s, <span class="s">'username'</span>)}
+      validation={this.v.username} /&gt;
+    &lt;<span class="t">FieldText</span> autocomplete=<span class="s">"current-password"</span> disabled={s.busy}
+      label=<span class="s">"Password"</span> model={bind(s, <span class="s">'password'</span>)}
+      type=<span class="s">"password"</span> validation={this.v.password} /&gt;
+    &lt;<span class="t">Button</span> disabled={!this.v.$valid} loading={s.busy}
+      type=<span class="s">"submit"</span> variant=<span class="s">"primary"</span>&gt;Sign in&lt;/<span class="t">Button</span>&gt;
+  &lt;/<span class="t">Card</span>&gt;
+&lt;/<span class="t">form</span>&gt;</pre>
+<p class="codecap">Mithril + de fork's componenten; alleen op het web.</p></div>
+<div><pre><span class="c">// hetzelfde in de nieuwe bibliotheek — web, wereldframe en app</span>
+<span class="k">view!</span> {
+  &lt;<span class="t">Form</span> on:submit={submit}&gt;
+    &lt;<span class="t">Card</span> title={title}&gt;
+      &lt;<span class="t">Text</span> class=<span class="s">"hint"</span>&gt;{hint}&lt;/<span class="t">Text</span>&gt;
+      &lt;<span class="t">FieldText</span> model={s.username} label=<span class="s">"Username"</span>
+        autocomplete=<span class="s">"username"</span> disabled={busy} validation={v.username} /&gt;
+      &lt;<span class="t">FieldText</span> model={s.password} label=<span class="s">"Password"</span> kind=<span class="t">Password</span>
+        autocomplete=<span class="s">"current-password"</span> disabled={busy} validation={v.password} /&gt;
+      &lt;<span class="t">Button</span> variant=<span class="t">Primary</span> submit=<span class="k">true</span> loading={busy} disabled={!v.valid()}&gt;
+        <span class="s">"Sign in"</span>
+      &lt;/<span class="t">Button</span>&gt;
+    &lt;/<span class="t">Card</span>&gt;
+  &lt;/<span class="t">Form</span>&gt;
+}</pre>
+<p class="codecap">Dezelfde namen en props; <code>model</code> is een signaal; de DOM-backend schrijft <code>&lt;form&gt;</code>/<code>&lt;input&gt;</code> met de <code>m-</code>-klassen, de Bevy-backend <code>Node</code>s met <code>TextInput</code>.</p></div>
+</div>
+
+<h2><span>4</span>Fasering — elke stap landt alleen en laat iets zien</h2>
+<div class="phases">
+  <div class="ph now"><span class="n">0</span><b>Meten</b><p>bevy_ui-tekst naast egui 0.36 op 412×900/1,5× en 1600×900 (mac-2); <code>--timings</code> met de UI-features aan; 2.000 knopen op de telefoon-tier. Beslist: Bevy 0.20 nu of de Bevy-backend op 0.21.</p></div>
+  <div class="ph now"><span class="n">1</span><b>Kern + macro + DOM</b><p>eigen repository; signalen, <code>view!</code>, DOM-backend, tokens. Bewijs: één atlas-pagina (<code>/tokens</code>) pixelgelijk uit Rust/wasm, en als HTML-string.</p></div>
+  <div class="ph"><span class="n">2</span><b>Stijl gegenereerd</b><p>componentstijlen in Rust → <code>components.css</code>, component voor component tegen de fork's sandbox. De TS-fork wordt alleen nog renderer.</p></div>
+  <div class="ph"><span class="n">3</span><b>Bevy-backend</b><p>primitieven → Node, picking, TextInput, Layer, Scroll met traagheid. Eerste scherm: Settings, naast egui, gefotografeerd tegen de web-pagina.</p></div>
+  <div class="ph"><span class="n">4</span><b>Wereldframe = DOM</b><p>zoeker, lagen, Places, kaartjes, pins boven het canvas met de CSS van de site. Hier wordt de vraag letterlijk waar.</p></div>
+  <div class="ph"><span class="n">5</span><b>Paneel voor paneel</b><p>zwaarste eerst (chats 5.318 regels, settings, lagen, camera); <code>Canvas</code> voor kompas, OSD, cosmos, gezichten; dev-panelen laatst; dan de egui-brug eruit.</p></div>
+  <div class="ph"><span class="n">6</span><b>Optioneel</b><p>Pinnacle-backend; CMS-SSR van Bun naar Rust-string; midas' hub over.</p></div>
+</div>
+<p class="note" style="margin-top:18px">Fase 0 en 1 zijn enkele sessies en raken niets wat live staat. Fase 3–5 is het programma van maanden waarin egui en de nieuwe laag naast elkaar tekenen — de nieuwe laag claimt de aanraking eerst, de kaart als laatste.</p>
+
+</body></html>
