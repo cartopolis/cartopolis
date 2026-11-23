@@ -54,7 +54,7 @@ het voorstel.
   (Masonry). Wat we wél overnemen: Bevy's eigen `bevy_ui` + `bevy_ui_widgets`
   als native backend, `bevy_flair` als voorbeeld van CSS-op-`Node`, en de
   renderer-agnostische template-gedachte van Dioxus voor de macro.
-- **Eerst meten, dan bouwen — gemeten (§9).** Twee feiten beslisten of
+- **Eerst meten, dan bouwen — gemeten (§9); fase 1 gebouwd (§8.1).** Twee feiten beslisten of
   `bevy_ui` nu al kan: Bevy 0.20 verloor sub-pixelpositionering van tekst bij
   de overgang naar Parley (hersteld op `main` 2026-11-17 voor 0.21) en legt de
   hele UI-boom elke frame opnieuw uit (incrementeel in 0.21). Fase 0
@@ -387,12 +387,23 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
 0. **Meten** — gedaan 2026-11-23, §9: `bevy_ui`-tekst naast egui op de
    telefoon- en desktopmaat (mac-2), `--timings` met de UI-features aan, en
    2.000 rijen voor de lay-outkost. Uitkomst: Bevy 0.20 nu.
-1. **Kern + macro + DOM-backend + tokens** (eigen repository, zoals de
-   mithril-fork; crate-naam open). Bewijs: één bestaande atlas-webpagina
-   (`/tokens` of `/register`, klein, formulier-zwaar) in Rust/wasm, die in
-   headless Chrome **pixelgelijk** is aan de TS-versie met de bestaande
-   `components.css`, plus dezelfde HTML als string (SSR). De
-   `web_theme.rs`-generatie verhuist naar de bibliotheek.
+1. **Kern + macro + DOM-backend** — gebouwd 2026-11-23, **in
+   `jeroen/mithril` zelf**: de eigenaar koos "vervang de huidige
+   jeroen/mithril met ons nieuwe systeem", dus de Rust-editie staat in
+   `crates/` naast de TypeScript in `src/`, tot die uitgefaseerd is.
+   Signalen, de view-kern met `Renderer`-trait en string-renderer, `view!`
+   op rstml, de DOM-backend, en 19 componenten als port. Het bewijs werd
+   niet één atlas-pagina maar **de hele componentenset**:
+   `tools/parity.ts` rendert elk specimen met de TS-serverrenderer en met
+   de Rust-stringrenderer en vergelijkt de HTML (24 van 24 gelijk);
+   `tools/parity-web.sh` bouwt dezelfde specimens als twee pagina's over
+   één `components.css`, in headless Chromium op 800×2400 pixelgelijk op de
+   animatiefase van twee spinners na (414 van 1,9 miljoen pixels). Nog niet:
+   `validation`, `FieldTags`, `Table`, `Tabs`, `Collapse`, `Dialog`,
+   `Toaster`, `ThemeSwitch`, `Shell`; de `web_theme.rs`-generatie verhuist
+   in fase 2. Het ontwerp staat in de repository's `docs/notes/rust.md`.
+
+   ![pariteit](fase1-pariteit.png)
 2. **Componentstijlen in Rust → `components.css` gegenereerd**, component
    voor component, met de fork's sandbox als vergelijkingsbeeld. Daarna is
    de TS-fork alleen nog renderer; zijn CSS komt uit Rust.
