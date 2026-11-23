@@ -23,6 +23,7 @@ members = [
     "crates/voice",
     "crates/big_space",
     "crates/web_task",
+    "crates/mithril_bevy",
 ]
 default-members = ["crates/cartopolis"]
 # Not members, unlike `web_task`: they are dependencies patched in below, and as

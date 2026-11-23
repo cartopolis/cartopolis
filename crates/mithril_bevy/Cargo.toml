@@ -1,0 +1,31 @@
+# The component library's Bevy backend: the view tree as `bevy_ui` entities,
+# styled by the library's own cascade from the same rules the browser gets.
+# Developed here, beside its first consumer, on the warm Bevy nodes; it moves
+# into jeroen/mithril (`crates/bevy`) once its shape has settled
+# (docs/mockups/component-library/README.md, phase 3).
+[package]
+name = "mithril_bevy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "8560ec88" }
+# The client's image decoders, so a lone `cargo check -p mithril_bevy` resolves
+# bevy_image the way the client does (zstd needs a backend named).
+bevy_image.workspace = true
+bevy = { workspace = true, features = [
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_ui_widgets",
+    "ui_picking",
+    "bevy_input_focus",
+    "bevy_text",
+] }
+
+[lints]
+workspace = true

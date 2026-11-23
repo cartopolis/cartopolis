@@ -2613,6 +2613,8 @@ dependencies = [
  "js-sys",
  "libc",
  "libloading",
+ "mithril",
+ "mithril_bevy",
  "ndk",
  "ndk-sys",
  "nokhwa",
@@ -3862,6 +3864,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "derive-where"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e2b94854e8576378ccda7c8de8a66ed8b4e8acbd2c50ec3418ea6c8aaf4b567"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -6726,6 +6739,75 @@ dependencies = [
 ]
 
 [[package]]
+name = "mithril"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+dependencies = [
+ "mithril_components",
+ "mithril_macro",
+ "mithril_signals",
+ "mithril_style",
+ "mithril_validation",
+ "mithril_view",
+]
+
+[[package]]
+name = "mithril_bevy"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "bevy_image",
+ "mithril",
+]
+
+[[package]]
+name = "mithril_components"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+dependencies = [
+ "mithril_validation",
+ "mithril_view",
+]
+
+[[package]]
+name = "mithril_macro"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rstml",
+ "syn 3.0.4",
+]
+
+[[package]]
+name = "mithril_signals"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+
+[[package]]
+name = "mithril_style"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+
+[[package]]
+name = "mithril_validation"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+dependencies = [
+ "mithril_signals",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "mithril_view"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=8560ec88#8560ec88f4038a3b661c3e6caf20a17023580650"
+dependencies = [
+ "mithril_signals",
+]
+
+[[package]]
 name = "ml-dsa"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7980,7 +8062,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bab5b985dc082b345f812b7df84e1bef27e7207b39e448439ba8bd69c93f147"
 dependencies = [
  "proc-macro2",
- "proc-macro2-diagnostics",
+ "proc-macro2-diagnostics 0.10.1",
  "quote",
  "syn 2.0.119",
 ]
@@ -8333,6 +8415,18 @@ dependencies = [
  "syn 2.0.119",
  "version_check",
  "yansi",
+]
+
+[[package]]
+name = "proc-macro2-diagnostics"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df921e1ef974ebc8dd9effdb0c037a96928ae8cbf871438e02d6fd67204b595e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
+ "version_check",
 ]
 
 [[package]]
@@ -9033,6 +9127,20 @@ dependencies = [
  "heapless 0.8.0",
  "num-traits",
  "smallvec",
+]
+
+[[package]]
+name = "rstml"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6bd1bfba3c4c0b57aae906204d9e5744f3f65800ce6c75bd4cc162f2c26f3aa"
+dependencies = [
+ "derive-where",
+ "proc-macro2",
+ "proc-macro2-diagnostics 0.11.0",
+ "quote",
+ "syn 3.0.4",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

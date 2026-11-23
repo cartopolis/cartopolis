@@ -31,6 +31,7 @@ impl Plugin for UiProbePlugin {
             app.add_plugins(bevy::ui_widgets::UiWidgetsPlugins);
         }
         app.init_resource::<UiProbe>()
+            .add_plugins(mithril_bevy::MithrilUiPlugin::default())
             .add_systems(Update, spawn_probe.in_set(ClientPhase::Input));
     }
 }
@@ -51,10 +52,16 @@ const SPAWN_AFTER_FRAMES: u32 = 10;
 enum Mode {
     Card,
     Rows(usize),
+    /// The component library through its Bevy renderer (`mithril_bevy`):
+    /// one of each component, as the browser's parity page shows them.
+    Library,
 }
 
 fn mode() -> Option<Mode> {
     let value = crate::debug_switches::env_value("CARTO_UI_PROBE")?;
+    if value.trim() == "mithril" {
+        return Some(Mode::Library);
+    }
     Some(match value.trim().parse::<usize>() {
         Ok(n) if n > 1 => Mode::Rows(n),
         _ => Mode::Card,
@@ -106,6 +113,8 @@ fn spawn_probe(
     egui: EguiRef,
     mut fonts: ResMut<Assets<Font>>,
     mut ui_scale: ResMut<UiScale>,
+    // The library's host is thread-local: this system must run where it lives.
+    _main: bevy::ecs::system::NonSendMarker,
 ) {
     if probe.done {
         return;
@@ -135,11 +144,34 @@ fn spawn_probe(
         match mode {
             Mode::Card => "card".to_owned(),
             Mode::Rows(n) => format!("{n} rows"),
+            Mode::Library => "the component library".to_owned(),
         }
     );
     match mode {
         Mode::Card => spawn_card(&mut commands, camera, &faces, compact),
         Mode::Rows(n) => spawn_rows(&mut commands, camera, &faces, n),
+        Mode::Library => {
+            commands.insert_resource(mithril_bevy::UiCamera(camera));
+            commands.insert_resource(mithril_bevy::FontMap {
+                regular: faces.body.clone(),
+                semibold: faces.semibold.clone(),
+                mono: faces.body.clone(),
+            });
+            let p = theme::p();
+            mithril_bevy::with_host(|host| {
+                host.env.dark = p.ink == theme::DARK.ink;
+                host.env.coarse_pointer = theme::touch_layout();
+                host.mount(library::page(compact));
+            });
+            // The same page as HTML, for the browser beside the capture
+            // (`CARTO_UI_PROBE_HTML=/tmp/page.html`). A dev tool: `std::fs`.
+            if let Some(path) = std::env::var_os("CARTO_UI_PROBE_HTML") {
+                let html = library::html(compact);
+                if let Err(e) = std::fs::write(&path, html) {
+                    tracing::warn!(?path, error = %e, "ui probe: could not write the page's HTML");
+                }
+            }
+        }
     }
 }
 
@@ -397,4 +429,143 @@ fn spawn_rows(commands: &mut Commands, camera: Entity, faces: &Faces, n: usize) 
                     });
             }
         });
+}
+
+/// The library's components, one of each in a fixed state, as the browser's
+/// parity page shows them (`examples/parity` in jeroen/mithril): what the
+/// Bevy renderer is photographed against.
+mod library {
+    use std::rc::Rc;
+
+    use mithril::prelude::*;
+
+    /// The page's HTML, from the library's string renderer: what the browser
+    /// draws from the same tree, for the comparison.
+    pub fn html(compact: bool) -> String {
+        use std::cell::RefCell;
+
+        use mithril::view::{mount, StringRenderer};
+        let r = Rc::new(RefCell::new(StringRenderer::new()));
+        let root = r.borrow().root();
+        let mounted = mount(page(compact), &r, &root, None);
+        let html = r.borrow().html();
+        drop(mounted);
+        html
+    }
+
+    /// A column of specimens. `compact` makes it the viewport's width.
+    pub fn page(compact: bool) -> View {
+        let style = if compact {
+            "position: absolute; left: 0; right: 0; top: 0; bottom: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 20px; background: var(--m-bg)"
+        } else {
+            "position: absolute; left: 16px; top: 16px; bottom: 16px; width: 420px; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 20px; background: var(--m-bg); border-radius: 12px"
+        };
+        let specimens: Vec<(&'static str, View)> = vec![
+            (
+                "Buttons",
+                view! {
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap">
+                        <Button variant=Variant::Primary>"Save"</Button>
+                        <Button>"Cancel"</Button>
+                        <Button variant=Variant::Ghost>"Ghost"</Button>
+                        <Button variant=Variant::Danger size=Size::Sm>"Delete"</Button>
+                        <Button variant=Variant::Ghost loading=true>"Wait"</Button>
+                    </div>
+                },
+            ),
+            (
+                "Badge · spinner · progress",
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 12px">
+                        <div style="display: flex; gap: 8px; align-items: center">
+                            <Badge tone=Tone::Success dot=true>"Live"</Badge>
+                            <Badge>"3"</Badge>
+                            <Spinner size=Size::Sm />
+                        </div>
+                        <Progress value=Some(40.0) label="Upload" show_value=true />
+                    </div>
+                },
+            ),
+            (
+                "Alert",
+                view! {
+                    <Alert tone=Tone::Danger title="Failed" ondismiss={Some(Rc::new(|| {}) as Rc<dyn Fn()>)}>
+                        "Try again"
+                    </Alert>
+                },
+            ),
+            (
+                "Card",
+                view! {
+                    <Card title="Settings" subtitle="Account" actions={view! { <Badge>"1"</Badge> }} footer={view! { <Button variant=Variant::Primary size=Size::Sm>"Save"</Button> }}>
+                        "Auto is light while the real sun is above the horizon at the map, whatever the sky is set to."
+                    </Card>
+                },
+            ),
+            (
+                "Text fields",
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 12px">
+                        <FieldText model={signal(String::from("sam"))} label="Username" help="Shown to the people you meet." required=true id="p1" />
+                        <FieldText model={signal(String::new())} label="Email" error="Required" placeholder="you@example.org" id="p2" />
+                        <FieldTextarea model={signal(String::from("hi"))} label="Bio" rows=3 maxlength=Some(80) id="p3" />
+                        <FieldNumber model={signal(Some(5.0))} min=Some(0.0) max=Some(10.0) unit="kg" label="Weight" id="p4" />
+                    </div>
+                },
+            ),
+            (
+                "Toggles",
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 12px">
+                        <FieldCheckbox model={signal(true)} label="Agree" help="please" id="p5" />
+                        <FieldCheckbox model={signal(false)} label="Not yet" id="p6" />
+                        <FieldSwitch model={signal(true)} label="Street names" id="p7" />
+                        <FieldSwitch model={signal(false)} label="Shadows" id="p8" />
+                    </div>
+                },
+            ),
+            (
+                "Choices",
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 12px">
+                        <FieldSelect model={signal(Some(String::from("b")))}
+                            options={vec![Opt::from(String::from("a")), Opt::from(String::from("b")), Opt::new(String::from("c"), "C")]}
+                            placeholder="Pick" label="Letter" id="p9" />
+                        <FieldRadio model={signal(String::from("x"))}
+                            options={vec![Opt::from(String::from("x")), Opt::from(String::from("y"))]}
+                            inline=true label="Axis" id="p10" />
+                        <FieldSegmented model={signal(String::from("md"))}
+                            options={vec![Opt::from(String::from("sm")), Opt::from(String::from("md")), Opt::from(String::from("lg"))]}
+                            label="Size" id="p11" />
+                        <FieldSlider model={signal(25.0)} max=50.0 step=5.0 label="Volume" id="p12" />
+                    </div>
+                },
+            ),
+            (
+                "Tabs · collapse",
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 12px">
+                        <Tabs model={signal(String::from("a"))} variant=TabsVariant::Pill
+                            tabs={vec![
+                                TabItem::new(String::from("a"), "General").content(|| "Panel A".into_view()),
+                                TabItem::new(String::from("b"), "Graphics").badge(3),
+                            ]} />
+                        <Collapse model={signal(true)} title="More">"body"</Collapse>
+                    </div>
+                },
+            ),
+        ];
+        let cards: Vec<View> = specimens
+            .into_iter()
+            .map(|(name, body)| {
+                view! {
+                    <section style="display: flex; flex-direction: column; gap: 8px">
+                        <h2 style="font-size: 13px; font-weight: 600; color: var(--m-text-dim); text-transform: uppercase; letter-spacing: 0.6px; margin: 0">{name}</h2>
+                        {body}
+                    </section>
+                }
+            })
+            .collect();
+        view! { <main style={style}>{cards}</main> }
+    }
 }

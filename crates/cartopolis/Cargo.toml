@@ -138,6 +138,8 @@ scalar-fallback = []
 # cost. Off by default — nothing in the client reads these crates otherwise,
 # and a shipped build must not carry a second UI toolkit for a measurement.
 ui-probe = [
+    "dep:mithril_bevy",
+    "dep:mithril",
     "bevy/bevy_ui",
     "bevy/bevy_ui_render",
     "bevy/bevy_ui_widgets",
@@ -197,6 +199,10 @@ cartopolis_calls = { path = "../calls", features = ["client"], optional = true }
 postcard = { workspace = true }
 bytes.workspace = true
 egui.workspace = true
+# The component library and its Bevy backend, for the `ui-probe` feature
+# (docs/mockups/component-library, phase 3); not in a shipped build yet.
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "8560ec88", optional = true }
+mithril_bevy = { path = "../mithril_bevy", optional = true }
 egui-wgpu.workspace = true
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
 # dependencies of its own, so it builds on every lane, Android and wasm included.

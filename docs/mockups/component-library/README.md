@@ -418,10 +418,28 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    met fase 4, als cartopolis de bibliotheek gaat gebruiken).
 
    ![pariteit fase 2](fase2-pariteit.png)
-3. **Bevy-backend** op het gekozen Bevy: primitieven → `Node`, picking,
-   `TextInput`, `Layer`, `Scroll` met traagheid. Eerste scherm: **Settings**
-   (formulieren, geen painter), naast egui, gefotografeerd met
-   `docs/phone-ui-shots.toml` tegen de web-pagina ernaast.
+3. **Bevy-backend** op het gekozen Bevy — eerste stap (3a) gebouwd
+   2026-11-23. De cascade zit in `crates/style` zelf (`Stylist`, Bevy-vrij):
+   hij loopt dezelfde `css!`-regels door die `gen-css` schrijft, met
+   selectors, `&`-nesting, custom properties, `calc`, `color-mix`, de
+   coarse-pointer- en breedtecondities en een inline `style=` als laatste.
+   De renderer, `crates/mithril_bevy` in cartopolis (verhuist naar
+   `jeroen/mithril` als de vorm staat), legt de boom in `bevy_ui`-entiteiten
+   via een op-wachtrij: een signaal schrijft, het effect zet ops in de rij,
+   `drive_ui` past ze per frame toe en stijlt wat vuil is; picking en
+   toetsenbord gaan als `Event` naar de handlers. Wat het stylesheet met
+   pseudo-elementen tekent, tekent de renderer zelf (vinkje, radiopunt,
+   schakelknop, sluitkruis, chevron, de draai van de spinner). Bewijs:
+   dezelfde pagina (`CARTO_UI_PROBE=mithril`) in Bevy en in de browser —
+   dezelfde HTML uit de string-renderer met dezelfde stylesheets — op
+   telefoon 412×900 @1.5 en desktop 1600×900. Twee vallen van Bevy 0.20
+   staan bij de code: `UiTransform` nooit van een node halen, `Children`
+   nooit verwijderen-en-toevoegen; beide laten de hele boom 0×0. Nog niet
+   (3b): placeholder-tekst, de select-popup, de slider, scrollen met
+   traagheid, klik-eigendom tegenover de wereld, en **Settings** als eerste
+   scherm naast egui, gefotografeerd met `docs/phone-ui-shots.toml`.
+
+   ![Bevy naast de browser](fase3-bevy.png)
 4. **Het wereldframe op de DOM-backend**: zoeker, lagen, Places, kaartjes,
    pins. Hier wordt de vraag letterlijk waar: wasm-wereld + web-componenten,
    één stijl met de site.
