@@ -460,10 +460,21 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    placeholder-tekst (bevy_text tekent die nog niet) en scrollen met de
    vinger; en de pagina's **Graphics** en **World** overgezet, met hun
    `Option`-voorkeuren als vinkje-plus-"Automatic" en `DevPanelState` en
-   het weer twee kanten op gebonden. Nog niet: Audio, Account, Privacy,
-   Tokens; cartopolis' eigen `Tokens` (fase 4).
+   het weer twee kanten op gebonden.
 
    ![Graphics en World op de bibliotheek](fase3b-pages.png)
+
+   Ten slotte **Sound and voice, Account, Privacy and safety en Access
+   tokens** (2026-11-24): daarmee staat elke Settings-pagina op de
+   bibliotheek. Een handeling — de toon, de microfoon, verwijderen,
+   deblokkeren, een token maken of intrekken, kopiëren — is een `Cell` die
+   de view zet en het systeem opneemt, waar de resources en de verbinding
+   zijn; wat getoond wordt (de meter, de tokenlijst, een fout) spiegelt het
+   systeem elk frame in een signaal. Nog niet: de cameratest (een live
+   beeld), op General de ontvanger, opslag en editor-toegang, en
+   cartopolis' eigen `Tokens` (fase 4).
+
+   ![De overige pagina's](fase3b-rest.png)
 4. **Het wereldframe op de DOM-backend**: zoeker, lagen, Places, kaartjes,
    pins. Hier wordt de vraag letterlijk waar: wasm-wereld + web-componenten,
    één stijl met de site.

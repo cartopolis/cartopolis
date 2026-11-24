@@ -6741,7 +6741,7 @@ dependencies = [
 [[package]]
 name = "mithril"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "mithril_components",
  "mithril_macro",
@@ -6763,7 +6763,7 @@ dependencies = [
 [[package]]
 name = "mithril_components"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "mithril_validation",
  "mithril_view",
@@ -6772,7 +6772,7 @@ dependencies = [
 [[package]]
 name = "mithril_macro"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6783,17 +6783,17 @@ dependencies = [
 [[package]]
 name = "mithril_signals"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 
 [[package]]
 name = "mithril_style"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 
 [[package]]
 name = "mithril_validation"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "mithril_signals",
  "unicode-segmentation",
@@ -6802,7 +6802,7 @@ dependencies = [
 [[package]]
 name = "mithril_view"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=02bdf38c#02bdf38ce68f0308177b65eb1204ab2bd469bbc7"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "mithril_signals",
 ]

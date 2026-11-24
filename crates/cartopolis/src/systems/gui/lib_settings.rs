@@ -8,17 +8,19 @@
 //! empty panel of the same width so the dock and the map move over, and
 //! this module owns `RightPanel::Settings` — mounting the panel when it
 //! opens, unmounting it when it closes, closing it from its ✕. The list is
-//! the mockup's (`home-and-profile/v1`, D); General, Graphics and World are
-//! ported with their state bound both ways, the others say so and wait.
+//! the mockup's (`home-and-profile/v1`, D); every page is here, the camera
+//! test and General's receiver, storage and editor-access sections apart.
 //!
 //! **State.** The view reads signals; the app's state is Bevy resources. The
 //! bridge is a frame-by-frame diff in [`drive_lib_settings`]: a signal
 //! whose value moved since the last frame writes the resource, a resource
 //! that moved writes the signal, and a resource is assigned only when
 //! something differs (`AppPrefs` and `DevPanelState` are read through
-//! `is_changed()` gates that re-run work).
+//! `is_changed()` gates that re-run work). An action — a tone, the
+//! microphone, a deletion, a revoke — is a `Cell` the view sets and the
+//! system takes, where the resources and the connection are.
 //!
-//! `CARTO_UI_LIB_PAGE=general|graphics|world` opens on that page (for a
+//! `CARTO_UI_LIB_PAGE=general|graphics|world|…` opens on that page (for a
 //! capture); `CARTO_UI_LIB_HTML=<path>` writes the panel's HTML once, for
 //! the browser beside it.
 
@@ -27,18 +29,23 @@ use std::rc::Rc;
 
 use bevy::ecs::system::{NonSendMarker, SystemParam};
 use bevy::prelude::*;
+#[cfg(feature = "comms")]
+use cartopolis_core::{msg, ContactSettings, NetMessage, RequestPolicy};
 // The library's, not Bevy's: an explicit import outranks the two globs.
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::components::FreeCamera;
+use crate::platform::audio::AudioInput;
 use crate::resources::{
     AppPrefs, AuthIdentity, DevPanelState, MotionPref, OnlineSession, QualityPreset, RightPanel,
     SkyPreference, SunMode, UiTheme, Units,
 };
+#[cfg(feature = "comms")]
+use crate::systems::access_tokens::{self, AccessTokens, Expiry, TokenInfo};
 use crate::systems::egui_manager::EguiMut;
 use crate::systems::render_scale::RenderScale;
-use crate::systems::settings::{clock_hhmm, SettingsState, SettingsTab};
+use crate::systems::settings::{clock_hhmm, observe_peak, SettingsState, SettingsTab};
 use crate::systems::sky_dome::SkyMode;
 use crate::systems::weather::WeatherState;
 use crate::systems::{icons, theme};
@@ -66,9 +73,18 @@ pub struct AppState<'w> {
     prefs: ResMut<'w, AppPrefs>,
     dev: ResMut<'w, DevPanelState>,
     weather: ResMut<'w, WeatherState>,
-    identity: Res<'w, AuthIdentity>,
+    identity: ResMut<'w, AuthIdentity>,
     online: Option<Res<'w, OnlineSession>>,
     sky: Option<Res<'w, SkyMode>>,
+    time: Res<'w, Time>,
+    #[cfg(feature = "audio")]
+    soundscape: Option<Res<'w, crate::systems::player::soundscape::Soundscape>>,
+    #[cfg(feature = "comms")]
+    chat: ResMut<'w, crate::systems::chat::ChatState>,
+    #[cfg(feature = "comms")]
+    contacts: ResMut<'w, crate::systems::contacts::Contacts>,
+    #[cfg(feature = "comms")]
+    tokens: ResMut<'w, AccessTokens>,
 }
 
 /// An `Option<bool>` preference as the library shows it: the resolved
@@ -138,12 +154,28 @@ impl Scale {
     }
 }
 
-/// The mounted panel's signals and what the app last saw of its state.
-struct Live {
-    page: Signal<Option<SettingsTab>>,
-    /// The username when signed in.
+/// Something the view asks the system to do, where the resources are.
+#[derive(Clone, Default)]
+struct Actions {
+    close: Rc<Cell<bool>>,
+    to_about: Rc<Cell<bool>>,
+    play_tone: Rc<Cell<bool>>,
+    toggle_mic: Rc<Cell<bool>>,
+    delete_account: Rc<Cell<bool>>,
+    unblock: Rc<RefCell<Vec<String>>>,
+    revoke: Rc<RefCell<Option<String>>>,
+    make_token: Rc<Cell<bool>>,
+    token_done: Rc<Cell<bool>>,
+    copy: Rc<RefCell<Option<String>>>,
+}
+
+/// The signals every page draws from, and what the app last saw of its
+/// state (held by [`Live`]; the pages get a clone of the signals).
+#[derive(Clone)]
+struct Pages {
     who: Signal<Option<String>>,
     signed_in: Signal<bool>,
+    act: Actions,
     // General
     ui_theme: Signal<UiTheme>,
     units: Signal<Units>,
@@ -175,12 +207,69 @@ struct Live {
     cloud_cover: Signal<f64>,
     precipitation: Signal<f64>,
     fog_density: Signal<f64>,
-    /// The state as last synced, to tell a signal's move from a resource's.
+    // Audio
+    effects_volume: Signal<f64>,
+    voice_volume: Signal<f64>,
+    mic_gain: Signal<f64>,
+    mic_running: Signal<bool>,
+    /// The meter and its peak while a test runs (or the demo's).
+    mic_level: Signal<Option<(f32, f32)>>,
+    /// What the microphone says of itself: an error, "waiting", its name.
+    mic_status: Signal<Option<String>>,
+    // Account
+    deleted: Signal<bool>,
+    delete_error: Signal<Option<String>>,
+    delete_password: Signal<String>,
+    delete_armed: Signal<bool>,
+    // Privacy and tokens (`comms`)
+    #[cfg(feature = "comms")]
+    policy: Signal<RequestPolicy>,
+    #[cfg(feature = "comms")]
+    separate_new_accounts: Signal<bool>,
+    #[cfg(feature = "comms")]
+    notify_requests: Signal<bool>,
+    #[cfg(feature = "comms")]
+    show_online: Signal<bool>,
+    #[cfg(feature = "comms")]
+    blocked: Signal<Vec<String>>,
+    #[cfg(feature = "comms")]
+    token_list: Signal<Option<Result<Vec<TokenInfo>, String>>>,
+    #[cfg(feature = "comms")]
+    token_label: Signal<String>,
+    #[cfg(feature = "comms")]
+    token_expiry: Signal<Expiry>,
+    #[cfg(feature = "comms")]
+    token_elevated: Signal<bool>,
+    #[cfg(feature = "comms")]
+    token_password: Signal<String>,
+    #[cfg(feature = "comms")]
+    token_shown: Signal<Option<(String, String)>>,
+    #[cfg(feature = "comms")]
+    token_busy: Signal<bool>,
+    #[cfg(feature = "comms")]
+    token_error: Signal<Option<String>>,
+    #[cfg(feature = "comms")]
+    may_elevate: Signal<bool>,
+    #[cfg(feature = "comms")]
+    revoke_armed: Signal<Option<String>>,
+    /// The page shows its demo content (a capture), signed out.
+    #[cfg(feature = "comms")]
+    tokens_demo: Signal<bool>,
+}
+
+/// The mounted panel: its signals and the state as last synced, to tell a
+/// signal's move from a resource's.
+struct Live {
+    page: Signal<Option<SettingsTab>>,
+    p: Pages,
     last_prefs: AppPrefs,
     last_dev: DevPanelState,
     last_weather_live: bool,
-    close: Rc<Cell<bool>>,
-    to_about: Rc<Cell<bool>>,
+    last_delete_password: String,
+    #[cfg(feature = "comms")]
+    last_contacts: ContactSettings,
+    #[cfg(feature = "comms")]
+    last_token_form: (String, Expiry, bool, String),
 }
 
 /// The device's defaults behind every Automatic, as the egui page computes
@@ -211,25 +300,35 @@ impl Defaults {
     }
 }
 
+/// Whether the signed-in account may give a token its admin rights.
+#[cfg(feature = "comms")]
+fn may_elevate(identity: &AuthIdentity) -> bool {
+    identity
+        .permissions
+        .iter()
+        .filter_map(|s| cartopolis_core::permissions::Permission::from_slug(s))
+        .any(|p| p.elevated())
+}
+
 impl Live {
-    fn new(
-        prefs: &AppPrefs,
-        dev: &DevPanelState,
-        weather_live: bool,
-        sky_now: Option<SkyMode>,
-        who: Option<String>,
-        signed_in: bool,
-    ) -> Self {
-        let page = std::env::var("CARTO_UI_LIB_PAGE").ok().and_then(|p| {
-            SettingsTab::ALL.into_iter().find(|t| {
-                t.label().eq_ignore_ascii_case(&p) || format!("{t:?}").eq_ignore_ascii_case(&p)
+    fn new(app: &AppState, state: &SettingsState, who: Option<String>, signed_in: bool) -> Self {
+        // The page asked for: by the capture's environment, else by whoever
+        // opened the panel on one (`--ui graphics`, `shot_harness`).
+        let page = std::env::var("CARTO_UI_LIB_PAGE")
+            .ok()
+            .and_then(|p| {
+                SettingsTab::ALL.into_iter().find(|t| {
+                    t.label().eq_ignore_ascii_case(&p) || format!("{t:?}").eq_ignore_ascii_case(&p)
+                })
             })
-        });
+            .or(state.page);
+        let prefs = &*app.prefs;
+        let dev = &*app.dev;
         let d = Defaults::now(prefs);
-        Live {
-            page: signal(page),
+        let p = Pages {
             who: signal(who),
             signed_in: signal(signed_in),
+            act: Actions::default(),
             ui_theme: signal(prefs.ui_theme),
             units: signal(prefs.units),
             keep_screen_on: signal(prefs.keep_screen_on),
@@ -243,7 +342,7 @@ impl Live {
             anti_aliasing: Tri::new(prefs.anti_aliasing, d.anti_aliasing),
             water_effects: signal(prefs.water_effects),
             sky: signal(prefs.sky),
-            sky_now: signal(sky_now),
+            sky_now: signal(app.sky.as_deref().copied()),
             shadows: Tri::new(prefs.shadows, d.shadows),
             sky_lighting: Tri::new(prefs.sky_lighting, d.sky_lighting),
             light_shafts: Tri::new(prefs.light_shafts, d.light_shafts),
@@ -252,54 +351,124 @@ impl Live {
             moon_age_days: signal(f64::from(dev.moon_age_days)),
             auto_cycle: signal(dev.auto_cycle),
             cycle_seconds: signal(Some(f64::from(dev.cycle_seconds))),
-            weather_live: signal(weather_live),
+            weather_live: signal(app.weather.live),
             clouds_enabled: signal(dev.clouds_enabled),
             cloud_shadows: signal(dev.cloud_shadows),
             cloud_cover: signal(f64::from(dev.cloud_cover)),
             precipitation: signal(f64::from(dev.precipitation)),
             fog_density: signal(f64::from(dev.fog_density)),
+            effects_volume: signal(f64::from(prefs.effects_volume)),
+            voice_volume: signal(f64::from(prefs.voice_volume)),
+            mic_gain: signal(f64::from(prefs.mic_gain)),
+            mic_running: signal(state.mic.is_some()),
+            mic_level: signal(state.demo_level),
+            mic_status: signal(None),
+            deleted: signal(app.identity.deleted),
+            delete_error: signal(app.identity.delete_error.clone()),
+            delete_password: signal(state.delete_password.clone()),
+            delete_armed: signal(false),
+            #[cfg(feature = "comms")]
+            policy: signal(app.contacts.settings.policy),
+            #[cfg(feature = "comms")]
+            separate_new_accounts: signal(app.contacts.settings.separate_new_accounts),
+            #[cfg(feature = "comms")]
+            notify_requests: signal(app.contacts.settings.notify_requests),
+            #[cfg(feature = "comms")]
+            show_online: signal(app.contacts.settings.show_online),
+            #[cfg(feature = "comms")]
+            blocked: signal(app.chat.blocked.clone()),
+            #[cfg(feature = "comms")]
+            token_list: signal(app.tokens.list.clone()),
+            #[cfg(feature = "comms")]
+            token_label: signal(app.tokens.label.clone()),
+            #[cfg(feature = "comms")]
+            token_expiry: signal(app.tokens.expiry),
+            #[cfg(feature = "comms")]
+            token_elevated: signal(app.tokens.elevated),
+            #[cfg(feature = "comms")]
+            token_password: signal(app.tokens.password.clone()),
+            #[cfg(feature = "comms")]
+            token_shown: signal(app.tokens.shown.clone()),
+            #[cfg(feature = "comms")]
+            token_busy: signal(app.tokens.busy),
+            #[cfg(feature = "comms")]
+            token_error: signal(app.tokens.error.clone()),
+            #[cfg(feature = "comms")]
+            may_elevate: signal(may_elevate(&app.identity)),
+            #[cfg(feature = "comms")]
+            revoke_armed: signal(None),
+            #[cfg(feature = "comms")]
+            tokens_demo: signal(app.tokens.demo),
+        };
+        Live {
+            page: signal(page),
+            p,
             last_prefs: *prefs,
             last_dev: dev.clone(),
-            last_weather_live: weather_live,
-            close: Rc::new(Cell::new(false)),
-            to_about: Rc::new(Cell::new(false)),
+            last_weather_live: app.weather.live,
+            last_delete_password: state.delete_password.clone(),
+            #[cfg(feature = "comms")]
+            last_contacts: app.contacts.settings.clone(),
+            #[cfg(feature = "comms")]
+            last_token_form: (
+                app.tokens.label.clone(),
+                app.tokens.expiry,
+                app.tokens.elevated,
+                app.tokens.password.clone(),
+            ),
         }
     }
 
     /// Signals that moved write the state; state that moved writes the
-    /// signals. Answers what to keep.
+    /// signals. Answers the preferences, the world state and the weather
+    /// switch to keep.
     fn sync(
         &mut self,
         prefs: &AppPrefs,
         dev: &DevPanelState,
         weather_live: bool,
     ) -> (AppPrefs, DevPanelState, bool) {
+        let p = &self.p;
         let d = Defaults::now(prefs);
         let mut edited = *prefs;
         // A plain signal against a plain field.
         macro_rules! plain {
-            ($sig:expr, $edited:expr, $now:expr, $last:expr, $conv:expr) => {{
+            ($sig:expr, $edited:expr, $now:expr, $last:expr) => {{
                 let s = $sig.get();
                 if s != $last {
-                    $edited = $conv(s);
+                    $edited = s;
                 } else if $now != $last {
                     $sig.set($now);
                 }
             }};
         }
+        // An `f64` signal against an `f32` field.
+        macro_rules! plain32 {
+            ($sig:expr, $edited:expr, $now:expr, $last:expr) => {{
+                let s = $sig.get() as f32;
+                if s != $last {
+                    $edited = s;
+                } else if $now != $last {
+                    $sig.set(f64::from($now));
+                }
+            }};
+        }
         macro_rules! pref {
             ($f:ident) => {
-                plain!(self.$f, edited.$f, prefs.$f, self.last_prefs.$f, |v| v)
+                plain!(p.$f, edited.$f, prefs.$f, self.last_prefs.$f)
+            };
+            ($f:ident, f32) => {
+                plain32!(p.$f, edited.$f, prefs.$f, self.last_prefs.$f)
             };
         }
         macro_rules! tri {
             ($f:ident, $default:expr) => {{
-                self.$f.follow($default);
-                let s = self.$f.get();
+                p.$f.follow($default);
+                let s = p.$f.get();
                 if s != self.last_prefs.$f {
                     edited.$f = s;
                 } else if prefs.$f != self.last_prefs.$f {
-                    self.$f.set(prefs.$f, $default);
+                    p.$f.set(prefs.$f, $default);
                 }
             }};
         }
@@ -313,17 +482,20 @@ impl Live {
         pref!(frame_rate);
         pref!(water_effects);
         pref!(sky);
+        pref!(effects_volume, f32);
+        pref!(voice_volume, f32);
+        pref!(mic_gain, f32);
         tri!(bloom, d.bloom);
         tri!(anti_aliasing, d.anti_aliasing);
         tri!(shadows, d.shadows);
         tri!(sky_lighting, d.sky_lighting);
         tri!(light_shafts, d.light_shafts);
         {
-            let s = self.render_scale.get();
+            let s = p.render_scale.get();
             if s != self.last_prefs.render_scale {
                 edited.render_scale = s;
             } else if prefs.render_scale != self.last_prefs.render_scale {
-                self.render_scale.set(prefs.render_scale, d.render_scale);
+                p.render_scale.set(prefs.render_scale, d.render_scale);
             }
         }
         self.last_prefs = edited;
@@ -331,16 +503,11 @@ impl Live {
         let mut world = dev.clone();
         macro_rules! devf {
             ($f:ident) => {
-                plain!(self.$f, world.$f, dev.$f, self.last_dev.$f, |v| v)
+                plain!(p.$f, world.$f, dev.$f, self.last_dev.$f)
             };
-            ($f:ident, f32) => {{
-                let s = self.$f.get() as f32;
-                if s != self.last_dev.$f {
-                    world.$f = s;
-                } else if dev.$f != self.last_dev.$f {
-                    self.$f.set(f64::from(dev.$f));
-                }
-            }};
+            ($f:ident, f32) => {
+                plain32!(p.$f, world.$f, dev.$f, self.last_dev.$f)
+            };
         }
         devf!(sun_mode);
         devf!(auto_cycle);
@@ -352,29 +519,69 @@ impl Live {
         devf!(precipitation, f32);
         devf!(fog_density, f32);
         {
-            let s = self
+            let s = p
                 .cycle_seconds
                 .get()
                 .map_or(dev.cycle_seconds, |v| v as f32);
             if s != self.last_dev.cycle_seconds {
                 world.cycle_seconds = s.clamp(1.0, 120.0);
             } else if dev.cycle_seconds != self.last_dev.cycle_seconds {
-                self.cycle_seconds.set(Some(f64::from(dev.cycle_seconds)));
+                p.cycle_seconds.set(Some(f64::from(dev.cycle_seconds)));
             }
         }
         self.last_dev = world.clone();
 
         let mut live = weather_live;
-        {
-            let s = self.weather_live.get();
-            if s != self.last_weather_live {
-                live = s;
-            } else if weather_live != self.last_weather_live {
-                self.weather_live.set(weather_live);
-            }
-        }
+        plain!(p.weather_live, live, weather_live, self.last_weather_live);
         self.last_weather_live = live;
         (edited, world, live)
+    }
+
+    /// The contact settings, the same way; answers them when they changed.
+    #[cfg(feature = "comms")]
+    fn sync_contacts(&mut self, now: &ContactSettings) -> Option<ContactSettings> {
+        let p = &self.p;
+        let mut edited = now.clone();
+        macro_rules! field {
+            ($f:ident) => {{
+                let s = p.$f.get();
+                if s != self.last_contacts.$f {
+                    edited.$f = s;
+                } else if now.$f != self.last_contacts.$f {
+                    p.$f.set(now.$f);
+                }
+            }};
+        }
+        field!(policy);
+        field!(separate_new_accounts);
+        field!(notify_requests);
+        field!(show_online);
+        self.last_contacts = edited.clone();
+        (edited != *now).then_some(edited)
+    }
+
+    /// The token form's fields, the same way, written straight into the
+    /// store (plain strings, no gate behind them).
+    #[cfg(feature = "comms")]
+    fn sync_token_form(&mut self, tokens: &mut AccessTokens) {
+        let p = &self.p;
+        let last = &mut self.last_token_form;
+        macro_rules! field {
+            ($sig:ident, $f:ident, $i:tt) => {{
+                let s = p.$sig.get();
+                if s != last.$i {
+                    tokens.$f = s.clone();
+                    last.$i = s;
+                } else if tokens.$f != last.$i {
+                    p.$sig.set(tokens.$f.clone());
+                    last.$i = tokens.$f.clone();
+                }
+            }};
+        }
+        field!(token_label, label, 0);
+        field!(token_expiry, expiry, 1);
+        field!(token_elevated, elevated, 2);
+        field!(token_password, password, 3);
     }
 }
 
@@ -426,7 +633,6 @@ pub fn drive_lib_settings(
     egui.set_overlay_owns_pointer(open && pointer.owns_pointer());
     let signed_in = app.identity.username.is_some() && app.online.is_some();
     let who = signed_in.then(|| app.identity.username.clone()).flatten();
-    let sky_now = app.sky.as_deref().copied();
     LIVE.with(|live| {
         let mut live = live.borrow_mut();
         match (open, live.as_mut()) {
@@ -434,17 +640,18 @@ pub fn drive_lib_settings(
             (false, Some(_)) => {
                 *live = None;
                 mithril_bevy::with_host(|host| host.clear());
+                // What egui's panel does on closing: the microphone off, the
+                // typed password gone, the tokens forgotten.
                 state.page = None;
+                if state.mic.is_some() {
+                    state.stop_mic();
+                }
+                state.delete_password.clear();
+                #[cfg(feature = "comms")]
+                app.tokens.forget();
             }
             (true, None) => {
-                let l = Live::new(
-                    &app.prefs,
-                    &app.dev,
-                    app.weather.live,
-                    sky_now,
-                    who,
-                    signed_in,
-                );
+                let l = Live::new(&app, &state, who, signed_in);
                 let compact = egui.compact();
                 let p = theme::p();
                 mithril_bevy::with_host(|host| {
@@ -470,20 +677,156 @@ pub fn drive_lib_settings(
                 if weather_live != app.weather.live {
                     app.weather.live = weather_live;
                 }
-                if l.signed_in.get() != signed_in {
-                    l.signed_in.set(signed_in);
+                let p = &l.p;
+                macro_rules! mirror {
+                    ($sig:expr, $now:expr) => {{
+                        let now = $now;
+                        if $sig.get() != now {
+                            $sig.set(now);
+                        }
+                    }};
                 }
-                if l.who.get() != who {
-                    l.who.set(who);
-                }
-                if l.sky_now.get() != sky_now {
-                    l.sky_now.set(sky_now);
-                }
+                mirror!(p.signed_in, signed_in);
+                mirror!(p.who, who.clone());
+                mirror!(p.sky_now, app.sky.as_deref().copied());
+                mirror!(p.deleted, app.identity.deleted);
+                mirror!(p.delete_error, app.identity.delete_error.clone());
                 state.page = l.page.get();
-                if l.close.take() {
+
+                // Audio: the microphone test and its meter.
+                let on_audio = state.page == Some(SettingsTab::Audio);
+                if p.act.toggle_mic.take() {
+                    if state.mic.is_some() {
+                        state.stop_mic();
+                    } else {
+                        state.start_mic();
+                    }
+                }
+                if !on_audio && state.mic.is_some() {
+                    state.stop_mic();
+                }
+                mirror!(p.mic_running, state.mic.is_some());
+                let (now, dt) = (app.time.elapsed_secs_f64(), app.time.delta_secs());
+                let gain = app.prefs.capture_gain();
+                let (level, status) = match observe_peak(&mut state, gain, now, dt) {
+                    Some(level) => {
+                        let mic = state.mic.as_ref().expect("observe_peak proved it is Some");
+                        if let Some(err) = mic.error() {
+                            (None, Some(err))
+                        } else if !mic.is_receiving() {
+                            (None, Some("Waiting for the microphone…".to_owned()))
+                        } else {
+                            (Some(level), mic.device_name())
+                        }
+                    }
+                    None => (state.demo_level, None),
+                };
+                mirror!(p.mic_level, level);
+                mirror!(p.mic_status, status);
+                if p.act.play_tone.take() {
+                    #[cfg(feature = "audio")]
+                    if let Some(soundscape) = app.soundscape.as_deref() {
+                        commands.spawn((
+                            bevy::audio::AudioPlayer(soundscape.test_tone.clone()),
+                            bevy::audio::PlaybackSettings {
+                                mode: bevy::audio::PlaybackMode::Despawn,
+                                ..default()
+                            },
+                        ));
+                    }
+                }
+
+                // Account: the password typed, and the deletion asked for.
+                {
+                    let s = p.delete_password.get();
+                    if s != l.last_delete_password {
+                        state.delete_password = s.clone();
+                        l.last_delete_password = s;
+                    } else if state.delete_password != l.last_delete_password {
+                        p.delete_password.set(state.delete_password.clone());
+                        l.last_delete_password = state.delete_password.clone();
+                    }
+                }
+                if p.act.delete_account.take() && !state.delete_password.is_empty() {
+                    if let Some(online) = app.online.as_deref() {
+                        online.send(
+                            "delete account",
+                            cartopolis_core::NetMessage::DeleteAccount(
+                                cartopolis_core::msg::DeleteAccount {
+                                    request_id: crate::resources::DELETE_ACCOUNT_REQUEST,
+                                    password: std::mem::take(&mut state.delete_password),
+                                },
+                            ),
+                        );
+                        p.delete_password.set(String::new());
+                        l.last_delete_password.clear();
+                    }
+                }
+
+                #[cfg(feature = "comms")]
+                {
+                    // Privacy: the request policy and the block list.
+                    let settings_now = app.contacts.settings.clone();
+                    if let Some(edited) = l.sync_contacts(&settings_now) {
+                        app.contacts.settings = edited;
+                        app.contacts.push_settings(false);
+                    }
+                    mirror!(l.p.blocked, app.chat.blocked.clone());
+                    let unblock: Vec<String> = std::mem::take(&mut *l.p.act.unblock.borrow_mut());
+                    if let Some(online) = app.online.as_deref() {
+                        for username in unblock {
+                            online.send(
+                                "set blocked",
+                                NetMessage::SetBlocked(msg::SetBlocked {
+                                    request_id: 0,
+                                    username,
+                                    blocked: false,
+                                }),
+                            );
+                        }
+                    }
+                    // Tokens: the list asked for on the page, the form, the
+                    // actions, the secret shown once.
+                    if state.page == Some(SettingsTab::Tokens) {
+                        app.tokens.drain();
+                        if !app.tokens.asked {
+                            app.tokens.asked = true;
+                            app.tokens.refresh();
+                        }
+                    }
+                    l.sync_token_form(&mut app.tokens);
+                    if l.p.act.make_token.take() {
+                        app.tokens.make();
+                    }
+                    if let Some(id) = l.p.act.revoke.borrow_mut().take() {
+                        let token = app
+                            .tokens
+                            .list
+                            .as_ref()
+                            .and_then(|r| r.as_ref().ok())
+                            .and_then(|list| list.iter().find(|t| t.id == id).cloned());
+                        if let Some(t) = token {
+                            app.tokens.revoke(&t);
+                        }
+                    }
+                    if l.p.act.token_done.take() {
+                        app.tokens.shown = None;
+                    }
+                    if let Some(text) = l.p.act.copy.borrow_mut().take() {
+                        egui.ctx().copy_text(text);
+                    }
+                    mirror!(l.p.token_list, app.tokens.list.clone());
+                    mirror!(l.p.token_shown, app.tokens.shown.clone());
+                    mirror!(l.p.token_busy, app.tokens.busy);
+                    mirror!(l.p.token_error, app.tokens.error.clone());
+                    mirror!(l.p.may_elevate, may_elevate(&app.identity));
+                    mirror!(l.p.tokens_demo, app.tokens.demo);
+                }
+
+                if l.p.act.close.take() {
                     *right_panel = RightPanel::None;
                 }
-                if l.to_about.take() {
+                if l.p.act.to_about.take() {
                     *right_panel = RightPanel::About;
                 }
             }
@@ -520,6 +863,22 @@ fn note(text: impl Into<String>) -> View {
     }
 }
 
+/// A line in the error colour.
+fn error_line(text: impl Into<String>) -> View {
+    let text: String = text.into();
+    view! {
+        <p style="margin: 0; color: var(--m-danger); font-size: var(--m-font-size-sm); line-height: 1.4">{text}</p>
+    }
+}
+
+/// A short strong line: a subsection's title.
+fn strong(text: impl Into<String>) -> View {
+    let text: String = text.into();
+    view! {
+        <p style="margin: 0; color: var(--m-text-strong); font-weight: 600">{text}</p>
+    }
+}
+
 /// A handler from a closure.
 fn on(f: impl Fn() + 'static) -> Option<Handler> {
     Some(Rc::new(move |_: &Event| f()) as Handler)
@@ -534,7 +893,7 @@ fn panel(l: &Live, compact: bool) -> View {
     };
     let header = {
         let page = l.page.clone();
-        let close = l.close.clone();
+        let close = l.p.act.close.clone();
         move || -> View {
             let back_to_list = {
                 let page = page.clone();
@@ -563,16 +922,22 @@ fn panel(l: &Live, compact: bool) -> View {
     };
     let body = {
         let page = l.page.clone();
-        let l = Pages::from(l);
+        let p = l.p.clone();
         move || -> View {
             match page.get() {
-                None => l.home(&page),
-                Some(SettingsTab::General) => l.general(),
-                Some(SettingsTab::Graphics) => l.graphics(),
-                Some(SettingsTab::World) => l.world(),
-                Some(_) => note(
-                    "This page is not in the library's edition yet; without CARTO_UI_LIB it is egui's.",
-                ),
+                None => p.home(&page),
+                Some(SettingsTab::General) => p.general(),
+                Some(SettingsTab::Graphics) => p.graphics(),
+                Some(SettingsTab::World) => p.world(),
+                Some(SettingsTab::Audio) => p.audio(),
+                Some(SettingsTab::Account) => p.account(),
+                #[cfg(feature = "comms")]
+                Some(SettingsTab::Privacy) => p.privacy(),
+                #[cfg(feature = "comms")]
+                Some(SettingsTab::Tokens) => p.tokens(),
+                // Not in the web build's list (`SettingsTab::ALL`).
+                #[cfg(not(feature = "comms"))]
+                Some(SettingsTab::Privacy | SettingsTab::Tokens) => View::Empty,
             }
         }
     };
@@ -583,81 +948,6 @@ fn panel(l: &Live, compact: bool) -> View {
                 {body}
             </div>
         </div>
-    }
-}
-
-/// The signals the pages draw from, cloned out of [`Live`] so a page can be
-/// re-rendered on a page turn.
-#[derive(Clone)]
-struct Pages {
-    who: Signal<Option<String>>,
-    signed_in: Signal<bool>,
-    to_about: Rc<Cell<bool>>,
-    ui_theme: Signal<UiTheme>,
-    units: Signal<Units>,
-    keep_screen_on: Signal<bool>,
-    motion: Signal<MotionPref>,
-    developer_menu: Signal<bool>,
-    voice_guidance: Signal<bool>,
-    quality: Signal<QualityPreset>,
-    render_scale: Scale,
-    frame_rate: Signal<Option<u32>>,
-    bloom: Tri,
-    anti_aliasing: Tri,
-    water_effects: Signal<bool>,
-    sky: Signal<SkyPreference>,
-    sky_now: Signal<Option<SkyMode>>,
-    shadows: Tri,
-    sky_lighting: Tri,
-    light_shafts: Tri,
-    sun_mode: Signal<SunMode>,
-    time_of_day: Signal<f64>,
-    moon_age_days: Signal<f64>,
-    auto_cycle: Signal<bool>,
-    cycle_seconds: Signal<Option<f64>>,
-    weather_live: Signal<bool>,
-    clouds_enabled: Signal<bool>,
-    cloud_shadows: Signal<bool>,
-    cloud_cover: Signal<f64>,
-    precipitation: Signal<f64>,
-    fog_density: Signal<f64>,
-}
-
-impl From<&Live> for Pages {
-    fn from(l: &Live) -> Self {
-        Pages {
-            who: l.who.clone(),
-            signed_in: l.signed_in.clone(),
-            to_about: l.to_about.clone(),
-            ui_theme: l.ui_theme.clone(),
-            units: l.units.clone(),
-            keep_screen_on: l.keep_screen_on.clone(),
-            motion: l.motion.clone(),
-            developer_menu: l.developer_menu.clone(),
-            voice_guidance: l.voice_guidance.clone(),
-            quality: l.quality.clone(),
-            render_scale: l.render_scale.clone(),
-            frame_rate: l.frame_rate.clone(),
-            bloom: l.bloom.clone(),
-            anti_aliasing: l.anti_aliasing.clone(),
-            water_effects: l.water_effects.clone(),
-            sky: l.sky.clone(),
-            sky_now: l.sky_now.clone(),
-            shadows: l.shadows.clone(),
-            sky_lighting: l.sky_lighting.clone(),
-            light_shafts: l.light_shafts.clone(),
-            sun_mode: l.sun_mode.clone(),
-            time_of_day: l.time_of_day.clone(),
-            moon_age_days: l.moon_age_days.clone(),
-            auto_cycle: l.auto_cycle.clone(),
-            cycle_seconds: l.cycle_seconds.clone(),
-            weather_live: l.weather_live.clone(),
-            clouds_enabled: l.clouds_enabled.clone(),
-            cloud_shadows: l.cloud_shadows.clone(),
-            cloud_cover: l.cloud_cover.clone(),
-            precipitation: l.precipitation.clone(),
-            fog_density: l.fog_density.clone(),
-        }
     }
 }
 
@@ -714,6 +1004,48 @@ fn tri_row(tri: &Tri, label: &'static str, default: bool, id: &'static str) -> V
     }
 }
 
+/// A button that asks twice (`theme::confirm_button`): the first press arms
+/// it into the danger tone, the second does it.
+fn confirm_button(
+    armed: Signal<bool>,
+    label: &'static str,
+    confirm_label: &'static str,
+    enabled: Rc<dyn Fn() -> bool>,
+    fire: impl Fn() + 'static,
+) -> View {
+    let fire = Rc::new(fire);
+    move || -> View {
+        let is_armed = armed.get();
+        let disabled = !enabled();
+        let click = {
+            let (armed, fire) = (armed.clone(), fire.clone());
+            on(move || {
+                if armed.get() {
+                    armed.set(false);
+                    fire();
+                } else {
+                    armed.set(true);
+                }
+            })
+        };
+        if is_armed {
+            view! { <Button variant=Variant::Danger size=Size::Sm onclick={click} disabled={disabled}>{confirm_label}</Button> }
+        } else {
+            view! { <Button variant=Variant::Secondary size=Size::Sm onclick={click} disabled={disabled}>{label}</Button> }
+        }
+    }
+    .into_view()
+}
+
+/// Seconds since the epoch, for the tokens' dates.
+#[cfg(feature = "comms")]
+fn now_s() -> u64 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl Pages {
     /// The list of pages (`home-and-profile/v1`, D): the account's, then
     /// the app's, About last.
@@ -744,7 +1076,7 @@ impl Pages {
                 .collect()
         };
         let about = {
-            let to_about = self.to_about.clone();
+            let to_about = self.act.to_about.clone();
             on(move || to_about.set(true))
         };
         let (account_rows, app_rows) = (rows(true), rows(false));
@@ -1034,5 +1366,387 @@ impl Pages {
                 {manual_weather}
             </Section>
         }
+    }
+
+    /// Sound and voice (`settings::audio_tab`): the chime, the levels, the
+    /// microphone test with its meter. The camera test stays egui's: it
+    /// shows a live picture, which the library has no image node for yet.
+    fn audio(&self) -> View {
+        let has_audio = cfg!(feature = "audio");
+        let play = {
+            let play = self.act.play_tone.clone();
+            on(move || play.set(true))
+        };
+        let percent: Rc<dyn Fn(f64) -> String> = Rc::new(|v| format!("{:.0}%", v * 100.0));
+        let gain_pct: Rc<dyn Fn(f64) -> String> = Rc::new(|v| format!("{:.0}%", v * 100.0));
+        let mic_block = if AudioInput::available() {
+            let toggle = {
+                let t = self.act.toggle_mic.clone();
+                on(move || t.set(true))
+            };
+            let button = {
+                let running = self.mic_running.clone();
+                let toggle = toggle.clone();
+                move || -> View {
+                    if running.get() {
+                        view! { <Button variant=Variant::Secondary icon={icon(icons::STOP)} onclick={toggle.clone()}>"Stop microphone"</Button> }
+                    } else {
+                        view! { <Button variant=Variant::Secondary icon={icon(icons::MIC)} onclick={toggle.clone()}>"Test microphone"</Button> }
+                    }
+                }
+            };
+            let meter = {
+                let (level, status, running) = (
+                    self.mic_level.clone(),
+                    self.mic_status.clone(),
+                    self.mic_running.clone(),
+                );
+                move || -> View {
+                    let bar = level.get().map_or(View::Empty, |(meter, peak)| {
+                        let shown = f64::from(meter.clamp(0.0, 1.0) * 100.0);
+                        let peak_note = format!("peak {:.0}%", peak * 100.0);
+                        view! {
+                            <Progress value={Some(shown)} label="Level" />
+                            {note(peak_note)}
+                        }
+                    });
+                    let line = match (running.get(), status.get()) {
+                        (true, Some(s)) if level.get().is_none() => error_line(s),
+                        (true, Some(name)) => note(format!(
+                            "{name} — speak normally; the bar should reach the middle."
+                        )),
+                        (true, None) => note("Speak normally — the bar should reach the middle."),
+                        (false, _) => View::Empty,
+                    };
+                    view! { {bar} {line} }
+                }
+            };
+            view! {
+                <FieldSlider model={self.mic_gain.clone()} min=0.0 max={f64::from(crate::resources::MAX_MIC_GAIN)} step=0.05 format={Some(gain_pct)} label="Input gain" id="a-gain" />
+                {note("Lift a quiet headset. Aim for the middle of the bar while speaking.")}
+                <div>{button}</div>
+                {meter}
+            }
+        } else {
+            error_line(if has_audio {
+                "No microphone backend on this platform."
+            } else {
+                "This build has no audio support (built without the `audio` feature)."
+            })
+        };
+        view! {
+            <Section title="Output">
+                {note("Play a short chime to confirm you can hear the application.")}
+                <div><Button variant=Variant::Secondary icon={icon(icons::PLAY)} onclick={play} disabled={!has_audio}>"Sound test"</Button></div>
+                {if has_audio { View::Empty } else { error_line("This build has no audio support.") }}
+            </Section>
+            <Section title="Levels">
+                <FieldSlider model={self.effects_volume.clone()} min=0.0 max=1.0 step=0.01 format={Some(percent.clone())} label="Sound effects" id="a-effects" />
+                {note("Footsteps, wind, landings, splashes and fountains, and the driving turn cues.")}
+                <FieldSlider model={self.voice_volume.clone()} min=0.0 max=1.0 step=0.01 format={Some(percent)} label="Voice" id="a-voice" />
+                {note("How loudly people nearby are heard, before distance is applied.")}
+            </Section>
+            <Section title="Microphone">
+                {mic_block}
+            </Section>
+            <Section title="Camera">
+                {note("The camera test is still egui's: it shows a live picture.")}
+            </Section>
+        }
+    }
+
+    /// Account (`settings::account_tab`): who you are here, and the one
+    /// thing that cannot be undone, asked for twice with the password.
+    fn account(&self) -> View {
+        let (deleted, who, signed_in, error, password, armed) = (
+            self.deleted.clone(),
+            self.who.clone(),
+            self.signed_in.clone(),
+            self.delete_error.clone(),
+            self.delete_password.clone(),
+            self.delete_armed.clone(),
+        );
+        let fire = {
+            let act = self.act.delete_account.clone();
+            move || act.set(true)
+        };
+        let ready: Rc<dyn Fn() -> bool> = {
+            let password = password.clone();
+            Rc::new(move || !password.get().is_empty())
+        };
+        move || -> View {
+            if deleted.get() {
+                return view! {
+                    {strong("Your account has been deleted.")}
+                    {note("Nothing of it remains on the server except shared chat history, which no longer carries your name.")}
+                };
+            }
+            let who_line: View = match who.get() {
+                Some(name) => view! {
+                    <p style="margin: 0"><span style="color: var(--m-text-dim); font-size: var(--m-font-size-sm)">"Signed in as "</span><span style="color: var(--m-text-strong); font-weight: 600">{name}</span></p>
+                },
+                None => note("You are not signed in. Offline, there is no account and nothing leaves this device."),
+            };
+            let can_delete = signed_in.get();
+            let delete_block: View = if can_delete {
+                let err: View = error
+                    .get()
+                    .map_or(View::Empty, error_line);
+                view! {
+                    {err}
+                    <FieldText model={password.clone()} r#type=TextType::Password label="Type your password to confirm" id="acc-pw" autocomplete="current-password" />
+                    <div>{confirm_button(armed.clone(), "Delete account…", "Delete permanently", ready.clone(), fire.clone())}</div>
+                }
+            } else {
+                note("Sign in to the world holding the account to delete it.")
+            };
+            view! {
+                <Section title="Signed in">{who_line}</Section>
+                <Section title="Delete this account">
+                    {note("This cannot be undone. The account, its password and its block list are erased; anything you said in Global or in a room stays, with your name removed from it.")}
+                    {delete_block}
+                </Section>
+            }
+        }
+        .into_view()
+    }
+
+    /// Privacy and safety (`settings::privacy_tab`, `contacts::privacy_body`):
+    /// who may send you a request, who you blocked, and how to report.
+    #[cfg(feature = "comms")]
+    fn privacy(&self) -> View {
+        let signed_in = self.signed_in.clone();
+        let policies = opts(&[
+            (RequestPolicy::Anyone, "Anyone — including by username"),
+            (
+                RequestPolicy::Near,
+                "People you've been near — in the world in the last hour, or who share a contact with you",
+            ),
+            (
+                RequestPolicy::LinkOnly,
+                "Only with my link — nobody finds you by name or in the world",
+            ),
+        ]);
+        let (policy, separate, notify, show_online, blocked, unblock) = (
+            self.policy.clone(),
+            self.separate_new_accounts.clone(),
+            self.notify_requests.clone(),
+            self.show_online.clone(),
+            self.blocked.clone(),
+            self.act.unblock.clone(),
+        );
+        let blocked_list = move || -> View {
+            let names = blocked.get();
+            if names.is_empty() {
+                return note("You have not blocked anyone.");
+            }
+            let rows: Vec<View> = names
+                .into_iter()
+                .map(|name| {
+                    let click = {
+                        let (unblock, name) = (unblock.clone(), name.clone());
+                        on(move || unblock.borrow_mut().push(name.clone()))
+                    };
+                    let end = view! { <Button variant=Variant::Ghost size=Size::Sm onclick={click}>"Unblock"</Button> };
+                    view! { <ListItem icon={icon(icons::APPEARANCE)} end={end}>{name}</ListItem> }
+                })
+                .collect();
+            view! { <List>{rows}</List> }
+        };
+        let safety = view! {
+            <Section title="Safety">
+                {note("Tap or right-click somebody's name in chat to block or report them. Blocking is immediate and lasts until you undo it; reports go to the people who run this world.")}
+                <p style="margin: 0; font-size: var(--m-font-size-sm)"><span style="color: var(--m-text-dim)">"Contact: "</span><span style="color: var(--m-accent)">{crate::systems::settings::SAFETY_CONTACT}</span></p>
+            </Section>
+        };
+        move || -> View {
+            if !signed_in.get() {
+                return view! {
+                    {note("Signed out, nobody can message you and there is nobody to block.")}
+                    {safety.clone()}
+                };
+            }
+            view! {
+                <Section title="Who can send you a request">
+                    {note("Your contacts can always message you. Anyone with your link can always send a request.")}
+                    <FieldRadio model={policy.clone()} options={policies.clone()} id="pr-policy" />
+                </Section>
+                <Section title="Requests">
+                    <FieldCheckbox model={separate.clone()} label="Requests from accounts younger than a week wait in their own section" id="pr-separate" />
+                    <FieldCheckbox model={notify.clone()} label="Say so when a request arrives (off: they wait quietly in the tray)" id="pr-notify" />
+                </Section>
+                <Section title="Contacts can see">
+                    <FieldCheckbox model={show_online.clone()} label="That I'm online" id="pr-online" />
+                    {note("Where your avatar is stays per chat and until a time you set, as before. Being a contact doesn't show it.")}
+                </Section>
+                <Section title="Blocked">{blocked_list.clone()}</Section>
+                {safety.clone()}
+            }
+        }
+        .into_view()
+    }
+
+    /// Access tokens (`access_tokens::page`): the list with Revoke, the
+    /// form with the password asked again, the secret shown once.
+    #[cfg(feature = "comms")]
+    fn tokens(&self) -> View {
+        let demo = self.tokens_demo.clone();
+        let (signed_in, list, shown, busy, error, may_elevate, armed) = (
+            self.signed_in.clone(),
+            self.token_list.clone(),
+            self.token_shown.clone(),
+            self.token_busy.clone(),
+            self.token_error.clone(),
+            self.may_elevate.clone(),
+            self.revoke_armed.clone(),
+        );
+        let (label, expiry, elevated, password) = (
+            self.token_label.clone(),
+            self.token_expiry.clone(),
+            self.token_elevated.clone(),
+            self.token_password.clone(),
+        );
+        let act = self.act.clone();
+        let expiries = opts(&[
+            (Expiry::Day, "1 day"),
+            (Expiry::Month, "30 days"),
+            (Expiry::Never, "Never"),
+        ]);
+        let shown_card = {
+            let (shown, act) = (shown.clone(), act.clone());
+            move || -> View {
+                let Some((label, secret)) = shown.get() else {
+                    return View::Empty;
+                };
+                let copy = {
+                    let (act, secret) = (act.clone(), secret.clone());
+                    on(move || *act.copy.borrow_mut() = Some(secret.clone()))
+                };
+                let done = {
+                    let act = act.clone();
+                    on(move || act.token_done.set(true))
+                };
+                let title = format!("{label} is ready. Copy it now: it is shown only this once.");
+                view! {
+                    <Alert tone=Tone::Success title={title}>
+                        <code style="display: block; word-break: break-all; font-family: var(--m-font-mono); font-size: var(--m-font-size-sm)">{secret}</code>
+                        <div style="display: flex; gap: 8px; margin-top: 8px">
+                            <Button size=Size::Sm icon={icon(icons::COPY)} onclick={copy}>"Copy"</Button>
+                            <Button size=Size::Sm onclick={done}>"Done"</Button>
+                        </div>
+                    </Alert>
+                }
+            }
+        };
+        let list_view = {
+            let (list, armed, act) = (list.clone(), armed.clone(), act.clone());
+            move || -> View {
+                let now = now_s();
+                match list.get() {
+                    Some(Ok(tokens)) if !tokens.is_empty() => {
+                        let rows: Vec<View> = tokens
+                            .iter()
+                            .map(|t| {
+                                let expires = match t.expires_at {
+                                    Some(at) if at <= now => "expired".to_owned(),
+                                    Some(at) => format!("expires {}", access_tokens::day(at)),
+                                    None => "never expires".to_owned(),
+                                };
+                                let used = t
+                                    .last_used
+                                    .map_or_else(|| "Never used".to_owned(), |at| access_tokens::ago(at, now));
+                                let sub = format!("Made {} · {expires} · {used}", access_tokens::day(t.created_at));
+                                let is_armed = armed.get().as_deref() == Some(t.id.as_str());
+                                let click = {
+                                    let (armed, act, id) = (armed.clone(), act.clone(), t.id.clone());
+                                    on(move || {
+                                        if armed.get().as_deref() == Some(id.as_str()) {
+                                            armed.set(None);
+                                            *act.revoke.borrow_mut() = Some(id.clone());
+                                        } else {
+                                            armed.set(Some(id.clone()));
+                                        }
+                                    })
+                                };
+                                let end: View = if is_armed {
+                                    view! { <Button variant=Variant::Danger size=Size::Sm onclick={click}>"Revoke: it stops working now"</Button> }
+                                } else {
+                                    view! { <Button variant=Variant::Ghost size=Size::Sm onclick={click}>"Revoke…"</Button> }
+                                };
+                                let badge: View = if t.elevated {
+                                    view! { <Badge tone=Tone::Warning>"admin"</Badge> }
+                                } else {
+                                    View::Empty
+                                };
+                                let title = t.label.clone();
+                                view! {
+                                    <ListItem icon={icon(icons::KEY)} sub={sub} end={end}>{title}" "{badge}</ListItem>
+                                }
+                            })
+                            .collect();
+                        view! { <List>{rows}</List> }
+                    }
+                    Some(Ok(_)) => note("You have no access tokens."),
+                    Some(Err(e)) => note(format!("Could not load your tokens: {e}")),
+                    None => {
+                        view! { <div style="display: flex; align-items: center; gap: 8px"><Spinner size=Size::Sm />{note("Loading…")}</div> }
+                    }
+                }
+            }
+        };
+        let make = {
+            let act = act.clone();
+            on(move || act.make_token.set(true))
+        };
+        let form_foot = {
+            let (label, password, busy) = (label.clone(), password.clone(), busy.clone());
+            let make = make.clone();
+            move || -> View {
+                let ready =
+                    !label.get().trim().is_empty() && !password.get().is_empty() && !busy.get();
+                let why = if busy.get() {
+                    "Making it…"
+                } else {
+                    "Give it a name and your password"
+                };
+                view! {
+                    <div><Button variant=Variant::Primary onclick={make.clone()} disabled={!ready}>"Make token"</Button></div>
+                    {if ready { View::Empty } else { note(why) }}
+                }
+            }
+        };
+        let elevate_row = {
+            let (may, elevated) = (may_elevate.clone(), elevated.clone());
+            move || -> View {
+                if may.get() {
+                    view! { <FieldCheckbox model={elevated.clone()} label="Admin rights too: it may do what your admin roles allow" id="tk-admin" /> }
+                } else {
+                    View::Empty
+                }
+            }
+        };
+        let error_view = {
+            let error = error.clone();
+            move || -> View { error.get().map_or(View::Empty, error_line) }
+        };
+        move || -> View {
+            if !signed_in.get() && !demo.get() {
+                return note("Sign in to make or revoke access tokens.");
+            }
+            view! {
+                {note("What a bot or a script signs in with instead of your password. Revoking one stops it at once, also a bot already in the world.")}
+                {shown_card.clone()}
+                {error_view.clone()}
+                {list_view.clone()}
+                <Section title="New token">
+                    <FieldText model={label.clone()} label="Name" placeholder="Name, e.g. \"deck bot\"" id="tk-name" />
+                    <FieldSegmented model={expiry.clone()} options={expiries.clone()} label="Expires" id="tk-expiry" />
+                    {elevate_row.clone()}
+                    <FieldText model={password.clone()} r#type=TextType::Password label="Your password, to confirm" id="tk-pw" autocomplete="current-password" />
+                    {form_foot.clone()}
+                </Section>
+            }
+        }
+        .into_view()
     }
 }

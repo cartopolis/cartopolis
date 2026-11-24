@@ -96,6 +96,13 @@ computed colours, so a change of token reaches both:
 - **A finger's drag** scrolls a `ScrollArea` (the widgets' handles only the
   wheel): a `PointerDrag` observer moves `ScrollPosition` by the delta.
 
-Not yet: Audio, Account, Privacy and Tokens on the library; the General
-page's receiver, storage and editor-access sections; cartopolis' own
-`Tokens` (phase 4).
+Every Settings page is on the library since 2026-11-24. An action the page
+asks for — the chime, the microphone, a deletion, an unblock, a token made
+or revoked, a copy — is a `Cell` in `Actions` the view sets and the system
+takes, where the resources, the connection and egui's clipboard are; a
+value shown (the meter, the token list, an error) is a signal the system
+mirrors each frame when it differs.
+
+Not yet: the camera test (a live picture; the library has no image node),
+the General page's receiver, storage and editor-access sections, and
+cartopolis' own `Tokens` (phase 4).

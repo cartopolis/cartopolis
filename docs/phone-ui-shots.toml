@@ -137,6 +137,22 @@ look = [-50.0, 0.0]
 time = 12.0
 ui = ["tokens"]
 
+# Settings on the World tab, and on Sound and voice with the sample level
+# on the meter (the harness seeds both, as it does `graphics`).
+[[shot]]
+name = "world"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["world"]
+
+[[shot]]
+name = "audio"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["audio"]
+
 [[shot]]
 name = "safety"
 at = [53.2190, 6.5680, 350.0]

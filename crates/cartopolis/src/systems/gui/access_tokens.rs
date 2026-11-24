@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use crate::systems::{icons, theme};
 
 /// One token, without its secret (`auth::AccessTokenInfo` on the server).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct TokenInfo {
     pub id: String,
     pub label: String,
@@ -82,7 +82,7 @@ pub struct AccessTokens {
     pub busy: bool,
     pub error: Option<String>,
     /// The list has been asked for since the page opened.
-    asked: bool,
+    pub(crate) asked: bool,
     inbox: Arc<Mutex<Vec<Reply>>>,
     /// A scripted capture's stand-in list (`--ui tokens`).
     pub demo: bool,
@@ -125,7 +125,7 @@ impl AccessTokens {
         });
     }
 
-    fn make(&mut self) {
+    pub(crate) fn make(&mut self) {
         let label = self.label.trim().to_string();
         let body = serde_json::json!({
             "label": label,
@@ -164,7 +164,7 @@ impl AccessTokens {
         });
     }
 
-    fn revoke(&mut self, token: &TokenInfo) {
+    pub(crate) fn revoke(&mut self, token: &TokenInfo) {
         let id = token.id.clone();
         let label = token.label.clone();
         if self.demo {
@@ -181,7 +181,7 @@ impl AccessTokens {
         });
     }
 
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         let replies = self
             .inbox
             .lock()
@@ -219,7 +219,7 @@ impl AccessTokens {
 }
 
 /// `1760600000` as `16 Oct`.
-fn day(at: u64) -> String {
+pub(crate) fn day(at: u64) -> String {
     jiff::Timestamp::from_second(at as i64)
         .map(|t| {
             t.to_zoned(jiff::tz::TimeZone::system())
@@ -229,7 +229,7 @@ fn day(at: u64) -> String {
         .unwrap_or_default()
 }
 
-fn ago(at: u64, now: u64) -> String {
+pub(crate) fn ago(at: u64, now: u64) -> String {
     let s = now.saturating_sub(at);
     if s < 3600 {
         "Last used in the last hour".into()

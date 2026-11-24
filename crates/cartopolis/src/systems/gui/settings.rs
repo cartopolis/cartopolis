@@ -294,7 +294,12 @@ impl SettingsState {
 /// only place the input gain can be judged — voice transmits the gained signal,
 /// so a meter showing the raw one would have someone calibrate against a number
 /// nobody sends.
-fn observe_peak(state: &mut SettingsState, gain: f32, now: f64, dt: f32) -> Option<(f32, f32)> {
+pub(crate) fn observe_peak(
+    state: &mut SettingsState,
+    gain: f32,
+    now: f64,
+    dt: f32,
+) -> Option<(f32, f32)> {
     let mic = state.mic.as_ref()?;
     let meter = audio::level_to_meter((mic.level() * gain).clamp(0.0, 1.0));
     Some(meter_ballistics(state, meter, now, dt))
