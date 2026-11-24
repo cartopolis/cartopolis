@@ -1844,7 +1844,7 @@ fn world_tab(
 /// `13.5` → `"13:30"`. A slider formatter rather than a label under the slider:
 /// the value belongs on the control it belongs to, and a separate row would
 /// change height with the number.
-fn clock_hhmm(hours: f32) -> String {
+pub(crate) fn clock_hhmm(hours: f32) -> String {
     let h = hours.floor() as i32 % 24;
     let m = ((hours.fract() * 60.0).floor() as i32).clamp(0, 59);
     format!("{h:02}:{m:02}")

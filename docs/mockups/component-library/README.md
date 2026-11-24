@@ -449,11 +449,21 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    frame een diff); de andere pagina's zeggen dat ze nog egui's zijn. egui
    houdt een lege paneelstrook vast, zodat dock, pins en kaartrect opzij
    gaan zoals bij elk paneel, en de bibliotheek tekent erin. Foto: mockup,
-   Bevy en browser naast elkaar op de telefoon; de desktop eronder. Nog
-   niet: de overige pagina's, placeholder-tekst, select-popup, slider,
-   scrollen met de vinger, cartopolis' eigen `Tokens` (fase 4).
+   Bevy en browser naast elkaar op de telefoon; de desktop eronder.
 
    ![Settings op de bibliotheek](fase3b-settings.png)
+
+   Daarna (2026-11-24) de stukken die de overige pagina's nodig hebben, in
+   de renderer: de slider (Bevy's headless `Slider` onder een getekende
+   baan, vulling en knop), de select-popup (een backdrop en een menu die de
+   renderer zelf als view monteert, met regels in `fields.rs`),
+   placeholder-tekst (bevy_text tekent die nog niet) en scrollen met de
+   vinger; en de pagina's **Graphics** en **World** overgezet, met hun
+   `Option`-voorkeuren als vinkje-plus-"Automatic" en `DevPanelState` en
+   het weer twee kanten op gebonden. Nog niet: Audio, Account, Privacy,
+   Tokens; cartopolis' eigen `Tokens` (fase 4).
+
+   ![Graphics en World op de bibliotheek](fase3b-pages.png)
 4. **Het wereldframe op de DOM-backend**: zoeker, lagen, Places, kaartjes,
    pins. Hier wordt de vraag letterlijk waar: wasm-wereld + web-componenten,
    één stijl met de site.

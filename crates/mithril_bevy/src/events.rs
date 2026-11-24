@@ -10,6 +10,7 @@ use bevy::picking::events::{PointerClick, PointerOut, PointerOver, PointerPress,
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextEditChange};
 use bevy::ui::InteractionDisabled;
+use bevy::ui_widgets::ValueChange;
 use mithril::view::Event as UiEvent;
 
 use crate::tree::{NodeKind, UiTree};
@@ -131,6 +132,21 @@ pub(crate) fn listen(world: &mut World, id: NodeId, event: &str) {
                 },
             );
         }
+        "input" if tag == "input" && input_type == "range" => {
+            // A range: the headless slider's value, while and after a drag.
+            world.entity_mut(entity).observe(
+                move |ev: On<ValueChange<f32>>, mut events: ResMut<UiEvents>| {
+                    events.push(
+                        id,
+                        "input",
+                        EventData {
+                            value: Some(format!("{}", ev.value)),
+                            ..Default::default()
+                        },
+                    );
+                },
+            );
+        }
         "input" => {
             // Text: every applied edit is an input.
             world.entity_mut(entity).observe(
@@ -139,6 +155,21 @@ pub(crate) fn listen(world: &mut World, id: NodeId, event: &str) {
                       mut events: ResMut<UiEvents>| {
                     let data = text_of(&texts, ev.event_target());
                     events.push(id, "input", data);
+                },
+            );
+        }
+        "change" if tag == "select" => {
+            // A select: a click opens its popup (`popup::open_select`), whose
+            // choice comes back as the change.
+            world.entity_mut(entity).observe(
+                move |mut ev: On<PointerClick>,
+                      disabled: Query<&InteractionDisabled>,
+                      mut events: ResMut<UiEvents>| {
+                    if disabled.get(ev.entity).is_ok() {
+                        return;
+                    }
+                    ev.propagate(false);
+                    events.push(id, "@select", EventData::default());
                 },
             );
         }

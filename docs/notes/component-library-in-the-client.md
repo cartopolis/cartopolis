@@ -67,9 +67,35 @@ with each node's size; that is how they were found.
   the screen's system for the next frame.
 
 Captures: `--shots docs/phone-ui-shots.toml --only settings` with
-`CARTO_UI_LIB=settings` (`CARTO_UI_LIB_PAGE=general` for a page), and
-`CARTO_UI_LIB_HTML=<path>` writes the same panel as HTML for the browser
-beside it (the study's `fase3b-settings.png`).
+`CARTO_UI_LIB=settings` (`CARTO_UI_LIB_PAGE=general|graphics|world` for a
+page), and `CARTO_UI_LIB_HTML=<path>` writes the same panel as HTML for the
+browser beside it (the study's `fase3b-settings.png`).
 
-Not yet: the other Settings pages, placeholder text in inputs, the select
-popup, the slider, scrolling by touch drag, cartopolis' own `Tokens`.
+## What the renderer draws that the browser does natively
+
+The sheet reaches these through pseudo-elements or the platform, which the
+cascade does not model; `tree.rs`'s `decorations` draws them from the
+computed colours, so a change of token reaches both:
+
+- **A range input** is `bevy_ui_widgets::Slider` (headless, `TrackClick::Snap`)
+  over three decorations: the track, the filled part, and a thumb marked
+  `SliderThumb` at `left: pct%` pulled back by `pct` of its own width, which
+  is the travel the widget measures a drag against. Its `ValueChange<f32>`
+  is the element's `input` event; the model's value comes back through
+  `SliderValue` in `sync_inputs`.
+- **A select** hides its `<option>`s and shows the chosen label as a text
+  decoration; a click raises the renderer's own `@select`, and
+  `popup::open_select` mounts a backdrop and a menu (`.m-select__menu`,
+  rules in the library's `fields.rs`) under the control through the host,
+  so they are styled and clicked like any node. A choice raises the
+  select's `change` with `selected_index` through `UiHost::internal`,
+  delivered in the same frame.
+- **A placeholder** is a text decoration in `--m-text-faint`, shown while
+  the editor's text is empty — the typed text, not the model, so it goes
+  at the first key.
+- **A finger's drag** scrolls a `ScrollArea` (the widgets' handles only the
+  wheel): a `PointerDrag` observer moves `ScrollPosition` by the delta.
+
+Not yet: Audio, Account, Privacy and Tokens on the library; the General
+page's receiver, storage and editor-access sections; cartopolis' own
+`Tokens` (phase 4).

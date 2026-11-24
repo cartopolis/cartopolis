@@ -29,6 +29,7 @@ use mithril::style::{Env, Stylist, Tokens};
 use mithril::view::{Handler, Kind, Mounted, Renderer, View};
 
 mod events;
+mod popup;
 mod tree;
 
 pub use events::{UiEvents, UiPointer};
@@ -198,8 +199,13 @@ pub const ROOT: NodeId = NodeId(0);
 pub struct UiHost {
     pub renderer: Rc<RefCell<BevyRenderer>>,
     mounted: Vec<Mounted<NodeId>>,
+    /// The renderer's own popup over everything (a select's options).
+    popup: Vec<Mounted<NodeId>>,
     /// Handlers by node and event name.
     handlers: HashMap<(NodeId, String), Vec<Handler>>,
+    /// Events the renderer raises itself (a popup's choice), delivered in
+    /// the same frame after the pending ones.
+    pub(crate) internal: Vec<(NodeId, String, events::EventData)>,
     pub stylist: Stylist,
     pub env: Env,
 }
@@ -209,7 +215,9 @@ impl UiHost {
         UiHost {
             renderer: Rc::new(RefCell::new(BevyRenderer::default())),
             mounted: Vec::new(),
+            popup: Vec::new(),
             handlers: HashMap::new(),
+            internal: Vec::new(),
             stylist: Stylist::library(tokens),
             env: Env::default(),
         }
@@ -223,11 +231,27 @@ impl UiHost {
 
     /// Unmounts everything.
     pub fn clear(&mut self) {
+        self.close_popup();
         let old = std::mem::take(&mut self.mounted);
         for m in old {
             m.unmount(&self.renderer, &ROOT);
         }
         self.handlers.clear();
+    }
+
+    /// Mounts the popup's views over everything, after closing any other.
+    pub(crate) fn open_popup(&mut self, views: Vec<View>) {
+        self.close_popup();
+        for view in views {
+            let mounted = mithril::view::mount(view, &self.renderer, &ROOT, None);
+            self.popup.push(mounted);
+        }
+    }
+
+    pub(crate) fn close_popup(&mut self) {
+        for m in std::mem::take(&mut self.popup) {
+            m.unmount(&self.renderer, &ROOT);
+        }
     }
 
     pub(crate) fn handlers_for(&self, id: NodeId, event: &str) -> Vec<Handler> {
@@ -304,21 +328,38 @@ fn spin(time: Res<Time>, mut nodes: Query<&mut bevy::ui::UiTransform, With<Spin>
 /// One frame of the UI: events to handlers, queued operations to entities,
 /// changed nodes restyled.
 pub fn drive_ui(world: &mut World) {
-    // 1. Events → handlers (which write signals → effects → operations).
-    let pending = world.resource_mut::<UiEvents>().take();
-    if !pending.is_empty() {
-        let calls: Vec<(Handler, events::EventData)> = with_host(|host| {
-            let mut calls = Vec::new();
-            for (id, event, data) in pending {
+    // 1. Events → handlers (which write signals → effects → operations). An
+    //    event named `@…` is the renderer's own (a select's popup), and a
+    //    handler may raise events in turn (`UiHost::internal`): a few
+    //    rounds, in the same frame.
+    let mut pending = world.resource_mut::<UiEvents>().take();
+    let mut rounds = 0;
+    while !pending.is_empty() && rounds < 4 {
+        rounds += 1;
+        let mut calls: Vec<(Handler, events::EventData)> = Vec::new();
+        let mut own: Vec<(NodeId, String)> = Vec::new();
+        with_host(|host| {
+            for (id, event, data) in pending.drain(..) {
+                if event.starts_with('@') {
+                    own.push((id, event));
+                    continue;
+                }
                 for h in host.handlers_for(id, &event) {
                     calls.push((h, data.clone()));
                 }
             }
-            calls
         });
         for (h, data) in calls {
             h(&data.into_event());
         }
+        for (id, event) in own {
+            match event.as_str() {
+                "@select" => popup::open_select(world, id),
+                "@close" => with_host(|host| host.close_popup()),
+                _ => {}
+            }
+        }
+        pending = with_host(|host| std::mem::take(&mut host.internal));
     }
     // 2. Operations → the shadow tree and its entities; new listeners.
     let ops = with_host(|host| host.renderer.borrow_mut().drain());

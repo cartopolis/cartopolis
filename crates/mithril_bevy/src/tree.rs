@@ -6,12 +6,16 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::input_focus::InputFocus;
+use bevy::picking::events::PointerDrag;
 use bevy::prelude::*;
 use bevy::text::{EditableText, LineHeight};
+use bevy::ui::ScrollPosition;
 use bevy::ui::{
     BoxShadow, GlobalZIndex, Overflow, OverflowAxis, ShadowStyle, UiTargetCamera, UiTransform, Val2,
 };
-use bevy::ui_widgets::{ScrollArea, TextInput};
+use bevy::ui_widgets::{
+    ScrollArea, Slider, SliderRange, SliderStep, SliderThumb, SliderValue, TextInput, TrackClick,
+};
 use mithril::style::cascade::{
     Chain, Computed, Display, Element, Length, Overflow as Ov, Position, Rgba, States, TextAlign,
 };
@@ -763,7 +767,8 @@ fn write_components(
     let is_input = tag == "input";
     let input_type = props_or_attr(&id, world, "type").unwrap_or_default();
     let drawn = is_input && matches!(input_type.as_str(), "checkbox" | "radio");
-    let text_input = (is_input && !drawn && input_type != "range") || tag == "textarea";
+    let range = is_input && input_type == "range";
+    let text_input = (is_input && !drawn && !range) || tag == "textarea";
     let mut node = Node {
         display: match c.display {
             Display::None => bevy::ui::Display::None,
@@ -852,6 +857,14 @@ fn write_components(
         },
         ..default()
     };
+    // A select's options are not laid out: the select shows the chosen
+    // one (a decoration) and the rest come up in a popup.
+    if tag == "option" {
+        node.display = bevy::ui::Display::None;
+    }
+    if tag == "select" {
+        node.align_items = AlignItems::Center;
+    }
     // An inline element is a row whose items sit on the baseline.
     if matches!(c.display, Display::Inline) {
         node.display = bevy::ui::Display::Flex;
@@ -921,8 +934,45 @@ fn write_components(
     // stops at one without it, which leaves its whole subtree 0×0 at (0,0).
     em.insert(ui_transform(c).unwrap_or(UiTransform::IDENTITY));
     if c.overflow_y == Ov::Scroll || c.overflow_y == Ov::Auto {
-        em.insert(ScrollArea);
+        if em.get::<ScrollArea>().is_none() {
+            // The widgets' scroll area reads the wheel; a finger's drag is
+            // ours, as the drag's delta against the scroll position.
+            em.insert(ScrollArea);
+            em.observe(
+                |ev: On<PointerDrag>,
+                 mut areas: Query<(&ComputedNode, &mut ScrollPosition), With<ScrollArea>>| {
+                    if let Ok((computed, mut pos)) = areas.get_mut(ev.entity) {
+                        let scale = computed.inverse_scale_factor();
+                        pos.y -= ev.delta.y * scale;
+                        pos.x -= ev.delta.x * scale;
+                    }
+                },
+            );
+        }
     }
+    // A range input is the widgets' headless slider: it turns a press or a
+    // drag on the track into a `ValueChange` (`events.rs`); the track, the
+    // fill and the thumb are decorations below.
+    if range {
+        let value = props_or_attr(&id, world, "value").or_else(|| props.get("value").cloned());
+        let num = |s: Option<String>, d: f32| s.and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+        let min = num(props_or_attr(&id, world, "min"), 0.0);
+        let max = num(props_or_attr(&id, world, "max"), 100.0);
+        let step = num(props_or_attr(&id, world, "step"), 1.0);
+        let mut em = world.entity_mut(e);
+        if em.get::<Slider>().is_none() {
+            em.insert(Slider {
+                track_click: TrackClick::Snap,
+                ..default()
+            });
+        }
+        em.insert((
+            SliderValue(num(value, min)),
+            SliderRange::new(min, max),
+            SliderStep(step),
+        ));
+    }
+    let mut em = world.entity_mut(e);
     // The text controls: a `TextInput` over an `EditableText`.
     if text_input {
         let value = props.get("value").cloned().unwrap_or_default();
@@ -947,7 +997,50 @@ fn write_components(
         em.insert(LineHeight::RelativeToFont(c.line_height));
     }
     // The drawn pseudo-elements.
-    let decor_specs = decorations(&tag, &classes, &input_type, c, opacity, states);
+    let ctx = {
+        let num = |s: Option<String>, d: f64| s.and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+        let min = num(props_or_attr(&id, world, "min"), 0.0);
+        let select_label = (tag == "select").then(|| {
+            // The option at `selectedIndex`, the placeholder option counted.
+            let index = props
+                .get("selectedIndex")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let tree = world.resource::<UiTree>();
+            let options: Vec<String> = tree
+                .nodes
+                .get(&id)
+                .map(|n| {
+                    n.children
+                        .iter()
+                        .filter_map(|c| tree.nodes.get(c))
+                        .filter(|cn| matches!(&cn.kind, NodeKind::Element { tag, .. } if tag == "option"))
+                        .map(|cn| option_label(tree, cn))
+                        .collect()
+                })
+                .unwrap_or_default();
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| options.get(i).cloned())
+                .unwrap_or_default()
+        });
+        DecorContext {
+            value: num(
+                props
+                    .get("value")
+                    .cloned()
+                    .or_else(|| props_or_attr(&id, world, "value")),
+                min,
+            ),
+            min,
+            max: num(props_or_attr(&id, world, "max"), 100.0),
+            placeholder: text_input
+                .then(|| props_or_attr(&id, world, "placeholder"))
+                .flatten(),
+            select_label,
+        }
+    };
+    let decor_specs = decorations(&tag, &classes, &input_type, c, opacity, states, &ctx);
     let old: Vec<Entity> = world
         .resource::<UiTree>()
         .nodes
@@ -976,6 +1069,35 @@ fn write_components(
         }
         if let Some(shadow) = spec.shadow {
             world.entity_mut(d).insert(shadow);
+        }
+        if let Some((text, colour)) = spec.text {
+            let tf = match fonts {
+                Some(f) => TextFont {
+                    font: f.pick(&c.font_family, c.font_weight).into(),
+                    font_size: bevy::text::FontSize::Px(c.font_size),
+                    ..default()
+                },
+                None => TextFont {
+                    font_size: bevy::text::FontSize::Px(c.font_size),
+                    ..default()
+                },
+            };
+            world.entity_mut(d).insert((
+                Text::new(text),
+                tf,
+                TextColor(colour),
+                TextLayout::no_wrap(),
+                LineHeight::RelativeToFont(c.line_height),
+            ));
+        }
+        match spec.role {
+            DecorRole::Plain => {}
+            DecorRole::Thumb => {
+                world.entity_mut(d).insert((SliderThumb, DecorRole::Thumb));
+            }
+            DecorRole::Placeholder => {
+                world.entity_mut(d).insert(DecorRole::Placeholder);
+            }
         }
         world.entity_mut(d).insert(ChildOf(e));
         new_decor.push(d);
@@ -1029,6 +1151,32 @@ struct Decor {
     border_sides: Option<BorderColor>,
     transform: UiTransform,
     shadow: Option<BoxShadow>,
+    /// A text decoration (a select's shown label, an input's placeholder),
+    /// in the element's font.
+    text: Option<(String, Color)>,
+    /// Which decoration is which, for the systems that move or hide one.
+    role: DecorRole,
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum DecorRole {
+    #[default]
+    Plain,
+    /// The slider's thumb: `bevy_ui_widgets` measures it to reduce the travel.
+    Thumb,
+    /// Shown only while the input is empty (`sync_inputs`).
+    Placeholder,
+}
+
+/// What a decoration needs of the element beyond its style: the slider's
+/// numbers, the input's placeholder, the select's chosen label.
+#[derive(Default)]
+struct DecorContext {
+    value: f64,
+    min: f64,
+    max: f64,
+    placeholder: Option<String>,
+    select_label: Option<String>,
 }
 
 fn custom_colour(c: &Computed, name: &str, opacity: f32, fallback: Rgba) -> Color {
@@ -1050,11 +1198,15 @@ fn decorations(
     c: &Computed,
     opacity: f32,
     states: States,
+    ctx: &DecorContext,
 ) -> Vec<Decor> {
     let has = |class: &str| classes.iter().any(|x| x == class);
     let mut out = Vec::new();
     let on_accent = custom_colour(c, "--m-on-accent", opacity, Rgba::rgb(0.06, 0.09, 0.12));
     let text_dim = custom_colour(c, "--m-text-dim", opacity, c.color);
+    let text_faint = custom_colour(c, "--m-text-faint", opacity, c.color);
+    let accent = custom_colour(c, "--m-accent", opacity, c.color);
+    let border_colour = custom_colour(c, "--m-border", opacity, c.color);
     let current = colour(c.color, opacity);
     let plain = |n: Node, bg: Color| Decor {
         node: n,
@@ -1063,7 +1215,96 @@ fn decorations(
         border_sides: None,
         transform: UiTransform::default(),
         shadow: None,
+        text: None,
+        role: DecorRole::Plain,
     };
+    // A range input: the track, its filled part and the thumb, which the
+    // sheet draws with the browser's slider pseudo-elements. The thumb sits
+    // at `pct` of the travel, the travel being the width less the thumb's
+    // (`left: pct%` pulled back by `pct` of its own width), which is how
+    // `bevy_ui_widgets::Slider` measures a click or drag.
+    if tag == "input" && input_type == "range" {
+        let pct = if ctx.max > ctx.min {
+            (((ctx.value - ctx.min) / (ctx.max - ctx.min)).clamp(0.0, 1.0) * 100.0) as f32
+        } else {
+            0.0
+        };
+        let bar = |width: Val, bg: Color| {
+            plain(
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Percent(50.0),
+                    width,
+                    height: Val::Px(6.0),
+                    margin: UiRect::top(Val::Px(-3.0)),
+                    border_radius: BorderRadius::all(Val::Px(3.0)),
+                    ..default()
+                },
+                bg,
+            )
+        };
+        out.push(bar(Val::Percent(100.0), border_colour));
+        out.push(bar(Val::Percent(pct), accent));
+        out.push(Decor {
+            node: Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(pct),
+                top: Val::Percent(50.0),
+                width: Val::Px(20.0),
+                height: Val::Px(20.0),
+                margin: UiRect::top(Val::Px(-10.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            background: Color::srgba(1.0, 1.0, 1.0, opacity),
+            border: accent,
+            border_sides: None,
+            transform: UiTransform::from_translation(Val2::new(Val::Percent(-pct), Val::Px(0.0))),
+            shadow: Some(BoxShadow(vec![ShadowStyle {
+                color: Color::srgba(0.0, 0.0, 0.0, 0.25 * opacity),
+                x_offset: Val::Px(0.0),
+                y_offset: Val::Px(1.0),
+                spread_radius: Val::Px(0.0),
+                blur_radius: Val::Px(3.0),
+            }])),
+            text: None,
+            role: DecorRole::Thumb,
+        });
+    }
+    // A text input's placeholder, which bevy_text does not draw yet.
+    if let Some(p) = &ctx.placeholder {
+        out.push(Decor {
+            node: Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(c.padding.left + c.border.left),
+                top: Val::Percent(50.0),
+                ..default()
+            },
+            background: Color::NONE,
+            border: Color::NONE,
+            border_sides: None,
+            transform: UiTransform::from_translation(Val2::new(Val::Px(0.0), Val::Percent(-50.0))),
+            shadow: None,
+            text: Some((p.clone(), text_faint)),
+            role: DecorRole::Placeholder,
+        });
+    }
+    // A select shows its chosen option; the options themselves are hidden
+    // and come up in a popup (`lib.rs`, `open_select`).
+    if tag == "select" {
+        out.push(Decor {
+            node: Node::default(),
+            background: Color::NONE,
+            border: Color::NONE,
+            border_sides: None,
+            transform: UiTransform::default(),
+            shadow: None,
+            text: Some((ctx.select_label.clone().unwrap_or_default(), current)),
+            role: DecorRole::Plain,
+        });
+    }
     if tag == "input" && input_type == "checkbox" && has("m-checkbox") {
         if states.indeterminate {
             out.push(plain(
@@ -1107,6 +1348,8 @@ fn decorations(
                     ..default()
                 },
                 shadow: None,
+                text: None,
+                role: DecorRole::Plain,
             });
         }
     }
@@ -1150,6 +1393,8 @@ fn decorations(
                 spread_radius: Val::Px(0.0),
                 blur_radius: Val::Px(3.0),
             }])),
+            text: None,
+            role: DecorRole::Plain,
         });
     }
     if has("m-close") {
@@ -1173,6 +1418,8 @@ fn decorations(
                     ..default()
                 },
                 shadow: None,
+                text: None,
+                role: DecorRole::Plain,
             });
         }
     }
@@ -1197,6 +1444,8 @@ fn decorations(
             border_sides: None,
             transform: UiTransform::from_rotation(Rot2::degrees(45.0)),
             shadow: None,
+            text: None,
+            role: DecorRole::Plain,
         });
     }
     if has("m-spinner") {
@@ -1211,7 +1460,9 @@ fn decorations(
 /// model changed it from outside (not while the person types in it).
 pub(crate) fn sync_inputs(world: &mut World) {
     let focused = world.get_resource::<InputFocus>().and_then(|f| f.get());
-    let targets: Vec<(Entity, String)> = {
+    // Every text control and range: its entity, its `value` property and
+    // its decorations.
+    let targets: Vec<(Entity, Option<String>, Vec<Entity>)> = {
         let tree = world.resource::<UiTree>();
         tree.nodes
             .values()
@@ -1219,23 +1470,87 @@ pub(crate) fn sync_inputs(world: &mut World) {
                 (NodeKind::Element { props, tag, .. }, Some(e))
                     if (tag == "input" || tag == "textarea") =>
                 {
-                    props.get("value").map(|v| (e, v.clone()))
+                    Some((e, props.get("value").cloned(), n.decor.clone()))
                 }
                 _ => None,
             })
             .collect()
     };
-    for (e, value) in targets {
-        if Some(e) == focused {
+    for (e, value, decor) in targets {
+        // A range: the widget's value follows the model's.
+        if let Some(v) = value
+            .as_deref()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|_| world.get::<Slider>(e).is_some())
+        {
+            if world.get::<SliderValue>(e).is_some_and(|s| s.0 != v) {
+                world.entity_mut(e).insert(SliderValue(v));
+            }
             continue;
         }
-        if let Some(mut editable) = world.get_mut::<EditableText>(e) {
-            if editable.editor.text() != value.as_str() {
-                editable.editor.set_text(&value);
-                editable.queue_edit(bevy::text::TextEdit::TextEnd(false));
+        if Some(e) != focused {
+            if let (Some(value), Some(mut editable)) =
+                (value.as_deref(), world.get_mut::<EditableText>(e))
+            {
+                if editable.editor.text() != value {
+                    editable.editor.set_text(value);
+                    editable.queue_edit(bevy::text::TextEdit::TextEnd(false));
+                }
+            }
+        }
+        // The placeholder shows while the control is empty — by what is
+        // typed, not only by the model, so it goes at the first key.
+        let empty = world
+            .get::<EditableText>(e)
+            .is_some_and(|ed| ed.editor.text().to_string().is_empty());
+        for d in decor {
+            if world.get::<DecorRole>(d) == Some(&DecorRole::Placeholder) {
+                let want = if empty {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if world.get::<Visibility>(d) != Some(&want) {
+                    world.entity_mut(d).insert(want);
+                }
             }
         }
     }
+}
+
+/// An option's text, for the select's shown label.
+fn option_label(tree: &UiTree, option: &ShadowNode) -> String {
+    option
+        .children
+        .iter()
+        .filter_map(|c| tree.nodes.get(c))
+        .filter_map(|n| match &n.kind {
+            NodeKind::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// A select's options, for its popup: the label and whether it is disabled,
+/// in order, the placeholder option counted.
+pub(crate) fn select_options(tree: &UiTree, id: NodeId) -> Vec<(String, bool)> {
+    tree.nodes
+        .get(&id)
+        .map(|n| {
+            n.children
+                .iter()
+                .filter_map(|c| tree.nodes.get(c))
+                .filter_map(|cn| match &cn.kind {
+                    NodeKind::Element { tag, attrs, .. } if tag == "option" => Some((
+                        option_label(tree, cn),
+                        attrs.iter().any(|(n, _)| n == "disabled"),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The tree as text, one line a node: for `MITHRIL_BEVY_DUMP=1`, which logs
