@@ -321,6 +321,28 @@ pub struct GeoNavState {
     /// `ui_owns_keyboard` so typing a search doesn't also walk the avatar (set in
     /// [`search_ui`]).
     pub search_has_focus: bool,
+    /// The library draws the Search panel (`lib_search`): egui's panel
+    /// keeps only an empty strip of its width, and still does the view
+    /// actions the library's asks for, since it holds the camera they need.
+    pub lib: bool,
+    /// What the two panels pass each other while `lib` is on.
+    pub lib_view: SearchView,
+}
+
+/// The camera side of the Search panel, for the library's edition: egui's
+/// panel system computes it each frame and runs the action it is handed.
+#[derive(Default, Clone, PartialEq)]
+pub struct SearchView {
+    /// Where the camera is on Earth, for each row's distance.
+    pub viewer: Option<(f64, f64)>,
+    /// The view is known, so Set Home and Copy link can act.
+    pub place_known: bool,
+    /// Signed in: there is somebody to share the view with.
+    pub can_share: bool,
+    /// The action that fired within the last moment (its ✔).
+    pub done: Option<ViewAction>,
+    /// An action the library's panel asked for, run by egui's.
+    pub action: Option<ViewAction>,
 }
 
 impl GeoNavState {
@@ -802,6 +824,8 @@ impl Default for GeoNavState {
             from_history: false,
             focus_search: false,
             search_has_focus: false,
+            lib: false,
+            lib_view: SearchView::default(),
         }
     }
 }
@@ -1427,14 +1451,7 @@ fn history_row(
             "No Home set — use Set Home here, below",
         ) {
             if let Some(h) = home {
-                nav.pending_teleport = Some(Teleport {
-                    lat: h.lat,
-                    lng: h.lng,
-                    altitude: Some(h.altitude),
-                    pose: Some(h.pose.clone()),
-                    silent: false,
-                    look: false,
-                });
+                nav.go_home(h);
                 acted = true;
             }
         }
@@ -1449,7 +1466,7 @@ fn history_row(
 /// neither has anything to do with the settings and tools the menu is otherwise
 /// made of. `Copy link` is also the exact inverse of the field it now sits under,
 /// since what it writes is what Search accepts back.
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum ViewAction {
     SetHome,
     CopyLink,
@@ -1556,23 +1573,12 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
     }
     // Report focus so the auto-hiding top bar stays up while the user types.
     nav.search_has_focus = field.has_focus();
-    if nav.in_flight > 0 {
+    if nav.searching() {
         theme::busy(ui, "Searching…");
     }
 
     if field.changed() {
-        nav.last_edit = Some(Instant::now());
-        nav.teleport_on_result = false;
-        nav.error = None;
-        nav.show_suggestions = true;
-        // Re-arm the "No results" grace on every keystroke: the answer on screen
-        // is for a query that is now one character old, so whatever it said about
-        // emptiness says nothing about this one. Emptying the field entirely drops
-        // the list, which is what puts the recents back.
-        nav.empty_since = None;
-        if nav.query.trim().is_empty() {
-            nav.forget_suggestions();
-        }
+        nav.query_edited();
     }
     if field.gained_focus() {
         // Browser UX: select the whole query on focus so typing replaces it
@@ -1587,92 +1593,24 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                 )));
             state.store(ui.ctx(), field.id);
         }
-        if !nav.suggestions.is_empty() {
-            nav.show_suggestions = true;
-        }
+        nav.query_focused();
     }
 
     let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
-        if let Some(fix) = crate::systems::place_link::place_from_link(&nav.query) {
-            nav.pending_teleport = Some(Teleport::fix(fix).looking());
-            nav.show_suggestions = false;
-        } else if nav.query.trim() == nav.last_sent && !nav.stale && !nav.suggestions.is_empty() {
-            // …but never off a *stale* list: those hits answer a query the field no
-            // longer holds, and Enter is the one gesture that would fly there
-            // without the user having read the row.
-            let first = nav.suggestions[0].clone();
-            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None).looking());
-            nav.pending_card = Some(card_place(&first));
-            nav.pending_label = Some(first.name);
-            nav.query = first.label;
-            nav.show_suggestions = false;
-        } else {
-            // Search now; jump to the top hit when it lands.
-            nav.force_search = true;
-            nav.teleport_on_result = true;
-        }
+        nav.submit_query();
     }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        nav.show_suggestions = false;
+        nav.dismiss_list();
     }
 
-    // Suggestion dropdown under the field. Pasted coordinates — or a pasted
-    // cartopolis link, which is the same thing wearing a URL — get a single direct
-    // "Go to" entry instead of a lookup.
-    let coord_fix = crate::systems::place_link::place_from_link(&nav.query);
-    let coord_entry = coord_fix.map(|fix| {
-        let mut s =
-            GeoSuggestion::plain(format!("{:.5}, {:.5}", fix.lat, fix.lng), fix.lat, fix.lng);
-        s.name = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
-        s.kind = Some("coordinates".to_string());
-        if let Some(a) = fix.altitude {
-            s.context = format!("at {a:.0} m");
-        }
-        if fix.look.is_some() {
-            if !s.context.is_empty() {
-                s.context.push_str(", ");
-            }
-            s.context.push_str("with the pasted view");
-        }
-        s
-    });
-    // With nothing typed, the panel offers where you have already been. That list
-    // needs no keyboard, which is the whole point of it on a phone: Back walks the
-    // history one step at a time and is the only other way to reach it. It no
-    // longer waits for the field to hold focus — a panel opened and not typed into
-    // is exactly when the recents are the whole of what it has to offer.
-    let recents: Vec<(usize, GeoSuggestion)> = if nav.query.trim().is_empty() {
-        nav.recent_entries()
-            .map(|(i, e)| {
-                let mut s = GeoSuggestion::plain(e.title(), e.lat, e.lng);
-                s.kind = Some("recent".to_string());
-                (i, s)
-            })
-            .collect()
-    } else {
-        Vec::new()
+    let Some(list) = nav.search_list() else {
+        return;
     };
-    let status = nav.status();
-    let stale = nav.stale;
     // Set by the error chip below; consumed after the closure, since `nav` is
     // borrowed for the duration of it.
     let mut dismiss_error = false;
-    let has_content = coord_entry.is_some()
-        || !nav.suggestions.is_empty()
-        || !recents.is_empty()
-        || status.is_some();
-    // Shown while the field has something to answer, and whenever it is empty (a
-    // panel just opened offers the recents). Picking a hit puts the place's name
-    // in the field and clears `show_suggestions`, which is what takes the list
-    // down — there is no focus rule doing it any more.
-    if !has_content || !(nav.show_suggestions || nav.query.trim().is_empty()) {
-        return;
-    }
-
-    let mut picked: Option<GeoSuggestion> = None;
-    let mut routed: Option<GeoSuggestion> = None;
-    let mut picked_recent: Option<usize> = None;
+    let mut pick: Option<SearchPick> = None;
     ui.add_space(6.0);
     // The rows can outrun a phone's viewport, and a `Panel` clips rather than
     // scrolls — the same reason every other panel in this app wraps its body.
@@ -1680,41 +1618,36 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let width = ui.available_width();
-            let entries: Vec<&GeoSuggestion> =
-                coord_entry.iter().chain(nav.suggestions.iter()).collect();
             // No rules between the rows: each is a pane with its own hover
             // plate, as the web's list rows are; the hairlines made eight
             // results read as a form.
-            for (i, s) in entries.iter().enumerate() {
-                // The coordinate entry is never stale — it is derived from what
-                // is in the field this instant, not from an answer.
-                let dim = stale && !(i == 0 && coord_entry.is_some());
-                let row = destination_row(ui, s, viewer, width, dim);
+            for (s, dim) in &list.hits {
+                let row = destination_row(ui, s, viewer, width, *dim);
                 if row.clicked() {
-                    picked = Some((*s).clone());
+                    pick = Some(SearchPick::Hit(s.clone()));
                 }
                 if row.routed() {
-                    routed = Some((*s).clone());
+                    pick = Some(SearchPick::Route(s.clone()));
                 }
             }
-            if !recents.is_empty() {
+            if !list.recents.is_empty() {
                 ui.label(egui::RichText::new("Recent").small().weak());
-                for (idx, s) in recents.iter() {
+                for (idx, s) in list.recents.iter() {
                     let row = destination_row(ui, s, viewer, width, false);
                     if row.clicked() {
-                        picked_recent = Some(*idx);
+                        pick = Some(SearchPick::Recent(*idx));
                     }
                     if row.routed() {
-                        routed = Some(s.clone());
+                        pick = Some(SearchPick::Route(s.clone()));
                     }
                 }
             }
-            if let Some(msg) = &status {
+            if let Some(msg) = &list.status {
                 // Was `ui.weak()` — the quietest tone in the palette, on the one
                 // string in this panel that most needs to be read. A geocoding
                 // failure and "no results" arrive through the same slot, so the
                 // chip only comes out for the failure.
-                if nav.error.is_some() {
+                if list.error {
                     dismiss_error = theme::inline_error(ui, msg.as_str());
                 } else {
                     ui.label(
@@ -1727,66 +1660,233 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         });
 
     if dismiss_error {
-        nav.error = None;
+        nav.dismiss_error();
     }
-    if let Some(s) = routed {
-        // Routing to a hit does *not* fly there: the whole point is that you are
-        // planning a journey to somewhere you are not.
-        nav.route_to(s.name, s.lat, s.lng);
-        nav.show_suggestions = false;
-        nav.teleport_on_result = false;
-    } else if let Some(i) = picked_recent {
-        // A revisit restores the framing it was seen with, exactly as Back does —
-        // but it is a fresh visit, not a history move, so it appends.
-        let (tp, label, card) = {
-            let e = &nav.history[i];
-            (
-                Teleport {
+    if let Some(p) = pick {
+        nav.pick(p);
+    }
+}
+
+/// What the Search panel lists under its field: the hits (with whether each
+/// is dimmed as stale), the recents when the field is empty, and a status
+/// line. Built by [`GeoNavState::search_list`] for egui's panel and the
+/// library's (`lib_search`) alike.
+pub struct SearchList {
+    pub hits: Vec<(GeoSuggestion, bool)>,
+    /// History index and the row it shows.
+    pub recents: Vec<(usize, GeoSuggestion)>,
+    pub status: Option<String>,
+    /// The status is a failure (an error chip), not "No results".
+    pub error: bool,
+}
+
+/// A row of the Search panel picked: fly to a hit, revisit a recent, or
+/// route to either.
+pub enum SearchPick {
+    Hit(GeoSuggestion),
+    Recent(usize),
+    Route(GeoSuggestion),
+}
+
+impl GeoNavState {
+    /// The field's text changed (a keystroke, a paste, cleared).
+    pub fn query_edited(&mut self) {
+        self.last_edit = Some(Instant::now());
+        self.teleport_on_result = false;
+        self.error = None;
+        self.show_suggestions = true;
+        // Re-arm the "No results" grace on every keystroke: the answer on screen
+        // is for a query that is now one character old, so whatever it said about
+        // emptiness says nothing about this one. Emptying the field entirely drops
+        // the list, which is what puts the recents back.
+        self.empty_since = None;
+        if self.query.trim().is_empty() {
+            self.forget_suggestions();
+        }
+    }
+
+    /// The field took the keyboard: the list it answered comes back.
+    pub fn query_focused(&mut self) {
+        if !self.suggestions.is_empty() {
+            self.show_suggestions = true;
+        }
+    }
+
+    /// Lookups are outstanding ("Searching…").
+    pub fn searching(&self) -> bool {
+        self.in_flight > 0
+    }
+
+    /// Enter in the field.
+    pub fn submit_query(&mut self) {
+        if let Some(fix) = crate::systems::place_link::place_from_link(&self.query) {
+            self.pending_teleport = Some(Teleport::fix(fix).looking());
+            self.show_suggestions = false;
+        } else if self.query.trim() == self.last_sent && !self.stale && !self.suggestions.is_empty()
+        {
+            // …but never off a *stale* list: those hits answer a query the field no
+            // longer holds, and Enter is the one gesture that would fly there
+            // without the user having read the row.
+            let first = self.suggestions[0].clone();
+            self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None).looking());
+            self.pending_card = Some(card_place(&first));
+            self.pending_label = Some(first.name);
+            self.query = first.label;
+            self.show_suggestions = false;
+        } else {
+            // Search now; jump to the top hit when it lands.
+            self.force_search = true;
+            self.teleport_on_result = true;
+        }
+    }
+
+    /// Escape in the field: the list goes down.
+    pub fn dismiss_list(&mut self) {
+        self.show_suggestions = false;
+    }
+
+    /// The error chip's ✕.
+    pub fn dismiss_error(&mut self) {
+        self.error = None;
+    }
+
+    /// What the panel lists under the field, or `None` when it lists nothing.
+    pub fn search_list(&self) -> Option<SearchList> {
+        // Pasted coordinates — or a pasted cartopolis link, which is the same
+        // thing wearing a URL — get a single direct "Go to" entry instead of a
+        // lookup.
+        let coord_entry = crate::systems::place_link::place_from_link(&self.query).map(|fix| {
+            let mut s =
+                GeoSuggestion::plain(format!("{:.5}, {:.5}", fix.lat, fix.lng), fix.lat, fix.lng);
+            s.name = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
+            s.kind = Some("coordinates".to_string());
+            if let Some(a) = fix.altitude {
+                s.context = format!("at {a:.0} m");
+            }
+            if fix.look.is_some() {
+                if !s.context.is_empty() {
+                    s.context.push_str(", ");
+                }
+                s.context.push_str("with the pasted view");
+            }
+            s
+        });
+        // With nothing typed, the panel offers where you have already been. That
+        // list needs no keyboard, which is the whole point of it on a phone: Back
+        // walks the history one step at a time and is the only other way to reach
+        // it. It does not wait for the field to hold focus — a panel opened and
+        // not typed into is exactly when the recents are the whole of what it has
+        // to offer.
+        let recents: Vec<(usize, GeoSuggestion)> = if self.query.trim().is_empty() {
+            self.recent_entries()
+                .map(|(i, e)| {
+                    let mut s = GeoSuggestion::plain(e.title(), e.lat, e.lng);
+                    s.kind = Some("recent".to_string());
+                    (i, s)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let status = self.status();
+        // The coordinate entry is never stale — it is derived from what is in
+        // the field this instant, not from an answer.
+        let hits: Vec<(GeoSuggestion, bool)> = coord_entry
+            .into_iter()
+            .map(|s| (s, false))
+            .chain(self.suggestions.iter().map(|s| (s.clone(), self.stale)))
+            .collect();
+        let has_content = !hits.is_empty() || !recents.is_empty() || status.is_some();
+        // Shown while the field has something to answer, and whenever it is empty
+        // (a panel just opened offers the recents). Picking a hit puts the
+        // place's name in the field and clears `show_suggestions`, which is what
+        // takes the list down — there is no focus rule doing it.
+        if !has_content || !(self.show_suggestions || self.query.trim().is_empty()) {
+            return None;
+        }
+        Some(SearchList {
+            hits,
+            recents,
+            status,
+            error: self.error.is_some(),
+        })
+    }
+
+    /// A row picked.
+    pub fn pick(&mut self, pick: SearchPick) {
+        match pick {
+            SearchPick::Route(s) => {
+                // Routing to a hit does *not* fly there: the whole point is that
+                // you are planning a journey to somewhere you are not.
+                self.route_to(s.name, s.lat, s.lng);
+                self.show_suggestions = false;
+                self.teleport_on_result = false;
+            }
+            SearchPick::Recent(i) => {
+                // A revisit restores the framing it was seen with, exactly as Back
+                // does — but it is a fresh visit, not a history move, so it appends.
+                let Some(e) = self.history.get(i) else {
+                    return;
+                };
+                let tp = Teleport {
                     lat: e.lat,
                     lng: e.lng,
                     altitude: Some(e.altitude),
                     pose: Some(e.pose.clone()),
                     silent: false,
                     look: true,
-                },
-                e.label.clone(),
-                crate::systems::place_card::CardPlace {
+                };
+                let card = crate::systems::place_card::CardPlace {
                     name: e.title(),
                     kind: Some("recent".to_string()),
                     context: String::new(),
                     lat: e.lat,
                     lng: e.lng,
                     from: None,
-                },
-            )
-        };
-        nav.pending_label = label;
-        nav.pending_teleport = Some(tp);
-        nav.pending_card = Some(card);
-        nav.show_suggestions = false;
-    } else if let Some(s) = picked {
-        // The direct coordinate entry keeps its pasted altitude and view; a
-        // Nominatim hit is only a spot. It also leaves the field alone: the user
-        // typed those coordinates, and replacing them with "Go to 53.21940, …"
-        // would make a re-submit unparseable.
-        let fix = coord_fix.filter(|f| f.lat == s.lat && f.lng == s.lng);
-        let mut card = card_place(&s);
-        if fix.is_some() {
-            // The row said "Go to 53.21940, …" — an imperative that reads wrong
-            // as a card *title*; the bare coordinates are the place's name.
-            card.name = s.label.clone();
-        }
-        nav.pending_card = Some(card);
-        match fix {
-            Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix).looking()),
-            None => {
-                nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None).looking());
-                nav.pending_label = Some(s.name);
-                nav.query = s.label;
+                };
+                self.pending_label = e.label.clone();
+                self.pending_teleport = Some(tp);
+                self.pending_card = Some(card);
+                self.show_suggestions = false;
+            }
+            SearchPick::Hit(s) => {
+                // The direct coordinate entry keeps its pasted altitude and view; a
+                // Nominatim hit is only a spot. It also leaves the field alone: the
+                // user typed those coordinates, and replacing them with "Go to
+                // 53.21940, …" would make a re-submit unparseable.
+                let fix = crate::systems::place_link::place_from_link(&self.query)
+                    .filter(|f| f.lat == s.lat && f.lng == s.lng);
+                let mut card = card_place(&s);
+                if fix.is_some() {
+                    // The row said "Go to 53.21940, …" — an imperative that reads
+                    // wrong as a card *title*; the bare coordinates are the name.
+                    card.name = s.label.clone();
+                }
+                self.pending_card = Some(card);
+                match fix {
+                    Some(fix) => self.pending_teleport = Some(Teleport::fix(fix).looking()),
+                    None => {
+                        self.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None).looking());
+                        self.pending_label = Some(s.name);
+                        self.query = s.label;
+                    }
+                }
+                self.show_suggestions = false;
+                self.teleport_on_result = false;
             }
         }
-        nav.show_suggestions = false;
-        nav.teleport_on_result = false;
+    }
+
+    /// Home, from the history row: back to the saved spot and its view.
+    pub fn go_home(&mut self, h: &crate::systems::user_store::SavedLocation) {
+        self.pending_teleport = Some(Teleport {
+            lat: h.lat,
+            lng: h.lng,
+            altitude: Some(h.altitude),
+            pose: Some(h.pose.clone()),
+            silent: false,
+            look: false,
+        });
     }
 }
 
@@ -1867,31 +1967,72 @@ pub fn render_search_panel(
         .filter(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
         .map(|(action, _)| action);
     let mut fired = None;
-    let closed = crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        RightPanel::Search,
-        "search_panel",
-        320.0,
-        |ui| {
-            if history_row(ui, &mut nav, store.data.home.as_ref()) {
-                nav.close_suggestions();
-            }
-            // The foot **reserves its space before the body is laid out**, which is
-            // what a nested `TopBottomPanel` is for. The results list is an
-            // `auto_shrink([false, false])` `ScrollArea` and takes every point of
-            // height left to it, so two rows drawn after it are simply off the bottom
-            // of the panel (they were), and a bottom-up layout around both puts them
-            // over the top of it instead.
-            egui::Panel::bottom("search_view_actions")
-                .frame(egui::Frame::NONE)
-                .show_separator_line(false)
-                .show(ui, |ui| {
-                    fired = view_actions_ui(ui, place.is_some(), online.is_some(), done);
-                });
-            search_ui(ui, &mut nav, viewer);
-        },
-    );
+    // The library's edition is showing (`lib_search`): hand it the camera
+    // side, run what it asked for, and keep an empty strip of the panel's
+    // width, so the dock and the pins move aside and a click there is not
+    // the world's (as Settings' does).
+    if nav.lib {
+        let view = SearchView {
+            viewer,
+            place_known: place.is_some(),
+            can_share: online.is_some() && cfg!(feature = "comms"),
+            done,
+            // Read before taking, so a quiet frame leaves the resource unchanged.
+            action: if nav.lib_view.action.is_some() {
+                nav.lib_view.action.take()
+            } else {
+                None
+            },
+        };
+        fired = view.action;
+        if nav.lib_view != view {
+            nav.lib_view = SearchView {
+                action: None,
+                ..view
+            };
+        }
+        let compact = egui.compact();
+        let viewport_w = egui.viewport_pts().x;
+        let mut open = true;
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "search_panel",
+            compact,
+            viewport_w,
+            320.0,
+        )
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(320.0);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+    }
+    let closed = !nav.lib
+        && crate::systems::egui_manager::right_panel(
+            &mut egui,
+            &mut right_panel,
+            RightPanel::Search,
+            "search_panel",
+            320.0,
+            |ui| {
+                if history_row(ui, &mut nav, store.data.home.as_ref()) {
+                    nav.close_suggestions();
+                }
+                // The foot **reserves its space before the body is laid out**, which is
+                // what a nested `TopBottomPanel` is for. The results list is an
+                // `auto_shrink([false, false])` `ScrollArea` and takes every point of
+                // height left to it, so two rows drawn after it are simply off the bottom
+                // of the panel (they were), and a bottom-up layout around both puts them
+                // over the top of it instead.
+                egui::Panel::bottom("search_view_actions")
+                    .frame(egui::Frame::NONE)
+                    .show_separator_line(false)
+                    .show(ui, |ui| {
+                        fired = view_actions_ui(ui, place.is_some(), online.is_some(), done);
+                    });
+                search_ui(ui, &mut nav, viewer);
+            },
+        );
     match (fired, place) {
         (Some(ViewAction::SetHome), Some(((lat, lng), alt))) => {
             // Capture the current view so Home returns to it exactly.

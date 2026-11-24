@@ -47,6 +47,8 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_host::prepare_bevy,
                     crate::systems::lib_settings::drive_lib_settings,
                     crate::systems::lib_layers::drive_lib_layers,
+                    crate::systems::lib_search::drive_lib_search,
+                    crate::systems::lib_host::bridge_keyboard,
                 )
                     .chain()
                     .before(mithril_bevy::DriveUi),

@@ -296,6 +296,20 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                 n.dirty = true;
             }
         }
+        // The renderer action `@focus`: the field takes the keyboard as it
+        // mounts (a search panel's one field), as the DOM renderer's does.
+        Op::SetPropertyBool { id, name, value } if name == "@focus" => {
+            let entity = world
+                .resource::<UiTree>()
+                .nodes
+                .get(&id)
+                .and_then(|n| n.entity);
+            if let (true, Some(e)) = (value, entity) {
+                if let Some(mut focus) = world.get_resource_mut::<InputFocus>() {
+                    focus.set(e, bevy::input_focus::FocusCause::Navigated);
+                }
+            }
+        }
         Op::SetPropertyBool { id, name, value } => {
             let mut tree = world.resource_mut::<UiTree>();
             if let Some(n) = tree.element_mut(id) {
@@ -870,13 +884,14 @@ fn write_components(
     }
     // A block holding text beside an element (a label and its badge) is a
     // line of inline content in a browser. Bevy's block layout stretches
-    // every child to the full width instead, so it becomes a wrapping row:
-    // the badge keeps its own width and wraps under a long label.
+    // every child to the full width instead, so it becomes a column whose
+    // items keep their own width: the badge sits under the label. (A
+    // wrapping row measured a wrapped label one line short, and the badge
+    // fell out of the tile.)
     if node.display == bevy::ui::Display::Block && mixed_content(world, id) {
         node.display = bevy::ui::Display::Flex;
-        node.flex_direction = FlexDirection::Row;
-        node.flex_wrap = FlexWrap::Wrap;
-        node.align_items = AlignItems::Baseline;
+        node.flex_direction = FlexDirection::Column;
+        node.align_items = AlignItems::FlexStart;
     }
     // An inline element is a row whose items sit on the baseline.
     if matches!(c.display, Display::Inline) {

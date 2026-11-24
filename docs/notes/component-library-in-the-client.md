@@ -1,6 +1,6 @@
 ---
 topic: component-library-in-the-client
-triggers: [mithril_bevy, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
+triggers: [mithril_bevy, lib_search.rs, systems::lib_search, SearchView, bridge_keyboard, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
 updated: 2026-11-24
 ---
 
@@ -89,6 +89,29 @@ panel is drawn as the mockup had it, not as egui built it: a `TileGrid`
 of `Tile`s, `IconTabs` for the categories, `Chip`s for the kinds, choice
 tiles for the basemap — components added to the library for it. A
 category can be asked for by name (`CARTO_UI_LIB_PAGE=city`, `&page=city`).
+
+## The third screen: Search
+
+`systems::lib_search` (`CARTO_UI_LIB=search`, `&panel=search`) is the
+first whose field drives the world. Two rules came out of it:
+
+- **One set of methods, two editions.** What the field and the rows do is
+  `GeoNavState`'s (`query_edited`, `submit_query`, `search_list`, `pick`,
+  `go_home`), called by egui's `search_ui` and the library's screen alike,
+  so the two cannot drift. Move a panel's logic onto its state before
+  drawing it a second time.
+- **The camera side stays with egui's system.** The view actions (Set
+  Home, Copy link, Share) need the camera, the store and the share sheet,
+  which egui's `render_search_panel` already holds; with `nav.lib` on it
+  draws only its empty strip, publishes `GeoNavState::lib_view` (where the
+  camera is, what is possible) and runs the action the library hands back.
+
+A library text field with the keyboard holds the game keys off
+(`lib_host::bridge_keyboard` → `EguiManager::set_overlay_owns_keyboard`,
+read by `ui_owns_keyboard`); before it, typing a Settings password walked
+the avatar. A field takes the keyboard on mount with `autofocus` (the
+renderer action `@focus`), only when asked (Ctrl+L, `--ui search`), so a
+tap on the phone does not throw the keyboard over the recents.
 
 ## The same screen as DOM, in the web build
 

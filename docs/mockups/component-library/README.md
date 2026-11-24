@@ -527,6 +527,25 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    `?ui=lib&panel=layers`.
 
    ![Layers op de bibliotheek](fase5-layers.png)
+
+   **Search** (2026-11-24), het derde scherm en het eerste waarvan het
+   tekstveld de wereld stuurt: typen, Enter vliegt naar de eerste treffer,
+   een rij vliegt erheen of plant er een route naartoe, Terug · Vooruit ·
+   Thuis erboven, Thuis zetten · Link kopiëren · Delen eronder. Het veld
+   kreeg daarvoor `onkeydown` en `autofocus` (beide edities; `@focus` als
+   rendereractie), en wat veld en rijen doen werd eerst methoden van
+   `GeoNavState`, zodat egui's paneel en dat van de bibliotheek dezelfde
+   code aanroepen. Aan met `CARTO_UI_LIB=search`.
+
+   ![Search: egui, Bevy, browser](fase5-search.png)
+
+   **Ruimte** (2026-11-24, op verzoek): de componenten waren krap. Tegels,
+   lijstrijen, secties en chips gingen één stap omhoog op de ruimteschaal
+   (tegels 12 px tussen en binnen in plaats van 8, rijen 12/16 px),
+   sectietitels lijnen uit met de tekst van de rijen, en de schermen hebben
+   één linkerkantlijn van 20 px voor kop en inhoud.
+
+   ![Voor en na: Layers, Settings](ruimte.png)
 6. **Optioneel**: Pinnacle-backend; `cms`-SSR naar Rust; midas' hub over.
 
 Fase 0 en 1 kosten enkele sessies en veranderen niets aan wat live staat.

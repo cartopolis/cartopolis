@@ -55,10 +55,13 @@ use crate::systems::{icons, theme};
 pub struct LibScreens {
     pub settings: bool,
     pub layers: bool,
+    pub search: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
     /// Open Layers at once (`?panel=layers`).
     pub open_layers: bool,
+    /// Open Search at once (`?panel=search`).
+    pub open_search: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -76,8 +79,10 @@ impl LibScreens {
             LibScreens {
                 settings: all || named("settings"),
                 layers: all || named("layers"),
+                search: all || named("search"),
                 open_settings: false,
                 open_layers: false,
+                open_search: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -94,8 +99,10 @@ impl LibScreens {
             LibScreens {
                 settings: named("settings"),
                 layers: named("layers"),
+                search: named("search"),
                 open_settings: panel.as_deref() == Some("settings"),
                 open_layers: panel.as_deref() == Some("layers"),
+                open_search: panel.as_deref() == Some("search"),
                 page: get("page"),
             }
         }
@@ -943,14 +950,14 @@ fn panel(l: &Live, compact: bool) -> View {
             };
             match page.get() {
                 None => view! {
-                    <div style="display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--m-border)">
+                    <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                         <span style="color: var(--m-accent)">{icon(icons::SETTINGS)}</span>
                         <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Settings"</h1>
                         <CloseButton onclick={close_panel} />
                     </div>
                 },
                 Some(p) => view! {
-                    <div style="display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 0 12px 0 8px; border-bottom: 1px solid var(--m-border)">
+                    <div style="display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 0 12px 0 10px; border-bottom: 1px solid var(--m-border)">
                         <Button variant=Variant::Ghost size=Size::Sm onclick={back_to_list} aria_label="Back">{icon(icons::BACK)}</Button>
                         <h1 style="flex: 1; margin: 0; font-size: 20px; font-weight: 600; color: var(--m-text-strong)">{p.label()}</h1>
                     </div>
@@ -982,7 +989,7 @@ fn panel(l: &Live, compact: bool) -> View {
     view! {
         <div style={frame}>
             {header}
-            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px">
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 20px">
                 {body}
             </div>
         </div>

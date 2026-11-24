@@ -50,7 +50,7 @@ pub fn prepare_bevy(
     mut ready: bevy::prelude::Local<bool>,
 ) {
     use crate::systems::{icons, theme};
-    if *ready || !(lib.settings || lib.layers) {
+    if *ready || !(lib.settings || lib.layers || lib.search) {
         return;
     }
     let Ok(camera) = cameras.single() else {
@@ -66,6 +66,22 @@ pub fn prepare_bevy(
         icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
     });
     *ready = true;
+}
+
+/// A library text field with the keyboard holds the game keys off, as an
+/// egui field does (`EguiManager::ui_owns_keyboard`). As DOM a focused
+/// field is outside the canvas, whose keyboard Bevy reads, so only the
+/// Bevy backend needs telling.
+#[cfg(feature = "ui-probe")]
+pub fn bridge_keyboard(
+    focus: Option<bevy::prelude::Res<bevy::input_focus::InputFocus>>,
+    fields: bevy::prelude::Query<(), bevy::prelude::With<bevy::text::EditableText>>,
+    mut egui: crate::systems::egui_manager::EguiMut,
+) {
+    let owns = focus
+        .and_then(|f| f.get())
+        .is_some_and(|e| fields.contains(e));
+    egui.set_overlay_owns_keyboard(owns);
 }
 
 /// Unmounts everything mounted.

@@ -121,6 +121,10 @@ pub struct EguiManager {
     /// library's, `lib_settings`): a world click yields to it as it does to
     /// a panel. Set each frame by that screen's system, for the next frame.
     overlay_owns_pointer: bool,
+    /// A text field of a screen drawn beside egui holds the keyboard, so the
+    /// game keys yield to it as to egui's own fields. Set each frame by
+    /// `lib_host::bridge_keyboard`, for the next frame.
+    overlay_owns_keyboard: bool,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -420,6 +424,7 @@ impl Default for EguiManager {
             map_rect: None,
             ui_animating: false,
             overlay_owns_pointer: false,
+            overlay_owns_keyboard: false,
         }
     }
 }
@@ -665,6 +670,21 @@ impl EguiManager {
         self.overlay_owns_pointer = owns;
     }
 
+    /// Declare (each frame) that a text field beside egui has the keyboard —
+    /// see the `overlay_owns_keyboard` field.
+    #[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+    pub fn set_overlay_owns_keyboard(&mut self, owns: bool) {
+        if self.overlay_owns_keyboard != owns {
+            self.overlay_owns_keyboard = owns;
+        }
+    }
+
+    /// A text field beside egui has the keyboard.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn overlay_owns_keyboard(&self) -> bool {
+        self.overlay_owns_keyboard
+    }
+
     /// Is a drag under way that started on the bare map — not on a panel or a
     /// floating area? A sheet over the map steps aside for it: someone panning
     /// is looking at the map. Decided by where the press landed, as
@@ -723,6 +743,7 @@ impl EguiManager {
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
         self.ctx.text_edit_focused()
+            || self.overlay_owns_keyboard
             || self.modal
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)

@@ -57,6 +57,8 @@ pub mod lib_host;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
 #[cfg(feature = "ui-lib")]
+pub mod lib_search;
+#[cfg(feature = "ui-lib")]
 pub mod lib_settings;
 #[cfg(feature = "comms")]
 pub mod login_screen;

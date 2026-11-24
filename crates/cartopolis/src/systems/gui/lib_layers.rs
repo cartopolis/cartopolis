@@ -592,6 +592,14 @@ fn small(text: impl Into<String>) -> View {
     }
 }
 
+/// A group's heading inside a category, set as the library's section titles
+/// are, with room above it so the groups read apart.
+fn group(text: &'static str) -> View {
+    view! {
+        <p style="margin: 12px 0 0; color: var(--m-text-dim); font-size: var(--m-font-size-sm); font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase">{text}</p>
+    }
+}
+
 fn on(f: impl Fn() + 'static) -> Option<Handler> {
     Some(Rc::new(move |_: &Event| f()) as Handler)
 }
@@ -683,13 +691,13 @@ fn panel(l: &Live, counts: &Signal<[u64; 6]>, compact: bool) -> View {
     let credits = credits();
     view! {
         <div style={frame}>
-            <div style="display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--m-border)">
+            <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                 <span style="color: var(--m-accent)">{icon(RightPanel::Layers.icon())}</span>
                 <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Layers"</h1>
                 <Button variant=Variant::Ghost size=Size::Sm onclick={reset} title="Switch every layer back to how it ships">"Reset"</Button>
                 <CloseButton onclick={close} />
             </div>
-            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 10px">
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 16px">
                 {strip}
                 {subtitle}
                 {body}
@@ -770,20 +778,19 @@ fn map(l: &Live) -> View {
         None => View::Empty,
     };
     view! {
-        {small("The ground itself: pick one")}
         <TileGrid>
             {choice("Drawn map", icons::CAT_MAP, true, false)}
             {choice("Aerial photo", icons::AERIAL, true, true)}
             {choice("No ground", icons::NO_GROUND, false, false)}
         </TileGrid>
-        {small("On the map")}
+        {group("On the map")}
         <TileGrid>
             {tile(l, &l.street_labels, icons::LABEL, "Street names", false, false, ground.or(low))}
             {tile(l, &l.place_names, icons::LABEL, "Place names", false, false, None)}
             {tile(l, &l.roads_textured, icons::ROAD, "Road markings", false, false, low)}
             {tile(l, &l.water_shading, icons::WATER, "Moving water", false, false, low)}
         </TileGrid>
-        {small("From above")}
+        {group("From above")}
         <FieldSegmented model={l.globe_clouds.clone()} options={clouds} label="Clouds" size=Some(Size::Sm) id="ly-clouds" />
         <TileGrid>
             {tile(l, &l.night_side, icons::CAT_ORBIT, "Night side", false, false, None)}
