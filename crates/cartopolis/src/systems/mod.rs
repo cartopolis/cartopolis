@@ -66,8 +66,8 @@ pub use gui::{
     text_touch, theme, ui, ui_theme, welcome, zoom_rail,
 };
 // Settings drawn by the component library, beside egui (`ui-probe`).
-#[cfg(feature = "ui-probe")]
-pub use gui::lib_settings;
+#[cfg(feature = "ui-lib")]
+pub use gui::{lib_host, lib_settings};
 // What talks rather than shows the world: the app's, not the web build's
 // (`comms` in Cargo.toml).
 #[cfg(feature = "comms")]

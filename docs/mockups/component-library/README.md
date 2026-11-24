@@ -492,6 +492,22 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    eigenaar.
 
    ![Eén tokentabel](fase4-tokens.png)
+
+   **4b — dezelfde schermen als DOM in de webbuild**, gebouwd 2026-11-24.
+   `systems::lib_host` is de ene naad: een scherm roept `mount`/`clear`
+   aan en de lane kiest — `ui-probe` tekent via `mithril_bevy`, `ui-dom`
+   (wasm) via `mithril::dom` in een `<div>` over het canvas, met de
+   stylesheets van de bibliotheek uit `theme::tokens()` in de pagina
+   geschreven. Zo is Settings in het wereldframe op cartopolis.org echte
+   DOM in de stijl van de site (`?ui=lib&panel=settings`). De schermen
+   zelf — alle Settings-pagina's — staan er één keer; wat per backend
+   verschilt (camera, fonts, schaal, wie de klik heeft) zit achter een
+   `cfg`. Geen foto: de agent-container heeft geen GPU (ANGLE-Vulkan
+   vindt geen adapter, SwiftShader verliest het device vóór het eerste
+   frame, `web-device-loss.md`) en de Mac-nodes geen browser; de
+   wasm-check van de poort compileert de lane. Te zien op
+   `cartopolis.org/viewer/?ui=lib&panel=settings` zodra de webclient
+   opnieuw is gepubliceerd.
 5. **Paneel voor paneel** in de native app, zwaarste eerst (`chats.rs` 5.318,
    `settings.rs`, `data_layers.rs`, `camera_screen.rs`), `Canvas` voor de
    painter-schermen (kompas, OSD, cosmos, gezichten), de dev-panelen als

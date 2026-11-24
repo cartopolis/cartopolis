@@ -459,7 +459,7 @@
       })();
     </script>
     <link data-trunk rel="rust" data-bin="cartopolis" data-cargo-no-default-features
-          data-cargo-features="audio" />
+          data-cargo-features="audio,ui-dom" />
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />

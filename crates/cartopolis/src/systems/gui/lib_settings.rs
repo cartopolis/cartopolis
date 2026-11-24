@@ -35,6 +35,7 @@ use cartopolis_core::{msg, ContactSettings, NetMessage, RequestPolicy};
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
+#[cfg(feature = "ui-probe")]
 use crate::components::FreeCamera;
 use crate::platform::audio::AudioInput;
 use crate::resources::{
@@ -50,21 +51,59 @@ use crate::systems::sky_dome::SkyMode;
 use crate::systems::weather::WeatherState;
 use crate::systems::{icons, theme};
 
-/// Which screens the library draws instead of egui.
-#[derive(Resource, Default, Clone, Copy, Debug)]
+/// Which screens the library draws instead of egui, and what was asked of
+/// them at startup.
+#[derive(Resource, Default, Clone, Debug)]
 pub struct LibScreens {
     pub settings: bool,
+    /// Open Settings at once (a capture, a page's `?panel=settings`).
+    pub open_settings: bool,
+    /// The Settings page to open on, by label or name.
+    pub page: Option<String>,
 }
 
 impl LibScreens {
-    /// `CARTO_UI_LIB=settings` (or `1`, every screen there is).
+    /// Natively `CARTO_UI_LIB=settings` (or `1`, every screen there is) and
+    /// `CARTO_UI_LIB_PAGE`; on the web the page's query, `?ui=lib`,
+    /// `&panel=settings`, `&page=graphics`.
     pub fn from_env() -> Self {
-        let v = std::env::var("CARTO_UI_LIB").unwrap_or_default();
-        let all = v.trim() == "1";
-        LibScreens {
-            settings: all || v.split(',').any(|s| s.trim() == "settings"),
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let v = std::env::var("CARTO_UI_LIB").unwrap_or_default();
+            let all = v.trim() == "1";
+            LibScreens {
+                settings: all || v.split(',').any(|s| s.trim() == "settings"),
+                open_settings: false,
+                page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let search = web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .unwrap_or_default();
+            let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
+            let get = |k: &str| params.as_ref().and_then(|p| p.get(k));
+            let ui = get("ui").unwrap_or_default();
+            LibScreens {
+                settings: ui == "lib" || ui.split(',').any(|s| s == "settings"),
+                open_settings: get("panel").as_deref() == Some("settings"),
+                page: get("page"),
+            }
         }
     }
+}
+
+/// What the Bevy backend needs of the world: the camera it draws to, the
+/// faces, the UI scale and whether the pointer is over the panel.
+#[cfg(feature = "ui-probe")]
+#[derive(SystemParam)]
+pub struct BevyBackend<'w, 's> {
+    pointer: Res<'w, mithril_bevy::UiPointer>,
+    cameras: Query<'w, 's, Entity, With<FreeCamera>>,
+    fonts: ResMut<'w, Assets<Font>>,
+    ui_scale: ResMut<'w, UiScale>,
+    ready: Local<'s, bool>,
 }
 
 /// The app's state the pages read and write, in one parameter.
@@ -311,14 +350,20 @@ fn may_elevate(identity: &AuthIdentity) -> bool {
 }
 
 impl Live {
-    fn new(app: &AppState, state: &SettingsState, who: Option<String>, signed_in: bool) -> Self {
-        // The page asked for: by the capture's environment, else by whoever
-        // opened the panel on one (`--ui graphics`, `shot_harness`).
-        let page = std::env::var("CARTO_UI_LIB_PAGE")
-            .ok()
+    fn new(
+        app: &AppState,
+        state: &SettingsState,
+        page_hint: Option<&str>,
+        who: Option<String>,
+        signed_in: bool,
+    ) -> Self {
+        // The page asked for: by the capture's environment or the page's
+        // query (`LibScreens::page`), else by whoever opened the panel on one
+        // (`--ui graphics`, `shot_harness`).
+        let page = page_hint
             .and_then(|p| {
                 SettingsTab::ALL.into_iter().find(|t| {
-                    t.label().eq_ignore_ascii_case(&p) || format!("{t:?}").eq_ignore_ascii_case(&p)
+                    t.label().eq_ignore_ascii_case(p) || format!("{t:?}").eq_ignore_ascii_case(p)
                 })
             })
             .or(state.page);
@@ -598,13 +643,11 @@ pub fn drive_lib_settings(
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<SettingsState>,
     mut app: AppState,
-    mut egui: EguiMut,
-    pointer: Res<mithril_bevy::UiPointer>,
-    cameras: Query<Entity, With<FreeCamera>>,
-    mut fonts: ResMut<Assets<Font>>,
-    mut ui_scale: ResMut<UiScale>,
+    // Written to only by the Bevy backend (the pointer's ownership).
+    #[cfg_attr(not(feature = "ui-probe"), allow(unused_mut))] mut egui: EguiMut,
+    #[cfg(feature = "ui-probe")] mut bevy: BevyBackend,
     mut commands: Commands,
-    mut ready: Local<bool>,
+    mut opened: Local<bool>,
 ) {
     if !lib.settings {
         return;
@@ -612,25 +655,33 @@ pub fn drive_lib_settings(
     if !state.lib {
         state.lib = true;
     }
-    if !*ready {
+    // Asked to open on Settings (`?panel=settings` on the web): once.
+    if lib.open_settings && !*opened {
+        *opened = true;
+        *right_panel = RightPanel::Settings;
+    }
+    #[cfg(feature = "ui-probe")]
+    if !*bevy.ready {
         // The camera the panel draws to and the faces it draws with, once.
-        let Ok(camera) = cameras.single() else {
+        let Ok(camera) = bevy.cameras.single() else {
             return;
         };
-        ui_scale.0 = egui.ui_scale();
-        let body = fonts.add(Font::from_bytes(theme::BODY_TTF.to_vec()));
+        bevy.ui_scale.0 = egui.ui_scale();
+        let body = bevy.fonts.add(Font::from_bytes(theme::BODY_TTF.to_vec()));
         commands.insert_resource(mithril_bevy::UiCamera(camera));
         commands.insert_resource(mithril_bevy::FontMap {
             regular: body.clone(),
-            semibold: fonts.add(Font::from_bytes(theme::BRAND_TTF.to_vec())),
+            semibold: bevy.fonts.add(Font::from_bytes(theme::BRAND_TTF.to_vec())),
             mono: body,
-            icons: Some(fonts.add(Font::from_bytes(icons::FONT.to_vec()))),
+            icons: Some(bevy.fonts.add(Font::from_bytes(icons::FONT.to_vec()))),
         });
-        *ready = true;
+        *bevy.ready = true;
     }
     let open = right_panel.is(RightPanel::Settings);
-    // A world click under the panel is the panel's.
-    egui.set_overlay_owns_pointer(open && pointer.owns_pointer());
+    // A world click under the panel is the panel's. (As DOM the panel sits
+    // over the canvas and the click never reaches it.)
+    #[cfg(feature = "ui-probe")]
+    egui.set_overlay_owns_pointer(open && bevy.pointer.owns_pointer());
     let signed_in = app.identity.username.is_some() && app.online.is_some();
     let who = signed_in.then(|| app.identity.username.clone()).flatten();
     LIVE.with(|live| {
@@ -639,7 +690,7 @@ pub fn drive_lib_settings(
             (false, None) => {}
             (false, Some(_)) => {
                 *live = None;
-                mithril_bevy::with_host(|host| host.clear());
+                crate::systems::lib_host::clear();
                 // What egui's panel does on closing: the microphone off, the
                 // typed password gone, the tokens forgotten.
                 state.page = None;
@@ -651,14 +702,14 @@ pub fn drive_lib_settings(
                 app.tokens.forget();
             }
             (true, None) => {
-                let l = Live::new(&app, &state, who, signed_in);
+                let l = Live::new(&app, &state, lib.page.as_deref(), who, signed_in);
                 let compact = egui.compact();
                 let p = theme::p();
-                mithril_bevy::with_host(|host| {
-                    host.env.dark = p.ink == theme::DARK.ink;
-                    host.env.coarse_pointer = theme::touch_layout();
-                    host.mount(panel(&l, compact));
-                });
+                crate::systems::lib_host::mount(
+                    panel(&l, compact),
+                    p.ink == theme::DARK.ink,
+                    theme::touch_layout(),
+                );
                 if let Some(path) = std::env::var_os("CARTO_UI_LIB_HTML") {
                     if let Err(e) = std::fs::write(&path, html(&l, compact)) {
                         warn!(?path, error = %e, "lib settings: could not write the HTML");

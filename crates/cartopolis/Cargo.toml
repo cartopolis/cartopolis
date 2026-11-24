@@ -137,9 +137,14 @@ scalar-fallback = []
 # with `bevy_ui` beside egui's Settings panel, and a long list for the layout
 # cost. Off by default — nothing in the client reads these crates otherwise,
 # and a shipped build must not carry a second UI toolkit for a measurement.
+# The component library's screens (`systems::lib_settings`), on whichever
+# backend the lane has: `ui-probe` draws them through `bevy_ui` (native),
+# `ui-dom` as DOM over the canvas (the web build, `systems::lib_host`).
+ui-lib = ["dep:mithril"]
+ui-dom = ["ui-lib", "mithril/dom"]
 ui-probe = [
+    "ui-lib",
     "dep:mithril_bevy",
-    "dep:mithril",
     "bevy/bevy_ui",
     "bevy/bevy_ui_render",
     "bevy/bevy_ui_widgets",

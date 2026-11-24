@@ -6746,6 +6746,7 @@ version = "0.1.0"
 source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
 dependencies = [
  "mithril_components",
+ "mithril_dom",
  "mithril_macro",
  "mithril_signals",
  "mithril_style",
@@ -6769,6 +6770,17 @@ source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937f
 dependencies = [
  "mithril_validation",
  "mithril_view",
+]
+
+[[package]]
+name = "mithril_dom"
+version = "0.1.0"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=067bd937#067bd937fd1c3096755116eb4a85cc54ab923269"
+dependencies = [
+ "js-sys",
+ "mithril_view",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

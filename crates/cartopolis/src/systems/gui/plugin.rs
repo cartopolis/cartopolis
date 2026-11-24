@@ -28,6 +28,12 @@ pub struct GuiPlugin {
 
 impl Plugin for GuiPlugin {
     fn build(&self, app: &mut App) {
+        // The web build: the library's screens as DOM over the canvas
+        // (`systems::lib_host`), on with `?ui=lib`. Natively the probe
+        // plugin registers the same system behind `CARTO_UI_LIB`.
+        #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
+        app.insert_resource(systems::lib_settings::LibScreens::from_env())
+            .add_systems(PostUpdate, systems::lib_settings::drive_lib_settings);
         app.init_resource::<systems::settings::SettingsState>()
             .init_resource::<systems::place_names::PlaceNames>()
             .init_resource::<systems::facade_check::FacadeCheck>()

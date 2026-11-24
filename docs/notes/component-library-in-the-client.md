@@ -77,6 +77,23 @@ Captures: `--shots docs/phone-ui-shots.toml --only settings` with
 page), and `CARTO_UI_LIB_HTML=<path>` writes the same panel as HTML for the
 browser beside it (the study's `fase3b-settings.png`).
 
+## The same screen as DOM, in the web build
+
+On the web the client is only the world inside the site's frame
+(`web-client-is-the-world.md`), and its chrome should look like the site.
+`systems::lib_host` is the one seam: a screen's system calls `mount` and
+`clear`, and the lane decides — `ui-probe` draws through `mithril_bevy`,
+`ui-dom` (wasm) through `mithril::dom` into a full-window `<div
+id="cartopolis-ui">` over the canvas, `pointer-events: none` except where a
+screen is, with the library's stylesheets written into a `<style>` from
+`theme::tokens()` the first time something mounts (no file is copied; the
+page's own baseline `base.css` is left out). The container carries
+`data-theme` from the app's setting, not the page's. Switched on by the
+page's query: `?ui=lib`, `&panel=settings` opens it, `&page=graphics`
+on a page. The Bevy-only parts of the system (camera, fonts, UI scale,
+the pointer's ownership) are a `BevyBackend` parameter behind `ui-probe`;
+as DOM the panel sits over the canvas and a click never reaches the world.
+
 ## What the renderer draws that the browser does natively
 
 The sheet reaches these through pseudo-elements or the platform, which the
