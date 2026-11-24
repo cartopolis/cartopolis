@@ -13,14 +13,11 @@
 //! CARTO_WRITE_WEB_THEME=1 cargo test -p cartopolis web_theme
 //! ```
 //!
-//! **The dark half is the client's [`theme::DARK`].** Every dark value below is
-//! one of its fields; none is a fresh hex. **The light half is the web's own**
-//! and lives here so it is still in the one place UI colour is chosen, beside
-//! the dark value it answers to. It is the same ramp turned over, with the same
-//! teal cast, and the same accent carrying the same ink in both modes, so a
-//! primary button is the same object in the client, on the dark page and on
-//! the light one. The client's own light theme ([`theme::LIGHT`], 2026-11-10)
-//! took these values, role for role, and is free to move apart from them.
+//! The `--m-*` tokens are [`theme::tokens`], the one `Tokens` value the Bevy
+//! backend draws with too (phase 4 of `docs/mockups/component-library`); this
+//! module adds the `--c-*` tokens the page has and the library does not, and
+//! writes the file. The colours themselves, light and dark, are chosen in
+//! `theme/tokens.rs`.
 //!
 //! What is *not* generated is the page styling itself (`app.css` and the page
 //! stylesheets), which only ever names `--m-*` tokens — that rule is what makes
@@ -29,73 +26,16 @@
 //! Test-only on purpose: nothing at run time reads it, and a module compiled
 //! into the client binary to be called from one test is dead weight there.
 
-use super::theme;
 use egui::Color32;
+use mithril_style::Pair;
 
-/// The client's dark palette as the web still draws it. On 2026-11-10 the
-/// app's accent plates went a deeper teal with white ink (the person: "a teal
-/// button with black text is not nice"); the web was not part of that ask, so
-/// its generated theme keeps the bright accent and dark ink it had.
-const WEB: theme::Palette = theme::Palette {
-    accent: Color32::from_rgb(0x5C, 0xC6, 0xC0),
-    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
-    accent_lift: Color32::WHITE,
-    accent_pressed: Color32::from_rgb(0x3F, 0xA9, 0xA2),
-    accent_ring: Color32::from_rgb(0xA8, 0xDC, 0xD8),
-    ..theme::DARK
-};
+use super::theme;
+use super::theme::tokens::{alpha, hex, WEB};
 
 /// Where the generated file lives, from this crate's manifest directory.
 const OUT: &str = "../atlas/web/src/css/theme.css";
 /// And the page whose pre-stylesheet background must match `--m-bg`.
 const INDEX_HTML: &str = "../atlas/web/src/index.html";
-
-/// The font family name the web's `@font-face` rules declare (`app.css`). The
-/// files are the client's own, copied into `dist/fonts/` by `build.ts`.
-const FONT_FAMILY: &str = "Plus Jakarta Sans";
-
-// ─── The light half ───────────────────────────────────────────────────────────
-
-/// Page background: an off-white with the ramp's teal cast, the light twin of
-/// [`theme::INK`].
-const L_BG: Color32 = Color32::from_rgb(0xF1, 0xF5, 0xF5);
-const L_SURFACE: Color32 = Color32::WHITE;
-const L_SURFACE_RAISED: Color32 = Color32::from_rgb(0xF8, 0xFA, 0xFA);
-const L_SURFACE_SUNKEN: Color32 = Color32::from_rgb(0xE7, 0xED, 0xED);
-/// Body text is the client's raised surface: the ramp, read the other way.
-const L_TEXT: Color32 = WEB.surface_raised;
-const L_TEXT_DIM: Color32 = Color32::from_rgb(0x54, 0x65, 0x68);
-const L_TEXT_FAINT: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
-const L_BORDER: Color32 = Color32::from_rgb(0xDA, 0xE3, 0xE3);
-/// A control's boundary. Clears 3:1 on white for the reason [`theme::LINE`]
-/// does on the dark ramp (WCAG 1.4.11): a field at rest has no other edge.
-const L_BORDER_STRONG: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
-/// Pushed under the pointer: the same move as [`theme::ACCENT_PRESSED`].
-const L_ACCENT_HOVER: Color32 = WEB.accent_pressed;
-/// Links and accent-coloured words on white. The teal itself is too light to
-/// read there, so the text tint is a deep version of it.
-const L_ACCENT_TEXT: Color32 = Color32::from_rgb(0x17, 0x69, 0x6A);
-/// Selected rows, a pressed nav item: the light twin of [`theme::ACCENT_MUTED`].
-const L_ACCENT_SOFT: Color32 = Color32::from_rgb(0xD9, 0xF0, 0xEE);
-
-// ─── Status tones (the client has two: WARN and ERROR) ───────────────────────
-
-const L_INFO: Color32 = Color32::from_rgb(0x1F, 0x6A, 0xB0);
-const D_INFO: Color32 = theme::REAL_LOCATION;
-const L_INFO_SOFT: Color32 = Color32::from_rgb(0xE4, 0xF0, 0xFB);
-const D_INFO_SOFT: Color32 = Color32::from_rgb(0x15, 0x27, 0x36);
-const L_SUCCESS: Color32 = Color32::from_rgb(0x1C, 0x74, 0x42);
-const D_SUCCESS: Color32 = Color32::from_rgb(0x7C, 0xCF, 0x9B);
-const L_SUCCESS_SOFT: Color32 = Color32::from_rgb(0xE3, 0xF4, 0xE9);
-const D_SUCCESS_SOFT: Color32 = Color32::from_rgb(0x15, 0x2C, 0x1E);
-const L_WARNING: Color32 = Color32::from_rgb(0x85, 0x57, 0x00);
-const D_WARNING: Color32 = WEB.warn;
-const L_WARNING_SOFT: Color32 = Color32::from_rgb(0xFB, 0xF1, 0xDA);
-const D_WARNING_SOFT: Color32 = Color32::from_rgb(0x30, 0x29, 0x16);
-const L_DANGER: Color32 = Color32::from_rgb(0xB3, 0x36, 0x1E);
-const D_DANGER: Color32 = WEB.error;
-const L_DANGER_SOFT: Color32 = Color32::from_rgb(0xFC, 0xE8, 0xE4);
-const D_DANGER_SOFT: Color32 = Color32::from_rgb(0x36, 0x1D, 0x19);
 
 /// One token: a light/dark pair, or one value for both.
 enum Value {
@@ -103,97 +43,72 @@ enum Value {
     Both(String),
 }
 
-/// An opaque colour as CSS.
-fn hex(c: Color32) -> String {
-    debug_assert_eq!(c.a(), 255, "a translucent colour goes through alpha()");
-    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
-}
-
-/// An opaque colour at a percentage, as CSS. Built from the opaque colour
-/// rather than from a translucent `Color32`, which egui stores premultiplied —
-/// reading one back at 5 % alpha does not return the colour it was made from.
-fn alpha(c: Color32, pct: f32) -> String {
-    format!("rgb({} {} {} / {}%)", c.r(), c.g(), c.b(), pct.round())
-}
-
-fn pair(light: Color32, dark: Color32) -> Value {
-    Value::Pair(hex(light), hex(dark))
+impl From<&Pair> for Value {
+    fn from(p: &Pair) -> Self {
+        if p.light == p.dark {
+            Value::Both(p.light.0.clone())
+        } else {
+            Value::Pair(p.light.0.clone(), p.dark.0.clone())
+        }
+    }
 }
 
 fn both(c: Color32) -> Value {
     Value::Both(hex(c))
 }
 
-/// Every token, in the order the file lists them. Names are the library's
-/// (`@garage44/mithril/components`, `css/tokens.css`) plus `--c-*` for the two
-/// this project has and the library does not.
+/// Every token, in the order the file lists them. The `--m-*` names are the
+/// library's (`@garage44/mithril/components`, `css/tokens.css`), their values
+/// [`theme::tokens`]'s; `--c-*` are the ones this project has and the library
+/// does not.
 fn tokens() -> Vec<(&'static str, Value)> {
     use theme::*;
     use Value::*;
+    let t = theme::tokens();
     // The web's glass stays at the 92 % the client's was. The client went
     // solid on 2026-11-08 (`theme::GLASS`) at the person's word about the app;
     // the web page was not part of that ask, so it keeps its look until it is.
     let glass_pct = 92.0;
+    let l_surface = Color32::WHITE;
     vec![
         // Brand
         ("--c-brand", both(BRAND)),
-        ("--m-accent", both(WEB.accent)),
-        ("--m-accent-hover", pair(L_ACCENT_HOVER, WEB.accent_ring)),
-        // Dark: the pale teal, so words in it read as well on the selected
-        // fill ([`ACCENT_MUTED`]) as on a panel.
-        ("--m-accent-text", pair(L_ACCENT_TEXT, WEB.accent_ring)),
-        ("--m-accent-soft", pair(L_ACCENT_SOFT, WEB.accent_muted)),
-        ("--m-on-accent", both(WEB.on_accent)),
+        ("--m-accent", (&t.accent).into()),
+        ("--m-accent-hover", (&t.accent_hover).into()),
+        ("--m-accent-text", (&t.accent_text).into()),
+        ("--m-accent-soft", (&t.accent_soft).into()),
+        ("--m-on-accent", (&t.on_accent).into()),
         // Surfaces, back to front
-        ("--m-bg", pair(L_BG, WEB.ink)),
-        ("--m-surface", pair(L_SURFACE, WEB.surface)),
-        (
-            "--m-surface-raised",
-            pair(L_SURFACE_RAISED, WEB.surface_raised),
-        ),
-        ("--m-surface-sunken", pair(L_SURFACE_SUNKEN, WEB.ink)),
+        ("--m-bg", (&t.bg).into()),
+        ("--m-surface", (&t.surface).into()),
+        ("--m-surface-raised", (&t.surface_raised).into()),
+        ("--m-surface-sunken", (&t.surface_sunken).into()),
         (
             "--c-glass",
-            Pair(alpha(L_SURFACE, glass_pct), alpha(WEB.surface, glass_pct)),
+            Pair(alpha(l_surface, glass_pct), alpha(WEB.surface, glass_pct)),
         ),
-        (
-            "--m-hover",
-            Pair(alpha(WEB.ink, 5.0), alpha(WEB.cream, 6.0)),
-        ),
-        (
-            "--m-pressed",
-            Pair(alpha(WEB.ink, 10.0), alpha(WEB.cream, 11.0)),
-        ),
+        ("--m-hover", (&t.hover).into()),
+        ("--m-pressed", (&t.pressed).into()),
         // Text and lines
-        ("--m-text", pair(L_TEXT, WEB.text)),
-        ("--m-text-strong", pair(WEB.ink, WEB.cream)),
-        ("--m-text-dim", pair(L_TEXT_DIM, WEB.text_dim)),
-        ("--m-text-faint", pair(L_TEXT_FAINT, WEB.line)),
-        ("--m-border", pair(L_BORDER, WEB.surface_hover)),
-        ("--m-border-strong", pair(L_BORDER_STRONG, WEB.line)),
-        ("--m-control-bg", pair(L_SURFACE, WEB.ink)),
+        ("--m-text", (&t.text).into()),
+        ("--m-text-strong", (&t.text_strong).into()),
+        ("--m-text-dim", (&t.text_dim).into()),
+        ("--m-text-faint", (&t.text_faint).into()),
+        ("--m-border", (&t.border).into()),
+        ("--m-border-strong", (&t.border_strong).into()),
+        ("--m-control-bg", (&t.control_bg).into()),
         // Status
-        ("--m-info", pair(L_INFO, D_INFO)),
-        ("--m-info-soft", pair(L_INFO_SOFT, D_INFO_SOFT)),
-        ("--m-success", pair(L_SUCCESS, D_SUCCESS)),
-        ("--m-success-soft", pair(L_SUCCESS_SOFT, D_SUCCESS_SOFT)),
-        ("--m-warning", pair(L_WARNING, D_WARNING)),
-        ("--m-warning-soft", pair(L_WARNING_SOFT, D_WARNING_SOFT)),
-        ("--m-danger", pair(L_DANGER, D_DANGER)),
-        ("--m-danger-soft", pair(L_DANGER_SOFT, D_DANGER_SOFT)),
-        (
-            "--m-focus",
-            Pair(alpha(WEB.accent, 50.0), alpha(WEB.accent, 55.0)),
-        ),
-        (
-            "--m-backdrop",
-            Pair(alpha(WEB.ink, 40.0), alpha(Color32::BLACK, 60.0)),
-        ),
-        // Dark: the midas hub's card shadow (`--lift-2`), as `theme::CARD_SHADOW`.
-        (
-            "--m-shadow-color",
-            Pair(alpha(WEB.ink, 8.0), alpha(Color32::BLACK, 60.0)),
-        ),
+        ("--m-info", (&t.info).into()),
+        ("--m-info-soft", (&t.info_soft).into()),
+        ("--m-success", (&t.success).into()),
+        ("--m-success-soft", (&t.success_soft).into()),
+        ("--m-warning", (&t.warning).into()),
+        ("--m-warning-soft", (&t.warning_soft).into()),
+        ("--m-danger", (&t.danger).into()),
+        ("--m-danger-soft", (&t.danger_soft).into()),
+        ("--m-focus", (&t.focus).into()),
+        ("--m-backdrop", (&t.backdrop).into()),
+        ("--m-shadow-color", (&t.shadow_color).into()),
         // Depth: what makes a surface read as a pane of glass and a button as
         // a thing standing on it (`depth.css`). Light from above: a rim and an
         // inner highlight along the top edge, a shade along the bottom, and the
@@ -204,7 +119,7 @@ fn tokens() -> Vec<(&'static str, Value)> {
         // anything the app or the hub draws (2026-11-01).
         (
             "--c-glass-soft",
-            Pair(alpha(L_SURFACE, 62.0), alpha(WEB.surface, glass_pct)),
+            Pair(alpha(l_surface, 62.0), alpha(WEB.surface, glass_pct)),
         ),
         (
             "--c-rim",
@@ -237,15 +152,19 @@ fn tokens() -> Vec<(&'static str, Value)> {
             Pair(alpha(WEB.ink, 7.0), alpha(WEB.text_dim, 9.0)),
         ),
         // Shape and type
+        ("--m-font", Both(t.font.clone())),
         (
-            "--m-font",
-            Both(format!(
-                "'{FONT_FAMILY}', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-            )),
+            "--m-radius-sm",
+            Both(format!("{}px", mithril_style::num(t.radius_sm))),
         ),
-        ("--m-radius-sm", Both(format!("{RADIUS_SM}px"))),
-        ("--m-radius", Both(format!("{RADIUS}px"))),
-        ("--m-radius-lg", Both(format!("{RADIUS_LG}px"))),
+        (
+            "--m-radius",
+            Both(format!("{}px", mithril_style::num(t.radius))),
+        ),
+        (
+            "--m-radius-lg",
+            Both(format!("{}px", mithril_style::num(t.radius_lg))),
+        ),
     ]
 }
 
@@ -278,6 +197,7 @@ pub fn css() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::theme::tokens::*;
     use super::*;
 
     fn path(rel: &str) -> std::path::PathBuf {

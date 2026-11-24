@@ -2616,6 +2616,7 @@ dependencies = [
  "libloading",
  "mithril",
  "mithril_bevy",
+ "mithril_style",
  "ndk",
  "ndk-sys",
  "nokhwa",

@@ -32,7 +32,12 @@ impl Plugin for UiProbePlugin {
         }
         app.init_resource::<UiProbe>()
             .insert_resource(crate::systems::lib_settings::LibScreens::from_env())
-            .add_plugins(mithril_bevy::MithrilUiPlugin::default())
+            // Cartopolis' own tokens: the same `Tokens` the web's `theme.css`
+            // is written from, so the library draws the app's palette here
+            // and the site's there from one table.
+            .add_plugins(mithril_bevy::MithrilUiPlugin {
+                tokens: theme::tokens(),
+            })
             .add_systems(Update, spawn_probe.in_set(ClientPhase::Input))
             // After every Update system has had its say on `RightPanel`, and
             // before the library applies the frame's operations.

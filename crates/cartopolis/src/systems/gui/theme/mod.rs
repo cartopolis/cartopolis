@@ -105,6 +105,10 @@ mod metrics;
 mod palette;
 mod states;
 mod style;
+// Read by the web theme's test and by the library's backends (`ui-lib`);
+// in a lane with neither it is the table nothing reads yet.
+#[cfg_attr(not(any(test, feature = "ui-lib")), allow(dead_code))]
+pub mod tokens;
 
 pub use brand::*;
 pub use controls::*;
@@ -115,6 +119,8 @@ pub use metrics::*;
 pub use palette::*;
 pub use states::*;
 pub use style::*;
+#[cfg(any(test, feature = "ui-lib"))]
+pub use tokens::tokens;
 
 #[cfg(test)]
 mod tests;

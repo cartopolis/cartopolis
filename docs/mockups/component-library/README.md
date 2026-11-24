@@ -478,6 +478,20 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
 4. **Het wereldframe op de DOM-backend**: zoeker, lagen, Places, kaartjes,
    pins. Hier wordt de vraag letterlijk waar: wasm-wereld + web-componenten,
    één stijl met de site.
+
+   **4a — één tokentabel**, gebouwd 2026-11-24. `theme::tokens()` is
+   cartopolis' eigen `Tokens` (de bibliotheek's getypte struct): het donkere
+   deel het palet van de client zoals het web het tekent, het lichte deel
+   het web's eigen. `web_theme.rs` schrijft `theme.css` er nu uit (het
+   bestand kwam byte-gelijk terug, dus de oude handmatige koppeling is
+   exact overgenomen) en de Bevy-backend tekent ermee: Settings in de app
+   draagt het palet van de site — dezelfde teal, dezelfde vlakken — in
+   plaats van de oranje bibliotheekkleuren. Open: de app's eigen accent is
+   sinds 2026-11-10 dieper teal met wit erop, het web hield de heldere
+   teal met donkere inkt; welke de ene tabel krijgt is een keuze voor de
+   eigenaar.
+
+   ![Eén tokentabel](fase4-tokens.png)
 5. **Paneel voor paneel** in de native app, zwaarste eerst (`chats.rs` 5.318,
    `settings.rs`, `data_layers.rs`, `camera_screen.rs`), `Canvas` voor de
    painter-schermen (kompas, OSD, cosmos, gezichten), de dev-panelen als

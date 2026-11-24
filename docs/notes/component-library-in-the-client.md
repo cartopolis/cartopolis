@@ -23,6 +23,12 @@ trees, handlers) is **thread-local** — signals and handlers are `!Send`, and
 Bevy 0.20 has no non-send `World` resources — so a system that mounts takes
 `NonSendMarker` and reaches it with `mithril_bevy::with_host`.
 
+Tokens: the plugin takes `theme::tokens()`, cartopolis' own `Tokens`
+(`theme/tokens.rs`) — the one table `web_theme.rs` writes the web's
+`theme.css` from, so the app's library screens and the site share a
+palette by construction. Change a colour there and both move; the web
+theme test fails until `theme.css` is regenerated.
+
 Fonts: the cascade's families map onto `FontMap` (`regular`, `semibold` from
 weight ≥ 550, `mono`, and `icons` for a family naming "Symbols"), so an icon is
 a glyph of `icons::FONT` in a span with `font-family: 'Material Symbols
