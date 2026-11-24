@@ -32,6 +32,42 @@ pub fn mount(view: View, dark: bool, coarse_pointer: bool) {
     }
 }
 
+/// The Bevy backend's root: the camera it draws to, the faces it draws
+/// with, and the UI scale egui lays out in — once any screen is on. Without
+/// it the host has no root and every operation waits.
+#[cfg(feature = "ui-probe")]
+pub fn prepare_bevy(
+    _main: bevy::ecs::system::NonSendMarker,
+    lib: bevy::prelude::Res<crate::systems::lib_settings::LibScreens>,
+    cameras: bevy::prelude::Query<
+        bevy::prelude::Entity,
+        bevy::prelude::With<crate::components::FreeCamera>,
+    >,
+    mut fonts: bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::Font>>,
+    mut ui_scale: bevy::prelude::ResMut<bevy::prelude::UiScale>,
+    egui: crate::systems::egui_manager::EguiRef,
+    mut commands: bevy::prelude::Commands,
+    mut ready: bevy::prelude::Local<bool>,
+) {
+    use crate::systems::{icons, theme};
+    if *ready || !(lib.settings || lib.layers) {
+        return;
+    }
+    let Ok(camera) = cameras.single() else {
+        return;
+    };
+    ui_scale.0 = egui.ui_scale();
+    let body = fonts.add(bevy::prelude::Font::from_bytes(theme::BODY_TTF.to_vec()));
+    commands.insert_resource(mithril_bevy::UiCamera(camera));
+    commands.insert_resource(mithril_bevy::FontMap {
+        regular: body.clone(),
+        semibold: fonts.add(bevy::prelude::Font::from_bytes(theme::BRAND_TTF.to_vec())),
+        mono: body,
+        icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
+    });
+    *ready = true;
+}
+
 /// Unmounts everything mounted.
 pub fn clear() {
     #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]

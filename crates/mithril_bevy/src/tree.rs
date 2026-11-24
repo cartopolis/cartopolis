@@ -11,7 +11,8 @@ use bevy::prelude::*;
 use bevy::text::{EditableText, LineHeight};
 use bevy::ui::ScrollPosition;
 use bevy::ui::{
-    BoxShadow, GlobalZIndex, Overflow, OverflowAxis, ShadowStyle, UiTargetCamera, UiTransform, Val2,
+    BoxShadow, GlobalZIndex, GridTrack, Overflow, OverflowAxis, RepeatedGridTrack, ShadowStyle,
+    UiTargetCamera, UiTransform, Val2,
 };
 use bevy::ui_widgets::{
     ScrollArea, Slider, SliderRange, SliderStep, SliderThumb, SliderValue, TextInput, TrackClick,
@@ -855,6 +856,8 @@ fn write_components(
             x: overflow_axis(c.overflow_x),
             y: overflow_axis(c.overflow_y),
         },
+        grid_template_columns: grid_tracks(c.grid_template_columns.as_deref()),
+        grid_template_rows: grid_tracks(c.grid_template_rows.as_deref()),
         ..default()
     };
     // A select's options are not laid out: the select shows the chosen
@@ -864,6 +867,16 @@ fn write_components(
     }
     if tag == "select" {
         node.align_items = AlignItems::Center;
+    }
+    // A block holding text beside an element (a label and its badge) is a
+    // line of inline content in a browser. Bevy's block layout stretches
+    // every child to the full width instead, so it becomes a wrapping row:
+    // the badge keeps its own width and wraps under a long label.
+    if node.display == bevy::ui::Display::Block && mixed_content(world, id) {
+        node.display = bevy::ui::Display::Flex;
+        node.flex_direction = FlexDirection::Row;
+        node.flex_wrap = FlexWrap::Wrap;
+        node.align_items = AlignItems::Baseline;
     }
     // An inline element is a row whose items sit on the baseline.
     if matches!(c.display, Display::Inline) {
@@ -1125,6 +1138,25 @@ fn write_components(
     }
 }
 
+/// Whether a node's children are text and elements both. (Inserting or
+/// removing a child marks the parent dirty, so this is re-read then.)
+fn mixed_content(world: &World, id: NodeId) -> bool {
+    let tree = world.resource::<UiTree>();
+    let Some(n) = tree.nodes.get(&id) else {
+        return false;
+    };
+    let kinds = n.children.iter().filter_map(|c| tree.nodes.get(c));
+    let (mut text, mut element) = (false, false);
+    for k in kinds {
+        match k.kind {
+            NodeKind::Text(_) => text = true,
+            NodeKind::Element { .. } => element = true,
+            NodeKind::Anchor => {}
+        }
+    }
+    text && element
+}
+
 fn props_or_attr(id: &NodeId, world: &World, name: &str) -> Option<String> {
     let tree = world.resource::<UiTree>();
     match tree.nodes.get(id).map(|n| &n.kind) {
@@ -1134,6 +1166,81 @@ fn props_or_attr(id: &NodeId, world: &World, name: &str) -> Option<String> {
             .map(|(_, v)| v.clone()),
         _ => None,
     }
+}
+
+/// A `grid-template-*` as Bevy's tracks: the forms the sheets use —
+/// `repeat(auto-fill, minmax(104px, 1fr))`, `repeat(3, 1fr)`, and a list of
+/// `1fr`, `Npx`, `auto`. Anything else leaves the template empty (one
+/// implicit track).
+fn grid_tracks(template: Option<&str>) -> Vec<RepeatedGridTrack> {
+    use bevy::ui::{GridTrackRepetition, MaxTrackSizingFunction, MinTrackSizingFunction};
+    let Some(t) = template else {
+        return Vec::new();
+    };
+    let t = t.trim();
+    if let Some(inner) = t.strip_prefix("repeat(").and_then(|r| r.strip_suffix(')')) {
+        let (count, tracks) = match inner.split_once(',') {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let repetition = match count.trim() {
+            "auto-fill" => GridTrackRepetition::AutoFill,
+            "auto-fit" => GridTrackRepetition::AutoFit,
+            n => match n.parse::<u16>() {
+                Ok(n) => GridTrackRepetition::Count(n),
+                Err(_) => return Vec::new(),
+            },
+        };
+        let tracks = tracks.trim();
+        if let Some(mm) = tracks
+            .strip_prefix("minmax(")
+            .and_then(|r| r.strip_suffix(')'))
+        {
+            let Some((min, max)) = mm.split_once(',') else {
+                return Vec::new();
+            };
+            let min = min.trim().trim_end_matches("px").parse::<f32>().ok();
+            let max = max.trim();
+            let max = if let Some(fr) = max.strip_suffix("fr") {
+                fr.parse::<f32>().ok().map(MaxTrackSizingFunction::Fraction)
+            } else if max == "auto" {
+                Some(MaxTrackSizingFunction::Auto)
+            } else {
+                max.trim_end_matches("px")
+                    .parse::<f32>()
+                    .ok()
+                    .map(MaxTrackSizingFunction::Px)
+            };
+            return match (min, max) {
+                (Some(min), Some(max)) => vec![RepeatedGridTrack::minmax(
+                    repetition,
+                    MinTrackSizingFunction::Px(min),
+                    max,
+                )],
+                _ => Vec::new(),
+            };
+        }
+        if let Some(fr) = tracks.strip_suffix("fr") {
+            return match (fr.parse::<f32>(), repetition) {
+                (Ok(fr), GridTrackRepetition::Count(n)) => vec![RepeatedGridTrack::fr(n, fr)],
+                _ => Vec::new(),
+            };
+        }
+        return Vec::new();
+    }
+    t.split_whitespace()
+        .filter_map(|part| {
+            if part == "auto" {
+                Some(GridTrack::auto())
+            } else if let Some(fr) = part.strip_suffix("fr") {
+                fr.parse::<f32>().ok().map(GridTrack::fr)
+            } else {
+                part.strip_suffix("px")
+                    .and_then(|px| px.parse::<f32>().ok())
+                    .map(GridTrack::px)
+            }
+        })
+        .collect()
 }
 
 fn overflow_axis(o: Ov) -> OverflowAxis {
@@ -1396,6 +1503,27 @@ fn decorations(
             text: None,
             role: DecorRole::Plain,
         });
+    }
+    // A tile's drawn switch: the knob at `--m-knob`, which the sheet moves
+    // with `[data-on]` (the same property its `::after` reads).
+    if has("m-tile__switch") {
+        let knob = c
+            .custom
+            .get("--m-knob")
+            .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(2.0);
+        out.push(plain(
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(2.0),
+                left: Val::Px(knob),
+                width: Val::Px(10.0),
+                height: Val::Px(10.0),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            Color::srgba(1.0, 1.0, 1.0, opacity),
+        ));
     }
     if has("m-close") {
         for deg in [45.0, -45.0] {

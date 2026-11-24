@@ -77,6 +77,19 @@ Captures: `--shots docs/phone-ui-shots.toml --only settings` with
 page), and `CARTO_UI_LIB_HTML=<path>` writes the same panel as HTML for the
 browser beside it (the study's `fase3b-settings.png`).
 
+## The second screen: Layers
+
+`systems::lib_layers` follows the Settings shape exactly — `DataLayers::lib`
+makes egui's `render_data_layers_panel` keep an empty strip, the library's
+system owns `RightPanel::Layers`, every switch is a signal diffed against
+the resource each frame. Two things differ. The resource is written
+through `bypass_change_detection` and `set_changed` only when a field
+moved, because `DataLayers::is_changed` restarts streaming work. And the
+panel is drawn as the mockup had it, not as egui built it: a `TileGrid`
+of `Tile`s, `IconTabs` for the categories, `Chip`s for the kinds, choice
+tiles for the basemap — components added to the library for it. A
+category can be asked for by name (`CARTO_UI_LIB_PAGE=city`, `&page=city`).
+
 ## The same screen as DOM, in the web build
 
 On the web the client is only the world inside the site's frame

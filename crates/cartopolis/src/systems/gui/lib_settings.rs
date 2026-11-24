@@ -35,8 +35,6 @@ use cartopolis_core::{msg, ContactSettings, NetMessage, RequestPolicy};
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-#[cfg(feature = "ui-probe")]
-use crate::components::FreeCamera;
 use crate::platform::audio::AudioInput;
 use crate::resources::{
     AppPrefs, AuthIdentity, DevPanelState, MotionPref, OnlineSession, QualityPreset, RightPanel,
@@ -56,8 +54,11 @@ use crate::systems::{icons, theme};
 #[derive(Resource, Default, Clone, Debug)]
 pub struct LibScreens {
     pub settings: bool,
+    pub layers: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
+    /// Open Layers at once (`?panel=layers`).
+    pub open_layers: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -71,9 +72,12 @@ impl LibScreens {
         {
             let v = std::env::var("CARTO_UI_LIB").unwrap_or_default();
             let all = v.trim() == "1";
+            let named = |s: &str| v.split(',').any(|x| x.trim() == s);
             LibScreens {
-                settings: all || v.split(',').any(|s| s.trim() == "settings"),
+                settings: all || named("settings"),
+                layers: all || named("layers"),
                 open_settings: false,
+                open_layers: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -85,25 +89,25 @@ impl LibScreens {
             let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
             let get = |k: &str| params.as_ref().and_then(|p| p.get(k));
             let ui = get("ui").unwrap_or_default();
+            let named = |s: &str| ui == "lib" || ui.split(',').any(|x| x == s);
+            let panel = get("panel");
             LibScreens {
-                settings: ui == "lib" || ui.split(',').any(|s| s == "settings"),
-                open_settings: get("panel").as_deref() == Some("settings"),
+                settings: named("settings"),
+                layers: named("layers"),
+                open_settings: panel.as_deref() == Some("settings"),
+                open_layers: panel.as_deref() == Some("layers"),
                 page: get("page"),
             }
         }
     }
 }
 
-/// What the Bevy backend needs of the world: the camera it draws to, the
-/// faces, the UI scale and whether the pointer is over the panel.
+/// What the Bevy backend tells the panel: whether the pointer is over it.
+/// (Its camera, faces and scale are `lib_host::prepare_bevy`'s.)
 #[cfg(feature = "ui-probe")]
 #[derive(SystemParam)]
-pub struct BevyBackend<'w, 's> {
+pub struct BevyBackend<'w> {
     pointer: Res<'w, mithril_bevy::UiPointer>,
-    cameras: Query<'w, 's, Entity, With<FreeCamera>>,
-    fonts: ResMut<'w, Assets<Font>>,
-    ui_scale: ResMut<'w, UiScale>,
-    ready: Local<'s, bool>,
 }
 
 /// The app's state the pages read and write, in one parameter.
@@ -645,7 +649,7 @@ pub fn drive_lib_settings(
     mut app: AppState,
     // Written to only by the Bevy backend (the pointer's ownership).
     #[cfg_attr(not(feature = "ui-probe"), allow(unused_mut))] mut egui: EguiMut,
-    #[cfg(feature = "ui-probe")] mut bevy: BevyBackend,
+    #[cfg(feature = "ui-probe")] bevy: BevyBackend,
     mut commands: Commands,
     mut opened: Local<bool>,
 ) {
@@ -659,23 +663,6 @@ pub fn drive_lib_settings(
     if lib.open_settings && !*opened {
         *opened = true;
         *right_panel = RightPanel::Settings;
-    }
-    #[cfg(feature = "ui-probe")]
-    if !*bevy.ready {
-        // The camera the panel draws to and the faces it draws with, once.
-        let Ok(camera) = bevy.cameras.single() else {
-            return;
-        };
-        bevy.ui_scale.0 = egui.ui_scale();
-        let body = bevy.fonts.add(Font::from_bytes(theme::BODY_TTF.to_vec()));
-        commands.insert_resource(mithril_bevy::UiCamera(camera));
-        commands.insert_resource(mithril_bevy::FontMap {
-            regular: body.clone(),
-            semibold: bevy.fonts.add(Font::from_bytes(theme::BRAND_TTF.to_vec())),
-            mono: body,
-            icons: Some(bevy.fonts.add(Font::from_bytes(icons::FONT.to_vec()))),
-        });
-        *bevy.ready = true;
     }
     let open = right_panel.is(RightPanel::Settings);
     // A world click under the panel is the panel's. (As DOM the panel sits

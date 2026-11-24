@@ -512,6 +512,21 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    `settings.rs`, `data_layers.rs`, `camera_screen.rs`), `Canvas` voor de
    painter-schermen (kompas, OSD, cosmos, gezichten), de dev-panelen als
    laatste; dan de egui-brug, de panel-chain-test en `source_rules` eruit.
+
+   **Layers** (2026-11-24), het tweede scherm, en het eerste zoals de mockup
+   het tekende (`layers-and-ring` v1): zes ronde categorieknoppen met
+   tellers, de lagen als tegels die elk hun eigen schakelaar zijn, chips
+   voor de soorten in een legenda, drie keuzekaarten voor de ondergrond.
+   Daarvoor kreeg de bibliotheek `IconTabs`, `Tile`/`TileGrid` en `Chip`
+   (beide edities, 36 specimens gelijk); de knop van een tegel is getekend,
+   niet een input, en zijn plek is één custom property (`--m-knob`) die de
+   Bevy-backend ook leest. `systems::lib_layers` bindt alle ~45
+   schakelaars aan `DataLayers` met dezelfde diff per frame, en schrijft
+   de resource alleen als er iets verschilt (zijn `is_changed` start
+   streamwerk). Aan met `CARTO_UI_LIB=layers` (of `1`), op het web
+   `?ui=lib&panel=layers`.
+
+   ![Layers op de bibliotheek](fase5-layers.png)
 6. **Optioneel**: Pinnacle-backend; `cms`-SSR naar Rust; midas' hub over.
 
 Fase 0 en 1 kosten enkele sessies en veranderen niets aan wat live staat.

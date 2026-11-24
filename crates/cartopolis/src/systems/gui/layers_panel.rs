@@ -67,13 +67,13 @@ fn building_sources(
 /// What the Layers panel needs to know about the view: whether the camera is in
 /// space, which decides which tiles can be seen from here.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct LayerView<'w, 's> {
+pub(crate) struct LayerView<'w, 's> {
     globe: Res<'w, crate::systems::globe::GlobeState>,
     camera: AnchoredCamera<'w, 's>,
 }
 
 impl LayerView<'_, '_> {
-    fn in_space(&self) -> bool {
+    pub(crate) fn in_space(&self) -> bool {
         self.camera
             .get()
             .is_some_and(|(c, t)| self.globe.in_space(c, t))
@@ -481,7 +481,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
 }
 
 /// The Plans tile's label, which is also how its ⋯ is told open.
-const PLANS_TILE: &str = "Plans";
+pub(crate) const PLANS_TILE: &str = "Plans";
 
 /// Plans ⋯: which kinds of notice, whether the council, and how far back
 /// (`systems::plans`; `docs/mockups/plans-and-decisions/v2-layer.png`).
@@ -570,6 +570,27 @@ pub fn render_data_layers_panel(
     let mut about = false;
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
+    // The library's edition of this panel is showing (`lib_layers`), and
+    // owns its opening and closing. Still an egui panel, empty and
+    // unframed, so the dock, the pins and the map's rect move aside as for
+    // any panel and a click there is not the world's (as `settings` does).
+    if dl.lib {
+        if open_before {
+            let mut strip = crate::systems::egui_manager::responsive_right_panel(
+                "layers_panel",
+                compact,
+                viewport_w,
+                300.0,
+            )
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false);
+            if !compact {
+                strip = strip.resizable(false).exact_size(300.0);
+            }
+            strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        }
+        return;
+    }
     crate::systems::egui_manager::responsive_right_panel(
         "layers_panel",
         compact,

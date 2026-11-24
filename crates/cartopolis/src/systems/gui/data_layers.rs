@@ -594,6 +594,7 @@ impl Default for DataLayers {
         let detail = crate::quality::budget().detail_layers;
         Self {
             panel_open: false,
+            lib: false,
             buildings_enabled: true,
             tdbag_enabled: true,
             osm_buildings_enabled: true,

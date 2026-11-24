@@ -206,12 +206,12 @@ bytes.workspace = true
 egui.workspace = true
 # The component library and its Bevy backend, for the `ui-probe` feature
 # (docs/mockups/component-library, phase 3); not in a shipped build yet.
-mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "067bd937", optional = true }
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "386ca649", optional = true }
 mithril_bevy = { path = "../mithril_bevy", optional = true }
 # The library's design tokens, typed: cartopolis' own `Tokens` (`theme::tokens`)
 # are what the web's `theme.css` is written from and what the Bevy backend
 # draws with. Bevy-free and dependency-free, so every lane carries it.
-mithril_style = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "067bd937" }
+mithril_style = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "386ca649" }
 egui-wgpu.workspace = true
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
 # dependencies of its own, so it builds on every lane, Android and wasm included.

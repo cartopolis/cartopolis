@@ -43,7 +43,13 @@ impl Plugin for UiProbePlugin {
             // before the library applies the frame's operations.
             .add_systems(
                 PostUpdate,
-                crate::systems::lib_settings::drive_lib_settings.before(mithril_bevy::DriveUi),
+                (
+                    crate::systems::lib_host::prepare_bevy,
+                    crate::systems::lib_settings::drive_lib_settings,
+                    crate::systems::lib_layers::drive_lib_layers,
+                )
+                    .chain()
+                    .before(mithril_bevy::DriveUi),
             );
     }
 }

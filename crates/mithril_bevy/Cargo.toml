@@ -14,7 +14,7 @@ publish = false
 doctest = false
 
 [dependencies]
-mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "067bd937" }
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "386ca649" }
 # The client's image decoders, so a lone `cargo check -p mithril_bevy` resolves
 # bevy_image the way the client does (zstd needs a backend named).
 bevy_image.workspace = true
