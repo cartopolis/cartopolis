@@ -201,7 +201,7 @@ bytes.workspace = true
 egui.workspace = true
 # The component library and its Bevy backend, for the `ui-probe` feature
 # (docs/mockups/component-library, phase 3); not in a shipped build yet.
-mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "8560ec88", optional = true }
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "ef810217", optional = true }
 mithril_bevy = { path = "../mithril_bevy", optional = true }
 egui-wgpu.workspace = true
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no

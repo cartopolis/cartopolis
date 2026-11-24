@@ -25,12 +25,21 @@ pub struct FontMap {
     pub regular: Handle<Font>,
     pub semibold: Handle<Font>,
     pub mono: Handle<Font>,
+    /// An icon font, for a family naming "Symbols" or "icons"
+    /// (`font-family: 'Material Symbols Rounded'`); `None` falls back to
+    /// the regular face.
+    pub icons: Option<Handle<Font>>,
 }
 
 impl FontMap {
     fn pick(&self, family: &str, weight: u16) -> Handle<Font> {
         if family.contains("monospace") || family.contains("mono") {
             return self.mono.clone();
+        }
+        if family.contains("Symbols") || family.contains("icons") {
+            if let Some(icons) = &self.icons {
+                return icons.clone();
+            }
         }
         if weight >= 550 {
             self.semibold.clone()

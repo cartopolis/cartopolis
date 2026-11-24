@@ -119,7 +119,7 @@ impl SettingsTab {
     /// Every page, in the list's order: the account's, then the app's. The
     /// list is drawn from this, so a page left out of it cannot be reached.
     #[cfg(feature = "comms")]
-    const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Privacy,
         Self::Tokens,
         Self::Account,
@@ -131,14 +131,14 @@ impl SettingsTab {
     /// The web build's: the account's pages are the page's around it, which
     /// signed it in (`comms`).
     #[cfg(not(feature = "comms"))]
-    const ALL: [Self; 4] = [Self::General, Self::Audio, Self::Graphics, Self::World];
+    pub(crate) const ALL: [Self; 4] = [Self::General, Self::Audio, Self::Graphics, Self::World];
 
     /// Under "Account" in the list, rather than "App".
-    fn about_the_account(self) -> bool {
+    pub(crate) fn about_the_account(self) -> bool {
         matches!(self, Self::Privacy | Self::Tokens | Self::Account)
     }
 
-    fn icon(self) -> &'static str {
+    pub(crate) fn icon(self) -> &'static str {
         match self {
             Self::General => icons::SETTINGS,
             Self::World => icons::CAT_ORBIT,
@@ -151,7 +151,7 @@ impl SettingsTab {
     }
 
     /// The line under the page's name in the list.
-    fn hint(self) -> Option<&'static str> {
+    pub(crate) fn hint(self) -> Option<&'static str> {
         match self {
             Self::General => Some("Units, navigation, connection"),
             Self::World => None,
@@ -163,7 +163,7 @@ impl SettingsTab {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::World => "Time and weather",
@@ -199,6 +199,9 @@ pub struct PeopleSettings<'w, 's> {
 pub struct SettingsState {
     /// The page showing; `None` is the list of them.
     pub page: Option<SettingsTab>,
+    /// The component library draws the panel (`lib_settings`, on with
+    /// `CARTO_UI_LIB=settings`): egui's steps aside.
+    pub lib: bool,
     /// The panel was open last frame, so its closing can be seen.
     was_open: bool,
     /// `Some` only while the mic test is active — see the module note on why
@@ -357,6 +360,34 @@ pub fn render_settings_panel(
     // draft in `SettingsState` and written back only on Apply or the switch.
     mut receiver: ResMut<crate::systems::gnss_receiver::ReceiverPrefs>,
 ) {
+    // The library's edition of this panel is showing (`lib_settings`), and
+    // owns the panel's opening and closing: nothing here to draw or decide.
+    if state.lib {
+        // Still an egui panel, empty and unframed: it takes the width the
+        // library's panel draws in, so the dock, the pins and the map's
+        // leftover rect move aside as for any panel, and a click there is
+        // egui's and not the world's.
+        if right_panel.is(RightPanel::Settings) {
+            let compact = egui.compact();
+            let viewport_w = egui.viewport_pts().x;
+            let mut open = true;
+            let mut strip = crate::systems::egui_manager::responsive_right_panel(
+                "settings_panel",
+                compact,
+                viewport_w,
+                340.0,
+            )
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false);
+            if !compact {
+                // Exactly the library panel's width: an empty resizable panel
+                // shrinks to nothing, and the dock then sat over the header.
+                strip = strip.resizable(false).exact_size(340.0);
+            }
+            strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        }
+        return;
+    }
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
     // sentence without numbers rather than inventing a resolution.

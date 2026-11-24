@@ -117,6 +117,10 @@ pub struct EguiManager {
     /// `frame_pacing::present_rate`, so a surface arriving over a still map
     /// is drawn at the full rate and not the idle one.
     ui_animating: bool,
+    /// The pointer is over a screen drawn beside egui (the component
+    /// library's, `lib_settings`): a world click yields to it as it does to
+    /// a panel. Set each frame by that screen's system, for the next frame.
+    overlay_owns_pointer: bool,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -415,6 +419,7 @@ impl Default for EguiManager {
             injected: Vec::new(),
             map_rect: None,
             ui_animating: false,
+            overlay_owns_pointer: false,
         }
     }
 }
@@ -643,10 +648,21 @@ impl EguiManager {
     /// *where it landed* instead: on a floating area or modal, or on the root
     /// layer outside the map (a panel), it is egui's — [`press_over_ui`].
     pub fn owns_click(&self, touch_click: bool, cursor: Option<Vec2>) -> bool {
+        if self.overlay_owns_pointer {
+            return true;
+        }
         match (touch_click, cursor) {
             (true, Some(at)) => press_over_ui(&self.ctx, self.map_rect, self.window_to_ui(at)),
             _ => self.ctx.egui_wants_pointer_input(),
         }
+    }
+
+    /// Declare (each frame) that the pointer is over a screen drawn beside
+    /// egui — see the `overlay_owns_pointer` field. Only the library's
+    /// screens (`ui-probe`) have one to declare.
+    #[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+    pub fn set_overlay_owns_pointer(&mut self, owns: bool) {
+        self.overlay_owns_pointer = owns;
     }
 
     /// Is a drag under way that started on the bare map — not on a panel or a

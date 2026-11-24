@@ -52,6 +52,8 @@ pub mod icons;
 pub mod js_highlight;
 pub mod layer_tiles;
 pub mod layers_panel;
+#[cfg(feature = "ui-probe")]
+pub mod lib_settings;
 #[cfg(feature = "comms")]
 pub mod login_screen;
 pub mod map_osd;

@@ -434,12 +434,26 @@ telefoon hangt aan Bevy 0.21 (§7); en de 34 headless-kliktests die nu een
    dezelfde HTML uit de string-renderer met dezelfde stylesheets — op
    telefoon 412×900 @1.5 en desktop 1600×900. Twee vallen van Bevy 0.20
    staan bij de code: `UiTransform` nooit van een node halen, `Children`
-   nooit verwijderen-en-toevoegen; beide laten de hele boom 0×0. Nog niet
-   (3b): placeholder-tekst, de select-popup, de slider, scrollen met
-   traagheid, klik-eigendom tegenover de wereld, en **Settings** als eerste
-   scherm naast egui, gefotografeerd met `docs/phone-ui-shots.toml`.
+   nooit verwijderen-en-toevoegen; beide laten de hele boom 0×0.
 
    ![Bevy naast de browser](fase3-bevy.png)
+
+   **3b — Settings als eerste scherm naast egui**, gebouwd 2026-11-24
+   (`CARTO_UI_LIB=settings`, `systems::lib_settings`;
+   `docs/notes/component-library-in-the-client.md`). De bibliotheek kreeg
+   er de woordenschat van een instellingenpagina bij — `Section`, `List`,
+   `ListItem` (icoon op een vierkantje, titel, regel eronder, woord of
+   chevron rechts), in beide edities met één markup. De lijst volgt
+   mockup D van `home-and-profile/v1`; de pagina General is overgezet met
+   zijn voorkeuren twee kanten op gebonden (`AppPrefs` ↔ signalen, per
+   frame een diff); de andere pagina's zeggen dat ze nog egui's zijn. egui
+   houdt een lege paneelstrook vast, zodat dock, pins en kaartrect opzij
+   gaan zoals bij elk paneel, en de bibliotheek tekent erin. Foto: mockup,
+   Bevy en browser naast elkaar op de telefoon; de desktop eronder. Nog
+   niet: de overige pagina's, placeholder-tekst, select-popup, slider,
+   scrollen met de vinger, cartopolis' eigen `Tokens` (fase 4).
+
+   ![Settings op de bibliotheek](fase3b-settings.png)
 4. **Het wereldframe op de DOM-backend**: zoeker, lagen, Places, kaartjes,
    pins. Hier wordt de vraag letterlijk waar: wasm-wereld + web-componenten,
    één stijl met de site.

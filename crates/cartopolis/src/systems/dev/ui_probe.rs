@@ -31,8 +31,15 @@ impl Plugin for UiProbePlugin {
             app.add_plugins(bevy::ui_widgets::UiWidgetsPlugins);
         }
         app.init_resource::<UiProbe>()
+            .insert_resource(crate::systems::lib_settings::LibScreens::from_env())
             .add_plugins(mithril_bevy::MithrilUiPlugin::default())
-            .add_systems(Update, spawn_probe.in_set(ClientPhase::Input));
+            .add_systems(Update, spawn_probe.in_set(ClientPhase::Input))
+            // After every Update system has had its say on `RightPanel`, and
+            // before the library applies the frame's operations.
+            .add_systems(
+                PostUpdate,
+                crate::systems::lib_settings::drive_lib_settings.before(mithril_bevy::DriveUi),
+            );
     }
 }
 
@@ -156,6 +163,7 @@ fn spawn_probe(
                 regular: faces.body.clone(),
                 semibold: faces.semibold.clone(),
                 mono: faces.body.clone(),
+                icons: None,
             });
             let p = theme::p();
             mithril_bevy::with_host(|host| {
