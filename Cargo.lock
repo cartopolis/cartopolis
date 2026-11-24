@@ -2578,6 +2578,7 @@ dependencies = [
  "bevy",
  "bevy_image",
  "big_space",
+ "blake3",
  "bytes",
  "cartopolis_calls",
  "cartopolis_chat",

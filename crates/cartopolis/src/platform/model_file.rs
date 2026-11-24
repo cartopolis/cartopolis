@@ -73,7 +73,10 @@ pub enum Kind {
 }
 
 impl Kind {
-    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_arch = "wasm32", target_os = "android", target_os = "pinnacle"),
+        allow(dead_code)
+    )]
     fn title(self) -> &'static str {
         match self {
             Kind::Model => "Model to upload",
@@ -96,7 +99,11 @@ pub fn start_for(kind: Kind) -> Result<Pick, String> {
 // Desktop: a file dialog.
 // ---------------------------------------------------------------------------
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "pinnacle")
+))]
 mod imp {
     use super::{Kind, Outcome, Slot};
     use bevy::tasks::IoTaskPool;
@@ -262,6 +269,23 @@ mod imp {
 ///
 /// So the button is hidden on a phone rather than doing nothing when pressed.
 #[cfg(target_os = "android")]
+mod imp {
+    use super::{Kind, Slot};
+
+    pub const AVAILABLE: bool = false;
+
+    pub struct Inner;
+
+    pub fn start(_slot: Slot, _kind: Kind) -> Result<Inner, String> {
+        Err("this build cannot choose a file".into())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pinnacle: no file dialog yet.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "pinnacle")]
 mod imp {
     use super::{Kind, Slot};
 

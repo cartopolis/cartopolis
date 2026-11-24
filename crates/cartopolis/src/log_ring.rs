@@ -23,6 +23,8 @@ const KEPT: usize = 2000;
 
 /// One logged line, numbered from the start of the run.
 #[derive(Clone)]
+// Read by the MCP server's log tool, which Pinnacle does not build (it is Unix).
+#[cfg_attr(target_os = "pinnacle", allow(dead_code))]
 pub struct Line {
     pub seq: u64,
     pub level: Level,
@@ -51,6 +53,7 @@ where
 }
 
 /// Every kept line after `after`, oldest first.
+#[cfg_attr(target_os = "pinnacle", allow(dead_code))]
 pub fn since(after: u64) -> Vec<Line> {
     let ring = RING.lock().unwrap_or_else(|p| p.into_inner());
     ring.lines

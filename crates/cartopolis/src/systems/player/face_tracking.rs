@@ -78,22 +78,37 @@ pub(crate) struct Seen {
     pub at: std::time::Instant,
 }
 
+/// The tracker: `cartopolis_face`'s. Pinnacle does not build it (`tract`'s
+/// matrix kernels are C and assembly), so there none is ever made and a
+/// picture fed is let go.
+#[cfg(not(target_os = "pinnacle"))]
+type Tracker = cartopolis_face::FaceTracker;
+#[cfg(target_os = "pinnacle")]
+type Tracker = std::convert::Infallible;
+
 /// Feeds a tracker from any camera's thread: [`FaceTap::feed`] each picture.
 /// Cloned into a sink — this module's own camera's, or the camera screen's
 /// when it already holds the front camera (Mixed), since only one camera can
 /// be open. Every tap of one [`FaceTracking`] shares its last face.
 #[derive(Clone)]
+#[cfg_attr(target_os = "pinnacle", allow(dead_code))]
 pub(crate) struct FaceTap {
     models: Arc<[Arc<Vec<u8>>; 3]>,
     /// Built on the feeding thread at its first picture; `Some(None)` once it
     /// failed to, so it is not tried again every picture.
-    tracker: Arc<Mutex<Option<Option<cartopolis_face::FaceTracker>>>>,
+    tracker: Arc<Mutex<Option<Option<Tracker>>>>,
     latest: Arc<Mutex<Option<Seen>>>,
 }
 
 impl FaceTap {
     /// Read the face in `picture` (upright, not mirrored). Blocks for the
     /// models' run: call it from a camera's thread, never the frame loop.
+    #[cfg(target_os = "pinnacle")]
+    pub(crate) fn feed(&self, _picture: &I420) {}
+
+    /// Read the face in `picture` (upright, not mirrored). Blocks for the
+    /// models' run: call it from a camera's thread, never the frame loop.
+    #[cfg(not(target_os = "pinnacle"))]
     pub(crate) fn feed(&self, picture: &I420) {
         let Ok(mut tracker) = self.tracker.lock() else {
             return;
@@ -168,8 +183,10 @@ impl FaceTracking {
 
 /// A camera's picture as `cartopolis_face` reads it: RGB from the I420
 /// planes, one pixel at a time, where the tracker samples.
+#[cfg(not(target_os = "pinnacle"))]
 struct I420Frame<'a>(&'a I420);
 
+#[cfg(not(target_os = "pinnacle"))]
 impl cartopolis_face::Frame for I420Frame<'_> {
     fn width(&self) -> u32 {
         self.0.width

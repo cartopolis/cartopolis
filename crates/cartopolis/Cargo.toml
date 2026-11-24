@@ -259,9 +259,6 @@ base64.workspace = true
 # provider (`platform::gnss_receiver`). The desktop also takes its serial port,
 # below; Android reaches the adapter through the USB host API instead.
 cartopolis_gnss = { path = "../gnss" }
-# The user's face through the front camera (`systems::face_tracking`); not on
-# the web, which has no camera here.
-cartopolis_face = { path = "../face" }
 # Microphone capture for `platform::audio` (see the `audio` feature above).
 # Version-matched to the cpal rodio already resolves, so Cargo unifies to one
 # copy rather than compiling two ALSA backends.
@@ -323,7 +320,20 @@ rustls.workspace = true
 # has no android backend and does not build for one. Android's clipboard is a JNI
 # call through `ClipboardManager`, which is its own seam and not wired yet
 # (`utils::clipboard` has a no-op arm for it).
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "pinnacle")))'.dependencies]
+# The user's face through the front camera (`systems::face_tracking`); not on
+# the web, which has no camera here, nor on Pinnacle, where `tract`'s matrix
+# kernels are C and assembly (no C there; Pinnacle has no camera driver yet).
+cartopolis_face = { path = "../face" }
+
+# Pinnacle (`docs/notes/pinnacle.md`): an OS with no C anywhere. Bevy's
+# assets hash with blake3, whose default build compiles C and assembly; its
+# `pure` feature is Rust alone, and naming it here turns it on for the one
+# copy Bevy uses.
+[target.'cfg(target_os = "pinnacle")'.dependencies]
+blake3 = { version = "1.8", features = ["pure"] }
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android"), not(target_os = "pinnacle")))'.dependencies]
 # The receiver's serial port (`cartopolis_gnss::serial`): a tty here, and no
 # such thing on a phone — see the entry under `not(wasm32)`.
 cartopolis_gnss = { path = "../gnss", features = ["serial"] }

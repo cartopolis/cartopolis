@@ -25,6 +25,7 @@ pub enum Outcome {
     /// Still waiting on the user (or, on Android, on the camera app).
     Pending,
     /// Encoded image bytes, in whatever format the source produced.
+    #[cfg_attr(target_os = "pinnacle", allow(dead_code))]
     Ready(Vec<u8>),
     /// The user backed out. Not an error and nothing to report in the panel.
     ///
@@ -125,7 +126,11 @@ pub fn start_from(source: Source) -> Result<Capture, String> {
 // Desktop: a file dialog.
 // ---------------------------------------------------------------------------
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "pinnacle")
+))]
 mod imp {
     use super::{Outcome, Slot};
     use bevy::tasks::IoTaskPool;
@@ -437,5 +442,30 @@ mod imp {
             })
             .map_err(|e| format!("could not ask for the camera: {e}"))?;
         Ok(Inner::Asking { answer, cancel })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pinnacle: no file dialog and no camera driver yet, so no photo.
+// ---------------------------------------------------------------------------
+
+/// The button is hidden rather than dead (`AVAILABLE`), as on a phone that
+/// cannot choose a file.
+#[cfg(target_os = "pinnacle")]
+mod imp {
+    use super::Slot;
+
+    pub const AVAILABLE: bool = false;
+    pub const ACTION_LABEL: &str = "Choose a photo…";
+
+    pub struct Inner;
+
+    impl Inner {
+        pub fn poll(&mut self, _slot: &Slot) {}
+        pub fn cancel(&mut self) {}
+    }
+
+    pub fn start(_slot: Slot, _source: super::Source) -> Result<Inner, String> {
+        Err("this build cannot take or choose a photo".into())
     }
 }

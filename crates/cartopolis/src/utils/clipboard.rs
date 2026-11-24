@@ -17,7 +17,11 @@
 //! then, the web build's paste path returns `None`, and the way to open a place
 //! there is the `?place=` URL (see `systems::geo_nav::launch_place`).
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "pinnacle")
+))]
 mod imp {
     use crate::platform::sync::{Mutex, OnceLock};
 
@@ -45,6 +49,26 @@ mod imp {
                     tracing::warn!(error = %e, "clipboard copy failed");
                 }
             }
+        }
+    }
+}
+
+#[cfg(target_os = "pinnacle")]
+mod imp {
+    //! Pinnacle: the clipboard every app shares is the display server's, which
+    //! a window reaches through winit's Pinnacle backend, not yet wired up
+    //! here; until then copy and paste work within the app.
+    use crate::platform::sync::Mutex;
+
+    static CLIPBOARD: Mutex<Option<String>> = Mutex::new(None);
+
+    pub fn get_text() -> Option<String> {
+        CLIPBOARD.lock().ok()?.clone()
+    }
+
+    pub fn set_text(text: &str) {
+        if let Ok(mut clipboard) = CLIPBOARD.lock() {
+            *clipboard = Some(text.to_string());
         }
     }
 }

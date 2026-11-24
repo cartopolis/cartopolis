@@ -123,10 +123,16 @@ mod native {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "pinnacle")))]
     fn opener(setup: &Setup) -> Opener {
         let (port, baud) = (setup.port.clone(), setup.baud);
         Box::new(move || cartopolis_gnss::serial::open(&port, baud))
+    }
+
+    /// Pinnacle has no serial ports for a program yet.
+    #[cfg(target_os = "pinnacle")]
+    fn opener(_setup: &Setup) -> Opener {
+        Box::new(|| Err("no serial ports on Pinnacle yet".into()))
     }
 
     #[cfg(target_os = "android")]
@@ -241,13 +247,20 @@ mod native {
 
     /// Serial ports a receiver could be on, `(path, label)`. Desktop only: on
     /// Android the adapter is found by its USB identity rather than chosen.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "pinnacle")))]
     #[must_use]
     pub fn ports() -> Vec<(String, String)> {
         cartopolis_gnss::serial::ports()
             .into_iter()
             .map(|p| (p.path, p.label))
             .collect()
+    }
+
+    /// Pinnacle has no serial ports for a program yet.
+    #[cfg(target_os = "pinnacle")]
+    #[must_use]
+    pub fn ports() -> Vec<(String, String)> {
+        Vec::new()
     }
 }
 
