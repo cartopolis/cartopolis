@@ -858,6 +858,17 @@ pub struct DriverState {
     armed: bool,
     /// …and with the overview up once it does (the `--ui overview` preset).
     armed_overview: bool,
+
+    /// The library draws the navigation chrome (`lib_driver`):
+    /// [`render_driver_hud`] draws nothing and publishes
+    /// [`lib_view`](Self::lib_view) instead. Untouched by [`Self::enter`] and
+    /// [`Self::exit`], which are the drive's switch, not the library's.
+    pub lib: bool,
+    /// What the library's edition shows, while `lib` is on and driving.
+    pub lib_view: Option<DriverView>,
+    /// Taps on the library's edition, done by [`render_driver_hud`] next
+    /// frame through [`DriverState::apply`].
+    pub lib_acts: Vec<DriverAct>,
 }
 
 impl DriverState {
@@ -2226,6 +2237,28 @@ impl DriverState {
     pub fn retry_route(&mut self) {
         self.retry_requested = true;
     }
+
+    /// Do a tap on the navigation chrome: egui's buttons and the library's
+    /// (`lib_driver`) both come here.
+    pub fn apply(&mut self, act: DriverAct, right_panel: &mut crate::resources::RightPanel) {
+        match act {
+            DriverAct::Recentre => self.recentre(),
+            DriverAct::ToggleOverview => {
+                self.overview = !self.overview;
+                self.recentre();
+            }
+            DriverAct::Retry => self.retry_route(),
+            // Opening the planner does not leave driver mode: the drive carries
+            // on behind it, the bar stands down as it does for any docked
+            // panel, and the card — Stop included — stays put.
+            DriverAct::OpenPlanner => *right_panel = crate::resources::RightPanel::Route,
+            // Arriving and stopping are the same act as far as the mode is
+            // concerned — the route line stays drawn either way, because
+            // clearing it is the planner's business and a driver who has just
+            // parked may well want to see it.
+            DriverAct::Done => self.exit(),
+        }
+    }
 }
 
 // ─── The arrow ───────────────────────────────────────────────────────────────
@@ -2483,16 +2516,16 @@ pub const CARD_MARGIN: f32 = 12.0;
 
 /// The manoeuvre plate at the card's left edge: the turn glyph, big, on a
 /// sign-coloured square — the one part of the card read without reading.
-const TILE: f32 = 64.0;
+pub(crate) const TILE: f32 = 64.0;
 
 /// The trip bar along the bottom: as wide as the screen allows, up to this.
 const BAR_MAX_WIDTH: f32 = 520.0;
 /// Its height, which everything stacked above it (the speed disc, the overview
 /// button, the GPS note) clears.
-const BAR_HEIGHT: f32 = 62.0;
+pub(crate) const BAR_HEIGHT: f32 = 62.0;
 
 /// The speed disc's diameter.
-const SPEED_DISC: f32 = 58.0;
+pub(crate) const SPEED_DISC: f32 = 58.0;
 
 /// How close the manoeuvre after this one has to be before the card previews it.
 /// Two turns in quick succession is the case a card showing only the next one gets
@@ -2525,13 +2558,114 @@ fn driver_layout(viewport_x: f32, compact: bool) -> DriverLayout {
 }
 
 /// How far the trip bar's bottom edge clears the viewport's.
-fn bar_bottom() -> f32 {
+pub(crate) fn bar_bottom() -> f32 {
     theme::OSD_MARGIN + 4.0
 }
 
 /// Where the things stacked over the bar's two ends sit: their bottom edge.
-fn above_bar() -> f32 {
+pub(crate) fn above_bar() -> f32 {
     bar_bottom() + BAR_HEIGHT + theme::OSD_GAP
+}
+
+/// A tap on the navigation chrome: one set, for egui's buttons and the
+/// library's (`lib_driver`), done by [`DriverState::apply`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverAct {
+    /// Stop, or Done once arrived: leave driver mode.
+    Done,
+    /// Ask for a failed reroute again.
+    Retry,
+    /// Open the route planner over the drive.
+    OpenPlanner,
+    /// The route overview on or off.
+    ToggleOverview,
+    /// Put the camera back behind the arrow.
+    Recentre,
+}
+
+/// Where the navigation chrome goes, egui points: the viewport's width and
+/// the boxes [`driver_layout`] fitted to it.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverPlace {
+    pub w: f32,
+    pub card_width: f32,
+    pub bar_width: f32,
+    /// The GPS chip's content width.
+    pub chip_width: f32,
+}
+
+/// The turn card, as [`render_driver_hud`] works it out.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverCard {
+    /// The plate's signage colour (`DRIVE_BLUE`, `ARRIVE_GREEN` …).
+    pub plate: egui::Color32,
+    pub glyph: &'static str,
+    pub title: String,
+    /// Big while instructing, smaller for a state.
+    pub title_size: f32,
+    /// The manoeuvre after this one, when it follows at once.
+    pub then: Option<&'static str>,
+    /// The street, or what the state means; empty for none.
+    pub sub: String,
+    /// Retry, after a reroute came back empty.
+    pub retry: bool,
+    /// Stop (Done once arrived) on the card, while a panel is docked.
+    pub stop: bool,
+    pub arrived: bool,
+    /// The approach bar's fill, hundredths, when it shows.
+    pub approach: Option<u8>,
+}
+
+/// The trip bar along the bottom.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverBar {
+    pub arrived: bool,
+    /// The arrival clock ("14:32").
+    pub arrival: String,
+    pub time_left: String,
+    pub to_go: String,
+    /// How much of the trip is behind, thousandths.
+    pub driven: u16,
+}
+
+/// The speed, and the limit over it.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverSpeed {
+    /// km/h, as drawn.
+    pub speed: String,
+    /// Over the limit: the speed in sign red.
+    pub over: bool,
+    pub limit: Option<u16>,
+}
+
+/// What stands on and over the bottom edge, while no panel is docked.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverBottom {
+    pub bar: DriverBar,
+    pub speed: DriverSpeed,
+    /// Re-centre beside Overview: the view is held off the rig.
+    pub peeking: bool,
+    /// The overview is up: its button wears the engaged plate.
+    pub overview: bool,
+    /// What the position is worth, when there is something to say.
+    pub chip: Option<String>,
+}
+
+/// What the navigation chrome shows this frame, published by
+/// [`render_driver_hud`] for the library's edition (`lib_driver`) while
+/// [`DriverState::lib`] is on.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DriverView {
+    pub place: DriverPlace,
+    pub card: DriverCard,
+    /// `None` while a panel is docked: the card carries Stop meanwhile.
+    pub bottom: Option<DriverBottom>,
 }
 
 /// The navigation chrome: the turn card at the top, the trip bar at the bottom,
@@ -2548,6 +2682,11 @@ fn above_bar() -> f32 {
 /// over the planner's turn list or the Places panel; but Stop has to stay
 /// reachable on a phone, which has no Escape key. So while a panel is open the
 /// card grows a Stop button in its last row, in the height it always reserves.
+///
+/// With [`DriverState::lib`] on (`lib_driver`, `CARTO_UI_LIB=driver`) it
+/// draws nothing: it does the taps the library handed back, through
+/// [`DriverState::apply`] as egui's buttons do, and publishes what to show in
+/// [`DriverState::lib_view`].
 pub fn render_driver_hud(
     egui: EguiRef,
     mut driver: ResMut<DriverState>,
@@ -2558,18 +2697,34 @@ pub fn render_driver_hud(
     data_layers: Res<crate::systems::layer_state::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
 ) {
-    if !driver.active {
-        return;
+    // The library's taps of last frame, before anything is worked out.
+    if driver.lib && !driver.lib_acts.is_empty() {
+        let acts = std::mem::take(&mut driver.lib_acts);
+        if driver.active {
+            for a in acts {
+                driver.apply(a, &mut right_panel);
+            }
+        }
     }
+    // The route being *driven*, which during a reroute is the one being replaced.
+    let shown = if driver.active {
+        route.displayed()
+    } else {
+        None
+    };
+    let Some(r) = shown else {
+        if driver.lib_view.is_some() {
+            driver.lib_view = None;
+        }
+        return;
+    };
     // Every number on this screen is a function of where the vehicle is, and
     // driving produces no egui input at all. Without this the HUD is tessellated
     // once and then re-presented unchanged until something is tapped
-    // (`EguiManager::animating`).
+    // (`EguiManager::animating`). Kept with the library's edition too: the
+    // compass `hud` turns with the drive is egui's unless the chrome is the
+    // library's.
     egui.animating();
-    // The route being *driven*, which during a reroute is the one being replaced.
-    let Some(r) = route.displayed() else {
-        return;
-    };
     let progress = driver.progress.unwrap_or_default();
     let arrived = driver.arrived;
     let off_route = driver.off_route();
@@ -2587,13 +2742,6 @@ pub fn render_driver_hud(
     let panel_open = data_layers.panel_open
         || bookmarks.panel_open
         || !right_panel.is(crate::resources::RightPanel::None);
-    let ctx = egui.ctx().clone();
-
-    let mut done = false;
-    let mut retry = false;
-    let mut open_planner = false;
-    let mut toggle_overview = false;
-    let mut recentre = false;
 
     // ── The turn card ──
     //
@@ -2602,7 +2750,7 @@ pub fn render_driver_hud(
     // the line is the normal case, and the display is already fixing it), red for
     // what it cannot fix, green for being there. The card itself is the app's
     // glass, so it reads as part of the same screen as everything else.
-    let (plate, glyph, title, sub): (egui::Color32, &str, String, String) = if arrived {
+    let (plate, glyph, title, sub): (egui::Color32, &'static str, String, String) = if arrived {
         (
             ARRIVE_GREEN,
             icons::FINISH,
@@ -2647,6 +2795,92 @@ pub fn render_driver_hud(
         .get(progress.step + 1)
         .filter(|_| instructing && next_step_gap(r, progress) <= THEN_PREVIEW_M)
         .map(|s| s.maneuver);
+
+    // What stands on the bottom edge, worked out for both editions.
+    let ((hh, mm, _), local_clock) = clock.hms();
+    let arrival = arrival_clock(hh, mm, progress.remaining_s, local_clock);
+    let driven = if r.distance_m > 1.0 {
+        (1.0 - progress.remaining_m / r.distance_m).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let time_left = if arrived {
+        "—".to_string()
+    } else {
+        format_duration(progress.remaining_s)
+    };
+    let to_go = if arrived {
+        "—".to_string()
+    } else {
+        format_distance(progress.remaining_m)
+    };
+    let speed_kmh = driver.speed_ms * 3.6;
+    let limit = ahead.limit_at(progress.along_m);
+    let over = limit.is_some_and(|l| speed_kmh > f32::from(l) + OVER_LIMIT_TOLERANCE_KMH);
+    let peeking = driver.peeking();
+    let overview = driver.overview;
+    let chip = driver
+        .gps_error
+        .as_ref()
+        .map(|err| format!("{err} — following the avatar"))
+        .or_else(|| driver.gps.chip());
+    let chip_width = (usable - 2.0 * (SPEED_DISC + theme::OSD_GAP)).clamp(80.0, 260.0);
+
+    // The library's edition is showing: hand it what to draw, draw nothing.
+    if driver.lib {
+        let view = DriverView {
+            place: DriverPlace {
+                w: viewport_x,
+                card_width,
+                bar_width,
+                chip_width,
+            },
+            card: DriverCard {
+                plate,
+                glyph,
+                title,
+                title_size: if instructing { 30.0 } else { 22.0 },
+                then: then.map(icons::maneuver),
+                sub,
+                retry: failed.is_some(),
+                stop: panel_open,
+                arrived,
+                // As `approach_bar`: shown while instructing with no buttons.
+                approach: (instructing && !panel_open).then(|| {
+                    let filled = 1.0 - (progress.step_distance_m / APPROACH_M).clamp(0.0, 1.0);
+                    (filled * 100.0).round() as u8
+                }),
+            },
+            bottom: (!panel_open).then(|| DriverBottom {
+                bar: DriverBar {
+                    arrived,
+                    arrival,
+                    time_left,
+                    to_go,
+                    driven: (driven * 1000.0).round() as u16,
+                },
+                speed: DriverSpeed {
+                    speed: format!("{speed_kmh:.0}"),
+                    over,
+                    limit,
+                },
+                peeking,
+                overview,
+                chip,
+            }),
+        };
+        if driver.lib_view.as_ref() != Some(&view) {
+            driver.lib_view = Some(view);
+        }
+        return;
+    }
+
+    let ctx = egui.ctx().clone();
+    let mut done = false;
+    let mut retry = false;
+    let mut open_planner = false;
+    let mut toggle_overview = false;
+    let mut recentre = false;
 
     egui::Area::new(egui::Id::new("driver_maneuver"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
@@ -2738,13 +2972,6 @@ pub fn render_driver_hud(
     // the card carries Stop meanwhile.
     if !panel_open {
         // ── The trip bar, bottom centre ──
-        let ((hh, mm, _), local_clock) = clock.hms();
-        let arrival = arrival_clock(hh, mm, progress.remaining_s, local_clock);
-        let driven = if r.distance_m > 1.0 {
-            (1.0 - progress.remaining_m / r.distance_m).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
         egui::Area::new(egui::Id::new("driver_bar"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bar_bottom()))
             .show(&ctx, |ui| {
@@ -2768,16 +2995,6 @@ pub fn render_driver_hud(
                         let stats = (ui.available_width() - theme::ROUND_BUTTON_SIZE - 3.0 * gap)
                             .max(90.0)
                             / 3.0;
-                        let time_left = if arrived {
-                            "—".to_string()
-                        } else {
-                            format_duration(progress.remaining_s)
-                        };
-                        let to_go = if arrived {
-                            "—".to_string()
-                        } else {
-                            format_distance(progress.remaining_m)
-                        };
                         for (value, caption) in [
                             (
                                 arrival.as_str(),
@@ -2830,9 +3047,6 @@ pub fn render_driver_hud(
             });
 
         // ── The speed, above the bar's left end, with the limit over it ──
-        let speed_kmh = driver.speed_ms * 3.6;
-        let limit = ahead.limit_at(progress.along_m);
-        let over = limit.is_some_and(|l| speed_kmh > f32::from(l) + OVER_LIMIT_TOLERANCE_KMH);
         let left = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
         egui::Area::new(egui::Id::new("driver_speed"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(left, -above_bar()))
@@ -2880,8 +3094,6 @@ pub fn render_driver_hud(
         // up beside it only while the view is held off the rig — an offer, not
         // the mechanism; the peek expires on its own ([`PEEK_TIMEOUT`]).
         let right = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
-        let peeking = driver.peeking();
-        let overview = driver.overview;
         egui::Area::new(egui::Id::new("driver_view_buttons"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-right, -above_bar()))
             .show(&ctx, |ui| {
@@ -2919,18 +3131,12 @@ pub fn render_driver_hud(
         // The provider's own message when there is one, otherwise the quality of
         // the fix itself (`GpsQuality`) — only when there is something to say, so
         // a good lock adds nothing to the screen.
-        let chip = driver
-            .gps_error
-            .as_ref()
-            .map(|err| format!("{err} — following the avatar"))
-            .or_else(|| driver.gps.chip());
         if let Some(chip) = chip {
-            let width = (usable - 2.0 * (SPEED_DISC + theme::OSD_GAP)).clamp(80.0, 260.0);
             egui::Area::new(egui::Id::new("driver_gps_chip"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -above_bar()))
                 .show(&ctx, |ui| {
                     theme::chip_frame().show(ui, |ui| {
-                        ui.set_width(width);
+                        ui.set_width(chip_width);
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(chip)
@@ -2944,27 +3150,18 @@ pub fn render_driver_hud(
         }
     }
 
-    if recentre {
-        driver.recentre();
-    }
-    if toggle_overview {
-        driver.overview = !driver.overview;
-        driver.recentre();
-    }
-    if retry {
-        driver.retry_route();
-    }
-    // Opening the planner does not leave driver mode: the drive carries on behind
-    // it, the bar stands down as it does for any docked panel, and the card —
-    // Stop included — stays put.
-    if open_planner {
-        *right_panel = crate::resources::RightPanel::Route;
-    }
-    // Arriving and stopping are the same act as far as the mode is concerned —
-    // the route line stays drawn either way, because clearing it is the planner's
-    // business and a driver who has just parked may well want to see it.
-    if done {
-        driver.exit();
+    // In the order they were always done, through the one method both editions
+    // call.
+    for (pressed, act) in [
+        (recentre, DriverAct::Recentre),
+        (toggle_overview, DriverAct::ToggleOverview),
+        (retry, DriverAct::Retry),
+        (open_planner, DriverAct::OpenPlanner),
+        (done, DriverAct::Done),
+    ] {
+        if pressed {
+            driver.apply(act, &mut right_panel);
+        }
     }
 }
 
@@ -2977,8 +3174,8 @@ const DRIVE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x14, 0x6E, 0xD2);
 /// [`DRIVE_BLUE`], only harder: this *is* a road sign, and a road sign recoloured
 /// into a brand palette stops being recognisable at a glance, which is the entire
 /// function it performs.
-const SIGN_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF7, 0xF7, 0xF4);
-const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
+pub(crate) const SIGN_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF7, 0xF7, 0xF4);
+pub(crate) const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
 
 /// The card's colour once the trip is over. Same argument as [`DRIVE_BLUE`]: the
 /// card is read as signage, and "you are there" is green everywhere signage
@@ -3001,7 +3198,7 @@ const OFF_ROUTE_RED: egui::Color32 = egui::Color32::from_rgb(0xA3, 0x2A, 0x22);
 
 /// The route line's own blue (`navigation`'s fill), for the trip bar's progress
 /// line: the bar and the line on the map are the same object.
-const ROUTE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x29, 0x87, 0xE6);
+pub(crate) const ROUTE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x29, 0x87, 0xE6);
 
 /// The distance to the next manoeuvre, as a countdown rather than a measurement.
 ///

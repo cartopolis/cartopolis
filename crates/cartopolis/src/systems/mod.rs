@@ -68,17 +68,17 @@ pub use gui::{
 // Settings drawn by the component library, beside egui (`ui-probe`).
 #[cfg(feature = "ui-probe")]
 pub use gui::lib_keyboard;
+#[cfg(feature = "ui-lib")]
+pub use gui::{
+    lib_action_ring, lib_app_update, lib_avatar, lib_chrome, lib_design_room, lib_driver,
+    lib_interact, lib_locate, lib_main_menu, lib_map_osd, lib_models, lib_pins, lib_place_names,
+    lib_plans, lib_poi_card, lib_satellite_menu, lib_scenario, lib_script, lib_walk_guide,
+};
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub use gui::{
     lib_admin, lib_calendar, lib_chat_conversation, lib_chat_overlay, lib_chats, lib_communities,
     lib_contacts, lib_dialogs, lib_filter_chip, lib_login, lib_person_card, lib_post_composer,
     lib_reminder, lib_share, lib_welcome,
-};
-#[cfg(feature = "ui-lib")]
-pub use gui::{
-    lib_app_update, lib_avatar, lib_chrome, lib_design_room, lib_interact, lib_main_menu,
-    lib_map_osd, lib_models, lib_pins, lib_place_names, lib_plans, lib_poi_card, lib_scenario,
-    lib_script, lib_walk_guide,
 };
 #[cfg(feature = "ui-lib")]
 pub use gui::{

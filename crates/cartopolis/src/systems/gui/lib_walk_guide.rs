@@ -376,16 +376,17 @@ fn bar_view(v: &WalkView, p: &Placement, acts: &Acts) -> View {
     view! {
         <div style={frame} on:click={|_: &Event| {}}>
             {skip}
-            <div style="display: flex; align-items: center; gap: 12px">
-                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
-                    {headline}
-                    <span style={sub}>{destination}</span>
-                    {note}
-                </div>
-                <div style="flex: none; display: flex; align-items: center; gap: 4px">
-                    {walking}
-                    <Button variant=Variant::Ghost size=Size::Sm onclick={Some(on(acts, WalkAct::Stop))}>{stop}</Button>
-                </div>
+            // The words over the buttons, not beside them: at a phone's
+            // width the row left "18 min · 1.4 km left" a column one word
+            // wide (egui's row overlaps there too).
+            <div style="min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                {headline}
+                <span style={sub}>{destination}</span>
+                {note}
+            </div>
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px">
+                {walking}
+                <Button variant=Variant::Ghost size=Size::Sm onclick={Some(on(acts, WalkAct::Stop))}>{stop}</Button>
             </div>
         </div>
     }

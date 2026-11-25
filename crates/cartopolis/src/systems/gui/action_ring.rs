@@ -8,13 +8,20 @@
 //! Drawing only: the caller decides which actions exist, and acts on the key
 //! [`show`] hands back. It is a floating `Area` on the foreground order, outside
 //! the panel chain, like the place and building cards.
+//!
+//! The component library draws the same ring (`lib_action_ring`) when a
+//! caller hands [`run`] a [`RingLib`] that is on: then this module only
+//! decides — where the ring stands, what it offers, whether a press off it or
+//! Escape closes it — and publishes that as a [`RingView`]; a tap on the
+//! library's ring comes back through [`RingLib::acts`].
 
+use bevy::prelude::Resource;
 use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::systems::theme;
 
 /// One button on the ring.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RingAction {
     /// What the caller matches on when it is pressed.
     pub key: &'static str,
@@ -26,7 +33,7 @@ pub struct RingAction {
 }
 
 /// What happened to the ring this frame.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RingOutcome {
     #[default]
     Open,
@@ -37,11 +44,64 @@ pub enum RingOutcome {
 }
 
 /// Radius from the centre to each button's centre, points.
-const RADIUS: f32 = 78.0;
+pub(crate) const RADIUS: f32 = 78.0;
 /// A button's radius, points: 56 pt across, above the 48 dp touch floor.
-const BUTTON_R: f32 = 28.0;
+pub(crate) const BUTTON_R: f32 = 28.0;
 /// The centre ✕'s radius.
-const CLOSE_R: f32 = 17.0;
+pub(crate) const CLOSE_R: f32 = 17.0;
+/// How far under the buttons the pill starts, points.
+pub(crate) const PILL_GAP: f32 = 8.0;
+
+/// One open ring, as the component library draws it: everything but the
+/// painting. `centre` is already pulled on screen ([`clamp_centre`]).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct RingView {
+    /// The ring's `id` in [`show`]: new for each opening, and the tag its
+    /// taps come back with.
+    pub id: Id,
+    /// Ui points.
+    pub centre: Pos2,
+    /// The viewport's width, ui points: the pill is centred in a band that
+    /// must stay on screen.
+    pub screen_w: f32,
+    pub title: String,
+    pub detail: String,
+    pub actions: Vec<RingAction>,
+}
+
+/// The bridge between a ring's caller and the library's ring
+/// (`lib_action_ring`): whether the library draws it, what it draws, and
+/// what was tapped on it.
+#[derive(Debug, Default)]
+pub struct RingLib {
+    /// The library draws the ring; egui paints nothing.
+    pub on: bool,
+    /// The ring open this frame, `None` when there is none.
+    pub view: Option<RingView>,
+    /// Taps on the library's ring since the last frame, with the ring they
+    /// were on.
+    pub acts: Vec<(Id, RingOutcome)>,
+}
+
+impl RingLib {
+    /// No ring this frame: the library takes its down.
+    pub fn hide(&mut self) {
+        if self.view.is_some() {
+            self.view = None;
+        }
+        if !self.acts.is_empty() {
+            self.acts.clear();
+        }
+    }
+}
+
+/// The map's ring (`ui::render_context_menu`) bridged to the library.
+/// Inserted by the library's driver the first frame it runs, so without it
+/// (or without `ui-lib`) the caller finds none and egui draws.
+#[derive(Resource, Debug, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct MapRingLib(pub RingLib);
 
 /// Where the `i`th of `n` buttons sits: evenly round the circle, the first (the
 /// primary) straight up.
@@ -67,6 +127,75 @@ pub fn clamp_centre(at: Pos2, screen: Rect) -> Pos2 {
             (screen.bottom() - below).max(screen.top() + margin),
         ),
     )
+}
+
+/// [`show`], or — with `lib` on — the same decisions with the library
+/// drawing: the ring is published in `lib.view`, and what was tapped on it
+/// (or a press off it, or Escape, read from egui's input as [`show`] reads
+/// it) is the outcome.
+pub fn run(
+    ctx: &egui::Context,
+    lib: Option<&mut RingLib>,
+    id: Id,
+    at: Pos2,
+    title: &str,
+    detail: &str,
+    actions: &[RingAction],
+) -> RingOutcome {
+    let Some(lib) = lib.filter(|l| l.on) else {
+        return show(ctx, id, at, title, detail, actions);
+    };
+    let screen = ctx.viewport_rect();
+    let centre = clamp_centre(at, screen);
+    let frame = ctx.cumulative_pass_nr();
+    let first = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(id.with("opened"), || frame));
+    let fresh = lib.view.as_ref().is_none_or(|v| {
+        v.id != id
+            || v.centre != centre
+            || v.screen_w != screen.width()
+            || v.title != title
+            || v.detail != detail
+            || v.actions != actions
+    });
+    if fresh {
+        lib.view = Some(RingView {
+            id,
+            centre,
+            screen_w: screen.width(),
+            title: title.to_owned(),
+            detail: detail.to_owned(),
+            actions: actions.to_vec(),
+        });
+    }
+    let mut outcome = lib
+        .acts
+        .drain(..)
+        .filter(|(on, _)| *on == id)
+        .map(|(_, o)| o)
+        .next_back()
+        .unwrap_or_default();
+    if outcome == RingOutcome::Open && dismissed(ctx, centre, frame, first) {
+        outcome = RingOutcome::Dismissed;
+    }
+    if outcome != RingOutcome::Open {
+        ctx.data_mut(|d| d.remove::<u64>(id.with("opened")));
+        lib.view = None;
+    }
+    outcome
+}
+
+/// Whether Escape, or a press off the ring around `c` after the frame it
+/// opened, closes it.
+fn dismissed(ctx: &egui::Context, c: Pos2, frame: u64, first: u64) -> bool {
+    let (pressed, at_ptr, escape) = ctx.input(|i| {
+        (
+            i.pointer.any_pressed(),
+            i.pointer.interact_pos(),
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let off_ring = at_ptr.is_some_and(|p| p.distance(c) > RADIUS + BUTTON_R + 4.0);
+    escape || (pressed && off_ring && frame > first)
 }
 
 /// Draw the ring around `at` (ui points) and report what was pressed. `id`
@@ -187,7 +316,7 @@ pub fn show(
                     detail_g.size().y
                 }
                 + 12.0;
-            let top = c.y + RADIUS + BUTTON_R + 8.0;
+            let top = c.y + RADIUS + BUTTON_R + PILL_GAP;
             let pill = Rect::from_center_size(Pos2::new(c.x, top + h / 2.0), Vec2::new(w, h));
             painter.rect_filled(pill, 12.0, theme::p().glass);
             painter.rect_stroke(
@@ -213,18 +342,8 @@ pub fn show(
         });
 
     let c = area.inner;
-    if outcome == RingOutcome::Open {
-        let (pressed, at_ptr, escape) = ctx.input(|i| {
-            (
-                i.pointer.any_pressed(),
-                i.pointer.interact_pos(),
-                i.key_pressed(egui::Key::Escape),
-            )
-        });
-        let off_ring = at_ptr.is_some_and(|p| p.distance(c) > RADIUS + BUTTON_R + 4.0);
-        if escape || (pressed && off_ring && frame > first) {
-            outcome = RingOutcome::Dismissed;
-        }
+    if outcome == RingOutcome::Open && dismissed(ctx, c, frame, first) {
+        outcome = RingOutcome::Dismissed;
     }
     if outcome != RingOutcome::Open {
         ctx.data_mut(|d| d.remove::<u64>(id.with("opened")));

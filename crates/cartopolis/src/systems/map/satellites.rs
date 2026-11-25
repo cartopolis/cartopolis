@@ -52,6 +52,7 @@ use web_time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::components::FreeCamera;
 use crate::grid::AnchoredCamera;
 use crate::platform::{http, storage};
+use crate::systems::action_ring::RingLib;
 use crate::systems::camera_attach::{AttachKey, AttachRange, CameraAttach};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::layer_state::DataLayers;
@@ -483,6 +484,44 @@ pub struct SatelliteLayer {
     card_open: bool,
     /// Where the left button went down, for telling a tap from a drag.
     press: Option<(Vec2, f32)>,
+    /// The ring drawn by the component library (`lib_satellite_menu`):
+    /// [`render_satellite_menu`] still decides it and acts on its taps.
+    pub ring_lib: RingLib,
+    /// The library draws the card; egui paints none.
+    pub card_lib: bool,
+    /// The card open this frame, for the library to draw.
+    pub card_view: Option<SatCardView>,
+    /// Taps on the library's card, done next frame by the code egui's run.
+    pub card_acts: Vec<SatCardAct>,
+}
+
+/// The satellite card (the ring's More) as the component library draws it.
+/// `rows` change as the satellite moves; the rest only with a new one.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct SatCardView {
+    pub name: String,
+    /// The kind's name, under the name.
+    pub kind: &'static str,
+    /// The kind's dot: its colour on the map, content and not chrome.
+    pub swatch: [u8; 3],
+    /// Label, value: Altitude, Speed, Over, Orbit, NORAD.
+    pub rows: Vec<(&'static str, String)>,
+    /// The camera rides it: the button lets go.
+    pub riding: bool,
+    /// The card's bottom above the window's, ui points.
+    pub bottom: f32,
+    /// Its width, ui points.
+    pub width: f32,
+}
+
+/// A tap on the library's satellite card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum SatCardAct {
+    Close,
+    /// Follow, or Let go.
+    Ride,
 }
 
 impl SatelliteLayer {
@@ -1012,6 +1051,10 @@ pub fn report_attached_satellite(
 /// What a tap on a satellite opens: the ring of actions round it
 /// (`systems::action_ring`) — Follow, Path, More — and, from More, the card with
 /// everything known about it.
+///
+/// With the component library drawing them (`lib_satellite_menu`: `ring_lib`
+/// and `card_lib` on), this still decides both and acts on their taps; only
+/// the painting moves.
 pub fn render_satellite_menu(
     egui: EguiRef,
     mut layer: ResMut<SatelliteLayer>,
@@ -1024,12 +1067,14 @@ pub fn render_satellite_menu(
     if layer.selected_satellite().is_none() || hidden {
         layer.menu_at = None;
         layer.card_open = false;
+        hide_lib(&mut layer);
         return;
     }
     let Some(sat) = layer.selected_satellite() else {
         return;
     };
     let Some((r, v)) = sat.ecef_at(now_unix()) else {
+        hide_lib(&mut layer);
         return;
     };
     let (lat, lng, height) = cartopolis_core::ecef_to_geodetic(r);
@@ -1078,7 +1123,19 @@ pub fn render_satellite_menu(
         );
         let id = egui::Id::new("satellite_ring").with((norad, at.x.to_bits(), at.y.to_bits()));
         let ui_at = egui.window_to_ui(at);
-        match action_ring::show(egui.ctx(), id, ui_at, &name, &detail, &actions) {
+        if layer.card_view.is_some() {
+            layer.card_view = None;
+        }
+        let outcome = action_ring::run(
+            egui.ctx(),
+            Some(&mut layer.ring_lib),
+            id,
+            ui_at,
+            &name,
+            &detail,
+            &actions,
+        );
+        match outcome {
             RingOutcome::Open => {}
             RingOutcome::Dismissed => close_menu(&mut layer, &attach, key),
             RingOutcome::Chosen(chosen) => {
@@ -1097,65 +1154,58 @@ pub fn render_satellite_menu(
         }
         return;
     }
+    layer.ring_lib.hide();
 
     if !layer.card_open {
+        if layer.card_view.is_some() {
+            layer.card_view = None;
+        }
         return;
     }
     let [sr, sg, sb] = def.color.map(|c| (c.min(1.0) * 255.0) as u8);
     let swatch = egui::Color32::from_rgb(sr, sg, sb);
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let width = 300.0_f32.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
+    let rows = card_rows(height, speed_kms, lat, lng, period, norad);
     let mut close = false;
     let mut toggle_ride = false;
-    egui::Area::new(egui::Id::new("satellite_card"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(egui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(width);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = theme::close_button(ui).clicked();
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                            ui.painter().circle_filled(rect.center(), 4.5, swatch);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&name).size(theme::SIZE_TITLE).strong(),
-                                )
-                                .truncate(),
-                            );
-                        });
-                    });
-                });
-                ui.label(
-                    egui::RichText::new(def.label)
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
-                );
-                ui.add_space(4.0);
-                egui::Grid::new("satellite_card_rows")
-                    .num_columns(2)
-                    .spacing([12.0, 2.0])
-                    .show(ui, |ui| {
-                        let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                            ui.label(egui::RichText::new(k).color(theme::p().text_dim));
-                            ui.label(v);
-                            ui.end_row();
-                        };
-                        row(ui, "Altitude", format!("{:.0} km", height / 1000.0));
-                        row(ui, "Speed", format!("{speed_kms:.2} km/s"));
-                        row(ui, "Over", format!("{lat:.2}°, {lng:.2}°"));
-                        row(ui, "Orbit", format_period(period));
-                        row(ui, "NORAD", norad.to_string());
-                    });
-                ui.add_space(6.0);
-                let text = if riding { "Let go" } else { "Follow" };
-                if theme::action_button(ui, &format!("{}  {text}", icons::FOLLOW)).clicked() {
-                    toggle_ride = true;
-                }
-            });
-        });
+    if layer.card_lib {
+        // The library's taps of the last frame, done as egui's buttons are.
+        for act in std::mem::take(&mut layer.card_acts) {
+            match act {
+                SatCardAct::Close => close = true,
+                SatCardAct::Ride => toggle_ride = true,
+            }
+        }
+        let view = SatCardView {
+            name: name.clone(),
+            kind: def.label,
+            swatch: [sr, sg, sb],
+            rows,
+            riding,
+            bottom,
+            width,
+        };
+        if layer.card_view.as_ref() != Some(&view) {
+            layer.card_view = Some(view);
+        }
+    } else {
+        if layer.card_view.is_some() {
+            layer.card_view = None;
+        }
+        draw_card(
+            &egui,
+            &name,
+            def.label,
+            swatch,
+            &rows,
+            riding,
+            bottom,
+            width,
+            &mut close,
+            &mut toggle_ride,
+        );
+    }
     if toggle_ride {
         if riding {
             attach.detach();
@@ -1165,8 +1215,97 @@ pub fn render_satellite_menu(
     }
     if close {
         layer.card_open = false;
+        layer.card_view = None;
         close_menu(&mut layer, &attach, key);
     }
+}
+
+/// The card's rows, label and value, as egui's grid and the library's card
+/// both show them.
+fn card_rows(
+    height: f64,
+    speed_kms: f64,
+    lat: f64,
+    lng: f64,
+    period: f64,
+    norad: u64,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("Altitude", format!("{:.0} km", height / 1000.0)),
+        ("Speed", format!("{speed_kms:.2} km/s")),
+        ("Over", format!("{lat:.2}°, {lng:.2}°")),
+        ("Orbit", format_period(period)),
+        ("NORAD", norad.to_string()),
+    ]
+}
+
+/// No ring and no card this frame: the library takes its down.
+fn hide_lib(layer: &mut SatelliteLayer) {
+    layer.ring_lib.hide();
+    if layer.card_view.is_some() {
+        layer.card_view = None;
+    }
+}
+
+/// egui's satellite card: the kind's dot and the name with ✕, the kind, the
+/// rows, Follow or Let go.
+#[allow(clippy::too_many_arguments)]
+fn draw_card(
+    egui: &EguiRef,
+    name: &str,
+    kind: &str,
+    swatch: egui::Color32,
+    rows: &[(&'static str, String)],
+    riding: bool,
+    bottom: f32,
+    width: f32,
+    close: &mut bool,
+    toggle_ride: &mut bool,
+) {
+    egui::Area::new(egui::Id::new("satellite_card"))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+        .show(egui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        *close = theme::close_button(ui).clicked();
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 4.5, swatch);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(name).size(theme::SIZE_TITLE).strong(),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(kind)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::p().text_dim),
+                );
+                ui.add_space(4.0);
+                egui::Grid::new("satellite_card_rows")
+                    .num_columns(2)
+                    .spacing([12.0, 2.0])
+                    .show(ui, |ui| {
+                        for (k, v) in rows {
+                            ui.label(egui::RichText::new(*k).color(theme::p().text_dim));
+                            ui.label(v.as_str());
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(6.0);
+                let text = if riding { "Let go" } else { "Follow" };
+                if theme::action_button(ui, &format!("{}  {text}", icons::FOLLOW)).clicked() {
+                    *toggle_ride = true;
+                }
+            });
+        });
 }
 
 /// Close the ring, and let the selection go unless something still shows it:

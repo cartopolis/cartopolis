@@ -1226,6 +1226,18 @@ pub fn sync_dialog_to_selection(
     }
 }
 
+/// Saving the point under the cursor as a place: the ring's Save. Bundled to
+/// keep [`render_context_menu`] under Bevy's 16-parameter cap.
+/// `BookmarksState` is `Res` and not `ResMut` on purpose: `request_address`
+/// resolves the name through an interior-mutability channel, so the ring does
+/// not have to contend with the Places panel for the resource every frame it
+/// happens to be open.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SaveHere<'w> {
+    pub store: ResMut<'w, crate::systems::user_store::UserStore>,
+    pub bookmarks: Res<'w, crate::systems::bookmarks::BookmarksState>,
+}
+
 /// The map's context menu: right-click on a desktop, **long-press on a phone**
 /// (`systems::touch` fires an emulated `Right` for a held finger, which is what
 /// `picking` opens this on).
@@ -1241,7 +1253,12 @@ pub fn sync_dialog_to_selection(
 ///
 /// At 16 system parameters this is at Bevy's cap. The next thing that needs world
 /// access here should be grouped into a `SystemParam` rather than added to the
-/// list — `camera_controls` hit the same wall and that is what it did.
+/// list — `camera_controls` hit the same wall and that is what it did, and so
+/// did the library's ring ([`SaveHere`] made its room).
+///
+/// With the component library drawing the ring (`lib_action_ring`,
+/// `action_ring::MapRingLib`), this still decides everything and acts on the
+/// choice; only the painting moves.
 pub fn render_context_menu(
     mut commands: Commands,
     mut egui: EguiMut,
@@ -1254,21 +1271,20 @@ pub fn render_context_menu(
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut script_editor: ResMut<crate::systems::script_editor::ScriptEditorState>,
     online: Option<Res<crate::resources::OnlineSession>>,
-    // Saving the point under the cursor as a place. `BookmarksState` is `Res` and
-    // not `ResMut` on purpose: `request_address` resolves the name through an
-    // interior-mutability channel, so this menu does not have to contend with the
-    // Places panel for the resource every frame it happens to be open.
-    mut store: ResMut<crate::systems::user_store::UserStore>,
-    bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
+    mut save_here: SaveHere,
     camera_state: Res<crate::resources::CameraState>,
     camera: crate::grid::AnchoredCamera,
     mut attach: ResMut<crate::systems::camera_attach::CameraAttach>,
+    mut ring_lib: Option<ResMut<crate::systems::action_ring::MapRingLib>>,
 ) {
     use crate::resources::RightPanel;
     use crate::systems::action_ring::{self, RingAction, RingOutcome};
     use crate::systems::navigation::Endpoint;
 
     if !context_menu.visible {
+        if let Some(lib) = ring_lib.as_deref_mut() {
+            lib.0.hide();
+        }
         return;
     }
 
@@ -1408,6 +1424,9 @@ pub fn render_context_menu(
     }
     if actions.is_empty() {
         context_menu.visible = false;
+        if let Some(lib) = ring_lib.as_deref_mut() {
+            lib.0.hide();
+        }
         return;
     }
 
@@ -1424,7 +1443,15 @@ pub fn render_context_menu(
         context_menu.screen_pos.x.to_bits(),
         context_menu.screen_pos.y.to_bits(),
     ));
-    let outcome = action_ring::show(egui.ctx_mut(), id, at, &title, &detail, &actions);
+    let outcome = action_ring::run(
+        egui.ctx_mut(),
+        ring_lib.as_deref_mut().map(|l| &mut l.0),
+        id,
+        at,
+        &title,
+        &detail,
+        &actions,
+    );
 
     let chosen = match outcome {
         RingOutcome::Open => return,
@@ -1463,14 +1490,14 @@ pub fn render_context_menu(
             // point, because a saved place is a remembered *view* as well as a
             // coordinate (`CameraPose::apply`).
             if let Some(altitude) = camera_altitude {
-                let id = store.add_bookmark(
+                let id = save_here.store.add_bookmark(
                     crate::systems::bookmarks::PLACEHOLDER_NAME.to_string(),
                     lat,
                     lng,
                     altitude,
                     crate::systems::geo_nav::CameraPose::capture(&camera_state),
                 );
-                bookmarks.request_address(id, lat, lng);
+                save_here.bookmarks.request_address(id, lat, lng);
                 *right_panel = RightPanel::Places;
             }
         }

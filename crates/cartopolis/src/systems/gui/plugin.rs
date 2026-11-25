@@ -65,6 +65,10 @@ impl Plugin for GuiPlugin {
                     systems::lib_interact::drive_lib_attach_chip,
                     systems::lib_poi_card::drive_lib_poi_card,
                     systems::lib_main_menu::drive_lib_main_menu,
+                    systems::lib_action_ring::drive_lib_action_ring,
+                    systems::lib_satellite_menu::drive_lib_satellite_menu,
+                    systems::lib_locate::drive_lib_locate,
+                    systems::lib_driver::drive_lib_driver,
                 ),
             );
         app.init_resource::<systems::settings::SettingsState>()

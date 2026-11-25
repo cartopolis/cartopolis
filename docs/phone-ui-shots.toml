@@ -404,3 +404,35 @@ at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]
 time = 12.0
 ui = ["chatworld"]
+
+# The map's action ring on a long press, and on a place name; the driver's
+# and the walker's guidance (`action_ring`, `driver`, `walk_guide`).
+[[shot]]
+name = "ring"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["ring"]
+
+[[shot]]
+name = "placering"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["placering"]
+
+[[shot]]
+name = "driver"
+at = [53.2190, 6.5680, 2.0]
+look = [-15.0, 0.0]
+time = 12.0
+mode = "avatar"
+ui = ["driver"]
+
+[[shot]]
+name = "walk"
+at = [53.2190, 6.5680, 2.0]
+look = [-15.0, 0.0]
+time = 12.0
+mode = "avatar"
+ui = ["walk"]

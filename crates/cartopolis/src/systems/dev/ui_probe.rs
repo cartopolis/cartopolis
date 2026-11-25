@@ -85,6 +85,20 @@ impl Plugin for UiProbePlugin {
                     .chain()
                     .after(crate::systems::lib_host::prepare_bevy)
                     .before(crate::systems::lib_host::bridge_input),
+            )
+            // A tuple holds twenty systems at most: the map's rings, the
+            // locate arrow and the driver's HUD go after the rest.
+            .add_systems(
+                PostUpdate,
+                (
+                    crate::systems::lib_action_ring::drive_lib_action_ring,
+                    crate::systems::lib_satellite_menu::drive_lib_satellite_menu,
+                    crate::systems::lib_locate::drive_lib_locate,
+                    crate::systems::lib_driver::drive_lib_driver,
+                )
+                    .chain()
+                    .after(crate::systems::lib_main_menu::drive_lib_main_menu)
+                    .before(crate::systems::lib_host::bridge_input),
             );
         // The screens that talk, the app's only (`comms`): between the
         // screens above and the input bridge.

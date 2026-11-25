@@ -103,7 +103,11 @@ pub fn prepare_bevy(
             || lib.poi_card
             || lib.dialogs
             || lib.main_menu
-            || lib.share_sheet)
+            || lib.share_sheet
+            || lib.action_ring
+            || lib.satellite_menu
+            || lib.locate
+            || lib.driver)
     {
         return;
     }

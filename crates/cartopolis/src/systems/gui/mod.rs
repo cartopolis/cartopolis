@@ -53,6 +53,8 @@ pub mod js_highlight;
 pub mod layer_tiles;
 pub mod layers_panel;
 #[cfg(feature = "ui-lib")]
+pub mod lib_action_ring;
+#[cfg(feature = "ui-lib")]
 pub mod lib_app_update;
 #[cfg(feature = "ui-lib")]
 pub mod lib_avatar;
@@ -67,6 +69,8 @@ pub mod lib_design_room;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_dialogs;
 #[cfg(feature = "ui-lib")]
+pub mod lib_driver;
+#[cfg(feature = "ui-lib")]
 pub mod lib_host;
 #[cfg(feature = "ui-lib")]
 pub mod lib_interact;
@@ -74,6 +78,8 @@ pub mod lib_interact;
 pub mod lib_keyboard;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
+#[cfg(feature = "ui-lib")]
+pub mod lib_locate;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_login;
 #[cfg(feature = "ui-lib")]
@@ -96,6 +102,8 @@ pub mod lib_plans;
 pub mod lib_poi_card;
 #[cfg(feature = "ui-lib")]
 pub mod lib_route;
+#[cfg(feature = "ui-lib")]
+pub mod lib_satellite_menu;
 #[cfg(feature = "ui-lib")]
 pub mod lib_scenario;
 #[cfg(feature = "ui-lib")]
