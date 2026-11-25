@@ -43,6 +43,13 @@ impl Plugin for GuiPlugin {
                     systems::lib_places::drive_lib_places,
                     systems::lib_place_card::drive_lib_place_card,
                     systems::lib_building_card::drive_lib_building_card,
+                    systems::lib_app_update::drive_lib_app_update,
+                    systems::lib_avatar::drive_lib_avatar,
+                    systems::lib_models::drive_lib_models,
+                    systems::lib_script::drive_lib_script,
+                    systems::lib_plans::drive_lib_plans,
+                    systems::lib_scenario::drive_lib_scenario,
+                    systems::lib_design_room::drive_lib_design_room,
                 ),
             );
         app.init_resource::<systems::settings::SettingsState>()

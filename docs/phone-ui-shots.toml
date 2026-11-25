@@ -327,3 +327,45 @@ at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]
 time = 12.0
 ui = ["share"]
+
+[[shot]]
+name = "models"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["models"]
+
+[[shot]]
+name = "script"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["script"]
+
+[[shot]]
+name = "updateready"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["updateready"]
+
+[[shot]]
+name = "updatetooold"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["updatetooold"]
+
+[[shot]]
+name = "planshere"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["planshere"]
+
+[[shot]]
+name = "designroom"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["designroom"]

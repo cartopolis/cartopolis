@@ -53,17 +53,33 @@ pub mod js_highlight;
 pub mod layer_tiles;
 pub mod layers_panel;
 #[cfg(feature = "ui-lib")]
+pub mod lib_app_update;
+#[cfg(feature = "ui-lib")]
+pub mod lib_avatar;
+#[cfg(feature = "ui-lib")]
 pub mod lib_building_card;
+#[cfg(feature = "ui-lib")]
+pub mod lib_design_room;
 #[cfg(feature = "ui-lib")]
 pub mod lib_host;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_login;
+#[cfg(feature = "ui-lib")]
+pub mod lib_models;
 #[cfg(feature = "ui-lib")]
 pub mod lib_place_card;
 #[cfg(feature = "ui-lib")]
 pub mod lib_places;
 #[cfg(feature = "ui-lib")]
+pub mod lib_plans;
+#[cfg(feature = "ui-lib")]
 pub mod lib_route;
+#[cfg(feature = "ui-lib")]
+pub mod lib_scenario;
+#[cfg(feature = "ui-lib")]
+pub mod lib_script;
 #[cfg(feature = "ui-lib")]
 pub mod lib_search;
 #[cfg(feature = "ui-lib")]
@@ -83,6 +99,8 @@ pub mod lib_person_card;
 pub mod lib_post_composer;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_reminder;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_welcome;
 #[cfg(feature = "comms")]
 pub mod login_screen;
 pub mod map_osd;

@@ -2672,6 +2672,9 @@ const UI_ELEMENTS: &[&str] = &[
     // The design room open where the camera looks, a stall standing in it
     // (`systems::design_room`).
     "designroom",
+    // Models and the script editor (`RightPanel::Models`, `::Script`).
+    "models",
+    "script",
     "callincoming",
     "call",
     "callvideo",
@@ -2877,6 +2880,10 @@ pub fn open_scripted_ui(
         crate::resources::RightPanel::Places
     } else if want("search") {
         crate::resources::RightPanel::Search
+    } else if want("models") {
+        crate::resources::RightPanel::Models
+    } else if want("script") {
+        crate::resources::RightPanel::Script
     } else if want("avatar") || want("appearance") {
         // The chooser moved into the `RightPanel` slot with the rest; the
         // `avatar.open` bool above is what the HUD reads, not the panel, so

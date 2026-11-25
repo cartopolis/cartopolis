@@ -45,6 +45,7 @@ impl Plugin for UiProbePlugin {
                 PostUpdate,
                 (
                     crate::systems::lib_host::prepare_bevy,
+                    crate::systems::lib_host::follow_world_target,
                     crate::systems::lib_settings::drive_lib_settings,
                     crate::systems::lib_layers::drive_lib_layers,
                     crate::systems::lib_search::drive_lib_search,
@@ -56,6 +57,21 @@ impl Plugin for UiProbePlugin {
                 )
                     .chain()
                     .before(mithril_bevy::DriveUi),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    crate::systems::lib_app_update::drive_lib_app_update,
+                    crate::systems::lib_avatar::drive_lib_avatar,
+                    crate::systems::lib_models::drive_lib_models,
+                    crate::systems::lib_script::drive_lib_script,
+                    crate::systems::lib_plans::drive_lib_plans,
+                    crate::systems::lib_scenario::drive_lib_scenario,
+                    crate::systems::lib_design_room::drive_lib_design_room,
+                )
+                    .chain()
+                    .after(crate::systems::lib_host::prepare_bevy)
+                    .before(crate::systems::lib_host::bridge_input),
             );
         // The screens that talk, the app's only (`comms`): between the
         // screens above and the input bridge.
@@ -68,6 +84,8 @@ impl Plugin for UiProbePlugin {
                 crate::systems::lib_reminder::drive_lib_reminder,
                 crate::systems::lib_filter_chip::drive_lib_filter_chip,
                 crate::systems::lib_post_composer::drive_lib_post_composer,
+                crate::systems::lib_login::drive_lib_login,
+                crate::systems::lib_welcome::drive_lib_welcome,
             )
                 .chain()
                 .after(crate::systems::lib_host::prepare_bevy)

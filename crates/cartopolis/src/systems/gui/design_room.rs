@@ -124,6 +124,11 @@ pub struct DesignRoom {
     flash_started: u32,
     loaded: bool,
     inbox: Inbox,
+    /// The library draws the room's bar, outliner, Scripts panel, tool
+    /// column and way out (`lib_design_room`): egui's systems draw none of
+    /// them, and still paint the veil, the navigation gizmo and the
+    /// measurements over the room.
+    pub lib: bool,
 }
 
 impl DesignRoom {
@@ -144,7 +149,318 @@ impl DesignRoom {
         self.picked.clear();
         self.flash += 1;
     }
+
+    /// The bar's Keep: the objects here kept in the inventory as one design,
+    /// under the name typed.
+    pub fn keep(&mut self) {
+        let Some(spot) = self.spot else {
+            return;
+        };
+        self.busy = true;
+        self.status = "Keeping…".into();
+        save_design(
+            self.inbox.clone(),
+            self.name.trim().to_string(),
+            spot,
+            self.parts.clone(),
+        );
+    }
+
+    /// The bar's Place in the street: the drafts here, for everybody.
+    pub fn place_drafts_here(&mut self) {
+        self.busy = true;
+        place_drafts(self.inbox.clone(), self.drafts.clone());
+    }
+
+    /// A kept design's Place here: a copy of it on the spot, as drafts.
+    pub fn place_kept(&mut self, id: i64, name: String) {
+        let Some(spot) = self.spot else {
+            return;
+        };
+        self.busy = true;
+        place_design(self.inbox.clone(), id, name, spot);
+    }
+
+    /// A kept design removed from the inventory; copies placed stay.
+    pub fn forget_kept(&mut self, id: i64, name: String) {
+        self.busy = true;
+        forget_design(self.inbox.clone(), id, name);
+    }
+
+    /// Tick or untick parts in the outliner (a group's box ticks its members).
+    pub fn pick(&mut self, ids: &[i64], on: bool) {
+        for id in ids {
+            if on {
+                self.picked.insert(*id);
+            } else {
+                self.picked.remove(id);
+            }
+        }
+    }
+
+    /// Whether Group can go: something ticked, a name typed, nothing under way.
+    #[must_use]
+    pub fn can_group(&self) -> bool {
+        !self.picked.is_empty() && !self.group_name.trim().is_empty() && !self.busy
+    }
+
+    /// Whether Keep can go: something here, a name typed, nothing under way.
+    #[must_use]
+    pub fn can_keep(&self) -> bool {
+        !self.parts.is_empty() && !self.name.trim().is_empty() && !self.busy
+    }
+
+    /// The outliner's Group: the ticked parts in a new group, under the name
+    /// typed.
+    pub fn group_picked(&mut self) {
+        self.busy = true;
+        make_group(
+            self.inbox.clone(),
+            self.group_name.trim().to_string(),
+            self.picked.iter().copied().collect(),
+        );
+        self.picked.clear();
+        self.group_name.clear();
+    }
+
+    /// A group's Ungroup: its parts stay in the groups around it.
+    pub fn dissolve(&mut self, id: i64, name: String) {
+        self.busy = true;
+        ungroup(self.inbox.clone(), id, name);
+    }
 }
+
+/// The bar's Add a part: a new box on the spot, in the editor.
+pub fn add_part(
+    room: &DesignRoom,
+    map_anchor: &MapAnchor,
+    edit_dialog: &mut EditDialogState,
+    game_state: &mut GameState,
+) {
+    if let (Some(spot), Some(anchor)) = (room.spot, map_anchor.geo) {
+        let (wx, wz) = crate::grid::lat_lng_to_world(anchor, spot.0, spot.1);
+        crate::systems::ui::open_new_object(edit_dialog, game_state, [wx as f32, 0.0, wz as f32]);
+    }
+}
+
+/// Duplicate (the bar's, the tool column's, Shift-D): a draft copy of the
+/// selected part, a metre east.
+pub fn duplicate(online: Option<&crate::resources::OnlineSession>, part: Option<SelectedPart>) {
+    if let (Some(session), Some(part)) = (online, part) {
+        session.send("duplicate", duplicate_message(part));
+    }
+}
+
+/// How many objects stand in the room, for the bar's title.
+#[must_use]
+pub fn parts_note(n: usize) -> String {
+    match n {
+        0 => "nothing here yet".to_string(),
+        1 => "1 object".to_string(),
+        n => format!("{n} objects"),
+    }
+}
+
+/// How many drafts only this account sees.
+#[must_use]
+pub fn drafts_line(n: usize) -> String {
+    if n == 1 {
+        "1 object only you see".to_string()
+    } else {
+        format!("{n} objects only you see")
+    }
+}
+
+/// A kept design's size.
+#[must_use]
+pub fn kept_parts(n: i64) -> String {
+    if n == 1 {
+        "1 part".to_string()
+    } else {
+        format!("{n} parts")
+    }
+}
+
+/// The selected part's size, width × depth × height.
+#[must_use]
+pub fn size_line(tf: &Transform) -> String {
+    let s = tf.scale.abs();
+    format!("{:.2} × {:.2} × {:.2} m", s.x, s.z, s.y)
+}
+
+/// The outliner's count, and how many are drafts.
+#[must_use]
+pub fn outliner_note(tree: &[PartRow]) -> String {
+    let drafts = tree.iter().filter(|r| r.draft).count();
+    if drafts > 0 {
+        format!("{} · {drafts} draft", tree.len())
+    } else {
+        tree.len().to_string()
+    }
+}
+
+/// One line of the outliner, in order: a header for each group a part
+/// enters, then the part.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outline {
+    Group {
+        depth: usize,
+        id: i64,
+        name: String,
+        members: Vec<i64>,
+    },
+    Part {
+        depth: usize,
+        id: i64,
+        name: String,
+        draft: bool,
+    },
+}
+
+/// The outliner's lines for the parts in their groups.
+#[must_use]
+pub fn outline(tree: &[PartRow]) -> Vec<Outline> {
+    let mut out = Vec::new();
+    let mut previous: &[cartopolis_core::GroupLevel] = &[];
+    for row in tree {
+        let shared = row
+            .groups
+            .iter()
+            .zip(previous)
+            .take_while(|(a, b)| a.id == b.id)
+            .count();
+        for (depth, g) in row.groups.iter().enumerate().skip(shared) {
+            out.push(Outline::Group {
+                depth,
+                id: g.id,
+                name: g.name.clone(),
+                members: tree
+                    .iter()
+                    .filter(|r| r.groups.iter().any(|x| x.id == g.id))
+                    .map(|r| r.id)
+                    .collect(),
+            });
+        }
+        out.push(Outline::Part {
+            depth: row.groups.len(),
+            id: row.id,
+            name: row.name.clone(),
+            draft: row.draft,
+        });
+        previous = &row.groups;
+    }
+    out
+}
+
+/// How a part's script stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptState {
+    Running,
+    /// It just touched its part.
+    Working,
+    /// Its last word was an error.
+    Error,
+}
+
+impl ScriptState {
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            ScriptState::Running => "running",
+            ScriptState::Working => "working",
+            ScriptState::Error => "error",
+        }
+    }
+}
+
+/// One scripted part in the Scripts panel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptRow {
+    pub id: i64,
+    pub name: String,
+    pub state: ScriptState,
+    /// The newest error its script reported, if its last word was one.
+    pub why: Option<String>,
+}
+
+/// The room's scripted parts, and how each stands.
+#[must_use]
+pub fn script_rows(
+    room: &DesignRoom,
+    prims: &Query<&Prim>,
+    editor: &crate::systems::script_editor::ScriptEditorState,
+) -> Vec<ScriptRow> {
+    room.tree
+        .iter()
+        .filter(|r| prims.iter().any(|p| p.id == r.id && p.scripted))
+        .map(|r| {
+            let why = editor
+                .console
+                .iter()
+                .rev()
+                .find(|l| l.prim_id == r.id)
+                .filter(|l| matches!(l.level, cartopolis_core::ScriptLevel::Error))
+                .map(|l| l.text.clone());
+            let state = match &why {
+                Some(_) => ScriptState::Error,
+                None if room.pulse.contains_key(&r.id) => ScriptState::Working,
+                None => ScriptState::Running,
+            };
+            ScriptRow {
+                id: r.id,
+                name: r.name.clone(),
+                state,
+                why,
+            }
+        })
+        .collect()
+}
+
+/// The Scripts panel's count.
+#[must_use]
+pub fn scripts_note(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 script".to_string(),
+        n => format!("{n} scripts"),
+    }
+}
+
+/// Open a part's script in the editor, the right panel.
+pub fn edit_script(
+    editor: &mut crate::systems::script_editor::ScriptEditorState,
+    right_panel: &mut crate::resources::RightPanel,
+    id: i64,
+) {
+    editor.open(id);
+    *right_panel = crate::resources::RightPanel::Script;
+}
+
+/// The tool column's handle modes: the mode, its key, its word, its tip.
+pub const TOOLS: [(crate::systems::gizmo::GizmoMode, &str, &str, &str); 3] = [
+    (
+        crate::systems::gizmo::GizmoMode::Translate,
+        "G",
+        "move",
+        "move the selected part (G)",
+    ),
+    (
+        crate::systems::gizmo::GizmoMode::Rotate,
+        "R",
+        "turn",
+        "turn the selected part (R)",
+    ),
+    (
+        crate::systems::gizmo::GizmoMode::Scale,
+        "S",
+        "size",
+        "size the selected part (S)",
+    ),
+];
+
+/// The tips on the tool column's copy and magnet.
+pub const DUPLICATE_TIP: &str = "a copy of the selected part, a metre east (Shift-D)";
+pub const SNAP_TIP: &str = "handles move in 10 cm and turn in 15° steps";
 
 /// One line of the Scripts panel's log.
 #[derive(Debug, Clone)]
@@ -895,17 +1211,19 @@ pub fn render_design_room_bar(
     online: Option<Res<crate::resources::OnlineSession>>,
     selected: Query<SelectedPart, With<crate::components::Selected>>,
 ) {
+    // The veil is painted over the whole screen: egui's, whichever edition
+    // draws the panels.
     draw_veil(egui.ctx(), &mut room);
-    let Some(spot) = room.spot else {
+    if room.spot.is_none() || room.lib {
         return;
-    };
+    }
     // The selected part and its size, always on screen: v4's "a grid you can
     // read sizes off" for the part in hand.
     let chosen = selected.single().ok();
     let mut duplicate = false;
     let signed_in = online.is_some() && model_assets::have_endpoint();
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let width = 420.0_f32.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
+    let width = BAR_W.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
 
     let mut name = std::mem::take(&mut room.name);
     let parts = room.parts.len();
@@ -919,11 +1237,7 @@ pub fn render_design_room_bar(
     let mut place: Option<(i64, String)> = None;
     let mut forget: Option<(i64, String)> = None;
 
-    let note = match parts {
-        0 => "nothing here yet".to_string(),
-        1 => "1 object".to_string(),
-        n => format!("{n} objects"),
-    };
+    let note = parts_note(parts);
     room_panel(
         egui.ctx(),
         "design_room_bar",
@@ -963,24 +1277,15 @@ pub fn render_design_room_bar(
             if let Some((prim, tf, ..)) = chosen {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let s = tf.scale.abs();
                     ui.label(egui::RichText::new(&prim.name).color(theme::p().cream));
-                    ui.label(
-                        egui::RichText::new(format!("{:.2} × {:.2} × {:.2} m", s.x, s.z, s.y))
-                            .color(theme::p().accent_text),
-                    );
+                    ui.label(egui::RichText::new(size_line(tf)).color(theme::p().accent_text));
                 });
             }
             if drafts > 0 {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     pill(ui, "draft", theme::p().warn);
-                    let what = if drafts == 1 {
-                        "1 object only you see".to_string()
-                    } else {
-                        format!("{drafts} objects only you see")
-                    };
-                    ui.label(egui::RichText::new(what).color(theme::p().text_dim));
+                    ui.label(egui::RichText::new(drafts_line(drafts)).color(theme::p().text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_enabled_ui(!busy, |ui| {
@@ -1032,13 +1337,8 @@ pub fn render_design_room_bar(
                                         .color(theme::p().accent_text),
                                 );
                                 ui.label(egui::RichText::new(&d.name).color(theme::p().cream));
-                                let parts = if d.parts == 1 {
-                                    "1 part".to_string()
-                                } else {
-                                    format!("{} parts", d.parts)
-                                };
                                 ui.label(
-                                    egui::RichText::new(parts)
+                                    egui::RichText::new(kept_parts(d.parts))
                                         .small()
                                         .color(theme::p().text_dim),
                                 );
@@ -1081,43 +1381,30 @@ pub fn render_design_room_bar(
 
     room.name = name;
     if duplicate {
-        if let (Some(session), Some(part)) = (online.as_ref(), chosen) {
-            session.send("duplicate", duplicate_message(part));
-        }
+        self::duplicate(online.as_deref(), chosen);
     }
     if place_all {
-        room.busy = true;
-        place_drafts(room.inbox.clone(), room.drafts.clone());
+        room.place_drafts_here();
     }
     if add_part {
-        if let Some(anchor) = map_anchor.geo {
-            let (wx, wz) = crate::grid::lat_lng_to_world(anchor, spot.0, spot.1);
-            crate::systems::ui::open_new_object(
-                &mut edit_dialog,
-                &mut game_state,
-                [wx as f32, 0.0, wz as f32],
-            );
-        }
+        self::add_part(&room, &map_anchor, &mut edit_dialog, &mut game_state);
     }
-    if save {
-        room.busy = true;
-        room.status = "Keeping…".into();
-        save_design(
-            room.inbox.clone(),
-            room.name.trim().to_string(),
-            spot,
-            room.parts.clone(),
-        );
+    if save && room.can_keep() {
+        room.keep();
     }
     if let Some((id, name)) = place {
-        room.busy = true;
-        place_design(room.inbox.clone(), id, name, spot);
+        room.place_kept(id, name);
     }
     if let Some((id, name)) = forget {
-        room.busy = true;
-        forget_design(room.inbox.clone(), id, name);
+        room.forget_kept(id, name);
     }
 }
+
+/// The bar's width, before the screen narrows it.
+pub const BAR_W: f32 = 420.0;
+/// The outliner's and the Scripts panel's widths.
+pub const OUTLINER_W: f32 = 270.0;
+pub const SCRIPTS_W: f32 = 300.0;
 
 /// The outliner, on the left while the room is open: the parts in their
 /// groups, a tick box on each to choose what Group takes, and Ungroup on each
@@ -1127,7 +1414,7 @@ pub fn render_design_room_outliner(
     mut room: ResMut<DesignRoom>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    if room.spot.is_none() {
+    if room.spot.is_none() || room.lib {
         return;
     }
     // The one way out, always in the same place: top left, above everything
@@ -1144,7 +1431,7 @@ pub fn render_design_room_outliner(
             .show(egui.ctx(), |ui| {
                 theme::use_dark_visuals(ui);
                 if theme::secondary_button(ui, icons::BACK, "Back to the map", 0.0)
-                    .on_hover_text("Esc · drafts wait here for you, placed objects stay standing")
+                    .on_hover_text(BACK_TIP)
                     .clicked()
                 {
                     leave = true;
@@ -1159,20 +1446,16 @@ pub fn render_design_room_outliner(
         return;
     }
     let signed_in = online.is_some() && model_assets::have_endpoint();
-    let tree = room.tree.clone();
-    let mut picked = std::mem::take(&mut room.picked);
+    let lines = outline(&room.tree);
+    let picked = room.picked.clone();
     let mut group_name = std::mem::take(&mut room.group_name);
     let busy = room.busy;
-    let mut make: Option<(String, Vec<i64>)> = None;
+    let mut ticks: Vec<(Vec<i64>, bool)> = Vec::new();
+    let mut make = false;
     let mut dissolve: Option<(i64, String)> = None;
-    let width = 270.0_f32.min(egui.viewport_pts().x * 0.45);
+    let width = OUTLINER_W.min(egui.viewport_pts().x * 0.45);
 
-    let draft_count = tree.iter().filter(|r| r.draft).count();
-    let note = if draft_count > 0 {
-        format!("{} · {draft_count} draft", tree.len())
-    } else {
-        tree.len().to_string()
-    };
+    let note = outliner_note(&room.tree);
     room_panel(
         egui.ctx(),
         "design_room_outliner",
@@ -1185,96 +1468,90 @@ pub fn render_design_room_outliner(
             egui::ScrollArea::vertical()
                 .max_height(340.0)
                 .show(ui, |ui| {
-                    let mut previous: &[cartopolis_core::GroupLevel] = &[];
-                    for row in &tree {
-                        let shared = row
-                            .groups
-                            .iter()
-                            .zip(previous)
-                            .take_while(|(a, b)| a.id == b.id)
-                            .count();
-                        // A header for each group this row enters.
-                        for (depth, g) in row.groups.iter().enumerate().skip(shared) {
-                            let members: Vec<i64> = tree
-                                .iter()
-                                .filter(|r| r.groups.iter().any(|x| x.id == g.id))
-                                .map(|r| r.id)
-                                .collect();
-                            ui.horizontal(|ui| {
-                                ui.add_space(depth as f32 * 16.0);
-                                let mut all = members.iter().all(|id| picked.contains(id));
-                                if theme::checkbox(ui, &mut all, "").changed() {
-                                    for id in &members {
-                                        if all {
-                                            picked.insert(*id);
-                                        } else {
-                                            picked.remove(id);
-                                        }
-                                    }
-                                }
-                                ui.label(egui::RichText::new(icons::LAYERS).color(theme::p().warn));
-                                ui.label(egui::RichText::new(&g.name).color(theme::p().cream));
-                                ui.label(
-                                    egui::RichText::new(members.len().to_string())
-                                        .small()
-                                        .color(theme::p().text_dim),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if signed_in
-                                            && ui
-                                                .add_enabled_ui(!busy, |ui| {
-                                                    theme::ghost_button(ui, "", "Ungroup")
-                                                })
-                                                .inner
-                                                .on_hover_text(
-                                                    "dissolve this group; its parts stay in the \
-                                             groups around it",
-                                                )
-                                                .clicked()
-                                        {
-                                            dissolve = Some((g.id, g.name.clone()));
-                                        }
-                                    },
-                                );
-                            });
-                        }
-                        let on = picked.contains(&row.id);
-                        // A ticked row is lit, as the sheet's selected one is.
-                        let fill = if on {
-                            theme::p().accent.gamma_multiply(0.14)
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        };
-                        egui::Frame::NONE
-                            .fill(fill)
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .show(ui, |ui| {
+                    for line in &lines {
+                        match line {
+                            // A header for each group a part enters.
+                            Outline::Group {
+                                depth,
+                                id,
+                                name,
+                                members,
+                            } => {
                                 ui.horizontal(|ui| {
-                                    ui.add_space(row.groups.len() as f32 * 16.0);
-                                    let mut tick = on;
-                                    if theme::checkbox(ui, &mut tick, "").changed() {
-                                        if tick {
-                                            picked.insert(row.id);
-                                        } else {
-                                            picked.remove(&row.id);
-                                        }
+                                    ui.add_space(*depth as f32 * 16.0);
+                                    let mut all = members.iter().all(|m| picked.contains(m));
+                                    if theme::checkbox(ui, &mut all, "").changed() {
+                                        ticks.push((members.clone(), all));
                                     }
                                     ui.label(
-                                        egui::RichText::new(icons::BUILD)
+                                        egui::RichText::new(icons::LAYERS).color(theme::p().warn),
+                                    );
+                                    ui.label(egui::RichText::new(name).color(theme::p().cream));
+                                    ui.label(
+                                        egui::RichText::new(members.len().to_string())
+                                            .small()
                                             .color(theme::p().text_dim),
                                     );
-                                    ui.label(egui::RichText::new(&row.name).color(theme::p().text));
-                                    if row.draft {
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| pill(ui, "draft", theme::p().warn),
-                                        );
-                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if signed_in
+                                                && ui
+                                                    .add_enabled_ui(!busy, |ui| {
+                                                        theme::ghost_button(ui, "", "Ungroup")
+                                                    })
+                                                    .inner
+                                                    .on_hover_text(UNGROUP_TIP)
+                                                    .clicked()
+                                            {
+                                                dissolve = Some((*id, name.clone()));
+                                            }
+                                        },
+                                    );
                                 });
-                            });
-                        previous = &row.groups;
+                            }
+                            Outline::Part {
+                                depth,
+                                id,
+                                name,
+                                draft,
+                            } => {
+                                let on = picked.contains(id);
+                                // A ticked row is lit, as the sheet's selected one is.
+                                let fill = if on {
+                                    theme::p().accent.gamma_multiply(0.14)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                egui::Frame::NONE
+                                    .fill(fill)
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(*depth as f32 * 16.0);
+                                            let mut tick = on;
+                                            if theme::checkbox(ui, &mut tick, "").changed() {
+                                                ticks.push((vec![*id], tick));
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(icons::BUILD)
+                                                    .color(theme::p().text_dim),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(name).color(theme::p().text),
+                                            );
+                                            if *draft {
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| pill(ui, "draft", theme::p().warn),
+                                                );
+                                            }
+                                        });
+                                    });
+                            }
+                        }
                     }
                 });
             if signed_in {
@@ -1292,32 +1569,33 @@ pub fn render_design_room_outliner(
                             theme::secondary_button(ui, icons::LAYERS, "Group", 0.0)
                         })
                         .inner
-                        .on_hover_text("put the ticked parts in a new group")
+                        .on_hover_text(GROUP_TIP)
                         .clicked()
                     {
-                        make = Some((
-                            group_name.trim().to_string(),
-                            picked.iter().copied().collect(),
-                        ));
+                        make = true;
                     }
                 });
             }
         },
     );
 
-    if let Some((name, ids)) = make {
-        room.busy = true;
-        make_group(room.inbox.clone(), name, ids);
-        picked.clear();
-        group_name.clear();
+    room.group_name = group_name;
+    for (ids, on) in ticks {
+        room.pick(&ids, on);
+    }
+    if make && room.can_group() {
+        room.group_picked();
     }
     if let Some((id, name)) = dissolve {
-        room.busy = true;
-        ungroup(room.inbox.clone(), id, name);
+        room.dissolve(id, name);
     }
-    room.picked = picked;
-    room.group_name = group_name;
 }
+
+/// The outliner's tips.
+pub const UNGROUP_TIP: &str = "dissolve this group; its parts stay in the groups around it";
+pub const GROUP_TIP: &str = "put the ticked parts in a new group";
+/// The way out's tip.
+pub const BACK_TIP: &str = "Esc · drafts wait here for you, placed objects stay standing";
 
 /// A glow round a part its script just touched.
 #[derive(Component)]
@@ -1461,7 +1739,7 @@ pub fn render_design_room_scripts(
     selected: Query<&Prim, With<crate::components::Selected>>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    if room.spot.is_none() {
+    if room.spot.is_none() || room.lib {
         return;
     }
     let signed_in = online.is_some();
@@ -1469,33 +1747,14 @@ pub fn render_design_room_scripts(
     if !right_panel.is(crate::resources::RightPanel::None) {
         return;
     }
-    let scripted: Vec<(i64, String)> = room
-        .tree
-        .iter()
-        .filter(|r| prims.iter().any(|p| p.id == r.id && p.scripted))
-        .map(|r| (r.id, r.name.clone()))
-        .collect();
+    let scripted = script_rows(&room, &prims, &editor);
     let chosen = selected
         .single()
         .ok()
         .filter(|p| room.parts.contains(&p.id));
-    // The newest error a part's script reported, if its last word was one.
-    let failing = |id: i64| {
-        editor
-            .console
-            .iter()
-            .rev()
-            .find(|l| l.prim_id == id)
-            .filter(|l| matches!(l.level, cartopolis_core::ScriptLevel::Error))
-            .map(|l| l.text.clone())
-    };
     let mut open: Option<i64> = None;
-    let width = 300.0_f32.min(egui.viewport_pts().x * 0.45);
-    let note = match scripted.len() {
-        0 => String::new(),
-        1 => "1 script".to_string(),
-        n => format!("{n} scripts"),
-    };
+    let width = SCRIPTS_W.min(egui.viewport_pts().x * 0.45);
+    let note = scripts_note(scripted.len());
     room_panel(
         egui.ctx(),
         "design_room_scripts",
@@ -1523,27 +1782,26 @@ pub fn render_design_room_scripts(
                     .color(theme::p().text_dim),
                 );
             }
-            for (id, name) in &scripted {
+            for row in &scripted {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().accent_text));
-                    ui.label(egui::RichText::new(name).color(theme::p().cream));
-                    let glowing = room.pulse.contains_key(id);
-                    let (state, colour) = match failing(*id) {
-                        Some(_) => ("error", theme::p().error),
-                        None if glowing => ("working", theme::p().accent_bright),
-                        None => ("running", theme::p().accent_text),
+                    ui.label(egui::RichText::new(&row.name).color(theme::p().cream));
+                    let colour = match row.state {
+                        ScriptState::Error => theme::p().error,
+                        ScriptState::Working => theme::p().accent_bright,
+                        ScriptState::Running => theme::p().accent_text,
                     };
-                    pill(ui, state, colour);
+                    pill(ui, row.state.word(), colour);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::ghost_button(ui, "", "Edit")
                             .on_hover_text("open it in the script editor")
                             .clicked()
                         {
-                            open = Some(*id);
+                            open = Some(row.id);
                         }
                     });
                 });
-                if let Some(why) = failing(*id) {
+                if let Some(why) = &row.why {
                     ui.label(egui::RichText::new(why).small().color(theme::p().error));
                 }
             }
@@ -1592,8 +1850,7 @@ pub fn render_design_room_scripts(
         },
     );
     if let Some(id) = open {
-        editor.open(id);
-        *right_panel = crate::resources::RightPanel::Script;
+        edit_script(&mut editor, &mut right_panel, id);
     }
 }
 
@@ -1602,11 +1859,11 @@ pub fn render_design_room_scripts(
 // ---------------------------------------------------------------------------
 
 /// Width the tool column takes at the left edge, outliner beside it.
-const TOOL_COLUMN_W: f32 = 64.0;
+pub const TOOL_COLUMN_W: f32 = 64.0;
 
 /// Height the navigation gizmo's panel takes at the top right; Scripts is
 /// below it.
-const NAV_GIZMO_H: f32 = 220.0;
+pub const NAV_GIZMO_H: f32 = 220.0;
 
 /// The figure for scale: a person this tall, standing west of the spot.
 const FIGURE_HEIGHT_M: f32 = 1.75;
@@ -1626,8 +1883,7 @@ pub fn render_design_room_tools(
     online: Option<Res<crate::resources::OnlineSession>>,
     selected: Query<SelectedPart, With<crate::components::Selected>>,
 ) {
-    use crate::systems::gizmo::GizmoMode;
-    if room.spot.is_none() {
+    if room.spot.is_none() || room.lib {
         return;
     }
     let chosen = selected.single().ok();
@@ -1674,50 +1930,16 @@ pub fn render_design_room_tools(
                 );
                 resp.on_hover_text(tip).clicked()
             };
-            if tool(
-                ui,
-                mode == GizmoMode::Translate,
-                "G",
-                "move",
-                "move the selected part (G)",
-            ) {
-                mode = GizmoMode::Translate;
-            }
-            if tool(
-                ui,
-                mode == GizmoMode::Rotate,
-                "R",
-                "turn",
-                "turn the selected part (R)",
-            ) {
-                mode = GizmoMode::Rotate;
-            }
-            if tool(
-                ui,
-                mode == GizmoMode::Scale,
-                "S",
-                "size",
-                "size the selected part (S)",
-            ) {
-                mode = GizmoMode::Scale;
+            for (m, key, label, tip) in TOOLS {
+                if tool(ui, mode == m, key, label, tip) {
+                    mode = m;
+                }
             }
             ui.separator();
-            if tool(
-                ui,
-                false,
-                "D",
-                "copy",
-                "a copy of the selected part, a metre east (Shift-D)",
-            ) {
+            if tool(ui, false, "D", "copy", DUPLICATE_TIP) {
                 duplicate = true;
             }
-            if tool(
-                ui,
-                snap,
-                icons::FOLLOW,
-                "snap",
-                "handles move in 10 cm and turn in 15° steps",
-            ) {
+            if tool(ui, snap, icons::FOLLOW, "snap", SNAP_TIP) {
                 snap = !snap;
             }
         },
@@ -1729,9 +1951,7 @@ pub fn render_design_room_tools(
         room.no_snap = !snap;
     }
     if duplicate {
-        if let (Some(session), Some(part)) = (online.as_ref(), chosen) {
-            session.send("duplicate", duplicate_message(part));
-        }
+        self::duplicate(online.as_deref(), chosen);
     }
 }
 
@@ -1950,7 +2170,7 @@ pub fn render_design_room_measures(
 const DUPLICATE_OFFSET_M: f64 = 1.0;
 
 /// The selected part, as the bar and Shift-D read it.
-type SelectedPart<'a> = (
+pub type SelectedPart<'a> = (
     &'a Prim,
     &'a Transform,
     Option<&'a GridCell>,

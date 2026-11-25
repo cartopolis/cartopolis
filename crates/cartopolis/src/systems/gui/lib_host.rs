@@ -60,6 +60,7 @@ pub fn prepare_bevy(
         bevy::prelude::Entity,
         bevy::prelude::With<crate::components::FreeCamera>,
     >,
+    targets: bevy::prelude::Query<&bevy::camera::RenderTarget>,
     mut fonts: bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::Font>>,
     mut ui_scale: bevy::prelude::ResMut<bevy::prelude::UiScale>,
     egui: crate::systems::egui_manager::EguiRef,
@@ -79,7 +80,16 @@ pub fn prepare_bevy(
             || lib.person_card
             || lib.reminder
             || lib.filter_chip
-            || lib.post_composer)
+            || lib.post_composer
+            || lib.login
+            || lib.welcome
+            || lib.app_update
+            || lib.avatar
+            || lib.models
+            || lib.script
+            || lib.plans
+            || lib.scenario
+            || lib.design_room)
     {
         return;
     }
@@ -88,7 +98,26 @@ pub fn prepare_bevy(
     };
     ui_scale.0 = egui.ui_scale();
     let body = fonts.add(bevy::prelude::Font::from_bytes(theme::BODY_TTF.to_vec()));
-    commands.insert_resource(mithril_bevy::UiCamera(camera));
+    // A camera of the library's own, drawing nothing but the library and
+    // after the world's camera has finished — egui included, which draws
+    // after the upscale, past where `bevy_ui`'s pass sits. On the world's
+    // camera every egui button lay over the library's cards. It draws to
+    // the world camera's target (`follow_world_target`).
+    let target = targets.get(camera).cloned().unwrap_or_default();
+    let overlay = commands
+        .spawn((
+            bevy::prelude::Camera2d,
+            bevy::prelude::Camera {
+                order: 100,
+                clear_color: bevy::camera::ClearColorConfig::None,
+                ..Default::default()
+            },
+            bevy::prelude::Msaa::Off,
+            target,
+            LibCamera,
+        ))
+        .id();
+    commands.insert_resource(mithril_bevy::UiCamera(overlay));
     commands.insert_resource(mithril_bevy::FontMap {
         regular: body.clone(),
         semibold: fonts.add(bevy::prelude::Font::from_bytes(theme::BRAND_TTF.to_vec())),
@@ -96,6 +125,32 @@ pub fn prepare_bevy(
         icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
     });
     *ready = true;
+}
+
+/// The library's own camera (`prepare_bevy`).
+#[cfg(feature = "ui-probe")]
+#[derive(bevy::prelude::Component)]
+pub struct LibCamera;
+
+/// The library's camera draws where the world's does: a capture moves the
+/// world's camera onto an image (`shot_harness`), and the library has to
+/// land in the same picture.
+#[cfg(feature = "ui-probe")]
+pub fn follow_world_target(
+    world: bevy::prelude::Query<
+        &bevy::camera::RenderTarget,
+        (
+            bevy::prelude::With<crate::components::FreeCamera>,
+            bevy::prelude::Without<LibCamera>,
+            bevy::prelude::Changed<bevy::camera::RenderTarget>,
+        ),
+    >,
+    mut lib: bevy::prelude::Query<&mut bevy::camera::RenderTarget, bevy::prelude::With<LibCamera>>,
+) {
+    let (Ok(world), Ok(mut lib)) = (world.single(), lib.single_mut()) else {
+        return;
+    };
+    *lib = world.clone();
 }
 
 /// The library's screens hold the input they are under, as egui's panels

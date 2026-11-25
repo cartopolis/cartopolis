@@ -274,6 +274,12 @@ pub struct ScenarioView {
     sheet: Sheet,
     /// The finger on the sheet's grabber (`motion::grabber`).
     sheet_drag: motion::SheetDrag,
+    /// The library draws the lens (`lib_scenario`): egui's system still
+    /// paints the mode's frame round the map and works out what is up,
+    /// where and for which place, and publishes it in
+    /// [`lib_view`](Self::lib_view) instead of drawing it.
+    pub lib: bool,
+    pub lib_view: LensView,
 }
 
 impl Default for ScenarioView {
@@ -284,6 +290,71 @@ impl Default for ScenarioView {
             error: None,
             sheet: Sheet::from_env(),
             sheet_drag: motion::SheetDrag::default(),
+            lib: false,
+            lib_view: LensView::default(),
+        }
+    }
+}
+
+/// What a tap on the lens asked for, from either edition: both go through
+/// [`ScenarioView::act`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum LensAct {
+    /// Show this much of the lens.
+    Sheet(Sheet),
+    /// Show this figure, `"<file>/<layer>"`.
+    Open(String),
+    /// The lens off.
+    Close,
+    /// Single a band out on the map, or let it go.
+    Band(usize),
+    /// Play the clock, or pause it.
+    Play,
+    /// Play at this many clock seconds a second.
+    Speed(f64),
+    /// Move the clock: whole years on a clock of years, else minutes.
+    Seek(f64),
+    /// Pick a track, or let it go.
+    Track(usize),
+}
+
+impl Open {
+    /// What a tap on the open lens's own controls asked for.
+    fn act(&mut self, a: &LensAct) {
+        match *a {
+            LensAct::Band(b) => self.focus = if self.focus == Some(b) { None } else { Some(b) },
+            LensAct::Play => {
+                if !self.playing && self.t >= self.play.scenario.clock.end {
+                    self.t = Clock::ZERO;
+                }
+                self.playing = !self.playing;
+            }
+            LensAct::Speed(s) => self.speed = s,
+            LensAct::Seek(v) => {
+                self.t = if self.play.scenario.clock.start_year.is_some() {
+                    Clock(v.round() as i64 * cartopolis_scenario::time::YEAR.0)
+                } else {
+                    Clock::from_minutes(v)
+                };
+                self.carry = 0.0;
+            }
+            LensAct::Track(i) => {
+                self.selected = if self.selected == Some(i) {
+                    None
+                } else {
+                    Some(i)
+                };
+            }
+            LensAct::Sheet(_) | LensAct::Open(_) | LensAct::Close => {}
+        }
+    }
+
+    /// Where the clock stands on its rail: whole years, or minutes.
+    fn rail_value(&self) -> f64 {
+        if self.play.scenario.clock.start_year.is_some() {
+            self.t.0.div_euclid(cartopolis_scenario::time::YEAR.0) as f64
+        } else {
+            self.t.minutes()
         }
     }
 }
@@ -361,6 +432,31 @@ impl ScenarioView {
         o.focus = None;
         o.peek = None;
         true
+    }
+
+    /// Do what a tap on the lens asked, in either edition. A new figure or
+    /// the lens off is a write of `DataLayers::scenario`, handed back for
+    /// the caller to make (`Some(None)` turns the lens off), so that a tap
+    /// that changes only the sheet leaves `DataLayers` unchanged.
+    #[must_use]
+    pub fn act(&mut self, a: LensAct, wanted: Option<&str>) -> Option<Option<String>> {
+        match a {
+            LensAct::Sheet(s) => {
+                self.sheet = s;
+                None
+            }
+            LensAct::Open(key) => (wanted != Some(key.as_str())).then_some(Some(key)),
+            LensAct::Close => {
+                self.sheet = Sheet::Hidden;
+                wanted.is_some().then_some(None)
+            }
+            other => {
+                if let Some(o) = self.open.as_mut() {
+                    o.act(&other);
+                }
+                None
+            }
+        }
     }
 
     fn key(&self) -> Option<&str> {
@@ -1057,6 +1153,9 @@ pub fn render_scenario_chrome(
     let strip = shown == Sheet::Hidden;
     if hidden || (strip && view.open.is_none()) {
         ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
+        if view.lib_view.geom.is_some() {
+            view.lib_view = LensView::default();
+        }
         if peeked.is_some() {
             ctx.request_repaint();
         }
@@ -1067,6 +1166,9 @@ pub fn render_scenario_chrome(
     if !strip && egui.map_dragged() {
         view.sheet = Sheet::Hidden;
         ctx.data_mut(|d| d.remove::<(egui::Rect, bool)>(egui::Id::new(RECT_ID)));
+        if view.lib_view.geom.is_some() {
+            view.lib_view = LensView::default();
+        }
         return;
     }
 
@@ -1078,6 +1180,48 @@ pub fn render_scenario_chrome(
     let frame = theme::overlay_frame();
     let inset = frame.inner_margin.sum().x + 2.0 * frame.stroke.width;
     let bottom = crate::systems::dock::reserved_bottom() + theme::OSD_MARGIN;
+
+    // The library's edition (`lib_scenario`): what is up, where, and for
+    // which place, handed over instead of drawn. Its rect for the pins is
+    // the slot the lens may fill, not the height it took.
+    if view.lib {
+        let part = match (strip, shown, view.open.is_some()) {
+            (true, ..) => LensPart::Strip,
+            (_, Sheet::Shelf, _) => LensPart::Shelf,
+            (_, Sheet::Figures, true) => LensPart::Figures,
+            (_, Sheet::Place, true) => LensPart::Place,
+            _ => LensPart::Waiting,
+        };
+        let geom = lib_geom(shape, strip, shown == Sheet::Shelf, viewport, bottom);
+        let tall = if strip {
+            STRIP_EST_PTS
+        } else {
+            geom.max_height
+        };
+        let rect = if geom.sheet {
+            egui::Rect::from_min_size(
+                egui::pos2(geom.left, viewport.y - geom.edge - tall),
+                egui::vec2(geom.width, tall),
+            )
+        } else {
+            egui::Rect::from_min_size(
+                egui::pos2(geom.left, geom.edge),
+                egui::vec2(geom.width, tall),
+            )
+        };
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(RECT_ID), (rect, geom.sheet)));
+        // The library's px are egui's points natively, the page's as DOM.
+        let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
+            egui.ui_scale()
+        } else {
+            1.0
+        };
+        let published = view.lens_view(part, layers.scenario.as_deref(), here, geom.scaled(k));
+        if view.lib_view != published {
+            view.lib_view = published;
+        }
+        return;
+    }
     if strip {
         let Some(o) = view.open.as_mut() else { return };
         let (area, width) = match shape {
@@ -1181,16 +1325,19 @@ pub fn render_scenario_chrome(
     // figure is one tap away rather than behind the disc again (asked
     // 2026-11-17: "hard to navigate"). A lens off the shelf opens on its
     // figures.
+    let mut asks = Vec::new();
     if let Some(key) = asked.open {
-        if layers.scenario.as_deref() != Some(key.as_str()) {
-            layers.scenario = Some(key);
-        }
+        asks.push(LensAct::Open(key));
     }
     if asked.close {
-        layers.scenario = None;
-        view.sheet = Sheet::Hidden;
+        asks.push(LensAct::Close);
     } else if let Some(s) = asked.sheet {
-        view.sheet = s;
+        asks.push(LensAct::Sheet(s));
+    }
+    for a in asks {
+        if let Some(wanted) = view.act(a, layers.scenario.as_deref()) {
+            layers.scenario = wanted;
+        }
     }
 }
 
@@ -1384,7 +1531,7 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
     }
     o.peek = peek;
     if let Some(t) = tapped {
-        o.focus = if o.focus == Some(t) { None } else { Some(t) };
+        o.act(&LensAct::Band(t));
     }
 }
 
@@ -2098,10 +2245,7 @@ fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mu
                 for s in shelf().iter().filter(|s| s.question.as_deref() == q) {
                     let is_open = open_file == Some(s.id);
                     if shelf_card(ui, s, is_open).clicked() {
-                        asked.open = Some(match open_key {
-                            Some(k) if is_open => k.to_owned(),
-                            _ => s.first.clone(),
-                        });
+                        asked.open = Some(shelf_opens(open_key, s, is_open));
                         asked.sheet = Some(Sheet::Figures);
                     }
                 }
@@ -2144,13 +2288,26 @@ fn shelf_card(ui: &mut egui::Ui, s: &Shelved, is_open: bool) -> egui::Response {
     theme::named(ui, resp, &s.name)
 }
 
-/// A lens on its way, or one that would not open, with the way out.
-fn waiting_body(ui: &mut egui::Ui, loading: bool, error: Option<&str>, asked: &mut Asked) {
-    let words = match (loading, error) {
+/// The figure a lens on the shelf opens at: the one it had, or its first.
+fn shelf_opens(open_key: Option<&str>, s: &Shelved, is_open: bool) -> String {
+    match open_key {
+        Some(k) if is_open => k.to_owned(),
+        _ => s.first.clone(),
+    }
+}
+
+/// What a lens on its way, or one that would not open, says.
+fn waiting_words(loading: bool, error: Option<&str>) -> String {
+    match (loading, error) {
         (_, Some(e)) => format!("Could not open this lens: {e}"),
         (true, _) => "Loading the areas…".to_owned(),
         _ => "Opening…".to_owned(),
-    };
+    }
+}
+
+/// A lens on its way, or one that would not open, with the way out.
+fn waiting_body(ui: &mut egui::Ui, loading: bool, error: Option<&str>, asked: &mut Asked) {
+    let words = waiting_words(loading, error);
     ui.horizontal(|ui| {
         let w = ui.available_width() - theme::close_button_size() - ui.spacing().item_spacing.x;
         left_sized(
@@ -2280,15 +2437,8 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
             egui::RichText::new(format!("{} · {what}", tr.id)).size(theme::SIZE_SUB),
         );
         if r.clicked() {
-            pick = Some(if selected { None } else { Some(tn.track) });
+            pick = Some(tn.track);
         }
-    }
-    if let Some(p) = pick {
-        o.selected = p;
-    }
-    if let Some(t) = tapped {
-        o.focus = if o.focus == Some(t) { None } else { Some(t) };
-        ui.ctx().request_repaint();
     }
     // The picked track: what its cone reaches, and when.
     if let Some(i) = o.selected {
@@ -2321,6 +2471,15 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
             ui,
             format!("The cone widens {:.0} km an hour.", tr.cone_km_per_h),
         );
+    }
+    // The taps last: the layer's areas above are borrowed from `o` until
+    // here, and a tap changes it.
+    if let Some(p) = pick {
+        o.act(&LensAct::Track(p));
+    }
+    if let Some(t) = tapped {
+        o.act(&LensAct::Band(t));
+        ui.ctx().request_repaint();
     }
 }
 
@@ -2384,10 +2543,7 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
             .on_hover_text(if o.playing { "Pause" } else { "Play" })
             .clicked()
         {
-            if !o.playing && o.t >= end {
-                o.t = Clock::ZERO;
-            }
-            o.playing = !o.playing;
+            o.act(&LensAct::Play);
         }
         ui.label(
             egui::RichText::new(clock.label(o.t))
@@ -2398,7 +2554,7 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for &(speed, word) in speeds(o).iter().rev() {
                 if theme::chip(ui, word, o.speed == speed).clicked() {
-                    o.speed = speed;
+                    o.act(&LensAct::Speed(speed));
                 }
             }
         });
@@ -2411,15 +2567,13 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
         let mut y = o.t.0.div_euclid(year);
         let slider = egui::Slider::new(&mut y, 0..=end.0.div_euclid(year)).show_value(false);
         if ui.add(slider).changed() {
-            o.t = Clock(y * year);
-            o.carry = 0.0;
+            o.act(&LensAct::Seek(y as f64));
         }
     } else {
         let mut minutes = o.t.minutes() as f32;
         let slider = egui::Slider::new(&mut minutes, 0.0..=end.minutes() as f32).show_value(false);
         if ui.add(slider).changed() {
-            o.t = Clock::from_minutes(f64::from(minutes));
-            o.carry = 0.0;
+            o.act(&LensAct::Seek(f64::from(minutes)));
         }
     }
     // Measured, then a model's: the forecast part of the rail hatched
@@ -2452,6 +2606,632 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
             dim(ui, clock.label(end));
         });
     });
+}
+
+// ---------------------------------------------------------------------------
+// The lens as the library draws it (`lib_scenario`)
+// ---------------------------------------------------------------------------
+
+/// What the key strip takes over the map, roughly: the pins' rect only.
+const STRIP_EST_PTS: f32 = 96.0;
+
+/// Where the library's lens stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LensGeom {
+    pub left: f32,
+    pub width: f32,
+    pub max_height: f32,
+    /// Along the bottom edge, `edge` above it; else a column hanging `edge`
+    /// below the top.
+    pub sheet: bool,
+    pub edge: f32,
+}
+
+impl LensGeom {
+    /// In the library's px: egui's points natively, `k` times them as DOM.
+    fn scaled(self, k: f32) -> Self {
+        LensGeom {
+            left: self.left * k,
+            width: self.width * k,
+            max_height: self.max_height * k,
+            sheet: self.sheet,
+            edge: self.edge * k,
+        }
+    }
+}
+
+/// Where the lens stands, in points: egui's own placement, the frame
+/// included.
+fn lib_geom(shape: Shape, strip: bool, shelf: bool, viewport: egui::Vec2, bottom: f32) -> LensGeom {
+    let top = crate::systems::dock::reserved_top();
+    let column_x = theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP;
+    let column_h = (viewport.y - top - bottom).max(BODY_MIN_PTS);
+    match (shape, strip) {
+        (Shape::Sheet, _) => {
+            let max_w = if strip { STRIP_MAX_W } else { SHEET_MAX_W };
+            let width = (viewport.x - 2.0 * theme::OSD_MARGIN).min(max_w).max(0.0);
+            let share = if shelf { SHELF_SHARE } else { SHEET_SHARE };
+            LensGeom {
+                left: ((viewport.x - width) / 2.0).max(0.0),
+                width,
+                max_height: (viewport.y * share - bottom).max(BODY_MIN_PTS + HEADER_PTS),
+                sheet: true,
+                edge: bottom,
+            }
+        }
+        (Shape::Column, true) => LensGeom {
+            left: column_x,
+            width: STRIP_MAX_W,
+            max_height: column_h,
+            sheet: false,
+            edge: top,
+        },
+        (Shape::Column, false) => LensGeom {
+            left: column_x,
+            width: COLUMN_W,
+            max_height: column_h,
+            sheet: false,
+            edge: top,
+        },
+    }
+}
+
+/// Which of the lens's surfaces is up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LensPart {
+    /// The key strip over the map, the sheet put away.
+    #[default]
+    Strip,
+    Figures,
+    Place,
+    Shelf,
+    /// On its way, or would not open.
+    Waiting,
+}
+
+/// A mode as a chip: what kind of truth the colours are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModeChip {
+    pub word: &'static str,
+    pub colour: egui::Color32,
+    /// An exercise: striped in egui's, outlined in the library's.
+    pub striped: bool,
+}
+
+fn mode_chip_of(mode: Mode) -> ModeChip {
+    let (colour, word) = mode_frame(mode);
+    ModeChip {
+        word,
+        colour,
+        striped: mode == Mode::Exercise,
+    }
+}
+
+/// The lens's header: its mode and its name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensHead {
+    pub mode: Option<ModeChip>,
+    pub name: String,
+}
+
+/// One band of a figure's scale.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensBand {
+    pub label: String,
+    pub colour: [u8; 3],
+}
+
+/// The open figure's key: its title, how real it is, its scale.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensKey {
+    /// The figure and its year.
+    pub title: String,
+    /// How real, per what, when.
+    pub honest: String,
+    pub bands: Vec<LensBand>,
+    /// The band the map singles out.
+    pub singled: Option<usize>,
+    /// It was picked (not only pointed at): "Show all" lets it go.
+    pub focus: Option<usize>,
+    /// The band of the place under the crosshair.
+    pub marker: Option<usize>,
+}
+
+/// The place under the crosshair, as a row that opens the place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensHere {
+    pub name: String,
+    pub value: String,
+    pub below: String,
+    pub edge: Option<[u8; 3]>,
+}
+
+/// The clock's head: play, where it stands, the speeds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensClock {
+    pub playing: bool,
+    pub label: String,
+    pub speeds: Vec<(f64, &'static str)>,
+    pub speed: f64,
+}
+
+/// The clock's rail: its length, the forecast's share of it, its ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensRail {
+    pub max: f64,
+    /// Where the forecast starts, as a share of the rail.
+    pub forecast: Option<f32>,
+    pub start: String,
+    pub end: String,
+    pub forecast_from: Option<String>,
+}
+
+/// One figure to pick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensFigure {
+    /// A heading over it: the first of its group.
+    pub group: Option<String>,
+    pub on: bool,
+    pub label: String,
+    pub ramp: Vec<[u8; 3]>,
+    pub value: Option<String>,
+    pub band: Option<usize>,
+    pub key: String,
+}
+
+/// One band of a derived state, with how many areas are in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensCount {
+    pub label: String,
+    pub colour: [u8; 3],
+    pub count: usize,
+    pub on: bool,
+}
+
+/// One track to pick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensTrack {
+    pub label: String,
+    pub selected: bool,
+    pub index: usize,
+}
+
+/// The picked track: what its cone reaches, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensPicked {
+    pub line: String,
+    pub reach: Vec<(String, String)>,
+    pub cone: String,
+}
+
+/// Under the figures: a derived state's bands, the attribution, what is next
+/// to be reached, the tracks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensScale {
+    pub counted: Option<String>,
+    pub counts: Vec<LensCount>,
+    pub attribution: Option<String>,
+    pub next: Vec<(String, String)>,
+    pub has_tracks: bool,
+    pub tracks: Vec<LensTrack>,
+    pub picked: Option<LensPicked>,
+}
+
+/// One row of the place's figures.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensPlaceRow {
+    pub on: bool,
+    pub label: String,
+    pub value: String,
+    pub context: String,
+    pub key: String,
+}
+
+/// The place under the crosshair, every figure of the lens for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensPlace {
+    pub name: String,
+    pub found: bool,
+    pub about: String,
+    pub compare: &'static str,
+    pub rows: Vec<LensPlaceRow>,
+    pub attribution: String,
+}
+
+/// One lens on the shelf.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensShelved {
+    pub name: String,
+    pub summary: String,
+    pub mode: ModeChip,
+    pub figures: String,
+    pub is_open: bool,
+    /// The figure it opens at.
+    pub opens: String,
+}
+
+/// The lenses there are, under the question each answers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensShelf {
+    /// A lens is open: the views' control is shown.
+    pub tabs: bool,
+    pub groups: Vec<(String, Vec<LensShelved>)>,
+}
+
+/// The lens as egui's system works it out for the library's edition: only
+/// the fields of the part that is up are filled.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensView {
+    /// Where it stands; `None` while nothing of it is up.
+    pub geom: Option<LensGeom>,
+    pub part: LensPart,
+    pub head: LensHead,
+    pub key: LensKey,
+    pub here: Option<LensHere>,
+    pub clock: Option<LensClock>,
+    pub rail: Option<LensRail>,
+    /// Where the clock stands on the rail.
+    pub t: f64,
+    pub figures: Vec<LensFigure>,
+    pub scale: LensScale,
+    pub sources: Vec<String>,
+    pub place: LensPlace,
+    pub shelf: LensShelf,
+    pub waiting: String,
+}
+
+impl ScenarioView {
+    /// The lens as the library draws it, worked out by the same helpers
+    /// egui's bodies call.
+    fn lens_view(
+        &self,
+        part: LensPart,
+        open_key: Option<&str>,
+        here: Option<LonLat>,
+        geom: LensGeom,
+    ) -> LensView {
+        let mut v = LensView {
+            geom: Some(geom),
+            part,
+            ..LensView::default()
+        };
+        match (part, self.open.as_ref()) {
+            (LensPart::Shelf, _) => v.shelf = shelf_of(open_key),
+            (LensPart::Waiting, _) | (_, None) => {
+                v.part = LensPart::Waiting;
+                v.waiting = waiting_words(
+                    self.loading.is_some(),
+                    self.error.as_ref().map(|e| e.1.as_str()),
+                );
+            }
+            (part, Some(o)) => {
+                let meta = &o.play.scenario.meta;
+                v.head = LensHead {
+                    mode: Some(mode_chip_of(meta.mode)),
+                    name: meta.name.clone(),
+                };
+                v.key = key_of(o, here);
+                if part == LensPart::Figures {
+                    v.here = here_of(o, here);
+                    if o.play.scenario.clock.end > Clock::ZERO {
+                        let (clock, rail) = clock_of(o);
+                        v.clock = Some(clock);
+                        v.rail = Some(rail);
+                        v.t = o.rail_value();
+                    }
+                    v.figures = figures_of(o, here);
+                    v.scale = scale_of(o);
+                    v.sources = meta.sources.clone();
+                }
+                if part == LensPart::Place {
+                    v.place = place_of(o, here);
+                }
+            }
+        }
+        v
+    }
+}
+
+/// The open figure's key, as `key_body` and `key_strip` set it.
+fn key_of(o: &Open, here: Option<LonLat>) -> LensKey {
+    let layer = &o.play.scenario.region_states[o.layer];
+    let mut title = layer.label.clone();
+    let mut per = o
+        .play
+        .layer_areas(o.layer)
+        .map_or("nothing to show at this height".to_owned(), |s| {
+            format!("per {}", s.rung.label())
+        });
+    if let Some(w) = when_label(o) {
+        title = format!("{title} · {w}");
+        per = format!("{per} · {w}");
+    }
+    LensKey {
+        title,
+        honest: format!("{} · {per}", honest(&o.play.scenario.meta)),
+        bands: layer
+            .states
+            .iter()
+            .map(|s| LensBand {
+                label: s.label.clone(),
+                colour: s.colour.0,
+            })
+            .collect(),
+        singled: o.singled(),
+        focus: o.focus,
+        marker: here.and_then(|p| o.band_at(o.layer, p)),
+    }
+}
+
+/// The place under the crosshair and the open figure's value there, as
+/// `here_row` draws it.
+fn here_of(o: &Open, here: Option<LonLat>) -> Option<LensHere> {
+    let (name, value) = here.and_then(|p| value_at(o, o.layer, p))?;
+    let rung = o.play.layer_areas(o.layer).map_or("", |s| s.rung.label());
+    let below = match here.and_then(|p| range_at(o, o.layer, p)) {
+        Some(r) => format!("{rung} · {r}"),
+        None => format!("{rung} · every figure here"),
+    };
+    Some(LensHere {
+        name: name.to_owned(),
+        value: value.unwrap_or_else(|| "not published".to_owned()),
+        below,
+        edge: here
+            .and_then(|q| o.band_at(o.layer, q))
+            .map(|b| o.play.scenario.region_states[o.layer].states[b].colour.0),
+    })
+}
+
+/// The clock's head and rail, as `clock_bar` draws them.
+fn clock_of(o: &Open) -> (LensClock, LensRail) {
+    let clock = o.play.scenario.clock;
+    let end = clock.end;
+    let forecast = o.play.scenario.forecast.filter(|&f| f < end);
+    let max = if clock.start_year.is_some() {
+        end.0.div_euclid(cartopolis_scenario::time::YEAR.0) as f64
+    } else {
+        end.minutes()
+    };
+    (
+        LensClock {
+            playing: o.playing,
+            label: clock.label(o.t),
+            speeds: speeds(o).to_vec(),
+            speed: o.speed,
+        },
+        LensRail {
+            max,
+            forecast: forecast.map(|f| f.0.max(0) as f32 / end.0.max(1) as f32),
+            start: clock.label(Clock::ZERO),
+            end: clock.label(end),
+            forecast_from: forecast.map(|f| format!("forecast from {}", clock.label(f))),
+        },
+    )
+}
+
+/// Every figure of the lens to pick one from, as `figures_body` lists them.
+fn figures_of(o: &Open, here: Option<LonLat>) -> Vec<LensFigure> {
+    let file = file_of(o);
+    let mut group: Option<&str> = None;
+    let mut out = Vec::new();
+    for (i, layer) in o.play.scenario.region_states.iter().enumerate() {
+        let mut heading = None;
+        if layer.group.as_deref() != group {
+            group = layer.group.as_deref();
+            heading = group.map(str::to_owned);
+        }
+        out.push(LensFigure {
+            group: heading,
+            on: i == o.layer,
+            label: layer.label.clone(),
+            ramp: layer.states.iter().map(|s| s.colour.0).collect(),
+            value: here.and_then(|p| value_at(o, i, p)).and_then(|(_, v)| v),
+            band: here.and_then(|p| o.band_at(i, p)),
+            key: format!("{file}/{}", layer.id),
+        });
+    }
+    out
+}
+
+/// Under the figures, as `scale_card` draws it.
+fn scale_of(o: &Open) -> LensScale {
+    let clock = o.play.scenario.clock;
+    let li = o.layer;
+    let layer = &o.play.scenario.region_states[li];
+    let set = o.play.layer_areas(li);
+    let counted = layer.field.is_none();
+    let places = o
+        .frame
+        .regions
+        .get(li)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut scale = LensScale {
+        counted: counted.then(|| format!("Areas · {}", layer.label)),
+        attribution: set.map(|s| s.attribution.clone()),
+        has_tracks: !o.play.scenario.tracks.is_empty(),
+        ..LensScale::default()
+    };
+    if counted {
+        scale.counts = layer
+            .states
+            .iter()
+            .enumerate()
+            .map(|(si, s)| LensCount {
+                label: s.label.clone(),
+                colour: s.colour.0,
+                count: places.iter().filter(|p| p.state == si).count(),
+                on: o.focus == Some(si),
+            })
+            .collect();
+    }
+    if let Some(set) = set {
+        let mut next: Vec<(Clock, &str)> = places
+            .iter()
+            .filter(|p| layer.states[p.state].within.is_some())
+            .filter_map(|p| Some((p.eta?, set.areas[p.area?].name.as_str())))
+            .collect();
+        next.sort();
+        scale.next = next
+            .iter()
+            .take(6)
+            .map(|(eta, name)| {
+                let mins = eta.minus(o.t).minutes().round().max(0.0);
+                ((*name).to_owned(), format!("{mins:.0} min"))
+            })
+            .collect();
+    }
+    scale.tracks = o
+        .frame
+        .tracks
+        .iter()
+        .map(|tn| {
+            let tr = &o.play.scenario.tracks[tn.track];
+            let what = match (tn.moving, tr.count) {
+                (Some(n), Some(c)) => format!("{n} of {c}"),
+                (Some(_), None) => "moving".to_owned(),
+                (None, _) if o.t < tr.t0 => format!("from {}", clock.label(tr.t0)),
+                (None, _) => "ended".to_owned(),
+            };
+            LensTrack {
+                label: format!("{} · {what}", tr.id),
+                selected: o.selected == Some(tn.track),
+                index: tn.track,
+            }
+        })
+        .collect();
+    scale.picked = o.selected.map(|i| {
+        let tr = &o.play.scenario.tracks[i];
+        let reach = match set {
+            Some(set) => o
+                .play
+                .cone_reaches(i, li, o.t, Clock(3 * 3600))
+                .iter()
+                .take(5)
+                .map(|(a, t)| (set.areas[*a].name.clone(), format!("~{}", clock.label(*t))))
+                .collect(),
+            None => Vec::new(),
+        };
+        LensPicked {
+            line: format!(
+                "{} · from {} · {:.0} km/h",
+                tr.id,
+                clock.label(tr.t0),
+                tr.speed_kmh
+            ),
+            reach,
+            cone: format!("The cone widens {:.0} km an hour.", tr.cone_km_per_h),
+        }
+    });
+    scale
+}
+
+/// The place under the crosshair with every figure of the lens, as
+/// `place_body` lists them.
+fn place_of(o: &Open, here: Option<LonLat>) -> LensPlace {
+    let found = here.and_then(|p| {
+        let set = o.play.layer_areas(o.layer)?;
+        Some((p, set, set.area_at(p)?))
+    });
+    let Some((p, set, a)) = found else {
+        return LensPlace {
+            name: "No area here".to_owned(),
+            ..LensPlace::default()
+        };
+    };
+    let mut about = vec![set.rung.label().to_owned()];
+    if set.rung != Rung::Municipality {
+        if let Some(town) = o
+            .play
+            .areas
+            .iter()
+            .find(|s| s.rung == Rung::Municipality)
+            .and_then(|s| Some(s.areas[s.area_at(p)?].name.clone()))
+        {
+            about.push(town);
+        }
+    }
+    if let Some(people) = set.field("people").and_then(|f| set.value(a, f)) {
+        about.push(format!("{} people", figure(people, "")));
+    }
+    let file = file_of(o);
+    let rows = o
+        .play
+        .scenario
+        .region_states
+        .iter()
+        .enumerate()
+        .map(|(i, layer)| {
+            let town = value_on_rung(o, i, p, Rung::Municipality);
+            let land = value_on_rung(o, i, p, Rung::Country);
+            LensPlaceRow {
+                on: i == o.layer,
+                label: layer.label.clone(),
+                value: value_at(o, i, p)
+                    .and_then(|(_, v)| v)
+                    .unwrap_or_else(|| "–".into()),
+                context: match (set.rung >= Rung::Municipality, town, land) {
+                    (true, Some(t), Some(l)) => format!("{t} · {l}"),
+                    (_, _, Some(l)) => l,
+                    _ => String::new(),
+                },
+                key: format!("{file}/{}", layer.id),
+            }
+        })
+        .collect();
+    LensPlace {
+        name: set.areas[a].name.clone(),
+        found: true,
+        about: about.join(" · "),
+        compare: if set.rung >= Rung::Municipality {
+            "town · country"
+        } else {
+            "country"
+        },
+        rows,
+        attribution: set.attribution.clone(),
+    }
+}
+
+/// The shelf, as `shelf_body` groups it.
+fn shelf_of(open_key: Option<&str>) -> LensShelf {
+    let open_file = open_key.and_then(|k| k.split_once('/')).map(|(f, _)| f);
+    let mut questions: Vec<Option<&str>> = Vec::new();
+    for s in shelf() {
+        if !questions.contains(&s.question.as_deref()) {
+            questions.push(s.question.as_deref());
+        }
+    }
+    let groups = questions
+        .into_iter()
+        .map(|q| {
+            let cards = shelf()
+                .iter()
+                .filter(|s| s.question.as_deref() == q)
+                .map(|s| {
+                    let is_open = open_file == Some(s.id);
+                    let n = if s.figures == 1 {
+                        "1 figure".to_owned()
+                    } else {
+                        format!("{} figures", s.figures)
+                    };
+                    LensShelved {
+                        name: s.name.clone(),
+                        summary: s.summary.clone(),
+                        mode: mode_chip_of(s.mode),
+                        figures: if is_open { format!("{n} · open") } else { n },
+                        is_open,
+                        opens: shelf_opens(open_key, s, is_open),
+                    }
+                })
+                .collect();
+            (q.unwrap_or("More").to_owned(), cards)
+        })
+        .collect();
+    LensShelf {
+        tabs: open_key.is_some(),
+        groups,
+    }
 }
 
 #[cfg(test)]

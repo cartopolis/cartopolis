@@ -11,7 +11,9 @@
 //! Drawn inside the Appearance panel (`ui::render_avatar_chooser`), whose
 //! Apply saves the draft. The names here are the pack's
 //! (`crates/human/src/bin/human-pack.rs` lists what it carries); a name the
-//! pack lacks is skipped by the builder.
+//! pack lacks is skipped by the builder. The component library draws the
+//! same designer (`lib_avatar`) from the tables and `DesignerState` methods
+//! here, so a change to what it offers goes here, once.
 
 use crate::systems::theme;
 use crate::systems::user_store::HumanLook;
@@ -995,13 +997,13 @@ fn similar_face(dice: &mut Dice, look: &mut HumanLook) {
 
 /// One of `list` worn as an extra, or none: the extras hold at most one from
 /// each list (a beard, glasses).
-fn extra_of<'a>(look: &HumanLook, list: &[(&'a str, &'a str)]) -> Option<&'a str> {
+pub(crate) fn extra_of<'a>(look: &HumanLook, list: &[(&'a str, &'a str)]) -> Option<&'a str> {
     list.iter()
         .map(|(n, _)| *n)
         .find(|n| look.extras.iter().any(|e| e == n))
 }
 
-fn set_extra(look: &mut HumanLook, list: &[(&str, &str)], name: Option<&str>) {
+pub(crate) fn set_extra(look: &mut HumanLook, list: &[(&str, &str)], name: Option<&str>) {
     look.extras.retain(|e| !list.iter().any(|(n, _)| n == e));
     if let Some(n) = name {
         look.extras.push(n.into());
@@ -1009,7 +1011,7 @@ fn set_extra(look: &mut HumanLook, list: &[(&str, &str)], name: Option<&str>) {
 }
 
 /// Put on a whole outfit (or a dress), taking off any separates.
-fn wear_outfit(look: &mut HumanLook, name: &str) {
+pub(crate) fn wear_outfit(look: &mut HumanLook, name: &str) {
     look.outfit = name.into();
     set_extra(look, &TOPS, None);
     set_extra(look, &BOTTOMS, None);
@@ -1017,7 +1019,7 @@ fn wear_outfit(look: &mut HumanLook, name: &str) {
 
 /// Change into separates: no outfit, and a top and a bottom — the first of
 /// each unless some are worn already.
-fn wear_separates(look: &mut HumanLook) {
+pub(crate) fn wear_separates(look: &mut HumanLook) {
     look.outfit.clear();
     if extra_of(look, &TOPS).is_none() {
         set_extra(look, &TOPS, Some(TOPS[0].0));
@@ -1081,16 +1083,7 @@ pub fn designer(
     view_row(ui, state);
     start_from(ui, state, look);
     ui.add_space(8.0);
-    theme::segmented(
-        ui,
-        &mut state.tab,
-        &[
-            (DesignerTab::Body, "Body"),
-            (DesignerTab::Face, "Face"),
-            (DesignerTab::SkinAndHair, "Skin & hair"),
-            (DesignerTab::Clothes, "Clothes"),
-        ],
-    );
+    theme::segmented(ui, &mut state.tab, &TABS);
     ui.add_space(8.0);
     match state.tab {
         DesignerTab::Body => body(ui, &mut state.body, look),
@@ -1098,8 +1091,22 @@ pub fn designer(
         DesignerTab::SkinAndHair => skin_and_hair(ui, look),
         DesignerTab::Clothes => clothes(ui, look),
     }
-    record(state, look, ui.input(|i| i.pointer.any_down()));
+    state.record(look, ui.input(|i| i.pointer.any_down()));
     *look != before
+}
+
+/// The width of the library's panel (`lib_avatar`) and of the empty strip
+/// egui keeps under it, in points.
+pub const LIB_PANEL_WIDTH: f32 = 320.0;
+
+/// Apply: the draft becomes the saved appearance, which
+/// `human_avatar::rebuild_on_look_change` watches. Both editions' Apply.
+pub fn apply_draft(
+    chooser: &crate::resources::AvatarChooserState,
+    store: &mut crate::systems::user_store::UserStore,
+) {
+    store.data.appearance = chooser.draft.clone();
+    store.dirty = true;
 }
 
 /// Most undo steps kept.
@@ -1123,6 +1130,271 @@ fn record(state: &mut DesignerState, look: &HumanLook, dragging: bool) {
     state.settled = Some(look.clone());
 }
 
+/// What the designer does, for both its editions: egui's (`designer`) and
+/// the component library's (`lib_avatar`), so the two cannot drift apart.
+impl DesignerState {
+    pub fn can_undo(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.future.is_empty()
+    }
+
+    pub fn undo(&mut self, look: &mut HumanLook) {
+        if let Some(prev) = self.history.pop() {
+            self.future.push(std::mem::replace(look, prev));
+            self.settled = Some(look.clone());
+        }
+    }
+
+    pub fn redo(&mut self, look: &mut HumanLook) {
+        if let Some(next) = self.future.pop() {
+            self.history.push(std::mem::replace(look, next));
+            self.settled = Some(look.clone());
+        }
+    }
+
+    /// Back to the look last applied: a step like any other, so it can
+    /// itself be undone.
+    pub fn back_to_saved(&mut self, look: &mut HumanLook, saved: &HumanLook) {
+        if look != saved {
+            self.history.push(std::mem::replace(look, saved.clone()));
+            self.future.clear();
+            self.settled = Some(look.clone());
+        }
+    }
+
+    /// "Surprise me": a whole person from the dice. `time` stirs them.
+    pub fn surprise(&mut self, look: &mut HumanLook, time: f64) {
+        *look = surprise(&mut Dice { state: self, time });
+    }
+
+    /// "Another face".
+    pub fn another_face(&mut self, look: &mut HumanLook, time: f64) {
+        another_face(&mut Dice { state: self, time }, look);
+    }
+
+    /// "Similar face".
+    pub fn similar_face(&mut self, look: &mut HumanLook, time: f64) {
+        similar_face(&mut Dice { state: self, time }, look);
+    }
+
+    /// Keep the undo history (`record`): call once a frame with whether a
+    /// pointer is down.
+    pub fn record(&mut self, look: &HumanLook, dragging: bool) {
+        record(self, look, dragging);
+    }
+}
+
+/// The designer's four tabs, as both editions label them.
+pub(crate) const TABS: [(DesignerTab, &str); 4] = [
+    (DesignerTab::Body, "Body"),
+    (DesignerTab::Face, "Face"),
+    (DesignerTab::SkinAndHair, "Skin & hair"),
+    (DesignerTab::Clothes, "Clothes"),
+];
+
+/// The sides of the avatar to see.
+pub(crate) const VIEWS: [(DesignerView, &str); 3] = [
+    (DesignerView::Front, "Front"),
+    (DesignerView::Side, "Side"),
+    (DesignerView::Back, "Back"),
+];
+
+/// The face parts, in the Face tab's order.
+pub(crate) const FACE_PARTS: [(FacePart, &str); 6] = [
+    (FacePart::Head, "Head"),
+    (FacePart::Eyes, "Eyes"),
+    (FacePart::Nose, "Nose"),
+    (FacePart::Mouth, "Mouth"),
+    (FacePart::Jaw, "Jaw"),
+    (FacePart::Ears, "Ears"),
+];
+
+/// The body parts under "Body parts".
+pub(crate) const BODY_PARTS: [(BodyPart, &str); 5] = [
+    (BodyPart::Torso, "Torso"),
+    (BodyPart::Hips, "Hips"),
+    (BodyPart::Neck, "Neck"),
+    (BodyPart::Arms, "Arms"),
+    (BodyPart::Legs, "Legs"),
+];
+
+/// The Body tab's quick picks, each setting one or two sliders.
+pub(crate) const SHAPE_PICKS: [(&str, [u8; 1]); 3] = [
+    ("Feminine", [0]),
+    ("In between", [50]),
+    ("Masculine", [100]),
+];
+pub(crate) const AGE_PICKS: [(&str, [u8; 1]); 7] = [
+    ("20s", [24]),
+    ("30s", [34]),
+    ("40s", [44]),
+    ("50s", [54]),
+    ("60s", [64]),
+    ("70s", [74]),
+    ("80s", [84]),
+];
+/// Weight and muscle together: a build is both.
+pub(crate) const BUILD_PICKS: [(&str, [u8; 2]); 5] = [
+    ("Slim", [25, 40]),
+    ("Average", [50, 50]),
+    ("Athletic", [40, 85]),
+    ("Sturdy", [70, 70]),
+    ("Heavy", [90, 40]),
+];
+pub(crate) const HEIGHT_PICKS: [(&str, [u8; 1]); 3] =
+    [("Short", [20]), ("Average", [50]), ("Tall", [80])];
+
+/// One of the body's whole-body sliders under "Fine-tune".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Macro {
+    BodyShape,
+    Age,
+    Height,
+    Weight,
+    Muscle,
+    Proportions,
+    Chest,
+}
+
+impl Macro {
+    pub(crate) fn get(self, look: &HumanLook) -> u8 {
+        match self {
+            Macro::BodyShape => look.body_shape,
+            Macro::Age => look.age,
+            Macro::Height => look.height,
+            Macro::Weight => look.weight,
+            Macro::Muscle => look.muscle,
+            Macro::Proportions => look.proportions,
+            Macro::Chest => look.chest,
+        }
+    }
+
+    pub(crate) fn get_mut(self, look: &mut HumanLook) -> &mut u8 {
+        match self {
+            Macro::BodyShape => &mut look.body_shape,
+            Macro::Age => &mut look.age,
+            Macro::Height => &mut look.height,
+            Macro::Weight => &mut look.weight,
+            Macro::Muscle => &mut look.muscle,
+            Macro::Proportions => &mut look.proportions,
+            Macro::Chest => &mut look.chest,
+        }
+    }
+}
+
+/// A "Fine-tune" slider: which, its label, its range, its five words (or
+/// the number, for the age) and what its ends mean.
+pub(crate) struct MacroSlider {
+    pub(crate) which: Macro,
+    pub(crate) label: &'static str,
+    pub(crate) range: (u8, u8),
+    pub(crate) words: Option<[&'static str; 5]>,
+    pub(crate) ends: (&'static str, &'static str),
+}
+
+impl MacroSlider {
+    /// The word for where it sits.
+    pub(crate) fn says(&self, v: u8) -> String {
+        match self.words {
+            Some(words) => word(v, words),
+            None => v.to_string(),
+        }
+    }
+}
+
+pub(crate) const MACROS: [MacroSlider; 7] = [
+    MacroSlider {
+        which: Macro::BodyShape,
+        label: "Body shape",
+        range: (0, 100),
+        words: Some([
+            "feminine",
+            "more feminine",
+            "in between",
+            "more masculine",
+            "masculine",
+        ]),
+        ends: ("Feminine", "Masculine"),
+    },
+    MacroSlider {
+        which: Macro::Age,
+        label: "Age",
+        range: (18, 90),
+        words: None,
+        ends: ("18", "90"),
+    },
+    MacroSlider {
+        which: Macro::Height,
+        label: "Height",
+        range: (0, 100),
+        words: Some(["short", "shorter", "average", "taller", "tall"]),
+        ends: ("Short", "Tall"),
+    },
+    MacroSlider {
+        which: Macro::Weight,
+        label: "Weight",
+        range: (0, 100),
+        words: Some(["slim", "slimmer", "average", "heavier", "heavy"]),
+        ends: ("Slim", "Heavy"),
+    },
+    MacroSlider {
+        which: Macro::Muscle,
+        label: "Muscle",
+        range: (0, 100),
+        words: Some(["soft", "softer", "average", "toned", "muscular"]),
+        ends: ("Soft", "Muscular"),
+    },
+    MacroSlider {
+        which: Macro::Proportions,
+        label: "Proportions",
+        range: (0, 100),
+        words: Some(["unusual", "less usual", "average", "classic", "classic"]),
+        ends: ("Unusual", "Classic"),
+    },
+    MacroSlider {
+        which: Macro::Chest,
+        label: "Chest",
+        range: (0, 100),
+        words: Some(["small", "smaller", "average", "fuller", "full"]),
+        ends: ("Small", "Full"),
+    },
+];
+
+/// The word beside a face or body-part slider.
+pub(crate) fn shape_says(v: i32, ends: (&str, &str)) -> String {
+    match v {
+        0 => "average".to_string(),
+        v if v > 0 => format!("{} {}", ends.1.to_lowercase(), v),
+        v => format!("{} {}", ends.0.to_lowercase(), -v),
+    }
+}
+
+/// The word beside the skin's tone slider.
+pub(crate) fn tone_says(tone: i32) -> String {
+    match tone {
+        0 => "as painted".to_string(),
+        t if t > 0 => format!("lighter {t}"),
+        t => format!("darker {}", -t),
+    }
+}
+
+/// Whether any body-part control has moved ("Average body parts" shows).
+pub(crate) fn body_parts_moved(look: &HumanLook) -> bool {
+    BODY.iter()
+        .flat_map(|(_, s)| s.iter())
+        .any(|s| look.face_value(s.0) != 0)
+}
+
+/// "Average body parts".
+pub(crate) fn average_body_parts(look: &mut HumanLook) {
+    for s in BODY.iter().flat_map(|(_, s)| s.iter()) {
+        look.set_face(s.0, 0);
+    }
+}
+
 /// Undo, redo and back to the saved look.
 fn history_row(
     ui: &mut egui::Ui,
@@ -1132,35 +1404,22 @@ fn history_row(
 ) {
     ui.horizontal_wrapped(|ui| {
         if ui
-            .add_enabled_ui(!state.history.is_empty(), |ui| {
-                theme::ghost_button(ui, "", "Undo")
-            })
+            .add_enabled_ui(state.can_undo(), |ui| theme::ghost_button(ui, "", "Undo"))
             .inner
             .clicked()
         {
-            if let Some(prev) = state.history.pop() {
-                state.future.push(std::mem::replace(look, prev));
-                state.settled = Some(look.clone());
-            }
+            state.undo(look);
         }
         if ui
-            .add_enabled_ui(!state.future.is_empty(), |ui| {
-                theme::ghost_button(ui, "", "Redo")
-            })
+            .add_enabled_ui(state.can_redo(), |ui| theme::ghost_button(ui, "", "Redo"))
             .inner
             .clicked()
         {
-            if let Some(next) = state.future.pop() {
-                state.history.push(std::mem::replace(look, next));
-                state.settled = Some(look.clone());
-            }
+            state.redo(look);
         }
         if let Some(saved) = saved.filter(|s| *s != look) {
             if theme::ghost_button(ui, "", "Back to saved").clicked() {
-                // A step like any other, so it can itself be undone.
-                state.history.push(std::mem::replace(look, saved.clone()));
-                state.future.clear();
-                state.settled = Some(look.clone());
+                state.back_to_saved(look, saved);
             }
         }
     });
@@ -1170,11 +1429,7 @@ fn history_row(
 fn view_row(ui: &mut egui::Ui, state: &mut DesignerState) {
     ui.horizontal_wrapped(|ui| {
         ui.label("View");
-        for (v, label) in [
-            (DesignerView::Front, "Front"),
-            (DesignerView::Side, "Side"),
-            (DesignerView::Back, "Back"),
-        ] {
+        for (v, label) in VIEWS {
             if theme::chip(ui, label, state.view == v).clicked() {
                 state.view = v;
             }
@@ -1196,11 +1451,7 @@ impl DesignerState {
 fn shape_sliders(ui: &mut egui::Ui, sliders: &[FaceSlider], look: &mut HumanLook) {
     for FaceSlider(modifier, label, ends, one_sided) in sliders {
         let mut v = i32::from(look.face_value(modifier));
-        let says = match v {
-            0 => "average".to_string(),
-            v if v > 0 => format!("{} {}", ends.1.to_lowercase(), v),
-            v => format!("{} {}", ends.0.to_lowercase(), -v),
-        };
+        let says = shape_says(v, *ends);
         let lo = if *one_sided { 0 } else { -100 };
         header(ui, label, says);
         ui.spacing_mut().slider_width = ui.available_width();
@@ -1226,7 +1477,7 @@ fn start_from(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook
             }
         }
         if theme::chip(ui, "Surprise me", false).clicked() {
-            *look = surprise(&mut Dice { state, time });
+            state.surprise(look, time);
         }
     });
     theme::note(ui, "Then change anything below.");
@@ -1256,49 +1507,15 @@ fn picks<const N: usize>(
 }
 
 fn body(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
-    picks(
-        ui,
-        "Body shape",
-        &[
-            ("Feminine", [0]),
-            ("In between", [50]),
-            ("Masculine", [100]),
-        ],
-        [&mut look.body_shape],
-    );
-    picks(
-        ui,
-        "Age",
-        &[
-            ("20s", [24]),
-            ("30s", [34]),
-            ("40s", [44]),
-            ("50s", [54]),
-            ("60s", [64]),
-            ("70s", [74]),
-            ("80s", [84]),
-        ],
-        [&mut look.age],
-    );
-    // Weight and muscle together: a build is both.
+    picks(ui, "Body shape", &SHAPE_PICKS, [&mut look.body_shape]);
+    picks(ui, "Age", &AGE_PICKS, [&mut look.age]);
     picks(
         ui,
         "Build",
-        &[
-            ("Slim", [25, 40]),
-            ("Average", [50, 50]),
-            ("Athletic", [40, 85]),
-            ("Sturdy", [70, 70]),
-            ("Heavy", [90, 40]),
-        ],
+        &BUILD_PICKS,
         [&mut look.weight, &mut look.muscle],
     );
-    picks(
-        ui,
-        "Height",
-        &[("Short", [20]), ("Average", [50]), ("Tall", [80])],
-        [&mut look.height],
-    );
+    picks(ui, "Height", &HEIGHT_PICKS, [&mut look.height]);
     egui::CollapsingHeader::new("Fine-tune")
         .id_salt("avatar_body_fine_tune")
         .show(ui, |ui| body_sliders(ui, look));
@@ -1309,13 +1526,7 @@ fn body(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
 
 fn body_parts(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
     ui.horizontal_wrapped(|ui| {
-        for (p, label) in [
-            (BodyPart::Torso, "Torso"),
-            (BodyPart::Hips, "Hips"),
-            (BodyPart::Neck, "Neck"),
-            (BodyPart::Arms, "Arms"),
-            (BodyPart::Legs, "Legs"),
-        ] {
+        for (p, label) in BODY_PARTS {
             if theme::chip(ui, label, *part == p).clicked() {
                 *part = p;
             }
@@ -1325,93 +1536,23 @@ fn body_parts(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
     if let Some((_, sliders)) = BODY.iter().find(|(p, _)| p == part) {
         shape_sliders(ui, sliders, look);
     }
-    let moved = BODY
-        .iter()
-        .flat_map(|(_, s)| s.iter())
-        .any(|s| look.face_value(s.0) != 0);
-    if moved && theme::action_button(ui, "Average body parts").clicked() {
-        for s in BODY.iter().flat_map(|(_, s)| s.iter()) {
-            look.set_face(s.0, 0);
-        }
+    if body_parts_moved(look) && theme::action_button(ui, "Average body parts").clicked() {
+        average_body_parts(look);
     }
 }
 
 fn body_sliders(ui: &mut egui::Ui, look: &mut HumanLook) {
-    let shape = look.body_shape;
-    slider(
-        ui,
-        "Body shape",
-        &mut look.body_shape,
-        0..=100,
-        word(
-            shape,
-            [
-                "feminine",
-                "more feminine",
-                "in between",
-                "more masculine",
-                "masculine",
-            ],
-        ),
-        ("Feminine", "Masculine"),
-    );
-    let age = look.age;
-    slider(
-        ui,
-        "Age",
-        &mut look.age,
-        18..=90,
-        age.to_string(),
-        ("18", "90"),
-    );
-    let v = look.height;
-    slider(
-        ui,
-        "Height",
-        &mut look.height,
-        0..=100,
-        word(v, ["short", "shorter", "average", "taller", "tall"]),
-        ("Short", "Tall"),
-    );
-    let v = look.weight;
-    slider(
-        ui,
-        "Weight",
-        &mut look.weight,
-        0..=100,
-        word(v, ["slim", "slimmer", "average", "heavier", "heavy"]),
-        ("Slim", "Heavy"),
-    );
-    let v = look.muscle;
-    slider(
-        ui,
-        "Muscle",
-        &mut look.muscle,
-        0..=100,
-        word(v, ["soft", "softer", "average", "toned", "muscular"]),
-        ("Soft", "Muscular"),
-    );
-    let v = look.proportions;
-    slider(
-        ui,
-        "Proportions",
-        &mut look.proportions,
-        0..=100,
-        word(
-            v,
-            ["unusual", "less usual", "average", "classic", "classic"],
-        ),
-        ("Unusual", "Classic"),
-    );
-    let v = look.chest;
-    slider(
-        ui,
-        "Chest",
-        &mut look.chest,
-        0..=100,
-        word(v, ["small", "smaller", "average", "fuller", "full"]),
-        ("Small", "Full"),
-    );
+    for m in &MACROS {
+        let says = m.says(m.which.get(look));
+        slider(
+            ui,
+            m.label,
+            m.which.get_mut(look),
+            m.range.0..=m.range.1,
+            says,
+            m.ends,
+        );
+    }
 }
 
 fn face(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
@@ -1420,10 +1561,10 @@ fn face(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
     let time = ui.input(|i| i.time);
     ui.horizontal_wrapped(|ui| {
         if theme::action_button(ui, "Another face").clicked() {
-            another_face(&mut Dice { state, time }, look);
+            state.another_face(look, time);
         }
         if theme::action_button(ui, "Similar face").clicked() {
-            similar_face(&mut Dice { state, time }, look);
+            state.similar_face(look, time);
         }
         if has_face(look) && theme::action_button(ui, "Average face").clicked() {
             clear_face(look);
@@ -1432,14 +1573,7 @@ fn face(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
     ui.add_space(6.0);
     let part = &mut state.face;
     ui.horizontal_wrapped(|ui| {
-        for (p, label) in [
-            (FacePart::Head, "Head"),
-            (FacePart::Eyes, "Eyes"),
-            (FacePart::Nose, "Nose"),
-            (FacePart::Mouth, "Mouth"),
-            (FacePart::Jaw, "Jaw"),
-            (FacePart::Ears, "Ears"),
-        ] {
+        for (p, label) in FACE_PARTS {
             if theme::chip(ui, label, *part == p).clicked() {
                 *part = p;
             }
@@ -1464,12 +1598,12 @@ const BODY_GROUPS: [&str; 7] = [
     "neck", "torso", "hip", "stomach", "buttocks", "arms", "legs",
 ];
 
-fn has_face(look: &HumanLook) -> bool {
+pub(crate) fn has_face(look: &HumanLook) -> bool {
     look.face.iter().any(|(m, _)| !is_body_control(m))
 }
 
 /// Back to the average face, keeping the body's controls.
-fn clear_face(look: &mut HumanLook) {
+pub(crate) fn clear_face(look: &mut HumanLook) {
     look.face.retain(|(m, _)| is_body_control(m));
 }
 
@@ -1484,15 +1618,7 @@ fn skin_and_hair(ui: &mut egui::Ui, look: &mut HumanLook) {
     });
     let tone = look.skin_tone;
     let mut v = i32::from(tone);
-    header(
-        ui,
-        "Tone",
-        match tone {
-            0 => "as painted".to_string(),
-            t if t > 0 => format!("lighter {t}"),
-            t => format!("darker {}", -t),
-        },
-    );
+    header(ui, "Tone", tone_says(i32::from(tone)));
     ui.spacing_mut().slider_width = ui.available_width();
     if ui
         .add(egui::Slider::new(&mut v, -100..=100).show_value(false))
@@ -1599,7 +1725,7 @@ fn clothes(ui: &mut egui::Ui, look: &mut HumanLook) {
 }
 
 /// A word for where a 0–100 slider sits, in five bands.
-fn word(v: u8, words: [&str; 5]) -> String {
+pub(crate) fn word(v: u8, words: [&str; 5]) -> String {
     words[(usize::from(v.min(99)) * 5 / 100).min(4)].to_string()
 }
 

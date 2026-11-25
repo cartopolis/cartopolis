@@ -27,6 +27,9 @@ pub(crate) struct Ellipsis {
     /// come before the faces have loaded, too narrow, so the fit starts
     /// over once when the screen has settled.
     frames: u32,
+    /// The measured width the last cut was taken from: the next cut waits
+    /// for a new measure.
+    cut_from: Option<f32>,
 }
 
 /// How many frames after a text appears its fit starts over, once.
@@ -39,6 +42,7 @@ impl Ellipsis {
             full_width: None,
             width: -1.0,
             frames: 0,
+            cut_from: None,
         }
     }
 
@@ -47,6 +51,7 @@ impl Ellipsis {
         self.full = full;
         self.full_width = None;
         self.width = -1.0;
+        self.cut_from = None;
     }
 }
 
@@ -100,6 +105,7 @@ pub(crate) fn fit_ellipsis(
         if (width - el.width).abs() > 0.5 {
             // A new width: measure the whole text against it next frame.
             el.width = width;
+            el.cut_from = None;
             if text.0 != el.full {
                 text.0 = el.full.clone();
             }
@@ -108,10 +114,17 @@ pub(crate) fn fit_ellipsis(
         if info.size.x <= width + 1.0 {
             continue;
         }
+        // The text's measure lags its change by a frame: until the cut text
+        // has been measured, the width seen is the one already cut from,
+        // and cutting by it again took a long line down to "1…".
+        if el.cut_from == Some(info.size.x) {
+            continue;
+        }
         let shown = text.0.strip_suffix('…').unwrap_or(&text.0);
         if let Some(cut) = cut_to(shown, width / info.size.x) {
             if text.0 != cut {
                 text.0 = cut;
+                el.cut_from = Some(info.size.x);
             }
         }
     }

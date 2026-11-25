@@ -1,6 +1,6 @@
 ---
 topic: component-library-in-the-client
-triggers: [mithril_bevy, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
+triggers: [mithril_bevy, LibCamera, follow_world_target, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
 updated: 2026-11-24
 ---
 
@@ -192,3 +192,17 @@ site's `tokens()` on egui's sizes (`SIZE_BODY` 14, `SIZE_SUB` 12.5,
 sub-page titles 17. On the site's 15/13 every screen read a size larger
 than its egui twin and titles wrapped (2026-11-25). The site's
 `theme.css` stays on `tokens()`.
+
+## The library draws above egui, on a camera of its own
+
+egui draws after the upscale (`egui_pass.after(upscaling)`), and
+`bevy_ui`'s pass sits before it, so on the world's camera every egui
+button lay over the library's cards (2026-11-25). `lib_host::prepare_bevy`
+spawns `LibCamera`, a `Camera2d` at order 100 with no clear and no MSAA,
+and makes it the `UiCamera`; `follow_world_target` copies the world
+camera's `RenderTarget` onto it, since a capture moves that onto an image.
+A Core2d camera runs no egui pass, so egui draws once, under the library.
+
+The "…" fit waits for a new measure after each cut (`Ellipsis::cut_from`):
+a text's `TextLayoutInfo` lags its change by a frame, and cutting by the
+stale width again took long lines down to "1…".

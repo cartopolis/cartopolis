@@ -65,6 +65,15 @@ pub struct LibScreens {
     pub reminder: bool,
     pub filter_chip: bool,
     pub post_composer: bool,
+    pub login: bool,
+    pub welcome: bool,
+    pub app_update: bool,
+    pub avatar: bool,
+    pub models: bool,
+    pub script: bool,
+    pub plans: bool,
+    pub scenario: bool,
+    pub design_room: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
     /// Open Layers at once (`?panel=layers`).
@@ -76,6 +85,11 @@ pub struct LibScreens {
     pub open_places: bool,
     /// Open Chats at once (`?panel=chats`).
     pub open_chats: bool,
+    /// Open the avatar designer, Models or the script editor at once
+    /// (`?panel=avatar|models|script`).
+    pub open_avatar: bool,
+    pub open_models: bool,
+    pub open_script: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -103,12 +117,24 @@ impl LibScreens {
                 reminder: all || named("reminder"),
                 filter_chip: all || named("filter_chip"),
                 post_composer: all || named("post_composer"),
+                login: all || named("login"),
+                welcome: all || named("welcome"),
+                app_update: all || named("app_update"),
+                avatar: all || named("avatar"),
+                models: all || named("models"),
+                script: all || named("script"),
+                plans: all || named("plans"),
+                scenario: all || named("scenario"),
+                design_room: all || named("design_room"),
                 open_settings: false,
                 open_layers: false,
                 open_search: false,
                 open_route: false,
                 open_places: false,
                 open_chats: false,
+                open_avatar: false,
+                open_models: false,
+                open_script: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -135,12 +161,24 @@ impl LibScreens {
                 reminder: named("reminder"),
                 filter_chip: named("filter_chip"),
                 post_composer: named("post_composer"),
+                login: named("login"),
+                welcome: named("welcome"),
+                app_update: named("app_update"),
+                avatar: named("avatar"),
+                models: named("models"),
+                script: named("script"),
+                plans: named("plans"),
+                scenario: named("scenario"),
+                design_room: named("design_room"),
                 open_settings: panel.as_deref() == Some("settings"),
                 open_layers: panel.as_deref() == Some("layers"),
                 open_search: panel.as_deref() == Some("search"),
                 open_route: panel.as_deref() == Some("route"),
                 open_places: panel.as_deref() == Some("places"),
                 open_chats: panel.as_deref() == Some("chats"),
+                open_avatar: panel.as_deref() == Some("avatar"),
+                open_models: panel.as_deref() == Some("models"),
+                open_script: panel.as_deref() == Some("script"),
                 page: get("page"),
             }
         }

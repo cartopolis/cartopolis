@@ -326,6 +326,23 @@ pub struct Plans {
     /// Notices and works near a followed place not shown yet
     /// ([`PlansFollow::news`]).
     news: Vec<(Card, [f64; 2])>,
+    /// The library draws the chip, the card and the news (`lib_plans`):
+    /// egui's systems draw none of them, still paint the dots, and publish
+    /// what only they work out in [`lib_view`](Self::lib_view).
+    pub lib: bool,
+    pub lib_view: PlansView,
+}
+
+/// What egui's systems work out for the library's edition (`lib_plans`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlansView {
+    /// The layer's chip, when it is up: dots drawn, how many still open,
+    /// works, and whether the view is too high to draw them.
+    pub chip: Option<(usize, usize, usize, bool)>,
+    /// The place card's reasons to stand aside hold: the card steps aside.
+    pub card_hidden: bool,
+    /// The news chip stands aside (a card, a panel, the menu, driving).
+    pub news_hidden: bool,
 }
 
 impl Plans {
@@ -552,6 +569,9 @@ pub fn render_plans(
 ) {
     let mut anchored = WorldAnchored::new(egui.ctx(), "plans");
     plans.shown = (0, 0, 0);
+    if plans.lib_view.chip.is_some() {
+        plans.lib_view.chip = None;
+    }
     if !dl.plans_enabled || driver.active {
         return;
     }
@@ -685,6 +705,12 @@ pub fn render_plans(
         plans.card = Some(card);
     }
     if right_panel.is(crate::resources::RightPanel::None) {
+        // The library's chip (`lib_plans`) is drawn from the counts; the
+        // dots stay painted here.
+        if plans.lib {
+            plans.lib_view.chip = Some((drawn, open, works, high));
+            return;
+        }
         let top = crate::systems::dock::reserved_top() + theme::OSD_MARGIN + 52.0;
         if chip(&ctx, top, (drawn, open, works), high) {
             dl.plans_enabled = false;
@@ -951,7 +977,7 @@ fn work_square(
 /// how many still open, and how many works. Its ✕ turns the layer off;
 /// whether it was pressed.
 fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool) -> bool {
-    let (drawn, open, works) = counts;
+    let (what, open, works) = chip_words(counts, high);
     let mut off = false;
     egui::Area::new(egui::Id::new("plans_chip"))
         .order(egui::Order::Middle)
@@ -973,30 +999,20 @@ fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool
                                 .size(theme::SIZE_SUB)
                                 .color(theme::p().cream),
                         );
-                        let what = if high {
-                            "zoom in to see them".to_string()
-                        } else {
-                            format!("{drawn} here")
-                        };
                         ui.label(
-                            egui::RichText::new(what)
+                            egui::RichText::new(&what)
                                 .size(theme::SIZE_SUB)
                                 .color(theme::p().text_dim),
                         );
-                        if !high && open > 0 {
+                        if let Some(open) = &open {
                             ui.label(
-                                egui::RichText::new(format!("{open} still open"))
+                                egui::RichText::new(open)
                                     .size(theme::SIZE_SUB)
                                     .color(theme::BRAND),
                             );
                         }
-                        if !high && works > 0 {
-                            let what = if works == 1 { "work" } else { "works" };
-                            ui.label(
-                                egui::RichText::new(format!("{works} {what} planned"))
-                                    .size(theme::SIZE_SUB)
-                                    .color(WORK),
-                            );
+                        if let Some(works) = &works {
+                            ui.label(egui::RichText::new(works).size(theme::SIZE_SUB).color(WORK));
                         }
                         off = crate::systems::discs::circle_button(
                             ui,
@@ -1010,6 +1026,27 @@ fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool
                 });
         });
     off
+}
+
+/// The chip's words, as both editions set them: how many are drawn (or that
+/// the view is too high), how many still open, and the works planned.
+#[must_use]
+pub fn chip_words(
+    counts: (usize, usize, usize),
+    high: bool,
+) -> (String, Option<String>, Option<String>) {
+    let (drawn, open, works) = counts;
+    let what = if high {
+        "zoom in to see them".to_string()
+    } else {
+        format!("{drawn} here")
+    };
+    let open = (!high && open > 0).then(|| format!("{open} still open"));
+    let works = (!high && works > 0).then(|| {
+        let what = if works == 1 { "work" } else { "works" };
+        format!("{works} {what} planned")
+    });
+    (what, open, works)
 }
 
 /// `28 Oct 2026` for `2026-10-28`.
@@ -1080,18 +1117,24 @@ fn link(ui: &mut egui::Ui, label: &str, url: &str) {
     }
 }
 
-/// A row naming a notice, with its dot; whether it was tapped.
-fn notice_row(ui: &mut egui::Ui, n: &Notice, today: &str) -> bool {
-    let open = n.open_on(today);
+/// A row naming another card, with its marker; whether it was tapped.
+fn row(ui: &mut egui::Ui, marker: Marker, text: &str) -> bool {
     ui.horizontal(|ui| {
-        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
-        let colour = if open {
-            theme::BRAND
-        } else {
-            theme::DARK.accent
-        };
-        ui.painter().circle_filled(dot.center(), 4.0, colour);
-        let text = format!("{} · {}", pretty_date(&n.date), n.title);
+        match marker {
+            Marker::Open | Marker::Closed => {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(dot.center(), 4.0, marker.colour());
+            }
+            Marker::Council | Marker::Work => {
+                let (sq, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    egui::Rect::from_center_size(sq.center(), egui::vec2(10.0, 10.0)),
+                    3,
+                    marker.colour(),
+                );
+            }
+        }
         ui.add(
             egui::Label::new(egui::RichText::new(text).size(theme::SIZE_SUB))
                 .truncate()
@@ -1103,30 +1146,267 @@ fn notice_row(ui: &mut egui::Ui, n: &Notice, today: &str) -> bool {
     .inner
 }
 
-/// A row naming a council item; whether it was tapped.
-fn council_row(ui: &mut egui::Ui, c: &cartopolis_core::plans::CouncilItem) -> bool {
-    ui.horizontal(|ui| {
-        let (sq, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
-        ui.painter().rect_filled(
-            egui::Rect::from_center_size(sq.center(), egui::vec2(10.0, 10.0)),
-            3,
-            theme::COUNCIL,
-        );
-        let state = if c.decided {
-            "decided"
+/// A row naming a notice, as both editions show it.
+fn notice_row(n: &Notice, today: &str, go: Card) -> Block {
+    Block::Row {
+        marker: if n.open_on(today) {
+            Marker::Open
         } else {
-            "on the agenda"
-        };
-        let text = format!("{} · {state} · {}", pretty_date(c.last_date()), c.title);
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(theme::SIZE_SUB))
-                .truncate()
-                .sense(egui::Sense::click()),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    })
-    .inner
+            Marker::Closed
+        },
+        text: format!("{} · {}", pretty_date(&n.date), n.title),
+        go,
+    }
+}
+
+/// A row naming a council item.
+fn council_row(c: &cartopolis_core::plans::CouncilItem, go: Card) -> Block {
+    let state = if c.decided {
+        "decided"
+    } else {
+        "on the agenda"
+    };
+    Block::Row {
+        marker: Marker::Council,
+        text: format!("{} · {state} · {}", pretty_date(c.last_date()), c.title),
+        go,
+    }
+}
+
+/// A row naming a work.
+fn work_row(w: &Work, go: Card) -> Block {
+    let mut text = format!("{} · {}", w.year, w.measure);
+    if !w.place.is_empty() {
+        text.push_str(&format!(" · {}", w.place));
+    }
+    Block::Row {
+        marker: Marker::Work,
+        text,
+        go,
+    }
+}
+
+/// How a line on a card is coloured, as both editions colour it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ink {
+    Strong,
+    Text,
+    Dim,
+    /// A response period that still runs.
+    Open,
+    Council,
+    Work,
+}
+
+impl Ink {
+    #[must_use]
+    pub fn colour(self) -> egui::Color32 {
+        match self {
+            Ink::Strong => theme::p().cream,
+            Ink::Text => theme::p().text,
+            Ink::Dim => theme::p().text_dim,
+            Ink::Open => theme::BRAND,
+            Ink::Council => theme::COUNCIL_LIGHT,
+            Ink::Work => WORK,
+        }
+    }
+}
+
+/// How large a line on a card is set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextSize {
+    Sub,
+    Tiny,
+}
+
+impl TextSize {
+    fn points(self) -> f32 {
+        match self {
+            TextSize::Sub => theme::SIZE_SUB,
+            TextSize::Tiny => theme::SIZE_TINY,
+        }
+    }
+}
+
+/// The marker beside a row: a notice's dot, open or closed, a council
+/// item's square, a work's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Marker {
+    Open,
+    Closed,
+    Council,
+    Work,
+}
+
+impl Marker {
+    #[must_use]
+    pub fn colour(self) -> egui::Color32 {
+        match self {
+            Marker::Open => theme::BRAND,
+            Marker::Closed => theme::DARK.accent,
+            Marker::Council => theme::COUNCIL,
+            Marker::Work => WORK,
+        }
+    }
+}
+
+/// One piece of a card, as both editions draw it: the card is worked out
+/// once ([`Plans::card_model`]) and each edition only sets it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Block {
+    /// The card's main line.
+    Title(String),
+    /// A line of text; `gap` leaves a little room above it.
+    Line {
+        text: String,
+        ink: Ink,
+        size: TextSize,
+        gap: bool,
+    },
+    /// A link out; with a `note` it is the notice's own (an icon before it,
+    /// its id after), else a bare link in a list.
+    Link {
+        label: String,
+        url: String,
+        note: Option<String>,
+    },
+    /// A council meeting: its date and its page.
+    Meeting {
+        date: String,
+        label: String,
+        url: String,
+    },
+    /// A heading over rows.
+    Section(String),
+    /// A row that opens another card.
+    Row {
+        marker: Marker,
+        text: String,
+        go: Card,
+    },
+    /// Follow this place for new plans, or stop.
+    Follow { at: (f64, f64), followed: bool },
+}
+
+/// What a tap on a card asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CardAct {
+    /// Open another card.
+    Go(Card),
+    /// Follow the place, or stop following it.
+    Follow((f64, f64)),
+}
+
+/// A card as both editions draw it: its kicker, and its blocks — `None`
+/// while the feed is still being read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardModel {
+    pub kicker: Option<(String, Ink)>,
+    pub blocks: Option<Vec<Block>>,
+}
+
+/// The tip on Follow.
+#[must_use]
+pub fn follow_tip() -> String {
+    format!(
+        "Be told when something new is published within {HERE_M:.0} m, also while the app is closed"
+    )
+}
+
+/// What following does, under the button once it is on.
+#[must_use]
+pub fn follow_explained() -> String {
+    format!(
+        "New notices, and works new to the city's programme, within {HERE_M:.0} m are shown at the top of the map, and wake the phone app when it is closed."
+    )
+}
+
+/// egui's edition of a card's blocks; what a tap asked for.
+fn draw_blocks(ui: &mut egui::Ui, blocks: &[Block]) -> Option<CardAct> {
+    let mut asked = None;
+    for b in blocks {
+        match b {
+            Block::Title(text) => {
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(theme::SIZE_BODY)
+                        .color(theme::p().cream),
+                );
+            }
+            Block::Line {
+                text,
+                ink,
+                size,
+                gap,
+            } => {
+                if *gap {
+                    ui.add_space(4.0);
+                }
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(size.points())
+                        .color(ink.colour()),
+                );
+            }
+            Block::Link { label, url, note } => match note {
+                Some(note) => {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(icons::OPEN_EXTERNAL)
+                                .size(theme::SIZE_SUB)
+                                .color(theme::p().text_dim),
+                        );
+                        link(ui, label, url);
+                        ui.label(
+                            egui::RichText::new(note)
+                                .size(theme::SIZE_TINY)
+                                .color(theme::p().text_dim),
+                        );
+                    });
+                }
+                None => link(ui, label, url),
+            },
+            Block::Meeting { date, label, url } => {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(date)
+                            .size(theme::SIZE_SUB)
+                            .color(theme::p().text_dim),
+                    );
+                    link(ui, label, url);
+                });
+            }
+            Block::Section(text) => section(ui, text),
+            Block::Row { marker, text, go } => {
+                if row(ui, *marker, text) {
+                    asked = Some(CardAct::Go(*go));
+                }
+            }
+            Block::Follow { at, followed } => {
+                ui.add_space(6.0);
+                let label = if *followed {
+                    "Following · stop"
+                } else {
+                    "Follow this place"
+                };
+                let pressed = theme::secondary_toggle(ui, icons::FLAG, label, 0.0, *followed)
+                    .on_hover_text(follow_tip())
+                    .clicked();
+                if pressed {
+                    asked = Some(CardAct::Follow(*at));
+                }
+                if *followed || pressed {
+                    ui.label(
+                        egui::RichText::new(follow_explained())
+                            .size(theme::SIZE_TINY)
+                            .color(theme::p().text_dim),
+                    );
+                }
+            }
+        }
+    }
+    asked
 }
 
 fn kicker(ui: &mut egui::Ui, text: &str, colour: egui::Color32) {
@@ -1162,18 +1442,32 @@ pub fn render_plans_card(
         return;
     };
     // The place card's suppression rules, for its reasons.
-    if driver.active || keyboard.is_open() || menu.open {
+    let hidden = driver.active
+        || keyboard.is_open()
+        || menu.open
+        || (egui.compact() && !right_panel.is(crate::resources::RightPanel::None));
+    // Seeing a followed place's card counts what is near it as shown.
+    if !hidden {
+        if let (Card::Here { lat, lng }, Some(feed)) = (card, plans.feed.clone()) {
+            see_followed(&mut store, (lat, lng), &feed);
+        }
+    }
+    // The library's edition is showing (`lib_plans`): it draws the card from
+    // the same model, and only needs to know whether to stand aside.
+    if plans.lib {
+        if plans.lib_view.card_hidden != hidden {
+            plans.lib_view.card_hidden = hidden;
+        }
         return;
     }
-    if egui.compact() && !right_panel.is(crate::resources::RightPanel::None) {
+    if hidden {
         return;
     }
-    let today = civil_date(now_unix());
-    let since = dl.plans_period.since(now_unix());
-    let feed = plans.feed.clone();
+    let model = plans.card_model(card, &dl, &store.data.plans_follow);
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let ctx = egui.ctx();
-    let mut next: Option<Option<Card>> = None;
+    let mut close = false;
+    let mut asked: Option<CardAct> = None;
     egui::Area::new(egui::Id::new("plans_card"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
@@ -1183,143 +1477,184 @@ pub fn render_plans_card(
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::close_button(ui).clicked() {
-                            next = Some(None);
+                            close = true;
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let head = match (card, &feed) {
-                                (Card::Notice(i), Some(f)) => f.notices.get(i).map(|n| {
-                                    let colour = if n.open_on(&today) {
-                                        theme::BRAND
-                                    } else {
-                                        theme::p().text_dim
-                                    };
-                                    (
-                                        format!(
-                                            "{} · {}",
-                                            kind_label(n.kind),
-                                            pretty_date(&n.date)
-                                        ),
-                                        colour,
-                                    )
-                                }),
-                                (Card::Council(i), Some(f)) => f.council.get(i).map(|c| {
-                                    let state = if c.decided {
-                                        "decided"
-                                    } else {
-                                        "on the agenda"
-                                    };
-                                    (
-                                        format!(
-                                            "Council · {state} · {}",
-                                            pretty_date(c.last_date())
-                                        ),
-                                        theme::COUNCIL_LIGHT,
-                                    )
-                                }),
-                                (Card::Work(i), Some(f)) => f.works.get(i).map(|w| {
-                                    (format!("Works · {} · {}", work_label(w.kind), w.year), WORK)
-                                }),
-                                (Card::Here { .. }, _) => {
-                                    Some(("Plans here".to_string(), theme::p().text_dim))
-                                }
-                                _ => None,
-                            };
-                            if let Some((text, colour)) = head {
-                                kicker(ui, &text, colour);
+                            if let Some((text, ink)) = &model.kicker {
+                                kicker(ui, text, ink.colour());
                             }
                         });
                     });
                 });
-                let Some(feed) = feed.as_deref() else {
-                    ui.label(
-                        egui::RichText::new("Reading what is published…")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                    return;
-                };
-                match card {
-                    Card::Notice(i) => {
-                        if let Some(go) = notice_body(ui, feed, i, &today) {
-                            next = Some(Some(go));
-                        }
-                    }
-                    Card::Council(i) => {
-                        if let Some(go) = council_body(ui, feed, i, &today) {
-                            next = Some(Some(go));
-                        }
-                    }
-                    Card::Work(i) => {
-                        if let Some(go) = work_body(ui, feed, i, &today) {
-                            next = Some(Some(go));
-                        }
-                    }
-                    Card::Here { lat, lng } => {
-                        if let Some(go) = here_body(ui, feed, (lat, lng), &dl, &today, &since) {
-                            next = Some(Some(go));
-                        }
-                        follow_row(ui, &mut store, (lat, lng), feed);
+                match &model.blocks {
+                    Some(blocks) => asked = draw_blocks(ui, blocks),
+                    None => {
+                        ui.label(
+                            egui::RichText::new("Reading what is published…")
+                                .size(theme::SIZE_SUB)
+                                .color(theme::p().text_dim),
+                        );
                     }
                 }
             });
         });
-    if let Some(next) = next {
-        plans.card = next;
+    if close {
+        plans.card = None;
+    } else if let Some(a) = asked {
+        plans.act(a, &mut store);
+    }
+}
+
+impl Plans {
+    /// The card `card` as both editions draw it.
+    #[must_use]
+    pub fn card_model(&self, card: Card, dl: &DataLayers, follow: &PlansFollow) -> CardModel {
+        let now = now_unix();
+        let today = civil_date(now);
+        let since = dl.plans_period.since(now);
+        let feed = self.feed.as_deref();
+        let kicker = match (card, feed) {
+            (Card::Notice(i), Some(f)) => f.notices.get(i).map(|n| {
+                let ink = if n.open_on(&today) {
+                    Ink::Open
+                } else {
+                    Ink::Dim
+                };
+                (
+                    format!("{} · {}", kind_label(n.kind), pretty_date(&n.date)),
+                    ink,
+                )
+            }),
+            (Card::Council(i), Some(f)) => f.council.get(i).map(|c| {
+                let state = if c.decided {
+                    "decided"
+                } else {
+                    "on the agenda"
+                };
+                (
+                    format!("Council · {state} · {}", pretty_date(c.last_date())),
+                    Ink::Council,
+                )
+            }),
+            (Card::Work(i), Some(f)) => f.works.get(i).map(|w| {
+                (
+                    format!("Works · {} · {}", work_label(w.kind), w.year),
+                    Ink::Work,
+                )
+            }),
+            (Card::Here { .. }, _) => Some(("Plans here".to_string(), Ink::Dim)),
+            _ => None,
+        };
+        let blocks = feed.map(|feed| match card {
+            Card::Notice(i) => notice_blocks(feed, i, &today),
+            Card::Council(i) => council_blocks(feed, i, &today),
+            Card::Work(i) => work_blocks(feed, i, &today),
+            Card::Here { lat, lng } => {
+                let mut blocks = here_blocks(feed, (lat, lng), dl, &today, &since);
+                blocks.push(Block::Follow {
+                    at: (lat, lng),
+                    followed: follow.at((lat, lng)).is_some(),
+                });
+                blocks
+            }
+        });
+        CardModel { kicker, blocks }
+    }
+
+    /// Do what a tap on the card asked: open another card, or follow the
+    /// place (or stop).
+    pub fn act(&mut self, a: CardAct, store: &mut crate::systems::user_store::UserStore) {
+        match a {
+            CardAct::Go(card) => self.card = Some(card),
+            CardAct::Follow(at) => {
+                store.data.plans_follow.toggle(at, self.feed.as_deref());
+                store.dirty = true;
+            }
+        }
+    }
+
+    /// The news chip's two lines — how many and where, and the newest one —
+    /// while there is news.
+    #[must_use]
+    pub fn news_lines(&self) -> Option<(String, String)> {
+        let feed = self.feed.as_deref()?;
+        let &(first, place) = self.news.first()?;
+        let line = match first {
+            Card::Notice(i) => feed.notices.get(i).map(|n| {
+                let mut line = format!("{}: {}", kind_label(n.kind), n.title);
+                if !n.place.is_empty() {
+                    line.push_str(&format!(" · {}", n.place));
+                }
+                line
+            }),
+            Card::Work(i) => feed.works.get(i).map(|w| {
+                let mut line = format!("Works {}: {}", w.year, w.measure);
+                if !w.place.is_empty() {
+                    line.push_str(&format!(" · {}", w.place));
+                }
+                line
+            }),
+            _ => None,
+        }?;
+        let count = self.news.len();
+        let head = if count == 1 {
+            "New near a place you follow".to_string()
+        } else if self.news.iter().all(|(_, p)| *p == place) {
+            format!("{count} new near a place you follow")
+        } else {
+            format!("{count} new near places you follow")
+        };
+        Some((head, line))
+    }
+
+    /// The news chip tapped: the newest one's own card, and everything near
+    /// its place counted as shown.
+    pub fn open_news(&mut self, store: &mut crate::systems::user_store::UserStore) {
+        let (Some(feed), Some(&(first, place))) = (self.feed.clone(), self.news.first()) else {
+            return;
+        };
+        store.data.plans_follow.mark_seen(place, &feed);
+        store.dirty = true;
+        self.news.retain(|(_, p)| *p != place);
+        self.card = Some(first);
     }
 }
 
 /// A notice: what, where, until when, the link, the council items naming its
-/// place, and other notices on the same spot. The card to go to, if a row was
-/// tapped.
-fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Option<Card> {
-    let n = feed.notices.get(i)?;
-    let mut go = None;
-    ui.label(
-        egui::RichText::new(&n.title)
-            .size(theme::SIZE_BODY)
-            .color(theme::p().cream),
-    );
+/// place, and other notices on the same spot.
+fn notice_blocks(feed: &PlansFeed, i: usize, today: &str) -> Vec<Block> {
+    let Some(n) = feed.notices.get(i) else {
+        return Vec::new();
+    };
+    let mut out = vec![Block::Title(n.title.clone())];
     if !n.place.is_empty() {
-        ui.label(
-            egui::RichText::new(&n.place)
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-        );
+        out.push(Block::Line {
+            text: n.place.clone(),
+            ink: Ink::Dim,
+            size: TextSize::Sub,
+            gap: false,
+        });
     }
     if let Some((line, running)) = deadline(n, today) {
-        ui.add_space(4.0);
-        let colour = if running {
-            theme::BRAND
-        } else {
-            theme::p().text_dim
-        };
-        ui.label(
-            egui::RichText::new(line)
-                .size(theme::SIZE_SUB)
-                .color(colour),
-        );
+        out.push(Block::Line {
+            text: line,
+            ink: if running { Ink::Open } else { Ink::Dim },
+            size: TextSize::Sub,
+            gap: true,
+        });
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(icons::OPEN_EXTERNAL)
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-        );
-        link(ui, "Read the notice", &notice_url(&n.id));
-        ui.label(
-            egui::RichText::new(&n.id)
-                .size(theme::SIZE_TINY)
-                .color(theme::p().text_dim),
-        );
+    out.push(Block::Link {
+        label: "Read the notice".to_string(),
+        url: notice_url(&n.id),
+        note: Some(n.id.clone()),
     });
     if !n.council.is_empty() {
-        section(ui, "In the council · matched by place name");
+        out.push(Block::Section(
+            "In the council · matched by place name".to_string(),
+        ));
         for &c in &n.council {
             if let Some(item) = feed.council.get(c as usize) {
-                if council_row(ui, item) {
-                    go = Some(Card::Council(c as usize));
-                }
+                out.push(council_row(item, Card::Council(c as usize)));
             }
         }
     }
@@ -1331,82 +1666,54 @@ fn notice_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Op
         .take(3)
         .collect();
     if !also.is_empty() {
-        section(ui, "Also here");
+        out.push(Block::Section("Also here".to_string()));
         for (j, o) in also {
-            if notice_row(ui, o, today) {
-                go = Some(Card::Notice(j));
-            }
+            out.push(notice_row(o, today, Card::Notice(j)));
         }
     }
-    go
-}
-
-/// A row naming a work, with its square; whether it was tapped.
-fn work_row(ui: &mut egui::Ui, w: &Work) -> bool {
-    ui.horizontal(|ui| {
-        let (sq, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
-        ui.painter().rect_filled(
-            egui::Rect::from_center_size(sq.center(), egui::vec2(10.0, 10.0)),
-            3,
-            WORK,
-        );
-        let mut text = format!("{} · {}", w.year, w.measure);
-        if !w.place.is_empty() {
-            text.push_str(&format!(" · {}", w.place));
-        }
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(theme::SIZE_SUB))
-                .truncate()
-                .sense(egui::Sense::click()),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    })
-    .inner
+    out
 }
 
 /// A work: the programme's own words, a plain sentence for the measure, what
 /// the programme does not say, the council business naming its street, and
-/// the other works on that street. The card to go to, if a row was tapped.
-fn work_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Option<Card> {
-    let w = feed.works.get(i)?;
-    let mut go = None;
-    ui.label(
-        egui::RichText::new(format!("“{}”", w.measure))
-            .size(theme::SIZE_BODY)
-            .color(theme::p().cream),
-    );
+/// the other works on that street.
+fn work_blocks(feed: &PlansFeed, i: usize, today: &str) -> Vec<Block> {
+    let Some(w) = feed.works.get(i) else {
+        return Vec::new();
+    };
+    let mut out = vec![Block::Title(format!("“{}”", w.measure))];
     if !w.place.is_empty() {
-        ui.label(
-            egui::RichText::new(&w.place)
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-        );
+        out.push(Block::Line {
+            text: w.place.clone(),
+            ink: Ink::Dim,
+            size: TextSize::Sub,
+            gap: false,
+        });
     }
     if let Some(line) = gloss(&w.measure) {
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(line)
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text),
-        );
+        out.push(Block::Line {
+            text: line.to_string(),
+            ink: Ink::Text,
+            size: TextSize::Sub,
+            gap: true,
+        });
     }
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(format!(
+    out.push(Block::Line {
+        text: format!(
             "Planned for {}. The programme names the year only: no dates, closures or detours.",
             w.year
-        ))
-        .size(theme::SIZE_SUB)
-        .color(WORK),
-    );
+        ),
+        ink: Ink::Work,
+        size: TextSize::Sub,
+        gap: true,
+    });
     if !w.council.is_empty() {
-        section(ui, "In the council · matched by place name");
+        out.push(Block::Section(
+            "In the council · matched by place name".to_string(),
+        ));
         for &c in &w.council {
             if let Some(item) = feed.council.get(c as usize) {
-                if council_row(ui, item) {
-                    go = Some(Card::Council(c as usize));
-                }
+                out.push(council_row(item, Card::Council(c as usize)));
             }
         }
     }
@@ -1419,74 +1726,59 @@ fn work_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Opti
             .take(4)
             .collect();
         if !also.is_empty() {
-            section(ui, &format!("Also planned on {}", w.place));
+            out.push(Block::Section(format!("Also planned on {}", w.place)));
             for (j, o) in also {
-                if work_row(ui, o) {
-                    go = Some(Card::Work(j));
-                }
+                out.push(work_row(o, Card::Work(j)));
             }
         }
     }
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(format!(
-            "Gemeente Groningen · maintenance programme {}",
-            w.year
-        ))
-        .size(theme::SIZE_TINY)
-        .color(theme::p().text_dim),
-    );
-    go
+    out.push(Block::Line {
+        text: format!("Gemeente Groningen · maintenance programme {}", w.year),
+        ink: Ink::Dim,
+        size: TextSize::Tiny,
+        gap: true,
+    });
+    out
 }
 
 /// A council item: its meetings, its documents, and the notices published
 /// where its title points.
-fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> Option<Card> {
-    let c = feed.council.get(i)?;
-    let mut go = None;
-    ui.label(
-        egui::RichText::new(&c.title)
-            .size(theme::SIZE_BODY)
-            .color(theme::p().cream),
-    );
-    let names: Vec<&str> = c.places.iter().map(|p| p.name.as_str()).collect();
-    ui.label(
-        egui::RichText::new(format!(
-            "Placed by the name {} in its title",
-            names
-                .iter()
-                .map(|n| format!("“{n}”"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-        .size(theme::SIZE_TINY)
-        .color(theme::COUNCIL_LIGHT),
-    );
-    section(ui, "Meetings");
+fn council_blocks(feed: &PlansFeed, i: usize, today: &str) -> Vec<Block> {
+    let Some(c) = feed.council.get(i) else {
+        return Vec::new();
+    };
+    let mut out = vec![Block::Title(c.title.clone())];
+    let names: Vec<String> = c.places.iter().map(|p| format!("“{}”", p.name)).collect();
+    out.push(Block::Line {
+        text: format!("Placed by the name {} in its title", names.join(", ")),
+        ink: Ink::Council,
+        size: TextSize::Tiny,
+        gap: false,
+    });
+    out.push(Block::Section("Meetings".to_string()));
     for s in &c.steps {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(pretty_date(&s.date))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-            );
-            link(ui, &s.body, &s.url);
+        out.push(Block::Meeting {
+            date: pretty_date(&s.date),
+            label: s.body.clone(),
+            url: s.url.clone(),
         });
     }
     if !c.documents.is_empty() {
-        section(ui, "Documents");
+        out.push(Block::Section("Documents".to_string()));
         for d in c.documents.iter().take(6) {
-            link(ui, &d.name, &d.url);
+            out.push(Block::Link {
+                label: d.name.clone(),
+                url: d.url.clone(),
+                note: None,
+            });
         }
         if c.documents.len() > 6 {
-            ui.label(
-                egui::RichText::new(format!(
-                    "and {} more on the meeting pages",
-                    c.documents.len() - 6
-                ))
-                .size(theme::SIZE_TINY)
-                .color(theme::p().text_dim),
-            );
+            out.push(Block::Line {
+                text: format!("and {} more on the meeting pages", c.documents.len() - 6),
+                ink: Ink::Dim,
+                size: TextSize::Tiny,
+                gap: false,
+            });
         }
     }
     let linked: Vec<(usize, &Notice)> = feed
@@ -1497,56 +1789,27 @@ fn council_body(ui: &mut egui::Ui, feed: &PlansFeed, i: usize, today: &str) -> O
         .take(4)
         .collect();
     if !linked.is_empty() {
-        section(ui, "Published at the same place");
+        out.push(Block::Section("Published at the same place".to_string()));
         for (j, n) in linked {
-            if notice_row(ui, n, today) {
-                go = Some(Card::Notice(j));
-            }
+            out.push(notice_row(n, today, Card::Notice(j)));
         }
     }
-    go
+    out
 }
 
-/// Under *Plans here*: follow this place for new notices, or stop. Seeing a
-/// followed place's card counts what is near it as shown.
-fn follow_row(
-    ui: &mut egui::Ui,
+/// Seeing a followed place's card counts what is near it as shown.
+fn see_followed(
     store: &mut crate::systems::user_store::UserStore,
     at: (f64, f64),
     feed: &PlansFeed,
 ) {
     let follow = &store.data.plans_follow;
-    let followed = follow.at(at);
-    if let Some(i) = followed {
+    if let Some(i) = follow.at(at) {
         let place = follow.places[i];
         if follow.news(feed).iter().any(|(_, p)| *p == place) {
             store.data.plans_follow.mark_seen(place, feed);
             store.dirty = true;
         }
-    }
-    ui.add_space(6.0);
-    let label = if followed.is_some() {
-        "Following · stop"
-    } else {
-        "Follow this place"
-    };
-    let pressed = theme::secondary_toggle(ui, icons::FLAG, label, 0.0, followed.is_some())
-        .on_hover_text(format!(
-            "Be told when something new is published within {HERE_M:.0} m, also while the app is closed"
-        ))
-        .clicked();
-    if pressed {
-        store.data.plans_follow.toggle(at, Some(feed));
-        store.dirty = true;
-    }
-    if followed.is_some() || pressed {
-        ui.label(
-            egui::RichText::new(format!(
-                "New notices, and works new to the city's programme, within {HERE_M:.0} m are shown at the top of the map, and wake the phone app when it is closed."
-            ))
-            .size(theme::SIZE_TINY)
-            .color(theme::p().text_dim),
-        );
     }
 }
 
@@ -1561,37 +1824,23 @@ pub fn render_plans_news(
     driver: Res<crate::systems::driver::DriverState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
 ) {
-    if plans.news.is_empty() || plans.card.is_some() || driver.active || menu.open {
+    let hidden = plans.card.is_some()
+        || driver.active
+        || menu.open
+        || !right_panel.is(crate::resources::RightPanel::None);
+    // The library draws the chip (`lib_plans`) from the same lines.
+    if plans.lib {
+        if plans.lib_view.news_hidden != hidden {
+            plans.lib_view.news_hidden = hidden;
+        }
         return;
     }
-    if !right_panel.is(crate::resources::RightPanel::None) {
+    if hidden {
         return;
     }
-    let Some(feed) = plans.feed.clone() else {
+    let Some((head, line)) = plans.news_lines() else {
         return;
     };
-    let (first, place) = plans.news[0];
-    let line = match first {
-        Card::Notice(i) => feed.notices.get(i).map(|n| {
-            let mut line = format!("{}: {}", kind_label(n.kind), n.title);
-            if !n.place.is_empty() {
-                line.push_str(&format!(" · {}", n.place));
-            }
-            line
-        }),
-        Card::Work(i) => feed.works.get(i).map(|w| {
-            let mut line = format!("Works {}: {}", w.year, w.measure);
-            if !w.place.is_empty() {
-                line.push_str(&format!(" · {}", w.place));
-            }
-            line
-        }),
-        _ => None,
-    };
-    let Some(line) = line else {
-        return;
-    };
-    let count = plans.news.len();
     // Under the layer's own chip when that is up.
     let chip_up = dl.plans_enabled;
     let top = crate::systems::dock::reserved_top()
@@ -1616,13 +1865,6 @@ pub fn render_plans_news(
                                 .color(theme::BRAND),
                         );
                         ui.vertical(|ui| {
-                            let head = if count == 1 {
-                                "New near a place you follow".to_string()
-                            } else if plans.news.iter().all(|(_, p)| *p == place) {
-                                format!("{count} new near a place you follow")
-                            } else {
-                                format!("{count} new near places you follow")
-                            };
                             ui.label(
                                 egui::RichText::new(head)
                                     .size(theme::SIZE_SUB)
@@ -1651,22 +1893,18 @@ pub fn render_plans_news(
         });
     if open {
         // The newest notice's own card; everything near its place is shown.
-        store.data.plans_follow.mark_seen(place, &feed);
-        store.dirty = true;
-        plans.news.retain(|(_, p)| *p != place);
-        plans.card = Some(first);
+        plans.open_news(&mut store);
     }
 }
 
 /// Everything published within [`HERE_M`] of a spot, open first.
-fn here_body(
-    ui: &mut egui::Ui,
+fn here_blocks(
     feed: &PlansFeed,
     at: (f64, f64),
     dl: &DataLayers,
     today: &str,
     since: &str,
-) -> Option<Card> {
+) -> Vec<Block> {
     let mut near: Vec<(usize, &Notice)> = feed
         .notices
         .iter()
@@ -1687,16 +1925,14 @@ fn here_body(
             near.len()
         )
     };
-    ui.label(
-        egui::RichText::new(summary)
-            .size(theme::SIZE_SUB)
-            .color(theme::p().cream),
-    );
-    let mut go = None;
+    let mut out = vec![Block::Line {
+        text: summary,
+        ink: Ink::Strong,
+        size: TextSize::Sub,
+        gap: false,
+    }];
     for (j, n) in near.iter().take(6) {
-        if notice_row(ui, n, today) {
-            go = Some(Card::Notice(*j));
-        }
+        out.push(notice_row(n, today, Card::Notice(*j)));
     }
     let works: Vec<(usize, &Work)> = feed
         .works
@@ -1706,21 +1942,20 @@ fn here_body(
         .take(4)
         .collect();
     if !works.is_empty() {
-        section(ui, "Works planned here");
+        out.push(Block::Section("Works planned here".to_string()));
         for (j, w) in works {
-            if work_row(ui, w) {
-                go = Some(Card::Work(j));
-            }
+            out.push(work_row(w, Card::Work(j)));
         }
     }
     if near.len() > 6 && !dl.plans_enabled {
-        ui.label(
-            egui::RichText::new("Turn on the Plans layer (Layers, Places) to see them all.")
-                .size(theme::SIZE_TINY)
-                .color(theme::p().text_dim),
-        );
+        out.push(Block::Line {
+            text: "Turn on the Plans layer (Layers, Places) to see them all.".to_string(),
+            ink: Ink::Dim,
+            size: TextSize::Tiny,
+            gap: false,
+        });
     }
-    go
+    out
 }
 
 #[cfg(test)]

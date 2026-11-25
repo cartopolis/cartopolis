@@ -35,6 +35,13 @@ pub struct AppUpdate {
     /// What a scripted capture shows instead (`--ui updateready`, `updatetooold`,
     /// `updating`), as on a phone; `None` on every other shot and in use.
     pub capture: Option<Capture>,
+    /// The component library draws the pill and the card
+    /// (`systems::lib_app_update`): this system then draws nothing, but still
+    /// asks the updater, publishes what to show ([`Self::lib_view`]) and does
+    /// what a tap there asked for ([`Self::lib_action`]).
+    pub lib: bool,
+    pub lib_view: UpdateView,
+    pub lib_action: Option<UpdateAction>,
 }
 
 /// A stand-in for the updater and the server's answer, for a capture.
@@ -44,48 +51,165 @@ pub struct Capture {
     pub too_old: bool,
 }
 
+/// What is on screen, in either edition.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum UpdateView {
+    #[default]
+    None,
+    /// The pill at the top: "Update ready" with Install and ×, or how far
+    /// the update is once tapped.
+    Pill {
+        title: &'static str,
+        line: String,
+        ready: bool,
+    },
+    /// The card over everything: this build is too old for the server.
+    TooOld(TooOld),
+}
+
+/// The too-old card's states.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TooOld {
+    /// Downloading: the fraction done, and "34 of 80 MB".
+    Fetching {
+        fraction: f32,
+        line: String,
+    },
+    Installing,
+    /// The update can be had here; why the last attempt failed, if it did.
+    Offer {
+        failed: Option<String>,
+    },
+    /// This build cannot update itself: get the new one from the site.
+    Elsewhere,
+}
+
+/// A tap, in either edition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateAction {
+    Install,
+    /// The pill's ×: not for this build again.
+    Dismiss,
+}
+
+/// The line under "Installing…" and a download on the too-old card.
+pub const CLOSES: &str = "Cartopolis closes when the update is in; a notification opens it again.";
+
+/// The too-old card's text, in either edition: the title and the lines.
+#[must_use]
+pub fn too_old_text(t: &TooOld) -> (&'static str, &'static str) {
+    match t {
+        TooOld::Fetching { .. } => ("Updating…", CLOSES),
+        TooOld::Installing => ("Installing…", CLOSES),
+        TooOld::Offer { .. } => (
+            "Update Cartopolis to continue",
+            "The server has moved on and this version can no longer \
+             talk to it. The update takes about a minute.",
+        ),
+        TooOld::Elsewhere => (
+            "This version of Cartopolis is too old",
+            "The server has moved on and this version can no longer \
+             talk to it. Get the new one from cartopolis.org.",
+        ),
+    }
+}
+
+impl AppUpdate {
+    /// What to show: the pill, the too-old card, or nothing.
+    fn view(&self, too_old: bool, installable: bool) -> UpdateView {
+        if too_old {
+            return UpdateView::TooOld(match &self.status {
+                UpdateStatus::Fetching { done, total } => TooOld::Fetching {
+                    fraction: if *total > 0 {
+                        #[allow(clippy::cast_precision_loss)]
+                        let f = *done as f32 / *total as f32;
+                        f
+                    } else {
+                        0.0
+                    },
+                    line: megabytes(*done, *total),
+                },
+                UpdateStatus::Installing => TooOld::Installing,
+                _ if installable => TooOld::Offer {
+                    failed: match &self.status {
+                        UpdateStatus::Failed(why) => Some(why.clone()),
+                        _ => None,
+                    },
+                },
+                _ => TooOld::Elsewhere,
+            });
+        }
+        let (title, line) = match &self.status {
+            UpdateStatus::Ready(name) if self.dismissed.as_ref() != Some(name) => {
+                ("Update ready", format!("Cartopolis {name}"))
+            }
+            UpdateStatus::Fetching { done, total } if self.dismissed.is_none() => {
+                ("Updating…", megabytes(*done, *total))
+            }
+            UpdateStatus::Installing if self.dismissed.is_none() => {
+                ("Installing…", "Cartopolis closes when it is in".to_string())
+            }
+            _ => return UpdateView::None,
+        };
+        UpdateView::Pill {
+            title,
+            line,
+            ready: matches!(self.status, UpdateStatus::Ready(_)),
+        }
+    }
+
+    /// Do what a tap asked for.
+    fn act(&mut self, action: UpdateAction) {
+        match action {
+            UpdateAction::Install => update::install_now(),
+            UpdateAction::Dismiss => {
+                if let UpdateStatus::Ready(name) = &self.status {
+                    self.dismissed = Some(name.clone());
+                }
+            }
+        }
+    }
+}
+
 pub fn render_app_update(egui: EguiRef, mut state: ResMut<AppUpdate>, time: Res<Time<Real>>) {
-    if let Some(c) = state.capture.clone() {
-        if c.too_old {
-            too_old_card(&egui, &c.status, true);
-        } else {
-            state.status = c.status;
-            pill(&egui, &mut state);
+    // A tap the library's edition handed back.
+    if let Some(action) = state.lib_action {
+        state.lib_action = None;
+        state.act(action);
+    }
+    let (too_old, installable) = if let Some(c) = state.capture.clone() {
+        state.status = c.status;
+        (c.too_old, true)
+    } else {
+        let now = time.elapsed_secs_f64();
+        if update::can_install() && state.polled_at.is_none_or(|t| now - t >= POLL_S) {
+            state.polled_at = Some(now);
+            state.status = update::status();
+        }
+        (update::too_old(), update::can_install())
+    };
+    let view = state.view(too_old, installable);
+    if state.lib {
+        if state.lib_view != view {
+            state.lib_view = view;
         }
         return;
     }
-    let too_old = update::too_old();
-    let now = time.elapsed_secs_f64();
-    if update::can_install() && state.polled_at.is_none_or(|t| now - t >= POLL_S) {
-        state.polled_at = Some(now);
-        state.status = update::status();
-    }
-    if too_old {
-        too_old_card(&egui, &state.status, update::can_install());
-    } else {
-        pill(&egui, &mut state);
+    let action = match &view {
+        UpdateView::None => None,
+        UpdateView::Pill { title, line, ready } => pill(&egui, title, line, *ready),
+        UpdateView::TooOld(t) => too_old_card(&egui, t),
+    };
+    if let Some(action) = action {
+        state.act(action);
     }
 }
 
 /// "Update ready", with Install — and once tapped, how far it is.
-fn pill(egui: &EguiRef, state: &mut AppUpdate) {
-    let (title, line) = match &state.status {
-        UpdateStatus::Ready(name) if state.dismissed.as_ref() != Some(name) => {
-            ("Update ready", format!("Cartopolis {name}"))
-        }
-        UpdateStatus::Fetching { done, total } if state.dismissed.is_none() => {
-            ("Updating…", megabytes(*done, *total))
-        }
-        UpdateStatus::Installing if state.dismissed.is_none() => {
-            ("Installing…", "Cartopolis closes when it is in".to_string())
-        }
-        _ => return,
-    };
-    let ready = matches!(state.status, UpdateStatus::Ready(_));
+fn pill(egui: &EguiRef, title: &str, line: &str, ready: bool) -> Option<UpdateAction> {
     let ctx = egui.ctx();
     let width = PILL_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-    let mut install = false;
-    let mut close = false;
+    let mut action = None;
     egui::Area::new(egui::Id::new("app_update_pill"))
         .order(egui::Order::Foreground)
         // Under the search bar, which has the top edge.
@@ -109,7 +233,7 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
                                 .color(theme::p().cream),
                         );
                         ui.label(
-                            egui::RichText::new(&line)
+                            egui::RichText::new(line)
                                 .size(theme::SIZE_SUB)
                                 .color(theme::p().text_dim),
                         );
@@ -117,10 +241,10 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ready {
                             if theme::close_button(ui).clicked() {
-                                close = true;
+                                action = Some(UpdateAction::Dismiss);
                             }
                             if theme::primary_button_sized(ui, "Install", 0.0).clicked() {
-                                install = true;
+                                action = Some(UpdateAction::Install);
                             }
                         } else {
                             ui.add(
@@ -133,18 +257,11 @@ fn pill(egui: &EguiRef, state: &mut AppUpdate) {
                 });
             });
         });
-    if install {
-        update::install_now();
-    }
-    if close {
-        if let UpdateStatus::Ready(name) = &state.status {
-            state.dismissed = Some(name.clone());
-        }
-    }
+    action
 }
 
 /// "Update Cartopolis to continue": the map dimmed, nothing else answers.
-fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
+fn too_old_card(egui: &EguiRef, t: &TooOld) -> Option<UpdateAction> {
     let ctx = egui.ctx();
     let screen = ctx.content_rect();
     let width = CARD_WIDTH.min(screen.width() - 2.0 * theme::OSD_MARGIN);
@@ -159,6 +276,7 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
         });
     let mut tapped = false;
+    let (heading, text) = too_old_text(t);
     egui::Area::new(egui::Id::new("app_update_card"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -172,65 +290,36 @@ fn too_old_card(egui: &EguiRef, status: &UpdateStatus, installable: bool) {
                             .color(theme::p().accent),
                     );
                     ui.add_space(4.0);
-                    match status {
-                        UpdateStatus::Fetching { done, total } => {
-                            title(ui, "Updating…");
-                            ui.add_space(8.0);
-                            let fraction = if *total > 0 {
-                                #[allow(clippy::cast_precision_loss)]
-                                let f = *done as f32 / *total as f32;
-                                f
-                            } else {
-                                0.0
-                            };
-                            ui.add(egui::ProgressBar::new(fraction)
-                                    .desired_height(8.0)
-                                    .fill(theme::p().accent));
-                            line(ui, &megabytes(*done, *total));
-                            line(ui, "Cartopolis closes when the update is in; a notification opens it again.");
+                    title(ui, heading);
+                    if let TooOld::Fetching { fraction, line: mb } = t {
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::ProgressBar::new(*fraction)
+                                .desired_height(8.0)
+                                .fill(theme::p().accent),
+                        );
+                        line(ui, mb);
+                    }
+                    line(ui, text);
+                    if let TooOld::Offer { failed } = t {
+                        if let Some(why) = failed {
+                            ui.add_space(4.0);
+                            let _ = theme::inline_error(ui, &format!("Did not work: {why}"));
                         }
-                        UpdateStatus::Installing => {
-                            title(ui, "Installing…");
-                            line(ui, "Cartopolis closes when the update is in; a notification opens it again.");
-                        }
-                        _ if installable => {
-                            title(ui, "Update Cartopolis to continue");
-                            line(
-                                ui,
-                                "The server has moved on and this version can no longer \
-                                 talk to it. The update takes about a minute.",
-                            );
-                            if let UpdateStatus::Failed(why) = status {
-                                ui.add_space(4.0);
-                                let _ = theme::inline_error(ui, &format!("Did not work: {why}"));
-                            }
-                            ui.add_space(8.0);
-                            let label = if matches!(status, UpdateStatus::Failed(_)) {
-                                "Try again"
-                            } else {
-                                "Update now"
-                            };
-                            if theme::primary_button_sized(ui, label, ui.available_width())
-                                .clicked()
-                            {
-                                tapped = true;
-                            }
-                        }
-                        _ => {
-                            title(ui, "This version of Cartopolis is too old");
-                            line(
-                                ui,
-                                "The server has moved on and this version can no longer \
-                                 talk to it. Get the new one from cartopolis.org.",
-                            );
+                        ui.add_space(8.0);
+                        let label = if failed.is_some() {
+                            "Try again"
+                        } else {
+                            "Update now"
+                        };
+                        if theme::primary_button_sized(ui, label, ui.available_width()).clicked() {
+                            tapped = true;
                         }
                     }
                 });
             });
         });
-    if tapped {
-        update::install_now();
-    }
+    tapped.then_some(UpdateAction::Install)
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {

@@ -108,25 +108,29 @@ pub struct LoginScreen {
     /// 0 → 1 while opening. Drives both the backdrop alpha and the card's rise, so
     /// they cannot get out of step.
     anim: f32,
-    server: String,
-    username: String,
-    password: String,
+    pub(crate) server: String,
+    pub(crate) username: String,
+    pub(crate) password: String,
     /// Keep this server's session token, so it stops asking for the password —
     /// and, since a remembered session is exactly one that can be entered without
     /// asking, the same tick is what `SessionPrefs::auto_enter` gets. They were
     /// two checkboxes ("Remember me on this device" / "Enter this way next time")
     /// and the combination that made them different — remember the token but ask
     /// anyway, or auto-enter with no token, which fails — is not one anybody wants.
-    remember: bool,
+    pub(crate) remember: bool,
     /// A request is in flight and this card is waiting to see how it lands.
     awaiting: bool,
     /// The Server field is open. It folds to one line naming the server once
     /// there is one, since almost everybody signs in to [`DEFAULT_SERVER`]
     /// and a field asking for it was the card's first question.
-    edit_server: bool,
+    pub(crate) edit_server: bool,
     /// Signing in with Discord, Google and the rest, through the browser
     /// (`external_signin`): what the server offers, and a round trip out.
-    external: crate::systems::external_signin::External,
+    pub(crate) external: crate::systems::external_signin::External,
+    /// The component library draws the card (`systems::lib_login`): egui's
+    /// system then draws nothing, but still settles the card, tells the
+    /// keyboard gate and collects a sign-in from the browser.
+    pub lib: bool,
 }
 
 impl Default for LoginScreen {
@@ -141,6 +145,7 @@ impl Default for LoginScreen {
             awaiting: false,
             edit_server: false,
             external: Default::default(),
+            lib: false,
         }
     }
 }
@@ -229,10 +234,83 @@ impl LoginScreen {
     /// [`Self::build_request`] refuses on, stated separately so the button can be
     /// disabled *before* the press rather than swallowing it.
     #[must_use]
-    fn answerable(&self) -> bool {
+    pub(crate) fn answerable(&self) -> bool {
         !normalize_server(&self.server).is_empty()
             && !self.username.trim().is_empty()
             && can_simulate()
+    }
+
+    /// The field still unanswered, named under a disabled button: the card
+    /// asks two questions and this says which one is left.
+    #[must_use]
+    pub(crate) fn missing(&self) -> Option<&'static str> {
+        if self.answerable() {
+            None
+        } else if normalize_server(&self.server).is_empty() {
+            Some("Enter the server to sign in to")
+        } else {
+            Some("Enter your account name")
+        }
+    }
+
+    /// The server as the foot of the card names it, or `None` when there is
+    /// none yet and the field is the way to give one.
+    #[must_use]
+    pub(crate) fn server_shown(&self) -> Option<String> {
+        if normalize_server(&self.server).is_empty() {
+            None
+        } else {
+            Some(self.server.trim().to_string())
+        }
+    }
+
+    /// Ask for the session the form describes — the press of Sign in, or
+    /// Enter, in either edition. Writes the remembered prefs and stays open
+    /// waiting (`settle` closes the card the frame the session comes up).
+    /// `false` when the form is not answerable or a session is under way.
+    pub(crate) fn submit(&mut self, store: &mut UserStore, session: &mut SessionState) -> bool {
+        if session.status.is_busy() {
+            return false;
+        }
+        let Some(request) = self.build_request() else {
+            return false;
+        };
+        // Says the request left the card, which is the one step between the
+        // button and `network::start_link` that used to have no evidence at
+        // all: a sign-in that produced nothing could equally have been a
+        // press that never reached the button, a form the card refused, or a
+        // socket that failed — and the log said the same thing (nothing) for
+        // all three.
+        info!(server = %self.server, user = %self.username, "sign-in requested");
+        store.set_session_prefs(self.prefs());
+        session.request(request);
+        // Stay open while it connects: the spinner, and any rejection, belong
+        // on this card.
+        self.awaiting = true;
+        true
+    }
+
+    /// Start signing in with one of the providers the server offers.
+    pub(crate) fn choose_external(&mut self, provider: crate::systems::external_signin::Offered) {
+        if let Some(base) = self.api_base() {
+            self.external.start(&base, provider);
+        }
+    }
+
+    /// A request that came back offline is no longer awaited: its reason is
+    /// on the card in front of the person who asked.
+    pub(crate) fn settle_awaiting(&mut self, session: &SessionState) {
+        if self.awaiting && !session.status.is_busy() {
+            self.awaiting = false;
+        }
+    }
+
+    /// The ✕ or the backdrop: closes the card, unless a connection is in
+    /// flight — closing would hide the only place the outcome is reported.
+    pub(crate) fn dismiss(&mut self, session: &SessionState) {
+        if !self.awaiting && !session.status.is_busy() {
+            self.open = false;
+        }
     }
 
     /// The server's HTTP address, for the other ways in it offers: `None` with
@@ -408,6 +486,13 @@ pub fn render_login_screen(
             screen.awaiting = true;
         }
     }
+    // The library's edition draws the card and takes its presses
+    // (`systems::lib_login`, in `PostUpdate`, after the session driver has
+    // seen any request, so it also lets go of `awaiting` there).
+    if screen.lib {
+        screen.anim = 1.0;
+        return;
+    }
     let dt = time.delta_secs();
     screen.anim = (screen.anim + dt / FADE_S).min(1.0);
     if screen.anim < 1.0 {
@@ -534,25 +619,12 @@ pub fn render_login_screen(
     // that used to say so was only true with a field focused, since that was
     // the condition for the key arriving at all; it is true now.
     let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
-    submit |= enter && !session.status.is_busy();
+    submit |= enter;
 
-    if submit {
-        if let Some(request) = screen.build_request() {
-            // Says the request left the card, which is the one step between the
-            // button and `network::start_link` that used to have no evidence at
-            // all: a sign-in that produced nothing could equally have been a
-            // press that never reached the button, a form the card refused, or a
-            // socket that failed — and the log said the same thing (nothing) for
-            // all three.
-            info!(server = %screen.server, user = %screen.username, "sign-in requested");
-            store.set_session_prefs(screen.prefs());
-            session.request(request);
-            // Stay open while it connects: the spinner, and any rejection, belong
-            // on this card. `settle` closes it at the top of the frame the session
-            // comes up.
-            screen.awaiting = true;
-            return;
-        }
+    // `submit` keeps the card open while it connects; `settle` closes it at
+    // the top of the frame the session comes up.
+    if submit && screen.submit(&mut store, &mut session) {
+        return;
     }
     // Dismiss on arrival, not on the click: a sign-in that is still authenticating
     // has not happened yet, and closing over it would leave the user looking at a
@@ -561,13 +633,11 @@ pub fn render_login_screen(
     // request that came back offline, whose reason is now on the card in front of
     // the person who asked for it.
     if screen.awaiting {
-        if !session.status.is_busy() {
-            screen.awaiting = false;
-        }
+        screen.settle_awaiting(&session);
         return;
     }
-    if close && !session.status.is_busy() {
-        screen.open = false;
+    if close {
+        screen.dismiss(&session);
     }
 }
 
@@ -701,15 +771,10 @@ fn card_ui(
                     .color(theme::p().text_dim),
             );
         });
-    } else if !ready {
+    } else if let Some(missing) = screen.missing() {
         // Says which field is missing rather than what is wrong with the form:
         // the card asks two questions and this names the one still unanswered.
         ui.add_space(8.0);
-        let missing = if normalize_server(&screen.server).is_empty() {
-            "Enter the server to sign in to"
-        } else {
-            "Enter your account name"
-        };
         ui.label(
             egui::RichText::new(missing)
                 .size(theme::SIZE_SUB)
@@ -757,11 +822,11 @@ fn card_ui(
     // question: only somebody running their own server has a different answer
     // than the one filled in. Asked to be changed, it becomes a field here.
     ui.add_space(14.0);
-    if !screen.edit_server && !normalize_server(&screen.server).is_empty() {
+    if let Some(server) = screen.server_shown().filter(|_| !screen.edit_server) {
         ui.horizontal(|ui| {
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(format!("Server: {}", screen.server.trim()))
+                    egui::RichText::new(format!("Server: {server}"))
                         .size(theme::SIZE_SUB)
                         .color(theme::p().text_dim),
                 )
@@ -814,8 +879,8 @@ fn external_buttons(ui: &mut egui::Ui, screen: &mut LoginScreen, busy: bool) {
             ui.add_space(4.0);
         }
     });
-    if let (Some(p), Some(base)) = (chosen, screen.api_base()) {
-        screen.external.start(&base, p);
+    if let Some(p) = chosen {
+        screen.choose_external(p);
     }
     if let Some(error) = &screen.external.error {
         ui.label(
@@ -895,18 +960,36 @@ fn external_waiting(ui: &mut egui::Ui, screen: &mut LoginScreen) {
     }
 }
 
-/// Where you are right now — the line that makes "sign out" mean something.
-fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentity) {
-    let (dot, text) = match &session.status {
+/// The status line's dot, by what it says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StatusDot {
+    Online,
+    Offline,
+    Busy,
+}
+
+/// What the status line says, in either edition.
+pub(crate) fn status_of(session: &SessionState, identity: &AuthIdentity) -> (StatusDot, String) {
+    match &session.status {
         SessionStatus::Online => (
-            theme::p().accent_bright,
+            StatusDot::Online,
             match identity.username.as_deref() {
                 Some(user) => format!("{user} · {}", session.mode.where_()),
                 None => session.mode.where_(),
             },
         ),
-        SessionStatus::Offline => (theme::p().text_dim, "Not signed in".to_string()),
-        busy => (theme::p().warn, busy.label().to_string()),
+        SessionStatus::Offline => (StatusDot::Offline, "Not signed in".to_string()),
+        busy => (StatusDot::Busy, busy.label().to_string()),
+    }
+}
+
+/// Where you are right now — the line that makes "sign out" mean something.
+fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentity) {
+    let (dot, text) = status_of(session, identity);
+    let dot = match dot {
+        StatusDot::Online => theme::p().accent_bright,
+        StatusDot::Offline => theme::p().text_dim,
+        StatusDot::Busy => theme::p().warn,
     };
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());

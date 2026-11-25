@@ -44,7 +44,7 @@ use crate::systems::{icons, theme};
 /// person exports the right thing, not so anything is decided here — which is
 /// why the numbers are read from `cartopolis_core::model_limits`, the constants
 /// `simulator::assets` enforces, rather than typed a second time.
-fn upload_format_hint() -> String {
+pub(crate) fn upload_format_hint() -> String {
     use cartopolis_core::model_limits::{
         with_thousands, MAX_ASSET_MB, MAX_NODES, MAX_TEXTURE_EDGE, MAX_TRIANGLES,
     };
@@ -118,7 +118,7 @@ pub enum Licence {
 }
 
 impl Licence {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Own => "own",
             Self::Cc0 => "cc0",
@@ -129,7 +129,7 @@ impl Licence {
 
     /// What the person choosing sees. Written as a claim they are making, because
     /// that is what it is.
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Own => "I made it",
             Self::Cc0 => "CC0 — public domain",
@@ -139,14 +139,14 @@ impl Licence {
     }
 
     /// Whether choosing this permits sharing. Advisory here; the server refuses.
-    fn may_share(self) -> bool {
+    pub(crate) fn may_share(self) -> bool {
         !matches!(self, Self::Other)
     }
 
     /// Whether a credit line has to be given with it. Asked at upload, because
     /// that is the moment the person still has the answer in front of them —
     /// chasing it up later means chasing it up never.
-    fn needs_attribution(self) -> bool {
+    pub(crate) fn needs_attribution(self) -> bool {
         matches!(self, Self::CcBy)
     }
 }
@@ -175,6 +175,9 @@ pub struct ModelLibraryState {
     /// rather than as a second visit to the list, and forced off for a licence
     /// that may not be handed on.
     pub upload_share: bool,
+    /// The component library draws the panel (`lib_models`): egui's keeps
+    /// an empty strip of its width.
+    pub lib: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +510,132 @@ pub fn poll_model_library(mut state: ResMut<ModelLibraryState>) {
     }
 }
 
+/// The width of the panel, egui's and the library's, in points.
+pub const PANEL_WIDTH: f32 = 360.0;
+
+/// Why the panel has nothing to show, when it has not: offline there is no
+/// simulator, so there is no store and no inventory, and the panel says so
+/// rather than showing two empty lists that look like a failure.
+///
+/// **Two reasons, two sentences.** These used to be one flag, and a signed-in
+/// person whose server never said where its model store is was told to sign
+/// in — which is not something they can act on, and made a working panel look
+/// broken. A server can be joined and still have no HTTP surface (no
+/// `--http-listen`) or one the client cannot derive, and that is the
+/// operator's to fix, not the player's.
+pub(crate) fn unavailable(have_session: bool) -> Option<&'static str> {
+    if have_session && model_assets::have_endpoint() {
+        None
+    } else if have_session {
+        Some(
+            "This server did not say where its model store is, so there is nothing \
+             to show. An operator turns one on with --http-listen, or names it with \
+             api_base_url.",
+        )
+    } else {
+        Some("Models belong to your account. Sign in to see yours.")
+    }
+}
+
+/// Whether a name passes the search box (`needle` lower-cased).
+pub(crate) fn matches(name: &str, needle: &str) -> bool {
+    needle.is_empty() || name.to_lowercase().contains(needle)
+}
+
+/// What the panel does, for both its editions: egui's
+/// (`render_model_library_panel`) and the component library's
+/// (`lib_models`), so the two cannot drift apart.
+impl ModelLibraryState {
+    /// Fetch both lists the first time the panel is open in a session.
+    pub fn ensure_loaded(&mut self, signed_in: bool) {
+        if signed_in && !self.loaded {
+            self.loaded = true;
+            self.refresh();
+        }
+    }
+
+    /// Fetch both lists again.
+    pub fn refresh(&mut self) {
+        self.busy = true;
+        fetch_inventory(self.inbox.clone());
+        fetch_library(self.inbox.clone());
+    }
+
+    /// A file has been chosen and waits for its details and Upload.
+    pub fn has_file(&self) -> bool {
+        self.pending_bytes.is_some()
+    }
+
+    /// Open the file dialog ("Add a model…").
+    pub fn start_pick(&mut self) {
+        match model_file::start() {
+            Ok(pick) => {
+                self.pick = Some(pick);
+                self.status = "Choose a model…".into();
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Upload the chosen file with the details given, and share it in the
+    /// same breath when that was asked and the licence allows it.
+    pub fn start_upload(&mut self) {
+        if let Some(bytes) = self.pending_bytes.take() {
+            let name = if self.upload_name.trim().is_empty() {
+                "Unnamed model".to_string()
+            } else {
+                self.upload_name.clone()
+            };
+            self.busy = true;
+            self.status = "Uploading…".into();
+            let share_too = self.upload_share && self.upload_licence.may_share();
+            upload(
+                self.inbox.clone(),
+                bytes,
+                name,
+                self.upload_licence,
+                self.upload_attribution.clone(),
+                share_too,
+            );
+            self.upload_name.clear();
+            self.upload_attribution.clear();
+        }
+    }
+
+    pub fn share_item(&mut self, id: i64, name: String) {
+        self.busy = true;
+        share(self.inbox.clone(), id, name);
+    }
+
+    pub fn unshare_item(&mut self, id: i64, name: String) {
+        self.busy = true;
+        unshare(self.inbox.clone(), id, name);
+    }
+
+    pub fn discard_item(&mut self, id: i64, name: String) {
+        self.busy = true;
+        discard(self.inbox.clone(), id, name);
+    }
+
+    /// "Keep": a copy of a library entry into the inventory.
+    pub fn take_entry(&mut self, hash: String, name: String) {
+        self.busy = true;
+        take(self.inbox.clone(), hash, name);
+    }
+
+    /// "Place": a prim wearing the model, in front of the avatar.
+    pub fn place(
+        &mut self,
+        game_state: &mut GameState,
+        avatar_state: &AvatarState,
+        hash: &str,
+        name: &str,
+    ) {
+        place_model(game_state, avatar_state, hash, name);
+        self.status = format!("Placed \u{201c}{name}\u{201d}.");
+    }
+}
+
 /// The panel.
 #[allow(clippy::too_many_lines)]
 pub fn render_model_library_panel(
@@ -520,24 +649,30 @@ pub fn render_model_library_panel(
     if !right_panel.is(RightPanel::Models) {
         return;
     }
-    // Offline there is no simulator, so there is no store and no inventory. The
-    // panel says so rather than showing two empty lists that look like a failure.
-    //
-    // **Two reasons, two sentences.** These used to be one flag, and a signed-in
-    // person whose server never said where its model store is was told to sign
-    // in — which is not something they can act on, and made a working panel look
-    // broken. A server can be joined and still have no HTTP surface (no
-    // `--http-listen`) or one the client cannot derive, and that is the
-    // operator's to fix, not the player's.
-    let have_session = online.is_some();
-    let have_store = model_assets::have_endpoint();
-    let signed_in = have_session && have_store;
+    let unavailable = unavailable(online.is_some());
+    let signed_in = unavailable.is_none();
+    state.ensure_loaded(signed_in);
 
-    if signed_in && !state.loaded {
-        state.loaded = true;
-        state.busy = true;
-        fetch_inventory(state.inbox.clone());
-        fetch_library(state.inbox.clone());
+    // The library's edition is showing (`lib_models`): keep an empty strip
+    // of the panel's width, so the dock and the pins move aside and a click
+    // there is not the world's.
+    if state.lib {
+        let compact = egui.compact();
+        let viewport_w = egui.viewport_pts().x;
+        let mut open = true;
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "model_library_panel",
+            compact,
+            viewport_w,
+            PANEL_WIDTH,
+        )
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(PANEL_WIDTH);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        return;
     }
 
     // The panel body cannot borrow `state`: `right_panel` already holds a mutable
@@ -555,7 +690,7 @@ pub fn render_model_library_panel(
     let entries = std::mem::take(&mut state.entries);
     let busy = state.busy;
     let status = state.status.clone();
-    let has_bytes = state.pending_bytes.is_some();
+    let has_bytes = state.has_file();
 
     let mut want_pick = false;
     let mut want_upload = false;
@@ -571,16 +706,9 @@ pub fn render_model_library_panel(
         &mut right_panel,
         RightPanel::Models,
         "model_library_panel",
-        360.0,
+        PANEL_WIDTH,
         |ui| {
-            if !signed_in {
-                let message = if have_session {
-                    "This server did not say where its model store is, so there is nothing \
-                     to show. An operator turns one on with --http-listen, or names it with \
-                     api_base_url."
-                } else {
-                    "Models belong to your account. Sign in to see yours."
-                };
+            if let Some(message) = unavailable {
                 ui.label(egui::RichText::new(message).color(theme::p().text_dim));
                 return;
             }
@@ -705,7 +833,7 @@ pub fn render_model_library_panel(
                         );
                     }
                     for item in &items {
-                        if !needle.is_empty() && !item.name.to_lowercase().contains(&needle) {
+                        if !matches(&item.name, &needle) {
                             continue;
                         }
                         ui.horizontal_wrapped(|ui| {
@@ -784,7 +912,7 @@ pub fn render_model_library_panel(
                         );
                     }
                     for entry in &entries {
-                        if !needle.is_empty() && !entry.name.to_lowercase().contains(&needle) {
+                        if !matches(&entry.name, &needle) {
                             continue;
                         }
                         ui.horizontal_wrapped(|ui| {
@@ -841,60 +969,28 @@ pub fn render_model_library_panel(
     state.entries = entries;
 
     if want_refresh {
-        state.busy = true;
-        fetch_inventory(state.inbox.clone());
-        fetch_library(state.inbox.clone());
+        state.refresh();
     }
     if want_pick {
-        match model_file::start() {
-            Ok(pick) => {
-                state.pick = Some(pick);
-                state.status = "Choose a model…".into();
-            }
-            Err(e) => state.status = e,
-        }
+        state.start_pick();
     }
     if want_upload {
-        if let Some(bytes) = state.pending_bytes.take() {
-            let name = if state.upload_name.trim().is_empty() {
-                "Unnamed model".to_string()
-            } else {
-                state.upload_name.clone()
-            };
-            state.busy = true;
-            state.status = "Uploading…".into();
-            let share_too = state.upload_share && state.upload_licence.may_share();
-            upload(
-                state.inbox.clone(),
-                bytes,
-                name,
-                state.upload_licence,
-                state.upload_attribution.clone(),
-                share_too,
-            );
-            state.upload_name.clear();
-            state.upload_attribution.clear();
-        }
+        state.start_upload();
     }
     if let Some((id, name)) = share_item {
-        state.busy = true;
-        share(state.inbox.clone(), id, name);
+        state.share_item(id, name);
     }
     if let Some((id, name)) = unshare_item {
-        state.busy = true;
-        unshare(state.inbox.clone(), id, name);
+        state.unshare_item(id, name);
     }
     if let Some((id, name)) = discard_item {
-        state.busy = true;
-        discard(state.inbox.clone(), id, name);
+        state.discard_item(id, name);
     }
     if let Some((hash, name)) = take_entry {
-        state.busy = true;
-        take(state.inbox.clone(), hash, name);
+        state.take_entry(hash, name);
     }
     if let Some((hash, name)) = place {
-        place_model(&mut game_state, &avatar_state, &hash, &name);
-        state.status = format!("Placed \u{201c}{name}\u{201d}.");
+        state.place(&mut game_state, &avatar_state, &hash, &name);
     }
 }
 

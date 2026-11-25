@@ -643,10 +643,43 @@ pub fn render_avatar_chooser(
     let mut apply = false;
     // On a phone the designer is a sheet across the bottom half: a panel that
     // filled the screen would hide the avatar it is shaping.
-    if let Some(tab) = chooser.open_tab.take() {
-        designer.tab = tab;
+    // The library's edition takes the tab itself (`lib_avatar`).
+    let lib = chooser.lib;
+    if !lib {
+        if let Some(tab) = chooser.open_tab.take() {
+            designer.tab = tab;
+        }
     }
     let sheet = egui.compact();
+    // The library's edition is showing (`lib_avatar`): keep an empty strip
+    // of the panel's size, so the dock and the pins move aside and a click
+    // there is not the world's, and leave the draft and the camera to the
+    // code below, as for egui's.
+    if lib && right_panel.is(RightPanel::Appearance) {
+        let mut open = true;
+        if sheet {
+            let height = egui.viewport_pts().y * SHEET_SHARE;
+            egui::Panel::bottom("appearance_sheet")
+                .frame(egui::Frame::NONE)
+                .show_separator_line(false)
+                .resizable(false)
+                .exact_size(height)
+                .show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        } else {
+            let viewport_w = egui.viewport_pts().x;
+            crate::systems::egui_manager::responsive_right_panel(
+                "appearance_panel",
+                false,
+                viewport_w,
+                crate::systems::avatar_designer::LIB_PANEL_WIDTH,
+            )
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .resizable(false)
+            .exact_size(crate::systems::avatar_designer::LIB_PANEL_WIDTH)
+            .show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        }
+    }
     let body = |ui: &mut egui::Ui| {
         // Outside the scroll area, so the header and the close button stay put
         // while the body scrolls under them — and so the body is what is
@@ -681,28 +714,28 @@ pub fn render_avatar_chooser(
                 }
             });
     };
-    let closed = if sheet {
-        crate::systems::egui_manager::bottom_sheet(
-            &mut egui,
-            &mut right_panel,
-            RightPanel::Appearance,
-            "appearance_sheet",
-            SHEET_SHARE,
-            body,
-        )
-    } else {
-        crate::systems::egui_manager::right_panel(
-            &mut egui,
-            &mut right_panel,
-            RightPanel::Appearance,
-            "appearance_panel",
-            280.0,
-            body,
-        )
-    };
+    let closed = !lib
+        && if sheet {
+            crate::systems::egui_manager::bottom_sheet(
+                &mut egui,
+                &mut right_panel,
+                RightPanel::Appearance,
+                "appearance_sheet",
+                SHEET_SHARE,
+                body,
+            )
+        } else {
+            crate::systems::egui_manager::right_panel(
+                &mut egui,
+                &mut right_panel,
+                RightPanel::Appearance,
+                "appearance_panel",
+                280.0,
+                body,
+            )
+        };
     if apply {
-        store.data.appearance = chooser.draft.clone();
-        store.dirty = true;
+        crate::systems::avatar_designer::apply_draft(&chooser, &mut store);
     }
     if closed {
         chooser.seeded = false;
@@ -721,7 +754,13 @@ pub fn render_avatar_chooser(
     // the middle of the half it leaves, not the middle of the screen: aiming
     // at the face put it right on the sheet's edge, under it but for the hair.
     // (0.9 m at the default 6 m: 2.5 m of the top half, the body with room.)
-    let close = showing.is_some() && designer.close_up();
+    // The library's designer says what it wants through the chooser.
+    let close_up = if lib {
+        chooser.lib_close_up
+    } else {
+        designer.close_up()
+    };
+    let close = showing.is_some() && close_up;
     let aim = if close {
         Some(1.62)
     } else {
@@ -739,7 +778,11 @@ pub fn render_avatar_chooser(
         camera.aim_reach = reach;
     }
     let turn = if showing.is_some() {
-        designer.view.turn()
+        if lib {
+            chooser.lib_turn
+        } else {
+            designer.view.turn()
+        }
     } else {
         0.0
     };

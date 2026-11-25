@@ -41,6 +41,55 @@ pub struct Welcome {
     /// v2-account, A1), whether or not it has been answered before. Signing
     /// in opens the Community page; "Not now" and World go back to the map.
     pub community: bool,
+    /// The component library draws the card (`systems::lib_welcome`): egui's
+    /// system then draws nothing, but still decides whether it shows
+    /// ([`Self::lib_view`]) and answers what it hands back
+    /// ([`Self::lib_action`]).
+    pub lib: bool,
+    pub lib_view: WelcomeView,
+    pub lib_action: Option<WelcomeAction>,
+}
+
+/// What the card shows, published for the library's edition.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct WelcomeView {
+    pub shown: bool,
+    /// The server signs people up on its web page ("Create account").
+    pub register: bool,
+}
+
+/// One of the card's three answers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WelcomeAction {
+    SignIn,
+    CreateAccount,
+    NotNow,
+}
+
+/// An answer, in either edition: sign in, sign up through the browser (and
+/// come back to the card that takes the account), or just the map.
+#[cfg(feature = "comms")]
+fn answer(
+    action: WelcomeAction,
+    welcome: &mut Welcome,
+    prefs: &mut AppPrefs,
+    login: &mut LoginScreen,
+) {
+    match action {
+        WelcomeAction::SignIn => login.open = true,
+        WelcomeAction::CreateAccount => {
+            if let Some(url) = login.register_url() {
+                crate::systems::data_layers::open_url(&url);
+            }
+            // Back from the browser with an account, the card that takes it
+            // is already open.
+            login.open = true;
+        }
+        WelcomeAction::NotNow => welcome.community = false,
+    }
+    if welcome.capture.is_none() {
+        prefs.welcome_seen = true;
+    }
 }
 
 /// The card, while it has not been answered. The app's only (`comms`): in
@@ -60,6 +109,11 @@ pub fn render_welcome(
     place: Res<crate::systems::place_card::PlaceCard>,
     building: Res<crate::systems::building_select::BuildingSelection>,
 ) {
+    // An answer the library's card handed back.
+    if let Some(action) = welcome.lib_action {
+        welcome.lib_action = None;
+        answer(action, &mut welcome, &mut prefs, &mut login);
+    }
     // Somebody who has signed in knows what it is for, and a remembered
     // session coming up on launch is that somebody.
     if session.is_online() && !prefs.welcome_seen {
@@ -73,21 +127,28 @@ pub fn render_welcome(
         }
     }
     let show = welcome.community || welcome.capture.unwrap_or(!prefs.welcome_seen);
-    if !show || session.is_online() || session.status.is_busy() || login.open {
+    let visible = show
+        && !(session.is_online() || session.status.is_busy() || login.open)
+        && !(driver.active || keyboard.is_open() || menu.open || !right_panel.is(RightPanel::None))
+        // A card the person opened is what they are looking at.
+        && !(place.place.is_some() || building.selected.is_some());
+    if welcome.lib {
+        let view = WelcomeView {
+            shown: visible,
+            register: visible && login.register_url().is_some(),
+        };
+        if welcome.lib_view != view {
+            welcome.lib_view = view;
+        }
         return;
     }
-    if driver.active || keyboard.is_open() || menu.open || !right_panel.is(RightPanel::None) {
-        return;
-    }
-    // A card the person opened is what they are looking at.
-    if place.place.is_some() || building.selected.is_some() {
+    if !visible {
         return;
     }
 
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let ctx = egui.ctx();
-    let mut answered = false;
-    let mut not_now = false;
+    let mut answer_with = None;
     egui::Area::new(egui::Id::new("welcome_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(ctx, |ui| {
@@ -117,33 +178,23 @@ pub fn render_welcome(
                         width
                     };
                     if theme::primary_button_sized(ui, "Sign in", half).clicked() {
-                        login.open = true;
-                        answered = true;
+                        answer_with = Some(WelcomeAction::SignIn);
                     }
-                    if let Some(url) = &register {
-                        let resp = theme::secondary_button(ui, "", "Create account", half);
-                        if resp.clicked() {
-                            crate::systems::data_layers::open_url(url);
-                            // Back from the browser with an account, the card
-                            // that takes it is already open.
-                            login.open = true;
-                            answered = true;
-                        }
+                    if register.is_some()
+                        && theme::secondary_button(ui, "", "Create account", half).clicked()
+                    {
+                        answer_with = Some(WelcomeAction::CreateAccount);
                     }
                 });
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
                     if theme::ghost_button(ui, "", "Not now, just the map").clicked() {
-                        answered = true;
-                        not_now = true;
+                        answer_with = Some(WelcomeAction::NotNow);
                     }
                 });
             });
         });
-    if answered && welcome.capture.is_none() {
-        prefs.welcome_seen = true;
-    }
-    if not_now {
-        welcome.community = false;
+    if let Some(action) = answer_with {
+        answer(action, &mut welcome, &mut prefs, &mut login);
     }
 }

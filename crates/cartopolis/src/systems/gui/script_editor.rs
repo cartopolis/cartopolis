@@ -99,6 +99,9 @@ pub struct ScriptEditorState {
     /// The world's budget, from `WorldCapacity`. `None` until the server has
     /// said — offline it never does, and the headroom line is simply absent.
     pub budget: Option<WorldBudget>,
+    /// The component library draws the panel (`lib_script`): egui's keeps
+    /// an empty strip of its width.
+    pub lib: bool,
 }
 
 impl ScriptEditorState {
@@ -161,7 +164,100 @@ impl ScriptEditorState {
     pub fn is_dirty(&self) -> bool {
         self.fetched && self.source != self.saved
     }
+
+    // What the panel does, for both its editions: egui's
+    // (`render_script_panel`) and the component library's (`lib_script`),
+    // so the two cannot drift apart.
+
+    /// Ask for the prim's source, once per opening. From the panel rather
+    /// than the context menu, so there is one place that knows how to fill
+    /// the buffer.
+    pub fn fetch_if_needed(&mut self, online: &OnlineSession) {
+        if let (true, Some(prim_id)) = (self.needs_fetch, self.prim_id) {
+            online.send(
+                "get prim script",
+                NetMessage::GetPrimScript(msg::GetPrimScript {
+                    request_id: 0,
+                    prim_id,
+                }),
+            );
+            self.needs_fetch = false;
+        }
+    }
+
+    /// "Save & run": store the script, which (re)starts it.
+    pub fn save(&self, online: &OnlineSession) {
+        let Some(prim_id) = self.prim_id else {
+            return;
+        };
+        online.send(
+            "set prim script",
+            NetMessage::SetPrimScript(msg::SetPrimScript {
+                request_id: 0,
+                prim_id,
+                source: self.source.clone(),
+            }),
+        );
+    }
+
+    /// "Stop": remove the script. Storing an empty script *is* removing it —
+    /// one code path on the server, and one less thing that can disagree
+    /// about whether a prim has a script.
+    pub fn stop(&mut self, online: &OnlineSession) {
+        let Some(prim_id) = self.prim_id else {
+            return;
+        };
+        self.source.clear();
+        online.send(
+            "set prim script",
+            NetMessage::SetPrimScript(msg::SetPrimScript {
+                request_id: 0,
+                prim_id,
+                source: String::new(),
+            }),
+        );
+    }
+
+    /// "Touch": fire `on_touch`, as if you had clicked the prim.
+    pub fn touch(&self, online: &OnlineSession) {
+        let Some(prim_id) = self.prim_id else {
+            return;
+        };
+        online.send(
+            "touch prim",
+            NetMessage::TouchPrim(msg::TouchPrim {
+                request_id: 0,
+                prim_id,
+            }),
+        );
+    }
+
+    /// "Start from a template".
+    pub fn insert_template(&mut self) {
+        self.source = TEMPLATE.to_string();
+    }
 }
+
+/// The width of the panel, egui's and the library's, in points.
+pub const PANEL_WIDTH: f32 = 420.0;
+
+/// The region's headroom, as the line under the prim says it.
+pub(crate) fn budget_line(b: WorldBudget) -> String {
+    format!(
+        "region: {} / {} scripts · {} / {} prims · {} each",
+        b.scripts_used,
+        b.scripts_max,
+        b.prims_used,
+        b.prims_max,
+        memory_label(b.script_memory_bytes)
+    )
+}
+
+/// What the headroom line means, on hover.
+pub(crate) const BUDGET_HINT: &str =
+    "What this region has left. Scripts and prims are budgeted per region, \
+     and each script may take at most this much more memory at a time: one \
+     that takes more is stopped.";
 
 /// The collapsed API reference: every call and every handler, grouped.
 ///
@@ -248,24 +344,36 @@ pub fn render_script_panel(
     mut right_panel: ResMut<RightPanel>,
     prims: Query<&crate::components::Prim>,
 ) {
-    let Some(online) = online else {
-        return;
-    };
     if !right_panel.is(RightPanel::Script) {
         return;
     }
-
-    // The source request is made from here rather than from the context menu, so
-    // there is one place that knows how to fill the buffer.
-    if let (true, Some(prim_id)) = (editor.needs_fetch, editor.prim_id) {
-        online.send(
-            "get prim script",
-            NetMessage::GetPrimScript(msg::GetPrimScript {
-                request_id: 0,
-                prim_id,
-            }),
-        );
-        editor.needs_fetch = false;
+    // The library's edition is showing (`lib_script`): keep an empty strip
+    // of the panel's width, so the dock and the pins move aside and a click
+    // there is not the world's. It fetches and sends itself.
+    if editor.lib {
+        let compact = egui.compact();
+        let viewport_w = egui.viewport_pts().x;
+        let mut open = true;
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "script_panel",
+            compact,
+            viewport_w,
+            PANEL_WIDTH,
+        )
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(PANEL_WIDTH);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        return;
+    }
+    let Some(online) = online else {
+        return;
+    };
+    // Read before writing, so a quiet frame leaves the resource unchanged.
+    if editor.needs_fetch {
+        editor.fetch_if_needed(&online);
     }
 
     let prim_id = editor.prim_id;
@@ -285,7 +393,7 @@ pub fn render_script_panel(
         &mut right_panel,
         RightPanel::Script,
         "script_panel",
-        420.0,
+        PANEL_WIDTH,
         |ui| {
             let Some(prim_id) = prim_id else {
                 ui.label(
@@ -329,22 +437,11 @@ pub fn render_script_panel(
 
             if let Some(b) = budget {
                 ui.label(
-                    egui::RichText::new(format!(
-                        "region: {} / {} scripts · {} / {} prims · {} each",
-                        b.scripts_used,
-                        b.scripts_max,
-                        b.prims_used,
-                        b.prims_max,
-                        memory_label(b.script_memory_bytes)
-                    ))
-                    .color(theme::p().text_dim)
-                    .small(),
+                    egui::RichText::new(budget_line(b))
+                        .color(theme::p().text_dim)
+                        .small(),
                 )
-                .on_hover_text(
-                    "What this region has left. Scripts and prims are budgeted per region, \
-                 and each script may take at most this much more memory at a time: one \
-                 that takes more is stopped.",
-                );
+                .on_hover_text(BUDGET_HINT);
             }
             ui.separator();
 
@@ -446,43 +543,15 @@ pub fn render_script_panel(
         editor.console.clear();
     }
     if insert_template {
-        editor.source = TEMPLATE.to_string();
+        editor.insert_template();
     }
-
-    let Some(prim_id) = editor.prim_id else {
-        return;
-    };
     if save {
-        let source = editor.source.clone();
-        online.send(
-            "set prim script",
-            NetMessage::SetPrimScript(msg::SetPrimScript {
-                request_id: 0,
-                prim_id,
-                source,
-            }),
-        );
+        editor.save(&online);
     }
     if stop {
-        // Storing an empty script *is* removing it — one code path on the server,
-        // and one less thing that can disagree about whether a prim has a script.
-        editor.source.clear();
-        online.send(
-            "set prim script",
-            NetMessage::SetPrimScript(msg::SetPrimScript {
-                request_id: 0,
-                prim_id,
-                source: String::new(),
-            }),
-        );
+        editor.stop(&online);
     }
     if touch {
-        online.send(
-            "touch prim",
-            NetMessage::TouchPrim(msg::TouchPrim {
-                request_id: 0,
-                prim_id,
-            }),
-        );
+        editor.touch(&online);
     }
 }
