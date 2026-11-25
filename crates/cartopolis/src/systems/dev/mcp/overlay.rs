@@ -28,7 +28,34 @@ const LINGER_S: f64 = 12.0;
 /// The box's width. Fixed, because its content is a log: lines arrive at
 /// unpredictable lengths and a box that resized around each one would twitch its
 /// way across the corner.
-const WIDTH: f32 = 268.0;
+pub const WIDTH: f32 = 268.0;
+
+/// The editor's log as the component library draws it
+/// (`lib_mcp_overlay`): with `lib` on, [`render_mcp_activity`] keeps
+/// deciding what shows and publishes it in `view`, and draws nothing.
+#[derive(Resource, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct McpActivityLib {
+    pub lib: bool,
+    /// What shows this frame; `None` hides the box.
+    pub view: Option<ActivityView>,
+}
+
+/// The box as plain data.
+// No `Debug`: `Outcome` has none.
+#[derive(Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct ActivityView {
+    /// How far below `OSD_MARGIN` it stands: under the Midas button while
+    /// the link is up.
+    pub below: f32,
+    /// A call is waiting on the schedule: the spinner turns.
+    pub busy: bool,
+    /// Where the editor's socket listens.
+    pub listen: String,
+    /// The lines still up: (tool, what it was asked or answered, outcome).
+    pub lines: Vec<(String, String, Outcome)>,
+}
 
 pub fn render_mcp_activity(
     egui: EguiRef,
@@ -37,12 +64,15 @@ pub fn render_mcp_activity(
     driver: Res<crate::systems::driver::DriverState>,
     real: Res<Time<Real>>,
     link: Option<Res<crate::systems::midas_link::MidasLink>>,
+    mut lib: Option<ResMut<McpActivityLib>>,
 ) {
+    let lib_on = lib.as_ref().is_some_and(|l| l.lib);
     // Driver mode owns the screen, and the top-right corner is where its trip
     // strip goes. There is no ambient "driver mode is on" that hides an `Area`,
     // so anything new that draws over the map opts out by hand — see
     // `docs/notes/map-chrome.md`, which is a list of the things that did not.
     if !right_panel.is(crate::resources::RightPanel::None) || driver.active {
+        publish(&mut lib, None);
         return;
     }
     let now = real.elapsed_secs_f64();
@@ -52,6 +82,7 @@ pub fn render_mcp_activity(
         .filter(|e| e.outcome == Outcome::Working || now - e.at < LINGER_S)
         .collect();
     if live.is_empty() {
+        publish(&mut lib, None);
         return;
     }
     // A capture in flight repaints for the whole of its settle, and egui would
@@ -66,6 +97,29 @@ pub fn render_mcp_activity(
     } else {
         0.0
     };
+    if lib_on {
+        // A finished line goes on its own after `LINGER_S`: wake for it.
+        if let Some(next) = live
+            .iter()
+            .filter(|e| e.outcome != Outcome::Working)
+            .map(|e| e.at + LINGER_S - now)
+            .min_by(f64::total_cmp)
+        {
+            egui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(next.max(0.0)));
+        }
+        let view = ActivityView {
+            below,
+            busy: bridge.busy(),
+            listen: bridge.listen.display().to_string(),
+            lines: live
+                .iter()
+                .map(|e| (e.label.clone(), e.detail.clone(), e.outcome))
+                .collect(),
+        };
+        publish(&mut lib, Some(view));
+        return;
+    }
 
     egui::Area::new(egui::Id::new("mcp_activity"))
         // Top-right: the compass, the locate button and the layers disc hold the
@@ -125,6 +179,15 @@ pub fn render_mcp_activity(
                 }
             });
         });
+}
+
+/// Hand the library what shows, writing the resource only when it moved.
+fn publish(lib: &mut Option<ResMut<McpActivityLib>>, view: Option<ActivityView>) {
+    if let Some(l) = lib.as_mut() {
+        if l.lib && l.view != view {
+            l.view = view;
+        }
+    }
 }
 
 /// How long after its last call the agent still counts as at work in the room.

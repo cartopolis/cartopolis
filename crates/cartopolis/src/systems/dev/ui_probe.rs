@@ -99,6 +99,9 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_cosmos::drive_lib_cosmos,
                     crate::systems::lib_splash::drive_lib_splash,
                     crate::systems::lib_face_viewfinder::drive_lib_face_viewfinder,
+                    crate::systems::lib_dev_panel::drive_lib_dev_panel,
+                    crate::systems::lib_object_editor::drive_lib_object_editor,
+                    crate::systems::lib_marquee::drive_lib_marquee,
                 )
                     .chain()
                     .after(crate::systems::lib_main_menu::drive_lib_main_menu)
@@ -123,7 +126,33 @@ impl Plugin for UiProbePlugin {
         app.init_resource::<crate::systems::call_screen::CallScreenLib>()
             .add_systems(
                 PostUpdate,
-                crate::systems::lib_call::drive_lib_call
+                (
+                    crate::systems::lib_call::drive_lib_call,
+                    crate::systems::lib_picture_viewer::drive_lib_picture_viewer,
+                )
+                    .after(crate::systems::lib_host::prepare_bevy)
+                    .before(crate::systems::lib_host::bridge_input),
+            );
+        // The object editor and the builder's marquee: their switches are
+        // resources the egui systems take as an `Option`.
+        app.init_resource::<crate::systems::ui::ObjectEditorLib>()
+            .init_resource::<crate::systems::picking::MarqueeLib>();
+        // The developer's tools over the app, native only.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(
+            PostUpdate,
+            (
+                crate::systems::lib_midas_link::drive_lib_midas_link,
+                crate::systems::lib_release_approval::drive_lib_release_approval,
+            )
+                .after(crate::systems::lib_host::prepare_bevy)
+                .before(crate::systems::lib_host::bridge_input),
+        );
+        #[cfg(all(mcp, not(target_os = "android")))]
+        app.init_resource::<crate::systems::mcp::overlay::McpActivityLib>()
+            .add_systems(
+                PostUpdate,
+                crate::systems::lib_mcp_overlay::drive_lib_mcp_activity
                     .after(crate::systems::lib_host::prepare_bevy)
                     .before(crate::systems::lib_host::bridge_input),
             );

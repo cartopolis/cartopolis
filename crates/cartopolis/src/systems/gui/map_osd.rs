@@ -283,6 +283,10 @@ pub struct OsdLib {
     /// What the library draws this frame, in egui points. Assigned only
     /// when it differs, so a resting OSD sends the library nothing.
     pub view: OsdView,
+    /// The hand disc's menu is open (right-click or long press on it):
+    /// egui's slot opens it, the library's popover closes it
+    /// (`lib_map_osd`). egui's own popup keeps its state in egui.
+    pub hand_menu: bool,
 }
 
 /// Everything the controls show this frame, as egui laid it out.
@@ -295,6 +299,8 @@ pub struct OsdView {
     pub discs: Vec<DiscView>,
     /// The hand tracking's word, left of the hand disc.
     pub hand_word: Option<HandWordView>,
+    /// The hand disc's menu, while it is open.
+    pub hand_menu: Option<HandMenuView>,
     /// The expressions, opened from the face disc.
     pub faces: Option<FacesView>,
     pub rail: Option<RailFrame>,
@@ -357,6 +363,17 @@ pub struct HandWordView {
     pub y: f32,
     pub text: &'static str,
     pub tone: Tone,
+}
+
+/// The hand disc's menu (egui's context menu on it): the disc it hangs
+/// from, which hand, whether Start again can be pressed, and what is wrong.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HandMenuView {
+    /// The hand disc, in egui points.
+    pub disc: egui::Rect,
+    pub left: bool,
+    pub can_restart: bool,
+    pub problem: Option<String>,
 }
 
 /// The expressions' frame and its rows.
@@ -596,7 +613,7 @@ pub fn render_map_osd(
     chrome: Res<crate::systems::dock::MapChrome>,
     #[cfg(feature = "comms")] sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
     room: Res<crate::systems::design_room::DesignRoom>,
-    lib: Option<ResMut<OsdLib>>,
+    mut lib: Option<ResMut<OsdLib>>,
 ) {
     // The library's edition: what it draws, gathered as egui lays it out.
     let mut out: Option<OsdView> = lib.as_ref().filter(|l| l.lib).map(|_| OsdView {
@@ -683,7 +700,13 @@ pub fn render_map_osd(
                     body.faces
                         .write(crate::systems::avatar_face::StartExpression(e));
                 }
-                hand_button(ctx, &fingers, &mut areas, &mut body, at, out.as_mut());
+                // The library's edition keeps the menu's open state where
+                // its popover can close it.
+                let menu = lib
+                    .as_deref_mut()
+                    .filter(|l| l.lib)
+                    .map(|l| &mut l.hand_menu);
+                hand_button(ctx, &fingers, &mut areas, &mut body, at, out.as_mut(), menu);
             }
             // The zoom rail below is Earth mode's control, on every device.
             Cluster::Zoom => {}
@@ -1560,6 +1583,7 @@ fn hand_button(
     body: &mut BodyControls,
     at: Spots,
     mut out: Option<&mut OsdView>,
+    menu: Option<&mut bool>,
 ) {
     use crate::systems::held_phone::Side;
     use crate::systems::high_precision::{HandWord, HighPrecision};
@@ -1620,36 +1644,51 @@ fn hand_button(
             if tapped && !resp.long_touched() && HighPrecision::available() {
                 body.tap_hand();
             }
+            // The library's edition: the same press opens its popover
+            // (`lib_map_osd`), published while open; egui's popup is not
+            // made at all.
+            if let Some(open) = menu {
+                if resp.secondary_clicked() || resp.long_touched() {
+                    *open = true;
+                }
+                if *open {
+                    if let Some(v) = out.as_deref_mut() {
+                        v.hand_menu = Some(HandMenuView {
+                            disc: resp.rect,
+                            left: body.held.side == Side::Left,
+                            can_restart: body.high.on,
+                            problem: body.high.problem(),
+                        });
+                    }
+                }
+                return;
+            }
             resp.context_menu(|ui| {
-                ui.label(egui::RichText::new("Your hand").strong());
+                ui.label(egui::RichText::new(HAND_MENU_TITLE).strong());
                 ui.horizontal(|ui| {
                     for (side, label) in [(Side::Left, "Left"), (Side::Right, "Right")] {
                         if ui.selectable_label(body.held.side == side, label).clicked() {
-                            body.store.data.hand.left = side == Side::Left;
-                            body.store.dirty = true;
+                            body.set_hand_side(side == Side::Left);
                         }
                     }
                 });
                 if ui
                     .add_enabled_ui(body.high.on, |ui| {
-                        theme::secondary_button(ui, "", "Start again", 0.0)
+                        theme::secondary_button(ui, "", HAND_MENU_RESTART, 0.0)
                     })
                     .inner
                     .clicked()
                 {
-                    body.high.restart();
+                    body.restart_hand();
                     ui.close();
                 }
                 if let Some(problem) = body.high.problem() {
                     ui.label(egui::RichText::new(problem).color(theme::p().warn));
                 }
                 ui.label(
-                    egui::RichText::new(
-                        "Uses the back camera and the motion sensors. Nothing the \
-                         camera sees is kept.",
-                    )
-                    .size(theme::SIZE_CHIP)
-                    .color(theme::p().text_dim),
+                    egui::RichText::new(HAND_MENU_NOTE)
+                        .size(theme::SIZE_CHIP)
+                        .color(theme::p().text_dim),
                 );
             });
         });
@@ -1704,6 +1743,12 @@ pub const HAND_CARD_LINES: [&str; 3] = [
 pub const HAND_CARD_DECLINE: &str = "Not now";
 pub const HAND_CARD_ACCEPT: &str = "Use my hand";
 
+/// The hand menu's words, one copy for both editions (`lib_map_osd`).
+pub const HAND_MENU_TITLE: &str = "Your hand";
+pub const HAND_MENU_RESTART: &str = "Start again";
+pub const HAND_MENU_NOTE: &str =
+    "Uses the back camera and the motion sensors. Nothing the camera sees is kept.";
+
 impl BodyControls<'_, '_> {
     /// The hand disc's tap: on or off once agreed, else the card that asks.
     fn tap_hand(&mut self) {
@@ -1732,6 +1777,18 @@ impl BodyControls<'_, '_> {
     /// The card's "Not now", its backdrop or Escape.
     pub fn decline_hand(&mut self) {
         self.card.0 = false;
+    }
+
+    /// The hand menu's Left or Right: which hand holds the phone,
+    /// remembered.
+    pub fn set_hand_side(&mut self, left: bool) {
+        self.store.data.hand.left = left;
+        self.store.dirty = true;
+    }
+
+    /// The hand menu's Start again: the tracking starts over.
+    pub fn restart_hand(&mut self) {
+        self.high.restart();
     }
 }
 

@@ -1,7 +1,7 @@
 //! The map's on-screen controls drawn by the component library (`lib_host`),
 //! beside egui's (`systems::map_osd`): the thumbstick, the climb or zoom
 //! pair, the jump, face and hand discs, the expressions, the zoom rail with
-//! its list of scales, and the hand's first-use card.
+//! its list of scales, the hand's first-use card and the hand's menu.
 //!
 //! On with `CARTO_UI_LIB=osd` (or `1`), on the web `?ui=osd`. egui's system
 //! keeps doing everything but paint (`OsdLib::lib`): it lays every control
@@ -10,16 +10,24 @@
 //! there is never the world's, and publishes what it laid out
 //! (`OsdLib::view`). This draws that, rect for rect, in egui's points (as
 //! DOM the page's px are `ui_scale` times larger: [`Pen`]). Nothing here
-//! listens but the hand card, so a press goes through to egui's slot
-//! beneath — as DOM by `pointer-events: none`.
+//! listens but the hand card and the hand menu, so a press goes through to
+//! egui's slot beneath — as DOM by `pointer-events: none`.
 //!
 //! **Built from boxes.** egui painted every mark with its `Painter`; here a
 //! stroke is a thin box turned by `transform: rotate`, a disc or a ring a
 //! box with `border-radius: 50%`, and an arc a ring with only its top border
 //! coloured, turned to where it belongs (`Pen`).
 //!
-//! **What stays egui's.** The hand disc's menu (right-click or long press:
-//! which hand, start again): egui's popup, opened from the slot.
+//! **The hand menu.** Opened as egui's was, by a right-click or a long
+//! press on the hand disc's slot (`OsdLib::hand_menu`, set by
+//! `map_osd::hand_button`, which then makes no popup of its own); drawn
+//! here as a popover over the disc, right-aligned to it. Which hand, Start
+//! again (only while the tracking is on), what is wrong, and the line on
+//! what it uses. A choice closes it, as a tap in egui's menu did; a tap
+//! beside it or Escape closes it too, through a transparent veil over the
+//! screen that holds the pointer while it is open. The choices are done by
+//! `BodyControls::set_hand_side` and `restart_hand`, what egui's menu
+//! calls.
 //!
 //! **What differs.** No press-shrink or hover lift on the discs (the plates
 //! do change on hover and press); the halo round the hand's word is a small
@@ -33,7 +41,9 @@ use std::rc::Rc;
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::{ButtonInput, Commands, KeyCode, Res, ResMut};
-use mithril::prelude::{el, signal, view, Button, Event, Handler, IntoView, Signal, Variant, View};
+use mithril::prelude::{
+    el, signal, view, Button, Event, Handler, IntoView, Signal, Size, Variant, View,
+};
 
 use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
@@ -48,10 +58,32 @@ const DISCS: &str = "osd_discs";
 const FACES: &str = "osd_faces";
 const RAIL: &str = "osd_rail";
 const CARD: &str = "osd_hand_card";
+const MENU: &str = "osd_hand_menu";
 
 /// The width of the hand card, before the screen narrows it (egui's
 /// `set_max_width`).
 const CARD_WIDTH: f32 = 420.0;
+
+/// The hand menu's width, before the screen narrows it: room for the
+/// line on what it uses in three or four lines.
+const MENU_WIDTH: f32 = 240.0;
+
+/// What the hand menu's choices asked for; done by the system.
+#[derive(Clone, Copy)]
+enum HandAct {
+    /// Left (`true`) or Right.
+    Side(bool),
+    Restart,
+    /// A tap beside the menu.
+    Close,
+}
+
+#[derive(Clone, PartialEq)]
+struct Menu {
+    v: map_osd::HandMenuView,
+    screen: (f32, f32),
+    k: f32,
+}
 
 /// Every stroke on a disc, as egui's `paint_mark`.
 const STROKE: f32 = 2.0;
@@ -102,6 +134,8 @@ struct Screens {
     faces: Option<Signal<Faces>>,
     rail: Option<(Signal<RailShape>, Signal<map_osd::RailLive>)>,
     card: Option<Signal<Card>>,
+    hand_acts: Rc<RefCell<Vec<HandAct>>>,
+    menu: Option<Signal<Menu>>,
 }
 
 thread_local! {
@@ -194,6 +228,34 @@ pub fn drive_lib_map_osd(
         if body.hand_card_open() && keys.just_pressed(KeyCode::Escape) {
             body.decline_hand();
         }
+        // The hand menu's: a choice is done as egui's menu does it, and
+        // any of them closes it, as a tap in egui's menu did.
+        let hand_acts: Vec<HandAct> = std::mem::take(&mut *screens.hand_acts.borrow_mut());
+        let mut close = !hand_acts.is_empty();
+        for a in hand_acts {
+            match a {
+                HandAct::Side(left) => body.set_hand_side(left),
+                HandAct::Restart => body.restart_hand(),
+                HandAct::Close => {}
+            }
+        }
+        // Gone with the hand disc (another mode, a panel over the
+        // controls), and on Escape.
+        close |= view.hand_menu.is_none() || keys.just_pressed(KeyCode::Escape);
+        if close && osd.hand_menu {
+            osd.hand_menu = false;
+        }
+        let menu = view
+            .hand_menu
+            .clone()
+            .filter(|_| osd.hand_menu)
+            .map(|v| Menu {
+                v,
+                screen: (view.screen.x, view.screen.y),
+                k,
+            });
+        let hand_acts = screens.hand_acts.clone();
+        keep(&mut screens.menu, MENU, menu, |s| menu_view(s, &hand_acts));
 
         keep(
             &mut screens.stick,
@@ -985,4 +1047,89 @@ fn card_view(s: Signal<Card>, acts: &Rc<RefCell<Vec<CardAct>>>) -> View {
             </div>
         </div>
     }
+}
+
+/// The hand disc's menu (`map_osd::hand_button`'s context menu): a popover
+/// right-aligned to the disc and standing over it, and a transparent veil
+/// over the rest of the screen that closes it on a tap. The popover comes
+/// after the veil rather than inside it, so a tap on its padding does not
+/// reach the veil.
+fn menu_view(s: Signal<Menu>, acts: &Rc<RefCell<Vec<HandAct>>>) -> View {
+    let acts = acts.clone();
+    (move || -> View {
+        let m = s.get();
+        let p = Pen { k: m.k };
+        let on = |a: HandAct| -> Option<Handler> {
+            let acts = acts.clone();
+            Some(Rc::new(move |_: &Event| acts.borrow_mut().push(a)) as Handler)
+        };
+        let (sw, sh) = m.screen;
+        let width = MENU_WIDTH.min(sw - 2.0 * theme::OSD_MARGIN).max(0.0);
+        // Right-aligned to the disc, kept on the screen.
+        let right = (sw - m.v.disc.max.x)
+            .min(sw - width - theme::OSD_MARGIN)
+            .max(0.0);
+        let bottom = sh - m.v.disc.min.y + theme::OSD_GAP;
+        let pop = format!(
+            "position: absolute; right: {}; bottom: {}; width: {}; box-sizing: border-box; \
+             display: flex; flex-direction: column; gap: {}; padding: {}; \
+             background: var(--m-surface); border: 1px solid var(--m-border); \
+             border-radius: var(--m-radius-lg); box-shadow: var(--m-shadow-lg)",
+            p.px(right),
+            p.px(bottom),
+            p.px(width),
+            p.px(8.0),
+            p.px(12.0)
+        );
+        let title = format!(
+            "font-size: {}; font-weight: 600; color: var(--m-text-strong)",
+            p.px(theme::SIZE_BODY)
+        );
+        let (left_v, right_v) = if m.v.left {
+            (Variant::Primary, Variant::Secondary)
+        } else {
+            (Variant::Secondary, Variant::Primary)
+        };
+        let problem: View = match m.v.problem.clone() {
+            Some(text) => {
+                let style = format!(
+                    "margin: 0; color: var(--m-warning); font-size: {}",
+                    p.px(theme::SIZE_SUB)
+                );
+                view! { <p style={style}>{text}</p> }
+            }
+            None => View::Empty,
+        };
+        let note = format!(
+            "margin: 0; color: var(--m-text-dim); font-size: {}",
+            p.px(theme::SIZE_CHIP)
+        );
+        let veil = el("div")
+            .attr(
+                "style",
+                "position: absolute; left: 0; top: 0; right: 0; bottom: 0".to_owned(),
+            )
+            .on("click", {
+                let acts = acts.clone();
+                move |_: &Event| acts.borrow_mut().push(HandAct::Close)
+            })
+            .into_view();
+        let can_restart = m.v.can_restart;
+        let card = view! {
+            <div style={pop} on:click={|_: &Event| {}}>
+                <span style={title}>{map_osd::HAND_MENU_TITLE}</span>
+                <div style="display: flex; gap: 8px">
+                    <Button size=Size::Sm variant={left_v} onclick={on(HandAct::Side(true))}>"Left"</Button>
+                    <Button size=Size::Sm variant={right_v} onclick={on(HandAct::Side(false))}>"Right"</Button>
+                </div>
+                <div style="display: flex">
+                    <Button size=Size::Sm variant=Variant::Secondary disabled={!can_restart} onclick={on(HandAct::Restart)}>{map_osd::HAND_MENU_RESTART}</Button>
+                </div>
+                {problem}
+                <p style={note}>{map_osd::HAND_MENU_NOTE}</p>
+            </div>
+        };
+        vec![veil, card].into_view()
+    })
+    .into_view()
 }

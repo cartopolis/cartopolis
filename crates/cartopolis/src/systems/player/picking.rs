@@ -369,16 +369,45 @@ fn reset_marquee(m: &mut MarqueeState) {
 
 // ─── Marquee rendering ────────────────────────────────────────────────────────
 
-/// Draws the rubber-band rectangle as an egui overlay.
-pub fn render_marquee(mut egui: EguiMut, marquee: Res<MarqueeState>) {
-    if !marquee.active {
-        return;
-    }
+/// The rubber band as the component library draws it (`lib_marquee`,
+/// `CARTO_UI_LIB=marquee`): with `lib` on [`render_marquee`] paints nothing
+/// and publishes the rectangle in `view` instead. The drag itself stays
+/// [`prim_picking`]'s either way.
+#[derive(Resource, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct MarqueeLib {
+    /// The library draws the rubber band.
+    pub lib: bool,
+    /// The rectangle while a drag is on, in egui points: `[left, top,
+    /// right, bottom]`.
+    pub view: Option<[f32; 4]>,
+}
 
+/// Draws the rubber-band rectangle as an egui overlay.
+pub fn render_marquee(
+    mut egui: EguiMut,
+    marquee: Res<MarqueeState>,
+    mut lib: Option<ResMut<MarqueeLib>>,
+) {
     // The drag was measured against the window's cursor, so both corners are in
     // window points and have to be converted before egui paints with them.
-    let min = egui.window_to_ui(marquee.start.min(marquee.end));
-    let max = egui.window_to_ui(marquee.start.max(marquee.end));
+    let corners = marquee.active.then(|| {
+        (
+            egui.window_to_ui(marquee.start.min(marquee.end)),
+            egui.window_to_ui(marquee.start.max(marquee.end)),
+        )
+    });
+    // The library draws it (`lib_marquee`): publish, paint nothing.
+    if let Some(lib) = lib.as_deref_mut().filter(|l| l.lib) {
+        let view = corners.map(|(min, max)| [min.x, min.y, max.x, max.y]);
+        if lib.view != view {
+            lib.view = view;
+        }
+        return;
+    }
+    let Some((min, max)) = corners else {
+        return;
+    };
     let rect = egui::Rect::from_min_max(min, max);
 
     let ctx = egui.ctx_mut();

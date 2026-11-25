@@ -72,8 +72,13 @@ impl Plugin for GuiPlugin {
                     systems::lib_cosmos::drive_lib_cosmos,
                     systems::lib_splash::drive_lib_splash,
                     systems::lib_face_viewfinder::drive_lib_face_viewfinder,
+                    systems::lib_dev_panel::drive_lib_dev_panel,
+                    systems::lib_object_editor::drive_lib_object_editor,
+                    systems::lib_marquee::drive_lib_marquee,
                 ),
-            );
+            )
+            .init_resource::<systems::ui::ObjectEditorLib>()
+            .init_resource::<systems::picking::MarqueeLib>();
         app.init_resource::<systems::settings::SettingsState>()
             // The tapped POI's card, egui's or the library's (`data_layers`).
             .init_resource::<systems::data_layers::PoiCard>()

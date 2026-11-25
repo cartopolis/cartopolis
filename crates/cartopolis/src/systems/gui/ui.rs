@@ -1591,13 +1591,13 @@ pub fn open_new_object(
 /// The floor is deliberately below anything comfortable: on a viewport narrower
 /// than the floor the dialog is cut off either way, and a width that goes
 /// negative is a panic in egui's layout rather than an ugly dialog.
-fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
+pub(crate) fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
     preferred.min(viewport_w - 16.0).max(200.0)
 }
 
 /// How much of a phone's screen height the object editor may cover. The rest is
 /// the object itself, which is the thing being edited.
-const SHEET_HEIGHT: f32 = 0.55;
+pub(crate) const SHEET_HEIGHT: f32 = 0.55;
 
 /// One labelled X/Y/Z row: the label on its own line, then three fields sharing
 /// the width equally.
@@ -1643,6 +1643,101 @@ fn dialog_frame(style: &egui::Style) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(10, 10))
 }
 
+/// The object editor and its texture picker as the component library draws
+/// them (`lib_object_editor`, `CARTO_UI_LIB=object_editor`).
+///
+/// With `lib` on [`render_edit_dialog`] draws nothing. The library's edition
+/// reads and writes [`EditDialogState`]'s fields itself (a field is a field in
+/// either edition) and does its buttons through [`apply_edit_act`], the code
+/// egui's buttons run.
+#[derive(Resource, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct ObjectEditorLib {
+    /// The library draws the editor and the picker.
+    pub lib: bool,
+}
+
+/// What a button of the object editor or its texture picker asked for —
+/// egui's, or the library's (`lib_object_editor`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditAct {
+    /// The header's ✕: Cancel, and the picker goes too.
+    Close,
+    Save,
+    Cancel,
+    /// The second press of Delete: a deleted prim has no undo.
+    Delete,
+    /// Pick…: the texture picker opens, or closes again.
+    TogglePicker,
+    /// The texture comes off.
+    ClearTexture,
+    /// A tile of the picker: the texture goes on and the picker closes.
+    PickTexture(String),
+    /// The picker's ✕.
+    ClosePicker,
+    /// Repeats per metre's Apply: the per-face repeats from the object's size.
+    ApplyPerMetre,
+    ChooseVideo,
+    StopVideo,
+    /// The Physical box, ticked or cleared: sent at once, not on Save.
+    Physical(bool),
+}
+
+/// Do `act` to the editor: the one place both editions' buttons go through.
+pub fn apply_edit_act(act: EditAct, edit_dialog: &mut EditDialogState, game_state: &mut GameState) {
+    match act {
+        EditAct::Close => {
+            push_revert(game_state, edit_dialog);
+            edit_dialog.visible = false;
+            edit_dialog.texture_picker_open = false;
+            game_state.editing_prim_id = None;
+        }
+        EditAct::Save => {
+            game_state.pending_prim_save = Some(edit_dialog.clone());
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+        EditAct::Cancel => {
+            push_revert(game_state, edit_dialog);
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+        EditAct::Delete => {
+            if let Some(id) = edit_dialog.prim_id {
+                game_state.prims_to_delete.push(id);
+            }
+            edit_dialog.visible = false;
+            game_state.editing_prim_id = None;
+        }
+        EditAct::TogglePicker => {
+            edit_dialog.texture_picker_open = !edit_dialog.texture_picker_open;
+        }
+        EditAct::ClearTexture => edit_dialog.texture_id = None,
+        EditAct::PickTexture(id) => {
+            edit_dialog.texture_id = Some(id);
+            edit_dialog.texture_picker_open = false;
+        }
+        EditAct::ClosePicker => edit_dialog.texture_picker_open = false,
+        EditAct::ApplyPerMetre => {
+            if edit_dialog.repeats_per_meter > 0.0 {
+                let rpm = edit_dialog.repeats_per_meter;
+                edit_dialog.surface.repeat_u = rpm * edit_dialog.scale[0];
+                edit_dialog.surface.repeat_v = rpm * edit_dialog.scale[1];
+            }
+        }
+        EditAct::ChooseVideo => {
+            edit_dialog.video_action = Some(crate::resources::VideoAction::Choose);
+        }
+        EditAct::StopVideo => {
+            edit_dialog.video_action = Some(crate::resources::VideoAction::Stop);
+        }
+        EditAct::Physical(on) => {
+            edit_dialog.physical = on;
+            edit_dialog.physical_request = Some(on);
+        }
+    }
+}
+
 /// The object (prim) editor.
 ///
 /// **It wears the panels' chrome, not egui's.** This is the primary surface of
@@ -1659,7 +1754,13 @@ pub fn render_edit_dialog(
     texture_lib: Res<TextureLibrary>,
     mut texture_cache: ResMut<PrimTextureCache>,
     mut gizmo_state: ResMut<crate::systems::gizmo::GizmoState>,
+    lib: Option<Res<ObjectEditorLib>>,
 ) {
+    // The library draws the editor and the picker (`lib_object_editor`),
+    // and does their buttons itself.
+    if lib.is_some_and(|l| l.lib) {
+        return;
+    }
     if !edit_dialog.visible {
         return;
     }
@@ -1702,6 +1803,7 @@ pub fn render_edit_dialog(
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
             .resizable(false);
     }
+    let mut acts: Vec<EditAct> = Vec::new();
     window.show(ctx, |ui| {
         ui.set_max_width(width);
         if theme::panel_header(ui, icons::TUNE, title) {
@@ -1724,30 +1826,36 @@ pub fn render_edit_dialog(
         let spacing = ui.spacing().item_spacing.y;
         let footer = theme::row_height() + 3.0 * spacing + 8.0;
         let body = (max_height - ui.min_rect().height() - footer).max(80.0);
-        egui::ScrollArea::vertical()
+        let tab_act = egui::ScrollArea::vertical()
             .max_height(body)
             .auto_shrink([false, true])
             .show(ui, |ui| match edit_dialog.active_tab {
                 0 => basics_tab(ui, &mut edit_dialog, &mut gizmo_state),
-                1 => shape_tab(ui, &mut edit_dialog),
+                1 => {
+                    shape_tab(ui, &mut edit_dialog);
+                    None
+                }
                 _ => surface_tab(ui, &mut edit_dialog, &texture_lib),
-            });
+            })
+            .inner;
+        acts.extend(tab_act);
 
         ui.separator();
 
-        dialog_buttons(ui, &mut edit_dialog, &mut game_state);
+        acts.extend(dialog_buttons(ui, &edit_dialog));
     });
 
     if !dialog_open {
-        push_revert(&mut game_state, &edit_dialog);
-        edit_dialog.visible = false;
-        edit_dialog.texture_picker_open = false;
-        game_state.editing_prim_id = None;
+        acts.push(EditAct::Close);
+    }
+    for act in acts {
+        apply_edit_act(act, &mut edit_dialog, &mut game_state);
     }
 
     render_texture_picker(
         &mut egui,
         &mut edit_dialog,
+        &mut game_state,
         &texture_lib,
         &mut texture_cache,
     );
@@ -1762,8 +1870,9 @@ fn basics_tab(
     ui: &mut egui::Ui,
     edit_dialog: &mut ResMut<EditDialogState>,
     gizmo_state: &mut ResMut<crate::systems::gizmo::GizmoState>,
-) {
+) -> Option<EditAct> {
     use crate::systems::gizmo::GizmoMode;
+    let mut act = None;
     egui::Grid::new("edit_grid")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -1789,12 +1898,12 @@ fn basics_tab(
                 if crate::systems::theme::checkbox(ui, &mut on, "Falls, bounces and can be pushed")
                     .changed()
                 {
-                    edit_dialog.physical = on;
-                    edit_dialog.physical_request = Some(on);
+                    act = Some(EditAct::Physical(on));
                 }
                 ui.end_row();
             }
         });
+    act
 }
 
 /// The object editor's Shape tab: block type, transform, and the path and
@@ -1968,7 +2077,8 @@ fn surface_tab(
     ui: &mut egui::Ui,
     edit_dialog: &mut ResMut<EditDialogState>,
     texture_lib: &TextureLibrary,
-) {
+) -> Option<EditAct> {
+    let mut act = None;
     egui::Grid::new("texture_grid")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -2002,12 +2112,12 @@ fn surface_tab(
                     if crate::platform::model_file::is_available()
                         && theme::secondary_button(ui, "", "Choose video…", 0.0).clicked()
                     {
-                        edit_dialog.video_action = Some(crate::resources::VideoAction::Choose);
+                        act = Some(EditAct::ChooseVideo);
                     }
                     if edit_dialog.playing_video
                         && theme::ghost_button(ui, icons::STOP, "Stop").clicked()
                     {
-                        edit_dialog.video_action = Some(crate::resources::VideoAction::Stop);
+                        act = Some(EditAct::StopVideo);
                     }
                     if let Some(note) = &edit_dialog.video_note {
                         ui.label(
@@ -2028,12 +2138,12 @@ fn surface_tab(
                 if !texture_lib.entries.is_empty()
                     && theme::secondary_button(ui, "", "Pick…", 0.0).clicked()
                 {
-                    edit_dialog.texture_picker_open = !edit_dialog.texture_picker_open;
+                    act = Some(EditAct::TogglePicker);
                 }
                 if edit_dialog.texture_id.is_some()
                     && theme::ghost_button(ui, "", "Clear").clicked()
                 {
-                    edit_dialog.texture_id = None;
+                    act = Some(EditAct::ClearTexture);
                 }
             });
             ui.end_row();
@@ -2118,9 +2228,7 @@ fn surface_tab(
         if theme::secondary_button(ui, "", "Apply", 0.0).clicked()
             && edit_dialog.repeats_per_meter > 0.0
         {
-            let rpm = edit_dialog.repeats_per_meter;
-            edit_dialog.surface.repeat_u = rpm * edit_dialog.scale[0];
-            edit_dialog.surface.repeat_v = rpm * edit_dialog.scale[1];
+            act = Some(EditAct::ApplyPerMetre);
         }
     });
 
@@ -2144,26 +2252,20 @@ fn surface_tab(
                 .max_decimals(3),
         );
     });
+    act
 }
 
-/// Save, Cancel and Delete, under every tab.
-fn dialog_buttons(
-    ui: &mut egui::Ui,
-    edit_dialog: &mut ResMut<EditDialogState>,
-    mut game_state: &mut ResMut<GameState>,
-) {
+/// Save, Cancel and Delete, under every tab: which was pressed.
+fn dialog_buttons(ui: &mut egui::Ui, edit_dialog: &EditDialogState) -> Option<EditAct> {
+    let mut act = None;
     // Dialog buttons — always visible regardless of active tab
     ui.horizontal(|ui| {
         if theme::primary_button_sized(ui, "Save", 0.0).clicked() {
-            game_state.pending_prim_save = Some(edit_dialog.clone());
-            edit_dialog.visible = false;
-            game_state.editing_prim_id = None;
+            act = Some(EditAct::Save);
         }
 
         if theme::ghost_button(ui, "", "Cancel").clicked() {
-            push_revert(&mut game_state, &edit_dialog);
-            edit_dialog.visible = false;
-            game_state.editing_prim_id = None;
+            act = Some(EditAct::Cancel);
         }
 
         // Two presses: a deleted prim has no undo.
@@ -2175,19 +2277,17 @@ fn dialog_buttons(
                 "Really delete",
             )
         {
-            if let Some(id) = edit_dialog.prim_id {
-                game_state.prims_to_delete.push(id);
-            }
-            edit_dialog.visible = false;
-            game_state.editing_prim_id = None;
+            act = Some(EditAct::Delete);
         }
     });
+    act
 }
 
 /// The texture library picker the Surface tab opens.
 fn render_texture_picker(
     egui: &mut EguiMut,
     edit_dialog: &mut ResMut<EditDialogState>,
+    game_state: &mut ResMut<GameState>,
     texture_lib: &TextureLibrary,
     texture_cache: &mut ResMut<PrimTextureCache>,
 ) {
@@ -2298,10 +2398,10 @@ fn render_texture_picker(
                     });
             });
         if let Some(id) = clicked_texture {
-            edit_dialog.texture_id = Some(id);
-            picker_open = false;
+            apply_edit_act(EditAct::PickTexture(id), edit_dialog, game_state);
+        } else if !picker_open {
+            apply_edit_act(EditAct::ClosePicker, edit_dialog, game_state);
         }
-        edit_dialog.texture_picker_open = picker_open;
     }
 }
 
@@ -2758,7 +2858,7 @@ fn apply_material_edits(
 // Helpers
 // ---------------------------------------------------------------------------
 
-const SHAPES: &[(&str, &str)] = &[
+pub(crate) const SHAPES: &[(&str, &str)] = &[
     ("box", "Box"),
     ("sphere", "Sphere"),
     ("cylinder", "Cylinder"),

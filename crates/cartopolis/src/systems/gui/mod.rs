@@ -72,6 +72,8 @@ pub mod lib_chrome;
 pub mod lib_cosmos;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
+#[cfg(feature = "ui-lib")]
+pub mod lib_dev_panel;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_dialogs;
 #[cfg(feature = "ui-lib")]
@@ -95,7 +97,17 @@ pub mod lib_main_menu;
 #[cfg(feature = "ui-lib")]
 pub mod lib_map_osd;
 #[cfg(feature = "ui-lib")]
+pub mod lib_marquee;
+#[cfg(all(feature = "ui-lib", mcp, not(target_os = "android")))]
+pub mod lib_mcp_overlay;
+#[cfg(all(feature = "ui-lib", not(target_arch = "wasm32")))]
+pub mod lib_midas_link;
+#[cfg(feature = "ui-lib")]
 pub mod lib_models;
+#[cfg(feature = "ui-lib")]
+pub mod lib_object_editor;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_picture_viewer;
 #[cfg(feature = "ui-lib")]
 pub mod lib_pins;
 #[cfg(feature = "ui-lib")]
@@ -108,6 +120,8 @@ pub mod lib_places;
 pub mod lib_plans;
 #[cfg(feature = "ui-lib")]
 pub mod lib_poi_card;
+#[cfg(all(feature = "ui-lib", not(target_arch = "wasm32")))]
+pub mod lib_release_approval;
 #[cfg(feature = "ui-lib")]
 pub mod lib_route;
 #[cfg(feature = "ui-lib")]

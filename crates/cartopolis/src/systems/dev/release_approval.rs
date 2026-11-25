@@ -35,7 +35,7 @@ const REPOSITORY: &str = "https://code.garage44.eu/jeroen/cartopolis";
 /// Largest package this phone downloads to check: the APK is about 80 MB.
 const MAX_PACKAGE: u64 = 300 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 64 * 1024;
-const CARD_WIDTH: f32 = 420.0;
+pub(crate) const CARD_WIDTH: f32 = 420.0;
 
 /// What a release says it is: the server's `release.json`, with the APK
 /// beside it when the release carries one.
@@ -103,7 +103,86 @@ struct State {
     outcome: Option<(String, String)>,
     /// Developer tools ▸ Midas ▸ Release key, read once.
     key: Option<KeyView>,
+    /// The component library draws the card (`lib_release_approval`):
+    /// [`render_release_approval`] keeps its logic and draws nothing.
+    lib: bool,
+    /// The card as the library draws it, published each frame.
+    lib_view: Option<ApprovalView>,
+    /// The library's taps, done next frame by [`act`].
+    lib_acts: Vec<ApprovalAct>,
 }
+
+/// A tap on the card, from either edition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum ApprovalAct {
+    Approve,
+    Decline,
+}
+
+/// Claude's verdict as the card words it ([`verdict_view`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum VerdictView {
+    /// Still checking: what it is at.
+    Pending(String),
+    Said {
+        title: &'static str,
+        green: bool,
+        body: String,
+    },
+}
+
+/// The card, as plain data, for the library's edition.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct ApprovalView {
+    pub title: String,
+    pub asked: String,
+    pub verdict: VerdictView,
+    /// Claude's findings: ("file lines", why).
+    pub findings: Vec<(String, String)>,
+    /// What the release lists, and its version code.
+    pub release: Option<(Vec<String>, u32)>,
+    /// What the checks are at while they run.
+    pub checking: Option<String>,
+    /// Each check: (passed, line).
+    pub checks: Vec<(bool, String)>,
+    /// Green and every check passed: the button works.
+    pub ready: bool,
+    /// Waiting for the fingerprint.
+    pub signing: bool,
+    /// Settled and not green: say there is nothing to approve.
+    pub not_green: bool,
+}
+
+/// Developer tools ▸ Midas ▸ Release key as plain data ([`key_view`]).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct KeySectionView {
+    /// The public key, whole (for Copy), or `None` before one is made.
+    pub public: Option<String>,
+    /// The key shortened as the section shows it.
+    pub short: String,
+    /// Where it is kept, in words.
+    pub kept: String,
+    /// The Claude API key note.
+    pub api_note: &'static str,
+    pub message: Option<String>,
+}
+
+/// A tap in the Release key section, from either edition.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum KeyAct {
+    Make,
+    /// Keep this Claude API key (empty forgets it).
+    SaveApiKey(String),
+}
+
+/// The section's words before a key is made.
+pub const KEY_MAKE_NOTE: &str = "Approves releases of the app and of self-hosted servers with your fingerprint. Made once, on this phone; it never leaves its security chip.";
+/// The section's words under the key.
+pub const KEY_TOOL_NOTE: &str = "A session reads it with the link's release_key tool and builds it into the server and the app as the key they trust.";
 
 #[derive(Clone, Default)]
 struct KeyView {
@@ -119,7 +198,31 @@ static STATE: Mutex<State> = Mutex::new(State {
     request: None,
     outcome: None,
     key: None,
+    lib: false,
+    lib_view: None,
+    lib_acts: Vec::new(),
 });
+
+/// The library draws the card from now on (`lib_release_approval`).
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn set_lib() {
+    let mut s = state();
+    if !s.lib {
+        s.lib = true;
+    }
+}
+
+/// The card as published this frame, for the library.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn lib_view() -> Option<ApprovalView> {
+    state().lib_view.clone()
+}
+
+/// A tap on the library's card, done next frame.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn lib_act(a: ApprovalAct) {
+    state().lib_acts.push(a);
+}
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE
@@ -404,14 +507,13 @@ fn hash(url: &str, package: &Package) -> Result<(), String> {
     Ok(())
 }
 
-/// Developer tools ▸ Midas ▸ Release key.
-pub fn key_section(ui: &mut egui::Ui) {
+/// Developer tools ▸ Midas ▸ Release key as both editions show it, read once;
+/// `None` where releases are not approved (not the owner's Android phone).
+pub fn key_view() -> Option<KeySectionView> {
     if !release_key::available() {
-        return;
+        return None;
     }
-    ui.separator();
-    theme::section(ui, "Release key");
-    let view = {
+    let k = {
         let mut s = state();
         s.key
             .get_or_insert_with(|| KeyView {
@@ -422,63 +524,54 @@ pub fn key_section(ui: &mut egui::Ui) {
             })
             .clone()
     };
-    match &view.public {
-        None => {
-            theme::note(ui, "Approves releases of the app and of self-hosted servers with your fingerprint. Made once, on this phone; it never leaves its security chip.");
-            if theme::primary_button_sized(ui, "Make release key", 200.0).clicked() {
-                let made = release_key::create();
-                let mut s = state();
-                let k = s.key.get_or_insert_with(KeyView::default);
-                match made {
-                    Ok(public) => {
-                        k.public = Some(public);
-                        k.location = release_key::location();
-                        k.message = None;
-                    }
-                    Err(e) => k.message = Some(format!("Could not make it: {e}")),
-                }
-            }
-        }
-        Some(key) => {
-            theme::note(
-                ui,
-                &format!(
-                    "Kept in {}; signs only after your fingerprint.",
-                    match view.location.as_deref() {
-                        Some("strongbox") => "the phone's separate security chip (StrongBox)",
-                        Some("tee") => "the phone's secure area (TEE)",
-                        Some("software") => "software only — do not sign releases with it",
-                        _ => "the Android Keystore",
-                    }
-                ),
-            );
-            ui.label(
-                egui::RichText::new(format!("{}…{}", &key[..16], &key[key.len() - 8..]))
-                    .monospace(),
-            );
-            if ui.button("Copy public key").clicked() {
-                ui.ctx().copy_text(key.clone());
-            }
-            theme::note(ui, "A session reads it with the link's release_key tool and builds it into the server and the app as the key they trust.");
-        }
-    }
-    theme::note(
-        ui,
-        if view.has_api_key {
-            "Claude API key: kept on this phone, encrypted. Claude reviews every release before you are asked to approve it."
+    let short = k.public.as_deref().map_or_else(String::new, |key| {
+        if key.len() > 24 {
+            format!("{}…{}", &key[..16], &key[key.len() - 8..])
         } else {
-            "Claude API key: none yet. Claude reviews every release with it, straight from this phone, before you are asked to approve it."
-        },
+            key.to_string()
+        }
+    });
+    let kept = format!(
+        "Kept in {}; signs only after your fingerprint.",
+        match k.location.as_deref() {
+            Some("strongbox") => "the phone's separate security chip (StrongBox)",
+            Some("tee") => "the phone's secure area (TEE)",
+            Some("software") => "software only — do not sign releases with it",
+            _ => "the Android Keystore",
+        }
     );
-    let mut draft = view.api_key_draft.clone();
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut draft)
-                .password(true)
-                .hint_text("sk-ant-…")
-                .desired_width(200.0),
-        );
-        if ui.button("Save key").clicked() {
+    let api_note = if k.has_api_key {
+        "Claude API key: kept on this phone, encrypted. Claude reviews every release before you are asked to approve it."
+    } else {
+        "Claude API key: none yet. Claude reviews every release with it, straight from this phone, before you are asked to approve it."
+    };
+    Some(KeySectionView {
+        public: k.public,
+        short,
+        kept,
+        api_note,
+        message: k.message,
+    })
+}
+
+/// Make the release key or keep a Claude API key: what both editions' buttons
+/// do.
+pub fn key_act(a: KeyAct) {
+    match a {
+        KeyAct::Make => {
+            let made = release_key::create();
+            let mut s = state();
+            let k = s.key.get_or_insert_with(KeyView::default);
+            match made {
+                Ok(public) => {
+                    k.public = Some(public);
+                    k.location = release_key::location();
+                    k.message = None;
+                }
+                Err(e) => k.message = Some(format!("Could not make it: {e}")),
+            }
+        }
+        KeyAct::SaveApiKey(draft) => {
             let saved = release_key::save_api_key(&draft);
             let mut s = state();
             let k = s.key.get_or_insert_with(KeyView::default);
@@ -489,7 +582,47 @@ pub fn key_section(ui: &mut egui::Ui) {
                 }
                 Err(e) => k.message = Some(format!("Could not keep it: {e}")),
             }
-            draft.clear();
+        }
+    }
+}
+
+/// Developer tools ▸ Midas ▸ Release key.
+pub fn key_section(ui: &mut egui::Ui) {
+    let Some(view) = key_view() else {
+        return;
+    };
+    ui.separator();
+    theme::section(ui, "Release key");
+    match &view.public {
+        None => {
+            theme::note(ui, KEY_MAKE_NOTE);
+            if theme::primary_button_sized(ui, "Make release key", 200.0).clicked() {
+                key_act(KeyAct::Make);
+            }
+        }
+        Some(key) => {
+            theme::note(ui, &view.kept);
+            ui.label(egui::RichText::new(&view.short).monospace());
+            if ui.button("Copy public key").clicked() {
+                ui.ctx().copy_text(key.clone());
+            }
+            theme::note(ui, KEY_TOOL_NOTE);
+        }
+    }
+    theme::note(ui, view.api_note);
+    let mut draft = state()
+        .key
+        .as_ref()
+        .map_or_else(String::new, |k| k.api_key_draft.clone());
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut draft)
+                .password(true)
+                .hint_text("sk-ant-…")
+                .desired_width(200.0),
+        );
+        if ui.button("Save key").clicked() {
+            key_act(KeyAct::SaveApiKey(std::mem::take(&mut draft)));
         }
     });
     if let Some(k) = state().key.as_mut() {
@@ -503,7 +636,17 @@ pub fn key_section(ui: &mut egui::Ui) {
 /// The release in front of the owner, over everything; and the fingerprint
 /// sheet's outcome once it is answered.
 pub fn render_release_approval(egui: EguiRef) {
-    let Some(request) = state().request.clone() else {
+    // The library's taps of last frame, done as egui's buttons do them.
+    let acts = std::mem::take(&mut state().lib_acts);
+    for a in acts {
+        let open = state().request.clone();
+        if let Some(request) = open {
+            act(&request, a);
+        }
+    }
+    let open = state().request.clone();
+    let Some(request) = open else {
+        // `answer` cleared the view with the request; nothing else does.
         return;
     };
     if request.phase == Phase::Signing {
@@ -551,6 +694,16 @@ pub fn render_release_approval(egui: EguiRef) {
     if matches!(request.phase, Phase::Checking(_)) || matches!(request.review, Review::Pending(_)) {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
+    {
+        let mut s = state();
+        if s.lib {
+            let view = approval_view(&request);
+            if s.lib_view.as_ref() != Some(&view) {
+                s.lib_view = Some(view);
+            }
+            return;
+        }
+    }
     let screen = ctx.content_rect();
     let width = CARD_WIDTH.min(screen.width() - 2.0 * theme::OSD_MARGIN);
     egui::Area::new(egui::Id::new("release_approval_veil"))
@@ -570,10 +723,7 @@ pub fn render_release_approval(egui: EguiRef) {
         .show(ctx, |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 ui.set_width(width);
-                let title = request.release.as_ref().map_or_else(
-                    || "A release for your approval".to_string(),
-                    |r| format!("Release {}", r.name),
-                );
+                let title = approval_title(&request);
                 ui.label(
                     egui::RichText::new(title)
                         .size(theme::SIZE_HEADING)
@@ -642,19 +792,8 @@ pub fn render_release_approval(egui: EguiRef) {
                             });
                     });
                 ui.add_space(8.0);
-                // Green means: every file checked out on this phone, and
-                // Claude found nothing. Anything else has no button.
-                let green = matches!(&request.review, Review::Done(v) if v.green());
-                let ready = request.phase == Phase::Ready
-                    && request.release.is_some()
-                    && !request.checks.is_empty()
-                    && request.checks.iter().all(|c| c.ok)
-                    && green;
-                let label = if request.phase == Phase::Signing {
-                    "Waiting for your fingerprint…"
-                } else {
-                    "Approve with fingerprint"
-                };
+                let ready = ready(&request);
+                let label = approve_label(&request);
                 let width = ui.available_width();
                 if ui
                     .add_enabled_ui(ready, |ui| theme::primary_button_sized(ui, label, width))
@@ -663,12 +802,8 @@ pub fn render_release_approval(egui: EguiRef) {
                 {
                     approve = true;
                 }
-                let settled = !matches!(request.review, Review::Pending(_));
-                if request.phase == Phase::Ready && !ready && settled {
-                    line(
-                        ui,
-                        "Not green, so there is nothing to approve. Ask a session to look into it.",
-                    );
+                if not_green(&request) {
+                    line(ui, NOT_GREEN);
                 }
                 if ui.button("Not now").clicked() {
                     decline = true;
@@ -676,43 +811,152 @@ pub fn render_release_approval(egui: EguiRef) {
             });
         });
     if approve {
-        let name = request
-            .release
-            .as_ref()
-            .map_or_else(String::new, |r| r.name.clone());
-        match release_key::sign(
-            &request.manifest,
-            &format!("Approve Cartopolis release {name}"),
-            "Publishing it lets every server and phone that trusts your key install it.",
-        ) {
-            Ok(()) => set_phase(Phase::Signing),
-            Err(e) => {
-                let mut s = state();
-                if let Some(r) = s.request.as_mut() {
-                    r.checks.push(Check {
-                        ok: false,
-                        line: format!("Signing did not start: {e}"),
-                    });
+        act(&request, ApprovalAct::Approve);
+    }
+    if decline {
+        act(&request, ApprovalAct::Decline);
+    }
+}
+
+/// Under the button when there is nothing to approve.
+pub const NOT_GREEN: &str =
+    "Not green, so there is nothing to approve. Ask a session to look into it.";
+
+/// Green means: every file checked out on this phone, and Claude found
+/// nothing. Anything else has no button.
+fn ready(request: &Request) -> bool {
+    let green = matches!(&request.review, Review::Done(v) if v.green());
+    request.phase == Phase::Ready
+        && request.release.is_some()
+        && !request.checks.is_empty()
+        && request.checks.iter().all(|c| c.ok)
+        && green
+}
+
+/// Settled, ready to sign, and not green: the card says why there is no
+/// button to press.
+fn not_green(request: &Request) -> bool {
+    let settled = !matches!(request.review, Review::Pending(_));
+    request.phase == Phase::Ready && !ready(request) && settled
+}
+
+fn approve_label(request: &Request) -> &'static str {
+    if request.phase == Phase::Signing {
+        "Waiting for your fingerprint…"
+    } else {
+        "Approve with fingerprint"
+    }
+}
+
+/// A tap on Approve or Not now, from either edition.
+fn act(request: &Request, a: ApprovalAct) {
+    match a {
+        ApprovalAct::Approve => {
+            if !ready(request) {
+                return;
+            }
+            let name = request
+                .release
+                .as_ref()
+                .map_or_else(String::new, |r| r.name.clone());
+            match release_key::sign(
+                &request.manifest,
+                &format!("Approve Cartopolis release {name}"),
+                "Publishing it lets every server and phone that trusts your key install it.",
+            ) {
+                Ok(()) => set_phase(Phase::Signing),
+                Err(e) => {
+                    let mut s = state();
+                    if let Some(r) = s.request.as_mut() {
+                        r.checks.push(Check {
+                            ok: false,
+                            line: format!("Signing did not start: {e}"),
+                        });
+                    }
                 }
             }
         }
+        ApprovalAct::Decline => {
+            let name = request
+                .release
+                .as_ref()
+                .map_or_else(|| request.source.clone(), |r| r.name.clone());
+            answer(
+                request,
+                format!("The owner did not approve release {name}."),
+            );
+        }
     }
-    if decline {
-        let name = request
+}
+
+/// The card's title: the release's name once it reads.
+fn approval_title(request: &Request) -> String {
+    request.release.as_ref().map_or_else(
+        || "A release for your approval".to_string(),
+        |r| format!("Release {}", r.name),
+    )
+}
+
+/// Claude's verdict in the card's words.
+fn verdict_view(review: &Review) -> VerdictView {
+    match review {
+        Review::Pending(what) => VerdictView::Pending(what.clone()),
+        Review::Done(v) if v.green() => VerdictView::Said {
+            title: "Claude found nothing to worry about",
+            green: true,
+            body: v.summary.clone(),
+        },
+        Review::Done(v) => VerdictView::Said {
+            title: "Claude found something",
+            green: false,
+            body: v.summary.clone(),
+        },
+        Review::Failed(why) => VerdictView::Said {
+            title: "Not checked by Claude",
+            green: false,
+            body: why.clone(),
+        },
+    }
+}
+
+/// The card as plain data, for the library.
+fn approval_view(request: &Request) -> ApprovalView {
+    let findings = match &request.review {
+        Review::Done(v) => v
+            .findings
+            .iter()
+            .map(|f| (format!("{} {}", f.file, f.lines), f.why.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    ApprovalView {
+        title: approval_title(request),
+        asked: format!("Asked by {} · {}", request.session, request.source),
+        verdict: verdict_view(&request.review),
+        findings,
+        release: request
             .release
             .as_ref()
-            .map_or_else(|| request.source.clone(), |r| r.name.clone());
-        answer(
-            &request,
-            format!("The owner did not approve release {name}."),
-        );
+            .map(|r| (r.changes.clone(), r.code)),
+        checking: match &request.phase {
+            Phase::Checking(what) => Some(what.clone()),
+            _ => None,
+        },
+        checks: request
+            .checks
+            .iter()
+            .map(|c| (c.ok, c.line.clone()))
+            .collect(),
+        ready: ready(request),
+        signing: request.phase == Phase::Signing,
+        not_green: not_green(request),
     }
 }
 
 /// Claude's verdict, at the top of the card: what the owner decides on.
 fn verdict_block(ui: &mut egui::Ui, review: &Review) {
-    let (title, colour, body) = match review {
-        Review::Pending(what) => {
+    match verdict_view(review) {
+        VerdictView::Pending(what) => {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().color(theme::p().accent));
                 ui.label(
@@ -721,27 +965,22 @@ fn verdict_block(ui: &mut egui::Ui, review: &Review) {
                         .color(theme::p().cream),
                 );
             });
-            line(ui, what);
-            return;
+            line(ui, &what);
         }
-        Review::Done(v) if v.green() => (
-            "Claude found nothing to worry about",
-            theme::p().accent,
-            v.summary.as_str(),
-        ),
-        Review::Done(v) => (
-            "Claude found something",
-            theme::p().error,
-            v.summary.as_str(),
-        ),
-        Review::Failed(why) => ("Not checked by Claude", theme::p().error, why.as_str()),
-    };
-    ui.label(
-        egui::RichText::new(title)
-            .size(theme::SIZE_BODY)
-            .color(colour),
-    );
-    ui.label(body);
+        VerdictView::Said { title, green, body } => {
+            let colour = if green {
+                theme::p().accent
+            } else {
+                theme::p().error
+            };
+            ui.label(
+                egui::RichText::new(title)
+                    .size(theme::SIZE_BODY)
+                    .color(colour),
+            );
+            ui.label(body);
+        }
+    }
 }
 
 fn set_phase(phase: Phase) {
@@ -754,6 +993,7 @@ fn set_phase(phase: Phase) {
 fn answer(request: &Request, words: String) {
     let mut s = state();
     s.request = None;
+    s.lib_view = None;
     s.outcome = Some((request.session.clone(), words));
 }
 

@@ -70,6 +70,10 @@ pub use gui::{
 pub use gui::lib_camera;
 #[cfg(feature = "ui-probe")]
 pub use gui::lib_keyboard;
+#[cfg(all(feature = "ui-lib", mcp, not(target_os = "android")))]
+pub use gui::lib_mcp_overlay;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub use gui::lib_picture_viewer;
 #[cfg(feature = "ui-lib")]
 pub use gui::{
     lib_action_ring, lib_app_update, lib_avatar, lib_chrome, lib_cosmos, lib_design_room,
@@ -88,6 +92,10 @@ pub use gui::{
     lib_building_card, lib_host, lib_layers, lib_place_card, lib_places, lib_route, lib_search,
     lib_settings,
 };
+#[cfg(feature = "ui-lib")]
+pub use gui::{lib_dev_panel, lib_marquee, lib_object_editor};
+#[cfg(all(feature = "ui-lib", not(target_arch = "wasm32")))]
+pub use gui::{lib_midas_link, lib_release_approval};
 // What talks rather than shows the world: the app's, not the web build's
 // (`comms` in Cargo.toml).
 #[cfg(feature = "comms")]

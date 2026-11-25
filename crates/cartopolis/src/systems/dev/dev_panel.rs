@@ -44,6 +44,12 @@
 //! Frame tab is reachable in two taps on a handset, says strictly more (worst
 //! frame, jitter, triangles by producer, upload and residency), and does not
 //! need a second per-frame moving average of its own kept alive to say it.
+//!
+//! **The library draws it too** (`lib_dev_panel`, `CARTO_UI_LIB=dev_panel`).
+//! The readouts are worked out once, as [`DevSection`]s both editions draw;
+//! with [`DevTools::lib`] on this system publishes [`DevTools::lib_view`] and
+//! does the library's taps through `apply`, the code egui's controls run.
+//! The Midas tab stays egui's in the apps (see `render_dev_panel`).
 
 use crate::systems::egui_manager::EguiMut;
 use web_time::Instant;
@@ -68,6 +74,129 @@ use crate::systems::theme;
 #[derive(Resource, Default)]
 pub struct DevTools {
     pub tab: DevTab,
+    /// The library draws the panel (`lib_dev_panel`, `CARTO_UI_LIB=dev_panel`):
+    /// [`render_dev_panel`] draws nothing and publishes
+    /// [`lib_view`](Self::lib_view) instead — on every tab but Midas in the
+    /// apps, whose body is `midas_link::midas_tab`'s and stays egui's.
+    pub lib: bool,
+    /// What the library's edition shows, while `lib` is on and the panel is
+    /// open.
+    pub lib_view: Option<DevPanelView>,
+    /// Taps on the library's edition, done by [`render_dev_panel`] next
+    /// frame (`apply`).
+    pub lib_acts: Vec<DevAct>,
+    /// When the library's readouts were last handed over (`READOUT_PERIOD_S`).
+    pub lib_at: Option<f64>,
+}
+
+/// How a readout's value is coloured: a measurement, an absence, a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DevTone {
+    Value,
+    Dim,
+    Error,
+}
+
+/// One line of a readout section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DevRow {
+    /// `name  value` ([`stat`]). A name led by two spaces is a sub-row.
+    Stat {
+        name: String,
+        value: String,
+        tone: DevTone,
+    },
+    /// A monospace line on its own: a failed pipeline's label.
+    Mono(String, DevTone),
+    /// A quiet explanation (`theme::note`).
+    Note(String),
+}
+
+/// A titled run of readout rows. Both editions draw the same sections, so
+/// the numbers and their wording are worked out once.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevSection {
+    pub title: &'static str,
+    pub rows: Vec<DevRow>,
+}
+
+/// One `CARTO_*` switch: its variable, its label, what it does, and whether
+/// it is on.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct SwitchRow {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    pub on: bool,
+}
+
+/// The Precision tab, as the library's edition draws it.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct PrecisionView {
+    /// What the tracking says, while the walk test runs; `None` before it.
+    pub word: Option<crate::systems::high_precision::HandWord>,
+    /// The device can run it (a phone).
+    pub available: bool,
+    pub problem: Option<String>,
+    /// "1:05 running · round 2 · 340 field readings".
+    pub running: Option<String>,
+    pub rounds: u32,
+    pub stand_in: bool,
+    /// The log's tail; `None` while it is empty.
+    pub log: Option<String>,
+}
+
+/// What a tab shows in the library's edition.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum DevBody {
+    /// Frame and Profiler: readouts only.
+    Readouts(Vec<DevSection>),
+    /// View: the camera's readouts, then the shot preset's group and Copy.
+    View {
+        sections: Vec<DevSection>,
+        group: String,
+        can_copy: bool,
+        copied: bool,
+    },
+    Switches {
+        on: usize,
+        rows: Vec<SwitchRow>,
+    },
+    Precision(PrecisionView),
+    /// A tab with nothing but a line (Midas in the browser).
+    Note(&'static str),
+}
+
+/// What the developer panel shows this frame, published by
+/// [`render_dev_panel`] for the library's edition (`lib_dev_panel`).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DevPanelView {
+    pub tab: DevTab,
+    pub body: DevBody,
+}
+
+/// A tap on the library's edition, done by [`render_dev_panel`].
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum DevAct {
+    Tab(DevTab),
+    Close,
+    /// The shot preset's group, as typed.
+    Group(String),
+    CopyPreset,
+    /// A `CARTO_*` switch by its variable, on or off.
+    Switch(&'static str, bool),
+    /// The walk test: Start, Round, Stop.
+    Start,
+    Round,
+    Stop,
+    StandIn(bool),
+    CopyLog,
+    ClearLog,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -123,7 +252,10 @@ pub fn toggle_dev_panel_shortcut(
 /// egui's default cascade puts a window near that corner, which is where the
 /// layers disc, the compass and the locate button already are. Only a default —
 /// the window is draggable and egui remembers where it was put.
-const DEV_PANEL_LEFT: f32 = 160.0;
+pub(crate) const DEV_PANEL_LEFT: f32 = 160.0;
+
+/// The window's width, egui's default and the library's sheet.
+pub(crate) const DEV_PANEL_WIDTH: f32 = 300.0;
 
 /// How often the draw/triangle census is re-walked while the panel is open.
 ///
@@ -136,6 +268,9 @@ const DEV_PANEL_LEFT: f32 = 160.0;
 /// throttled by this — that comes from [`crate::resources::FrameStats`], which is
 /// accumulated every frame regardless.
 const CENSUS_PERIOD_S: f64 = 0.5;
+
+/// How often the library's readout rows are rebuilt (`DevTools::lib_at`).
+const READOUT_PERIOD_S: f64 = 0.5;
 
 /// The throttled census, kept across frames so the panel is not re-walking the
 /// world on every one of them.
@@ -194,7 +329,29 @@ pub fn render_dev_panel(
     #[cfg(not(target_arch = "wasm32"))] mut midas: ResMut<crate::systems::midas_link::MidasLink>,
     mut commands: Commands,
 ) {
+    // The library's taps of last frame, before anything is measured.
+    if tools.lib && !tools.lib_acts.is_empty() {
+        let acts = std::mem::take(&mut tools.lib_acts);
+        let fix = view.fix();
+        for act in acts {
+            apply(
+                act,
+                &mut tools,
+                &mut dev,
+                &mut shot,
+                &mut prefs,
+                fix,
+                &mut copied_at,
+                &mut precision_log,
+                &mut precise_hand,
+                &mut high,
+            );
+        }
+    }
     if !dev.open {
+        if tools.lib_view.is_some() {
+            tools.lib_view = None;
+        }
         return;
     }
     // Every number in this panel changes on its own, so the window has to be
@@ -223,6 +380,65 @@ pub fn render_dev_panel(
         crate::systems::render_census::RenderCounts::default()
     };
     let fix = view.fix();
+
+    // The library's edition is showing: hand it what to draw, draw nothing.
+    // Midas in the apps stays egui's whole window, tab row and all: its body
+    // is `midas_link::midas_tab`, which holds the link's own pairing, sending
+    // and release-key code.
+    let midas_in_egui = cfg!(not(target_arch = "wasm32")) && tab == DevTab::Midas;
+    if tools.lib && !midas_in_egui {
+        // Frame and Profiler numbers change every frame, and a library row
+        // rebuilt every frame is never laid out: the tab showed nothing. Twice
+        // a second, as the census already is, unless the tab changed.
+        let ticking = matches!(tab, DevTab::Frame | DevTab::Profiler);
+        let same_tab = tools.lib_view.as_ref().is_some_and(|v| v.tab == tab);
+        if ticking && same_tab && tools.lib_at.is_some_and(|t| now - t < READOUT_PERIOD_S) {
+            return;
+        }
+        tools.lib_at = Some(now);
+        let body = match tab {
+            DevTab::Frame => {
+                DevBody::Readouts(frame_sections(&readouts, counts, readouts.entities.count()))
+            }
+            DevTab::View => DevBody::View {
+                sections: camera_sections(fix, view.interact.address.as_deref()),
+                group: shot.preset_group.clone(),
+                can_copy: fix.is_some(),
+                copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < COPIED_S),
+            },
+            DevTab::Profiler => DevBody::Readouts(profiler_sections(&readouts.diagnostics)),
+            DevTab::Switches => {
+                let rows: Vec<SwitchRow> = crate::resources::DebugSwitches::SWITCHES
+                    .iter()
+                    .filter_map(|&(name, label, help)| {
+                        Some(SwitchRow {
+                            name,
+                            label,
+                            help,
+                            on: prefs.debug_switches.get(name)?,
+                        })
+                    })
+                    .collect();
+                DevBody::Switches {
+                    on: rows.iter().filter(|r| r.on).count(),
+                    rows,
+                }
+            }
+            DevTab::Precision => {
+                DevBody::Precision(precision_view(&precision_log, &precise_hand, &high))
+            }
+            DevTab::Midas => DevBody::Note(MIDAS_IN_THE_APPS),
+        };
+        let next = DevPanelView { tab, body };
+        if tools.lib_view.as_ref() != Some(&next) {
+            tools.lib_view = Some(next);
+        }
+        return;
+    }
+    if tools.lib_view.is_some() {
+        tools.lib_view = None;
+    }
+
     // Edited as a copy and written back below, so an open Switches tab does not
     // mark `AppPrefs` changed on every frame it is open — which would put the
     // preferences autosave on the frame loop. The Settings panel does exactly
@@ -233,7 +449,7 @@ pub fn render_dev_panel(
     let mut open = true;
     egui::Window::new("Developer tools")
         .open(&mut open)
-        .default_width(300.0)
+        .default_width(DEV_PANEL_WIDTH)
         .default_pos([DEV_PANEL_LEFT + theme::OSD_GAP, theme::OSD_MARGIN])
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
@@ -280,10 +496,7 @@ pub fn render_dev_panel(
                     #[cfg(target_arch = "wasm32")]
                     DevTab::Midas => {
                         let _ = &mut commands;
-                        theme::note(
-                            ui,
-                            "The link to Midas is in the phone and desktop apps, not the browser.",
-                        );
+                        theme::note(ui, MIDAS_IN_THE_APPS);
                     }
                 });
         });
@@ -298,6 +511,231 @@ pub fn render_dev_panel(
     }
 }
 
+/// What the Midas tab says in the browser.
+const MIDAS_IN_THE_APPS: &str =
+    "The link to Midas is in the phone and desktop apps, not the browser.";
+
+/// How long "copied" shows after Copy as preset, s.
+const COPIED_S: f32 = 1.5;
+
+/// The shot preset's group field, explained.
+pub(crate) const GROUP_HELP: &str = "Subject this viewpoint is for — tunnels, bridges, doors. \
+     Captured by `cargo shots --only <group>`, into docs/img/<group>/. \
+     Leave blank to add it to the published documentation set.";
+
+/// Copy as preset, explained.
+pub(crate) const COPY_HELP: &str = "Copies this camera as a [[shot]] block for docs/shots.toml";
+
+/// Under the View tab.
+pub(crate) const CLOCK_NOTE: &str = "The clock and the weather are in Settings, under World.";
+
+/// The indoor walk test's steps, before it starts.
+pub(crate) const WALK_STEPS: [&str; 4] = [
+    "1. Start outside, under open sky.",
+    "2. Hold the phone still, then move it a little, until it says following.",
+    "3. Walk one indoor route three times. Tap Round at the start of each.",
+    "4. Copy the log below and paste it into the chat.",
+];
+
+/// Under a greyed Start.
+pub(crate) const NEEDS_A_PHONE: &str =
+    "Needs a phone: its back camera, motion sensors and magnetometer.";
+
+/// Under Start.
+pub(crate) const WALK_NOTE: &str =
+    "Uses the back camera and the motion sensors. Nothing the camera sees \
+     is kept. While it runs, things that sense hands near you feel yours.";
+
+/// Under "Stand-in hand".
+pub(crate) const STAND_IN_NOTE: &str =
+    "Lets your avatar's hand (or the view, in fly mode) play hand-sensing \
+     objects such as a theremin before high precision can place your phone. \
+     Scripts are told it is not precise.";
+
+/// The precision log, empty.
+pub(crate) const LOG_EMPTY_NOTE: &str =
+    "Nothing yet. Start the walk test above; what the camera and sensors \
+     report is written here every few seconds.";
+
+/// Over the switches, none on.
+pub(crate) const SWITCHES_NOTE: &str =
+    "Each switch removes a layer, or adds an instrument. All of them are \
+     read once, at startup — restart the app to apply a change. An \
+     environment variable or a debug.carto.* property still overrides \
+     what is set here.";
+
+/// Over the switches, `on` of them on.
+pub(crate) fn switches_on(on: usize) -> String {
+    format!("{on} on — this run's rendering is not evidence. Restart to apply a change.")
+}
+
+/// Do a tap on the library's edition: the same code egui's controls run.
+///
+/// Each resource is written only when the tap changes it: `DevPanelState`'s
+/// `is_changed()` re-runs the lighting, `AppPrefs`' the autosave.
+#[allow(clippy::too_many_arguments)]
+fn apply(
+    act: DevAct,
+    tools: &mut ResMut<DevTools>,
+    dev: &mut ResMut<crate::resources::DevPanelState>,
+    shot: &mut ResMut<crate::resources::ScreenshotState>,
+    prefs: &mut ResMut<crate::resources::AppPrefs>,
+    fix: Option<ViewFix>,
+    copied_at: &mut Option<Instant>,
+    log: &mut ResMut<crate::systems::high_precision::HighPrecisionLog>,
+    hand: &mut ResMut<crate::systems::prim_hand::PreciseHand>,
+    high: &mut ResMut<crate::systems::high_precision::HighPrecision>,
+) {
+    match act {
+        DevAct::Tab(t) => {
+            if tools.tab != t {
+                tools.tab = t;
+            }
+        }
+        DevAct::Close => {
+            if dev.open {
+                dev.open = false;
+            }
+        }
+        DevAct::Group(g) => {
+            if shot.preset_group != g {
+                shot.preset_group = g;
+            }
+        }
+        DevAct::CopyPreset => {
+            if let Some(v) = fix {
+                copy_preset(v, &shot.preset_group, &**dev, copied_at);
+            }
+        }
+        DevAct::Switch(name, on) => {
+            if prefs.debug_switches.get(name).is_some_and(|now| now != on) {
+                if let Some(value) = prefs.debug_switches.get_mut(name) {
+                    *value = on;
+                }
+            }
+        }
+        DevAct::Start => {
+            if crate::systems::high_precision::HighPrecision::available() && !high.on {
+                high.on = true;
+            }
+        }
+        DevAct::Round => {
+            if high.hand_word().is_some() {
+                high.mark_round(log);
+            }
+        }
+        DevAct::Stop => {
+            if high.on {
+                high.on = false;
+            }
+        }
+        DevAct::StandIn(on) => {
+            if hand.camera_stands_in != on {
+                hand.camera_stands_in = on;
+            }
+        }
+        DevAct::CopyLog => crate::utils::clipboard::set_text(&log.text()),
+        DevAct::ClearLog => log.clear(),
+    }
+}
+
+/// Copy the camera as a `[[shot]]` block, and start the "copied" line.
+fn copy_preset(
+    v: ViewFix,
+    group: &str,
+    dev: &crate::resources::DevPanelState,
+    copied_at: &mut Option<Instant>,
+) {
+    crate::utils::clipboard::set_text(&crate::systems::shot_presets::preset_toml(
+        "new-view",
+        group,
+        v.lat,
+        v.lng,
+        v.alt,
+        v.pitch,
+        v.yaw,
+        dev.time_of_day,
+        dev.fog_density,
+        dev.cloud_cover,
+    ));
+    *copied_at = Some(Instant::now());
+}
+
+/// The Precision tab's state, for the library's edition.
+fn precision_view(
+    log: &crate::systems::high_precision::HighPrecisionLog,
+    hand: &crate::systems::prim_hand::PreciseHand,
+    high: &crate::systems::high_precision::HighPrecision,
+) -> PrecisionView {
+    let word = high.hand_word();
+    let running = word.and(high.running_for()).map(|(ran, readings)| {
+        let s = ran.as_secs();
+        format!(
+            "{}:{:02} running · round {} · {readings} field readings",
+            s / 60,
+            s % 60,
+            high.rounds()
+        )
+    });
+    PrecisionView {
+        word,
+        available: crate::systems::high_precision::HighPrecision::available(),
+        problem: word.and_then(|_| high.problem()),
+        running,
+        rounds: high.rounds(),
+        stand_in: hand.camera_stands_in,
+        log: (!log.is_empty()).then(|| log.tail()),
+    }
+}
+
+/// A `name  value` row in the value's colour.
+fn row(name: impl Into<String>, value: impl Into<String>) -> DevRow {
+    row_toned(name, value, DevTone::Value)
+}
+
+fn row_toned(name: impl Into<String>, value: impl Into<String>, tone: DevTone) -> DevRow {
+    DevRow::Stat {
+        name: name.into(),
+        value: value.into(),
+        tone,
+    }
+}
+
+/// Draw readout sections as egui's panel always has: a header, its rows, and
+/// 5 pt between sections.
+fn draw_sections(ui: &mut egui::Ui, sections: &[DevSection]) {
+    for (i, s) in sections.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(5.0);
+        }
+        theme::section(ui, s.title);
+        for r in &s.rows {
+            match r {
+                DevRow::Stat { name, value, tone } => {
+                    stat_colored(ui, name, value, tone_color(*tone));
+                }
+                DevRow::Mono(text, tone) => {
+                    ui.label(
+                        egui::RichText::new(text)
+                            .monospace()
+                            .size(theme::SIZE_TINY)
+                            .color(tone_color(*tone)),
+                    );
+                }
+                DevRow::Note(text) => theme::note(ui, text),
+            }
+        }
+    }
+}
+
+fn tone_color(tone: DevTone) -> egui::Color32 {
+    match tone {
+        DevTone::Value => theme::p().cream,
+        DevTone::Dim => theme::p().text_dim,
+        DevTone::Error => theme::p().error,
+    }
+}
+
 /// Frame: is it fast, and what is it drawing?
 fn frame_tab(
     ui: &mut egui::Ui,
@@ -305,115 +743,165 @@ fn frame_tab(
     counts: crate::systems::render_census::RenderCounts,
     entity_count: usize,
 ) {
+    draw_sections(ui, &frame_sections(readouts, counts, entity_count));
+}
+
+/// The Frame tab's readouts.
+fn frame_sections(
+    readouts: &DevReadouts,
+    counts: crate::systems::render_census::RenderCounts,
+    entity_count: usize,
+) -> Vec<DevSection> {
     let frame = &readouts.frame;
     // Mean, worst and jitter together, because they fail differently: a healthy
     // mean beside a bad worst is a hitch, and a healthy mean beside a high jitter
     // is a pacing problem rather than a load one. A single fps number hides both.
-    theme::section(ui, "Frame");
-    if frame.sampled {
-        stat(ui, "rate", &format!("{} fps", frame.fps));
-        stat(
-            ui,
-            "frame",
-            &format!(
-                "{:.1} ms  worst {:.0}  ±{:.1}",
-                frame.mean_ms, frame.worst_ms, frame.jitter_ms
+    let timing = if frame.sampled {
+        vec![
+            row("rate", format!("{} fps", frame.fps)),
+            row(
+                "frame",
+                format!(
+                    "{:.1} ms  worst {:.0}  ±{:.1}",
+                    frame.mean_ms, frame.worst_ms, frame.jitter_ms
+                ),
             ),
-        );
+        ]
     } else {
         // The window is a whole second wide, so say so rather than print a
         // confident zero — the same call `FrameStats` documents.
-        stat(ui, "rate", "measuring…");
-    }
+        vec![row("rate", "measuring…")]
+    };
 
-    ui.add_space(5.0);
-    theme::section(ui, "Drawn");
-    stat(
-        ui,
-        "draws",
-        &format!("{}  ·  {} entities", counts.draws, entity_count),
-    );
-    stat(ui, "triangles", &thousands(counts.tris_total));
-    // Split by producer, so a regression names the streamer that caused it.
-    // Shadow casters are counted apart because each cascade re-draws them — four
-    // cascades make that number the one that matters.
-    //
-    // Both a triangle count and an entity count, because they answer different
-    // questions and one of them can be zero while the cost is real: a mesh
-    // uploaded `RENDER_WORLD`-only contributes no triangles from this side, and
-    // the whole clipmap pyramid is exactly that. The caster count is what shows
-    // it.
-    stat(
-        ui,
-        "  shadowed",
-        &format!(
-            "{} ({:.0}%)  ·  {} casters",
-            thousands(counts.tris_shadow),
-            share(counts.tris_shadow, counts.tris_total),
-            thousands(counts.shadow_casters),
+    let drawn = vec![
+        row(
+            "draws",
+            format!("{}  ·  {} entities", counts.draws, entity_count),
         ),
-    );
-    stat(ui, "  buildings", &thousands(counts.tris_buildings));
-    stat(ui, "  3DBAG", &thousands(counts.tris_lod22));
-    stat(ui, "  map tiles", &thousands(counts.tris_tiles));
-    stat(ui, "  globe", &thousands(counts.tris_globe));
+        row("triangles", thousands(counts.tris_total)),
+        // Split by producer, so a regression names the streamer that caused it.
+        // Shadow casters are counted apart because each cascade re-draws them — four
+        // cascades make that number the one that matters.
+        //
+        // Both a triangle count and an entity count, because they answer different
+        // questions and one of them can be zero while the cost is real: a mesh
+        // uploaded `RENDER_WORLD`-only contributes no triangles from this side, and
+        // the whole clipmap pyramid is exactly that. The caster count is what shows
+        // it.
+        row(
+            "  shadowed",
+            format!(
+                "{} ({:.0}%)  ·  {} casters",
+                thousands(counts.tris_shadow),
+                share(counts.tris_shadow, counts.tris_total),
+                thousands(counts.shadow_casters),
+            ),
+        ),
+        row("  buildings", thousands(counts.tris_buildings)),
+        row("  3DBAG", thousands(counts.tris_lod22)),
+        row("  map tiles", thousands(counts.tris_tiles)),
+        row("  globe", thousands(counts.tris_globe)),
+    ];
 
-    ui.add_space(5.0);
     // The two halves of every device-loss report this project has: a rate (a
     // frame's upload burst times out a command buffer) and a total (streamed
     // content exhausts an allocator). They move independently — the per-frame
     // ceiling flattens the first and does nothing at all about the second — so
     // both are here or neither is worth having. `docs/notes/upload-bursts.md`.
-    theme::section(ui, "GPU");
     let upload = &readouts.upload;
-    stat(
-        ui,
-        "upload",
-        &format!(
-            "{} kB now · {} kB peak",
-            thousands(upload.frame_kb()),
-            thousands(upload.peak_kb()),
-        ),
-    );
-    stat(
-        ui,
-        "biggest asset",
-        &format!("{} kB", thousands(upload.peak_asset_kb())),
-    );
     let resident_mb = upload.resident_bytes as f64 / (1024.0 * 1024.0);
     let peak_mb = upload.peak_resident_bytes as f64 / (1024.0 * 1024.0);
-    stat(
-        ui,
-        "resident",
-        &format!("{resident_mb:.0} MB · {peak_mb:.0} MB peak"),
-    );
+    let mut gpu = vec![
+        row(
+            "upload",
+            format!(
+                "{} kB now · {} kB peak",
+                thousands(upload.frame_kb()),
+                thousands(upload.peak_kb()),
+            ),
+        ),
+        row(
+            "biggest asset",
+            format!("{} kB", thousands(upload.peak_asset_kb())),
+        ),
+        row(
+            "resident",
+            format!("{resident_mb:.0} MB · {peak_mb:.0} MB peak"),
+        ),
+    ];
     // A pipeline that fails to compile is a silent hole in the picture: the
     // render node just skips its pass, and wgpu's one log line about it has long
     // since rolled out of the ring. Named here, live.
     match crate::systems::pipeline_health::snapshot() {
         Some(health) if !health.errored.is_empty() => {
-            stat_colored(
-                ui,
+            gpu.push(row_toned(
                 "pipelines",
-                &format!("{} FAILED", health.errored.len()),
-                theme::p().error,
-            );
+                format!("{} FAILED", health.errored.len()),
+                DevTone::Error,
+            ));
             for label in &health.errored {
-                ui.label(
-                    egui::RichText::new(label)
-                        .monospace()
-                        .size(theme::SIZE_TINY)
-                        .color(theme::p().error),
-                );
+                gpu.push(DevRow::Mono(label.to_string(), DevTone::Error));
             }
         }
-        Some(health) => stat(
-            ui,
+        Some(health) => gpu.push(row(
             "pipelines",
-            &format!("{} ready · {} building", health.ready, health.building),
-        ),
-        None => stat(ui, "pipelines", "not measured"),
+            format!("{} ready · {} building", health.ready, health.building),
+        )),
+        None => gpu.push(row("pipelines", "not measured")),
     }
+
+    vec![
+        DevSection {
+            title: "Frame",
+            rows: timing,
+        },
+        DevSection {
+            title: "Drawn",
+            rows: drawn,
+        },
+        DevSection {
+            title: "GPU",
+            rows: gpu,
+        },
+    ]
+}
+
+/// The View tab's readouts: the camera and the avatar.
+fn camera_sections(fix: Option<ViewFix>, address: Option<&str>) -> Vec<DevSection> {
+    // Where the camera is, in the terms the rest of the client argues in: a
+    // geographic fix, the altitude that drives every tier decision, and
+    // `space_factor` — the 0..1 crossfade the whole space tier rides, which is
+    // invisible in a screenshot and is the first thing to check when a ramp looks
+    // like a cut.
+    let camera = match fix {
+        Some(v) => vec![
+            row("at", format!("{:.5}, {:.5}", v.lat, v.lng)),
+            row("altitude", metres(v.alt)),
+            row("look", format!("{:.1}° pitch · {:.1}° yaw", v.pitch, v.yaw)),
+            row(
+                "tier",
+                if v.in_space {
+                    format!("space · factor {:.2}", v.space_factor)
+                } else {
+                    "ground".to_string()
+                },
+            ),
+        ],
+        None => vec![row("at", "no camera / no anchor yet")],
+    };
+    vec![
+        DevSection {
+            title: "Camera",
+            rows: camera,
+        },
+        // `None` off the Netherlands, away from an address, and in every camera
+        // mode but Follow — the register is the only source and it has no
+        // opinion about a field in Groningen, let alone one in France.
+        DevSection {
+            title: "Avatar",
+            rows: vec![row("address", address.unwrap_or("nothing near"))],
+        },
+    ]
 }
 
 /// View: where the camera is, and how to reproduce this shot.
@@ -425,40 +913,7 @@ fn view_tab(
     shot: &mut crate::resources::ScreenshotState,
     copied_at: &mut Option<Instant>,
 ) {
-    // Where the camera is, in the terms the rest of the client argues in: a
-    // geographic fix, the altitude that drives every tier decision, and
-    // `space_factor` — the 0..1 crossfade the whole space tier rides, which is
-    // invisible in a screenshot and is the first thing to check when a ramp looks
-    // like a cut.
-    theme::section(ui, "Camera");
-    match fix {
-        Some(v) => {
-            stat(ui, "at", &format!("{:.5}, {:.5}", v.lat, v.lng));
-            stat(ui, "altitude", &metres(v.alt));
-            stat(
-                ui,
-                "look",
-                &format!("{:.1}° pitch · {:.1}° yaw", v.pitch, v.yaw),
-            );
-            stat(
-                ui,
-                "tier",
-                &if v.in_space {
-                    format!("space · factor {:.2}", v.space_factor)
-                } else {
-                    "ground".to_string()
-                },
-            );
-        }
-        None => stat(ui, "at", "no camera / no anchor yet"),
-    }
-
-    ui.add_space(5.0);
-    theme::section(ui, "Avatar");
-    // `None` off the Netherlands, away from an address, and in every camera mode
-    // but Follow — the register is the only source and it has no opinion about a
-    // field in Groningen, let alone one in France.
-    stat(ui, "address", address.unwrap_or("nothing near"));
+    draw_sections(ui, &camera_sections(fix, address));
 
     ui.add_space(5.0);
     theme::section(ui, "Shot presets");
@@ -481,36 +936,20 @@ fn view_tab(
                 .hint_text("blank = README set")
                 .desired_width(120.0),
         )
-        .on_hover_text(
-            "Subject this viewpoint is for — tunnels, bridges, doors. \
-             Captured by `cargo shots --only <group>`, into docs/img/<group>/. \
-             Leave blank to add it to the published documentation set.",
-        );
+        .on_hover_text(GROUP_HELP);
     });
     ui.horizontal(|ui| {
-        let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
+        let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < COPIED_S);
         if ui
             .add_enabled(
                 fix.is_some(),
                 egui::Button::new(format!("{}  Copy as preset", icons::COPY)),
             )
-            .on_hover_text("Copies this camera as a [[shot]] block for docs/shots.toml")
+            .on_hover_text(COPY_HELP)
             .clicked()
         {
             if let Some(v) = fix {
-                crate::utils::clipboard::set_text(&crate::systems::shot_presets::preset_toml(
-                    "new-view",
-                    &shot.preset_group,
-                    v.lat,
-                    v.lng,
-                    v.alt,
-                    v.pitch,
-                    v.yaw,
-                    dev.time_of_day,
-                    dev.fog_density,
-                    dev.cloud_cover,
-                ));
-                *copied_at = Some(Instant::now());
+                copy_preset(v, &shot.preset_group, dev, copied_at);
             }
         }
         if copied {
@@ -518,10 +957,7 @@ fn view_tab(
         }
     });
 
-    theme::note(
-        ui,
-        "The clock and the weather are in Settings, under World.",
-    );
+    theme::note(ui, CLOCK_NOTE);
 }
 
 /// Profiler: Bevy's own diagnostics, live.
@@ -553,6 +989,11 @@ fn view_tab(
 /// table is indistinguishable from a profiler that measured zero, and the whole
 /// argument for `--dump-state`'s "not measured" rows applies here unchanged.
 fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
+    draw_sections(ui, &profiler_sections(store));
+}
+
+/// The Profiler tab's readouts.
+fn profiler_sections(store: &DiagnosticsStore) -> Vec<DevSection> {
     use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
     use bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin;
 
@@ -574,105 +1015,91 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
             .find(|d| d.path().as_str() == path)
             .and_then(bevy::diagnostic::Diagnostic::smoothed)
     };
-    let row = |ui: &mut egui::Ui, name: &str, value: Option<f64>, unit: &str, decimals: usize| {
-        match value {
-            Some(v) => stat(ui, name, &format!("{v:.decimals$} {unit}")),
-            None => stat_colored(ui, name, "not measured", theme::p().text_dim),
-        }
+    let measured = |name: &str, value: Option<f64>, unit: &str, decimals: usize| match value {
+        Some(v) => row(name, format!("{v:.decimals$} {unit}")),
+        None => row_toned(name, "not measured", DevTone::Dim),
     };
 
     // Bevy's frame timing, beside our own on the Frame tab on purpose: they are
     // measured differently (a rolling smoothed history here, a closed one-second
     // window there) and a disagreement between them is itself informative — it
     // means the last second was not like the seconds before it.
-    theme::section(ui, "Engine");
-    row(ui, "fps", read(&FrameTimeDiagnosticsPlugin::FPS), "", 1);
-    row(
-        ui,
-        "frame time",
-        read(&FrameTimeDiagnosticsPlugin::FRAME_TIME),
-        "ms",
-        2,
-    );
-    row(
-        ui,
-        "frame count",
-        read(&FrameTimeDiagnosticsPlugin::FRAME_COUNT),
-        "",
-        0,
-    );
-    row(
-        ui,
-        "entities",
-        read(&EntityCountDiagnosticsPlugin::ENTITY_COUNT),
-        "",
-        0,
-    );
+    let engine = vec![
+        measured("fps", read(&FrameTimeDiagnosticsPlugin::FPS), "", 1),
+        measured(
+            "frame time",
+            read(&FrameTimeDiagnosticsPlugin::FRAME_TIME),
+            "ms",
+            2,
+        ),
+        measured(
+            "frame count",
+            read(&FrameTimeDiagnosticsPlugin::FRAME_COUNT),
+            "",
+            0,
+        ),
+        measured(
+            "entities",
+            read(&EntityCountDiagnosticsPlugin::ENTITY_COUNT),
+            "",
+            0,
+        ),
+    ];
 
-    ui.add_space(5.0);
     // The mesh allocator's own view of what it is holding. `UploadMeter` on the
     // Frame tab counts bytes *we* handed over; this counts the slabs bevy packed
     // them into, and the gap between the two is fragmentation.
-    theme::section(ui, "Mesh allocator");
-    row(
-        ui,
-        "slabs",
-        read(MeshAllocatorDiagnosticPlugin::slabs_diagnostic_path()),
-        "",
-        0,
-    );
     let slab_bytes = read(MeshAllocatorDiagnosticPlugin::slabs_size_diagnostic_path());
-    row(
-        ui,
-        "slab bytes",
-        slab_bytes.map(|b| b / (1024.0 * 1024.0)),
-        "MB",
-        1,
-    );
-    row(
-        ui,
-        "allocations",
-        read(MeshAllocatorDiagnosticPlugin::allocations_diagnostic_path()),
-        "",
-        0,
-    );
+    let allocator = vec![
+        measured(
+            "slabs",
+            read(MeshAllocatorDiagnosticPlugin::slabs_diagnostic_path()),
+            "",
+            0,
+        ),
+        measured(
+            "slab bytes",
+            slab_bytes.map(|b| b / (1024.0 * 1024.0)),
+            "MB",
+            1,
+        ),
+        measured(
+            "allocations",
+            read(MeshAllocatorDiagnosticPlugin::allocations_diagnostic_path()),
+            "",
+            0,
+        ),
+    ];
 
-    ui.add_space(5.0);
-    theme::section(ui, "Process");
     let cpu = read_path("process/cpu_usage");
-    row(ui, "cpu", cpu, "% of a core", 1);
-    row(
-        ui,
-        "memory",
-        read_path("process/mem_usage"),
-        "% of system",
-        1,
-    );
+    let mut process = vec![
+        measured("cpu", cpu, "% of a core", 1),
+        measured("memory", read_path("process/mem_usage"), "% of system", 1),
+    ];
     if cpu.is_none() {
-        theme::note(
-            ui,
+        process.push(DevRow::Note(
             "Process CPU and memory need a build with the perf feature: \
-             cargo run -p cartopolis --features perf",
-        );
+             cargo run -p cartopolis --features perf"
+                .to_string(),
+        ));
     }
 
-    ui.add_space(5.0);
-    theme::section(ui, "GPU passes");
     let passes = crate::systems::perf::gpu_passes(store);
+    let mut gpu = Vec::new();
     if passes.is_empty() {
-        theme::note(
-            ui,
+        gpu.push(DevRow::Note(
             "No per-pass timings. Switch on \"Time the GPU passes\" under \
              Switches and restart. Vulkan and DX12 only — and some drivers \
-             crash on the readback, which is why it is off by default.",
-        );
+             crash on the readback, which is why it is off by default."
+                .to_string(),
+        ));
     } else {
         for pass in passes.iter().take(12) {
             // The pass name, not the whole path: every one of them begins with
             // the same two segments and a 300 pt window has no room to say so
             // twelve times.
             let name = pass.path.rsplit('/').next().unwrap_or(&pass.path);
-            let gpu = pass
+            let ms = pass
                 .gpu_ms
                 .map_or_else(|| "—".to_string(), |ms| format!("{ms:.2} ms"));
             // Fill, in millions of fragment-shader invocations. This is the one
@@ -681,18 +1108,34 @@ fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
             let frag = pass
                 .fragment_invocations
                 .map_or_else(String::new, |n| format!("  ·  {:.1} M frag", n / 1e6));
-            stat(ui, name, &format!("{gpu}{frag}"));
+            gpu.push(row(name, format!("{ms}{frag}")));
         }
         if passes.len() > 12 {
-            theme::note(
-                ui,
-                &format!(
-                    "{} more passes — cargo perf writes the full table.",
-                    passes.len() - 12
-                ),
-            );
+            gpu.push(DevRow::Note(format!(
+                "{} more passes — cargo perf writes the full table.",
+                passes.len() - 12
+            )));
         }
     }
+
+    vec![
+        DevSection {
+            title: "Engine",
+            rows: engine,
+        },
+        DevSection {
+            title: "Mesh allocator",
+            rows: allocator,
+        },
+        DevSection {
+            title: "Process",
+            rows: process,
+        },
+        DevSection {
+            title: "GPU passes",
+            rows: gpu,
+        },
+    ]
 }
 
 /// Switches: the `CARTO_*` bisecting switches, on the device.
@@ -721,19 +1164,10 @@ fn precision_tab(
     walk_test(ui, log, high);
     ui.separator();
     theme::checkbox(ui, &mut hand.camera_stands_in, "Stand-in hand");
-    theme::note(
-        ui,
-        "Lets your avatar's hand (or the view, in fly mode) play hand-sensing \
-         objects such as a theremin before high precision can place your phone. \
-         Scripts are told it is not precise.",
-    );
+    theme::note(ui, STAND_IN_NOTE);
     ui.separator();
     if log.is_empty() {
-        theme::note(
-            ui,
-            "Nothing yet. Start the walk test above; what the camera and sensors \
-             report is written here every few seconds.",
-        );
+        theme::note(ui, LOG_EMPTY_NOTE);
         return;
     }
     ui.horizontal(|ui| {
@@ -766,12 +1200,7 @@ fn walk_test(
     use crate::systems::high_precision::{HandWord, HighPrecision};
     theme::section(ui, "Indoor walk test");
     let Some(word) = high.hand_word() else {
-        for step in [
-            "1. Start outside, under open sky.",
-            "2. Hold the phone still, then move it a little, until it says following.",
-            "3. Walk one indoor route three times. Tap Round at the start of each.",
-            "4. Copy the log below and paste it into the chat.",
-        ] {
+        for step in WALK_STEPS {
             ui.label(step);
         }
         ui.add_space(theme::OSD_GAP);
@@ -784,16 +1213,9 @@ fn walk_test(
             }
         });
         if !available {
-            theme::note(
-                ui,
-                "Needs a phone: its back camera, motion sensors and magnetometer.",
-            );
+            theme::note(ui, NEEDS_A_PHONE);
         }
-        theme::note(
-            ui,
-            "Uses the back camera and the motion sensors. Nothing the camera sees \
-             is kept. While it runs, things that sense hands near you feel yours.",
-        );
+        theme::note(ui, WALK_NOTE);
         return;
     };
     let tone = match word {
@@ -845,20 +1267,12 @@ fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
     // it look like that" has to be answerable without remembering that you set one
     // a week ago.
     if on == 0 {
-        theme::note(
-            ui,
-            "Each switch removes a layer, or adds an instrument. All of them are \
-             read once, at startup — restart the app to apply a change. An \
-             environment variable or a debug.carto.* property still overrides \
-             what is set here.",
-        );
+        theme::note(ui, SWITCHES_NOTE);
     } else {
         ui.label(
-            egui::RichText::new(format!(
-                "{on} on — this run's rendering is not evidence. Restart to apply a change."
-            ))
-            .small()
-            .color(theme::p().accent_text),
+            egui::RichText::new(switches_on(on))
+                .small()
+                .color(theme::p().accent_text),
         );
     }
     ui.add_space(4.0);
@@ -918,12 +1332,9 @@ impl DevView<'_, '_> {
 /// This is the whole layout vocabulary of the developer panel, deliberately: a
 /// panel of numbers wants to be scanned down the left edge, and the moment two
 /// rows disagree about where the value starts it stops being scannable.
-fn stat(ui: &mut egui::Ui, name: &str, value: &str) {
-    stat_colored(ui, name, value, theme::p().cream);
-}
-
-/// [`stat`] with the value in a chosen colour — for the rows that report a
-/// failure or an absence rather than a measurement.
+///
+/// The value in a chosen colour: cream for a measurement, another for the
+/// rows that report a failure or an absence.
 fn stat_colored(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color32) {
     ui.horizontal(|ui| {
         ui.add_sized(

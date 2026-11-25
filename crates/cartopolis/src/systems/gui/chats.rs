@@ -147,6 +147,23 @@ pub struct ChatsView {
     /// `egui_only` did not run, as egui's window would not have shown.
     #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub lib_confirm: Option<String>,
+    /// The component library draws the full-size picture viewer
+    /// (`systems::lib_picture_viewer`, `CARTO_UI_LIB=picture`): egui's
+    /// system still decides when it is up, and paints nothing.
+    pub lib_picture: bool,
+    /// The picture `egui_only` would show full size this frame, for
+    /// `lib_picture_viewer`, which takes it each frame: `None` on a frame
+    /// `egui_only` did not run, as egui's window would not have shown.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub lib_viewing: Option<crate::systems::chat_pictures::PictureRef>,
+}
+
+impl ChatsView {
+    /// The picture viewer's close, whichever edition drew it.
+    pub fn close_picture(&mut self) {
+        self.viewing = None;
+        self.lib_viewing = None;
+    }
 }
 
 /// Which screen the Chats panel shows: one answer for egui's panel and the
@@ -1333,14 +1350,15 @@ pub(crate) fn settle(
 
 /// What only egui's system can do for the panel, whichever edition draws
 /// it: the account-delete confirmation, the community picture's picker, the
-/// full-size picture viewer (an egui texture) and the report dialog.
+/// full-size picture viewer and the report dialog.
 ///
 /// With `lib_dialogs` on, the confirmation and the report form are the
 /// library's (`systems::lib_dialogs`): the confirmation is handed over in
 /// `ChatsView::lib_confirm`, and the report form needs nothing handed over,
-/// being up whenever `ChatState::report` is and a session is there. The
-/// picker has nothing to draw — the platform's own sheet is in front — and
-/// the viewer stays egui's (see `lib_dialogs`).
+/// being up whenever `ChatState::report` is and a session is there. With
+/// `lib_picture` on, the viewer is the library's
+/// (`systems::lib_picture_viewer`), handed over in `ChatsView::lib_viewing`.
+/// The picker has nothing to draw — the platform's own sheet is in front.
 fn egui_only(
     egui: &mut crate::systems::egui_manager::EguiManager,
     chat: &mut ChatState,
@@ -1379,8 +1397,12 @@ fn egui_only(
             }
         }
     }
-    let viewport = egui.viewport_pts();
-    picture_viewer(&egui.ctx, viewport, view, pictures);
+    if view.lib_picture {
+        view.lib_viewing = view.viewing.clone();
+    } else {
+        let viewport = egui.viewport_pts();
+        picture_viewer(&egui.ctx, viewport, view, pictures);
+    }
     if let Some(online) = online.filter(|_| !view.lib_dialogs) {
         crate::systems::chat::render_report_dialog(egui, chat, online);
     }
@@ -3865,7 +3887,7 @@ fn picture_viewer(
             }
         });
     if !open {
-        view.viewing = None;
+        view.close_picture();
     }
 }
 

@@ -112,7 +112,14 @@ pub fn prepare_bevy(
             || lib.call
             || lib.cosmos
             || lib.splash
-            || lib.face_viewfinder)
+            || lib.face_viewfinder
+            || lib.dev_panel
+            || lib.picture_viewer
+            || lib.mcp_activity
+            || lib.midas_link
+            || lib.release_approval
+            || lib.object_editor
+            || lib.marquee)
     {
         return;
     }

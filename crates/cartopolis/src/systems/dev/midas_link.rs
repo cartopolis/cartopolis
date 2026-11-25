@@ -278,9 +278,60 @@ pub struct MidasLink {
     /// What a session asked to tell the person (`tell`), shown beside the
     /// button until it is tapped away, replaced, or its time is up.
     pub told: Option<Told>,
+    /// The component library draws the button, the card and the bubble
+    /// (`lib_midas_link`): [`draw_link_button`] keeps deciding and draws
+    /// nothing.
+    pub lib: bool,
+    /// What the library draws, published each frame; `None` hides it all.
+    pub lib_view: Option<LinkView>,
+    /// The library's taps, done next frame by [`MidasLink::apply`].
+    pub lib_acts: Vec<LinkAct>,
     /// The MCP server's job channel, for the worker's in-process session.
     #[cfg(mcp)]
     jobs: Option<McpJobs>,
+}
+
+/// A tap on the Midas button, its card or the bubble, from either edition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkAct {
+    /// The button: opens the card, or closes it.
+    Toggle,
+    /// A tap on the open card closes it.
+    CloseCard,
+    /// A tap on the bubble takes it down.
+    DismissTold,
+}
+
+/// The Midas corner as plain data, for the library's edition.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct LinkView {
+    /// The button's right edge in from the window's, egui points.
+    pub right: f32,
+    /// Its top edge, egui points.
+    pub top: f32,
+    /// A call just came in: the glow's strength, 1 fading to 0.
+    pub glow: Option<f32>,
+    /// The card, when open.
+    pub card: Option<LinkCardView>,
+    /// What a session told the person, when it did.
+    pub told: Option<ToldView>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct LinkCardView {
+    /// "s579 · screenshot · just now", or "No requests yet".
+    pub call: String,
+    /// As whom sessions act.
+    pub acts: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct ToldView {
+    pub session: String,
+    pub text: String,
 }
 
 #[cfg(mcp)]
@@ -303,6 +354,9 @@ impl Default for MidasLink {
             push_shot: None,
             card_open: false,
             told: None,
+            lib: false,
+            lib_view: None,
+            lib_acts: Vec::new(),
             #[cfg(mcp)]
             jobs: None,
         }
@@ -310,6 +364,15 @@ impl Default for MidasLink {
 }
 
 impl MidasLink {
+    /// A tap on the button, the card or the bubble: what both editions do.
+    pub fn apply(&mut self, a: LinkAct) {
+        match a {
+            LinkAct::Toggle => self.card_open = !self.card_open,
+            LinkAct::CloseCard => self.card_open = false,
+            LinkAct::DismissTold => self.told = None,
+        }
+    }
+
     fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared
             .lock()
@@ -1325,6 +1388,12 @@ pub fn draw_link_button(
     driver: Res<crate::systems::driver::DriverState>,
     mut seen: Local<(bool, Option<web_time::Instant>, Option<web_time::Instant>)>,
 ) {
+    // The library's taps of last frame, done as egui's are.
+    if !link.lib_acts.is_empty() {
+        for a in std::mem::take(&mut link.lib_acts) {
+            link.apply(a);
+        }
+    }
     let up = link.config.on && link.linked();
     let last = link.shared().last_call.clone();
     // Timed out: gone before it is drawn.
@@ -1352,6 +1421,9 @@ pub fn draw_link_button(
     // Under an open panel, or in driver mode, whose trip strip has this corner.
     if !up || !right_panel.is(crate::resources::RightPanel::None) || driver.active {
         link.card_open = false;
+        if link.lib_view.is_some() {
+            link.lib_view = None;
+        }
         return;
     }
     let age = last.as_ref().map(|(_, _, at)| at.elapsed().as_secs_f32());
@@ -1368,6 +1440,34 @@ pub fn draw_link_button(
     // and this takes the margin under the bar.
     let left_of_column =
         crate::systems::dock::right_column(egui.viewport_pts(), false, false).beside();
+    if link.lib {
+        // The repaints egui's card and bubble ask for, so the library's
+        // "just now" ages and a timed bubble goes.
+        if link.card_open && age.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
+        }
+        if let Some(until) = link.told.as_ref().and_then(|t| t.until) {
+            ctx.request_repaint_after(until.saturating_duration_since(web_time::Instant::now()));
+        }
+        let who = identity.as_deref().and_then(|i| i.username.clone());
+        let view = LinkView {
+            right: left_of_column,
+            top: crate::systems::dock::reserved_top(),
+            glow,
+            card: link.card_open.then(|| LinkCardView {
+                call: card_call(last.as_ref(), age),
+                acts: card_acts(who),
+            }),
+            told: link.told.as_ref().map(|t| ToldView {
+                session: t.session.clone(),
+                text: t.text.clone(),
+            }),
+        };
+        if link.lib_view.as_ref() != Some(&view) {
+            link.lib_view = Some(view);
+        }
+        return;
+    }
     egui::Area::new(egui::Id::new("midas_link_button"))
         .anchor(
             egui::Align2::RIGHT_TOP,
@@ -1412,7 +1512,9 @@ pub fn draw_link_button(
             toggle,
         ) + theme::OSD_GAP
     } else {
-        link.card_open = toggle;
+        if toggle {
+            link.apply(LinkAct::Toggle);
+        }
         top
     };
     draw_told(ctx, &mut link, beside, bubble_top, bubble_top == top, size);
@@ -1444,23 +1546,13 @@ fn draw_link_card(
                         .color(theme::p().cream)
                         .strong(),
                 );
-                let call = match (last, age) {
-                    (Some((tool, session, _)), Some(a)) => {
-                        format!("{session} · {tool} · {}", ago(a))
-                    }
-                    _ => "No requests yet".to_string(),
-                };
                 ui.label(
-                    egui::RichText::new(call)
+                    egui::RichText::new(card_call(last, age))
                         .size(theme::SIZE_CHIP)
                         .color(theme::midas_gold()),
                 );
-                let acts = match who {
-                    Some(name) => format!("Sessions can act as {name}"),
-                    None => "Signed out: sessions act as nobody".to_string(),
-                };
                 ui.label(
-                    egui::RichText::new(acts)
+                    egui::RichText::new(card_acts(who))
                         .size(theme::SIZE_TINY)
                         .color(theme::p().text_dim),
                 );
@@ -1474,7 +1566,7 @@ fn draw_link_card(
     let tap = card.response.interact(egui::Sense::click());
     tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
     if toggle || tap.clicked() {
-        link.card_open = false;
+        link.apply(LinkAct::CloseCard);
     }
     card.response.rect.bottom()
 }
@@ -1543,7 +1635,23 @@ fn draw_told(
     let tap = bubble.response.interact(egui::Sense::click());
     tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss"));
     if tap.clicked() {
-        link.told = None;
+        link.apply(LinkAct::DismissTold);
+    }
+}
+
+/// The card's second line: which session asked for what, and when.
+fn card_call(last: Option<&(String, String, web_time::Instant)>, age: Option<f32>) -> String {
+    match (last, age) {
+        (Some((tool, session, _)), Some(a)) => format!("{session} · {tool} · {}", ago(a)),
+        _ => "No requests yet".to_string(),
+    }
+}
+
+/// The card's third line: as whom sessions act.
+fn card_acts(who: Option<String>) -> String {
+    match who {
+        Some(name) => format!("Sessions can act as {name}"),
+        None => "Signed out: sessions act as nobody".to_string(),
     }
 }
 
