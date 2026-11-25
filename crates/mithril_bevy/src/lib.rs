@@ -33,9 +33,11 @@ mod events;
 mod images;
 mod popup;
 mod tree;
+mod typing;
 
 pub use events::{UiEvents, UiPointer};
 pub use tree::{FontMap, UiTree};
+pub use typing::{type_into_focused, KeyEdit, KeyEdits};
 
 /// A node as the tree names it: an id the renderer hands out; the entity
 /// behind it lives in [`UiTree`].
@@ -162,6 +164,9 @@ impl Renderer for BevyRenderer {
     }
 
     fn set_property_bool(&mut self, node: &NodeId, name: &str, value: bool) {
+        if name.starts_with('@') {
+            debug!(?node, name, value, "mithril_bevy: action asked");
+        }
         self.ops.push(Op::SetPropertyBool {
             id: *node,
             name: name.to_owned(),
@@ -336,6 +341,7 @@ impl Plugin for MithrilUiPlugin {
             .init_resource::<images::ImageCache>()
             .init_resource::<UiEvents>()
             .init_resource::<UiPointer>()
+            .init_resource::<KeyEdits>()
             .add_systems(
                 PostUpdate,
                 (
@@ -379,6 +385,12 @@ fn spin(time: Res<Time>, mut nodes: Query<&mut bevy::ui::UiTransform, With<Spin>
 /// One frame of the UI: events to handlers, queued operations to entities,
 /// changed nodes restyled.
 pub fn drive_ui(world: &mut World) {
+    // 0. Keys an on-screen keyboard typed (`typing.rs`): into the focused
+    //    field, their `keydown`s queued for this frame's handlers.
+    let typed = world.resource_mut::<KeyEdits>().take();
+    for edit in typed {
+        type_into_focused(world, edit);
+    }
     // 1. Events → handlers (which write signals → effects → operations). An
     //    event named `@…` is the renderer's own (a select's popup), and a
     //    handler may raise events in turn (`UiHost::internal`): a few

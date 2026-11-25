@@ -317,6 +317,9 @@ fn kb() -> OnScreenKeyboard {
         slab: None,
         fingers: Vec::new(),
         touch_seen: false,
+        lib: false,
+        lib_field: false,
+        lib_blur: false,
     }
 }
 

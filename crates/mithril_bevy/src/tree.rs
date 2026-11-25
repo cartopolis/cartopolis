@@ -323,7 +323,10 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                 .nodes
                 .get(&id)
                 .and_then(|n| n.entity);
+            debug!(?id, value, ?entity, "mithril_bevy: @focus asked");
             if let (true, Some(e)) = (value, entity) {
+                let present = world.get_resource::<InputFocus>().is_some();
+                debug!(?e, present, "mithril_bevy: @focus");
                 if let Some(mut focus) = world.get_resource_mut::<InputFocus>() {
                     focus.set(e, bevy::input_focus::FocusCause::Navigated);
                 }

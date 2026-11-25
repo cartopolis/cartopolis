@@ -32,6 +32,9 @@ use crate::resources::{AuthIdentity, OnlineSession, RightPanel};
 use crate::systems::chats::ChatsView;
 use crate::systems::{icons, theme};
 
+/// The account page's sign-in switch, in both editions.
+pub const CAN_SIGN_IN: &str = "Can sign in (off: stopped at the next sign-in)";
+
 /// Admin's colour, everywhere it appears: the web page's gold.
 fn gold() -> egui::Color32 {
     theme::p().warn
@@ -40,8 +43,11 @@ fn gold() -> egui::Color32 {
 /// How often the open-report count behind the You page's badge is refreshed.
 const REPORT_POLL_SECS: f32 = 120.0;
 
+/// The panel's width on a wide screen, in both editions.
+pub const PANEL_WIDTH: f32 = 360.0;
+
 /// One report about a person (`db::ReportRow` on the server).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Report {
     pub id: i64,
     #[serde(default)]
@@ -60,7 +66,7 @@ pub struct Report {
 }
 
 /// One account (`auth::AccountRow` on the server).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Account {
     pub id: String,
     pub username: String,
@@ -75,16 +81,16 @@ pub struct Account {
     pub email_pending: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-struct AccountsDoc {
-    accounts: Vec<Account>,
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct AccountsDoc {
+    pub accounts: Vec<Account>,
     /// Account id → the roles it holds explicitly.
     #[serde(default)]
-    roles: BTreeMap<String, Vec<String>>,
+    pub roles: BTreeMap<String, Vec<String>>,
 }
 
 /// A role (`roles::RoleRow` on the server).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Role {
     pub id: String,
     pub name: String,
@@ -102,7 +108,7 @@ struct RolesDoc {
 }
 
 /// An owned building (`buildings::Ownership` on the server).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Claim {
     pub pand_id: String,
     pub address: String,
@@ -119,7 +125,7 @@ struct ClaimsDoc {
 }
 
 /// Something fetched: not yet asked, on its way, here, or refused.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Load<T> {
     #[default]
     Idle,
@@ -129,7 +135,7 @@ pub enum Load<T> {
 }
 
 impl<T> Load<T> {
-    fn ready(&self) -> Option<&T> {
+    pub fn ready(&self) -> Option<&T> {
         match self {
             Load::Ready(t) => Some(t),
             _ => None,
@@ -175,7 +181,7 @@ pub struct AdminState {
     pub reports: Load<Vec<Report>>,
     /// Handled reports too, not only the open ones.
     pub show_handled: bool,
-    accounts: Load<AccountsDoc>,
+    pub accounts: Load<AccountsDoc>,
     pub roles: Load<Vec<Role>>,
     pub claims: Load<Vec<Claim>>,
     /// The Accounts page's search.
@@ -191,6 +197,10 @@ pub struct AdminState {
     inbox: Arc<Mutex<Vec<Reply>>>,
     /// A scripted capture's stand-in data (`--ui admin`): nothing is fetched.
     pub demo: bool,
+    /// The component library draws the panel (`systems::lib_admin`): egui
+    /// keeps only an empty strip of its width, and still drains the replies
+    /// and keeps the You page's badge.
+    pub lib: bool,
 }
 
 /// The permissions that make an account an admin of something, and so give
@@ -208,6 +218,162 @@ const ADMIN_PERMISSIONS: [Permission; 6] = [
 #[must_use]
 pub fn may_admin(identity: &AuthIdentity) -> bool {
     ADMIN_PERMISSIONS.iter().any(|p| identity.may(*p))
+}
+
+/// What the pages offer this account: read from its permissions (and all of
+/// it in a capture's demo). The server checks every call regardless.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Offers {
+    /// Reports and building claims.
+    pub triage: bool,
+    /// Accounts: find, suspend, delete.
+    pub accounts: bool,
+    /// The Roles page (also for whoever manages accounts).
+    pub roles: bool,
+    /// Giving an account roles.
+    pub assign_roles: bool,
+    pub overrides: bool,
+    pub library: bool,
+    pub pipeline: bool,
+}
+
+impl Offers {
+    #[must_use]
+    pub fn of(identity: &AuthIdentity, demo: bool) -> Self {
+        let accounts = identity.may(Permission::AccountsManage) || demo;
+        Offers {
+            triage: identity.may(Permission::ReportsTriage) || demo,
+            accounts,
+            roles: identity.may(Permission::RolesManage) || accounts,
+            assign_roles: identity.may(Permission::RolesManage) || demo,
+            overrides: identity.may(Permission::BuildingOverride) || demo,
+            library: identity.may(Permission::LibraryManage) || demo,
+            pipeline: identity.may(Permission::PipelineRun) || demo,
+        }
+    }
+
+    /// The People area has something in it.
+    #[must_use]
+    pub fn people(self) -> bool {
+        self.triage || self.accounts || self.roles
+    }
+}
+
+/// Back from the admin home to the You page it was opened from.
+pub fn to_you(right_panel: &mut RightPanel, view: &mut ChatsView) {
+    *right_panel = RightPanel::Chat;
+    view.open = None;
+    view.you = true;
+}
+
+/// Whether an account matches the Accounts page's search (lowercased).
+#[must_use]
+pub fn account_matches(a: &Account, needle: &str) -> bool {
+    needle.is_empty()
+        || a.username.to_lowercase().contains(needle)
+        || a.email
+            .as_deref()
+            .is_some_and(|e| e.to_lowercase().contains(needle))
+}
+
+/// An account's status word in the list: suspended, waiting, admin, or none.
+#[must_use]
+pub fn status_word(a: &Account) -> &'static str {
+    if a.disabled {
+        "suspended"
+    } else if a.email_pending {
+        "waiting on email"
+    } else if a.admin {
+        "admin"
+    } else {
+        ""
+    }
+}
+
+/// An account's line under its name in the list.
+#[must_use]
+pub fn account_sub(a: &Account) -> String {
+    match &a.email {
+        Some(e) => format!("Since {} · {e}", short_date(&a.created_at)),
+        None => format!("Since {}", short_date(&a.created_at)),
+    }
+}
+
+/// What the account page says of it, on one line.
+#[must_use]
+pub fn account_facts(a: &Account) -> String {
+    let mut facts = format!("Since {}", short_date(&a.created_at));
+    if let Some(e) = &a.email {
+        facts.push_str(&format!(" · {e}"));
+    }
+    if a.email_pending {
+        facts.push_str(" · waiting on email");
+    }
+    facts
+}
+
+/// The words a report row quotes: the line as reported, else the note.
+#[must_use]
+pub fn report_said(r: &Report) -> &str {
+    r.message
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&r.note)
+}
+
+/// Who filed a report, as a row says it.
+#[must_use]
+pub fn reported_by(r: &Report) -> String {
+    match &r.reporter_username {
+        Some(who) => format!("Reported by {who}"),
+        None => "Reported by a deleted account".into(),
+    }
+}
+
+/// How many people hold a role, in words.
+#[must_use]
+pub fn role_people(role: &Role) -> String {
+    if role.id == "player" {
+        "Everybody".to_string()
+    } else {
+        format!(
+            "{} {}",
+            role.members,
+            if role.members == 1 {
+                "person"
+            } else {
+                "people"
+            }
+        )
+    }
+}
+
+/// What a role may do, in words.
+#[must_use]
+pub fn role_may(role: &Role) -> Vec<String> {
+    role.permissions
+        .iter()
+        .map(|p| Permission::from_slug(p).map_or_else(|| p.clone(), |p| p.label().to_string()))
+        .collect()
+}
+
+/// A claimed building's address with its postcode.
+#[must_use]
+pub fn claim_place(c: &Claim) -> String {
+    match &c.postcode {
+        Some(pc) => format!("{} · {pc}", c.address),
+        None => c.address.clone(),
+    }
+}
+
+/// Who holds a claimed building, and since when.
+#[must_use]
+pub fn claim_holder(c: &Claim) -> String {
+    format!(
+        "{} · since {}",
+        c.username.as_deref().unwrap_or("a deleted account"),
+        short_date(&c.claimed_at)
+    )
 }
 
 impl AdminState {
@@ -332,16 +498,223 @@ impl AdminState {
         }
     }
 
-    fn account(&self, id: &str) -> Option<&Account> {
+    pub fn account(&self, id: &str) -> Option<&Account> {
         self.accounts.ready()?.accounts.iter().find(|a| a.id == id)
     }
 
-    fn account_named(&self, name: &str) -> Option<&Account> {
+    pub fn account_named(&self, name: &str) -> Option<&Account> {
         self.accounts
             .ready()?
             .accounts
             .iter()
             .find(|a| a.username.eq_ignore_ascii_case(name))
+    }
+
+    /// A report in the queue, by id.
+    pub fn report(&self, id: i64) -> Option<&Report> {
+        self.reports.ready()?.iter().find(|r| r.id == id)
+    }
+
+    /// How many reports (open or handled) are about this person.
+    #[must_use]
+    pub fn reports_about(&self, username: &str) -> usize {
+        self.reports.ready().map_or(0, |l| {
+            l.iter()
+                .filter(|r| r.subject_username.eq_ignore_ascii_case(username))
+                .count()
+        })
+    }
+
+    /// The roles an account holds explicitly.
+    #[must_use]
+    pub fn held_roles(&self, account_id: &str) -> Vec<String> {
+        self.accounts
+            .ready()
+            .and_then(|d| d.roles.get(account_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The Accounts row's line on the home page.
+    #[must_use]
+    pub fn accounts_summary(&self) -> String {
+        match self.accounts.ready() {
+            Some(doc) => {
+                let pending = doc.accounts.iter().filter(|a| a.email_pending).count();
+                if pending > 0 {
+                    format!("{} · {pending} waiting on email", doc.accounts.len())
+                } else {
+                    format!("{} accounts", doc.accounts.len())
+                }
+            }
+            None => "Find, suspend, delete".into(),
+        }
+    }
+
+    /// Open a page, fetching what it shows.
+    pub fn open(&mut self, page: Page) {
+        match &page {
+            Page::Home => {}
+            Page::Reports => self.fetch_reports(),
+            Page::Report(_) => {
+                self.resolution.clear();
+                self.fetch_accounts();
+            }
+            Page::Accounts => self.fetch_accounts(),
+            Page::Account(_) => self.fetch_roles(),
+            Page::Roles => self.fetch_roles(),
+            Page::Claims => self.fetch_claims(),
+        }
+        self.page = page;
+    }
+
+    /// The page a page's back arrow leads to; `None` on the home page, whose
+    /// arrow leads out to the You page.
+    #[must_use]
+    pub fn parent(&self) -> Option<Page> {
+        match self.page {
+            Page::Home => None,
+            Page::Reports | Page::Accounts | Page::Roles | Page::Claims => Some(Page::Home),
+            Page::Report(_) => Some(Page::Reports),
+            Page::Account(_) => Some(Page::Accounts),
+        }
+    }
+
+    /// Follow a page's back arrow (the home page's leads out: [`to_you`]).
+    pub fn go_back(&mut self) {
+        if let Some(page) = self.parent() {
+            self.page = page;
+        }
+    }
+
+    /// A report page whose report is gone (handled away, or never loaded)
+    /// falls back to the queue.
+    pub fn settle(&mut self) {
+        if let Page::Report(id) = self.page {
+            if self.report(id).is_none() {
+                self.page = Page::Reports;
+            }
+        }
+    }
+
+    /// The Reports page about one person, open ones first.
+    pub fn reports_of(&mut self) {
+        self.page = Page::Reports;
+        self.show_handled = false;
+    }
+
+    /// Mark a report handled with what was typed in `resolution`, and go back
+    /// to the queue.
+    pub fn mark_handled(&mut self, id: i64) {
+        let Some(subject) = self.report(id).map(|r| r.subject_username.clone()) else {
+            return;
+        };
+        let body = serde_json::json!({ "resolution": self.resolution.trim() }).to_string();
+        let path = format!("/api/admin/reports/{id}");
+        if self.demo {
+            let resolution = self.resolution.trim().to_string();
+            if let Load::Ready(list) = &mut self.reports {
+                if let Some(x) = list.iter_mut().find(|x| x.id == id) {
+                    x.resolved = true;
+                    x.resolution = Some(resolution);
+                }
+            }
+        }
+        self.change(
+            async move {
+                crate::systems::model_assets::api_patch(&path, body)
+                    .await
+                    .map(|_| ())
+            },
+            format!("Report about {subject} marked handled."),
+            Refetch::Reports,
+        );
+        self.resolution.clear();
+        self.page = Page::Reports;
+    }
+
+    /// Stop (`off`) or let back in an account.
+    pub fn suspend(&mut self, account: &Account, off: bool) {
+        let path = format!("/api/admin/accounts/{}", account.id);
+        let body = serde_json::json!({ "disabled": off }).to_string();
+        let said = if off {
+            format!(
+                "Suspended {}: they can't sign in until an admin lifts it.",
+                account.username
+            )
+        } else {
+            format!("{} can sign in again.", account.username)
+        };
+        if self.demo {
+            if let Load::Ready(doc) = &mut self.accounts {
+                if let Some(a) = doc.accounts.iter_mut().find(|a| a.id == account.id) {
+                    a.disabled = off;
+                }
+            }
+        }
+        self.change(
+            async move {
+                crate::systems::model_assets::api_patch(&path, body)
+                    .await
+                    .map(|_| ())
+            },
+            said,
+            Refetch::Accounts,
+        );
+    }
+
+    /// Give an account exactly these roles.
+    pub fn set_roles(&mut self, account: &Account, roles: Vec<String>) {
+        if let Load::Ready(doc) = &mut self.accounts {
+            doc.roles.insert(account.id.clone(), roles.clone());
+        }
+        let path = format!("/api/admin/accounts/{}/roles", account.id);
+        let body = serde_json::json!({ "roles": roles }).to_string();
+        self.change(
+            async move {
+                let request = crate::systems::model_assets::api_put(&path, body);
+                request.await.map(|_| ())
+            },
+            format!("{}'s roles changed.", account.username),
+            Refetch::Accounts,
+        );
+    }
+
+    /// Give an account one role more (`on`) or less.
+    pub fn set_role(&mut self, account: &Account, role: &str, on: bool) {
+        let mut want = self.held_roles(&account.id);
+        if on && !want.iter().any(|r| r == role) {
+            want.push(role.to_string());
+        } else if !on {
+            want.retain(|r| r != role);
+        }
+        self.set_roles(account, want);
+    }
+
+    /// Delete an account for good, and go back to the list.
+    pub fn delete_account(&mut self, account: &Account) {
+        let path = format!("/api/admin/accounts/{}", account.id);
+        let name = account.username.clone();
+        self.change(
+            async move { crate::systems::model_assets::api_delete(&path).await },
+            format!("Deleted {name}'s account."),
+            Refetch::Accounts,
+        );
+        self.page = Page::Accounts;
+    }
+
+    /// Release a building claim: anyone may claim it again.
+    pub fn release_claim(&mut self, claim: &Claim) {
+        let path = format!("/api/admin/claims/{}", claim.pand_id);
+        if self.demo {
+            if let Load::Ready(list) = &mut self.claims {
+                list.retain(|x| x.pand_id != claim.pand_id);
+            }
+        }
+        self.change(
+            async move { crate::systems::model_assets::api_delete(&path).await },
+            format!("Released {}.", claim.address),
+            Refetch::Claims,
+        );
     }
 }
 
@@ -351,7 +724,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, Strin
 }
 
 /// Open the web page's Admin, where Content and Data are.
-fn open_web_admin() {
+pub fn open_web_admin() {
     if let Some(base) = crate::systems::model_assets::api_base() {
         crate::systems::data_layers::open_url(&format!("{base}/admin"));
     }
@@ -387,84 +760,109 @@ pub fn render_admin_panel(
     if !right_panel.is(RightPanel::Admin) {
         return;
     }
+    admin.settle();
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     let mut open = true;
-    let mut you = false;
-    crate::systems::egui_manager::responsive_right_panel("admin_panel", compact, viewport_w, 360.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::p().panel)
-                .inner_margin(egui::Margin::symmetric(12, 10)),
+    // The library draws the panel (`systems::lib_admin`): keep its strip, so
+    // the dock and the map move aside and a click there is not the world's.
+    if admin.lib {
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "admin_panel",
+            compact,
+            viewport_w,
+            PANEL_WIDTH,
         )
-        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            // Home leads back to the You page it was opened from; every
-            // other page draws its own way back to Home.
-            if admin.page == Page::Home {
-                you = theme::back_title(ui, RightPanel::Admin.label());
-            }
-            if let Some((text, failed)) = admin.notice.clone() {
-                let dismiss = if failed {
-                    theme::inline_error(ui, &text)
-                } else {
-                    let mut ok = false;
-                    ui.horizontal_wrapped(|ui| {
-                        theme::note(ui, &text);
-                        ok = theme::action_button(ui, "OK").clicked();
-                    });
-                    ok
-                };
-                if dismiss {
-                    admin.notice = None;
-                }
-            }
-            let page = admin.page.clone();
-            let depth = match page {
-                Page::Home => 0,
-                Page::Reports | Page::Accounts | Page::Roles | Page::Claims => 1,
-                Page::Report(_) | Page::Account(_) => 2,
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(PANEL_WIDTH);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        return;
+    }
+    let mut you = false;
+    crate::systems::egui_manager::responsive_right_panel(
+        "admin_panel",
+        compact,
+        viewport_w,
+        PANEL_WIDTH,
+    )
+    .frame(
+        egui::Frame::NONE
+            .fill(theme::p().panel)
+            .inner_margin(egui::Margin::symmetric(12, 10)),
+    )
+    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+        // Home leads back to the You page it was opened from; every
+        // other page draws its own way back to Home.
+        if admin.page == Page::Home {
+            you = theme::back_title(ui, RightPanel::Admin.label());
+        }
+        if let Some((text, failed)) = admin.notice.clone() {
+            let dismiss = if failed {
+                theme::inline_error(ui, &text)
+            } else {
+                let mut ok = false;
+                ui.horizontal_wrapped(|ui| {
+                    theme::note(ui, &text);
+                    ok = theme::action_button(ui, "OK").clicked();
+                });
+                ok
             };
-            crate::systems::motion::page_turn(
-                ui,
-                egui::Id::new("admin_page"),
-                page,
-                depth,
-                |ui, page| match page {
-                    Page::Home => home(ui, &mut admin, &identity),
-                    Page::Reports => reports_page(ui, &mut admin),
-                    Page::Report(id) => report_page(ui, &mut admin, &identity, id),
-                    Page::Accounts => accounts_page(ui, &mut admin),
-                    Page::Account(id) => account_page(ui, &mut admin, &identity, &id),
-                    Page::Roles => roles_page(ui, &mut admin),
-                    Page::Claims => claims_page(ui, &mut admin),
-                },
-            );
-        });
+            if dismiss {
+                admin.notice = None;
+            }
+        }
+        let page = admin.page.clone();
+        let depth = match page {
+            Page::Home => 0,
+            Page::Reports | Page::Accounts | Page::Roles | Page::Claims => 1,
+            Page::Report(_) | Page::Account(_) => 2,
+        };
+        crate::systems::motion::page_turn(
+            ui,
+            egui::Id::new("admin_page"),
+            page,
+            depth,
+            |ui, page| match page {
+                Page::Home => home(ui, &mut admin, &identity),
+                Page::Reports => reports_page(ui, &mut admin),
+                Page::Report(id) => report_page(ui, &mut admin, &identity, id),
+                Page::Accounts => accounts_page(ui, &mut admin),
+                Page::Account(id) => account_page(ui, &mut admin, &identity, &id),
+                Page::Roles => roles_page(ui, &mut admin),
+                Page::Claims => claims_page(ui, &mut admin),
+            },
+        );
+    });
     // Every page's title carries the panel's close (`theme::back_title`).
     if !open || theme::take_panel_close(egui.ctx()) {
         *right_panel = RightPanel::None;
         you = false;
     }
     if you {
-        *right_panel = RightPanel::Chat;
-        view.open = None;
-        view.you = true;
+        to_you(&mut right_panel, &mut view);
     }
 }
 
 /// The admin home: the pages this account may open, in the web page's three
 /// areas (`docs/mockups/home-and-profile/v2`, H).
 fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
-    let triage = identity.may(Permission::ReportsTriage) || admin.demo;
-    let accounts = identity.may(Permission::AccountsManage) || admin.demo;
-    let roles = identity.may(Permission::RolesManage) || accounts;
-    let overrides = identity.may(Permission::BuildingOverride) || admin.demo;
-    let library = identity.may(Permission::LibraryManage) || admin.demo;
-    let pipeline = identity.may(Permission::PipelineRun) || admin.demo;
+    let offers = Offers::of(identity, admin.demo);
+    let Offers {
+        triage,
+        accounts,
+        roles,
+        overrides,
+        library,
+        pipeline,
+        ..
+    } = offers;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if triage || accounts || roles {
+            if offers.people() {
                 theme::section_tinted(ui, "People", gold());
                 theme::list_group(ui, |ui| {
                     if triage
@@ -478,22 +876,10 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                         )
                         .clicked()
                     {
-                        admin.page = Page::Reports;
-                        admin.fetch_reports();
+                        admin.open(Page::Reports);
                     }
                     if accounts {
-                        let sub = match admin.accounts.ready() {
-                            Some(doc) => {
-                                let pending =
-                                    doc.accounts.iter().filter(|a| a.email_pending).count();
-                                if pending > 0 {
-                                    format!("{} · {pending} waiting on email", doc.accounts.len())
-                                } else {
-                                    format!("{} accounts", doc.accounts.len())
-                                }
-                            }
-                            None => "Find, suspend, delete".into(),
-                        };
+                        let sub = admin.accounts_summary();
                         if theme::list_row(
                             ui,
                             icons::GROUP,
@@ -504,8 +890,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                         )
                         .clicked()
                         {
-                            admin.page = Page::Accounts;
-                            admin.fetch_accounts();
+                            admin.open(Page::Accounts);
                         }
                     }
                     if roles
@@ -519,8 +904,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                         )
                         .clicked()
                     {
-                        admin.page = Page::Roles;
-                        admin.fetch_roles();
+                        admin.open(Page::Roles);
                     }
                     if triage
                         && theme::list_row(
@@ -533,8 +917,7 @@ fn home(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity) {
                         )
                         .clicked()
                     {
-                        admin.page = Page::Claims;
-                        admin.fetch_claims();
+                        admin.open(Page::Claims);
                     }
                 });
             }
@@ -608,7 +991,7 @@ fn load_state<T>(ui: &mut egui::Ui, load: &Load<T>) -> bool {
 }
 
 /// A report's reason, as the server names it, in words.
-fn reason_word(reason: &str) -> &str {
+pub fn reason_word(reason: &str) -> &str {
     match reason {
         "spam" => "Spam",
         "harassment" => "Harassment",
@@ -620,7 +1003,7 @@ fn reason_word(reason: &str) -> &str {
 }
 
 /// `2026-10-16 11:40:02` (or an RFC 3339 stamp) as `16 Oct 11:40`.
-fn short_time(stamp: &str) -> String {
+pub fn short_time(stamp: &str) -> String {
     let date = stamp.get(..10).unwrap_or(stamp);
     let time = stamp.get(11..16).unwrap_or("");
     let month = date
@@ -654,7 +1037,7 @@ fn chip(ui: &mut egui::Ui, text: &str, ink: egui::Color32) {
 
 fn reports_page(ui: &mut egui::Ui, admin: &mut AdminState) {
     if theme::back_title(ui, "Reports") {
-        admin.page = Page::Home;
+        admin.go_back();
         return;
     }
     let mut handled = admin.show_handled;
@@ -696,9 +1079,7 @@ fn reports_page(ui: &mut egui::Ui, admin: &mut AdminState) {
             theme::list_group(ui, |ui| {
                 for r in &list {
                     if report_row(ui, r).clicked() {
-                        admin.resolution.clear();
-                        admin.page = Page::Report(r.id);
-                        admin.fetch_accounts();
+                        admin.open(Page::Report(r.id));
                     }
                 }
             });
@@ -731,11 +1112,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                 });
             });
             chip(ui, reason_word(&r.reason), theme::BRAND);
-            let said = r
-                .message
-                .as_deref()
-                .filter(|m| !m.is_empty())
-                .unwrap_or(&r.note);
+            let said = report_said(r);
             if !said.is_empty() {
                 ui.add(
                     egui::Label::new(
@@ -747,10 +1124,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                     .truncate(),
                 );
             }
-            let by = match &r.reporter_username {
-                Some(who) => format!("Reported by {who}"),
-                None => "Reported by a deleted account".into(),
-            };
+            let by = reported_by(r);
             ui.label(egui::RichText::new(by).size(12.0).color(theme::p().line));
         });
     let rect = inner.response.rect;
@@ -768,17 +1142,12 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
 }
 
 fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity, id: i64) {
-    let Some(r) = admin
-        .reports
-        .ready()
-        .and_then(|l| l.iter().find(|r| r.id == id))
-        .cloned()
-    else {
+    let Some(r) = admin.report(id).cloned() else {
         admin.page = Page::Reports;
         return;
     };
     if theme::back_title(ui, &format!("Report about {}", r.subject_username)) {
-        admin.page = Page::Reports;
+        admin.go_back();
         return;
     }
     egui::ScrollArea::vertical()
@@ -820,12 +1189,8 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                 });
             ui.add_space(8.0);
             let account = admin.account_named(&r.subject_username).cloned();
-            let about = admin.reports.ready().map_or(0, |l| {
-                l.iter()
-                    .filter(|x| x.subject_username.eq_ignore_ascii_case(&r.subject_username))
-                    .count()
-            });
-            let manage = identity.may(Permission::AccountsManage) || admin.demo;
+            let about = admin.reports_about(&r.subject_username);
+            let manage = Offers::of(identity, admin.demo).accounts;
             theme::list_group(ui, |ui| {
                 let sub = format!(
                     "{about} {}{}",
@@ -879,27 +1244,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
             let handled =
                 theme::primary_button_sized(ui, "Mark handled", ui.available_width()).clicked();
             if handled {
-                let body = serde_json::json!({ "resolution": admin.resolution.trim() }).to_string();
-                let path = format!("/api/admin/reports/{id}");
-                if admin.demo {
-                    if let Load::Ready(list) = &mut admin.reports {
-                        if let Some(x) = list.iter_mut().find(|x| x.id == id) {
-                            x.resolved = true;
-                            x.resolution = Some(admin.resolution.trim().to_string());
-                        }
-                    }
-                }
-                admin.change(
-                    async move {
-                        crate::systems::model_assets::api_patch(&path, body)
-                            .await
-                            .map(|_| ())
-                    },
-                    format!("Report about {} marked handled.", r.subject_username),
-                    Refetch::Reports,
-                );
-                admin.resolution.clear();
-                admin.page = Page::Reports;
+                admin.mark_handled(id);
             }
             if let (true, Some(a)) = (manage, account.filter(|a| !a.disabled && !a.admin)) {
                 ui.add_space(6.0);
@@ -909,45 +1254,15 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                     &format!("Suspend {}", a.username),
                     "Suspend: they can't sign in",
                 ) {
-                    suspend(admin, &a, true);
+                    admin.suspend(&a, true);
                 }
             }
         });
 }
 
-/// Stop (`off`) or let back in an account.
-fn suspend(admin: &mut AdminState, account: &Account, off: bool) {
-    let path = format!("/api/admin/accounts/{}", account.id);
-    let body = serde_json::json!({ "disabled": off }).to_string();
-    let said = if off {
-        format!(
-            "Suspended {}: they can't sign in until an admin lifts it.",
-            account.username
-        )
-    } else {
-        format!("{} can sign in again.", account.username)
-    };
-    if admin.demo {
-        if let Load::Ready(doc) = &mut admin.accounts {
-            if let Some(a) = doc.accounts.iter_mut().find(|a| a.id == account.id) {
-                a.disabled = off;
-            }
-        }
-    }
-    admin.change(
-        async move {
-            crate::systems::model_assets::api_patch(&path, body)
-                .await
-                .map(|_| ())
-        },
-        said,
-        Refetch::Accounts,
-    );
-}
-
 fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
     if theme::back_title(ui, "Accounts") {
-        admin.page = Page::Home;
+        admin.go_back();
         return;
     }
     crate::systems::theme::text_field(
@@ -968,13 +1283,7 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
         .map(|d| {
             d.accounts
                 .iter()
-                .filter(|a| {
-                    needle.is_empty()
-                        || a.username.to_lowercase().contains(&needle)
-                        || a.email
-                            .as_deref()
-                            .is_some_and(|e| e.to_lowercase().contains(&needle))
-                })
+                .filter(|a| account_matches(a, &needle))
                 .cloned()
                 .collect()
         })
@@ -989,19 +1298,8 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
             // first hundred keeps a phone's frame short until a search narrows it.
             theme::list_group(ui, |ui| {
                 for a in list.iter().take(100) {
-                    let status = if a.disabled {
-                        "suspended"
-                    } else if a.email_pending {
-                        "waiting on email"
-                    } else if a.admin {
-                        "admin"
-                    } else {
-                        ""
-                    };
-                    let sub = match &a.email {
-                        Some(e) => format!("Since {} · {e}", short_date(&a.created_at)),
-                        None => format!("Since {}", short_date(&a.created_at)),
-                    };
+                    let status = status_word(a);
+                    let sub = account_sub(a);
                     let end = if status.is_empty() {
                         theme::RowEnd::Chevron
                     } else {
@@ -1014,8 +1312,7 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                         icons::APPEARANCE
                     };
                     if theme::list_row(ui, icon, &a.username, Some(&sub), end, tone).clicked() {
-                        admin.page = Page::Account(a.id.clone());
-                        admin.fetch_roles();
+                        admin.open(Page::Account(a.id.clone()));
                     }
                 }
             });
@@ -1029,7 +1326,7 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
 }
 
 /// `2026-10-16…` as `16 Oct 2026`.
-fn short_date(stamp: &str) -> String {
+pub fn short_date(stamp: &str) -> String {
     let t = short_time(stamp);
     let mut parts = t.split(' ');
     match (parts.next(), parts.next(), stamp.get(..4)) {
@@ -1041,31 +1338,21 @@ fn short_date(stamp: &str) -> String {
 fn account_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentity, id: &str) {
     let Some(a) = admin.account(id).cloned() else {
         if theme::back_title(ui, "Account") {
-            admin.page = Page::Accounts;
+            admin.go_back();
         }
         load_state(ui, &admin.accounts);
         return;
     };
     if theme::back_title(ui, &a.username) {
-        admin.page = Page::Accounts;
+        admin.go_back();
         return;
     }
-    let held: Vec<String> = admin
-        .accounts
-        .ready()
-        .and_then(|d| d.roles.get(&a.id).cloned())
-        .unwrap_or_default();
+    let held = admin.held_roles(&a.id);
+    let offers = Offers::of(identity, admin.demo);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let mut facts = format!("Since {}", short_date(&a.created_at));
-            if let Some(e) = &a.email {
-                facts.push_str(&format!(" · {e}"));
-            }
-            if a.email_pending {
-                facts.push_str(" · waiting on email");
-            }
-            theme::note(ui, &facts);
+            theme::note(ui, &account_facts(&a));
             ui.add_space(6.0);
             if a.admin {
                 theme::note(
@@ -1078,27 +1365,14 @@ fn account_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdenti
                 let mut can = !a.disabled;
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
-                    ui.add_enabled_ui(
-                        identity.may(Permission::AccountsManage) || admin.demo,
-                        |ui| {
-                            if theme::checkbox(
-                                ui,
-                                &mut can,
-                                "Can sign in (off: stopped at the next sign-in)",
-                            )
-                            .changed()
-                            {
-                                suspend(admin, &a, !can);
-                            }
-                        },
-                    );
+                    ui.add_enabled_ui(offers.accounts, |ui| {
+                        if theme::checkbox(ui, &mut can, CAN_SIGN_IN).changed() {
+                            admin.suspend(&a, !can);
+                        }
+                    });
                 });
                 ui.add_space(6.0);
-                let reports = admin.reports.ready().map_or(0, |l| {
-                    l.iter()
-                        .filter(|r| r.subject_username.eq_ignore_ascii_case(&a.username))
-                        .count()
-                });
+                let reports = admin.reports_about(&a.username);
                 if theme::list_row(
                     ui,
                     icons::FLAG,
@@ -1109,81 +1383,50 @@ fn account_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdenti
                 )
                 .clicked()
                 {
-                    admin.page = Page::Reports;
-                    admin.show_handled = false;
+                    admin.reports_of();
                 }
             });
             // Roles: ticked for each one held. `player` is everybody's.
-            let may_roles = identity.may(Permission::RolesManage) || admin.demo;
             if let Some(roles) = admin.roles.ready().cloned() {
                 theme::section_tinted(ui, "Roles", gold());
-                let mut want = held.clone();
-                let mut changed = false;
+                let mut toggled: Option<(String, bool)> = None;
                 theme::list_group(ui, |ui| {
                     ui.add_space(6.0);
                     for role in roles.iter().filter(|r| r.id != "player") {
-                        let mut on = want.contains(&role.id);
+                        let mut on = held.contains(&role.id);
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
-                            ui.add_enabled_ui(may_roles, |ui| {
+                            ui.add_enabled_ui(offers.assign_roles, |ui| {
                                 if theme::checkbox(ui, &mut on, &role.name).changed() {
-                                    changed = true;
+                                    toggled = Some((role.id.clone(), on));
                                 }
                             });
                         });
-                        if on && !want.contains(&role.id) {
-                            want.push(role.id.clone());
-                        } else if !on {
-                            want.retain(|r| r != &role.id);
-                        }
                     }
                     ui.add_space(6.0);
                 });
-                if changed {
-                    set_roles(admin, &a, want);
+                if let Some((role, on)) = toggled {
+                    admin.set_role(&a, &role, on);
                 }
             }
             ui.add_space(10.0);
-            if (identity.may(Permission::AccountsManage) || admin.demo) && !a.admin {
-                if theme::confirm_button(
+            if offers.accounts
+                && !a.admin
+                && theme::confirm_button(
                     ui,
                     egui::Id::new(("admin_delete", &a.id)),
                     "Delete account…",
                     "Delete permanently",
-                ) {
-                    let path = format!("/api/admin/accounts/{}", a.id);
-                    let name = a.username.clone();
-                    admin.change(
-                        async move { crate::systems::model_assets::api_delete(&path).await },
-                        format!("Deleted {name}'s account."),
-                        Refetch::Accounts,
-                    );
-                    admin.page = Page::Accounts;
-                }
+                )
+            {
+                admin.delete_account(&a);
             }
         });
 }
 
-/// Give an account exactly these roles.
-fn set_roles(admin: &mut AdminState, account: &Account, roles: Vec<String>) {
-    if let Load::Ready(doc) = &mut admin.accounts {
-        doc.roles.insert(account.id.clone(), roles.clone());
-    }
-    let path = format!("/api/admin/accounts/{}/roles", account.id);
-    let body = serde_json::json!({ "roles": roles }).to_string();
-    admin.change(
-        async move {
-            let request = crate::systems::model_assets::api_put(&path, body);
-            request.await.map(|_| ())
-        },
-        format!("{}'s roles changed.", account.username),
-        Refetch::Accounts,
-    );
-}
-
 fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
     if theme::back_title(ui, "Roles") {
-        admin.page = Page::Home;
+        admin.go_back();
         return;
     }
     if !load_state(ui, &admin.roles) {
@@ -1209,32 +1452,13 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                     chip(ui, "built in", theme::p().text_dim);
                                 }
                             });
-                            let people = if role.id == "player" {
-                                "Everybody".to_string()
-                            } else {
-                                format!(
-                                    "{} {}",
-                                    role.members,
-                                    if role.members == 1 {
-                                        "person"
-                                    } else {
-                                        "people"
-                                    }
-                                )
-                            };
+                            let people = role_people(role);
                             ui.label(
                                 egui::RichText::new(people)
                                     .size(12.0)
                                     .color(theme::p().text_dim),
                             );
-                            let may: Vec<String> = role
-                                .permissions
-                                .iter()
-                                .map(|p| {
-                                    Permission::from_slug(p)
-                                        .map_or_else(|| p.clone(), |p| p.label().to_string())
-                                })
-                                .collect();
+                            let may = role_may(role);
                             if !may.is_empty() {
                                 ui.add(
                                     egui::Label::new(
@@ -1263,7 +1487,7 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
 
 fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
     if theme::back_title(ui, "Building claims") {
-        admin.page = Page::Home;
+        admin.go_back();
         return;
     }
     if !load_state(ui, &admin.claims) {
@@ -1287,23 +1511,15 @@ fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                         .inner_margin(egui::Margin::symmetric(14, 10))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            let place = match &c.postcode {
-                                Some(pc) => format!("{} · {pc}", c.address),
-                                None => c.address.clone(),
-                            };
                             ui.label(
-                                egui::RichText::new(place)
+                                egui::RichText::new(claim_place(c))
                                     .size(14.5)
                                     .color(theme::p().cream),
                             );
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{} · since {}",
-                                    c.username.as_deref().unwrap_or("a deleted account"),
-                                    short_date(&c.claimed_at)
-                                ))
-                                .size(12.0)
-                                .color(theme::p().text_dim),
+                                egui::RichText::new(claim_holder(c))
+                                    .size(12.0)
+                                    .color(theme::p().text_dim),
                             );
                             if theme::confirm_button(
                                 ui,
@@ -1311,19 +1527,7 @@ fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                 "Release…",
                                 "Release: anyone may claim it",
                             ) {
-                                let path = format!("/api/admin/claims/{}", c.pand_id);
-                                if admin.demo {
-                                    if let Load::Ready(list) = &mut admin.claims {
-                                        list.retain(|x| x.pand_id != c.pand_id);
-                                    }
-                                }
-                                admin.change(
-                                    async move {
-                                        crate::systems::model_assets::api_delete(&path).await
-                                    },
-                                    format!("Released {}.", c.address),
-                                    Refetch::Claims,
-                                );
+                                admin.release_claim(c);
                             }
                         });
                 });

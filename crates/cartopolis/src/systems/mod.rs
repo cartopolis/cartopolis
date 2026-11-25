@@ -66,6 +66,13 @@ pub use gui::{
     text_touch, theme, ui, ui_theme, welcome, zoom_rail,
 };
 // Settings drawn by the component library, beside egui (`ui-probe`).
+#[cfg(feature = "ui-probe")]
+pub use gui::lib_keyboard;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub use gui::{
+    lib_admin, lib_calendar, lib_chat_conversation, lib_chats, lib_communities, lib_contacts,
+    lib_filter_chip, lib_login, lib_person_card, lib_post_composer, lib_reminder, lib_welcome,
+};
 #[cfg(feature = "ui-lib")]
 pub use gui::{
     lib_app_update, lib_avatar, lib_design_room, lib_models, lib_plans, lib_scenario, lib_script,
@@ -74,11 +81,6 @@ pub use gui::{
 pub use gui::{
     lib_building_card, lib_host, lib_layers, lib_place_card, lib_places, lib_route, lib_search,
     lib_settings,
-};
-#[cfg(all(feature = "ui-lib", feature = "comms"))]
-pub use gui::{
-    lib_chat_conversation, lib_chats, lib_communities, lib_filter_chip, lib_login, lib_person_card,
-    lib_post_composer, lib_reminder, lib_welcome,
 };
 // What talks rather than shows the world: the app's, not the web build's
 // (`comms` in Cargo.toml).

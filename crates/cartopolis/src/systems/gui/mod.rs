@@ -62,6 +62,8 @@ pub mod lib_building_card;
 pub mod lib_design_room;
 #[cfg(feature = "ui-lib")]
 pub mod lib_host;
+#[cfg(feature = "ui-probe")]
+pub mod lib_keyboard;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
@@ -86,11 +88,17 @@ pub mod lib_search;
 pub mod lib_settings;
 // The library's screens that talk: the app's only, as their egui ones (`comms`).
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_admin;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_calendar;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_chat_conversation;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_chats;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_communities;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_contacts;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_filter_chip;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]

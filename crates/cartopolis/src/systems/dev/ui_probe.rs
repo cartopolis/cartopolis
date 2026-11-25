@@ -39,6 +39,9 @@ impl Plugin for UiProbePlugin {
                 tokens: theme::app_tokens(),
             })
             .add_systems(Update, spawn_probe.in_set(ClientPhase::Input))
+            // Before egui's systems: a screen claimed only in `PostUpdate` was drawn
+            // by egui for a frame first.
+            .add_systems(PreUpdate, crate::systems::lib_search::claim)
             // After every Update system has had its say on `RightPanel`, and
             // before the library applies the frame's operations.
             .add_systems(
@@ -62,6 +65,7 @@ impl Plugin for UiProbePlugin {
                 PostUpdate,
                 (
                     crate::systems::lib_app_update::drive_lib_app_update,
+                    crate::systems::lib_keyboard::drive_lib_keyboard,
                     crate::systems::lib_avatar::drive_lib_avatar,
                     crate::systems::lib_models::drive_lib_models,
                     crate::systems::lib_script::drive_lib_script,
@@ -80,6 +84,7 @@ impl Plugin for UiProbePlugin {
             PostUpdate,
             (
                 crate::systems::lib_chats::drive_lib_chats,
+                crate::systems::lib_admin::drive_lib_admin,
                 crate::systems::lib_person_card::drive_lib_person_card,
                 crate::systems::lib_reminder::drive_lib_reminder,
                 crate::systems::lib_filter_chip::drive_lib_filter_chip,

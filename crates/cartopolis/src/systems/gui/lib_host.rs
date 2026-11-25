@@ -89,7 +89,9 @@ pub fn prepare_bevy(
             || lib.script
             || lib.plans
             || lib.scenario
-            || lib.design_room)
+            || lib.design_room
+            || lib.admin
+            || lib.keyboard)
     {
         return;
     }
@@ -121,7 +123,13 @@ pub fn prepare_bevy(
     commands.insert_resource(mithril_bevy::FontMap {
         regular: body.clone(),
         semibold: fonts.add(bevy::prelude::Font::from_bytes(theme::BRAND_TTF.to_vec())),
-        mono: body,
+        // egui's own monospace (Hack, in its default fonts), which egui's
+        // code fields set; the body face before, so code was not monospace.
+        mono: egui::FontDefinitions::default()
+            .font_data
+            .get("Hack")
+            .map(|d| fonts.add(bevy::prelude::Font::from_bytes(d.font.to_vec())))
+            .unwrap_or(body),
         icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
     });
     *ready = true;
@@ -169,6 +177,9 @@ pub fn bridge_input(
     let owns = focus
         .and_then(|f| f.get())
         .is_some_and(|e| fields.contains(e));
+    if owns != egui.overlay_owns_keyboard() {
+        bevy::log::debug!(owns, "lib_host: a library field has the keyboard");
+    }
     egui.set_overlay_owns_keyboard(owns);
     // A node despawned under the pointer (a card closed by its ✕) never
     // sees the pointer leave, and would hold every world click after it.

@@ -771,6 +771,297 @@ impl Calendar {
         self.day = Some(local_day(now_ms));
         self.scroll_to_day = true;
     }
+
+    // What a tap on the calendar's pages changes, for egui's pages and the
+    // library's (`lib_calendar`) alike.
+
+    /// Open a row on its own page.
+    pub fn open_item(&mut self, pick: Pick) {
+        self.picked = Some(pick);
+        self.every = false;
+        self.page = Page::Detail;
+    }
+
+    /// List or Month, the switch over the overview.
+    pub fn switch_view(&mut self, page: Page) {
+        if page != self.page {
+            self.page = page;
+            self.scroll_to_day = true;
+        }
+    }
+
+    /// A day tapped in the week strip or the month.
+    pub fn pick_day(&mut self, day: i64) {
+        self.day = Some(day);
+        self.scroll_to_day = true;
+    }
+
+    /// The month the grid shows: the one browsed to, else the chosen day's.
+    #[must_use]
+    pub fn shown_month(&self, now_ms: u64) -> (i16, i8) {
+        self.month.unwrap_or_else(|| {
+            let d = civil(self.day.unwrap_or_else(|| local_day(now_ms)));
+            (d.year(), d.month())
+        })
+    }
+
+    /// The previous (`-1`) or next (`1`) month.
+    pub fn step_month(&mut self, dir: i32, now_ms: u64) {
+        let (y, m) = self.shown_month(now_ms);
+        let n = i32::from(y) * 12 + i32::from(m) - 1 + dir;
+        self.month = Some(((n.div_euclid(12)) as i16, (n.rem_euclid(12) + 1) as i8));
+    }
+
+    /// "+": plan something.
+    pub fn plan_new(&mut self) {
+        self.page = Page::New;
+        self.new_chat = None;
+    }
+
+    /// The day the "+" page plans on: the chosen day, never before today.
+    #[must_use]
+    pub fn new_day(&self, now_ms: u64) -> i64 {
+        self.day
+            .unwrap_or_else(|| local_day(now_ms))
+            .max(local_day(now_ms))
+    }
+
+    /// The "+" page's Next: the chat's own form for a meeting, or its
+    /// meet-up, on the day chosen.
+    pub fn new_next(&mut self, now_ms: u64, out: &mut Out) {
+        let day = self.new_day(now_ms);
+        if let Some(key) = self.new_chat.take() {
+            match self.new_kind {
+                NewKind::Meeting => out.plan_in = Some((key, day_start_ms(day))),
+                NewKind::Meetup => out.meetup_in = Some(key),
+            }
+            self.page = Page::List;
+        }
+    }
+
+    /// Limit a community to the plans answered, or stop limiting it.
+    pub fn set_answered_only(&mut self, community: &str, only: bool) {
+        let list = &mut self.book.prefs.answered_only;
+        list.retain(|x| x != community);
+        if only {
+            list.push(community.to_string());
+        }
+    }
+
+    /// How many plans and meet-ups the book keeps.
+    #[must_use]
+    pub fn plans_kept(&self) -> usize {
+        self.book
+            .entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    read(&e.json),
+                    Some(Said::Meeting(MeetingObject::Plan(_)) | Said::Meetup(_))
+                )
+            })
+            .count()
+    }
+}
+
+/// What the settings say about the book.
+#[must_use]
+pub fn plans_note(plans: usize) -> String {
+    format!(
+        "{plans} plans are kept here only. Your other devices build their own calendar from their chats."
+    )
+}
+
+/// An answer to a meeting's date, from its page: this date, every date, or
+/// the only one.
+#[must_use]
+pub fn answer(item: &Item, plan: &Plan, rsvp: Rsvp, every: bool) -> (String, MeetingObject) {
+    let date = if every {
+        AnswerFor::Every
+    } else if plan.repeat.is_none() {
+        AnswerFor::First
+    } else {
+        AnswerFor::Date(item.start_ms)
+    };
+    (
+        item.channel.clone(),
+        MeetingObject::Answer {
+            plan: plan.id.clone(),
+            rsvp,
+            date,
+        },
+    )
+}
+
+/// The planner takes this date out of the series, or puts it back.
+#[must_use]
+pub fn toggle_skip(item: &Item, plan: &Plan) -> (String, MeetingObject) {
+    let mut p = plan.clone();
+    if item.skipped {
+        p.skip.retain(|d| *d != item.start_ms);
+    } else {
+        p.skip.push(item.start_ms);
+    }
+    (item.channel.clone(), MeetingObject::Update(p))
+}
+
+/// The planner ends the series with this date.
+#[must_use]
+pub fn stop_after(item: &Item, plan: &Plan) -> (String, MeetingObject) {
+    let mut p = plan.clone();
+    if let Some(r) = p.repeat.as_mut() {
+        r.until_ms = Some(item.start_ms);
+    }
+    p.skip.retain(|d| *d <= item.start_ms);
+    (item.channel.clone(), MeetingObject::Update(p))
+}
+
+/// The meeting is about to start or going on: Join works.
+#[must_use]
+pub fn is_live(item: &Item, now_ms: u64) -> bool {
+    now_ms + MEETING_LEAD_MS >= item.start_ms && now_ms <= item.end_ms && !item.skipped
+}
+
+/// Join's words: "Join", or from when it can be pressed.
+#[must_use]
+pub fn join_label(item: &Item, now_ms: u64) -> String {
+    if is_live(item, now_ms) {
+        "Join".to_string()
+    } else {
+        format!(
+            "Join · from {}",
+            crate::systems::chats::clock_time(item.start_ms.saturating_sub(MEETING_LEAD_MS))
+        )
+    }
+}
+
+/// When it is, on its page: "Today, 18:00", a meeting with its end.
+#[must_use]
+pub fn when_line(item: &Item, now_ms: u64) -> String {
+    let clock = crate::systems::chats::clock_time;
+    if item.is_meetup() {
+        format!(
+            "{}, {}",
+            day_heading(item.start_ms, now_ms),
+            clock(item.start_ms)
+        )
+    } else {
+        format!(
+            "{}, {} – {}",
+            day_heading(item.start_ms, now_ms),
+            clock(item.start_ms),
+            clock(item.end_ms)
+        )
+    }
+}
+
+/// How a series comes back and which date this is: "Every Thursday · 3rd of 9".
+#[must_use]
+pub fn series_line(item: &Item) -> Option<String> {
+    let What::Meeting { plan } = &item.what else {
+        return None;
+    };
+    let rule = rule_words(plan)?;
+    let nth = ordinal_in_series(plan, item.start_ms)
+        .map(|n| format!(" · {n}"))
+        .unwrap_or_default();
+    Some(format!("{rule}{nth}"))
+}
+
+/// Where it came from and who: "Fietsclub · planned by you".
+#[must_use]
+pub fn by_line(item: &Item, from: &str, me: &str) -> String {
+    let by = if item.author == me {
+        "you"
+    } else {
+        item.author.as_str()
+    };
+    let verb = if item.is_meetup() {
+        "proposed"
+    } else {
+        "planned"
+    };
+    format!("{from} · {verb} by {by}")
+}
+
+/// A row is drawn faded: skipped, can't come, or over.
+#[must_use]
+pub fn row_faded(item: &Item, now_ms: u64) -> bool {
+    item.skipped || item.mine == Some(Rsvp::No) || item.end_ms <= now_ms
+}
+
+/// The small line under a row's time: the day given, or a meeting's length.
+#[must_use]
+pub fn row_under(item: &Item, day: Option<&str>) -> Option<String> {
+    day.map(str::to_string).or_else(|| {
+        (!item.is_meetup()).then(|| {
+            let mins = (item.end_ms - item.start_ms) / MIN_MS;
+            if mins % 60 == 0 {
+                format!("{} h", mins / 60)
+            } else if mins > 60 {
+                format!("{}h{:02}", mins / 60, mins % 60)
+            } else {
+                format!("{mins} min")
+            }
+        })
+    })
+}
+
+/// A row's second line, after its icon: the chat, how many go, that it
+/// repeats, or who skipped it.
+#[must_use]
+pub fn row_sub(item: &Item, chat_label: &str) -> String {
+    if item.skipped {
+        return format!("Skipped by {}", item.author);
+    }
+    match &item.what {
+        What::Meetup { .. } if item.going.len() > 1 => {
+            format!("{chat_label} · {} going", item.going.len())
+        }
+        What::Meeting { plan } if plan.repeat.is_some() => format!("repeats · {chat_label}"),
+        _ => chat_label.to_string(),
+    }
+}
+
+/// Which kinds a day holds: (a meeting, a meet-up).
+#[must_use]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn day_kinds(items: &[Item], day: i64) -> (bool, bool) {
+    let on = |meetup: bool| {
+        items
+            .iter()
+            .any(|i| local_day(i.start_ms) == day && i.is_meetup() == meetup)
+    };
+    (on(false), on(true))
+}
+
+/// A month's grid, Monday first as Dutch calendars are: its first cell's
+/// day, and how many weeks it spans.
+#[must_use]
+pub fn month_grid(year: i16, month: i8) -> (i64, i64) {
+    let first = jiff::civil::date(year, month, 1);
+    let first_day = first
+        .since(jiff::civil::date(1970, 1, 1))
+        .map_or(0, |s| i64::from(s.get_days()));
+    let lead = i64::from(first.weekday().to_monday_zero_offset());
+    let weeks = (lead + i64::from(first.days_in_month()) + 6) / 7;
+    (first_day - lead, weeks)
+}
+
+/// "November 2026".
+#[must_use]
+pub fn month_title(year: i16, month: i8) -> String {
+    jiff::civil::date(year, month, 1)
+        .strftime("%B %Y")
+        .to_string()
+}
+
+/// A day's weekday, short ("Thu"), its number in the month, and its month.
+#[must_use]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn day_face(day: i64) -> (String, i8, i8) {
+    let d = civil(day);
+    (d.strftime("%a").to_string(), d.day(), d.month())
 }
 
 fn store_key(server: &str, username: &str) -> String {
@@ -994,7 +1285,7 @@ pub fn row(
     day: Option<&str>,
     now_ms: u64,
 ) -> egui::Response {
-    let faded = item.skipped || item.mine == Some(Rsvp::No) || item.end_ms <= now_ms;
+    let faded = row_faded(item, now_ms);
     let h = 50.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
@@ -1020,19 +1311,7 @@ pub fn row(
         font(14.5),
         fade(theme::p().cream),
     );
-    let under = day.map(str::to_string).or_else(|| {
-        (!item.is_meetup()).then(|| {
-            let mins = (item.end_ms - item.start_ms) / MIN_MS;
-            if mins % 60 == 0 {
-                format!("{} h", mins / 60)
-            } else if mins > 60 {
-                format!("{}h{:02}", mins / 60, mins % 60)
-            } else {
-                format!("{mins} min")
-            }
-        })
-    });
-    if let Some(under) = under {
+    if let Some(under) = row_under(item, day) {
         p.text(
             egui::pos2(time_x, y_sub),
             egui::Align2::RIGHT_CENTER,
@@ -1087,16 +1366,7 @@ pub fn row(
     } else {
         icons::VIDEOCAM
     };
-    let mut sub = format!("{icon} {chat_label}");
-    if item.skipped {
-        sub = format!("{icon} Skipped by {}", item.author);
-    } else if item.is_meetup() && item.going.len() > 1 {
-        sub.push_str(&format!(" · {} going", item.going.len()));
-    } else if let What::Meeting { plan } = &item.what {
-        if plan.repeat.is_some() {
-            sub = format!("{icon} repeats · {chat_label}");
-        }
-    }
+    let sub = format!("{icon} {}", row_sub(item, chat_label));
     let sub_galley = one_line(&p, sub, font(12.0), fade(theme::p().text_dim), text_w);
     p.galley(
         egui::pos2(text_x, mid + 10.0 - sub_galley.size().y / 2.0),
@@ -1177,8 +1447,7 @@ fn overview(
             cal.page = Page::Settings;
         }
         if theme::round_button(ui, icons::ADD, "Plan something", false).clicked() {
-            cal.page = Page::New;
-            cal.new_chat = None;
+            cal.plan_new();
         }
     }) {
         out.back = true;
@@ -1189,18 +1458,14 @@ fn overview(
         &mut page,
         &[(Page::List, "List"), (Page::Month, "Month")],
     );
-    if page != cal.page {
-        cal.page = page;
-        cal.scroll_to_day = true;
-    }
+    cal.switch_view(page);
     ui.add_space(6.0);
     if cal.page == Page::List {
         // A week from today, a dot per kind on each day that has something.
         let from = day_start_ms(today);
         let week = cal.visible(from, day_start_ms(today + 7), communities);
         if let Some(d) = week_strip(ui, today, day, &week) {
-            cal.day = Some(d);
-            cal.scroll_to_day = true;
+            cal.pick_day(d);
         }
         ui.separator();
         let items = cal.visible(from, from + 120 * DAY_MS, communities);
@@ -1339,9 +1604,7 @@ fn list(
                 }
                 let label = chat_name(chat, communities, &item.channel);
                 if row(ui, item, &label, None, now).clicked() {
-                    cal.picked = Some(item.pick());
-                    cal.every = false;
-                    cal.page = Page::Detail;
+                    cal.open_item(item.pick());
                 }
             }
             ui.add_space(24.0);
@@ -1381,36 +1644,24 @@ fn month(
 ) {
     let today = local_day(now);
     let chosen = cal.day.unwrap_or(today);
-    let (y, m) = *cal.month.get_or_insert_with(|| {
-        let d = civil(chosen);
-        (d.year(), d.month())
-    });
-    let first = jiff::civil::date(y, m, 1);
+    let (y, m) = cal.shown_month(now);
+    cal.month = Some((y, m));
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(first.strftime("%B %Y").to_string())
+            egui::RichText::new(month_title(y, m))
                 .size(theme::SIZE_TITLE)
                 .color(theme::p().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let step = |dir: i32| {
-                let n = i32::from(y) * 12 + i32::from(m) - 1 + dir;
-                ((n.div_euclid(12)) as i16, (n.rem_euclid(12) + 1) as i8)
-            };
             if theme::icon_button_small(ui, icons::CHEVRON_RIGHT, "Next month").clicked() {
-                cal.month = Some(step(1));
+                cal.step_month(1, now);
             }
             if theme::icon_button_small(ui, icons::CHEVRON_LEFT, "Previous month").clicked() {
-                cal.month = Some(step(-1));
+                cal.step_month(-1, now);
             }
         });
     });
-    let first_day = first
-        .since(jiff::civil::date(1970, 1, 1))
-        .map_or(0, |s| i64::from(s.get_days()));
-    // Monday first, as Dutch calendars are.
-    let lead = i64::from(first.weekday().to_monday_zero_offset());
-    let start = first_day - lead;
+    let (start, weeks) = month_grid(y, m);
     let items = cal.visible(day_start_ms(start), day_start_ms(start + 42), communities);
     let w = ui.available_width();
     let cell = w / 7.0;
@@ -1424,7 +1675,6 @@ fn month(
             theme::p().text_dim,
         );
     }
-    let weeks = ((lead + i64::from(first.days_in_month())) + 6) / 7;
     let (grid, _) =
         ui.allocate_exact_size(egui::vec2(w, 46.0 * weeks as f32), egui::Sense::hover());
     for k in 0..weeks * 7 {
@@ -1439,7 +1689,7 @@ fn month(
         .shrink(2.0);
         let resp = ui.interact(r, ui.id().with(("month", d)), egui::Sense::click());
         if resp.clicked() {
-            cal.day = Some(d);
+            cal.pick_day(d);
         }
         let date = civil(d);
         let inside = date.month() == m;
@@ -1505,9 +1755,7 @@ fn month(
             for item in day_items {
                 let label = chat_name(chat, communities, &item.channel);
                 if row(ui, item, &label, None, now).clicked() {
-                    cal.picked = Some(item.pick());
-                    cal.every = false;
-                    cal.page = Page::Detail;
+                    cal.open_item(item.pick());
                 }
             }
         });
@@ -1570,49 +1818,20 @@ fn detail(
                     .size(theme::SIZE_PANEL_TITLE)
                     .color(theme::p().cream),
             );
-            let when = if item.is_meetup() {
-                format!(
-                    "{}, {}",
-                    day_heading(item.start_ms, now),
-                    crate::systems::chats::clock_time(item.start_ms)
-                )
-            } else {
-                format!(
-                    "{}, {} – {}",
-                    day_heading(item.start_ms, now),
-                    crate::systems::chats::clock_time(item.start_ms),
-                    crate::systems::chats::clock_time(item.end_ms)
-                )
-            };
             ui.label(
-                egui::RichText::new(when)
+                egui::RichText::new(when_line(&item, now))
                     .size(theme::SIZE_BODY)
                     .color(theme::p().text),
             );
-            if let What::Meeting { plan } = &item.what {
-                if let Some(rule) = rule_words(plan) {
-                    let nth = ordinal_in_series(plan, item.start_ms)
-                        .map(|n| format!(" · {n}"))
-                        .unwrap_or_default();
-                    ui.label(
-                        egui::RichText::new(format!("{rule}{nth}"))
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().accent),
-                    );
-                }
+            if let Some(series) = series_line(&item) {
+                ui.label(
+                    egui::RichText::new(series)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::p().accent),
+                );
             }
-            let by = if item.author == me {
-                "you".to_string()
-            } else {
-                item.author.clone()
-            };
-            let verb = if item.is_meetup() {
-                "proposed"
-            } else {
-                "planned"
-            };
             ui.label(
-                egui::RichText::new(format!("{from} · {verb} by {by}"))
+                egui::RichText::new(by_line(&item, &from, &me))
                     .size(theme::SIZE_SUB)
                     .color(theme::p().text_dim),
             );
@@ -1659,21 +1878,7 @@ fn meeting_detail(
                 )
                 .clicked()
                 {
-                    let date = if cal.every {
-                        AnswerFor::Every
-                    } else if plan.repeat.is_none() {
-                        AnswerFor::First
-                    } else {
-                        AnswerFor::Date(item.start_ms)
-                    };
-                    out.meeting = Some((
-                        item.channel.clone(),
-                        MeetingObject::Answer {
-                            plan: plan.id.clone(),
-                            rsvp: r,
-                            date,
-                        },
-                    ));
+                    out.meeting = Some(answer(item, plan, r, cal.every));
                 }
             }
         });
@@ -1715,20 +1920,13 @@ fn meeting_detail(
         }
     }
     ui.add_space(12.0);
-    let live = now + MEETING_LEAD_MS >= item.start_ms && now <= item.end_ms && !item.skipped;
+    let live = is_live(item, now);
     let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
     ui.horizontal(|ui| {
         if theme::secondary_button(ui, icons::CHAT, "Open chat", w).clicked() {
             out.open_chat = Some(item.channel.clone());
         }
-        let join = if live {
-            "Join".to_string()
-        } else {
-            format!(
-                "Join · from {}",
-                crate::systems::chats::clock_time(item.start_ms.saturating_sub(MEETING_LEAD_MS))
-            )
-        };
+        let join = join_label(item, now);
         let group = crate::systems::private_chat::group_of(&item.channel);
         if ui
             .add_enabled_ui(live && group.is_some(), |ui| {
@@ -1750,22 +1948,11 @@ fn meeting_detail(
                 format!("Skip {}", short_day(item.start_ms))
             };
             if theme::secondary_button(ui, icons::STOP, &label, w).clicked() {
-                let mut p = plan.clone();
-                if item.skipped {
-                    p.skip.retain(|d| *d != item.start_ms);
-                } else {
-                    p.skip.push(item.start_ms);
-                }
-                out.meeting = Some((item.channel.clone(), MeetingObject::Update(p)));
+                out.meeting = Some(toggle_skip(item, plan));
             }
             let last = plan.repeat.and_then(|r| r.until_ms) == Some(item.start_ms);
             if !last && theme::secondary_button(ui, icons::STOP, "Stop after this", w).clicked() {
-                let mut p = plan.clone();
-                if let Some(r) = p.repeat.as_mut() {
-                    r.until_ms = Some(item.start_ms);
-                }
-                p.skip.retain(|d| *d <= item.start_ms);
-                out.meeting = Some((item.channel.clone(), MeetingObject::Update(p)));
+                out.meeting = Some(stop_after(item, plan));
             }
         });
     }
@@ -1854,10 +2041,7 @@ fn new_page(
         cal.page = Page::List;
         return;
     }
-    let day = cal
-        .day
-        .unwrap_or_else(|| local_day(now))
-        .max(local_day(now));
+    let day = cal.new_day(now);
     ui.label(
         egui::RichText::new(format!(
             "Plan something on {}",
@@ -1916,13 +2100,7 @@ fn new_page(
         })
         .inner;
     if next.clicked() {
-        if let Some(key) = cal.new_chat.take() {
-            match kind {
-                NewKind::Meeting => out.plan_in = Some((key, day_start_ms(day))),
-                NewKind::Meetup => out.meetup_in = Some(key),
-            }
-            cal.page = Page::List;
-        }
+        cal.new_next(now, out);
     }
 }
 
@@ -1937,42 +2115,43 @@ fn settings(
         return;
     }
     let before = cal.book.prefs.clone();
+    let plans = cal.plans_kept();
+    let mut limit: Vec<(String, bool)> = Vec::new();
     let prefs = &mut cal.book.prefs;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        theme::section(ui, "Show");
-        theme::checkbox(ui, &mut prefs.show_declined, "Plans I can't come to, faded");
-        theme::checkbox(ui, &mut prefs.coming_up, "Coming up, on the Community list");
-        theme::section(ui, "Only the plans I answered, from");
-        if communities.list.is_empty() {
-            theme::note(ui, "Communities you are in can be limited here.");
-        }
-        for c in &communities.list {
-            let id = c.id.to_string();
-            let mut only = prefs.answered_only.contains(&id);
-            if theme::checkbox(ui, &mut only, &c.settings.name).changed() {
-                prefs.answered_only.retain(|x| *x != id);
-                if only {
-                    prefs.answered_only.push(id);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            theme::section(ui, "Show");
+            theme::checkbox(ui, &mut prefs.show_declined, "Plans I can't come to, faded");
+            theme::checkbox(ui, &mut prefs.coming_up, "Coming up, on the Community list");
+            theme::section(ui, "Only the plans I answered, from");
+            if communities.list.is_empty() {
+                theme::note(ui, "Communities you are in can be limited here.");
+            }
+            for c in &communities.list {
+                let id = c.id.to_string();
+                let mut only = prefs.answered_only.contains(&id);
+                if theme::checkbox(ui, &mut only, &c.settings.name).changed() {
+                    limit.push((id, only));
                 }
             }
-        }
-        theme::section(ui, "Remind me");
-        theme::checkbox(ui, &mut prefs.leave_reminder, "When it's time to leave for a meet-up");
-        theme::checkbox(ui, &mut prefs.meeting_reminder, "10 minutes before a meeting I said Going or Maybe to");
-        theme::section(ui, "On this device");
-        let plans = cal
-            .book
-            .entries
-            .iter()
-            .filter(|e| matches!(read(&e.json), Some(Said::Meeting(MeetingObject::Plan(_)) | Said::Meetup(_))))
-            .count();
-        theme::note(
-            ui,
-            &format!(
-                "{plans} plans are kept here only. Your other devices build their own calendar from their chats."
-            ),
-        );
-    });
+            theme::section(ui, "Remind me");
+            theme::checkbox(
+                ui,
+                &mut prefs.leave_reminder,
+                "When it's time to leave for a meet-up",
+            );
+            theme::checkbox(
+                ui,
+                &mut prefs.meeting_reminder,
+                "10 minutes before a meeting I said Going or Maybe to",
+            );
+            theme::section(ui, "On this device");
+            theme::note(ui, &plans_note(plans));
+        });
+    for (id, only) in limit {
+        cal.set_answered_only(&id, only);
+    }
     if cal.book.prefs != before {
         out.save = true;
     }

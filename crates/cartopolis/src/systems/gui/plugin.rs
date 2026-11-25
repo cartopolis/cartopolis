@@ -33,6 +33,7 @@ impl Plugin for GuiPlugin {
         // plugin registers the same system behind `CARTO_UI_LIB`.
         #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
         app.insert_resource(systems::lib_settings::LibScreens::from_env())
+            .add_systems(PreUpdate, systems::lib_search::claim)
             .add_systems(
                 PostUpdate,
                 (

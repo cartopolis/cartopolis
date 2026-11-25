@@ -159,6 +159,9 @@ pub fn app_tokens() -> Tokens {
         font_size: theme::SIZE_BODY,
         font_size_sm: theme::SIZE_SUB,
         font_size_lg: theme::SIZE_TITLE,
+        // An option's icon (`Opt::icon`) in the app's icon font, as every
+        // icon in the app's screens is (`icons::FONT`).
+        font_icons: "'Material Symbols Rounded'".to_owned(),
         ..tokens()
     }
 }

@@ -168,7 +168,7 @@ pub enum ShiftState {
 
 impl ShiftState {
     /// Is the alternate (upper) form of a key showing?
-    fn alt(self) -> bool {
+    pub fn alt(self) -> bool {
         self != Self::Off
     }
 
@@ -195,7 +195,7 @@ impl ShiftState {
 /// — on the symbol layer the alternate of `4` is `$`, which no case mapping
 /// produces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Cap {
+pub enum Cap {
     Char {
         base: char,
         alt: char,
@@ -348,6 +348,8 @@ struct Slab {
     key_h: f32,
     /// Width of one column unit, gaps included.
     unit_w: f32,
+    /// The gaps it was laid out with.
+    spacing: Spacing,
 }
 
 impl Slab {
@@ -355,11 +357,12 @@ impl Slab {
     /// `row`. Each key is inset by half a [`GAP`] on every side, so the gaps
     /// between neighbours come out even without the caller counting them.
     fn key_rect(&self, row: usize, col: f32, units: f32) -> egui::Rect {
-        let x0 = self.rect.left() + PAD + col * self.unit_w + GAP * 0.5;
-        let y0 = self.rect.top() + PAD + row as f32 * (self.key_h + GAP);
+        let Spacing { gap, pad, .. } = self.spacing;
+        let x0 = self.rect.left() + pad + col * self.unit_w + gap * 0.5;
+        let y0 = self.rect.top() + pad + row as f32 * (self.key_h + gap);
         egui::Rect::from_min_max(
             egui::pos2(x0, y0),
-            egui::pos2(x0 + units * self.unit_w - GAP, y0 + self.key_h),
+            egui::pos2(x0 + units * self.unit_w - gap, y0 + self.key_h),
         )
     }
 }
@@ -383,14 +386,49 @@ impl Slab {
 /// move, and for one that can it only puts the keys over what it was lifted
 /// to reveal.
 fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Slab {
+    layout_with(viewport, min_key_h, field, Spacing::EGUI)
+}
+
+/// The gaps and the smallest key a keyboard is laid out with: egui's tight
+/// ones, or the library's calmer ones ([`Spacing::LIB`]).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Spacing {
+    gap: f32,
+    pad: f32,
+    min_key: f32,
+}
+
+impl Spacing {
+    const EGUI: Spacing = Spacing {
+        gap: GAP,
+        pad: PAD,
+        min_key: MIN_KEY_HEIGHT_PTS,
+    };
+    /// The library's keys (`lib_keyboard`): the app's 6 px gap, and never
+    /// shorter than a touch row's 40.
+    const LIB: Spacing = Spacing {
+        gap: 6.0,
+        pad: 6.0,
+        min_key: 40.0,
+    };
+}
+
+/// [`layout`] with the given [`Spacing`].
+fn layout_with(
+    viewport: egui::Rect,
+    min_key_h: f32,
+    field: Option<egui::Rect>,
+    spacing: Spacing,
+) -> Slab {
+    let Spacing { gap, pad, min_key } = spacing;
     let n = ROW_COUNT;
     let max_h = viewport.height() * MAX_HEIGHT_FRACTION;
-    let fits = ((max_h - 2.0 * PAD - (n - 1.0) * GAP) / n).max(MIN_KEY_HEIGHT_PTS);
-    let key_h = min_key_h.min(fits).max(MIN_KEY_HEIGHT_PTS);
-    let height = 2.0 * PAD + n * key_h + (n - 1.0) * GAP;
+    let fits = ((max_h - 2.0 * pad - (n - 1.0) * gap) / n).max(min_key);
+    let key_h = min_key_h.min(fits).max(min_key);
+    let height = 2.0 * pad + n * key_h + (n - 1.0) * gap;
 
     let width = viewport.width();
-    let unit_w = (width - 2.0 * PAD) / COLUMNS;
+    let unit_w = (width - 2.0 * pad) / COLUMNS;
 
     let bottom = egui::Rect::from_min_size(
         egui::pos2(viewport.left(), viewport.bottom() - EDGE_MARGIN - height),
@@ -412,6 +450,7 @@ fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Sl
         rect,
         key_h,
         unit_w,
+        spacing,
     }
 }
 
@@ -491,7 +530,25 @@ pub struct OnScreenKeyboard {
     /// Has this device sent a touch? Once it has, the pointer events the touch
     /// bridge synthesises for the primary finger are duplicates and are ignored.
     touch_seen: bool,
+    /// The component library draws the keys (`lib_keyboard`,
+    /// `CARTO_UI_LIB=keyboard`): egui's pass then only follows the focus and
+    /// claims the strip ([`Self::lib_pass`]), and the keys type into an egui
+    /// field or a library one, whichever holds the keyboard.
+    pub lib: bool,
+    /// A library text field holds the keyboard (and no egui field does).
+    lib_field: bool,
+    /// The hide key or Back put the keys away from a library field: its focus
+    /// goes too, which only the library's system can do ([`Self::take_lib_blur`]).
+    lib_blur: bool,
 }
+
+/// How far the on-screen keyboard reaches up from the bottom edge, in egui
+/// points — which are the library's px (`lib_host::prepare_bevy` sets
+/// `UiScale` to egui's) — and 0 while it is down or docked to the top. A
+/// screen with a field at its foot (a composer) lifts by it. Written each
+/// frame by [`render_onscreen_keyboard`], whoever draws the keys.
+#[derive(Resource, Clone, Copy, PartialEq, Debug, Default)]
+pub struct KeyboardInset(pub f32);
 
 /// One finger on the keys, tracked by its own touch id.
 ///
@@ -534,14 +591,18 @@ impl Default for OnScreenKeyboard {
             slab: None,
             fingers: Vec::new(),
             touch_seen: false,
+            lib: false,
+            lib_field: false,
+            lib_blur: false,
         }
     }
 }
 
 impl OnScreenKeyboard {
-    /// Is the keyboard on screen right now?
+    /// Is the keyboard on screen right now? For an egui field, or (the
+    /// library drawing the keys) a library one.
     pub fn is_open(&self) -> bool {
-        self.open && self.enabled
+        (self.open || self.lib_field) && self.enabled
     }
 
     /// Put the keyboard away without typing anything.
@@ -552,6 +613,10 @@ impl OnScreenKeyboard {
     /// get rid of without submitting is worse than no keyboard.
     pub fn dismiss(&mut self) {
         self.open = false;
+        if self.lib_field {
+            self.lib_field = false;
+            self.lib_blur = true;
+        }
     }
 
     // There was a `pub fn enabled()` here too — "does this platform get a keyboard
@@ -564,7 +629,10 @@ impl OnScreenKeyboard {
     /// The rect the keyboard occupied on the last frame it drew — the area a
     /// caller must consider unavailable.
     pub fn slab(&self) -> Option<egui::Rect> {
-        self.open.then_some(self.slab).flatten().map(|s| s.rect)
+        (self.open || self.lib_field)
+            .then_some(self.slab)
+            .flatten()
+            .map(|s| s.rect)
     }
 
     /// Apply a key press, returning the egui events it produces.
@@ -699,7 +767,17 @@ pub(crate) fn restore_focus(ctx: &egui::Context, id: egui::Id) {
 ///
 /// **Must be registered after every system that draws a text field** — see the
 /// module note; the ordering is what makes the focus restore work at all.
-pub fn render_onscreen_keyboard(mut egui: EguiMut, mut kb: ResMut<OnScreenKeyboard>) {
+///
+/// With the library drawing the keys ([`OnScreenKeyboard::lib`]) it draws
+/// nothing: it follows egui's focus and claims the strip the library's keys
+/// stand in ([`OnScreenKeyboard::lib_pass`]). Either way it publishes
+/// [`KeyboardInset`].
+pub fn render_onscreen_keyboard(
+    mut egui: EguiMut,
+    mut kb: ResMut<OnScreenKeyboard>,
+    inset: Option<ResMut<KeyboardInset>>,
+    mut commands: Commands,
+) {
     if !kb.enabled {
         return;
     }
@@ -710,9 +788,29 @@ pub fn render_onscreen_keyboard(mut egui: EguiMut, mut kb: ResMut<OnScreenKeyboa
     // the `ResMut` borrow for the `inject_events` call at the end.
     let ctx = egui.ctx_mut().clone();
 
-    let events = kb.pass(&ctx, ui_scale, display_scale);
-    if !events.is_empty() {
-        egui.inject_events(events);
+    if kb.lib {
+        let lib_field = egui.overlay_owns_keyboard();
+        kb.lib_pass(&ctx, ui_scale, display_scale, lib_field);
+    } else {
+        let events = kb.pass(&ctx, ui_scale, display_scale);
+        if !events.is_empty() {
+            egui.inject_events(events);
+        }
+    }
+
+    // Only a slab on the bottom edge is something to lift above.
+    let viewport = ctx.viewport_rect();
+    let reach = kb
+        .slab()
+        .filter(|s| s.bottom() >= viewport.bottom() - EDGE_MARGIN - 1.0)
+        .map_or(0.0, |s| viewport.bottom() - s.top());
+    match inset {
+        Some(mut inset) => {
+            if inset.0 != reach {
+                inset.0 = reach;
+            }
+        }
+        None => commands.insert_resource(KeyboardInset(reach)),
     }
 }
 
@@ -815,6 +913,181 @@ impl OnScreenKeyboard {
         }
 
         events
+    }
+}
+
+// ─── The library's keys ───────────────────────────────────────────────────────
+
+/// Whose field the library's keys type into ([`OnScreenKeyboard::lib_tap`]).
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeysTo {
+    /// egui's focused `TextEdit`: the events go to `EguiManager::inject_events`.
+    Egui,
+    /// The library's focused text field (`mithril_bevy::KeyEdits`).
+    Library,
+}
+
+/// One key the library draws: its place in [`rows`] and its rect, in egui
+/// points, which are the library's px.
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct LibKey {
+    pub row: usize,
+    pub col: usize,
+    pub rect: egui::Rect,
+}
+
+/// The key at `row`, `col` on `layer` (the same slot on either layer is the
+/// same size, so the library's keys keep their place across a layer swap).
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+pub fn cap_at(layer: KeyLayer, row: usize, col: usize) -> Option<Cap> {
+    rows(layer).get(row)?.get(col).map(|k| k.cap)
+}
+
+/// What the library's keys are for; read by `lib_keyboard`, which exists
+/// only with `ui-probe`.
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+impl OnScreenKeyboard {
+    /// egui's half of a frame when the library draws the keys.
+    ///
+    /// The focus is followed as [`Self::pass`] follows it — a tap on the
+    /// library's keys lands on egui too, as a click away from the focused
+    /// `TextEdit`, which surrenders its focus, so it is put back
+    /// ([`restore_focus`]) when the press was on the keys. And the strip the
+    /// keys stand in is claimed by an empty `Area` at the keyboard's order,
+    /// so a tap between or on the keys does not also press the egui widget
+    /// under them (the library draws above egui, but egui reads every
+    /// pointer event).
+    ///
+    /// `lib_field`: a library text field holds the keyboard
+    /// (`EguiManager::overlay_owns_keyboard`). An egui field with the focus
+    /// wins over it: the focus that moved last is egui's.
+    pub fn lib_pass(
+        &mut self,
+        ctx: &egui::Context,
+        ui_scale: f32,
+        display_scale: f32,
+        lib_field: bool,
+    ) {
+        let text_focus = ctx.text_edit_focused();
+        if text_focus {
+            self.open = true;
+            self.target = ctx.memory(|m| m.focused());
+        }
+        // Where the keys stood last frame — where this frame's press landed.
+        let on_slab = self.slab.is_some_and(|slab| {
+            ctx.input(|i| {
+                i.pointer
+                    .interact_pos()
+                    .or_else(|| i.pointer.press_origin())
+            })
+            .is_some_and(|p| slab.rect.contains(p))
+        });
+        if self.open && !text_focus {
+            match (on_slab, self.target) {
+                (true, Some(id)) => restore_focus(ctx, id),
+                _ => {
+                    self.open = false;
+                    self.target = None;
+                }
+            }
+        }
+        if lib_field != self.lib_field {
+            bevy::log::debug!(
+                lib_field,
+                open = self.open,
+                blur = self.lib_blur,
+                "onscreen_keyboard: library field"
+            );
+        }
+        self.lib_field = lib_field && !self.open && !self.lib_blur;
+        if !self.is_open() {
+            self.slab = None;
+            return;
+        }
+
+        let field = if self.open {
+            self.target
+                .filter(|&id| !makes_room(ctx, id))
+                .and_then(|id| ctx.read_response(id))
+                .map(|r| r.rect)
+        } else {
+            None
+        };
+        let slab = layout_with(
+            ctx.viewport_rect(),
+            min_key_height_pts(ui_scale, display_scale),
+            field,
+            Spacing::LIB,
+        );
+        self.slab = Some(slab);
+
+        // Above `Foreground`, for the reason [`draw`] gives.
+        let id = egui::Id::new("onscreen_keyboard_lib");
+        egui::Area::new(id)
+            .order(egui::Order::Tooltip)
+            .fixed_pos(slab.rect.min)
+            .constrain(false)
+            .show(ctx, |ui| {
+                // unnamed: it only holds the taps the library's keys take.
+                let _claim = ui.allocate_rect(slab.rect, egui::Sense::click());
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, id));
+    }
+
+    /// Where the library draws the keys and the keys it draws, while they are
+    /// up; `None` while they are down.
+    pub fn lib_keys(&self) -> Option<(egui::Rect, Vec<LibKey>)> {
+        if !self.lib || !self.is_open() {
+            return None;
+        }
+        let slab = self.slab?;
+        let keys = key_rects(&slab, self.layer)
+            .into_iter()
+            .map(|(row, col, _, rect)| LibKey { row, col, rect })
+            .collect();
+        Some((slab.rect, keys))
+    }
+
+    /// Which layer and shift the keys show.
+    pub fn face(&self) -> (KeyLayer, ShiftState) {
+        (self.layer, self.shift)
+    }
+
+    /// A key the library's keyboard was tapped on: where it types and what,
+    /// as the events egui takes (the library's caller turns them into its
+    /// own edits). `None` for the hide key — which puts the keys away and
+    /// takes the field's focus with it: egui's here, a library field's at the
+    /// caller ([`Self::take_lib_blur`]) — and while no field has the keys.
+    pub fn lib_tap(&mut self, ctx: &egui::Context, cap: Cap) -> Option<(KeysTo, Vec<egui::Event>)> {
+        let to = if self.open {
+            KeysTo::Egui
+        } else if self.lib_field {
+            KeysTo::Library
+        } else {
+            return None;
+        };
+        if cap == Cap::Hide {
+            if let (KeysTo::Egui, Some(id)) = (to, self.target) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            if to == KeysTo::Library {
+                self.lib_blur = true;
+            }
+            self.open = false;
+            self.lib_field = false;
+            self.target = None;
+            self.slab = None;
+            return None;
+        }
+        Some((to, self.press(cap)))
+    }
+
+    /// Did the keys go away from a library field (the hide key, Back)? Then
+    /// the caller clears its focus; asked once.
+    pub fn take_lib_blur(&mut self) -> bool {
+        std::mem::take(&mut self.lib_blur)
     }
 }
 

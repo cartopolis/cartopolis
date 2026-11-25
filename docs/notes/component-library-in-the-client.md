@@ -1,7 +1,7 @@
 ---
 topic: component-library-in-the-client
-triggers: [mithril_bevy, LibCamera, follow_world_target, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
-updated: 2026-11-24
+triggers: [mithril_bevy, lib_keyboard.rs, systems::lib_keyboard, KeyEdits, data-keep-focus, KeyboardInset, LibCamera, follow_world_target, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
+updated: 2026-11-25
 ---
 
 # The component library draws beside egui: how a screen moves over
@@ -206,3 +206,32 @@ A Core2d camera runs no egui pass, so egui draws once, under the library.
 The "…" fit waits for a new measure after each cut (`Ellipsis::cut_from`):
 a text's `TextLayoutInfo` lags its change by a frame, and cutting by the
 stale width again took long lines down to "1…".
+
+## The on-screen keyboard: one set of keys for both kinds of field
+
+`systems::lib_keyboard` (`CARTO_UI_LIB=keyboard`, where the platform wants
+the keys at all — Android, a phone browser, `CARTO_OSK=1`) draws the keys
+for an egui field and a library field alike. egui's
+`render_onscreen_keyboard` still runs (`OnScreenKeyboard::lib_pass`): it
+follows egui's focus, puts it back after a tap on the library's keys — the
+library draws above egui, but egui reads every pointer event, so the tap is
+also a click away from the `TextEdit` — and claims the strip with an empty
+`Area`, or a key would also press the egui widget under it. It decides
+where the keys stand and publishes `onscreen_keyboard::KeyboardInset` (how
+far up from the bottom, in the library's px); a library screen with a field
+at its foot lifts by it.
+
+Into a library field the keys go through `mithril_bevy::KeyEdits`, applied
+at the start of `drive_ui` to the focused `EditableText` (`queue_edit`)
+with a `keydown` per key, so `onkeydown` (Enter) fires as for a physical
+key. **A key must not take the focus it types into**: a press on a control
+takes the focus (`events.rs`), and `PointerFocusPlugin`'s `AcquireFocus`
+bubbles to the window and clears it. An element with `data-keep-focus`
+does neither.
+
+A screen is claimed for the library in `PreUpdate` (`lib_search::claim`),
+not only in its `PostUpdate` system: claimed late, egui drew the Search
+panel for one frame and took the "focus the field" a scripted run or
+Ctrl+L asks for, so the library's field never took the keyboard
+(2026-11-25). A screen whose egui system consumes a one-shot request
+needs the same early claim.

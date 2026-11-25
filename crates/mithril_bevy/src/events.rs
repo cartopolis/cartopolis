@@ -5,7 +5,7 @@
 //! that listens.
 
 use bevy::input::keyboard::KeyboardInput;
-use bevy::input_focus::{FocusLost, FocusedInput, InputFocus};
+use bevy::input_focus::{AcquireFocus, FocusLost, FocusedInput, InputFocus};
 use bevy::picking::events::{PointerClick, PointerOut, PointerOver, PointerPress, PointerRelease};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextEditChange};
@@ -259,17 +259,36 @@ fn ensure_state_observers(world: &mut World, entity: Entity, id: NodeId) {
               inputs: Query<&bevy::ui_widgets::TextInput>| {
             set_state(&mut tree, id, |s| s.active = true);
             // A press on a control takes the focus; a text input does this
-            // itself.
-            if inputs.get(ev.entity).is_err() {
+            // itself; an on-screen keyboard's key leaves it where it is.
+            if inputs.get(ev.entity).is_err() && !keeps_focus(&tree, id) {
                 focus.set(ev.entity, bevy::input_focus::FocusCause::Pressed);
             }
         },
     );
+    // The press's own request for focus (`PointerFocusPlugin`) bubbles to
+    // the window, which clears the focus ("click outside to unfocus"): a
+    // key that keeps the focus stops it on its way up.
+    world
+        .entity_mut(entity)
+        .observe(move |mut ev: On<AcquireFocus>, tree: Res<UiTree>| {
+            if keeps_focus(&tree, id) {
+                ev.propagate(false);
+            }
+        });
     world
         .entity_mut(entity)
         .observe(move |_ev: On<PointerRelease>, mut tree: ResMut<UiTree>| {
             set_state(&mut tree, id, |s| s.active = false);
         });
+}
+
+/// An element marked `data-keep-focus` (an on-screen keyboard and its keys,
+/// `typing.rs`): pressing it leaves the focus on the field being typed in.
+fn keeps_focus(tree: &UiTree, id: NodeId) -> bool {
+    tree.nodes.get(&id).is_some_and(|n| match &n.kind {
+        NodeKind::Element { attrs, .. } => attrs.iter().any(|(name, _)| name == "data-keep-focus"),
+        _ => false,
+    })
 }
 
 fn set_state(tree: &mut UiTree, id: NodeId, f: impl FnOnce(&mut mithril::style::States)) {

@@ -369,3 +369,31 @@ at = [53.2190, 6.5680, 350.0]
 look = [-50.0, 0.0]
 time = 12.0
 ui = ["designroom"]
+
+[[shot]]
+name = "requests"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["requests"]
+
+[[shot]]
+name = "privacy"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["privacy"]
+
+[[shot]]
+name = "calendarmonth"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["calendarmonth"]
+
+[[shot]]
+name = "adminaccount"
+at = [53.2190, 6.5680, 350.0]
+look = [-50.0, 0.0]
+time = 12.0
+ui = ["adminaccount"]

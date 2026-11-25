@@ -150,6 +150,16 @@ fn nav_of(nav: &GeoNavState, has_home: bool) -> Nav {
     }
 }
 
+/// Claims the panel for the library before egui's systems run (`PreUpdate`):
+/// claimed only in `drive_lib_search`, egui drew it for one frame first and
+/// took the "focus the field" a scripted run or Ctrl+L asks for, so the
+/// library's field mounted without the keyboard.
+pub fn claim(lib: Res<LibScreens>, mut nav: ResMut<GeoNavState>) {
+    if lib.search && !nav.lib {
+        nav.lib = true;
+    }
+}
+
 /// Mounts, bridges and unmounts the Search panel. `PostUpdate`, before
 /// `DriveUi`, as every library screen.
 #[allow(clippy::too_many_arguments)]

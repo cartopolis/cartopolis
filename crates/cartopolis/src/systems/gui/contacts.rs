@@ -500,6 +500,12 @@ impl Contacts {
             }));
     }
 
+    /// A username looked up on the Add screen has not been answered yet.
+    #[must_use]
+    pub fn searching(&self) -> bool {
+        self.found.is_none() && self.search_request.is_some()
+    }
+
     /// The waiting request from `username`, if there is one.
     #[must_use]
     pub fn incoming_from(&self, username: &str) -> Option<&ContactRequestDto> {
@@ -1417,7 +1423,64 @@ fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
         });
 }
 
-fn in_common_text(names: &[String]) -> String {
+/// A request's line in the tray: where you met, or when it was sent.
+#[must_use]
+pub(crate) fn request_line(r: &ContactRequestDto, now: u64) -> String {
+    let line = match &r.met {
+        Some(m) => met_text(m, now),
+        None => format!("Sent {}", ago(r.sent_at_ms, now)),
+    };
+    agent_line(r.agent, line)
+}
+
+/// A contact's line in the list: online, added today where you met, or
+/// how long ago.
+#[must_use]
+pub(crate) fn contact_line(c: &ContactDto, now: u64) -> String {
+    let line = match (&c.met, c.online) {
+        (_, Some(true)) => "online".to_string(),
+        (Some(m), _) if now.saturating_sub(c.since_ms) < 86_400_000 => {
+            format!("added today · {}", met_text(m, now).to_lowercase())
+        }
+        _ => format!("contact since {}", ago(c.since_ms, now)),
+    };
+    agent_line(c.agent, line)
+}
+
+/// An online contact's line, in "Online now".
+#[must_use]
+pub(crate) fn online_line(c: &ContactDto) -> String {
+    agent_line(c.agent, "online".into())
+}
+
+/// What a username looked up on the Add screen is to you.
+#[must_use]
+pub(crate) fn found_line(p: &PersonDto) -> &'static str {
+    match p.relation {
+        Relation::Contact => "already a contact",
+        Relation::RequestSent => "request sent · waiting",
+        Relation::RequestReceived => "sent you a request",
+        Relation::Me => "that's you",
+        Relation::Nobody if p.may_request => "exact match",
+        Relation::Nobody => "only takes requests from people they've met",
+    }
+}
+
+/// What somebody wrote with their request: the lines of the private chat
+/// that goes with it.
+#[must_use]
+pub(crate) fn request_lines<'a>(
+    chat: &'a ChatState,
+    username: &str,
+) -> Vec<&'a crate::systems::chat::ChatLine> {
+    chat.direct
+        .get(&username.to_lowercase())
+        .and_then(|k| chat.channels.iter().find(|c| &c.key == k))
+        .map(|c| c.lines.iter().collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn in_common_text(names: &[String]) -> String {
     match names {
         [] => "No contacts in common".into(),
         [one] => format!("1 contact in common: {one}"),
@@ -1497,26 +1560,27 @@ pub fn requests_row(ui: &mut egui::Ui, contacts: &Contacts) -> bool {
     resp.clicked()
 }
 
-/// What a contacts screen decided, acted on after drawing.
+/// What a contacts screen decided: egui's drawing and the library's taps
+/// (`lib_contacts`) both fill one, and [`act`] does it.
 #[derive(Default)]
-struct Act {
-    back: bool,
-    to: Option<Sub>,
-    open_chat: Option<String>,
-    open_channel: Option<String>,
-    accept: Option<String>,
-    decline: Option<String>,
-    block: Option<String>,
-    report: Option<(String, Option<String>)>,
-    withdraw: Option<String>,
-    remove: Option<String>,
-    card: Option<String>,
-    hi: Option<String>,
-    add: Option<String>,
-    settings: bool,
-    reset_link: bool,
-    search: bool,
-    share_link: bool,
+pub(crate) struct Act {
+    pub(crate) back: bool,
+    pub(crate) to: Option<Sub>,
+    pub(crate) open_chat: Option<String>,
+    pub(crate) open_channel: Option<String>,
+    pub(crate) accept: Option<String>,
+    pub(crate) decline: Option<String>,
+    pub(crate) block: Option<String>,
+    pub(crate) report: Option<(String, Option<String>)>,
+    pub(crate) withdraw: Option<String>,
+    pub(crate) remove: Option<String>,
+    pub(crate) card: Option<String>,
+    pub(crate) hi: Option<String>,
+    pub(crate) add: Option<String>,
+    pub(crate) settings: bool,
+    pub(crate) reset_link: bool,
+    pub(crate) search: bool,
+    pub(crate) share_link: bool,
 }
 
 /// Draw one contacts screen in the Chats panel, and act on it.
@@ -1549,7 +1613,20 @@ pub fn screen(
             Sub::Privacy => privacy_screen(ui, contacts, &mut act),
         },
     );
+    self::act(sub, act, contacts, chat, view, online, me);
+}
 
+/// Do what a contacts screen asked for: egui's [`screen`] and the library's
+/// (`lib_contacts`) both end here, so a tap means the same in either.
+pub(crate) fn act(
+    sub: &Sub,
+    act: Act,
+    contacts: &mut Contacts,
+    chat: &mut ChatState,
+    view: &mut ChatsView,
+    online: Option<&OnlineSession>,
+    me: &str,
+) {
     if act.back && view.sub_root.as_ref() == Some(sub) {
         // Opened from the You page: back goes there.
         view.sub = None;
@@ -1822,11 +1899,7 @@ fn requests_screen(ui: &mut egui::Ui, contacts: &Contacts, act: &mut Act, now: u
                 }
                 section_label(ui, title, Some(list.len()));
                 for r in list.iter() {
-                    let line = match &r.met {
-                        Some(m) => met_text(m, now),
-                        None => format!("Sent {}", ago(r.sent_at_ms, now)),
-                    };
-                    let line = agent_line(r.agent, line);
+                    let line = request_line(r, now);
                     if person_row(ui, &r.username, &line, theme::p().text_dim, false, |_| {})
                         .clicked()
                     {
@@ -1871,11 +1944,7 @@ fn request_screen(
     // What they wrote, from the private chat that goes with the request. A
     // point is held back until you accept: from a stranger, a place and a
     // camera pose is exactly the kind of thing not to open unasked.
-    let key = chat.direct.get(&r.username.to_lowercase());
-    let lines: Vec<&crate::systems::chat::ChatLine> = key
-        .and_then(|k| chat.channels.iter().find(|c| &c.key == k))
-        .map(|c| c.lines.iter().collect())
-        .unwrap_or_default();
+    let lines = request_lines(chat, &r.username);
     let bottom_h = 112.0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1991,7 +2060,7 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
             if !online.is_empty() {
                 section_label(ui, "Online now", Some(online.len()));
                 for c in online {
-                    let line = agent_line(c.agent, "online".into());
+                    let line = online_line(c);
                     if person_row(ui, &c.username, &line, theme::p().text_dim, true, |ui| {
                         ui.label(egui::RichText::new(icons::CHAT).color(theme::p().text_dim));
                     })
@@ -2004,14 +2073,7 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
             if !contacts.contacts.is_empty() {
                 section_label(ui, "All contacts", Some(contacts.contacts.len()));
                 for c in &contacts.contacts {
-                    let line = match (&c.met, c.online) {
-                        (_, Some(true)) => "online".to_string(),
-                        (Some(m), _) if now.saturating_sub(c.since_ms) < 86_400_000 => {
-                            format!("added today · {}", met_text(m, now).to_lowercase())
-                        }
-                        _ => format!("contact since {}", ago(c.since_ms, now)),
-                    };
-                    let line = agent_line(c.agent, line);
+                    let line = contact_line(c, now);
                     let resp = person_row(
                         ui,
                         &c.username,
@@ -2172,20 +2234,13 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
                 }
             });
             match &contacts.found {
-                None if contacts.search_request.is_some() => {
+                None if contacts.searching() => {
                     ui.spinner();
                 }
                 None => {}
                 Some(None) => theme::note(ui, "Nobody by that name."),
                 Some(Some(p)) => {
-                    let line = match p.relation {
-                        Relation::Contact => "already a contact",
-                        Relation::RequestSent => "request sent · waiting",
-                        Relation::RequestReceived => "sent you a request",
-                        Relation::Me => "that's you",
-                        Relation::Nobody if p.may_request => "exact match",
-                        Relation::Nobody => "only takes requests from people they've met",
-                    };
+                    let line = found_line(p);
                     let p = p.clone();
                     let mut request = false;
                     person_row(ui, &p.username, line, theme::p().text_dim, false, |ui| {

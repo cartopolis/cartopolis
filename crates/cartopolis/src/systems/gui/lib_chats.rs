@@ -8,17 +8,18 @@
 //! (`&panel=chats` opens it). egui's panel steps aside (`ChatsView::lib`)
 //! on the screens the library draws (`ChatsScreen::on_library`), keeping an
 //! empty strip, and still does what only it can: the picture picker, the
-//! full-size picture viewer, the report and account-delete dialogs. On the
-//! contacts screens and the calendar, which are still egui's alone, the
-//! library unmounts and egui draws its whole panel.
+//! full-size picture viewer, the report and account-delete dialogs. Every
+//! screen of the panel is on the library: the contacts screens
+//! (`lib_contacts`) and the calendar (`lib_calendar`) were the last.
 //!
 //! **One set of logic, two editions.** Which screen shows is
 //! `ChatsView::screen`; the list's rows are `chats::list_model`; a tap fills
 //! the same `chats::Actions` egui's drawing fills, and the frame ends in the
 //! same `chats::settle` (→ `apply`). Nothing here decides what a tap means.
 //!
-//! **The shell is shared.** The conversation (`lib_chat_conversation`) and
-//! the communities screens (`lib_communities`) plug into [`ChatsLive`]: the
+//! **The shell is shared.** The conversation (`lib_chat_conversation`), the
+//! communities screens (`lib_communities`), the contacts screens
+//! (`lib_contacts`) and the calendar (`lib_calendar`) plug into [`ChatsLive`]: the
 //! router calls their `screen`, the system calls their `mirror` every frame,
 //! and they queue work with [`ChatsLive::on`] / [`ChatsLive::later`], which
 //! hand them the whole [`ChatsWorld`] and the frame's `Actions`.
@@ -45,8 +46,10 @@ use crate::systems::communities::Communities;
 use crate::systems::discs::{disc_look, ChatKind};
 use crate::systems::egui_manager::EguiRef;
 use crate::systems::faces::{FaceChoice, Faces};
+use crate::systems::lib_calendar::{self, CalendarLive};
 use crate::systems::lib_chat_conversation::{self, ConversationLive};
 use crate::systems::lib_communities::{self, CommunitiesLive};
+use crate::systems::lib_contacts::{self, ContactsLive};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::{icons, theme};
 use crate::utils::clock::unix_ms;
@@ -282,6 +285,10 @@ pub(crate) struct ChatsLive {
     pub conversation: ConversationLive,
     /// The communities screens' own state (`lib_communities`).
     pub communities: CommunitiesLive,
+    /// The contacts screens' own state (`lib_contacts`).
+    pub contacts: ContactsLive,
+    /// The calendar's own state (`lib_calendar`).
+    pub calendar: CalendarLive,
     acts: Rc<RefCell<Vec<Act>>>,
 }
 
@@ -378,6 +385,8 @@ pub fn drive_lib_chats(
                 },
                 conversation: ConversationLive::new(&w),
                 communities: CommunitiesLive::new(&w),
+                contacts: ContactsLive::new(&w),
+                calendar: CalendarLive::new(&w),
                 acts: Rc::new(RefCell::new(Vec::new())),
             };
             // The signals take the world's values before anything reads them.
@@ -480,6 +489,8 @@ fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
     }
     lib_chat_conversation::mirror(live, w, now);
     lib_communities::mirror(live, w, now);
+    moved |= lib_contacts::mirror(live, w, now);
+    moved |= lib_calendar::mirror(live, w, now);
     // Rows land after the mount (a picture resolving, a line arriving): the
     // HTML beside a capture follows them.
     if moved {
@@ -598,10 +609,25 @@ pub(crate) fn note(text: impl Into<String>) -> View {
 /// A screen's header: `lead` (a back arrow, an icon), the title, and `end`
 /// (buttons) at the right. Every Chats screen's header is this one.
 pub(crate) fn header(lead: View, title: View, end: View) -> View {
+    // A sub-page (a back arrow first) sets its title at 17 px and keeps its
+    // buttons close, as the other sub-pages do: with 12 px gaps and three
+    // buttons a phone left "Contacts" two letters.
+    let sub = !matches!(lead, View::Empty);
+    let (bar, size) = if sub {
+        (
+            "display: flex; align-items: center; gap: 4px; flex: none; min-height: 56px; padding: 0 8px; border-bottom: 1px solid var(--m-border)",
+            "flex: 1; min-width: 0; margin: 0 0 0 4px; font-size: 17px; font-weight: 600; color: var(--m-text-strong); white-space: nowrap; text-overflow: ellipsis; overflow: hidden",
+        )
+    } else {
+        (
+            "display: flex; align-items: center; gap: 12px; flex: none; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)",
+            "flex: 1; min-width: 0; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong); white-space: nowrap; text-overflow: ellipsis; overflow: hidden",
+        )
+    };
     view! {
-        <div style="display: flex; align-items: center; gap: 12px; flex: none; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
+        <div style={bar}>
             {lead}
-            <h1 style="flex: 1; min-width: 0; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong); white-space: nowrap; text-overflow: ellipsis; overflow: hidden">{title}</h1>
+            <h1 style={size}>{title}</h1>
             {end}
         </div>
     }
@@ -681,8 +707,8 @@ fn panel(l: &ChatsLive) -> View {
                 ChatsScreen::You => you_page(&l),
                 ChatsScreen::Chat(key) => lib_chat_conversation::screen(&l, &key),
                 ChatsScreen::Communities => lib_communities::screen(&l),
-                // egui's alone: the library is unmounted on these.
-                ChatsScreen::Contacts(_) | ChatsScreen::Calendar => View::Empty,
+                ChatsScreen::Contacts(sub) => lib_contacts::screen(&l, &sub),
+                ChatsScreen::Calendar => lib_calendar::screen(&l),
             }
         }
     };

@@ -74,6 +74,8 @@ pub struct LibScreens {
     pub plans: bool,
     pub scenario: bool,
     pub design_room: bool,
+    pub admin: bool,
+    pub keyboard: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
     /// Open Layers at once (`?panel=layers`).
@@ -90,6 +92,8 @@ pub struct LibScreens {
     pub open_avatar: bool,
     pub open_models: bool,
     pub open_script: bool,
+    /// Open the admin pages at once (`?panel=admin`).
+    pub open_admin: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -126,6 +130,8 @@ impl LibScreens {
                 plans: all || named("plans"),
                 scenario: all || named("scenario"),
                 design_room: all || named("design_room"),
+                admin: all || named("admin"),
+                keyboard: all || named("keyboard"),
                 open_settings: false,
                 open_layers: false,
                 open_search: false,
@@ -135,6 +141,7 @@ impl LibScreens {
                 open_avatar: false,
                 open_models: false,
                 open_script: false,
+                open_admin: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -170,6 +177,8 @@ impl LibScreens {
                 plans: named("plans"),
                 scenario: named("scenario"),
                 design_room: named("design_room"),
+                admin: named("admin"),
+                keyboard: named("keyboard"),
                 open_settings: panel.as_deref() == Some("settings"),
                 open_layers: panel.as_deref() == Some("layers"),
                 open_search: panel.as_deref() == Some("search"),
@@ -179,6 +188,7 @@ impl LibScreens {
                 open_avatar: panel.as_deref() == Some("avatar"),
                 open_models: panel.as_deref() == Some("models"),
                 open_script: panel.as_deref() == Some("script"),
+                open_admin: panel.as_deref() == Some("admin"),
                 page: get("page"),
             }
         }

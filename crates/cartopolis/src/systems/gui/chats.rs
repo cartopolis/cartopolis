@@ -160,11 +160,19 @@ pub enum ChatsScreen {
 
 impl ChatsScreen {
     /// Whether the component library draws this screen when it has the
-    /// panel. The contacts screens and the calendar are still egui's alone:
-    /// on them egui draws its whole panel, and the library stands down.
+    /// panel: every one, since the contacts screens (`lib_contacts`) and the
+    /// calendar (`lib_calendar`) moved over. Kept as the one place to say
+    /// so, should a screen ever be egui's alone again.
     #[must_use]
     pub fn on_library(&self) -> bool {
-        !matches!(self, ChatsScreen::Contacts(_) | ChatsScreen::Calendar)
+        match self {
+            ChatsScreen::Communities
+            | ChatsScreen::Contacts(_)
+            | ChatsScreen::You
+            | ChatsScreen::Calendar
+            | ChatsScreen::List
+            | ChatsScreen::Chat(_) => true,
+        }
     }
 }
 
@@ -906,7 +914,7 @@ pub(crate) struct Actions {
 
 /// Do what the calendar's pages asked for, through the same [`Actions`] the
 /// chat cards use, so an answer from the calendar is the answer from the card.
-fn calendar_out(
+pub(crate) fn calendar_out(
     out: crate::systems::calendar::Out,
     calendar: &mut crate::systems::calendar::Calendar,
     view: &mut ChatsView,
