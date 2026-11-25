@@ -133,9 +133,16 @@ impl LibScreens {
     pub fn from_env() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // Every screen by default since 2026-11-25; `0` (or `egui`) is
+            // egui's, a list names the screens to draw. Never in a build with
+            // no backend for the library: each egui screen it claimed would
+            // hide and nothing would draw it.
             let v = std::env::var("CARTO_UI_LIB").unwrap_or_default();
-            let all = v.trim() == "1";
-            let named = |s: &str| v.split(',').any(|x| x.trim() == s);
+            let v = v.trim();
+            let backed = cfg!(feature = "ui-probe");
+            let off = !backed || v == "0" || v == "egui";
+            let all = !off && (v.is_empty() || v == "1");
+            let named = |s: &str| !off && v.split(',').any(|x| x.trim() == s);
             LibScreens {
                 settings: all || named("settings"),
                 layers: all || named("layers"),
@@ -208,8 +215,13 @@ impl LibScreens {
                 .unwrap_or_default();
             let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
             let get = |k: &str| params.as_ref().and_then(|p| p.get(k));
+            // Every screen by default since 2026-11-25; `?ui=egui` is
+            // egui's, `?ui=a,b` names the screens to draw. Only with the
+            // DOM backend in the build (`ui-dom`).
             let ui = get("ui").unwrap_or_default();
-            let named = |s: &str| ui == "lib" || ui.split(',').any(|x| x == s);
+            let backed = cfg!(feature = "ui-dom");
+            let all = backed && (ui.is_empty() || ui == "lib");
+            let named = |s: &str| backed && ui != "egui" && (all || ui.split(',').any(|x| x == s));
             let panel = get("panel");
             LibScreens {
                 settings: named("settings"),

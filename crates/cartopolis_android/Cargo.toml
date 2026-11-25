@@ -53,9 +53,12 @@ bevy = { workspace = true, features = ["debug"] }
 # AAudio, which is a plain C API in the platform (`libaaudio.so`, API 26; the
 # manifest's minSdk is 28) and needs no permission for playback and no
 # `classes.dex`. `platform::audio`'s *capture* half stays off here on its own cfg.
+# `ui-probe` is the interface (the component library on bevy_ui), named here
+# as `audio` is: an APK without it would hide every egui screen and draw none.
 cartopolis = { path = "../cartopolis", default-features = false, features = [
     "audio",
     "comms",
+    "ui-probe",
 ] }
 
 [lints]

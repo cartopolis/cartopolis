@@ -8,8 +8,23 @@ updated: 2026-11-25
 
 `docs/mockups/component-library` is the study; this is what holds in the code
 while egui and the library (`mithril`, the Rust edition in `jeroen/mithril`,
-rendered by `crates/mithril_bevy`) share the client. Both are behind the
-`ui-probe` feature until a screen ships on the library.
+rendered by `crates/mithril_bevy`) share the client.
+
+**Since 2026-11-25 every screen has a library edition and the library is the
+interface**: `ui-probe` is a default feature (and named in the APK's), and
+`LibScreens` turns every screen on unless `CARTO_UI_LIB=0` (or `?ui=egui` on
+the web) asks for egui's. A build without a backend for the library
+(`ui-probe` natively, `ui-dom` on the web) keeps egui's, or each screen egui
+gave up would draw nowhere. egui is on its way out: what is still its own is
+the logic (each egui system publishes its screen's view and applies its
+taps), the cosmos' star fields, the Midas tab of Developer tools and the
+OSD's multi-touch.
+
+Two traps every port met: a library row rebuilt every frame is never laid out
+(the tree replaces it before layout sees it — publish ticking readouts at a
+few hertz, `dev_panel`'s `READOUT_PERIOD_S`); and the host's dark switch is one
+for every screen, so a screen dark in both themes draws in `theme::DARK`'s
+colours rather than mounting dark (`lib_camera`).
 
 ## One frame of the library
 

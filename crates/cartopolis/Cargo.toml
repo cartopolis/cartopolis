@@ -41,7 +41,10 @@ test = false
 # cartopolis_simulator` plus a sign-in to 127.0.0.1:4747, the same online path
 # every server uses. The simulator crate survives here as a dev-dependency, so
 # the loopback tests still boot the real thing.
-default = ["audio", "comms"]
+# `ui-probe`: the component library's screens on bevy_ui, the app's interface
+# since 2026-11-25 (egui is on its way out; `CARTO_UI_LIB=0` brings it back
+# until then).
+default = ["audio", "comms", "ui-probe"]
 # `audio`: the avatar soundscape (`systems::soundscape` — footsteps, landings,
 # wind). On by default, because a city you can walk through in silence reads as a
 # viewer rather than as a place.
