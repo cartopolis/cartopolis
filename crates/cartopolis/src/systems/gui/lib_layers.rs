@@ -694,7 +694,7 @@ fn panel(l: &Live, counts: &Signal<[u64; 6]>, compact: bool) -> View {
         <div style={frame}>
             <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                 <span style="color: var(--m-accent)">{icon(RightPanel::Layers.icon())}</span>
-                <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Layers"</h1>
+                <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">"Layers"</h1>
                 <Button variant=Variant::Ghost size=Size::Sm onclick={reset} title="Switch every layer back to how it ships">"Reset"</Button>
                 <CloseButton onclick={close} />
             </div>

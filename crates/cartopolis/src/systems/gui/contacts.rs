@@ -143,7 +143,7 @@ const TAP_RADIUS_PTS: f32 = 36.0;
 const CARD_WIDTH: f32 = 380.0;
 
 /// Longest first message, in characters. A knock, not a letter.
-const MAX_HELLO_CHARS: usize = 500;
+pub(crate) const MAX_HELLO_CHARS: usize = 500;
 
 /// Contact traffic the network system sorted out of the mailbox for
 /// [`drive_contacts`], as it does for private chats.
@@ -252,6 +252,126 @@ pub struct Contacts {
     seen_incoming: HashSet<String>,
     /// A demo capture with no session behind it (`--ui contacts`).
     pub demo: bool,
+    /// The library draws the person card and the first-message sheet
+    /// (`lib_person_card`): [`render_person_card`] draws nothing, and
+    /// publishes [`lib_view`](Self::lib_view) instead.
+    pub lib: bool,
+    /// What egui's system and the library's card pass each other while
+    /// `lib` is on.
+    pub lib_view: PersonView,
+}
+
+/// A tap on the person card or the first-message sheet: one set, for both
+/// editions, done by [`person_act`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersonAction {
+    /// ✕, or dismissing the card's error.
+    Close,
+    /// ⋯: Block and Report shown or hidden.
+    ToggleMenu,
+    /// Say hi: the first-message sheet.
+    SayHi,
+    /// Add contact: a request with no first message.
+    Add,
+    /// Message a contact: their chat.
+    Message,
+    /// See the request they sent you.
+    SeeRequest,
+    Block,
+    Report,
+    /// Offer a greeting to the avatar the card was opened on.
+    Greet(cartopolis_core::Greeting),
+    /// The sheet's Send request.
+    Send,
+    /// The sheet's Cancel, or dismissing its error.
+    Cancel,
+}
+
+/// The side of the person card only egui's system works out — the session,
+/// the driver bar, the panels, the on-screen keyboard — for the library's
+/// edition.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PersonView {
+    /// Neither the card nor the sheet shows (no session, driving).
+    pub hidden: bool,
+    /// The card waits behind an open panel on a phone (the sheet does not).
+    pub card_hidden: bool,
+    /// Signed in: greetings can be offered.
+    pub online: bool,
+    /// How far the on-screen keyboard lifts the sheet, points.
+    pub lift: f32,
+    /// A tap the library's card handed back, done by egui's system.
+    pub action: Option<PersonAction>,
+}
+
+/// One of the small facts on a person card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fact {
+    /// Led by the pin icon (where or how near).
+    pub pin: bool,
+    pub text: String,
+    /// The amber "new account" fact.
+    pub new: bool,
+}
+
+/// The facts a person card shows about `p`, both editions.
+#[must_use]
+pub fn person_facts(p: &PersonDto, now: u64) -> Vec<Fact> {
+    let mut out = Vec::new();
+    if let Some(d) = p.distance_m {
+        out.push(Fact {
+            pin: true,
+            text: format!("{d:.0} m from you"),
+            new: false,
+        });
+    } else if let Some(m) = &p.met {
+        out.push(Fact {
+            pin: true,
+            text: met_text(m, now),
+            new: false,
+        });
+    }
+    out.push(Fact {
+        pin: false,
+        text: joined(p.joined_ms, p.new_account, now),
+        new: p.new_account,
+    });
+    out.push(Fact {
+        pin: false,
+        text: in_common_text(&p.in_common),
+        new: false,
+    });
+    out
+}
+
+/// The line under a person's name: how they stand with you.
+#[must_use]
+pub fn relation_word(relation: Relation) -> &'static str {
+    match relation {
+        Relation::Contact => "Contact",
+        Relation::RequestSent => "Request sent · waiting",
+        Relation::RequestReceived => "Sent you a request",
+        Relation::Me => "You",
+        Relation::Nobody => "Not a contact",
+    }
+}
+
+/// Whether the card offers Say hi and Add contact to `p`.
+#[must_use]
+pub fn may_ask(p: &PersonDto, card: &Card) -> bool {
+    p.relation == Relation::Nobody && (p.may_request || card.link_code.is_some())
+}
+
+/// The quick first lines the sheet offers.
+pub const QUICK_HELLOS: [&str; 3] = ["👋 Hi!", "Nice build", "Want to explore together?"];
+
+/// What the sheet's fine print says about a first message to `name`.
+#[must_use]
+pub fn hello_fine_print(name: &str) -> String {
+    format!(
+        "Encrypted, text only. {name} sees this, your name and where you met. No points, \
+         pictures or locations until they accept."
+    )
 }
 
 impl Contacts {
@@ -785,10 +905,47 @@ pub fn render_person_card(
     mut greetings: ResMut<crate::systems::greet::Greetings>,
     mut interact: ResMut<crate::systems::interact::InteractState>,
 ) {
-    if (online.is_none() && !contacts.demo) || driver.active {
+    let hidden = (online.is_none() && !contacts.demo) || driver.active;
+    // On a phone an open panel is the whole screen; the card waits behind it.
+    let card_hidden = egui.compact() && !right_panel.is(RightPanel::None);
+
+    // The library's edition is showing (`lib_person_card`): hand it the side
+    // only this system works out, do the tap it handed back, draw nothing.
+    if contacts.lib {
+        // Read before taking, so a quiet frame leaves the resource unchanged.
+        let action = if contacts.lib_view.action.is_some() {
+            contacts.lib_view.action.take()
+        } else {
+            None
+        };
+        let view_now = PersonView {
+            hidden,
+            card_hidden,
+            online: online.is_some(),
+            lift: crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open()),
+            action: None,
+        };
+        if contacts.lib_view != view_now {
+            contacts.lib_view = view_now;
+        }
+        if let Some(a) = action {
+            person_act(
+                a,
+                &mut contacts,
+                &mut chat,
+                &mut view,
+                &mut right_panel,
+                online.as_deref(),
+                &mut greetings,
+                &mut interact,
+            );
+        }
         return;
     }
-    let compact = egui.compact();
+
+    if hidden {
+        return;
+    }
     // The content's width: the frame's own 12 pt a side comes on top, so it
     // is taken off here too, or the card meets the screen's edges on a phone.
     let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * (theme::OSD_MARGIN + 12.0));
@@ -851,7 +1008,7 @@ pub fn render_person_card(
                         }
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
-                            for quick in ["👋 Hi!", "Nice build", "Want to explore together?"] {
+                            for quick in QUICK_HELLOS {
                                 if theme::chip(ui, quick, false).clicked() {
                                     compose.text = quick.to_string();
                                 }
@@ -866,14 +1023,9 @@ pub fn render_person_card(
                                         .size(14.0),
                                 );
                                 ui.label(
-                                    egui::RichText::new(format!(
-                                        "Encrypted, text only. {} sees this, your name and \
-                                         where you met. No points, pictures or locations \
-                                         until they accept.",
-                                        compose.username
-                                    ))
-                                    .size(12.5)
-                                    .color(theme::p().text_dim),
+                                    egui::RichText::new(hello_fine_print(&compose.username))
+                                        .size(12.5)
+                                        .color(theme::p().text_dim),
                                 );
                             });
                         });
@@ -908,14 +1060,24 @@ pub fn render_person_card(
                         });
                     });
             });
-        if send {
-            if let Some(c) = contacts.compose.take() {
-                contacts.say_hi(&c.username, &c.text, c.link_code);
-                contacts.card = None;
-            }
+        let asked = if send {
+            Some(PersonAction::Send)
         } else if cancel {
-            contacts.compose = None;
-            contacts.error = None;
+            Some(PersonAction::Cancel)
+        } else {
+            None
+        };
+        if let Some(a) = asked {
+            person_act(
+                a,
+                &mut contacts,
+                &mut chat,
+                &mut view,
+                &mut right_panel,
+                online.as_deref(),
+                &mut greetings,
+                &mut interact,
+            );
         }
         return;
     }
@@ -923,19 +1085,10 @@ pub fn render_person_card(
     let Some(card) = contacts.card.clone() else {
         return;
     };
-    // On a phone an open panel is the whole screen; the card waits behind it.
-    if compact && !right_panel.is(RightPanel::None) {
+    if card_hidden {
         return;
     }
-    let mut close = false;
-    let mut hi: Option<(String, Option<String>)> = None;
-    let mut add: Option<(String, Option<String>)> = None;
-    let mut open_chat: Option<String> = None;
-    let mut open_request: Option<String> = None;
-    let mut block: Option<String> = None;
-    let mut report: Option<String> = None;
-    let mut greet: Option<(u64, cartopolis_core::Greeting, String)> = None;
-    let mut toggle_menu = false;
+    let mut asked: Option<PersonAction> = None;
     let error = contacts.error.clone();
     egui::Area::new(egui::Id::new("contacts_person_card"))
         .order(egui::Order::Foreground)
@@ -960,7 +1113,9 @@ pub fn render_person_card(
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = theme::close_button(ui).clicked();
+                            if theme::close_button(ui).clicked() {
+                                asked = Some(PersonAction::Close);
+                            }
                         });
                     });
                     return;
@@ -968,9 +1123,11 @@ pub fn render_person_card(
                 ui.horizontal(|ui| {
                     avatar(ui, &p.username, ChatKind::Private, 48.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = theme::close_button(ui).clicked();
+                        if theme::close_button(ui).clicked() {
+                            asked = Some(PersonAction::Close);
+                        }
                         if theme::kebab_button(ui).clicked() {
-                            toggle_menu = true;
+                            asked = Some(PersonAction::ToggleMenu);
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.label(
@@ -979,52 +1136,47 @@ pub fn render_person_card(
                                     .color(theme::p().cream),
                             );
                             ui.label(
-                                egui::RichText::new(match p.relation {
-                                    Relation::Contact => "Contact",
-                                    Relation::RequestSent => "Request sent · waiting",
-                                    Relation::RequestReceived => "Sent you a request",
-                                    Relation::Me => "You",
-                                    Relation::Nobody => "Not a contact",
-                                })
-                                .size(12.5)
-                                .color(theme::p().text_dim),
+                                egui::RichText::new(relation_word(p.relation))
+                                    .size(12.5)
+                                    .color(theme::p().text_dim),
                             );
                         });
                     });
                 });
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    if let Some(d) = p.distance_m {
-                        fact(ui, &format!("{} {:.0} m from you", icons::PIN, d), false);
-                    } else if let Some(m) = &p.met {
-                        fact(ui, &format!("{} {}", icons::PIN, met_text(m, now)), false);
+                    for f in person_facts(p, now) {
+                        let text = if f.pin {
+                            format!("{} {}", icons::PIN, f.text)
+                        } else {
+                            f.text
+                        };
+                        fact(ui, &text, f.new);
                     }
-                    fact(ui, &joined(p.joined_ms, p.new_account, now), p.new_account);
-                    fact(ui, &in_common_text(&p.in_common), false);
                 });
                 if card.menu {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if theme::action_button(ui, format!("{} Block", icons::CLEAR)).clicked() {
-                            block = Some(p.username.clone());
+                            asked = Some(PersonAction::Block);
                         }
                         if theme::action_button(ui, format!("{} Report…", icons::FLAG)).clicked()
                         {
-                            report = Some(p.username.clone());
+                            asked = Some(PersonAction::Report);
                         }
                     });
                 }
                 if let Some(e) = &error {
                     ui.add_space(4.0);
                     if theme::inline_error(ui, e) {
-                        close = true;
+                        asked = Some(PersonAction::Close);
                     }
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let half = (ui.available_width() - 8.0) / 2.0;
                     match p.relation {
-                        Relation::Nobody if p.may_request || card.link_code.is_some() => {
+                        Relation::Nobody if may_ask(p, &card) => {
                             if theme::primary_button_sized(
                                 ui,
                                 &format!("{} Say hi", icons::CHAT),
@@ -1032,7 +1184,7 @@ pub fn render_person_card(
                             )
                             .clicked()
                             {
-                                hi = Some((p.username.clone(), card.link_code.clone()));
+                                asked = Some(PersonAction::SayHi);
                             }
                             if theme::primary_button_sized(
                                 ui,
@@ -1041,7 +1193,7 @@ pub fn render_person_card(
                             )
                             .clicked()
                             {
-                                add = Some((p.username.clone(), card.link_code.clone()));
+                                asked = Some(PersonAction::Add);
                             }
                         }
                         Relation::Nobody => {
@@ -1055,7 +1207,7 @@ pub fn render_person_card(
                             )
                             .clicked()
                             {
-                                open_chat = Some(p.username.clone());
+                                asked = Some(PersonAction::Message);
                             }
                         }
                         Relation::RequestReceived => {
@@ -1066,7 +1218,7 @@ pub fn render_person_card(
                             )
                             .clicked()
                             {
-                                open_request = Some(p.username.clone());
+                                asked = Some(PersonAction::SeeRequest);
                             }
                         }
                         Relation::RequestSent => {
@@ -1077,9 +1229,7 @@ pub fn render_person_card(
                 });
                 // Greeting them (protocol 49): anybody standing near you,
                 // contact or not. The sim checks the reach and the blocks.
-                if let (Some(id), true, true) =
-                    (card.avatar_id, p.relation != Relation::Me, online.is_some())
-                {
+                if card.avatar_id.is_some() && p.relation != Relation::Me && online.is_some() {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         for g in cartopolis_core::Greeting::ALL {
@@ -1089,7 +1239,7 @@ pub fn render_person_card(
                                 )
                                 .clicked()
                             {
-                                greet = Some((id, g, p.username.clone()));
+                                asked = Some(PersonAction::Greet(g));
                             }
                         }
                     });
@@ -1097,67 +1247,134 @@ pub fn render_person_card(
             });
         });
 
-    if toggle_menu {
-        if let Some(c) = contacts.card.as_mut() {
-            c.menu = !c.menu;
+    if let Some(a) = asked {
+        person_act(
+            a,
+            &mut contacts,
+            &mut chat,
+            &mut view,
+            &mut right_panel,
+            online.as_deref(),
+            &mut greetings,
+            &mut interact,
+        );
+    }
+}
+
+/// Do a tap on the person card or the first-message sheet: egui's buttons
+/// and the library's (`lib_person_card`, through [`PersonView::action`]) both
+/// come here. The person is the one the card shows now.
+#[allow(clippy::too_many_arguments)]
+pub fn person_act(
+    action: PersonAction,
+    contacts: &mut Contacts,
+    chat: &mut ChatState,
+    view: &mut ChatsView,
+    right_panel: &mut RightPanel,
+    online: Option<&OnlineSession>,
+    greetings: &mut crate::systems::greet::Greetings,
+    interact: &mut crate::systems::interact::InteractState,
+) {
+    // The sheet's two taps need no card.
+    match action {
+        PersonAction::Send => {
+            let ready = contacts
+                .compose
+                .as_ref()
+                .is_some_and(|c| !c.text.trim().is_empty());
+            if ready {
+                if let Some(c) = contacts.compose.take() {
+                    contacts.say_hi(&c.username, &c.text, c.link_code);
+                    contacts.card = None;
+                }
+            }
+            return;
         }
-    }
-    if let (Some((id, greeting, name)), Some(session)) = (greet, online.as_deref()) {
-        // The card goes, so the two can see each other; the prompt's receipt
-        // line says what is waiting.
-        contacts.card = None;
-        greetings.offer(session, id, greeting);
-        interact.last = Some(format!("{} — waiting for {name}", greeting.label()));
-        interact.last_ttl = cartopolis_core::greet::OFFER_SECS;
-    }
-    if close {
-        contacts.card = None;
-        contacts.error = None;
-    }
-    if let Some((name, code)) = hi {
-        contacts.error = None;
-        contacts.compose = Some(Compose {
-            username: name,
-            link_code: code,
-            ..Compose::default()
-        });
-    }
-    if let Some((name, code)) = add {
-        contacts.request(&name, code);
-    }
-    if let Some(name) = open_chat {
-        contacts.card = None;
-        open_direct(&mut chat, &mut view, &mut right_panel, &name);
-    }
-    if let Some(name) = open_request {
-        contacts.card = None;
-        view.open = None;
-        view.sub = Some(Sub::Request(name));
-        *right_panel = RightPanel::Chat;
-    }
-    if let Some(name) = block {
-        contacts.card = None;
-        if let Some(online) = online.as_deref() {
-            online.send(
-                "set blocked",
-                NetMessage::SetBlocked(msg::SetBlocked {
-                    request_id: 0,
-                    username: name,
-                    blocked: true,
-                }),
-            );
+        PersonAction::Cancel => {
+            contacts.compose = None;
+            contacts.error = None;
+            return;
         }
+        PersonAction::Close => {
+            contacts.card = None;
+            contacts.error = None;
+            return;
+        }
+        PersonAction::ToggleMenu => {
+            if let Some(c) = contacts.card.as_mut() {
+                c.menu = !c.menu;
+            }
+            return;
+        }
+        _ => {}
     }
-    if let Some(name) = report {
-        contacts.card = None;
-        chat.report = Some(ReportDraft {
-            username: name,
-            message: None,
-            reason: cartopolis_core::ReportReason::Harassment,
-            note: String::new(),
-            asset: None,
-            community: None,
-        });
+    let Some(card) = contacts.card.clone() else {
+        return;
+    };
+    let Some(p) = card.person.as_ref() else {
+        return;
+    };
+    let name = p.username.clone();
+    match action {
+        PersonAction::SayHi => {
+            contacts.error = None;
+            contacts.compose = Some(Compose {
+                username: name,
+                link_code: card.link_code.clone(),
+                ..Compose::default()
+            });
+        }
+        PersonAction::Add => {
+            contacts.request(&name, card.link_code.clone());
+        }
+        PersonAction::Message => {
+            contacts.card = None;
+            open_direct(chat, view, right_panel, &name);
+        }
+        PersonAction::SeeRequest => {
+            contacts.card = None;
+            view.open = None;
+            view.sub = Some(Sub::Request(name));
+            *right_panel = RightPanel::Chat;
+        }
+        PersonAction::Block => {
+            contacts.card = None;
+            if let Some(online) = online {
+                online.send(
+                    "set blocked",
+                    NetMessage::SetBlocked(msg::SetBlocked {
+                        request_id: 0,
+                        username: name,
+                        blocked: true,
+                    }),
+                );
+            }
+        }
+        PersonAction::Report => {
+            contacts.card = None;
+            chat.report = Some(ReportDraft {
+                username: name,
+                message: None,
+                reason: cartopolis_core::ReportReason::Harassment,
+                note: String::new(),
+                asset: None,
+                community: None,
+            });
+        }
+        PersonAction::Greet(greeting) => {
+            if let (Some(id), Some(session)) = (card.avatar_id, online) {
+                // The card goes, so the two can see each other; the prompt's
+                // receipt line says what is waiting.
+                contacts.card = None;
+                greetings.offer(session, id, greeting);
+                interact.last = Some(format!("{} — waiting for {name}", greeting.label()));
+                interact.last_ttl = cartopolis_core::greet::OFFER_SECS;
+            }
+        }
+        PersonAction::Send
+        | PersonAction::Cancel
+        | PersonAction::Close
+        | PersonAction::ToggleMenu => {}
     }
 }
 

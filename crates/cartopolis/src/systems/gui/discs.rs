@@ -121,24 +121,14 @@ pub(crate) fn paint_avatar(
             return;
         }
     }
-    let (tone, text, scale) = match kind {
-        ChatKind::Here => (HERE_TONE, icons::PIN.to_string(), 0.45),
-        ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), 0.45),
-        ChatKind::Topic => (AVATAR_TONES[5], "#".to_string(), 0.42),
-        ChatKind::Community => (
-            tone_for(name),
-            name.chars().next().unwrap_or('?').to_uppercase().collect(),
-            0.4,
-        ),
-        ChatKind::Private => (
-            tone_for(name),
-            name.chars().next().unwrap_or('?').to_uppercase().collect(),
-            0.38,
-        ),
-    };
-    // A topic or a community is a place people gather rather than a person,
-    // so it is the design's rounded square (`.room`), not a circle.
-    if matches!(kind, ChatKind::Topic | ChatKind::Community) {
+    let DiscLook {
+        tone,
+        text,
+        scale,
+        square,
+        ..
+    } = disc_look(name, kind);
+    if square {
         let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
         p.rect_filled(rect, egui::CornerRadius::same((size * 0.29) as u8), tone);
     } else {
@@ -151,6 +141,44 @@ pub(crate) fn paint_avatar(
         egui::FontId::proportional(size * scale),
         egui::Color32::WHITE,
     );
+}
+
+/// How a chat's disc looks when it has no picture: its tone, what is on it
+/// (white), how large that is against the disc, and its shape — for egui's
+/// [`paint_avatar`] and the component library's discs (`lib_chats`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscLook {
+    pub tone: egui::Color32,
+    /// The initial, `#`, or an icon glyph.
+    pub text: String,
+    /// `text` is a glyph of the icon font (egui's fonts fall back to it).
+    #[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+    pub icon: bool,
+    /// The text's size as a share of the disc's.
+    pub scale: f32,
+    /// A topic or a community is a place people gather rather than a
+    /// person, so it is the design's rounded square (`.room`), not a circle.
+    pub square: bool,
+}
+
+/// The look of `name`'s disc for a chat of `kind`.
+#[must_use]
+pub fn disc_look(name: &str, kind: ChatKind) -> DiscLook {
+    let initial = || -> String { name.chars().next().unwrap_or('?').to_uppercase().collect() };
+    let (tone, text, icon, scale) = match kind {
+        ChatKind::Here => (HERE_TONE, icons::PIN.to_string(), true, 0.45),
+        ChatKind::Everyone => (AVATAR_TONES[3], icons::CAM_EARTH.to_string(), true, 0.45),
+        ChatKind::Topic => (AVATAR_TONES[5], "#".to_string(), false, 0.42),
+        ChatKind::Community => (tone_for(name), initial(), false, 0.4),
+        ChatKind::Private => (tone_for(name), initial(), false, 0.38),
+    };
+    DiscLook {
+        tone,
+        text,
+        icon,
+        scale,
+        square: matches!(kind, ChatKind::Topic | ChatKind::Community),
+    }
 }
 
 /// A round button of the design's composer (`.circ`): raised, or the pale

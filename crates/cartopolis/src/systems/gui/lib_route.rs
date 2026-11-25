@@ -973,7 +973,7 @@ fn header(l: &Live) -> View {
     view! {
         <div style={style}>
             <span style="color: var(--m-accent)">{icon(RightPanel::Route.icon())}</span>
-            <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Route"</h1>
+            <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">"Route"</h1>
             {fold}
             <CloseButton onclick={l.act(Act::Close)} />
         </div>

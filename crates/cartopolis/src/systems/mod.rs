@@ -71,6 +71,11 @@ pub use gui::{
     lib_building_card, lib_host, lib_layers, lib_place_card, lib_places, lib_route, lib_search,
     lib_settings,
 };
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub use gui::{
+    lib_chat_conversation, lib_chats, lib_communities, lib_filter_chip, lib_person_card,
+    lib_post_composer, lib_reminder,
+};
 // What talks rather than shows the world: the app's, not the web build's
 // (`comms` in Cargo.toml).
 #[cfg(feature = "comms")]

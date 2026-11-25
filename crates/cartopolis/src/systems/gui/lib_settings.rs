@@ -60,6 +60,11 @@ pub struct LibScreens {
     pub places: bool,
     pub place_card: bool,
     pub building_card: bool,
+    pub chats: bool,
+    pub person_card: bool,
+    pub reminder: bool,
+    pub filter_chip: bool,
+    pub post_composer: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
     /// Open Layers at once (`?panel=layers`).
@@ -69,6 +74,8 @@ pub struct LibScreens {
     /// Open Route or Places at once (`?panel=route`, `?panel=places`).
     pub open_route: bool,
     pub open_places: bool,
+    /// Open Chats at once (`?panel=chats`).
+    pub open_chats: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -91,11 +98,17 @@ impl LibScreens {
                 places: all || named("places"),
                 place_card: all || named("place_card"),
                 building_card: all || named("building_card"),
+                chats: all || named("chats"),
+                person_card: all || named("person_card"),
+                reminder: all || named("reminder"),
+                filter_chip: all || named("filter_chip"),
+                post_composer: all || named("post_composer"),
                 open_settings: false,
                 open_layers: false,
                 open_search: false,
                 open_route: false,
                 open_places: false,
+                open_chats: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -117,11 +130,17 @@ impl LibScreens {
                 places: named("places"),
                 place_card: named("place_card"),
                 building_card: named("building_card"),
+                chats: named("chats"),
+                person_card: named("person_card"),
+                reminder: named("reminder"),
+                filter_chip: named("filter_chip"),
+                post_composer: named("post_composer"),
                 open_settings: panel.as_deref() == Some("settings"),
                 open_layers: panel.as_deref() == Some("layers"),
                 open_search: panel.as_deref() == Some("search"),
                 open_route: panel.as_deref() == Some("route"),
                 open_places: panel.as_deref() == Some("places"),
+                open_chats: panel.as_deref() == Some("chats"),
                 page: get("page"),
             }
         }
@@ -958,14 +977,14 @@ fn panel(l: &Live, compact: bool) -> View {
                 None => view! {
                     <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                         <span style="color: var(--m-accent)">{icon(icons::SETTINGS)}</span>
-                        <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Settings"</h1>
+                        <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">"Settings"</h1>
                         <CloseButton onclick={close_panel} />
                     </div>
                 },
                 Some(p) => view! {
                     <div style="display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 0 12px 0 10px; border-bottom: 1px solid var(--m-border)">
                         <Button variant=Variant::Ghost size=Size::Sm onclick={back_to_list} aria_label="Back">{icon(icons::BACK)}</Button>
-                        <h1 style="flex: 1; margin: 0; font-size: 20px; font-weight: 600; color: var(--m-text-strong)">{p.label()}</h1>
+                        <h1 style="flex: 1; margin: 0; font-size: 17px; font-weight: 600; color: var(--m-text-strong)">{p.label()}</h1>
                     </div>
                 },
             }

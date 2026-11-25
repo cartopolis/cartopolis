@@ -144,3 +144,21 @@ pub fn tokens() -> Tokens {
         ..Tokens::garage44()
     }
 }
+
+/// [`tokens`] on the app's type scale, for the library's screens in the
+/// app (`mithril_bevy`, and the web client's frame): egui's sizes
+/// (`theme::SIZE_BODY` 14, `SIZE_SUB` 12.5, `SIZE_TITLE` 17) rather than
+/// the site's 15 / 13 / 17, so a screen moved off egui keeps its density.
+/// On the site's scale every library screen read a size larger than the
+/// egui one beside it, and titles wrapped that did not before. The site's
+/// `theme.css` stays on [`tokens`].
+#[must_use]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn app_tokens() -> Tokens {
+    Tokens {
+        font_size: theme::SIZE_BODY,
+        font_size_sm: theme::SIZE_SUB,
+        font_size_lg: theme::SIZE_TITLE,
+        ..tokens()
+    }
+}

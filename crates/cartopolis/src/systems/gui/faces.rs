@@ -503,6 +503,103 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
     }
 }
 
+/// A way to change your picture on the You page, for both editions
+/// (`you_picture`, and the library's `lib_chats`). The You page is the
+/// messenger's, so all of this is unused in a build without `comms`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(feature = "comms"), allow(dead_code))]
+pub enum FaceChoice {
+    /// A picture from the device.
+    Photo,
+    /// A selfie.
+    Camera,
+    /// The polaroid's viewfinder over the world.
+    FromTheWorld,
+    /// Back to the initial.
+    Remove,
+    /// The preview becomes your picture.
+    UsePreview,
+    /// Throw the preview away.
+    Again,
+}
+
+#[cfg_attr(not(feature = "comms"), allow(dead_code))]
+impl FaceChoice {
+    #[must_use]
+    pub fn icon(self) -> &'static str {
+        match self {
+            FaceChoice::Photo => icons::ADD,
+            FaceChoice::Camera => icons::CAMERA,
+            FaceChoice::FromTheWorld => icons::CAM_FOLLOW,
+            FaceChoice::Remove => icons::DELETE,
+            FaceChoice::UsePreview => icons::CHECK,
+            FaceChoice::Again => icons::CLEAR,
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            FaceChoice::Photo => "Photo",
+            FaceChoice::Camera => "Camera",
+            FaceChoice::FromTheWorld => "From the world",
+            FaceChoice::Remove => "Remove",
+            FaceChoice::UsePreview => "Use this",
+            FaceChoice::Again => "Again",
+        }
+    }
+}
+
+#[cfg_attr(not(feature = "comms"), allow(dead_code))]
+impl Faces {
+    /// What the You page offers: the preview's two answers while one waits,
+    /// else the ways this platform can make a picture, and Remove when
+    /// there is one.
+    #[must_use]
+    pub fn choices(&self, me: &str) -> Vec<FaceChoice> {
+        if self.preview.is_some() {
+            return vec![FaceChoice::UsePreview, FaceChoice::Again];
+        }
+        let mut out = Vec::new();
+        if crate::platform::photo::offers(Source::File) {
+            out.push(FaceChoice::Photo);
+        }
+        if crate::platform::photo::offers(Source::Selfie) {
+            out.push(FaceChoice::Camera);
+        }
+        out.push(FaceChoice::FromTheWorld);
+        if self.mine(me).is_some() {
+            out.push(FaceChoice::Remove);
+        }
+        out
+    }
+
+    /// The choices can be pressed: nothing is being saved, taken or made.
+    #[must_use]
+    pub fn choices_enabled(&self) -> bool {
+        if self.preview.is_some() {
+            self.saving.is_none()
+        } else {
+            !self.busy()
+        }
+    }
+
+    /// Do a choice. "From the world" closes the panel for the viewfinder.
+    pub fn choose(&mut self, choice: FaceChoice, panel: &mut Option<RightPanel>) {
+        match choice {
+            FaceChoice::Photo => self.pick = Some(Source::File),
+            FaceChoice::Camera => self.pick = Some(Source::Selfie),
+            FaceChoice::FromTheWorld => {
+                self.viewfinder = true;
+                *panel = Some(RightPanel::None);
+            }
+            FaceChoice::Remove => self.remove(),
+            FaceChoice::UsePreview => self.use_preview(),
+            FaceChoice::Again => self.preview = None,
+        }
+    }
+}
+
 /// Your picture on the You page: the disc, or the preview as a polaroid, and
 /// the ways to change it.
 pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut Option<RightPanel>) {
@@ -511,19 +608,15 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
             polaroid(ui, texture, me);
         }
         ui.add_space(8.0);
-        let saving = faces.saving.is_some();
+        let enabled = faces.choices_enabled();
         centred_row(ui, 230.0, |ui| {
-            if ui
-                .add_enabled(!saving, pill(icons::CHECK, "Use this"))
-                .clicked()
-            {
-                faces.use_preview();
-            }
-            if ui
-                .add_enabled(!saving, pill(icons::CLEAR, "Again"))
-                .clicked()
-            {
-                faces.preview = None;
+            for choice in faces.choices(me) {
+                if ui
+                    .add_enabled(enabled, pill(choice.icon(), choice.label()))
+                    .clicked()
+                {
+                    faces.choose(choice, panel);
+                }
             }
         });
     } else {
@@ -542,31 +635,15 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
             90.0,
         );
         ui.add_space(6.0);
-        let busy = faces.busy();
-        let has = faces.mine(me).is_some();
-        let mut buttons: Vec<(&str, &str, u8)> = Vec::new();
-        if crate::platform::photo::offers(Source::File) {
-            buttons.push((icons::ADD, "Photo", 0));
-        }
-        if crate::platform::photo::offers(Source::Selfie) {
-            buttons.push((icons::CAMERA, "Camera", 1));
-        }
-        buttons.push((icons::CAM_FOLLOW, "From the world", 2));
-        if has {
-            buttons.push((icons::DELETE, "Remove", 3));
-        }
-        centred_row(ui, 92.0 * buttons.len() as f32, |ui| {
-            for (icon, label, which) in buttons {
-                if ui.add_enabled(!busy, pill(icon, label)).clicked() {
-                    match which {
-                        0 => faces.pick = Some(Source::File),
-                        1 => faces.pick = Some(Source::Selfie),
-                        2 => {
-                            faces.viewfinder = true;
-                            *panel = Some(RightPanel::None);
-                        }
-                        _ => faces.remove(),
-                    }
+        let enabled = faces.choices_enabled();
+        let choices = faces.choices(me);
+        centred_row(ui, 92.0 * choices.len() as f32, |ui| {
+            for choice in choices {
+                if ui
+                    .add_enabled(enabled, pill(choice.icon(), choice.label()))
+                    .clicked()
+                {
+                    faces.choose(choice, panel);
                 }
             }
         });

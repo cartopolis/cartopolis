@@ -559,6 +559,75 @@ pub struct Reminder {
     pub line: String,
 }
 
+impl Reminder {
+    /// The icon beside it: walking to a meet-up, or a call.
+    #[must_use]
+    pub fn icon(&self) -> &'static str {
+        if self.item.is_meetup() {
+            icons::WALK
+        } else {
+            icons::VIDEOCAM
+        }
+    }
+
+    /// Its main verb: Walk there to a meet-up, Join a meeting.
+    #[must_use]
+    pub fn go_label(&self) -> &'static str {
+        if self.item.is_meetup() {
+            "Walk there"
+        } else {
+            "Join"
+        }
+    }
+}
+
+/// A tap on the reminder: one set, for both editions, done by
+/// [`reminder_act`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderAction {
+    /// Its chat, in the Chats panel.
+    OpenChat,
+    /// Walk there (a meet-up) or Join (a meeting).
+    Go,
+    Close,
+}
+
+/// Do a tap on the reminder: egui's buttons and the library's
+/// (`lib_reminder`) both come here. Every tap puts the reminder away.
+pub fn reminder_act(
+    cal: &mut Calendar,
+    action: ReminderAction,
+    view: &mut crate::systems::chats::ChatsView,
+    right_panel: &mut crate::resources::RightPanel,
+    nav: &mut crate::systems::geo_nav::GeoNavState,
+    calls: &mut crate::systems::calls::Calls,
+) {
+    let Some(r) = cal.reminder.take() else {
+        return;
+    };
+    match action {
+        ReminderAction::OpenChat => {
+            view.open_chat(&r.item.channel);
+            *right_panel = crate::resources::RightPanel::Chat;
+        }
+        ReminderAction::Go => match &r.item.what {
+            What::Meetup { point } => {
+                nav.route_to(
+                    point.name.clone().unwrap_or_else(|| "Meet-up".into()),
+                    point.latitude,
+                    point.longitude,
+                );
+            }
+            What::Meeting { .. } => {
+                if let Some(group) = crate::systems::private_chat::group_of(&r.item.channel) {
+                    calls.request = Some(crate::systems::calls::CallRequest::Join(group));
+                }
+            }
+        },
+        ReminderAction::Close => {}
+    }
+}
+
 /// The calendar's state: the book, which account it belongs to, and what is
 /// on screen.
 #[derive(Resource, Default)]
@@ -591,6 +660,13 @@ pub struct Calendar {
     /// Rows already reminded about.
     reminded: HashSet<Pick>,
     pub reminder: Option<Reminder>,
+    /// The library draws the reminder (`lib_reminder`): [`render_reminder`]
+    /// still works out when one is due and when it goes, and does the tap
+    /// the library hands back in [`lib_action`](Self::lib_action), but draws
+    /// nothing.
+    pub lib: bool,
+    /// A tap on the library's reminder, done by [`render_reminder`].
+    pub lib_action: Option<ReminderAction>,
     /// When the reminders were last worked out (ms).
     checked_ms: u64,
     /// Every row from a month back to a year ahead, worked out once per change
@@ -976,7 +1052,7 @@ pub fn row(
         egui::pos2(rect.right() - pill_galley.size().x - 18.0, mid - 10.0),
         egui::vec2(pill_galley.size().x + 14.0, 20.0),
     );
-    if item.end_ms > now_ms || item.mine.is_some() {
+    if shows_answer(item, now_ms) {
         p.rect_filled(pill_rect, egui::CornerRadius::same(9), fill);
         p.galley(
             pill_rect.center() - pill_galley.size() / 2.0,
@@ -1915,21 +1991,7 @@ pub fn coming_up(
 ) -> (bool, Option<Pick>) {
     let mut open = false;
     let mut picked = None;
-    let rows = cal.book.prefs.coming_up;
-    let soon: Vec<Item> = if rows {
-        cal.visible(now, now + DAY_MS, communities)
-            .into_iter()
-            .filter(|i| !i.skipped && i.mine != Some(Rsvp::No))
-            .take(2)
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let label = match (rows, soon.is_empty()) {
-        (false, _) => "Plans",
-        (true, true) => "Nothing coming up",
-        (true, false) => "Coming up",
-    };
+    let ComingUp { label, soon } = coming_up_list(cal, chat, communities, now);
     theme::list_group(ui, |ui| {
         egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(10, 6))
@@ -1947,20 +2009,89 @@ pub fn coming_up(
                         }
                     });
                 });
-                for item in &soon {
-                    let label = chat_name(chat, communities, &item.channel);
-                    let day = if local_day(item.start_ms) == local_day(now) {
-                        "today"
-                    } else {
-                        "tomorrow"
-                    };
-                    if row(ui, item, &label, Some(day), now).clicked() {
-                        picked = Some(item.pick());
+                for s in &soon {
+                    if row(ui, &s.item, &s.chat, Some(s.day), now).clicked() {
+                        picked = Some(s.item.pick());
                     }
                 }
             });
     });
     (open, picked)
+}
+
+/// One row of the "Coming up" card: the row, the chat it came from, and
+/// "today" or "tomorrow".
+#[derive(Debug, Clone, PartialEq)]
+pub struct Soon {
+    pub item: Item,
+    pub chat: String,
+    pub day: &'static str,
+}
+
+/// What the "Coming up" card shows, for both editions (egui's
+/// [`coming_up`], the library's `lib_chats`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComingUp {
+    /// "Coming up", "Nothing coming up", or "Plans" with the rows off.
+    pub label: &'static str,
+    pub soon: Vec<Soon>,
+}
+
+/// Up to two rows from the next day, unless the settings switched them off.
+#[must_use]
+pub fn coming_up_list(
+    cal: &Calendar,
+    chat: &ChatState,
+    communities: &crate::systems::communities::Communities,
+    now: u64,
+) -> ComingUp {
+    let rows = cal.book.prefs.coming_up;
+    let soon: Vec<Soon> = if rows {
+        cal.visible(now, now + DAY_MS, communities)
+            .into_iter()
+            .filter(|i| !i.skipped && i.mine != Some(Rsvp::No))
+            .take(2)
+            .map(|item| Soon {
+                chat: chat_name(chat, communities, &item.channel),
+                day: if local_day(item.start_ms) == local_day(now) {
+                    "today"
+                } else {
+                    "tomorrow"
+                },
+                item,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let label = match (rows, soon.is_empty()) {
+        (false, _) => "Plans",
+        (true, true) => "Nothing coming up",
+        (true, false) => "Coming up",
+    };
+    ComingUp { label, soon }
+}
+
+/// The word on a row's answer pill: Skipped, Going, Maybe, Can't come, or
+/// Answer while this person has not.
+#[must_use]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn answer_word(item: &Item) -> &'static str {
+    if item.skipped {
+        return "Skipped";
+    }
+    match item.mine {
+        Some(Rsvp::Going) => "Going",
+        Some(Rsvp::Maybe) => "Maybe",
+        Some(Rsvp::No) => "Can't come",
+        None => "Answer",
+    }
+}
+
+/// Whether a row shows its answer pill: not for a past date nobody answered.
+#[must_use]
+pub fn shows_answer(item: &Item, now_ms: u64) -> bool {
+    item.end_ms > now_ms || item.mine.is_some()
 }
 
 /// A reminder over whatever is open: time to leave for a meet-up, or a
@@ -2026,10 +2157,31 @@ pub fn render_reminder(
     let Some(r) = cal.reminder.clone() else {
         return;
     };
+    // Gone once the meet-up or meeting has started.
+    if now >= r.item.start_ms + 5 * MIN_MS {
+        cal.reminder = None;
+        return;
+    }
+    // The library's edition is showing (`lib_reminder`): do the tap it
+    // handed back, draw nothing.
+    if cal.lib {
+        if let Some(a) = cal.lib_action {
+            cal.lib_action = None;
+            reminder_act(
+                &mut cal,
+                a,
+                &mut view,
+                &mut right_panel,
+                &mut nav,
+                &mut calls,
+            );
+        }
+        return;
+    }
     let ctx = egui.ctx.clone();
     let viewport = egui.viewport_pts();
     let w = viewport.x.min(420.0) - 28.0;
-    let mut close = false;
+    let mut asked: Option<ReminderAction> = None;
     egui::Area::new(egui::Id::new("calendar_reminder"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
@@ -2037,12 +2189,7 @@ pub fn render_reminder(
             crate::systems::theme::glass_frame().show(ui, |ui| {
                 ui.set_width(w);
                 ui.horizontal(|ui| {
-                    let icon = if r.item.is_meetup() {
-                        icons::WALK
-                    } else {
-                        icons::VIDEOCAM
-                    };
-                    ui.label(egui::RichText::new(icon).size(22.0).color(theme::BRAND));
+                    ui.label(egui::RichText::new(r.icon()).size(22.0).color(theme::BRAND));
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new(&r.title)
@@ -2057,7 +2204,7 @@ pub fn render_reminder(
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         if theme::close_button(ui).clicked() {
-                            close = true;
+                            asked = Some(ReminderAction::Close);
                         }
                     });
                 });
@@ -2065,51 +2212,29 @@ pub fn render_reminder(
                 let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
                 ui.horizontal(|ui| {
                     if theme::secondary_button(ui, icons::CHAT, "Open chat", half).clicked() {
-                        view.open_chat(&r.item.channel);
-                        *right_panel = crate::resources::RightPanel::Chat;
-                        close = true;
+                        asked = Some(ReminderAction::OpenChat);
                     }
-                    match &r.item.what {
-                        What::Meetup { point } => {
-                            if theme::primary_button_sized(
-                                ui,
-                                &format!("{}  Walk there", icons::WALK),
-                                half,
-                            )
-                            .clicked()
-                            {
-                                nav.route_to(
-                                    point.name.clone().unwrap_or_else(|| "Meet-up".into()),
-                                    point.latitude,
-                                    point.longitude,
-                                );
-                                close = true;
-                            }
-                        }
-                        What::Meeting { .. } => {
-                            if theme::primary_button_sized(
-                                ui,
-                                &format!("{}  Join", icons::VIDEOCAM),
-                                half,
-                            )
-                            .clicked()
-                            {
-                                if let Some(group) =
-                                    crate::systems::private_chat::group_of(&r.item.channel)
-                                {
-                                    calls.request =
-                                        Some(crate::systems::calls::CallRequest::Join(group));
-                                }
-                                close = true;
-                            }
-                        }
+                    if theme::primary_button_sized(
+                        ui,
+                        &format!("{}  {}", r.icon(), r.go_label()),
+                        half,
+                    )
+                    .clicked()
+                    {
+                        asked = Some(ReminderAction::Go);
                     }
                 });
             });
         });
-    // Gone once the meet-up or meeting has started.
-    if close || now >= r.item.start_ms + 5 * MIN_MS {
-        cal.reminder = None;
+    if let Some(a) = asked {
+        reminder_act(
+            &mut cal,
+            a,
+            &mut view,
+            &mut right_panel,
+            &mut nav,
+            &mut calls,
+        );
     }
 }
 

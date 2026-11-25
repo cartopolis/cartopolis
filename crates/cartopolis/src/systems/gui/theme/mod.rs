@@ -119,7 +119,11 @@ pub use metrics::*;
 pub use palette::*;
 pub use states::*;
 pub use style::*;
-#[cfg(any(test, feature = "ui-lib"))]
+// The site's tokens (`theme.css`, written by the web theme test) and the
+// app's, for the library's screens.
+#[cfg(feature = "ui-lib")]
+pub use tokens::app_tokens;
+#[cfg(test)]
 pub use tokens::tokens;
 
 #[cfg(test)]

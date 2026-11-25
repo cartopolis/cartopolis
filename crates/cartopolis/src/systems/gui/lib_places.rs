@@ -939,7 +939,7 @@ fn panel(l: &Live) -> View {
         <div style={frame}>
             <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                 <span style="color: var(--m-accent)">{icon(RightPanel::Places.icon())}</span>
-                <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 600; color: var(--m-text-strong)">"Places"</h1>
+                <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">"Places"</h1>
                 <CloseButton onclick={close} />
             </div>
             <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 20px">

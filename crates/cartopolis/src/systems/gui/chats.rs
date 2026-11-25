@@ -132,6 +132,40 @@ pub struct ChatsView {
     /// A meeting or a poll being written for a chat (`+ → Plan a meeting`,
     /// `+ → Ask a poll`), in that chat's composer: (chat key, the form).
     pub meeting_form: Option<(String, MeetingForm)>,
+    /// The component library draws the panel (`systems::lib_chats`,
+    /// `CARTO_UI_LIB=chats`): on the screens it has ([`ChatsScreen::on_library`])
+    /// egui's [`render_chats_panel`] keeps only an empty strip of the
+    /// panel's width, and still runs what only it can (the picture picker,
+    /// the picture viewer, the report and delete dialogs).
+    pub lib: bool,
+}
+
+/// Which screen the Chats panel shows: one answer for egui's panel and the
+/// library's (`lib_chats`), so the two route alike.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatsScreen {
+    /// A community screen in front of the list (`communities::screen`).
+    Communities,
+    /// A contacts screen (`contacts::screen`).
+    Contacts(crate::systems::contacts::Sub),
+    /// Your own page, from your disc.
+    You,
+    /// The calendar (`calendar::screen`).
+    Calendar,
+    /// The list of chats.
+    List,
+    /// One chat's Chat view, by channel key.
+    Chat(String),
+}
+
+impl ChatsScreen {
+    /// Whether the component library draws this screen when it has the
+    /// panel. The contacts screens and the calendar are still egui's alone:
+    /// on them egui draws its whole panel, and the library stands down.
+    #[must_use]
+    pub fn on_library(&self) -> bool {
+        !matches!(self, ChatsScreen::Contacts(_) | ChatsScreen::Calendar)
+    }
 }
 
 /// The fields of `+ → Plan a meeting` and `+ → Ask a poll`, the web chat's two
@@ -250,7 +284,7 @@ impl MeetingForm {
 
 /// The next whole hour on this device's clock, which is not a whole UTC hour
 /// where the offset has minutes in it.
-fn next_hour_ms(now_ms: u64) -> u64 {
+pub(crate) fn next_hour_ms(now_ms: u64) -> u64 {
     const HOUR: i64 = 3_600_000;
     let off = i64::from(local_offset_s(now_ms).unwrap_or(0)) * 1000;
     let local = now_ms as i64 + off;
@@ -266,6 +300,23 @@ impl ChatsView {
         self.open = Some(key.to_string());
         self.attach = false;
         self.claim_focus = false;
+    }
+
+    /// The screen the panel shows, as both editions route it.
+    #[must_use]
+    pub fn screen(
+        &self,
+        communities: &crate::systems::communities::Communities,
+        calendar: &crate::systems::calendar::Calendar,
+    ) -> ChatsScreen {
+        match (&self.sub, &self.open) {
+            (None, None) if communities.screen.is_some() => ChatsScreen::Communities,
+            (Some(sub), _) => ChatsScreen::Contacts(sub.clone()),
+            (None, None) if self.you => ChatsScreen::You,
+            (None, None) if calendar.open => ChatsScreen::Calendar,
+            (None, None) => ChatsScreen::List,
+            (None, Some(key)) => ChatsScreen::Chat(key.clone()),
+        }
     }
 
     fn unread(&self, chat: &ChatState, key: &str, lines: &[ChatLine]) -> usize {
@@ -297,6 +348,16 @@ impl ChatsView {
             .filter(|c| kind_of(&c.key) != ChatKind::Here)
             .map(|c| self.unread(chat, &c.key, &c.lines))
             .sum()
+    }
+
+    /// A picture is being picked or taken for this chat.
+    pub(crate) fn capturing_for(&self, key: &str) -> bool {
+        self.capture.as_ref().is_some_and(|(k, _)| k == key)
+    }
+
+    /// Why the last picture could not be picked, until the next try.
+    pub(crate) fn picture_error(&self) -> Option<&str> {
+        self.picture_error.as_deref()
     }
 }
 
@@ -583,17 +644,31 @@ fn paint_pinned_wash(p: &egui::Painter, rect: egui::Rect) {
 }
 
 /// A row of the chat list.
-struct Row {
-    key: String,
-    name: String,
-    kind: ChatKind,
-    preview: String,
-    time: String,
-    unread: usize,
+pub struct Row {
+    pub key: String,
+    pub name: String,
+    pub kind: ChatKind,
+    pub preview: String,
+    pub time: String,
+    pub unread: usize,
     /// When its last line was said, for the newest-first order.
-    at_ms: u64,
+    pub at_ms: u64,
     /// A community's picture, in place of its initial.
-    picture: Option<egui::TextureHandle>,
+    pub picture: Option<egui::TextureHandle>,
+    /// The community this row is, if it is one.
+    pub community: Option<uuid::Uuid>,
+}
+
+/// What the view waiting to be sent is called, while one waits: its place's
+/// name, or its coordinates.
+#[must_use]
+pub fn sending_name(chat: &ChatState) -> Option<String> {
+    chat.point_draft.as_ref().map(|draft| {
+        draft
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{:.4}, {:.4}", draft.latitude, draft.longitude))
+    })
 }
 
 /// One row of the list (`.chat-row`): the 48 pt avatar, the name and time on
@@ -719,20 +794,23 @@ fn chat_row(ui: &mut egui::Ui, row: &Row, sending: bool) -> egui::Response {
 
 /// What an open chat needs to know when it is a topic of a community.
 #[derive(Clone)]
-struct TopicContext {
+pub(crate) struct TopicContext {
     /// "# general".
-    name: String,
+    pub(crate) name: String,
     /// "Garage 44 · 12 people".
-    sub: String,
-    community: uuid::Uuid,
-    community_name: String,
+    pub(crate) sub: String,
+    pub(crate) community: uuid::Uuid,
+    pub(crate) community_name: String,
     /// Whether this account moderates the community.
-    moderates: bool,
-    group: Vec<u8>,
+    pub(crate) moderates: bool,
+    pub(crate) group: Vec<u8>,
 }
 
 impl TopicContext {
-    fn of(communities: &crate::systems::communities::Communities, key: &str) -> Option<Self> {
+    pub(crate) fn of(
+        communities: &crate::systems::communities::Communities,
+        key: &str,
+    ) -> Option<Self> {
         let (c, t) = communities.topic(key)?;
         let (name, sub, community) = crate::systems::communities::topic_header(communities, key)?;
         Some(Self {
@@ -751,79 +829,79 @@ impl TopicContext {
 /// Everything the panel decided while it was drawing, acted on afterwards
 /// because the drawing closure holds the state borrowed.
 #[derive(Default)]
-struct Actions {
-    to_world: bool,
-    close: bool,
-    open: Option<String>,
-    back: bool,
-    world_of: Option<String>,
-    send: Option<String>,
-    send_point_to: Option<String>,
-    cancel_point: bool,
-    view_to: Option<String>,
-    go_to: Option<cartopolis_core::point::Point>,
-    start_private: Option<String>,
-    create_group: bool,
+pub(crate) struct Actions {
+    pub(crate) to_world: bool,
+    pub(crate) close: bool,
+    pub(crate) open: Option<String>,
+    pub(crate) back: bool,
+    pub(crate) world_of: Option<String>,
+    pub(crate) send: Option<String>,
+    pub(crate) send_point_to: Option<String>,
+    pub(crate) cancel_point: bool,
+    pub(crate) view_to: Option<String>,
+    pub(crate) go_to: Option<cartopolis_core::point::Point>,
+    pub(crate) start_private: Option<String>,
+    pub(crate) create_group: bool,
     /// Work for a community, handed to `Communities::ops`.
-    community_ops: Vec<crate::systems::communities::CommunityOp>,
+    pub(crate) community_ops: Vec<crate::systems::communities::CommunityOp>,
     /// Open a community's screen.
-    show_community: Option<uuid::Uuid>,
+    pub(crate) show_community: Option<uuid::Uuid>,
     /// A community picked in the list: the World, with only its posts on it.
-    community_world: Option<uuid::Uuid>,
+    pub(crate) community_world: Option<uuid::Uuid>,
     /// Open the directory, or the form for starting a community.
-    community_find: bool,
-    community_start: bool,
+    pub(crate) community_find: bool,
+    pub(crate) community_start: bool,
     /// Report a line to its community's moderators: (who, line, community,
     /// topic, seq).
-    report_to_mods: Option<(String, Option<String>, uuid::Uuid, Vec<u8>, u64)>,
+    pub(crate) report_to_mods: Option<(String, Option<String>, uuid::Uuid, Vec<u8>, u64)>,
     /// A server admin suspends (`false`) or deletes (`true`) an account.
-    admin: Option<(String, bool)>,
-    share: Option<(String, u64)>,
-    stop_share: Option<String>,
-    show_location: Option<(f64, f64, String)>,
+    pub(crate) admin: Option<(String, bool)>,
+    pub(crate) share: Option<(String, u64)>,
+    pub(crate) stop_share: Option<String>,
+    pub(crate) show_location: Option<(f64, f64, String)>,
     /// Plan a route to a point: `(lat, lng, name)`.
-    route_to: Option<(f64, f64, String)>,
+    pub(crate) route_to: Option<(f64, f64, String)>,
     /// Plan a route to a person sharing their location, which follows them:
     /// `(chat key, username, lat, lng)`.
-    route_to_person: Option<(String, String, f64, f64)>,
+    pub(crate) route_to_person: Option<(String, String, f64, f64)>,
     /// `+ → Meet up` in this chat.
-    meetup: Option<String>,
+    pub(crate) meetup: Option<String>,
     /// Move the draft meet-up's time, in minutes.
-    meetup_shift: Option<i64>,
-    meetup_send: bool,
-    meetup_cancel: bool,
+    pub(crate) meetup_shift: Option<i64>,
+    pub(crate) meetup_send: bool,
+    pub(crate) meetup_cancel: bool,
     /// "I'm going" to a meet-up: (chat key, the meet-up).
-    meetup_going: Option<(String, cartopolis_core::point::Point)>,
+    pub(crate) meetup_going: Option<(String, cartopolis_core::point::Point)>,
     /// An answer to a plan or a vote in a poll, to seal and send: (chat key,
     /// what).
-    meeting: Option<(String, cartopolis_core::meeting::MeetingObject)>,
-    block: Option<String>,
-    unblock: Option<String>,
-    report: Option<(String, Option<String>)>,
-    message: Option<String>,
-    dismiss_notice: bool,
-    call: Option<crate::systems::calls::CallRequest>,
+    pub(crate) meeting: Option<(String, cartopolis_core::meeting::MeetingObject)>,
+    pub(crate) block: Option<String>,
+    pub(crate) unblock: Option<String>,
+    pub(crate) report: Option<(String, Option<String>)>,
+    pub(crate) message: Option<String>,
+    pub(crate) dismiss_notice: bool,
+    pub(crate) call: Option<crate::systems::calls::CallRequest>,
     /// Open a contacts screen.
-    sub: Option<crate::systems::contacts::Sub>,
+    pub(crate) sub: Option<crate::systems::contacts::Sub>,
     /// Open a picture full size.
-    view_picture: Option<crate::systems::chat_pictures::PictureRef>,
+    pub(crate) view_picture: Option<crate::systems::chat_pictures::PictureRef>,
     /// Open (`true`) or leave (`false`) the You page.
-    you: Option<bool>,
+    pub(crate) you: Option<bool>,
     /// Your face at the top of the list was tapped: your sheet.
-    face: bool,
+    pub(crate) face: bool,
     /// Where that face is (`ui::MainMenu::face`).
-    face_rect: Option<egui::Rect>,
+    pub(crate) face_rect: Option<egui::Rect>,
     /// Put another panel in this one's place: Admin, Settings, Appearance.
-    panel: Option<RightPanel>,
+    pub(crate) panel: Option<RightPanel>,
     /// The contacts screen the You page opened, so back returns there.
-    sub_root: Option<crate::systems::contacts::Sub>,
+    pub(crate) sub_root: Option<crate::systems::contacts::Sub>,
     /// Settings, opened from the You page.
-    settings_from_you: bool,
-    sign_out: bool,
+    pub(crate) settings_from_you: bool,
+    pub(crate) sign_out: bool,
     /// Open the calendar.
-    calendar: bool,
+    pub(crate) calendar: bool,
     /// Open the calendar on this row.
-    calendar_pick: Option<crate::systems::calendar::Pick>,
+    pub(crate) calendar_pick: Option<crate::systems::calendar::Pick>,
 }
 
 /// Do what the calendar's pages asked for, through the same [`Actions`] the
@@ -877,7 +955,7 @@ const HEADER_CALL_KEY: f32 = 42.0;
 
 /// What a private chat's header offers about the chat's call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CallButton {
+pub(crate) enum CallButton {
     /// Not a private chat, or a build that cannot call.
     Hidden,
     /// Nobody is in a call: start one.
@@ -888,7 +966,7 @@ enum CallButton {
     HangUp,
 }
 
-fn call_button(calls: &crate::systems::calls::Calls, key: &str) -> CallButton {
+pub(crate) fn call_button(calls: &crate::systems::calls::Calls, key: &str) -> CallButton {
     let Some(group) = crate::systems::private_chat::group_of(key) else {
         return CallButton::Hidden;
     };
@@ -968,6 +1046,33 @@ pub fn render_chats_panel(
     let viewport_w = egui.viewport_pts().x;
     let mut open_flag = true;
     let now = unix_ms();
+    let screen = view.screen(&communities, &calendar);
+    // The library draws this screen (`lib_chats`): keep the slot with an
+    // empty, unframed strip, so the dock and the pins move aside and a click
+    // there is not the world's, and still do below what only egui can.
+    if view.lib && screen.on_library() {
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "chats_panel",
+            compact,
+            viewport_w,
+            360.0,
+        )
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(360.0);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open_flag, |_ui| {});
+        egui_only(
+            &mut egui,
+            &mut chat,
+            &mut view,
+            online.as_deref(),
+            &mut communities,
+            &mut pictures,
+        );
+        return;
+    }
     // The composer sits on the panel's bottom edge, which is where the
     // on-screen keys land, so while they are up the band lifts itself clear of
     // them (and says so to the keyboard, in `compose_row`).
@@ -998,39 +1103,14 @@ pub fn render_chats_panel(
                 }),
         )
         .show_collapsible(egui.ui_mut(), &mut open_flag, |ui| {
-            let mut me = identity.username.clone().unwrap_or_default();
-            if me.is_empty() && view.demo {
-                // A scripted capture has nobody signed in to draw.
-                me = "jeroen".into();
-            }
-            let server = match identity.server_name.as_deref() {
-                None if view.demo => "cartopolis.org",
-                other => other.unwrap_or_default(),
-            };
-            let me_full = cartopolis_core::address::person(&me, server);
+            let (me, me_full) = who_am_i(&identity, view.demo);
             let admin = identity.may(cartopolis_core::permissions::Permission::AccountsManage);
-            if communities.screen.is_some() && view.sub.is_none() && view.open.is_none() {
-                let out = crate::systems::communities::screen(ui, &mut communities, &me_full);
-                if let Some(key) = out.open {
-                    communities.screen = None;
-                    act.open = Some(key);
+            match screen.clone() {
+                ChatsScreen::Communities => {
+                    let out = crate::systems::communities::screen(ui, &mut communities, &me_full);
+                    communities_out(out, &mut communities, &mut act);
                 }
-                if let Some(who) = out.message {
-                    communities.screen = None;
-                    act.message = Some(who);
-                }
-                // A public post's place: open it as a point in a chat opens,
-                // with the community's posts pinned (`community_posts`).
-                if let Some(point) = out.go_to {
-                    act.go_to = Some(point);
-                }
-                // The ✕: what World does from the list. The page stays where
-                // it was, so opening Community again comes back to it.
-                act.close |= out.close;
-                return;
-            }
-            match (view.sub.clone(), view.open.clone()) {
-                (Some(sub), _) => crate::systems::contacts::screen(
+                ChatsScreen::Contacts(sub) => crate::systems::contacts::screen(
                     ui,
                     &sub,
                     &mut contacts,
@@ -1039,12 +1119,12 @@ pub fn render_chats_panel(
                     online.as_deref(),
                     &me,
                 ),
-                (None, None) if view.you => {
+                ChatsScreen::You => {
                     you_screen(
                         ui, &me, &me_full, &contacts, view.admin, &mut faces, &mut act,
                     );
                 }
-                (None, None) if calendar.open => {
+                ChatsScreen::Calendar => {
                     let mut out = crate::systems::calendar::Out::default();
                     crate::systems::calendar::screen(
                         ui,
@@ -1056,7 +1136,7 @@ pub fn render_chats_panel(
                     );
                     calendar_out(out, &mut calendar, &mut view, &mut act);
                 }
-                (None, None) => list_screen(
+                ChatsScreen::List => list_screen(
                     ui,
                     &mut chat,
                     &mut view,
@@ -1068,7 +1148,7 @@ pub fn render_chats_panel(
                     lift,
                     menu.open,
                 ),
-                (None, Some(key)) => {
+                ChatsScreen::Chat(key) => {
                     let call = call_button(&calls, &key);
                     chat_screen(
                         ui,
@@ -1091,6 +1171,89 @@ pub fn render_chats_panel(
     if !open_flag || theme::take_panel_close(egui.ctx()) {
         act.close = true;
     }
+    settle(
+        act,
+        &mut chat,
+        &mut view,
+        online.as_deref(),
+        &mut right_panel,
+        &mut nav,
+        &mut calls,
+        &mut communities,
+        &mut calendar,
+        &mut menu,
+        now,
+    );
+    egui_only(
+        &mut egui,
+        &mut chat,
+        &mut view,
+        online.as_deref(),
+        &mut communities,
+        &mut pictures,
+    );
+}
+
+/// Who is signed in, as the panel names them: the username and the full
+/// address (`jeroen@cartopolis.org`). A scripted capture has nobody signed
+/// in, and draws a stand-in.
+#[must_use]
+pub(crate) fn who_am_i(identity: &crate::resources::AuthIdentity, demo: bool) -> (String, String) {
+    let mut me = identity.username.clone().unwrap_or_default();
+    if me.is_empty() && demo {
+        me = "jeroen".into();
+    }
+    let server = match identity.server_name.as_deref() {
+        None if demo => "cartopolis.org",
+        other => other.unwrap_or_default(),
+    };
+    let full = cartopolis_core::address::person(&me, server);
+    (me, full)
+}
+
+/// What a community screen asked for, into the panel's [`Actions`]: both
+/// editions' community screens hand their `Out` here.
+pub(crate) fn communities_out(
+    out: crate::systems::communities::Out,
+    communities: &mut crate::systems::communities::Communities,
+    act: &mut Actions,
+) {
+    if let Some(key) = out.open {
+        communities.screen = None;
+        act.open = Some(key);
+    }
+    if let Some(who) = out.message {
+        communities.screen = None;
+        act.message = Some(who);
+    }
+    // A public post's place: open it as a point in a chat opens, with the
+    // community's posts pinned (`community_posts`).
+    if let Some(point) = out.go_to {
+        act.go_to = Some(point);
+    }
+    // The ✕: what World does from the list. The page stays where it was, so
+    // opening Community again comes back to it.
+    act.close |= out.close;
+}
+
+/// Everything a frame of the panel asked for, done: the face's sheet, the
+/// calendar, a call, the communities' work, and then [`apply`]. egui's panel
+/// and the library's (`lib_chats`) both end their frame here, so a tap means
+/// the same in either.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn settle(
+    mut act: Actions,
+    chat: &mut ChatState,
+    view: &mut ChatsView,
+    online: Option<&OnlineSession>,
+    right_panel: &mut RightPanel,
+    nav: &mut crate::systems::geo_nav::GeoNavState,
+    calls: &mut crate::systems::calls::Calls,
+    communities: &mut crate::systems::communities::Communities,
+    calendar: &mut crate::systems::calendar::Calendar,
+    menu: &mut crate::systems::ui::MainMenu,
+    now: u64,
+) {
     // Your face at the top of the list: the same sheet as the search bar's.
     if let Some(rect) = act.face_rect.take() {
         menu.face = Some(rect);
@@ -1144,7 +1307,24 @@ pub fn render_chats_panel(
         Some((who, true)) => communities.confirm_delete = Some(who),
         None => {}
     }
-    crate::systems::communities::confirm_account_delete(&egui.ctx, &mut communities);
+    if let Some(picture) = act.view_picture.take() {
+        view.viewing = Some(picture);
+    }
+    apply(act, chat, view, online, right_panel, nav, now);
+}
+
+/// What only egui's system can do for the panel, whichever edition draws
+/// it: the account-delete confirmation, the community picture's picker, the
+/// full-size picture viewer (an egui texture) and the report dialog.
+fn egui_only(
+    egui: &mut crate::systems::egui_manager::EguiManager,
+    chat: &mut ChatState,
+    view: &mut ChatsView,
+    online: Option<&OnlineSession>,
+    communities: &mut crate::systems::communities::Communities,
+    pictures: &mut crate::systems::chat_pictures::ChatPictures,
+) {
+    crate::systems::communities::confirm_account_delete(&egui.ctx, communities);
     if std::mem::take(&mut communities.pick_picture) {
         match crate::platform::photo::start_from(crate::platform::photo::Source::File) {
             Ok(capture) => communities.capture = Some(capture),
@@ -1170,23 +1350,10 @@ pub fn render_chats_panel(
             }
         }
     }
-    if let Some(picture) = act.view_picture.take() {
-        view.viewing = Some(picture);
-    }
     let viewport = egui.viewport_pts();
-    picture_viewer(&egui.ctx, viewport, &mut view, &mut pictures);
-
-    apply(
-        act,
-        &mut chat,
-        &mut view,
-        online.as_deref(),
-        &mut right_panel,
-        &mut nav,
-        now,
-    );
-    if let Some(online) = online.as_deref() {
-        crate::systems::chat::render_report_dialog(&mut egui, &mut chat, online);
+    picture_viewer(&egui.ctx, viewport, view, pictures);
+    if let Some(online) = online {
+        crate::systems::chat::render_report_dialog(egui, chat, online);
     }
 }
 
@@ -1204,12 +1371,7 @@ fn list_screen(
     face_open: bool,
 ) {
     // The page's name and your face (`docs/mockups/redesign`, v2, N5).
-    let bar = top_bar(
-        ui,
-        me,
-        !contacts.incoming.is_empty() || view.admin.is_some_and(|n| n > 0),
-        face_open,
-    );
+    let bar = top_bar(ui, me, face_waiting(contacts, view), face_open);
     act.face_rect = Some(bar.face_rect);
     act.face |= bar.face;
     let new_clicked = bar.new;
@@ -1226,19 +1388,11 @@ fn list_screen(
         }
     }
     // A view waiting to be sent: every private chat row becomes its target.
-    let sending = chat.point_draft.is_some();
-    if let Some(draft) = chat.point_draft.clone() {
+    if let Some(name) = sending_name(chat) {
         raised_frame().show(ui, |ui| {
             ui.label(
-                egui::RichText::new(format!(
-                    "{} Send this view: {}",
-                    icons::PIN,
-                    draft.name.clone().unwrap_or_else(|| format!(
-                        "{:.4}, {:.4}",
-                        draft.latitude, draft.longitude
-                    ))
-                ))
-                .color(theme::p().cream),
+                egui::RichText::new(format!("{} Send this view: {name}", icons::PIN))
+                    .color(theme::p().cream),
             );
             crate::systems::theme::text_field(
                 ui,
@@ -1282,18 +1436,66 @@ fn list_screen(
             });
         });
     ui.add_space(10.0);
-    let needle = view.search.trim().to_lowercase();
-    let matches = |name: &str, preview: &str| {
-        needle.is_empty()
-            || name.to_lowercase().contains(&needle)
-            || preview.to_lowercase().contains(&needle)
-    };
 
     // Message requests wait in one row above the chats, and the chats that
     // are still requests are not in the list until they are accepted.
     if crate::systems::contacts::requests_row(ui, contacts) {
         act.sub = Some(crate::systems::contacts::Sub::Requests);
     }
+    let ListModel {
+        public,
+        rows,
+        sending,
+        searching,
+    } = list_model(Some(ui.ctx()), chat, view, contacts, communities);
+    list_body(
+        ui,
+        chat,
+        view,
+        communities,
+        calendar,
+        act,
+        lift,
+        new_clicked,
+        &public,
+        &rows,
+        sending,
+        searching,
+    );
+}
+
+/// The list as it stands: the two public tiles and the conversations,
+/// filtered by the search field and newest first — what both editions draw
+/// (`lib_chats` draws it too).
+pub struct ListModel {
+    /// Here and Everyone, the two public chats, as tiles.
+    pub public: Vec<Row>,
+    /// People, groups and communities, newest first.
+    pub rows: Vec<Row>,
+    /// A view waits to be sent (`ChatState::point_draft`): a tap on a
+    /// private chat sends it there.
+    pub sending: bool,
+    /// The search field holds something: the list is its answer.
+    pub searching: bool,
+}
+
+/// The chat list's rows, worked out from the chats, the requests and the
+/// communities. `ctx` loads the communities' pictures; the library's edition,
+/// which cannot draw a picture, passes `None`.
+pub fn list_model(
+    ctx: Option<&egui::Context>,
+    chat: &ChatState,
+    view: &ChatsView,
+    contacts: &crate::systems::contacts::Contacts,
+    communities: &mut crate::systems::communities::Communities,
+) -> ListModel {
+    let sending = chat.point_draft.is_some();
+    let needle = view.search.trim().to_lowercase();
+    let matches = |name: &str, preview: &str| {
+        needle.is_empty()
+            || name.to_lowercase().contains(&needle)
+            || preview.to_lowercase().contains(&needle)
+    };
     let requests = contacts.request_channels(chat);
 
     let row_of = |c: &crate::systems::chat::ChatChannel| -> Row {
@@ -1337,6 +1539,7 @@ fn list_screen(
             },
             at_ms: at,
             picture: None,
+            community: None,
         }
     };
     let public: Vec<Row> = [ChatKind::Here, ChatKind::Everyone]
@@ -1364,12 +1567,9 @@ fn list_screen(
             .find(|c| c.key == key)
             .map_or(0, |c| view.unread(chat, key, &c.lines))
     };
-    let mut community_of = HashMap::new();
-    for c in crate::systems::communities::list_rows(ui.ctx(), communities, chat, &unread) {
-        let key = format!("community:{}", c.id);
-        community_of.insert(key.clone(), (c.id, c.open.clone()));
+    for c in crate::systems::communities::list_rows(ctx, communities, chat, &unread) {
         rows.push(Row {
-            key,
+            key: format!("community:{}", c.id),
             name: c.name,
             kind: ChatKind::Community,
             preview: c.preview,
@@ -1381,11 +1581,92 @@ fn list_screen(
             unread: c.unread,
             at_ms: c.at_ms,
             picture: c.picture,
+            community: Some(c.id),
         });
     }
     rows.retain(|r| matches(&r.name, &r.preview));
     rows.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    ListModel {
+        public,
+        rows,
+        sending,
+        searching: !needle.is_empty(),
+    }
+}
 
+/// A tap on a row of the list, for both editions. A community is a place on
+/// the map before it is a conversation (2026-10-18): picking one goes to the
+/// World with only its posts there; its page and topics are a tap on the
+/// chip that says so (`community_posts::render_filter_chip`). With a view
+/// waiting to be sent, a private chat is where it goes.
+pub(crate) fn tap_row(
+    key: &str,
+    kind: ChatKind,
+    community: Option<uuid::Uuid>,
+    sending: bool,
+    act: &mut Actions,
+) {
+    if let Some(id) = community {
+        act.community_world = Some(id);
+    } else if sending && kind == ChatKind::Private {
+        act.send_point_to = Some(key.to_string());
+    } else {
+        act.open = Some(key.to_string());
+    }
+}
+
+/// Your face at the top of the list wears an orange dot: a message request,
+/// or a report waiting for an admin.
+#[must_use]
+pub fn face_waiting(contacts: &crate::systems::contacts::Contacts, view: &ChatsView) -> bool {
+    !contacts.incoming.is_empty() || view.admin.is_some_and(|n| n > 0)
+}
+
+/// The message-requests row above the list, as words: "2 message requests",
+/// "sanne · 1 more", and the first two people for their discs. `None` while
+/// nobody waits. (`contacts::requests_row` is egui's drawing of the same.)
+#[must_use]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn requests_summary(
+    contacts: &crate::systems::contacts::Contacts,
+) -> Option<(String, String, Vec<String>)> {
+    let n = contacts.incoming.len();
+    let first = contacts.incoming.first()?;
+    let title = if n == 1 {
+        "1 message request".to_string()
+    } else {
+        format!("{n} message requests")
+    };
+    let more = if n > 1 {
+        format!(" · {} more", n - 1)
+    } else {
+        String::new()
+    };
+    let people = contacts
+        .incoming
+        .iter()
+        .take(2)
+        .map(|r| r.username.clone())
+        .collect();
+    Some((title, format!("{}{more}", first.username), people))
+}
+
+/// The scrolling half of the list, and the New sheet over it.
+#[allow(clippy::too_many_arguments)]
+fn list_body(
+    ui: &mut egui::Ui,
+    chat: &mut ChatState,
+    view: &mut ChatsView,
+    communities: &mut crate::systems::communities::Communities,
+    calendar: &crate::systems::calendar::Calendar,
+    act: &mut Actions,
+    lift: f32,
+    new_clicked: bool,
+    public: &[Row],
+    rows: &[Row],
+    sending: bool,
+    searching: bool,
+) {
     // The page, for the New sheet's backdrop below.
     let panel = ui.max_rect();
     egui::ScrollArea::vertical()
@@ -1396,7 +1677,7 @@ fn list_screen(
                 ui.horizontal(|ui| {
                     let gap = ui.spacing().item_spacing.x;
                     let w = (ui.available_width() - gap) / 2.0;
-                    for row in &public {
+                    for row in public {
                         if public_tile(ui, row, w).clicked() {
                             act.open = Some(row.key.clone());
                         }
@@ -1407,7 +1688,7 @@ fn list_screen(
             // What is coming up from every chat, and the way into the
             // calendar (`docs/mockups/calendar/v1`, A). Not while searching:
             // the list is then the answer to the search.
-            if needle.is_empty() && !sending {
+            if !searching && !sending {
                 let (open, pick) =
                     crate::systems::calendar::coming_up(ui, calendar, chat, communities, unix_ms());
                 act.calendar |= open;
@@ -1422,24 +1703,12 @@ fn list_screen(
             if !rows.is_empty() {
                 theme::section(ui, "Conversations");
             }
-            for row in &rows {
-                if !chat_row(ui, row, sending).clicked() {
-                    continue;
-                }
-                if let Some((id, _)) = community_of.get(&row.key) {
-                    // A community is a place on the map before it is a
-                    // conversation (2026-10-18): picking one goes to the
-                    // World with only its posts there. Its page and topics are
-                    // a tap on the chip that says so (`community_posts::
-                    // render_filter_chip`).
-                    act.community_world = Some(*id);
-                } else if sending && row.kind == ChatKind::Private {
-                    act.send_point_to = Some(row.key.clone());
-                } else {
-                    act.open = Some(row.key.clone());
+            for row in rows {
+                if chat_row(ui, row, sending).clicked() {
+                    tap_row(&row.key, row.kind, row.community, sending, act);
                 }
             }
-            if rows.is_empty() && !needle.is_empty() {
+            if rows.is_empty() && searching {
                 theme::note(ui, "Nothing here goes by that name.");
             } else if !rows.iter().any(|r| r.kind == ChatKind::Private) {
                 ui.add_space(6.0);
@@ -1542,6 +1811,85 @@ pub enum NewKind {
     Choose,
     Person,
     Group,
+}
+
+/// The four things the "+" sheet offers, for both editions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NewChoice {
+    Person,
+    Group,
+    FindCommunity,
+    StartCommunity,
+}
+
+/// What the "+" sheet says under its choices.
+pub const NEW_NOTE: &str = "All four are end-to-end encrypted.";
+
+impl NewChoice {
+    pub const ALL: [NewChoice; 4] = [
+        NewChoice::Person,
+        NewChoice::Group,
+        NewChoice::FindCommunity,
+        NewChoice::StartCommunity,
+    ];
+
+    #[must_use]
+    pub fn icon(self) -> &'static str {
+        match self {
+            NewChoice::Person => icons::CHAT,
+            NewChoice::Group => icons::GROUP,
+            NewChoice::FindCommunity => icons::SEARCH,
+            NewChoice::StartCommunity => icons::CAT_CITY,
+        }
+    }
+
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            NewChoice::Person => "Message a person",
+            NewChoice::Group => "Start a group",
+            NewChoice::FindCommunity => "Find a community",
+            NewChoice::StartCommunity => "Start a community",
+        }
+    }
+
+    #[must_use]
+    pub fn line(self) -> &'static str {
+        match self {
+            NewChoice::Person => "From your contacts, or by name",
+            NewChoice::Group => "A few people you pick",
+            NewChoice::FindCommunity => "Clubs, teams, neighbourhoods",
+            NewChoice::StartCommunity => "Several topics, one set of people",
+        }
+    }
+
+    /// A community's choice wears the brand colour, a chat's the accent.
+    #[must_use]
+    pub fn brand(self) -> bool {
+        matches!(self, NewChoice::FindCommunity | NewChoice::StartCommunity)
+    }
+}
+
+/// A choice picked on the "+" sheet: a form, or a community screen.
+pub(crate) fn pick_new(choice: NewChoice, kind: &mut NewKind, act: &mut Actions) {
+    match choice {
+        NewChoice::Person => *kind = NewKind::Person,
+        NewChoice::Group => *kind = NewKind::Group,
+        NewChoice::FindCommunity => act.community_find = true,
+        NewChoice::StartCommunity => act.community_start = true,
+    }
+}
+
+/// A person's name is typed on "Message a person".
+#[must_use]
+pub fn new_person_ready(chat: &ChatState) -> bool {
+    !chat.private_input.trim().is_empty()
+}
+
+/// A group has a name and somebody in it.
+#[must_use]
+pub fn new_group_ready(chat: &ChatState) -> bool {
+    !chat.group_name_input.trim().is_empty() && !chat.group_members_input.trim().is_empty()
 }
 
 /// One big choice on the "+" sheet: an icon, what it is, one line on it.
@@ -1711,47 +2059,19 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
                     .color(theme::p().cream),
             );
             ui.add_space(6.0);
-            if new_choice(
-                ui,
-                icons::CHAT,
-                "Message a person",
-                "From your contacts, or by name",
-                false,
-            ) {
-                *kind = NewKind::Person;
-            }
-            if new_choice(
-                ui,
-                icons::GROUP,
-                "Start a group",
-                "A few people you pick",
-                false,
-            ) {
-                *kind = NewKind::Group;
-            }
-            if new_choice(
-                ui,
-                icons::SEARCH,
-                "Find a community",
-                "Clubs, teams, neighbourhoods",
-                true,
-            ) {
-                act.community_find = true;
-            }
-            if new_choice(
-                ui,
-                icons::CAT_CITY,
-                "Start a community",
-                "Several topics, one set of people",
-                true,
-            ) {
-                act.community_start = true;
+            for choice in NewChoice::ALL {
+                if new_choice(
+                    ui,
+                    choice.icon(),
+                    choice.title(),
+                    choice.line(),
+                    choice.brand(),
+                ) {
+                    pick_new(choice, kind, act);
+                }
             }
             ui.add_space(6.0);
-            theme::note(
-                ui,
-                &format!("{} All four are end-to-end encrypted.", icons::LOCK),
-            );
+            theme::note(ui, &format!("{} {NEW_NOTE}", icons::LOCK));
         }
         NewKind::Person => {
             ui.label(
@@ -1768,7 +2088,7 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
                     .hint_text("Username"),
             );
             let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let ready = !chat.private_input.trim().is_empty();
+            let ready = new_person_ready(chat);
             ui.horizontal(|ui| {
                 if theme::action_button(ui, "Back").clicked() {
                     *kind = NewKind::Choose;
@@ -1806,8 +2126,7 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
                     .desired_width(ui.available_width())
                     .hint_text("Usernames, separated by commas"),
             );
-            let ready = !chat.group_name_input.trim().is_empty()
-                && !chat.group_members_input.trim().is_empty();
+            let ready = new_group_ready(chat);
             ui.horizontal(|ui| {
                 if theme::action_button(ui, "Back").clicked() {
                     *kind = NewKind::Choose;
@@ -1828,6 +2147,41 @@ fn new_sheet_body(ui: &mut egui::Ui, chat: &mut ChatState, kind: &mut NewKind, a
     }
 }
 
+/// What a tap on the You page opens, for both editions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum YouEntry {
+    ShareLink,
+    Avatar,
+    Contacts,
+    Requests,
+    Privacy,
+    Settings,
+    Admin,
+    SignOut,
+}
+
+/// A You page entry, tapped.
+pub(crate) fn pick_you(entry: YouEntry, act: &mut Actions) {
+    use crate::systems::contacts::Sub;
+    let sub = |act: &mut Actions, sub: Sub| {
+        act.sub = Some(sub.clone());
+        act.sub_root = Some(sub);
+    };
+    match entry {
+        YouEntry::ShareLink => sub(act, Sub::Add),
+        YouEntry::Avatar => act.panel = Some(RightPanel::Appearance),
+        YouEntry::Contacts => sub(act, Sub::Contacts),
+        YouEntry::Requests => sub(act, Sub::Requests),
+        YouEntry::Privacy => sub(act, Sub::Privacy),
+        YouEntry::Settings => {
+            act.panel = Some(RightPanel::Settings);
+            act.settings_from_you = true;
+        }
+        YouEntry::Admin => act.panel = Some(RightPanel::Admin),
+        YouEntry::SignOut => act.sign_out = true,
+    }
+}
+
 /// The You page, from your disc at the top of the list: who you are, your
 /// link, your avatar, your contacts and requests, and the way to Settings,
 /// Admin (for an account that may run something; `admin` is how many reports
@@ -1842,7 +2196,6 @@ fn you_screen(
     faces: &mut crate::systems::faces::Faces,
     act: &mut Actions,
 ) {
-    use crate::systems::contacts::Sub;
     if theme::back_title(ui, "You") {
         act.you = Some(false);
     }
@@ -1872,11 +2225,10 @@ fn you_screen(
                     |ui| {
                         ui.add_space(((w - 250.0) / 2.0).max(0.0));
                         if pill(ui, icons::SHARE, "Share my link").clicked() {
-                            act.sub = Some(Sub::Add);
-                            act.sub_root = Some(Sub::Add);
+                            pick_you(YouEntry::ShareLink, act);
                         }
                         if pill(ui, icons::APPEARANCE, "Avatar").clicked() {
-                            act.panel = Some(RightPanel::Appearance);
+                            pick_you(YouEntry::Avatar, act);
                         }
                     },
                 );
@@ -1893,8 +2245,7 @@ fn you_screen(
                 )
                 .clicked()
                 {
-                    act.sub = Some(Sub::Contacts);
-                    act.sub_root = Some(Sub::Contacts);
+                    pick_you(YouEntry::Contacts, act);
                 }
                 if theme::list_row(
                     ui,
@@ -1906,8 +2257,7 @@ fn you_screen(
                 )
                 .clicked()
                 {
-                    act.sub = Some(Sub::Requests);
-                    act.sub_root = Some(Sub::Requests);
+                    pick_you(YouEntry::Requests, act);
                 }
                 if theme::list_row(
                     ui,
@@ -1921,8 +2271,7 @@ fn you_screen(
                 )
                 .clicked()
                 {
-                    act.sub = Some(Sub::Privacy);
-                    act.sub_root = Some(Sub::Privacy);
+                    pick_you(YouEntry::Privacy, act);
                 }
             });
             theme::list_group(ui, |ui| {
@@ -1936,8 +2285,7 @@ fn you_screen(
                 )
                 .clicked()
                 {
-                    act.panel = Some(RightPanel::Settings);
-                    act.settings_from_you = true;
+                    pick_you(YouEntry::Settings, act);
                 }
                 if let Some(waiting) = admin {
                     if theme::list_row(
@@ -1950,7 +2298,7 @@ fn you_screen(
                     )
                     .clicked()
                     {
-                        act.panel = Some(RightPanel::Admin);
+                        pick_you(YouEntry::Admin, act);
                     }
                 }
                 if theme::list_row(
@@ -1963,7 +2311,7 @@ fn you_screen(
                 )
                 .clicked()
                 {
-                    act.sign_out = true;
+                    pick_you(YouEntry::SignOut, act);
                 }
             });
         });
@@ -2180,10 +2528,10 @@ fn chat_screen(
                     );
                 });
             }
-            if view.capture.as_ref().is_some_and(|(k, _)| k == key) {
+            if view.capturing_for(key) {
                 theme::note(ui, "Waiting for a picture…");
             }
-            if let Some(why) = view.picture_error.clone() {
+            if let Some(why) = view.picture_error().map(str::to_string) {
                 ui.label(
                     egui::RichText::new(format!("Could not get a picture: {why}"))
                         .size(theme::SIZE_SUB)
@@ -2459,20 +2807,7 @@ fn meeting_card(
                                 r.words().to_string()
                             };
                             if theme::chip(ui, &label, mine == Some(r)).clicked() {
-                                // On a series the card answers its next date.
-                                let date = if plan.repeat.is_some() {
-                                    cartopolis_core::meeting::AnswerFor::Date(date)
-                                } else {
-                                    cartopolis_core::meeting::AnswerFor::First
-                                };
-                                act.meeting = Some((
-                                    key.to_string(),
-                                    MeetingObject::Answer {
-                                        plan: plan.id.clone(),
-                                        rsvp: r,
-                                        date,
-                                    },
-                                ));
+                                act.meeting = Some((key.to_string(), rsvp_answer(plan, date, r)));
                             }
                         }
                     });
@@ -2484,18 +2819,11 @@ fn meeting_card(
                     ui.horizontal_wrapped(|ui| {
                         let day = crate::systems::calendar::short_day(date);
                         if theme::action_button(ui, format!("Skip {day}")).clicked() {
-                            let mut p = plan.clone();
-                            p.skip.push(date);
-                            act.meeting = Some((key.to_string(), MeetingObject::Update(p)));
+                            act.meeting = Some((key.to_string(), skip_date(plan, date)));
                         }
                         if !last && theme::action_button(ui, format!("Stop after {day}")).clicked()
                         {
-                            let mut p = plan.clone();
-                            if let Some(r) = p.repeat.as_mut() {
-                                r.until_ms = Some(date);
-                            }
-                            p.skip.retain(|d| *d <= date);
-                            act.meeting = Some((key.to_string(), MeetingObject::Update(p)));
+                            act.meeting = Some((key.to_string(), stop_after(plan, date)));
                         }
                     });
                 }
@@ -2632,26 +2960,7 @@ fn meeting_card(
                         theme::p().text_dim,
                     );
                     if response.clicked() {
-                        let choices = if poll.multiple {
-                            let mut c = mine.clone();
-                            if picked {
-                                c.retain(|x| x != option);
-                            } else {
-                                c.push(option.clone());
-                            }
-                            c
-                        } else if picked {
-                            Vec::new()
-                        } else {
-                            vec![option.clone()]
-                        };
-                        act.meeting = Some((
-                            key.to_string(),
-                            MeetingObject::Vote {
-                                poll: poll.id.clone(),
-                                choices,
-                            },
-                        ));
+                        act.meeting = Some((key.to_string(), poll_vote(poll, &mine, option)));
                     }
                     ui.add_space(4.0);
                 }
@@ -2777,6 +3086,75 @@ fn meeting_card(
     }
 }
 
+/// An answer to a plan's card: on a series it answers the date the card is
+/// about, otherwise the plan.
+pub(crate) fn rsvp_answer(
+    plan: &cartopolis_core::meeting::Plan,
+    date: u64,
+    rsvp: cartopolis_core::meeting::Rsvp,
+) -> cartopolis_core::meeting::MeetingObject {
+    use cartopolis_core::meeting::AnswerFor;
+    cartopolis_core::meeting::MeetingObject::Answer {
+        plan: plan.id.clone(),
+        rsvp,
+        date: if plan.repeat.is_some() {
+            AnswerFor::Date(date)
+        } else {
+            AnswerFor::First
+        },
+    }
+}
+
+/// Its planner takes `date` out of a series.
+pub(crate) fn skip_date(
+    plan: &cartopolis_core::meeting::Plan,
+    date: u64,
+) -> cartopolis_core::meeting::MeetingObject {
+    let mut p = plan.clone();
+    p.skip.push(date);
+    cartopolis_core::meeting::MeetingObject::Update(p)
+}
+
+/// Its planner ends a series with `date`.
+pub(crate) fn stop_after(
+    plan: &cartopolis_core::meeting::Plan,
+    date: u64,
+) -> cartopolis_core::meeting::MeetingObject {
+    let mut p = plan.clone();
+    if let Some(r) = p.repeat.as_mut() {
+        r.until_ms = Some(date);
+    }
+    p.skip.retain(|d| *d <= date);
+    cartopolis_core::meeting::MeetingObject::Update(p)
+}
+
+/// A tap on a poll's `option`, given what this person chose so far (`mine`):
+/// toggles it on a choose-any poll, picks or clears it on a choose-one.
+pub(crate) fn poll_vote(
+    poll: &cartopolis_core::meeting::Poll,
+    mine: &[String],
+    option: &str,
+) -> cartopolis_core::meeting::MeetingObject {
+    let picked = mine.iter().any(|m| m == option);
+    let choices = if poll.multiple {
+        let mut c = mine.to_vec();
+        if picked {
+            c.retain(|x| x != option);
+        } else {
+            c.push(option.to_string());
+        }
+        c
+    } else if picked {
+        Vec::new()
+    } else {
+        vec![option.to_string()]
+    };
+    cartopolis_core::meeting::MeetingObject::Vote {
+        poll: poll.id.clone(),
+        choices,
+    }
+}
+
 /// Who is going to a meet-up and how far each is from it, as the card lists
 /// them: `(name, status)`.
 ///
@@ -2784,7 +3162,7 @@ fn meeting_card(
 /// they are sharing with this chat — which "I'm going" turns on before the start
 /// — measured on this phone; somebody going who is not sharing (yet) reads as
 /// "going", and nothing more.
-fn meetup_people(
+pub(crate) fn meetup_people(
     chat: &ChatState,
     key: &str,
     proposal: &ChatLine,
@@ -2965,7 +3343,7 @@ fn meetup_card(
 
 /// This device's UTC offset at `at_ms`, in seconds — the time zone the thread's
 /// own clock times are printed in (`day_label`, `clock_time`).
-fn local_offset_s(at_ms: u64) -> Option<i32> {
+pub(crate) fn local_offset_s(at_ms: u64) -> Option<i32> {
     let ts = jiff::Timestamp::from_millisecond(at_ms as i64).ok()?;
     Some(jiff::tz::TimeZone::system().to_offset(ts).seconds())
 }
@@ -3031,7 +3409,7 @@ fn meetup_draft(ui: &mut egui::Ui, chat: &ChatState, key: &str, now: u64, act: &
 }
 
 /// "Today", "Yesterday", or the date, in this device's time zone.
-fn day_label(at_ms: u64, now_ms: u64) -> String {
+pub(crate) fn day_label(at_ms: u64, now_ms: u64) -> String {
     let tz = jiff::tz::TimeZone::system();
     let (Ok(at), Ok(now)) = (
         jiff::Timestamp::from_millisecond(at_ms as i64),
@@ -3081,7 +3459,7 @@ fn day_chip(ui: &mut egui::Ui, text: &str) {
 /// A private chat is a direct one when its label is a person rather than a
 /// group's name — which the chat itself does not record, so this asks whether
 /// anybody but that person has spoken in it.
-fn channel_is_direct(chat: &ChatState, key: &str) -> bool {
+pub(crate) fn channel_is_direct(chat: &ChatState, key: &str) -> bool {
     chat.channels.iter().find(|c| c.key == key).is_none_or(|c| {
         let peer = crate::systems::private_chat::peer_of_label(&c.label);
         c.lines.iter().all(|l| {
@@ -3295,61 +3673,9 @@ fn bubble_body(
                             moderate_topic: topic.filter(|t| t.moderates).map(|t| t.name.clone()),
                             admin,
                         };
-                        let seq = line.log_seq;
-                        person_menu(
-                            &name,
-                            &line.sender,
-                            Some(&line.body),
-                            &extras,
-                            |a| match a {
-                                PersonAction::Message => act.message = Some(line.sender.clone()),
-                                PersonAction::Block => act.block = Some(line.sender.clone()),
-                                PersonAction::Report(msg) => {
-                                    act.report = Some((line.sender.clone(), msg));
-                                }
-                                PersonAction::ReportToModerators(msg) => {
-                                    if let (Some(t), Some(seq)) = (topic, seq) {
-                                        act.report_to_mods = Some((
-                                            line.sender.clone(),
-                                            msg,
-                                            t.community,
-                                            t.group.clone(),
-                                            seq,
-                                        ));
-                                    }
-                                }
-                                PersonAction::DeleteForEveryone => {
-                                    if let (Some(t), Some(seq)) = (topic, seq) {
-                                        act.community_ops.push(
-                                        crate::systems::communities::CommunityOp::ModerateDelete(
-                                            t.group.clone(),
-                                            seq,
-                                        ),
-                                    );
-                                    }
-                                }
-                                PersonAction::RemoveFromTopic
-                                | PersonAction::RemoveFromCommunity => {
-                                    if let Some(t) = topic {
-                                        let whole = matches!(a, PersonAction::RemoveFromCommunity);
-                                        act.community_ops.push(
-                                            crate::systems::communities::CommunityOp::Remove {
-                                                id: t.community,
-                                                who: line.sender.clone(),
-                                                topic: (!whole).then(|| t.group.clone()),
-                                                block: false,
-                                            },
-                                        );
-                                    }
-                                }
-                                PersonAction::Suspend => {
-                                    act.admin = Some((line.sender.clone(), false))
-                                }
-                                PersonAction::DeleteAccount => {
-                                    act.admin = Some((line.sender.clone(), true));
-                                }
-                            },
-                        );
+                        person_menu(&name, &line.sender, Some(&line.body), &extras, |a| {
+                            person_act(a, &line.sender, line.log_seq, topic, act)
+                        });
                     }
                     ui.add(
                         egui::Label::new(egui::RichText::new(&line.body).size(14.5).color(ink))
@@ -3367,6 +3693,52 @@ fn bubble_body(
                 });
             });
     });
+}
+
+/// What a choice in the menu behind a speaker's name (`chat::person_menu`)
+/// asks for, for the line `sender` said (`seq`, its place in a topic's log)
+/// in this chat: both editions' menus end here.
+pub(crate) fn person_act(
+    a: PersonAction,
+    sender: &str,
+    seq: Option<u64>,
+    topic: Option<&TopicContext>,
+    act: &mut Actions,
+) {
+    match a {
+        PersonAction::Message => act.message = Some(sender.to_string()),
+        PersonAction::Block => act.block = Some(sender.to_string()),
+        PersonAction::Report(msg) => act.report = Some((sender.to_string(), msg)),
+        PersonAction::ReportToModerators(msg) => {
+            if let (Some(t), Some(seq)) = (topic, seq) {
+                act.report_to_mods =
+                    Some((sender.to_string(), msg, t.community, t.group.clone(), seq));
+            }
+        }
+        PersonAction::DeleteForEveryone => {
+            if let (Some(t), Some(seq)) = (topic, seq) {
+                act.community_ops
+                    .push(crate::systems::communities::CommunityOp::ModerateDelete(
+                        t.group.clone(),
+                        seq,
+                    ));
+            }
+        }
+        PersonAction::RemoveFromTopic | PersonAction::RemoveFromCommunity => {
+            if let Some(t) = topic {
+                let whole = matches!(a, PersonAction::RemoveFromCommunity);
+                act.community_ops
+                    .push(crate::systems::communities::CommunityOp::Remove {
+                        id: t.community,
+                        who: sender.to_string(),
+                        topic: (!whole).then(|| t.group.clone()),
+                        block: false,
+                    });
+            }
+        }
+        PersonAction::Suspend => act.admin = Some((sender.to_string(), false)),
+        PersonAction::DeleteAccount => act.admin = Some((sender.to_string(), true)),
+    }
 }
 
 /// The longest edge of a picture in the thread, in points. Big enough to see
@@ -3809,73 +4181,23 @@ fn attach_menu(
         return;
     }
     let sharing = chat.sharing.iter().any(|s| s.channel == key);
-    let camera = crate::systems::camera_screen::available();
-    let upload = crate::platform::photo::offers(crate::platform::photo::Source::File);
-    let mut entries: Vec<(&str, &str, &str, bool)> = Vec::new();
-    if camera {
-        entries.push((
-            icons::CAMERA,
-            "Camera",
-            "Take a picture for this chat",
-            false,
-        ));
-    }
-    if upload {
-        entries.push((
-            icons::UPLOAD,
-            "Upload",
-            "A picture from this device. Encrypted here: only this chat can open it.",
-            false,
-        ));
-    }
-    entries.push((
-        icons::PIN,
-        "This view",
-        "Send where the camera is looking, as a place people can tap",
-        false,
-    ));
-    entries.push((
-        icons::FLAG,
-        "Meet up",
-        "Propose a place and a time. Halfway between you when they are sharing \
-         where they are; otherwise where the map is now.",
-        false,
-    ));
-    entries.push((
-        icons::EVENT,
-        "Meeting",
-        "A call in this chat at a time, with an agenda",
-        false,
-    ));
-    entries.push((
-        icons::POLL,
-        "Poll",
-        "A question with options; everybody here sees who chose what",
-        false,
-    ));
-    if !sharing {
-        entries.push((
-            icons::HERE,
-            "Location",
-            "Share your real location with this chat for a while",
-            view.share_open,
-        ));
-    }
+    let entries = attach_entries(chat, key);
     let cell = (ui.available_width() / 4.0).floor();
     let mut picked = None;
     for row in entries.chunks(4) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (icon, label, hint, on) in row {
+            for &entry in row {
                 ui.allocate_ui_with_layout(
                     egui::vec2(cell, theme::ROUND_BUTTON_SIZE + 22.0),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        if theme::round_button(ui, icon, hint, *on).clicked() {
-                            picked = Some(*label);
+                        let on = entry == Attach::Location && view.share_open;
+                        if theme::round_button(ui, entry.icon(), entry.hint(), on).clicked() {
+                            picked = Some(entry);
                         }
                         ui.label(
-                            egui::RichText::new(*label)
+                            egui::RichText::new(entry.label())
                                 .size(12.0)
                                 .color(theme::p().text),
                         );
@@ -3885,47 +4207,151 @@ fn attach_menu(
         });
         ui.add_space(6.0);
     }
-    match picked {
-        Some("Camera") => {
-            view.camera_for = Some(key.to_string());
-            view.attach = false;
-        }
-        Some("Upload") => {
-            view.upload_for = Some(key.to_string());
-            view.attach = false;
-        }
-        Some("This view") => act.view_to = Some(key.to_string()),
-        Some("Meet up") => act.meetup = Some(key.to_string()),
-        Some("Meeting") => {
-            view.meeting_form = Some((key.to_string(), MeetingForm::plan(now)));
-            view.attach = false;
-        }
-        Some("Poll") => {
-            view.meeting_form = Some((key.to_string(), MeetingForm::poll()));
-            view.attach = false;
-        }
-        Some("Location") => view.share_open = !view.share_open,
-        _ => {}
+    if let Some(entry) = picked {
+        pick_attach(entry, view, key, now, act);
     }
     if view.share_open && !sharing {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("for").color(theme::p().text_dim));
-            for (label, minutes) in [("15 min", 15u64), ("1 hour", 60), ("8 hours", 480)] {
+            for (label, ms) in SHARE_FOR {
                 if theme::action_button(ui, label).clicked() {
-                    act.share = Some((key.to_string(), minutes * 60_000));
-                    view.share_open = false;
+                    share_for(view, key, ms, act);
                 }
             }
         });
-        theme::note(ui, "Only this chat sees it, and it stops by itself.");
+        theme::note(ui, SHARE_NOTE);
     }
+}
+
+/// One of the "+" menu's entries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Attach {
+    Camera,
+    Upload,
+    ThisView,
+    MeetUp,
+    Meeting,
+    Poll,
+    Location,
+}
+
+impl Attach {
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Attach::Camera => icons::CAMERA,
+            Attach::Upload => icons::UPLOAD,
+            Attach::ThisView => icons::PIN,
+            Attach::MeetUp => icons::FLAG,
+            Attach::Meeting => icons::EVENT,
+            Attach::Poll => icons::POLL,
+            Attach::Location => icons::HERE,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Attach::Camera => "Camera",
+            Attach::Upload => "Upload",
+            Attach::ThisView => "This view",
+            Attach::MeetUp => "Meet up",
+            Attach::Meeting => "Meeting",
+            Attach::Poll => "Poll",
+            Attach::Location => "Location",
+        }
+    }
+
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Attach::Camera => "Take a picture for this chat",
+            Attach::Upload => {
+                "A picture from this device. Encrypted here: only this chat can open it."
+            }
+            Attach::ThisView => "Send where the camera is looking, as a place people can tap",
+            Attach::MeetUp => {
+                "Propose a place and a time. Halfway between you when they are sharing \
+                 where they are; otherwise where the map is now."
+            }
+            Attach::Meeting => "A call in this chat at a time, with an agenda",
+            Attach::Poll => "A question with options; everybody here sees who chose what",
+            Attach::Location => "Share your real location with this chat for a while",
+        }
+    }
+}
+
+/// What the "+" menu of a private chat offers here: the camera and the
+/// picker where this build has them, and Location unless it is shared.
+pub(crate) fn attach_entries(chat: &ChatState, key: &str) -> Vec<Attach> {
+    let sharing = chat.sharing.iter().any(|s| s.channel == key);
+    let mut entries = Vec::new();
+    if crate::systems::camera_screen::available() {
+        entries.push(Attach::Camera);
+    }
+    if crate::platform::photo::offers(crate::platform::photo::Source::File) {
+        entries.push(Attach::Upload);
+    }
+    entries.extend([
+        Attach::ThisView,
+        Attach::MeetUp,
+        Attach::Meeting,
+        Attach::Poll,
+    ]);
+    if !sharing {
+        entries.push(Attach::Location);
+    }
+    entries
+}
+
+/// An entry of the "+" menu picked, in the chat `key`.
+pub(crate) fn pick_attach(
+    entry: Attach,
+    view: &mut ChatsView,
+    key: &str,
+    now: u64,
+    act: &mut Actions,
+) {
+    match entry {
+        Attach::Camera => {
+            view.camera_for = Some(key.to_string());
+            view.attach = false;
+        }
+        Attach::Upload => {
+            view.upload_for = Some(key.to_string());
+            view.attach = false;
+        }
+        Attach::ThisView => act.view_to = Some(key.to_string()),
+        Attach::MeetUp => act.meetup = Some(key.to_string()),
+        Attach::Meeting => {
+            view.meeting_form = Some((key.to_string(), MeetingForm::plan(now)));
+            view.attach = false;
+        }
+        Attach::Poll => {
+            view.meeting_form = Some((key.to_string(), MeetingForm::poll()));
+            view.attach = false;
+        }
+        Attach::Location => view.share_open = !view.share_open,
+    }
+}
+
+/// How long Location shares for: its words and milliseconds.
+pub(crate) const SHARE_FOR: [(&str, u64); 3] = [
+    ("15 min", 15 * 60_000),
+    ("1 hour", 60 * 60_000),
+    ("8 hours", 480 * 60_000),
+];
+/// Under the durations.
+pub(crate) const SHARE_NOTE: &str = "Only this chat sees it, and it stops by itself.";
+
+/// Share the real location with the chat `key` for `ms`.
+pub(crate) fn share_for(view: &mut ChatsView, key: &str, ms: u64, act: &mut Actions) {
+    act.share = Some((key.to_string(), ms));
+    view.share_open = false;
 }
 
 /// `+ → Plan a meeting` and `+ → Ask a poll`, filled in above where the
 /// composer was; posting seals the object into the chat (`act.meeting`).
 /// The dates a plan starting at `start_ms` with this rule would have, for
 /// the next two years: what Until steps through.
-fn series_dates(start_ms: u64, every: Every, interval: u32) -> Vec<u64> {
+pub(crate) fn series_dates(start_ms: u64, every: Every, interval: u32) -> Vec<u64> {
     let series = cartopolis_core::meeting::Plan {
         start_ms,
         repeat: Some(cartopolis_core::meeting::Repeat {
@@ -3964,59 +4390,141 @@ fn repeat_fields(
             .color(theme::p().text_dim),
     );
     ui.horizontal_wrapped(|ui| {
-        for (label, rule) in [
-            ("Never", None),
-            ("Every week", Some((Every::Week, 1))),
-            ("Every 2 weeks", Some((Every::Week, 2))),
-            ("Every month", Some((Every::Month, 1))),
-        ] {
-            if theme::chip(ui, label, *repeat == rule).clicked() && *repeat != rule {
-                *repeat = rule;
-                *until_ms = None;
+        for (label, rule) in REPEATS {
+            if theme::chip(ui, label, *repeat == rule).clicked() {
+                pick_repeat(repeat, until_ms, rule);
             }
         }
     });
-    let Some((every, interval)) = *repeat else {
+    if repeat.is_none() {
         return;
-    };
-    let dates = series_dates(start_ms, every, interval);
-    // Where Until is in the series, by its date, after the start moved.
-    let at = until_ms.and_then(|u| dates.iter().position(|d| *d >= u));
+    }
+    let at = until_at(start_ms, *repeat, *until_ms);
     ui.horizontal_wrapped(|ui| {
         ui.label(
             egui::RichText::new("Until")
                 .size(theme::SIZE_SUB)
                 .color(theme::p().text_dim),
         );
-        let last = dates.len().saturating_sub(1);
         if theme::chip(ui, "No end", at.is_none()).clicked() {
-            *until_ms = None;
+            step_until(start_ms, *repeat, until_ms, UntilStep::NoEnd);
         }
         match at {
-            // An end starts four meetings in, and steps one meeting at a time.
             None => {
                 if theme::action_button(ui, "Set an end").clicked() {
-                    *until_ms = dates.get(3.min(last)).copied();
+                    step_until(start_ms, *repeat, until_ms, UntilStep::SetEnd);
                 }
             }
-            Some(i) => {
+            Some((i, date)) => {
                 if theme::action_button(ui, "−1").clicked() {
-                    *until_ms = dates.get(i.saturating_sub(1).max(1).min(last)).copied();
+                    step_until(start_ms, *repeat, until_ms, UntilStep::Earlier);
                 }
                 ui.label(
                     egui::RichText::new(format!(
                         "{} · {} times",
-                        crate::systems::calendar::short_day(dates[i]),
+                        crate::systems::calendar::short_day(date),
                         i + 1
                     ))
                     .color(theme::p().text),
                 );
                 if theme::action_button(ui, "+1").clicked() {
-                    *until_ms = dates.get((i + 1).min(last)).copied();
+                    step_until(start_ms, *repeat, until_ms, UntilStep::Later);
                 }
             }
         }
     });
+}
+
+/// The plan form's Repeats choices.
+pub(crate) const REPEATS: [(&str, Option<(Every, u32)>); 4] = [
+    ("Never", None),
+    ("Every week", Some((Every::Week, 1))),
+    ("Every 2 weeks", Some((Every::Week, 2))),
+    ("Every month", Some((Every::Month, 1))),
+];
+
+/// A Repeats choice: a new rule drops the end the old one had.
+pub(crate) fn pick_repeat(
+    repeat: &mut Option<(Every, u32)>,
+    until_ms: &mut Option<u64>,
+    rule: Option<(Every, u32)>,
+) {
+    if *repeat != rule {
+        *repeat = rule;
+        *until_ms = None;
+    }
+}
+
+/// Where Until is in the series, by its date (after the start moved): its
+/// index and date; `None` for no end.
+pub(crate) fn until_at(
+    start_ms: u64,
+    repeat: Option<(Every, u32)>,
+    until_ms: Option<u64>,
+) -> Option<(usize, u64)> {
+    let (every, interval) = repeat?;
+    let until = until_ms?;
+    let dates = series_dates(start_ms, every, interval);
+    let i = dates.iter().position(|d| *d >= until)?;
+    Some((i, dates[i]))
+}
+
+/// How Until moves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum UntilStep {
+    NoEnd,
+    /// An end starts four meetings in.
+    SetEnd,
+    /// One meeting earlier, never before the second.
+    Earlier,
+    Later,
+}
+
+/// Move Until one step, a meeting at a time.
+pub(crate) fn step_until(
+    start_ms: u64,
+    repeat: Option<(Every, u32)>,
+    until_ms: &mut Option<u64>,
+    step: UntilStep,
+) {
+    let Some((every, interval)) = repeat else {
+        return;
+    };
+    let dates = series_dates(start_ms, every, interval);
+    let last = dates.len().saturating_sub(1);
+    let at = until_at(start_ms, repeat, *until_ms).map(|(i, _)| i);
+    *until_ms = match (step, at) {
+        (UntilStep::NoEnd, _) => None,
+        (UntilStep::SetEnd, _) => dates.get(3.min(last)).copied(),
+        (UntilStep::Earlier, Some(i)) => dates.get(i.saturating_sub(1).max(1).min(last)).copied(),
+        (UntilStep::Later, Some(i)) => dates.get((i + 1).min(last)).copied(),
+        (UntilStep::Earlier | UntilStep::Later, None) => *until_ms,
+    };
+}
+
+/// The plan form's start moved by `minutes`: never back before the hour now
+/// running, since a plan for the past is not something to ask people to.
+pub(crate) fn shift_start(start_ms: &mut u64, minutes: i64, now: u64) {
+    let moved = start_ms.saturating_add_signed(minutes * 60_000);
+    *start_ms = if minutes < 0 {
+        moved.max(next_hour_ms(now).saturating_sub(3_600_000))
+    } else {
+        moved
+    };
+}
+
+/// The plan form's lengths, in minutes.
+pub(crate) const DURATIONS: [u32; 6] = [15, 30, 45, 60, 90, 120];
+
+/// "15 min", "1 h", "1.5 h".
+pub(crate) fn duration_label(m: u32) -> String {
+    if m < 60 {
+        format!("{m} min")
+    } else if m % 60 == 0 {
+        format!("{} h", m / 60)
+    } else {
+        format!("{} h", f64::from(m) / 60.0)
+    }
 }
 
 fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, act: &mut Actions) {
@@ -4075,12 +4583,9 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
             } => {
                 field(ui, title, "What: Q4 planning", 1);
                 ui.horizontal_wrapped(|ui| {
-                    // Never before the hour now running: a plan for the past
-                    // is not something to ask people to come to.
-                    let floor = next_hour_ms(now).saturating_sub(3_600_000);
                     for (label, shift) in [("−1 day", -1440i64), ("−15 min", -15)] {
                         if theme::action_button(ui, label).clicked() {
-                            *start_ms = start_ms.saturating_add_signed(shift * 60_000).max(floor);
+                            shift_start(start_ms, shift, now);
                         }
                     }
                     ui.label(
@@ -4093,19 +4598,13 @@ fn meeting_form(ui: &mut egui::Ui, view: &mut ChatsView, key: &str, now: u64, ac
                     );
                     for (label, shift) in [("+15 min", 15i64), ("+1 day", 1440)] {
                         if theme::action_button(ui, label).clicked() {
-                            *start_ms = start_ms.saturating_add_signed(shift * 60_000);
+                            shift_start(start_ms, shift, now);
                         }
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    for m in [15u32, 30, 45, 60, 90, 120] {
-                        let label = if m < 60 {
-                            format!("{m} min")
-                        } else if m % 60 == 0 {
-                            format!("{} h", m / 60)
-                        } else {
-                            format!("{} h", f64::from(m) / 60.0)
-                        };
+                    for m in DURATIONS {
+                        let label = duration_label(m);
                         if theme::chip(ui, &label, *minutes == m).clicked() {
                             *minutes = m;
                         }

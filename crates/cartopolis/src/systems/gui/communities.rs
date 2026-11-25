@@ -172,19 +172,19 @@ pub struct Communities {
     pub created: Option<Uuid>,
     /// An admin asked to delete this person's account; waiting for "yes".
     pub confirm_delete: Option<String>,
-    draft: Draft,
-    query: String,
-    order: Option<DirectoryOrder>,
+    pub(crate) draft: Draft,
+    pub(crate) query: String,
+    pub(crate) order: Option<DirectoryOrder>,
     /// What is typed into the community screen's fields.
-    join_message: String,
-    new_topic: String,
-    add_people: String,
+    pub(crate) join_message: String,
+    pub(crate) new_topic: String,
+    pub(crate) add_people: String,
     /// Which of the community screen's two forms is open.
-    adding: bool,
-    starting_topic: bool,
+    pub(crate) adding: bool,
+    pub(crate) starting_topic: bool,
     /// A moderator has opened the join requests and reports, which the
     /// page otherwise folds into one row above the posts.
-    reviewing: bool,
+    pub(crate) reviewing: bool,
     admin: AdminInbox,
     /// Where the person is looking, for Near you and for pinning a place.
     pub here: Option<(f64, f64)>,
@@ -196,7 +196,7 @@ pub struct Communities {
     /// The last invite link a moderator made here, for the community it is to.
     pub invite: Option<(Uuid, String)>,
     /// A code or link typed into Find.
-    invite_input: String,
+    pub(crate) invite_input: String,
     /// An invite this launch was opened with, until the session is up.
     pub pending_invite: Option<String>,
     /// The invite being looked up was refused: expired, or never was.
@@ -204,7 +204,7 @@ pub struct Communities {
     /// The Edit screen asked for a picture to be picked (`chats` starts it).
     pub pick_picture: bool,
     pub capture: Option<crate::platform::photo::Capture>,
-    upload: Option<Task<Result<String, String>>>,
+    pub(crate) upload: Option<Task<Result<String, String>>>,
     /// Something went wrong with the picture, in words.
     pub picture_note: Option<String>,
     pictures: HashMap<String, Picture>,
@@ -515,7 +515,254 @@ pub struct Out {
     pub close: bool,
 }
 
-fn role_word(r: CommunityRole) -> &'static str {
+/// A tap on a community screen that is not typing: one set for egui's
+/// screens and the component library's (`lib_communities`), done by [`tap`],
+/// so the two cannot come to mean different things.
+#[derive(Debug, Clone)]
+pub enum Tap {
+    /// Back: one screen up, as each screen's back goes ([`tap`] says where).
+    Back,
+    /// The ✕: back to the map, as World does.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    Close,
+    /// Ask the directory again, in this order.
+    Find(DirectoryOrder),
+    /// A listing in Find: its page when this account is in it, else its
+    /// preview.
+    Listing(Uuid, ListingState),
+    /// Open the code or link typed under "Have an invite?".
+    OpenTypedInvite,
+    /// A community's page.
+    Show(Uuid),
+    /// Join through the invite being looked at.
+    JoinInvite(String, Uuid),
+    /// Join an open community.
+    Join(Uuid),
+    /// Ask to join, with the line typed for the moderators.
+    AskToJoin(Uuid),
+    /// Take a request to join back; `true` goes back to Find.
+    Withdraw(Uuid, bool),
+    /// Message this person.
+    Message(String),
+    /// The form's picture: pick one (`chats` starts the picker), or drop it.
+    ChoosePicture,
+    RemovePicture,
+    /// The form's place: where the map is, or none.
+    PinPlace,
+    RemovePlace,
+    /// Start the community the form describes, once it has a name.
+    Create,
+    /// The community page's two forms: Invite and New topic.
+    ToggleAdding,
+    ToggleTopic,
+    People(Uuid),
+    /// The Edit form, filled from the community as it is.
+    Edit(Uuid),
+    /// Add the people typed into Invite.
+    AddPeople(Uuid),
+    /// Put an invite link on the clipboard.
+    CopyInvite(String),
+    /// Start the topic typed into New topic.
+    StartTopic(Uuid),
+    /// Open or fold a moderator's queue.
+    ToggleReview,
+    /// Open this topic's chat.
+    Open(String),
+    /// Mute (`true`) or unmute a topic on this device.
+    Mute(String, bool),
+    /// Save the Edit form.
+    Save(Uuid),
+    /// Leave the community, or (`Delete`) delete it with every topic.
+    Leave(Uuid),
+    Delete(Uuid),
+    /// Work for the engine as it stands: a decision, a role, a removal, a
+    /// report closed, a new invite link.
+    Ops(Vec<CommunityOp>),
+}
+
+/// Whether the community form's picture is on its way (picked or uploading):
+/// Choose and Remove wait.
+#[must_use]
+pub fn picture_busy(cs: &Communities) -> bool {
+    cs.upload.is_some() || cs.capture.is_some()
+}
+
+/// Whether the form for a new community can be sent: it has a name.
+#[must_use]
+pub fn create_ready(cs: &Communities) -> bool {
+    !cs.draft.name.trim().is_empty()
+}
+
+/// Do a tap on a community screen, for egui's screens and the library's.
+#[allow(clippy::too_many_lines)]
+pub fn tap(cs: &mut Communities, t: Tap, out: &mut Out) {
+    match t {
+        Tap::Back => match cs.screen.clone() {
+            Some(Screen::Preview(_)) => cs.screen = Some(Screen::Find),
+            Some(Screen::Community(id)) if crate::systems::community_posts::composing(cs, id) => {
+                crate::systems::community_posts::leave_compose_page(cs);
+            }
+            Some(Screen::Edit(id) | Screen::People(id)) => {
+                if cs.get(id).is_some() {
+                    cs.show(id);
+                } else {
+                    cs.screen = None;
+                }
+            }
+            Some(Screen::PostTo) => {
+                cs.posts.from_view = None;
+                cs.posts.pending_picture = None;
+                cs.screen = None;
+            }
+            _ => cs.screen = None,
+        },
+        Tap::Close => out.close = true,
+        Tap::Find(order) => {
+            cs.order = Some(order);
+            cs.ops
+                .push(CommunityOp::Find(cs.query.clone(), order, cs.here));
+        }
+        Tap::Listing(id, mine) => {
+            cs.join_message.clear();
+            cs.screen = Some(match mine {
+                ListingState::Member => Screen::Community(id),
+                _ => Screen::Preview(id),
+            });
+        }
+        Tap::OpenTypedInvite => {
+            if let Some(code) = crate::systems::place_link::invite_from_link(&cs.invite_input) {
+                cs.invite_input.clear();
+                cs.open_invite(code);
+            }
+        }
+        Tap::Show(id) => cs.show(id),
+        Tap::JoinInvite(code, id) => {
+            cs.ops.push(CommunityOp::JoinInvite(code));
+            cs.show(id);
+        }
+        Tap::Join(id) => {
+            cs.ops.push(CommunityOp::Join(id, String::new()));
+            cs.show(id);
+        }
+        Tap::AskToJoin(id) => {
+            cs.ops
+                .push(CommunityOp::Join(id, cs.join_message.trim().to_string()));
+            cs.join_message.clear();
+            cs.screen = None;
+        }
+        Tap::Withdraw(id, to_find) => {
+            cs.ops.push(CommunityOp::Leave(id));
+            cs.screen = to_find.then_some(Screen::Find);
+        }
+        Tap::Message(who) => out.message = Some(who),
+        Tap::ChoosePicture => {
+            if crate::platform::photo::is_available() && !picture_busy(cs) {
+                cs.picture_note = None;
+                cs.picture_for_post = false;
+                cs.pick_picture = true;
+            }
+        }
+        Tap::RemovePicture => {
+            if !picture_busy(cs) {
+                cs.draft.picture = None;
+            }
+        }
+        Tap::PinPlace => {
+            if let Some((latitude, longitude)) = cs.here {
+                cs.draft.place = Some(CommunityPlace {
+                    latitude,
+                    longitude,
+                    name: String::new(),
+                });
+            }
+        }
+        Tap::RemovePlace => cs.draft.place = None,
+        Tap::Create => {
+            if !create_ready(cs) {
+                return;
+            }
+            let topics: Vec<String> = cs
+                .draft
+                .topics
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect();
+            cs.ops.push(CommunityOp::Create {
+                settings: cs.draft.settings(),
+                topics,
+                people: people(&cs.draft.people),
+            });
+            cs.screen = None;
+        }
+        Tap::ToggleAdding => {
+            cs.adding = !cs.adding;
+            cs.starting_topic = false;
+        }
+        Tap::ToggleTopic => {
+            cs.starting_topic = !cs.starting_topic;
+            cs.adding = false;
+        }
+        Tap::People(id) => cs.screen = Some(Screen::People(id)),
+        Tap::Edit(id) => {
+            if let Some(c) = cs.get(id).cloned() {
+                cs.draft = Draft::of(&c);
+                cs.screen = Some(Screen::Edit(id));
+            }
+        }
+        Tap::AddPeople(id) => {
+            for p in people(&cs.add_people) {
+                cs.ops.push(CommunityOp::Add(id, p));
+            }
+            cs.add_people.clear();
+            cs.adding = false;
+        }
+        Tap::CopyInvite(link) => crate::utils::clipboard::set_text(&link),
+        Tap::StartTopic(id) => {
+            if !cs.new_topic.trim().is_empty() {
+                cs.ops
+                    .push(CommunityOp::StartTopic(id, cs.new_topic.trim().to_string()));
+                cs.new_topic.clear();
+                cs.starting_topic = false;
+            }
+        }
+        Tap::ToggleReview => cs.reviewing = !cs.reviewing,
+        Tap::Open(key) => out.open = Some(key),
+        Tap::Mute(key, muted) => cs.set_muted(&key, muted),
+        Tap::Save(id) => {
+            let Some(c) = cs.get(id).cloned() else {
+                cs.screen = None;
+                return;
+            };
+            cs.ops.push(CommunityOp::Edit(id, cs.draft.settings()));
+            for (i, t) in cs.draft.topic_edits.iter().enumerate() {
+                let before = c.topics.iter().find(|b| b.group == t.group);
+                if before.is_some_and(|b| b.name != t.name || b.archived != t.archived) {
+                    cs.ops.push(CommunityOp::EditTopic {
+                        id,
+                        group: t.group.clone(),
+                        name: t.name.clone(),
+                        position: i as u32,
+                        archived: t.archived,
+                    });
+                }
+            }
+            cs.show(id);
+        }
+        Tap::Leave(id) => {
+            cs.ops.push(CommunityOp::Leave(id));
+            cs.screen = None;
+        }
+        Tap::Delete(id) => {
+            cs.ops.push(CommunityOp::Delete(id));
+            cs.screen = None;
+        }
+        Tap::Ops(ops) => cs.ops.extend(ops),
+    }
+}
+
+pub(crate) fn role_word(r: CommunityRole) -> &'static str {
     match r {
         CommunityRole::Owner => "Owner",
         CommunityRole::Moderator => "Moderator",
@@ -523,7 +770,7 @@ fn role_word(r: CommunityRole) -> &'static str {
     }
 }
 
-fn rule_word(r: JoinRule) -> &'static str {
+pub(crate) fn rule_word(r: JoinRule) -> &'static str {
     match r {
         JoinRule::Open => "Open",
         JoinRule::Ask => "Asks first",
@@ -540,7 +787,7 @@ fn rule_tone(r: JoinRule) -> egui::Color32 {
 }
 
 /// `name@server` as a person on this server reads it.
-fn shown(address: &str, home: &str) -> String {
+pub(crate) fn shown(address: &str, home: &str) -> String {
     cartopolis_core::address::display(address, home).to_string()
 }
 
@@ -780,21 +1027,20 @@ pub struct CommunityRow {
     pub at_ms: u64,
     /// Unread lines in its topics, plus requests to join for a moderator.
     pub unread: usize,
-    /// Where a tap goes: the only topic you are in, or (`None`) the community.
-    pub open: Option<String>,
 }
 
 /// Every community this account is in or asked to join, as list rows.
-/// `unread` counts a chat's unread lines.
+/// `unread` counts a chat's unread lines. `ctx` loads their pictures; the
+/// component library's list (`lib_chats`), which draws none, passes `None`.
 pub fn list_rows(
-    ctx: &egui::Context,
+    ctx: Option<&egui::Context>,
     communities: &mut Communities,
     chat: &ChatState,
     unread: &dyn Fn(&str) -> usize,
 ) -> Vec<CommunityRow> {
     let mut out = Vec::new();
     for c in communities.list.clone() {
-        let picture = communities.picture(ctx, c.settings.picture.as_deref());
+        let picture = ctx.and_then(|ctx| communities.picture(ctx, c.settings.picture.as_deref()));
         let joined: Vec<_> = c
             .topics
             .iter()
@@ -853,8 +1099,6 @@ pub fn list_rows(
                 0,
             ),
         };
-        let open = (c.role.is_some() && joined.len() == 1 && c.requests.is_empty())
-            .then(|| channel_key(&joined[0].group));
         out.push(CommunityRow {
             id: c.id,
             name: c.settings.name.clone(),
@@ -862,7 +1106,6 @@ pub fn list_rows(
             preview,
             at_ms,
             unread: waiting,
-            open,
         });
     }
     out
@@ -916,7 +1159,7 @@ pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out
 
 fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
     if title_row(ui, "Find a community", out) {
-        cs.screen = None;
+        tap(cs, Tap::Back, out);
         return;
     }
     let field = crate::systems::theme::text_field(
@@ -937,9 +1180,7 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
         ],
     );
     if changed || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-        cs.order = Some(order);
-        cs.ops
-            .push(CommunityOp::Find(cs.query.clone(), order, cs.here));
+        tap(cs, Tap::Find(order), out);
     }
     if order == DirectoryOrder::Near {
         theme::note(
@@ -986,11 +1227,7 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
             },
         );
         if resp.clicked() {
-            cs.join_message.clear();
-            cs.screen = Some(match l.mine {
-                ListingState::Member => Screen::Community(l.id),
-                _ => Screen::Preview(l.id),
-            });
+            tap(cs, Tap::Listing(l.id, l.mine), out);
         }
     }
     theme::section(ui, "Have an invite?");
@@ -1002,18 +1239,14 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
                 .desired_width(ui.available_width() - 70.0)
                 .hint_text("Paste the link or the code"),
         );
-        let code = crate::systems::place_link::invite_from_link(&cs.invite_input);
         if theme::action_button(ui, "Open").clicked() {
-            if let Some(code) = code {
-                cs.invite_input.clear();
-                cs.open_invite(code);
-            }
+            tap(cs, Tap::OpenTypedInvite, out);
         }
     });
 }
 
 /// "350 m away", "4.2 km away".
-fn distance_words(m: f64) -> String {
+pub(crate) fn distance_words(m: f64) -> String {
     if m < 1000.0 {
         format!("{} m away", (m / 10.0).round() * 10.0)
     } else if m < 10_000.0 {
@@ -1066,7 +1299,7 @@ fn listing_hero(ui: &mut egui::Ui, cs: &mut Communities, l: &CommunityListing) {
 }
 
 /// "Grote Markt, Groningen" or the coordinates, when it was given no name.
-fn place_words(p: &CommunityPlace) -> String {
+pub(crate) fn place_words(p: &CommunityPlace) -> String {
     if p.name.trim().is_empty() {
         format!("{:.4}, {:.4}", p.latitude, p.longitude)
     } else {
@@ -1077,7 +1310,7 @@ fn place_words(p: &CommunityPlace) -> String {
 /// Somebody opened an invite link: the community it names, and Join.
 fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str, out: &mut Out) {
     if title_row(ui, "Invitation", out) {
-        cs.screen = None;
+        tap(cs, Tap::Back, out);
         return;
     }
     let Some(l) = cs.directory.first().cloned() else {
@@ -1094,20 +1327,19 @@ fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str, out: &mut 
     listing_hero(ui, cs, &l);
     if l.mine == ListingState::Member {
         if theme::primary_button_sized(ui, "Open", ui.available_width()).clicked() {
-            cs.show(l.id);
+            tap(cs, Tap::Show(l.id), out);
         }
         return;
     }
     theme::note(ui, "You were invited, so you join straight away.");
     if theme::primary_button_sized(ui, "Join", ui.available_width()).clicked() {
-        cs.ops.push(CommunityOp::JoinInvite(code.to_string()));
-        cs.show(l.id);
+        tap(cs, Tap::JoinInvite(code.to_string(), l.id), out);
     }
 }
 
 fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
     if title_row(ui, "Community", out) {
-        cs.screen = Some(Screen::Find);
+        tap(cs, Tap::Back, out);
         return;
     }
     let Some(l) = cs.directory.iter().find(|l| l.id == id).cloned() else {
@@ -1136,21 +1368,20 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
             |_| {},
         );
         if r.clicked() {
-            out.message = Some(m.address.clone());
+            tap(cs, Tap::Message(m.address.clone()), out);
         }
     }
     ui.add_space(8.0);
     match (l.mine, l.join) {
         (ListingState::Member, _) => {
             if theme::primary_button_sized(ui, "Open", ui.available_width()).clicked() {
-                cs.show(id);
+                tap(cs, Tap::Show(id), out);
             }
         }
         (ListingState::Asked, _) => {
             theme::note(ui, "You asked to join. A moderator will answer.");
             if theme::action_button(ui, "Withdraw the request").clicked() {
-                cs.ops.push(CommunityOp::Leave(id));
-                cs.screen = Some(Screen::Find);
+                tap(cs, Tap::Withdraw(id, true), out);
             }
         }
         (ListingState::Refused, _) => {
@@ -1161,8 +1392,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
         }
         (ListingState::Outside, JoinRule::Open) => {
             if theme::primary_button_sized(ui, "Join", ui.available_width()).clicked() {
-                cs.ops.push(CommunityOp::Join(id, String::new()));
-                cs.show(id);
+                tap(cs, Tap::Join(id), out);
             }
         }
         (ListingState::Outside, JoinRule::Ask) => {
@@ -1185,10 +1415,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
             });
             ui.add_space(6.0);
             if theme::primary_button_sized(ui, "Ask to join", ui.available_width()).clicked() {
-                cs.ops
-                    .push(CommunityOp::Join(id, cs.join_message.trim().to_string()));
-                cs.join_message.clear();
-                cs.screen = None;
+                tap(cs, Tap::AskToJoin(id), out);
             }
         }
     }
@@ -1259,17 +1486,15 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
             picture.as_ref(),
             48.0,
         );
-        let busy = cs.upload.is_some() || cs.capture.is_some();
+        let busy = picture_busy(cs);
         if crate::platform::photo::is_available()
             && !busy
             && theme::action_button(ui, format!("{} Choose", icons::CAMERA)).clicked()
         {
-            cs.picture_note = None;
-            cs.picture_for_post = false;
-            cs.pick_picture = true;
+            tap(cs, Tap::ChoosePicture, &mut Out::default());
         }
         if cs.draft.picture.is_some() && !busy && theme::action_button(ui, "Remove").clicked() {
-            cs.draft.picture = None;
+            tap(cs, Tap::RemovePicture, &mut Out::default());
         }
     });
     if let Some(note) = &cs.picture_note {
@@ -1288,7 +1513,7 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
                         .hint_text("Name the place"),
                 );
                 if theme::action_button(ui, "Remove").clicked() {
-                    cs.draft.place = None;
+                    tap(cs, Tap::RemovePlace, &mut Out::default());
                 } else {
                     cs.draft.place = Some(p.clone());
                 }
@@ -1302,16 +1527,11 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
             );
         }
         None => {
-            if let Some((latitude, longitude)) = cs.here {
-                if theme::action_button(ui, format!("{} Pin it where the map is", icons::PIN))
+            if cs.here.is_some()
+                && theme::action_button(ui, format!("{} Pin it where the map is", icons::PIN))
                     .clicked()
-                {
-                    cs.draft.place = Some(CommunityPlace {
-                        latitude,
-                        longitude,
-                        name: String::new(),
-                    });
-                }
+            {
+                tap(cs, Tap::PinPlace, &mut Out::default());
             }
             theme::note(
                 ui,
@@ -1323,7 +1543,7 @@ fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
 
 fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
     if title_row(ui, "New community", out) {
-        cs.screen = None;
+        tap(cs, Tap::Back, out);
         return;
     }
     settings_form(ui, &mut cs.draft);
@@ -1345,25 +1565,11 @@ fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
             .hint_text("Usernames, separated by commas (optional)"),
     );
     ui.add_space(10.0);
-    let ready = !cs.draft.name.trim().is_empty();
+    let ready = create_ready(cs);
     if theme::action_enabled_because(ui, ready, "Start the community", "Give it a name first")
         .clicked()
-        && ready
     {
-        let topics: Vec<String> = cs
-            .draft
-            .topics
-            .split(',')
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-            .collect();
-        cs.ops.push(CommunityOp::Create {
-            settings: cs.draft.settings(),
-            topics,
-            people: people(&cs.draft.people),
-        });
-        cs.screen = None;
+        tap(cs, Tap::Create, out);
     }
     theme::note(
         ui,
@@ -1393,16 +1599,16 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 .clicked();
         });
         if back {
-            posts::leave_compose_page(cs);
+            tap(cs, Tap::Back, out);
             return;
         }
         if send {
-            posts::send_post(cs);
+            posts::composer_act(cs, posts::ComposerAction::Post);
         }
     }
     let Some(c) = cs.get(id).cloned() else {
         if title_row(ui, "", out) {
-            cs.screen = None;
+            tap(cs, Tap::Back, out);
             return;
         }
         theme::note(ui, "You are no longer in this community.");
@@ -1415,7 +1621,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     let picture = cs.picture(ui.ctx(), c.settings.picture.as_deref());
     let Some(role) = c.role else {
         if title_row(ui, "", out) {
-            cs.screen = None;
+            tap(cs, Tap::Back, out);
             return;
         }
         hero(
@@ -1427,8 +1633,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         );
         theme::note(ui, "You asked to join. A moderator will answer.");
         if theme::action_button(ui, "Withdraw the request").clicked() {
-            cs.ops.push(CommunityOp::Leave(id));
-            cs.screen = None;
+            tap(cs, Tap::Withdraw(id, false), out);
         }
         return;
     };
@@ -1455,7 +1660,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         }
     );
     if page_head(ui, &c.settings.name, picture.as_ref(), &facts, out) {
-        cs.screen = None;
+        tap(cs, Tap::Back, out);
         return;
     }
     if !c.settings.about.trim().is_empty() {
@@ -1494,19 +1699,10 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
     }
     let cells: Vec<_> = acts.iter().map(|(_, cell)| *cell).collect();
     match theme::action_strip(ui, &cells).map(|i| acts[i].0) {
-        Some(Act::Invite) => {
-            cs.adding = !cs.adding;
-            cs.starting_topic = false;
-        }
-        Some(Act::Topic) => {
-            cs.starting_topic = !cs.starting_topic;
-            cs.adding = false;
-        }
-        Some(Act::People) => cs.screen = Some(Screen::People(id)),
-        Some(Act::Edit) => {
-            cs.draft = Draft::of(&c);
-            cs.screen = Some(Screen::Edit(id));
-        }
+        Some(Act::Invite) => tap(cs, Tap::ToggleAdding, out),
+        Some(Act::Topic) => tap(cs, Tap::ToggleTopic, out),
+        Some(Act::People) => tap(cs, Tap::People(id), out),
+        Some(Act::Edit) => tap(cs, Tap::Edit(id), out),
         None => {}
     }
     if cs.adding {
@@ -1523,11 +1719,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 "They'll be in every topic, and get the recent history from whoever adds them.",
             );
             if theme::action_button(ui, "Add").clicked() {
-                for p in people(&cs.add_people) {
-                    cs.ops.push(CommunityOp::Add(id, p));
-                }
-                cs.add_people.clear();
-                cs.adding = false;
+                tap(cs, Tap::AddPeople(id), out);
             }
             ui.separator();
             match cs.invite.clone().filter(|(i, _)| *i == id) {
@@ -1539,10 +1731,10 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                     );
                     ui.horizontal(|ui| {
                         if theme::action_button(ui, format!("{} Copy", icons::COPY)).clicked() {
-                            crate::utils::clipboard::set_text(&link);
+                            tap(cs, Tap::CopyInvite(link.clone()), out);
                         }
                         if theme::action_button(ui, "New link").clicked() {
-                            cs.ops.push(CommunityOp::CreateInvite(id));
+                            tap(cs, Tap::Ops(vec![CommunityOp::CreateInvite(id)]), out);
                         }
                     });
                     theme::note(
@@ -1557,7 +1749,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                     if theme::action_button(ui, format!("{} Make an invite link", icons::SHARE))
                         .clicked()
                     {
-                        cs.ops.push(CommunityOp::CreateInvite(id));
+                        tap(cs, Tap::Ops(vec![CommunityOp::CreateInvite(id)]), out);
                     }
                 }
             }
@@ -1572,12 +1764,8 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                     .desired_width(ui.available_width())
                     .hint_text("Topic name, e.g. meet-ups"),
             );
-            if theme::action_button(ui, "Start topic").clicked() && !cs.new_topic.trim().is_empty()
-            {
-                cs.ops
-                    .push(CommunityOp::StartTopic(id, cs.new_topic.trim().to_string()));
-                cs.new_topic.clear();
-                cs.starting_topic = false;
+            if theme::action_button(ui, "Start topic").clicked() {
+                tap(cs, Tap::StartTopic(id), out);
             }
         });
     }
@@ -1726,8 +1914,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
         "Leave the community",
         "Leave: tap again",
     ) {
-        cs.ops.push(CommunityOp::Leave(id));
-        cs.screen = None;
+        tap(cs, Tap::Leave(id), out);
     }
     let _ = me;
 }
@@ -1753,7 +1940,7 @@ fn review_row(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, waiting
             let label = if cs.reviewing { "Hide" } else { "Review" };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if theme::secondary_toggle(ui, "", label, 0.0, cs.reviewing).clicked() {
-                    cs.reviewing = !cs.reviewing;
+                    tap(cs, Tap::ToggleReview, &mut Out::default());
                 }
                 ui.add_space(4.0);
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -1812,13 +1999,13 @@ fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &
                         .on_hover_text("Muted topics show no count. Only this device knows.")
                         .clicked()
                     {
-                        cs.set_muted(&key, !muted);
+                        tap(cs, Tap::Mute(key.clone(), !muted), &mut Out::default());
                     }
                 }
             },
         );
         if r.clicked() && t.joined {
-            out.open = Some(key);
+            tap(cs, Tap::Open(key), out);
         }
     }
     theme::note(
@@ -1829,7 +2016,7 @@ fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &
 
 fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
     if title_row(ui, "Edit community", out) {
-        cs.show(id);
+        tap(cs, Tap::Back, out);
         return;
     }
     let Some(c) = cs.get(id).cloned() else {
@@ -1855,20 +2042,7 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out)
     }
     ui.add_space(10.0);
     if theme::primary_button_sized(ui, "Save", ui.available_width()).clicked() {
-        cs.ops.push(CommunityOp::Edit(id, cs.draft.settings()));
-        for (i, t) in cs.draft.topic_edits.iter().enumerate() {
-            let before = c.topics.iter().find(|b| b.group == t.group);
-            if before.is_some_and(|b| b.name != t.name || b.archived != t.archived) {
-                cs.ops.push(CommunityOp::EditTopic {
-                    id,
-                    group: t.group.clone(),
-                    name: t.name.clone(),
-                    position: i as u32,
-                    archived: t.archived,
-                });
-            }
-        }
-        cs.show(id);
+        tap(cs, Tap::Save(id), out);
     }
     if c.role == Some(CommunityRole::Owner) {
         theme::section(ui, "Danger");
@@ -1878,15 +2052,14 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out)
             "Delete the community",
             "Delete it and every topic: tap again",
         ) {
-            cs.ops.push(CommunityOp::Delete(id));
-            cs.screen = None;
+            tap(cs, Tap::Delete(id), out);
         }
     }
 }
 
 fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
     if title_row(ui, "People", out) {
-        cs.show(id);
+        tap(cs, Tap::Back, out);
         return;
     }
     let Some(c) = cs.get(id).cloned() else {

@@ -254,6 +254,10 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                 }
             };
             if let Some(e) = entity {
+                // A line cut to fit starts again from its new whole.
+                if let Some(mut el) = world.get_mut::<crate::ellipsis::Ellipsis>(e) {
+                    el.reset(text.clone());
+                }
                 if let Some(mut t) = world.get_mut::<Text>(e) {
                     t.0 = text;
                 }
@@ -298,6 +302,21 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
         }
         // The renderer action `@focus`: the field takes the keyboard as it
         // mounts (a search panel's one field), as the DOM renderer's does.
+        // The renderer action `@scroll-end`: the scroll area to its end (a
+        // chat's latest line). Past the end is clamped by the layout, so
+        // the end it reaches is the content's as laid out this frame.
+        Op::SetPropertyBool { id, name, value } if name == "@scroll-end" => {
+            let entity = world
+                .resource::<UiTree>()
+                .nodes
+                .get(&id)
+                .and_then(|n| n.entity);
+            if let (true, Some(e)) = (value, entity) {
+                if let Ok(mut em) = world.get_entity_mut(e) {
+                    em.insert(ScrollPosition(Vec2::new(0.0, f32::MAX)));
+                }
+            }
+        }
         Op::SetPropertyBool { id, name, value } if name == "@focus" => {
             let entity = world
                 .resource::<UiTree>()
@@ -755,9 +774,11 @@ fn write_components(
         }
         em.insert(TextColor(colour(c.color, opacity)));
         em.insert(LineHeight::RelativeToFont(c.line_height));
-        // No ellipsis in Bevy's text: a line the browser would end in "…"
-        // wraps instead of being cut off mid-letter.
-        let mut layout = if c.nowrap && !c.ellipsis {
+        // A line the browser ends in "…" stays one line here too, may
+        // shrink to its box, and is cut to fit after the layout
+        // (`crate::ellipsis`): Bevy's text has no ellipsis of its own.
+        let fit = c.nowrap && c.ellipsis;
+        let mut layout = if c.nowrap {
             TextLayout::no_wrap()
         } else {
             TextLayout::default()
@@ -776,10 +797,30 @@ fn write_components(
                 }
             }
         }
+        // A line that may be cut takes the room its line has, not its own
+        // width: sized by its text, a cut line would shrink its box to
+        // itself and never see the room come back.
+        // Restyled, a line being cut keeps asking for its whole width.
+        let asked = em
+            .get::<crate::ellipsis::Ellipsis>()
+            .and_then(|el| el.full_width)
+            .filter(|_| fit)
+            .map_or(Val::Auto, Val::Px);
         em.insert(Node {
             flex_shrink: 1.0,
+            flex_grow: if fit { 1.0 } else { 0.0 },
+            min_width: if fit { Val::Px(0.0) } else { Val::Auto },
+            width: asked,
             ..default()
         });
+        if fit {
+            if em.get::<crate::ellipsis::Ellipsis>().is_none() {
+                let full = em.get::<Text>().map(|t| t.0.clone()).unwrap_or_default();
+                em.insert(crate::ellipsis::Ellipsis::new(full));
+            }
+        } else {
+            em.remove::<crate::ellipsis::Ellipsis>();
+        }
         return;
     }
     let is_input = tag == "input";
@@ -906,9 +947,23 @@ fn write_components(
         node.flex_grow = 1.0;
         node.min_width = Val::Px(0.0);
     }
+    // An `<img>`: its `data:` source decoded once (`images.rs`).
+    let picture = if tag == "img" {
+        props_or_attr(&id, world, "src").and_then(|src| crate::images::resolve(world, &src))
+    } else {
+        None
+    };
     // A drawn control has its size from the sheet already.
     let mut em = world.entity_mut(e);
     em.insert(node);
+    match picture {
+        Some(handle) => {
+            em.insert(ImageNode::new(handle));
+        }
+        None => {
+            em.remove::<ImageNode>();
+        }
+    }
     em.insert(BackgroundColor(
         c.background.map_or(Color::NONE, |b| colour(b, opacity)),
     ));

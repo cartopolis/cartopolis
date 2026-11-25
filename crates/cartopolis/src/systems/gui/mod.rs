@@ -68,6 +68,21 @@ pub mod lib_route;
 pub mod lib_search;
 #[cfg(feature = "ui-lib")]
 pub mod lib_settings;
+// The library's screens that talk: the app's only, as their egui ones (`comms`).
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_chat_conversation;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_chats;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_communities;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_filter_chip;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_person_card;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_post_composer;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_reminder;
 #[cfg(feature = "comms")]
 pub mod login_screen;
 pub mod map_osd;

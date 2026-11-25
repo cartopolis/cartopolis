@@ -36,7 +36,7 @@ impl Plugin for UiProbePlugin {
             // is written from, so the library draws the app's palette here
             // and the site's there from one table.
             .add_plugins(mithril_bevy::MithrilUiPlugin {
-                tokens: theme::tokens(),
+                tokens: theme::app_tokens(),
             })
             .add_systems(Update, spawn_probe.in_set(ClientPhase::Input))
             // After every Update system has had its say on `RightPanel`, and
@@ -57,6 +57,22 @@ impl Plugin for UiProbePlugin {
                     .chain()
                     .before(mithril_bevy::DriveUi),
             );
+        // The screens that talk, the app's only (`comms`): between the
+        // screens above and the input bridge.
+        #[cfg(feature = "comms")]
+        app.add_systems(
+            PostUpdate,
+            (
+                crate::systems::lib_chats::drive_lib_chats,
+                crate::systems::lib_person_card::drive_lib_person_card,
+                crate::systems::lib_reminder::drive_lib_reminder,
+                crate::systems::lib_filter_chip::drive_lib_filter_chip,
+                crate::systems::lib_post_composer::drive_lib_post_composer,
+            )
+                .chain()
+                .after(crate::systems::lib_host::prepare_bevy)
+                .before(crate::systems::lib_host::bridge_input),
+        );
     }
 }
 

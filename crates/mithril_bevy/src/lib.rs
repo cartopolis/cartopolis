@@ -28,7 +28,9 @@ use bevy::prelude::*;
 use mithril::style::{Env, Stylist, Tokens};
 use mithril::view::{Handler, Kind, Mounted, Renderer, View};
 
+mod ellipsis;
 mod events;
+mod images;
 mod popup;
 mod tree;
 
@@ -331,9 +333,35 @@ impl Plugin for MithrilUiPlugin {
         let tokens = self.tokens.clone();
         HOST.with(|h| *h.borrow_mut() = Some(UiHost::new(tokens)));
         app.init_resource::<UiTree>()
+            .init_resource::<images::ImageCache>()
             .init_resource::<UiEvents>()
             .init_resource::<UiPointer>()
-            .add_systems(PostUpdate, (drive_ui.in_set(DriveUi), spin.after(DriveUi)));
+            .add_systems(
+                PostUpdate,
+                (
+                    drive_ui.in_set(DriveUi),
+                    spin.after(DriveUi),
+                    settle_scroll.after(bevy::ui::UiSystems::Layout),
+                    ellipsis::fit_ellipsis.after(bevy::ui::UiSystems::Layout),
+                ),
+            );
+    }
+}
+
+/// A scroll position past the end — `@scroll-end` asks for the end as
+/// `f32::MAX` — back to the end the layout reached, so a drag or the wheel
+/// moves from there and not from infinity.
+fn settle_scroll(
+    mut areas: Query<
+        (&bevy::ui::ComputedNode, &mut bevy::ui::ScrollPosition),
+        With<bevy::ui_widgets::ScrollArea>,
+    >,
+) {
+    for (computed, mut pos) in &mut areas {
+        let laid = computed.scroll_position * computed.inverse_scale_factor;
+        if pos.0.y > laid.y + 1.0 || pos.0.x > laid.x + 1.0 {
+            pos.0 = laid;
+        }
     }
 }
 

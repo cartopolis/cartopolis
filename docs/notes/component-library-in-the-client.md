@@ -1,6 +1,6 @@
 ---
 topic: component-library-in-the-client
-triggers: [mithril_bevy, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
+triggers: [mithril_bevy, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
 updated: 2026-11-24
 ---
 
@@ -167,3 +167,28 @@ mirrors each frame when it differs.
 Not yet: the camera test (a live picture; the library has no image node),
 the General page's receiver, storage and editor-access sections, and
 cartopolis' own `Tokens` (phase 4).
+- **An `<img>`** whose `src` is a `data:` URL (`data:image/jpeg;base64,…`)
+  is decoded once and shown as an `ImageNode` (`images.rs`); the browser
+  shows the same tag as it is. A screen hands over thumbnails this way,
+  scaled down first, since the URL sits in the view and in its HTML dump.
+- **`text-overflow: ellipsis`**, which Bevy's text lacks
+  (`ellipsis.rs`): the line stays one line, asks for its whole text's
+  width (`Node::width`, measured while the whole text shows), may shrink
+  to `min-width: 0`, and is cut with "…" after `UiSystems::Layout`. Sized
+  by the cut text instead, every box around it that sizes to its content
+  shrank with the cut and kept it cut; a first measurement before the
+  faces loaded was too narrow, so the fit starts over once, ~45 frames
+  in. A line that still reads cut where egui's did not usually has
+  less room: measure it (`MITHRIL_BEVY_DUMP=1`) before blaming the cut.
+- **`@scroll-end`** (a renderer action) scrolls a scroll area to its end;
+  `settle_scroll` brings the asked-for `f32::MAX` back to the laid-out
+  end after the layout, or a drag would start from infinity.
+
+## Type scale: the app's, not the site's
+
+The library's screens in the app draw with `theme::app_tokens()` — the
+site's `tokens()` on egui's sizes (`SIZE_BODY` 14, `SIZE_SUB` 12.5,
+`SIZE_TITLE` 17); screen headers are 19 px (`SIZE_HEADING`), card and
+sub-page titles 17. On the site's 15/13 every screen read a size larger
+than its egui twin and titles wrapped (2026-11-25). The site's
+`theme.css` stays on `tokens()`.

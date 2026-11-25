@@ -110,7 +110,7 @@ pub(crate) fn header(glyph: &'static str, title: String, close: Handler) -> View
     view! {
         <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 16px">
             <span style="color: var(--m-accent)">{icon(glyph)}</span>
-            <h1 style="flex: 1; min-width: 0; margin: 0; font-size: 18px; font-weight: 600; color: var(--m-text-strong)">{title}</h1>
+            <h1 style="flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 600; color: var(--m-text-strong)">{title}</h1>
             <CloseButton onclick={Some(close)} />
         </div>
     }

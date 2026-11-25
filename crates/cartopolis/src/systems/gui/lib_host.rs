@@ -74,7 +74,12 @@ pub fn prepare_bevy(
             || lib.route
             || lib.places
             || lib.place_card
-            || lib.building_card)
+            || lib.building_card
+            || lib.chats
+            || lib.person_card
+            || lib.reminder
+            || lib.filter_chip
+            || lib.post_composer)
     {
         return;
     }
@@ -148,7 +153,7 @@ mod dom {
         if document.get_element_by_id(STYLE).is_none() {
             let style = document.create_element("style").ok()?;
             style.set_id(STYLE);
-            let tokens = theme::tokens();
+            let tokens = theme::app_tokens();
             let mut css = String::new();
             for (name, sheet) in mithril::style::sheets(&tokens) {
                 // The page's own baseline stays the page's.
