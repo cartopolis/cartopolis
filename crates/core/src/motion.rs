@@ -62,6 +62,41 @@ pub fn wish_for_speed(speed: f32) -> f32 {
     (speed / SPEED_SCALE).clamp(0.0, MAX_SPEED / SPEED_SCALE)
 }
 
+/// Hard cap on an avatar's speed while it drives a car (m/s): 252 km/h,
+/// above what any of the cars in `crate::car` reaches on the flat, so the car's
+/// own drag is what limits it and the cap only refuses a client that lies.
+///
+/// The sim grants it only to an intent that says it is driving
+/// (`ClientIntent::driving`, protocol 52); on foot [`MAX_SPEED`] still holds.
+pub const MAX_DRIVE_SPEED: f32 = 70.0;
+
+/// The cap that holds for an avatar on foot or at the wheel.
+#[must_use]
+pub fn speed_cap(driving: bool) -> f32 {
+    if driving {
+        MAX_DRIVE_SPEED
+    } else {
+        MAX_SPEED
+    }
+}
+
+/// [`sim_speed_for_wish`] under the cap for `driving` — the definition the sim
+/// and the prediction share once a car is involved.
+#[must_use]
+pub fn sim_speed_for_wish_capped(wish_magnitude: f32, driving: bool) -> f32 {
+    if wish_magnitude <= 1e-4 {
+        0.0
+    } else {
+        (wish_magnitude * SPEED_SCALE).min(speed_cap(driving))
+    }
+}
+
+/// [`wish_for_speed`] under the cap for `driving`.
+#[must_use]
+pub fn wish_for_speed_capped(speed: f32, driving: bool) -> f32 {
+    (speed / SPEED_SCALE).clamp(0.0, speed_cap(driving) / SPEED_SCALE)
+}
+
 // ── Vertical ─────────────────────────────────────────────────────────────────
 
 /// Downward acceleration (m/s²) on an avatar off the ground.
