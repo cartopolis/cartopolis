@@ -162,6 +162,31 @@ pub fn app_tokens() -> Tokens {
         // An option's icon (`Opt::icon`) in the app's icon font, as every
         // icon in the app's screens is (`icons::FONT`).
         font_icons: "'Material Symbols Rounded'".to_owned(),
+        // The app's accent plates, not the web's (`WEB`): the deeper teal
+        // with white ink, as egui's are since 2026-11-10 ("a teal button
+        // with black text is not nice").
+        accent: pair(theme::LIGHT.accent, theme::DARK.accent),
+        accent_hover: pair(theme::LIGHT.accent_lift, theme::DARK.accent_lift),
+        on_accent: pair(theme::LIGHT.on_accent, theme::DARK.on_accent),
+        focus: Pair::new(
+            &alpha(theme::LIGHT.accent, 50.0),
+            &alpha(theme::DARK.accent, 55.0),
+        ),
         ..tokens()
     }
+}
+
+/// The map chrome's own palette (`theme::map_disc`, the dock, the search
+/// bar) as custom properties for a library root over the map: `--map-fill`,
+/// `--map-rim`, `--map-ink`. The panels' surface and border are a shade
+/// off it, and its ink is white where theirs is the accent.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn map_vars() -> String {
+    let p = theme::p();
+    format!(
+        "--map-fill: {}; --map-rim: {}; --map-ink: {}",
+        hex(p.map_fill),
+        hex(p.map_rim),
+        hex(p.map_ink)
+    )
 }

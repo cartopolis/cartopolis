@@ -66,6 +66,10 @@ impl Plugin for UiProbePlugin {
                 (
                     crate::systems::lib_app_update::drive_lib_app_update,
                     crate::systems::lib_keyboard::drive_lib_keyboard,
+                    crate::systems::lib_chrome::drive_lib_chrome,
+                    crate::systems::lib_map_osd::drive_lib_map_osd,
+                    crate::systems::lib_place_names::drive_lib_place_names,
+                    crate::systems::lib_pins::drive_lib_pins,
                     crate::systems::lib_avatar::drive_lib_avatar,
                     crate::systems::lib_models::drive_lib_models,
                     crate::systems::lib_script::drive_lib_script,
@@ -85,6 +89,7 @@ impl Plugin for UiProbePlugin {
             (
                 crate::systems::lib_chats::drive_lib_chats,
                 crate::systems::lib_admin::drive_lib_admin,
+                crate::systems::lib_chat_overlay::drive_lib_chat_overlay,
                 crate::systems::lib_person_card::drive_lib_person_card,
                 crate::systems::lib_reminder::drive_lib_reminder,
                 crate::systems::lib_filter_chip::drive_lib_filter_chip,
@@ -220,6 +225,7 @@ fn spawn_probe(
                 semibold: faces.semibold.clone(),
                 mono: faces.body.clone(),
                 icons: None,
+                icon_scale: 1.0,
             });
             let p = theme::p();
             mithril_bevy::with_host(|host| {

@@ -41,6 +41,11 @@ pub(super) const EMOJI_TTF: &[u8] = include_bytes!(concat!(
 ));
 pub(super) const EMOJI_FAMILY: &str = "cartopolis-emoji";
 
+/// How much larger than its point size the icon face draws (egui's
+/// `FontTweak::scale` below, and the library's `FontMap::icon_scale`, whose
+/// icons came out a size smaller than egui's without it).
+pub const ICON_SCALE: f32 = 1.15;
+
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a
 /// glyph it lacks (emoji, arrows, the box-drawing the panels use) still resolves
 /// instead of rendering as tofu. Used for headings and the splash wordmark —
@@ -70,7 +75,7 @@ pub(super) fn fonts() -> egui::FontDefinitions {
                 // raises the row height of every line it appears in. These two
                 // numbers are the whole optical fit — `docs/notes/icon-font.md`
                 // has where they come from and when to re-check them.
-                scale: 1.15,
+                scale: ICON_SCALE,
                 y_offset_factor: 0.03,
                 ..Default::default()
             }),

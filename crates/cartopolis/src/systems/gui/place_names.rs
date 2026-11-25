@@ -27,6 +27,12 @@
 //! **A name is a button.** Clicking or long-pressing one opens the map's ring of
 //! actions on the place (`ui::render_context_menu`): Go there, Route here and
 //! Lenses, which centres the place and puts up the shelf of lenses.
+//!
+//! **Two editions, one placing.** Which names show, where, and what each
+//! looks like is decided here once; egui paints them, or — with
+//! [`PlaceNames::lib`] on — the component library does
+//! (`systems::lib_place_names`) from [`PlaceNames::lib_view`], and its taps
+//! come back through [`PlaceNames::lib_tapped`] to open the same ring.
 
 use crate::components::FreeCamera;
 use crate::resources::{ContextMenuState, MapAnchor, MapPlace};
@@ -139,6 +145,63 @@ pub struct PlaceNames {
     /// Tiles that came back empty or failed, so they are not asked again while
     /// they stay wanted.
     empty: HashSet<TileKey>,
+    /// The library draws the names (`lib_place_names`); egui's system still
+    /// chooses and places them and opens the ring, and paints nothing.
+    pub lib: bool,
+    /// The names the library draws this frame, written by
+    /// [`render_place_names`].
+    pub lib_view: Vec<NameItem>,
+    /// The key of the name the library's tap landed on ([`NameItem::key`]),
+    /// opened next frame as a click on egui's is.
+    pub lib_tapped: Option<String>,
+}
+
+/// One name where it stands this frame, for the library.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub struct NameItem {
+    /// The place's kind and name: what the library keys its node by.
+    pub key: String,
+    /// The place's point, in egui points (the library's px natively).
+    pub at: egui::Pos2,
+    pub look: NameLook,
+}
+
+/// What a name looks like, its geometry relative to its point as egui
+/// measured it: everything about it that does not move with the camera.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NameLook {
+    /// A country, city or town: the pill (left, top, width, height from the
+    /// point), the population's badge in it, and the dot a town has.
+    Banner {
+        name: String,
+        size: f32,
+        population: Option<String>,
+        pill: [f32; 4],
+        badge: f32,
+        dot: bool,
+    },
+    /// A station's disc, and its name beside it when it is a town's own,
+    /// with the width and height egui lays the name out in.
+    Station {
+        name: Option<String>,
+        width: f32,
+        height: f32,
+    },
+    /// A district in spaced capitals, centred on its point: its size, and
+    /// the width and height egui lays it out in.
+    District {
+        text: String,
+        size: f32,
+        width: f32,
+        height: f32,
+    },
+}
+
+/// A place's key in the library's list: one per name and kind, as egui
+/// keys its click area.
+fn name_key(p: &Place) -> String {
+    format!("{:?}:{}", p.kind, p.name)
 }
 
 /// Keep the tiles the names come from around the camera.
@@ -289,7 +352,7 @@ fn population_label(n: u32) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn render_place_names(
     mut egui: EguiMut,
-    names: Res<PlaceNames>,
+    mut names: ResMut<PlaceNames>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
@@ -322,6 +385,16 @@ pub fn render_place_names(
         crate::systems::scenario::open_shelf(&mut lenses);
     }
     let mut anchored = WorldAnchored::new(egui.ctx(), "place_names");
+    // The library's edition, when it has the names: egui paints nothing, and
+    // an early return below leaves it no names, which reads as them going.
+    let lib = names.lib;
+    let tapped_key = if lib {
+        names.lib_view.clear();
+        names.lib_tapped.take()
+    } else {
+        None
+    };
+    let mut lib_view: Vec<NameItem> = Vec::new();
     if driver.active || !layers.place_names || room.spot.is_some() {
         return;
     }
@@ -411,22 +484,36 @@ pub fn render_place_names(
         }
     };
     let mut opened: Option<(&Place, egui::Pos2)> = None;
+    // Measured and placed for both editions; painted only for egui's.
+    let paint = !lib;
     for (p, at) in places {
         let drawn = match p.kind {
             PlaceKind::Country | PlaceKind::City | PlaceKind::Town => {
-                banner(&painter, at, p, &mut free)
+                banner(&painter, at, p, &mut free, paint)
             }
             PlaceKind::Station => {
                 let named = alt < 20_000.0 && towns.iter().any(|t| p.name.starts_with(t));
-                station(&painter, at, p, named, &mut free)
+                station(&painter, at, p, named, &mut free, paint)
             }
             PlaceKind::Suburb | PlaceKind::Quarter | PlaceKind::Neighbourhood => {
-                district(&painter, at, p, &mut free)
+                district(&painter, at, p, &mut free, paint)
             }
         };
         let Some(drawn) = drawn else {
             continue;
         };
+        if lib {
+            let key = name_key(p);
+            if tapped_key.as_deref() == Some(key.as_str()) {
+                opened = Some((p, at));
+            }
+            lib_view.push(NameItem {
+                key,
+                at,
+                look: drawn.look,
+            });
+            continue;
+        }
         anchored.at(at);
         let response = sense(&ctx, map_rect, p, drawn.hit);
         if response.hovered() {
@@ -456,6 +543,9 @@ pub fn render_place_names(
             detail: describe(p),
             view_altitude_m: view_altitude_m(p),
         });
+    }
+    if lib {
+        names.lib_view = lib_view;
     }
 }
 
@@ -511,21 +601,30 @@ fn view_altitude_m(p: &Place) -> f64 {
 /// The dark pill a banner and a station share.
 const CHIP: egui::Color32 = theme::LABEL_CHIP;
 
-/// What one name took on the screen: where it answers a click, and the pill
-/// to ring in the accent while the pointer is on it (a banner has one).
+/// What one name took on the screen: where it answers a click, the pill to
+/// ring in the accent while the pointer is on it (a banner has one), and its
+/// look for the library's edition.
 struct Drawn {
     hit: egui::Rect,
     pill: Option<egui::Rect>,
+    look: NameLook,
+}
+
+/// A rect as `[left, top, width, height]` from `at`, for [`NameLook`].
+fn from(at: egui::Pos2, r: egui::Rect) -> [f32; 4] {
+    [r.min.x - at.x, r.min.y - at.y, r.width(), r.height()]
 }
 
 /// A city or town: a dot where it is, and over it a pill with the population
 /// and the name. A country is the pill alone, a size up, centred on its
-/// label point: it has no one spot a dot could mark.
+/// label point: it has no one spot a dot could mark. Measured and placed
+/// always; painted when `paint` (egui's edition).
 fn banner(
     painter: &egui::Painter,
     at: egui::Pos2,
     p: &Place,
     free: &mut impl FnMut(egui::Rect) -> bool,
+    paint: bool,
 ) -> Option<Drawn> {
     let country = p.kind == PlaceKind::Country;
     let name_size = match p.kind {
@@ -557,6 +656,21 @@ fn banner(
     };
     if !free(hit) {
         return None;
+    }
+    let look = NameLook::Banner {
+        name: p.name.clone(),
+        size: name_size,
+        population: (p.population > 0).then(|| population_label(p.population)),
+        pill: from(at, rect),
+        badge: pop_w,
+        dot: !country,
+    };
+    if !paint {
+        return Some(Drawn {
+            hit,
+            pill: Some(rect),
+            look,
+        });
     }
     if !country {
         painter.circle(
@@ -592,6 +706,7 @@ fn banner(
     Some(Drawn {
         hit,
         pill: Some(rect),
+        look,
     })
 }
 
@@ -603,6 +718,7 @@ fn station(
     p: &Place,
     named: bool,
     free: &mut impl FnMut(egui::Rect) -> bool,
+    paint: bool,
 ) -> Option<Drawn> {
     let r = 9.0;
     let name = named.then(|| {
@@ -619,6 +735,19 @@ fn station(
     if !free(rect) {
         return None;
     }
+    let size = name.as_ref().map_or(egui::Vec2::ZERO, |g| g.size());
+    let look = NameLook::Station {
+        name: named.then(|| p.name.clone()),
+        width: size.x,
+        height: size.y,
+    };
+    if !paint {
+        return Some(Drawn {
+            hit: rect,
+            pill: None,
+            look,
+        });
+    }
     painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::DARK.accent));
     // The train: a body, a window line, two wheels.
     let s = egui::Stroke::new(1.3, theme::DARK.cream);
@@ -634,6 +763,7 @@ fn station(
     Some(Drawn {
         hit: rect,
         pill: None,
+        look,
     })
 }
 
@@ -643,15 +773,17 @@ fn district(
     at: egui::Pos2,
     p: &Place,
     free: &mut impl FnMut(egui::Rect) -> bool,
+    paint: bool,
 ) -> Option<Drawn> {
     let size = if p.kind == PlaceKind::Neighbourhood {
         9.5
     } else {
         10.5
     };
+    let text = p.name.to_uppercase();
     let mut job = egui::text::LayoutJob::default();
     job.append(
-        &p.name.to_uppercase(),
+        &text,
         0.0,
         egui::TextFormat {
             font_id: egui::FontId::new(size, theme::brand_family()),
@@ -666,12 +798,21 @@ fn district(
     if !free(rect.expand2(egui::vec2(24.0, 10.0))) {
         return None;
     }
-    haloed(painter, rect.min, galley);
+    let look = NameLook::District {
+        text,
+        size,
+        width: rect.width(),
+        height: rect.height(),
+    };
+    if paint {
+        haloed(painter, rect.min, galley);
+    }
     // A little more than the letters, so a small-capitals name is not a
     // pixel hunt for a finger.
     Some(Drawn {
         hit: rect.expand2(egui::vec2(4.0, 5.0)),
         pill: None,
+        look,
     })
 }
 

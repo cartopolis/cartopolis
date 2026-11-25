@@ -81,6 +81,15 @@
 //! [`TouchGestures::ui_released`]; both are already hit-testable rects, so it
 //! costs a `contains` per control and no state anywhere.
 //!
+//! ## The library's edition
+//!
+//! With [`OsdLib::lib`] on (`systems::lib_map_osd`, `CARTO_UI_LIB=osd`) this
+//! system still lays every control out and reads every finger and click
+//! exactly as above — egui keeps the *slots*, so a click under a control is
+//! egui's on every platform, the web's DOM included — but paints nothing
+//! ([`slot_only`]), and publishes in [`OsdLib::view`] what the library draws
+//! over them, rect for rect. One set of logic, two ways to draw it.
+//!
 //! [`TouchGestures::ui_held`]: crate::systems::touch::TouchGestures::ui_held
 //! [`TouchGestures::ui_released`]: crate::systems::touch::TouchGestures::ui_released
 
@@ -97,8 +106,8 @@ use crate::systems::theme;
 /// that bought was a fourth diameter on a screen that only needed one.
 const CONTROL_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 /// Radius (points) of the thumbstick's well, and of the knob inside it.
-const STICK_RADIUS: f32 = 54.0;
-const STICK_KNOB_RADIUS: f32 = 22.0;
+pub(crate) const STICK_RADIUS: f32 = 54.0;
+pub(crate) const STICK_KNOB_RADIUS: f32 = 22.0;
 
 /// Distance from the bottom of the window to the bottom of a cluster: clear of
 /// the dock, which owns the bottom edge, plus the standard edge inset.
@@ -262,6 +271,162 @@ pub struct OsdInput {
     /// goal until it arrives or another zoom takes over
     /// (`CameraState::rail_goal`).
     pub rail_altitude: Option<f64>,
+}
+
+/// The library's edition of these controls (`systems::lib_map_osd`). Read
+/// as optional by [`render_map_osd`]; `drive_lib_map_osd` inserts it when
+/// nothing registered it.
+#[derive(Resource, Default)]
+pub struct OsdLib {
+    /// The library draws the controls; egui keeps their slots, unpainted.
+    pub lib: bool,
+    /// What the library draws this frame, in egui points. Assigned only
+    /// when it differs, so a resting OSD sends the library nothing.
+    pub view: OsdView,
+}
+
+/// Everything the controls show this frame, as egui laid it out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OsdView {
+    /// The screen (`Context::content_rect`), for what stands right-aligned.
+    pub screen: egui::Vec2,
+    pub stick: Option<StickView>,
+    /// The round controls: the climb or zoom pair, jump, face, hand.
+    pub discs: Vec<DiscView>,
+    /// The hand tracking's word, left of the hand disc.
+    pub hand_word: Option<HandWordView>,
+    /// The expressions, opened from the face disc.
+    pub faces: Option<FacesView>,
+    pub rail: Option<RailFrame>,
+    /// What moves on the rail every frame it moves, kept apart from
+    /// [`RailFrame`] so a zoom restyles a thumb rather than a rail.
+    pub rail_live: RailLive,
+}
+
+/// The thumbstick: the well's centre and the knob's, and whether a push is
+/// on it (the knob's engaged colours).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StickView {
+    pub centre: egui::Pos2,
+    pub knob: egui::Pos2,
+    pub engaged: bool,
+}
+
+/// A disc's ring when engaged ([`theme::map_disc`]'s `tone`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// `accent_ring`, every disc but the hand's.
+    Ring,
+    /// The hand following (`accent_bright`).
+    Bright,
+    /// The hand's camera busy (`warn`).
+    Warn,
+}
+
+/// A disc as [`theme::map_disc`] drew it: where, and which of its three
+/// plates (engaged, hovered, at rest).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiscState {
+    pub rect: egui::Rect,
+    pub on: bool,
+    pub hovered: bool,
+}
+
+impl DiscState {
+    fn of(resp: &egui::Response, on: bool) -> Self {
+        Self {
+            rect: resp.rect,
+            on: on || resp.is_pointer_button_down_on(),
+            hovered: resp.hovered(),
+        }
+    }
+}
+
+/// One round control and the mark on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiscView {
+    pub disc: DiscState,
+    pub mark: Mark,
+    pub tone: Tone,
+}
+
+/// A word right-aligned at `right`, centred on `y`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandWordView {
+    pub right: f32,
+    pub y: f32,
+    pub text: &'static str,
+    pub tone: Tone,
+}
+
+/// The expressions' frame and its rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FacesView {
+    pub frame: egui::Rect,
+    pub rows: Vec<(egui::Rect, &'static str)>,
+}
+
+/// The zoom rail's parts, as laid out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailFrame {
+    /// The whole column: the scale disc, −, the track, +.
+    pub column: egui::Rect,
+    pub scale: crate::systems::zoom_rail::Scale,
+    pub scale_disc: DiscState,
+    /// The − (out, `[0]`) and the + (in, `[1]`), each with the scale it
+    /// offers at the scale's end.
+    pub ends: [(DiscState, Option<crate::systems::zoom_rail::Scale>); 2],
+    pub track: egui::Rect,
+    /// How many steps the track spans (a tick between each two).
+    pub steps: usize,
+    /// The scales' list, when open.
+    pub list: Option<Vec<ListRow>>,
+}
+
+/// One row of the scales' list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListRow {
+    pub rect: egui::Rect,
+    pub scale: crate::systems::zoom_rail::Scale,
+    pub on: bool,
+    pub hovered: bool,
+}
+
+/// The rail's moving parts: how awake it is, the thumb, where a jump flies
+/// to, the step's name and how far it is faded in, and how far each end's
+/// push has filled its ring.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RailLive {
+    pub opacity: f32,
+    pub thumb_y: f32,
+    pub ring_y: Option<f32>,
+    pub name: Option<(&'static str, f32)>,
+    pub push: [f32; 2],
+}
+
+/// Half a point: finer than the eye, coarse enough that a resting control
+/// does not hand the library a new view every frame.
+fn q(v: f32) -> f32 {
+    (v * 2.0).round() / 2.0
+}
+
+fn q_pos(p: egui::Pos2) -> egui::Pos2 {
+    egui::pos2(q(p.x), q(p.y))
+}
+
+/// A fade or a fill, in fiftieths.
+fn q_unit(v: f32) -> f32 {
+    (v * 50.0).round() / 50.0
+}
+
+/// With the library drawing, egui lays the control out and takes its input
+/// as ever, and paints it at no opacity: the slot is egui's, the picture
+/// the library's. A popup (the hand's menu) is an area of its own and still
+/// shows.
+fn slot_only(ui: &mut egui::Ui, lib: bool) {
+    if lib {
+        ui.multiply_opacity(0.0);
+    }
 }
 
 /// The fingers the on-screen controls own this frame, in **egui** points.
@@ -431,7 +596,17 @@ pub fn render_map_osd(
     chrome: Res<crate::systems::dock::MapChrome>,
     #[cfg(feature = "comms")] sheet: Res<crate::systems::chat_overlay::ChatOverlay>,
     room: Res<crate::systems::design_room::DesignRoom>,
+    lib: Option<ResMut<OsdLib>>,
 ) {
+    // The library's edition: what it draws, gathered as egui lays it out.
+    let mut out: Option<OsdView> = lib.as_ref().filter(|l| l.lib).map(|_| OsdView {
+        screen: egui.ctx().content_rect().size(),
+        ..Default::default()
+    });
+    // The hand's first-use card is the library's there, over everything;
+    // the controls step aside under it as under a panel, or a tap on the
+    // card would also press the slot beneath it.
+    let card_up = out.is_some() && body.card.0;
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
     // latched and the camera would fly on with nothing on screen to stop it.
@@ -454,7 +629,7 @@ pub fn render_map_osd(
         driver.active,
         // The camera is the whole screen, exactly as a panel is. A chat's
         // World view is not: it keeps the touch controls.
-        !right_panel.is(RightPanel::None) || camera_open || room.spot.is_some(),
+        !right_panel.is(RightPanel::None) || camera_open || room.spot.is_some() || card_up,
         // The chat sheet on a phone takes the bottom of the screen as the
         // keys do, and the controls there would draw under it.
         keyboard.is_open() || (composing && egui.compact()),
@@ -466,11 +641,18 @@ pub fn render_map_osd(
         let at = spots(crate::systems::dock::lying(egui.viewport_pts()));
         match cluster {
             Cluster::Fly => {
-                next.climb =
-                    vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
+                next.climb = vertical_pair(
+                    ctx,
+                    &fingers,
+                    &mut areas,
+                    "osd_climb",
+                    Mark::Up,
+                    Mark::Down,
+                    out.as_mut(),
+                );
                 next.fly = {
                     let s = &mut *stick;
-                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas)
+                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas, out.as_mut())
                 };
             }
             Cluster::Walk => {
@@ -483,17 +665,25 @@ pub fn render_map_osd(
                     "osd_zoom",
                     Mark::Plus,
                     Mark::Minus,
+                    out.as_mut(),
                 );
                 next.walk = {
                     let s = &mut *stick;
-                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas)
+                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas, out.as_mut())
                 };
-                next.jump = jump_button(ctx, &fingers, &mut areas, at);
-                if let Some(e) = face_picker(ctx, &fingers, &mut areas, &mut body.faces_open, at) {
+                next.jump = jump_button(ctx, &fingers, &mut areas, at, out.as_mut());
+                if let Some(e) = face_picker(
+                    ctx,
+                    &fingers,
+                    &mut areas,
+                    &mut body.faces_open,
+                    at,
+                    out.as_mut(),
+                ) {
                     body.faces
                         .write(crate::systems::avatar_face::StartExpression(e));
                 }
-                hand_button(ctx, &fingers, &mut areas, &mut body, at);
+                hand_button(ctx, &fingers, &mut areas, &mut body, at, out.as_mut());
             }
             // The zoom rail below is Earth mode's control, on every device.
             Cluster::Zoom => {}
@@ -510,7 +700,8 @@ pub fn render_map_osd(
         && right_panel.is(RightPanel::None)
         && !camera_open
         && room.spot.is_none()
-        && !keyboard.is_open();
+        && !keyboard.is_open()
+        && !card_up;
     if rail_on {
         if let Some(alt) = rail.altitude().map(|a| a.max(camera_state.cosmos_alt)) {
             let fingers = Fingers::new(&touch, egui.ui_scale());
@@ -538,9 +729,17 @@ pub fn render_map_osd(
                 &mut rail.state,
                 touch_ui,
                 touch.active(),
+                out.as_mut(),
             );
             next.zoom = zoom;
             next.rail_altitude = goal;
+        }
+    }
+
+    if let Some(mut lib) = lib {
+        let view = out.unwrap_or_default();
+        if lib.view != view {
+            lib.view = view;
         }
     }
 
@@ -685,12 +884,30 @@ fn zoom_rail_control(
     state: &mut RailState,
     touch_ui: bool,
     touching: bool,
+    out: Option<&mut OsdView>,
 ) -> (f32, Option<f64>) {
     use crate::systems::zoom_rail::{altitude_at, index_of, position_of, step_altitude, Scale};
     let (alt, scale) = (rail.alt, rail.scale);
     let steps = scale.steps();
     let mut wish = 0.0;
     let mut goal = None;
+    // What the library draws (`lib_map_osd`), filled in as egui lays out.
+    let lib = out.is_some();
+    let unset = DiscState {
+        rect: egui::Rect::NOTHING,
+        on: false,
+        hovered: false,
+    };
+    let mut frame = RailFrame {
+        column: egui::Rect::NOTHING,
+        scale,
+        scale_disc: unset,
+        ends: [(unset, None), (unset, None)],
+        track: egui::Rect::NOTHING,
+        steps: steps.len(),
+        list: None,
+    };
+    let mut live = RailLive::default();
     let now = ctx.input(|i| i.time);
     let track_len = if touch_ui {
         RAIL_TRACK_TOUCH
@@ -766,6 +983,7 @@ fn zoom_rail_control(
     let area = egui::Area::new(egui::Id::new("zoom_rail"))
         .anchor(anchor.0, anchor.1)
         .show(ctx, |ui| {
+            slot_only(ui, lib);
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 // A mouse over the rail wakes it; a finger has no hover (egui's
@@ -784,7 +1002,9 @@ fn zoom_rail_control(
                     now - state.active_at < RAIL_AWAKE_SECS,
                     0.4,
                 );
-                ui.multiply_opacity(RAIL_REST_OPACITY + (1.0 - RAIL_REST_OPACITY) * awake);
+                let opacity = RAIL_REST_OPACITY + (1.0 - RAIL_REST_OPACITY) * awake;
+                ui.multiply_opacity(opacity);
+                live.opacity = q_unit(opacity);
                 let held = |resp: &egui::Response, hit: egui::Rect| {
                     (!touching
                         && resp.is_pointer_button_down_on()
@@ -820,6 +1040,7 @@ fn zoom_rail_control(
                 if resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false)) {
                     state.list_open = !state.list_open;
                 }
+                frame.scale_disc = DiscState::of(&resp, state.list_open);
 
                 // − at the top, or the next scale out at the end.
                 let end_disc = |ui: &mut egui::Ui, up: bool| {
@@ -891,9 +1112,12 @@ fn zoom_rail_control(
                 };
                 let (resp, next) = end_disc(ui, true);
                 let hit = reach(resp.rect, false, false);
-                if held(&resp, hit) {
+                let pressed = held(&resp, hit);
+                if pressed {
                     wish -= 1.0;
                 }
+                frame.ends[0] = (DiscState::of(&resp, pressed), next);
+                live.push[0] = q_unit(next.map_or(0.0, |_| rail.push.max(0.0)));
                 if let (Some(_), Some(since)) = (next, state.edge_since[0]) {
                     if tapped(&resp, hit, since) {
                         goal = scale.across(true);
@@ -905,6 +1129,7 @@ fn zoom_rail_control(
                     egui::Sense::click_and_drag(),
                 );
                 let resp = theme::named(ui, resp, "Zoom");
+                frame.track = rect;
                 let x = rect.center().x;
                 let y_at = |pos: f32| rect.top() + pos * track_len;
                 let grab = rect.expand(6.0);
@@ -985,6 +1210,11 @@ fn zoom_rail_control(
                     );
                 }
                 let thumb_y = y_at(pos_now);
+                live.thumb_y = q(thumb_y);
+                live.ring_y = rail
+                    .flying_to
+                    .filter(|to| Scale::of(*to) == scale)
+                    .map(|to| q(y_at(position_of(scale, to))));
                 if let Some(to) = rail.flying_to.filter(|to| Scale::of(*to) == scale) {
                     p.circle_stroke(
                         egui::pos2(x, y_at(position_of(scale, to))),
@@ -1008,6 +1238,7 @@ fn zoom_rail_control(
                     0.25,
                 );
                 state.shown = shown;
+                live.name = (shown > 0.0).then(|| (steps[current.1].label, q_unit(shown)));
                 if shown > 0.0 {
                     let label = steps[current.1].label;
                     let font = egui::FontId::proportional(theme::SIZE_SUB);
@@ -1035,9 +1266,12 @@ fn zoom_rail_control(
 
                 let (resp, next) = end_disc(ui, false);
                 let hit = reach(resp.rect, false, true);
-                if held(&resp, hit) {
+                let pressed = held(&resp, hit);
+                if pressed {
                     wish += 1.0;
                 }
+                frame.ends[1] = (DiscState::of(&resp, pressed), next);
+                live.push[1] = q_unit(next.map_or(0.0, |_| (-rail.push).max(0.0)));
                 if let (Some(_), Some(since)) = (next, state.edge_since[1]) {
                     if tapped(&resp, hit, since) {
                         goal = scale.across(false);
@@ -1053,7 +1287,9 @@ fn zoom_rail_control(
             .pivot(egui::Align2::RIGHT_TOP)
             .fixed_pos(scale_disc.left_top() + egui::vec2(-8.0, 0.0))
             .show(ctx, |ui| {
+                slot_only(ui, lib);
                 ui.spacing_mut().item_spacing.y = 6.0;
+                let mut rows = Vec::new();
                 for s in Scale::ALL.into_iter().rev() {
                     let font = egui::FontId::proportional(theme::SIZE_BODY);
                     let galley = ui.painter().layout_no_wrap(
@@ -1108,6 +1344,12 @@ fn zoom_rail_control(
                             theme::p().map_ink
                         },
                     );
+                    rows.push(ListRow {
+                        rect,
+                        scale: s,
+                        on,
+                        hovered: resp.hovered(),
+                    });
                     if resp.clicked() || fingers.lifted_in(rect) {
                         goal = Some(if on {
                             s.overview()
@@ -1118,6 +1360,7 @@ fn zoom_rail_control(
                         state.active_at = now;
                     }
                 }
+                frame.list = Some(rows);
             });
         areas.push(list.response.rect);
         state.list_rect = Some(list.response.rect.union(scale_disc));
@@ -1128,6 +1371,11 @@ fn zoom_rail_control(
     // The name is not a control: only the rail itself is claimed, so a pinch
     // beside it keeps both its fingers.
     areas.push(area.response.rect);
+    if let Some(v) = out {
+        frame.column = area.response.rect;
+        v.rail = Some(frame);
+        v.rail_live = live;
+    }
     (wish, goal)
 }
 
@@ -1237,11 +1485,13 @@ fn jump_button(
     fingers: &Fingers,
     areas: &mut Vec<egui::Rect>,
     at: Spots,
+    mut out: Option<&mut OsdView>,
 ) -> bool {
     let mut jump = false;
     let area = egui::Area::new(egui::Id::new("osd_actions"))
         .anchor(egui::Align2::RIGHT_BOTTOM, -at.actions)
         .show(ctx, |ui| {
+            slot_only(ui, out.is_some());
             // A claimed finger lifting inside the disc is the same event
             // `clicked()` reports, which is why the two are `or`-ed and not
             // chosen between: on a phone the first arm fires, on a desktop (or
@@ -1249,6 +1499,13 @@ fn jump_button(
             // does, and a jump is idempotent either way.
             let resp = round_button(ui, Mark::Jump, false);
             jump = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, true));
+            if let Some(v) = out.as_deref_mut() {
+                v.discs.push(DiscView {
+                    disc: DiscState::of(&resp, false),
+                    mark: Mark::Jump,
+                    tone: Tone::Ring,
+                });
+            }
         });
     areas.push(area.response.rect);
     jump
@@ -1257,9 +1514,10 @@ fn jump_button(
 /// The glyphs, painted rather than typed. `✕` taught this lesson once already
 /// (`theme::close_button`): the bundled brand font carries no symbol set, so a
 /// `+` or a `▲` in a `RichText` is a gamble on a font subset, while two line
-/// segments land on the pixel grid at any scale.
-#[derive(Clone, Copy)]
-enum Mark {
+/// segments land on the pixel grid at any scale. The library's edition
+/// (`lib_map_osd`) builds the same strokes out of thin boxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
     Plus,
     Minus,
     Up,
@@ -1301,6 +1559,7 @@ fn hand_button(
     areas: &mut Vec<egui::Rect>,
     body: &mut BodyControls,
     at: Spots,
+    mut out: Option<&mut OsdView>,
 ) {
     use crate::systems::held_phone::Side;
     use crate::systems::high_precision::{HandWord, HighPrecision};
@@ -1313,19 +1572,34 @@ fn hand_button(
         .hand_word()
         .or_else(|| stand_in.then_some(HandWord::Following));
     let on = word.is_some();
-    let tone = match word {
-        Some(HandWord::Following) => theme::p().accent_bright,
-        Some(HandWord::CameraBusy) => theme::p().warn,
-        _ => theme::p().accent_ring,
+    let (tone, lib_tone) = match word {
+        Some(HandWord::Following) => (theme::p().accent_bright, Tone::Bright),
+        Some(HandWord::CameraBusy) => (theme::p().warn, Tone::Warn),
+        _ => (theme::p().accent_ring, Tone::Ring),
     };
+    let lib = out.is_some();
     // Beside the jump disc rather than in a tier above it: the right
     // edge's top half is the map's column of round buttons now
     // (`dock::right_column`).
     let area = egui::Area::new(egui::Id::new("osd_hand"))
         .anchor(egui::Align2::RIGHT_BOTTOM, -at.hand)
         .show(ctx, |ui| {
+            slot_only(ui, lib);
             let (resp, face) = theme::map_disc(ui, CONTROL_SIZE, on, tone, egui::Sense::click());
             let resp = theme::named(ui, resp, Mark::Hand.label());
+            if let Some(v) = out.as_deref_mut() {
+                v.discs.push(DiscView {
+                    disc: DiscState::of(&resp, on),
+                    mark: Mark::Hand,
+                    tone: lib_tone,
+                });
+                v.hand_word = word.map(|w| HandWordView {
+                    right: face.center.x - face.radius - 8.0,
+                    y: face.center.y,
+                    text: w.text(),
+                    tone: lib_tone,
+                });
+            }
             paint_mark(
                 ui.painter(),
                 face.center,
@@ -1344,11 +1618,7 @@ fn hand_button(
             }
             let tapped = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false));
             if tapped && !resp.long_touched() && HighPrecision::available() {
-                if body.high.on || body.store.data.hand.agreed {
-                    body.high.on = !body.high.on;
-                } else {
-                    body.card.0 = true;
-                }
+                body.tap_hand();
             }
             resp.context_menu(|ui| {
                 ui.label(egui::RichText::new("Your hand").strong());
@@ -1384,7 +1654,8 @@ fn hand_button(
             });
         });
     areas.push(area.response.rect);
-    if body.card.0 {
+    // The library draws its own card (`lib_map_osd`), over everything.
+    if body.card.0 && !lib {
         hand_card(ctx, body);
     }
 }
@@ -1397,36 +1668,70 @@ fn hand_card(ctx: &egui::Context, body: &mut BodyControls) {
     let modal = egui::Modal::new(egui::Id::new("hand_card")).show(ctx, |ui| {
         ui.set_max_width(420.0);
         ui.label(
-            egui::RichText::new("Your phone, in your avatar's hand")
+            egui::RichText::new(HAND_CARD_TITLE)
                 .size(theme::SIZE_TITLE)
                 .strong(),
         );
         ui.add_space(theme::OSD_GAP);
-        for line in [
-            "The back camera and the motion sensors follow the phone, to about \
-             a centimetre. Nothing the camera sees is kept or sent.",
-            "Things that sense hands, such as a theremin, feel where your hand \
-             is while you are within a few metres of them.",
-            "Later, people near you will see your arm move: the same switch.",
-        ] {
+        for line in HAND_CARD_LINES {
             ui.label(line);
             ui.add_space(theme::OSD_GAP * 0.5);
         }
         ui.add_space(theme::OSD_GAP);
         ui.horizontal(|ui| {
-            if theme::secondary_button(ui, "", "Not now", 140.0).clicked() {
-                body.card.0 = false;
+            if theme::secondary_button(ui, "", HAND_CARD_DECLINE, 140.0).clicked() {
+                body.decline_hand();
             }
-            if theme::primary_button_sized(ui, "Use my hand", 160.0).clicked() {
-                body.store.data.hand.agreed = true;
-                body.store.dirty = true;
-                body.high.on = true;
-                body.card.0 = false;
+            if theme::primary_button_sized(ui, HAND_CARD_ACCEPT, 160.0).clicked() {
+                body.accept_hand();
             }
         });
     });
     if modal.should_close() {
-        body.card.0 = false;
+        body.decline_hand();
+    }
+}
+
+/// The hand card's words, one copy for both editions (`lib_map_osd`).
+pub const HAND_CARD_TITLE: &str = "Your phone, in your avatar's hand";
+pub const HAND_CARD_LINES: [&str; 3] = [
+    "The back camera and the motion sensors follow the phone, to about \
+     a centimetre. Nothing the camera sees is kept or sent.",
+    "Things that sense hands, such as a theremin, feel where your hand \
+     is while you are within a few metres of them.",
+    "Later, people near you will see your arm move: the same switch.",
+];
+pub const HAND_CARD_DECLINE: &str = "Not now";
+pub const HAND_CARD_ACCEPT: &str = "Use my hand";
+
+impl BodyControls<'_, '_> {
+    /// The hand disc's tap: on or off once agreed, else the card that asks.
+    fn tap_hand(&mut self) {
+        if self.high.on || self.store.data.hand.agreed {
+            self.high.on = !self.high.on;
+        } else {
+            self.card.0 = true;
+        }
+    }
+
+    /// Whether the first-use card is up.
+    #[must_use]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn hand_card_open(&self) -> bool {
+        self.card.0
+    }
+
+    /// The card's "Use my hand": remembered, and the tracking on.
+    pub fn accept_hand(&mut self) {
+        self.store.data.hand.agreed = true;
+        self.store.dirty = true;
+        self.high.on = true;
+        self.card.0 = false;
+    }
+
+    /// The card's "Not now", its backdrop or Escape.
+    pub fn decline_hand(&mut self) {
+        self.card.0 = false;
     }
 }
 
@@ -1439,14 +1744,24 @@ fn face_picker(
     areas: &mut Vec<egui::Rect>,
     open: &mut bool,
     at: Spots,
+    mut out: Option<&mut OsdView>,
 ) -> Option<cartopolis_core::Expression> {
     let above = at.face.y;
+    let lib = out.is_some();
     let area = egui::Area::new(egui::Id::new("osd_face"))
         .anchor(egui::Align2::RIGHT_BOTTOM, -at.face)
         .show(ctx, |ui| {
+            slot_only(ui, lib);
             let resp = round_button(ui, Mark::Face, *open);
             if resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false)) {
                 *open = !*open;
+            }
+            if let Some(v) = out.as_deref_mut() {
+                v.discs.push(DiscView {
+                    disc: DiscState::of(&resp, *open),
+                    mark: Mark::Face,
+                    tone: Tone::Ring,
+                });
             }
         });
     areas.push(area.response.rect);
@@ -1454,12 +1769,14 @@ fn face_picker(
         return None;
     }
     let mut picked = None;
+    let mut rows = Vec::new();
     let list = egui::Area::new(egui::Id::new("osd_faces"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-(at.face.x + CONTROL_SIZE + theme::OSD_GAP), -above),
         )
         .show(ctx, |ui| {
+            slot_only(ui, lib);
             theme::overlay_frame().show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 for e in cartopolis_core::Expression::ALL {
@@ -1467,10 +1784,17 @@ fn face_picker(
                     if resp.clicked() || fingers.lifted_in(resp.rect) {
                         picked = Some(e);
                     }
+                    rows.push((resp.rect, expression_label(e)));
                 }
             });
         });
     areas.push(list.response.rect);
+    if let Some(v) = out {
+        v.faces = Some(FacesView {
+            frame: list.response.rect,
+            rows,
+        });
+    }
     if picked.is_some() {
         *open = false;
     }
@@ -1512,6 +1836,7 @@ fn vertical_pair(
     id: &str,
     top: Mark,
     bottom: Mark,
+    mut out: Option<&mut OsdView>,
 ) -> f32 {
     let mut wish = 0.0;
     let area = egui::Area::new(egui::Id::new(id))
@@ -1520,6 +1845,7 @@ fn vertical_pair(
             egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
         )
         .show(ctx, |ui| {
+            slot_only(ui, out.is_some());
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
                 // A claimed finger resting on the disc is the held state, whether
@@ -1535,12 +1861,28 @@ fn vertical_pair(
                         || fingers.pressing(hit)
                 };
                 let resp = round_button(ui, top, false);
-                if held(&resp, reach(resp.rect, true, false)) {
+                let up = held(&resp, reach(resp.rect, true, false));
+                if up {
                     wish += 1.0;
                 }
+                if let Some(v) = out.as_deref_mut() {
+                    v.discs.push(DiscView {
+                        disc: DiscState::of(&resp, up),
+                        mark: top,
+                        tone: Tone::Ring,
+                    });
+                }
                 let resp = round_button(ui, bottom, false);
-                if held(&resp, reach(resp.rect, false, true)) {
+                let down = held(&resp, reach(resp.rect, false, true));
+                if down {
                     wish -= 1.0;
+                }
+                if let Some(v) = out.as_deref_mut() {
+                    v.discs.push(DiscView {
+                        disc: DiscState::of(&resp, down),
+                        mark: bottom,
+                        tone: Tone::Ring,
+                    });
                 }
             });
         });
@@ -1579,7 +1921,8 @@ fn round_button(ui: &mut egui::Ui, mark: Mark, on: bool) -> egui::Response {
 
 impl Mark {
     /// What the control does, for egui's widget info (`theme::named`).
-    fn label(self) -> &'static str {
+    #[must_use]
+    pub fn label(self) -> &'static str {
         match self {
             Self::Plus => "Zoom in",
             Self::Minus => "Zoom out",
@@ -1720,18 +2063,22 @@ fn thumbstick(
     owner: &mut Option<u64>,
     origin: &mut Option<egui::Pos2>,
     areas: &mut Vec<egui::Rect>,
+    out: Option<&mut OsdView>,
 ) -> Vec2 {
     let mut wish = Vec2::ZERO;
     let size = STICK_RADIUS * 2.0;
     let width = (size * STICK_FLOAT_WELLS)
         .min(ctx.content_rect().width() * STICK_FLOAT_MAX_FRACTION)
         .max(size);
+    let lib = out.is_some();
+    let mut drawn = None;
     let area = egui::Area::new(egui::Id::new("osd_stick"))
         .anchor(
             egui::Align2::LEFT_BOTTOM,
             egui::vec2(theme::OSD_MARGIN, -bottom_offset()),
         )
         .show(ctx, |ui| {
+            slot_only(ui, lib);
             let (zone, _) = ui.allocate_exact_size(egui::vec2(width, size), egui::Sense::hover());
             let rest = egui::Rect::from_min_size(zone.min, egui::Vec2::splat(size));
             // The mouse works the well where it rests; only a finger floats it.
@@ -1795,8 +2142,16 @@ fn thumbstick(
             };
             p.circle_filled(knob, STICK_KNOB_RADIUS, fill);
             p.circle_stroke(knob, STICK_KNOB_RADIUS, egui::Stroke::new(1.5, ring));
+            drawn = Some(StickView {
+                centre: q_pos(centre),
+                knob: q_pos(knob),
+                engaged: wish != Vec2::ZERO,
+            });
         });
     areas.push(area.response.rect);
+    if let Some(v) = out {
+        v.stick = drawn;
+    }
     wish
 }
 
@@ -2116,6 +2471,8 @@ mod tests {
         t: f64,
         /// The camera's height the rail is drawn for.
         alt: f64,
+        /// The library's edition: what it was handed, when on.
+        view: Option<OsdView>,
     }
 
     impl Rail {
@@ -2125,6 +2482,7 @@ mod tests {
                 state: RailState::default(),
                 t: 0.0,
                 alt: 1e6,
+                view: None,
             };
             // Let the layout settle, and the rail fall asleep, before any
             // finger arrives.
@@ -2158,6 +2516,7 @@ mod tests {
             };
             let (mut goal, mut areas) = (None, Vec::new());
             let state = &mut self.state;
+            let view = &mut self.view;
             let touching = !f.held.is_empty() || f.free > 0;
             let rail = RailIn {
                 alt: self.alt,
@@ -2168,7 +2527,17 @@ mod tests {
                 top: 0.0,
             };
             self.ctx.run_ui_unpainted(input, |ui| {
-                goal = zoom_rail_control(ui.ctx(), &f, &mut areas, &rail, state, true, touching).1;
+                goal = zoom_rail_control(
+                    ui.ctx(),
+                    &f,
+                    &mut areas,
+                    &rail,
+                    state,
+                    true,
+                    touching,
+                    view.as_mut(),
+                )
+                .1;
             });
             // The rail is the last area claimed; the scale list, if open,
             // comes before it.
@@ -2277,6 +2646,39 @@ mod tests {
             goal,
             step_altitude(Scale::Globe, index_of(Scale::Globe, goal))
         );
+    }
+
+    /// The library's edition (`OsdLib::lib`) changes only who paints: the
+    /// rail it is handed stands where egui laid the column out, the parts in
+    /// order down it, and a tap on the track still goes where it went.
+    #[test]
+    fn the_library_edition_is_handed_the_rail_egui_laid_out() {
+        let mut rail = Rail::new();
+        rail.view = Some(OsdView::default());
+        let (_, column) = rail.run(&fingers(&[], &[]), 0);
+        let v = rail.view.clone().expect("the harness keeps the view");
+        let f = v.rail.expect("no rail handed over");
+        assert_eq!(f.column, column);
+        let [(minus, _), (plus, _)] = f.ends;
+        assert!(f.scale_disc.rect.max.y <= minus.rect.min.y);
+        assert!(minus.rect.max.y <= f.track.min.y);
+        assert!(f.track.max.y <= plus.rect.min.y);
+        assert!(column.contains_rect(f.track) && column.contains_rect(plus.rect));
+        let y = v.rail_live.thumb_y;
+        assert!(y >= f.track.top() - 0.5 && y <= f.track.bottom() + 0.5);
+        assert!(
+            v.rail_live.opacity > 0.0,
+            "a resting rail is faint, not gone"
+        );
+
+        let p = rail.on_track(0.2);
+        assert_eq!(rail.frame(&fingers(&[(1, p)], &[]), 0), None);
+        let lift = Fingers {
+            held: Vec::new(),
+            released: vec![(1, egui::pos2(p.0, p.1))],
+            free: 0,
+        };
+        assert!(rail.frame(&lift, 0).is_some(), "the tap went nowhere");
     }
 
     /// At the top of the globe the − is the solar system: a tap there goes

@@ -42,12 +42,20 @@ pub const SAME_AVATAR_M: f64 = 60.0;
 const BALLOON_HOLD_SECS: f64 = 8.0;
 const BALLOON_FADE_SECS: f64 = 1.5;
 /// Widest a balloon gets, in points (the design's `.bub`, `max-width: 190px`).
-const BALLOON_WIDTH: f32 = 190.0;
+pub(crate) const BALLOON_WIDTH: f32 = 190.0;
+/// From a balloon's left edge to its tail, and the tail's size.
+pub(crate) const BALLOON_TAIL_X: f32 = 18.0;
+pub(crate) const BALLOON_TAIL: f32 = 6.0;
+/// A balloon's words, in points.
+pub(crate) const BALLOON_TEXT: f32 = 13.5;
+/// The name chip's words under a marker, in points.
+pub(crate) const NAME_TEXT: f32 = 11.5;
 
-/// The marker's disc diameter, its stem, and the ring round it.
-const DISC: f32 = 36.0;
-const STEM: f32 = 12.0;
-const RING: f32 = 3.0;
+/// The marker's disc diameter, its stem, and the ring round it. The
+/// library's edition (`lib_pins`) builds the same marker from these.
+pub(crate) const DISC: f32 = 36.0;
+pub(crate) const STEM: f32 = 12.0;
+pub(crate) const RING: f32 = 3.0;
 
 /// What `name` said last in `channel`, and how strongly to show it now:
 /// `None` when they said nothing recently. A line that only carries a point is
@@ -107,7 +115,7 @@ pub enum MarkerKind {
 }
 
 impl MarkerKind {
-    fn colour(self) -> egui::Color32 {
+    pub(crate) fn colour(self) -> egui::Color32 {
         match self {
             Self::Avatar => theme::BRAND,
             Self::Phone => theme::REAL_LOCATION,
@@ -126,7 +134,7 @@ pub fn marker(
     name: &str,
     kind: MarkerKind,
 ) -> bool {
-    let font = egui::FontId::proportional(11.5);
+    let font = egui::FontId::proportional(NAME_TEXT);
     let disc_r = DISC / 2.0;
     let height = DISC + 2.0 * RING + STEM;
     let colour = kind.colour();
@@ -215,6 +223,57 @@ pub fn marker_height() -> f32 {
     DISC + 2.0 * RING + STEM
 }
 
+/// The width of a [`marker`]'s name chip, as egui lays the name out: the
+/// library's edition centres the chip under the tip by it.
+#[must_use]
+pub fn chip_width(ctx: &egui::Context, name: &str) -> f32 {
+    crate::systems::place_pins::text_width(ctx, name, egui::FontId::proportional(NAME_TEXT)) + 14.0
+}
+
+/// A [`balloon`] placed for the library's edition (`lib_pins`): as egui's
+/// `Area` places it — its bottom-left corner [`BALLOON_TAIL_X`] left of the
+/// person and [`BALLOON_TAIL`] over them, its width the words' wrapped at
+/// [`BALLOON_WIDTH`], and kept on the map.
+#[must_use]
+pub fn balloon_item(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    key: &str,
+    anchor: egui::Pos2,
+    text: &str,
+    alpha: f32,
+    mine: bool,
+) -> crate::systems::place_pins::BalloonItem {
+    let words = ctx.layer_painter(egui::LayerId::background()).layout(
+        text.to_string(),
+        egui::FontId::proportional(BALLOON_TEXT),
+        egui::Color32::WHITE,
+        BALLOON_WIDTH - 22.0,
+    );
+    let width = words.size().x + 22.0;
+    let height = words.size().y + 14.0;
+    let left = (anchor.x - BALLOON_TAIL_X)
+        .min(map_rect.right() - width)
+        .max(map_rect.left());
+    let bottom = (anchor.y - BALLOON_TAIL)
+        .max(map_rect.top() + height)
+        .min(map_rect.bottom());
+    crate::systems::place_pins::BalloonItem {
+        key: if mine {
+            "balloon-mine".to_string()
+        } else {
+            format!("balloon:{}", key.to_lowercase())
+        },
+        left,
+        bottom,
+        width,
+        tail: BALLOON_TAIL_X,
+        text: text.to_string(),
+        alpha,
+        mine,
+    }
+}
+
 /// A speech balloon (the design's `.bub`): white with ink text, the tail at its
 /// lower left pointing down at `anchor`; in the accent colour when it is your
 /// own line (`.bub.me`). Never interactive.
@@ -227,9 +286,8 @@ pub fn balloon(
     alpha: f32,
     mine: bool,
 ) {
-    /// From the balloon's left edge to its tail, and the tail's size.
-    const TAIL_X: f32 = 18.0;
-    const TAIL: f32 = 6.0;
+    const TAIL_X: f32 = BALLOON_TAIL_X;
+    const TAIL: f32 = BALLOON_TAIL;
     let fill = if mine {
         theme::p().accent
     } else {
@@ -260,7 +318,7 @@ pub fn balloon(
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(text)
-                                .size(13.5)
+                                .size(BALLOON_TEXT)
                                 .color(theme::p().on_accent),
                         )
                         .wrap(),

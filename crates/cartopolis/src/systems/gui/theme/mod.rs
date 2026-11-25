@@ -121,10 +121,10 @@ pub use states::*;
 pub use style::*;
 // The site's tokens (`theme.css`, written by the web theme test) and the
 // app's, for the library's screens.
-#[cfg(feature = "ui-lib")]
-pub use tokens::app_tokens;
 #[cfg(test)]
 pub use tokens::tokens;
+#[cfg(feature = "ui-lib")]
+pub use tokens::{app_tokens, map_vars};
 
 #[cfg(test)]
 mod tests;

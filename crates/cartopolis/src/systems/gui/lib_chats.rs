@@ -74,6 +74,8 @@ pub struct ChatsWorld<'w> {
     pub menu: ResMut<'w, crate::systems::ui::MainMenu>,
     /// The pictures on their way out (`lib_chat_conversation`'s composer).
     pub pictures: Res<'w, crate::systems::chat_pictures::ChatPictures>,
+    /// How far the on-screen keyboard reaches up: the composer lifts by it.
+    pub keyboard: Option<Res<'w, crate::systems::onscreen_keyboard::KeyboardInset>>,
     // A screen that needs more (the conversation: `ChatPictures`, `Calls`'
     // state) adds its resource here. Every field must be read somewhere, or
     // `unused = "deny"` fails the build.

@@ -58,6 +58,10 @@ pub mod lib_app_update;
 pub mod lib_avatar;
 #[cfg(feature = "ui-lib")]
 pub mod lib_building_card;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_chat_overlay;
+#[cfg(feature = "ui-lib")]
+pub mod lib_chrome;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
 #[cfg(feature = "ui-lib")]
@@ -69,9 +73,15 @@ pub mod lib_layers;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_login;
 #[cfg(feature = "ui-lib")]
+pub mod lib_map_osd;
+#[cfg(feature = "ui-lib")]
 pub mod lib_models;
 #[cfg(feature = "ui-lib")]
+pub mod lib_pins;
+#[cfg(feature = "ui-lib")]
 pub mod lib_place_card;
+#[cfg(feature = "ui-lib")]
+pub mod lib_place_names;
 #[cfg(feature = "ui-lib")]
 pub mod lib_places;
 #[cfg(feature = "ui-lib")]

@@ -331,6 +331,9 @@ pub(crate) struct ConversationLive {
     /// Something is typed: send can be pressed.
     ready: Signal<bool>,
     form_kind: Signal<Option<FormKind>>,
+    /// How far the on-screen keyboard reaches up (`KeyboardInset`): the
+    /// composer lifts by it, so what is typed stays in sight.
+    lift: Signal<f32>,
     form: Signal<FormV>,
     /// `ChatsView::draft`.
     draft: Typed,
@@ -363,6 +366,7 @@ impl ConversationLive {
             attach_open: signal(false),
             ready: signal(false),
             form_kind: signal(None),
+            lift: signal(0.0),
             form: signal(FormV::default()),
             draft: Typed::new(&w.view.draft),
             title: Typed::new(""),
@@ -407,6 +411,10 @@ pub(crate) fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
         set(&c.shown, PAGE);
         set(&c.menu, None);
         set(&c.armed, None);
+    }
+    let lift = w.keyboard.as_ref().map_or(0.0, |k| k.0);
+    if (c.lift.get_untracked() - lift).abs() > 0.5 {
+        c.lift.set(lift);
     }
     // As egui's: a chat that is not there (left, or gone) goes back.
     if !w.chat.channels.iter().any(|ch| ch.key == key) {
@@ -1865,8 +1873,17 @@ fn composer(l: &ChatsLive, key: &str) -> View {
             }
         }
     };
+    let frame = {
+        let lift = l.conversation.lift.clone();
+        move || {
+            format!(
+                "flex: none; max-height: 75%; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px 20px {:.0}px; border-top: 1px solid var(--m-border); background: var(--m-bg)",
+                16.0 + lift.get()
+            )
+        }
+    };
     view! {
-        <div style="flex: none; max-height: 75%; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px 20px 16px; border-top: 1px solid var(--m-border); background: var(--m-bg)">
+        <div style={frame}>
             {above}
             {input}
         </div>

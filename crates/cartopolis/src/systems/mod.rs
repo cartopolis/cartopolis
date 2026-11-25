@@ -70,12 +70,14 @@ pub use gui::{
 pub use gui::lib_keyboard;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub use gui::{
-    lib_admin, lib_calendar, lib_chat_conversation, lib_chats, lib_communities, lib_contacts,
-    lib_filter_chip, lib_login, lib_person_card, lib_post_composer, lib_reminder, lib_welcome,
+    lib_admin, lib_calendar, lib_chat_conversation, lib_chat_overlay, lib_chats, lib_communities,
+    lib_contacts, lib_filter_chip, lib_login, lib_person_card, lib_post_composer, lib_reminder,
+    lib_welcome,
 };
 #[cfg(feature = "ui-lib")]
 pub use gui::{
-    lib_app_update, lib_avatar, lib_design_room, lib_models, lib_plans, lib_scenario, lib_script,
+    lib_app_update, lib_avatar, lib_chrome, lib_design_room, lib_map_osd, lib_models, lib_pins,
+    lib_place_names, lib_plans, lib_scenario, lib_script,
 };
 #[cfg(feature = "ui-lib")]
 pub use gui::{

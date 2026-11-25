@@ -48,18 +48,18 @@ use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::theme;
 
 /// Height of the World | Community switch: a 48 pt touch row.
-const SWITCH_H: f32 = 48.0;
+pub(crate) const SWITCH_H: f32 = 48.0;
 /// The switch's widest, on a desktop.
 pub(crate) const SWITCH_MAX_W: f32 = 264.0;
 /// Height of the search bar across the top.
-const SEARCH_H: f32 = 44.0;
+pub(crate) const SEARCH_H: f32 = 44.0;
 /// The search bar's widest, on a desktop. It is anchored at the map's top
 /// right, so your face is at its end there too.
 const SEARCH_MAX_W: f32 = 420.0;
 /// Diameter of your face at the end of the search bar.
-const FACE: f32 = 36.0;
+pub(crate) const FACE: f32 = 36.0;
 /// Room under the view-mode disc for its word ("Fly", "Earth").
-const MODE_WORD_H: f32 = 16.0;
+pub(crate) const MODE_WORD_H: f32 = 16.0;
 
 /// How much of the bottom edge the switch claims, in points.
 ///
@@ -257,17 +257,188 @@ fn column(has_locate: bool, has_camera: bool) -> RightColumn {
 
 /// What the chrome drew last frame, for what is drawn before it in the next:
 /// the zoom rail and the floor picker start under the right column.
-#[derive(Resource, Debug, Clone, Copy)]
+#[derive(Resource, Debug, Clone)]
 pub struct MapChrome {
     pub right_bottom: f32,
+    /// The component library's edition of the chrome (`lib_chrome`): the
+    /// dock, the view controls (`hud`) and the floor picker.
+    pub lib: ChromeLib,
 }
 
 impl Default for MapChrome {
     fn default() -> Self {
         Self {
             right_bottom: column(true, true).bottom,
+            lib: ChromeLib::default(),
         }
     }
+}
+
+/// The bridge to the library's edition of the chrome (`lib_chrome`). With
+/// `on`, egui's systems (`render_dock`, `hud::render_map_controls`,
+/// `floor_picker::render_floor_picker`) draw nothing but keep every decision
+/// — what shows, where, in which state — and publish it here; the library
+/// draws it and hands each tap back in `acts`, which the same systems act on
+/// next frame through the code egui's own buttons run.
+#[derive(Debug, Clone, Default)]
+pub struct ChromeLib {
+    pub on: bool,
+    pub dock: DockView,
+    pub hud: crate::systems::hud::HudView,
+    pub floors: Option<crate::systems::floor_picker::FloorsView>,
+    /// Taps on the library's chrome, not yet acted on.
+    pub acts: Vec<ChromeAct>,
+}
+
+impl ChromeLib {
+    /// The acts `mine` claims, taken out of the queue.
+    pub fn take_acts(&mut self, mine: fn(&ChromeAct) -> bool) -> Vec<ChromeAct> {
+        let mut out = Vec::new();
+        self.acts.retain(|a| {
+            if mine(a) {
+                out.push(*a);
+                false
+            } else {
+                true
+            }
+        });
+        out
+    }
+}
+
+/// Assign only when the value moved: the library re-renders a piece when
+/// what it is handed differs.
+pub fn set_if_changed<T: PartialEq>(slot: &mut T, value: T) {
+    if *slot != value {
+        *slot = value;
+    }
+}
+
+/// A tap on the library's chrome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+pub enum ChromeAct {
+    /// A side of the World | Community switch.
+    Space(Space),
+    Search,
+    Face,
+    /// The way back from Show in world, where the search field was.
+    Back,
+    Layers,
+    Mode,
+    Camera,
+    Lens,
+    Say,
+    // `hud`'s.
+    Compass,
+    Locate,
+    /// The light disc: open or close its choices.
+    LightDisc,
+    Light(crate::resources::SunMode),
+    // The floor picker's.
+    FloorPick(Option<usize>),
+    FloorClose,
+    FloorPlan,
+}
+
+impl ChromeAct {
+    #[must_use]
+    pub fn is_dock(&self) -> bool {
+        matches!(
+            self,
+            Self::Space(_)
+                | Self::Search
+                | Self::Face
+                | Self::Back
+                | Self::Layers
+                | Self::Mode
+                | Self::Camera
+                | Self::Lens
+                | Self::Say
+        )
+    }
+
+    #[must_use]
+    pub fn is_hud(&self) -> bool {
+        matches!(
+            self,
+            Self::Compass | Self::Locate | Self::LightDisc | Self::Light(_)
+        )
+    }
+
+    #[must_use]
+    pub fn is_floor(&self) -> bool {
+        matches!(
+            self,
+            Self::FloorPick(_) | Self::FloorClose | Self::FloorPlan
+        )
+    }
+}
+
+/// What the dock shows this frame, in egui points (the library's px on the
+/// Bevy backend), for the library's edition. `None` is a piece not shown.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct DockView {
+    pub switch: Option<SwitchView>,
+    pub bar: Option<BarView>,
+    pub right: Option<RightView>,
+    pub left: Option<LeftView>,
+}
+
+/// The World | Community switch: from the screen's left, its width.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct SwitchView {
+    pub left: f32,
+    pub width: f32,
+    pub on: Space,
+    pub unread: usize,
+}
+
+/// The search bar: how far its right end stands in from the screen's.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct BarView {
+    pub right: f32,
+    pub width: f32,
+    /// The Search panel is open: the ring is the accent.
+    pub open: bool,
+    /// After Show in world: the way back, in place of the field.
+    pub back: Option<String>,
+    pub face: Option<FaceView>,
+}
+
+/// Your face at the end of the bar.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct FaceView {
+    pub me: Option<String>,
+    pub waiting: bool,
+    pub open: bool,
+}
+
+/// The right set, at `RIGHT_TOP` offsets ([`RightColumn`]).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct RightView {
+    pub layers: egui::Vec2,
+    pub mode: egui::Vec2,
+    pub mode_icon: &'static str,
+    pub mode_word: &'static str,
+    pub mode_hint: String,
+    pub camera: Option<egui::Vec2>,
+    pub camera_on: bool,
+}
+
+/// The left set's discs this module draws, at `LEFT_TOP` offsets.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct LeftView {
+    pub lens: egui::Vec2,
+    pub lens_on: bool,
+    pub say: Option<egui::Vec2>,
+    pub say_on: bool,
 }
 
 /// The two spaces.
@@ -340,10 +511,16 @@ pub fn render_dock(
     let has_avatar = !avatars.is_empty();
     let viewport = egui.viewport_pts();
     chrome.right_bottom = right_column(viewport, has_avatar, has_camera).bottom;
+    // The library's edition (`lib_chrome`): egui draws nothing, publishes
+    // what to draw in `view`, and acts on the taps it handed back.
+    let lib = chrome.lib.on;
+    let acts = chrome.lib.take_acts(ChromeAct::is_dock);
+    let mut view = DockView::default();
     // Driving owns the screen, and so do the camera and the design room.
     if covers.driver.active || camera_open || covers.room.spot.is_some() {
         crate::systems::place_pins::set_chrome_holes(egui.ctx(), Vec::new());
         menu.open = false;
+        set_if_changed(&mut chrome.lib.dock, view);
         return;
     }
     let has_session = online.is_some();
@@ -398,26 +575,41 @@ pub fn render_dock(
     #[cfg(not(feature = "comms"))]
     let switch_shown = false;
     let mut picked = None;
-    // It comes and goes with `motion` when a panel, the keyboard or a chat
-    // takes the bottom edge, as the cards there do.
-    let switch_pres =
-        crate::systems::motion::presence(&ctx, egui::Id::new("space_switch"), switch_shown);
-    if switch_pres.visible() {
+    // Where the switch stands: centred on the map, or on the screen under a
+    // full-screen panel.
+    let (switch_width, switch_centre) = {
         let (left, right) = if covered {
             (0.0, viewport.x)
         } else {
             (map.left(), map.right())
         };
-        let width = (right - left - 2.0 * theme::OSD_MARGIN).min(SWITCH_MAX_W);
-        let centre = (left + right) / 2.0;
-        #[cfg(feature = "comms")]
-        let unread = if signed_in {
-            people.talk.view.unread_total(&people.chat)
-        } else {
-            0
-        };
-        #[cfg(not(feature = "comms"))]
-        let unread = 0;
+        (
+            (right - left - 2.0 * theme::OSD_MARGIN).min(SWITCH_MAX_W),
+            (left + right) / 2.0,
+        )
+    };
+    #[cfg(feature = "comms")]
+    let unread = if signed_in && switch_shown {
+        people.talk.view.unread_total(&people.chat)
+    } else {
+        0
+    };
+    #[cfg(not(feature = "comms"))]
+    let unread = 0;
+    if lib && switch_shown {
+        view.switch = Some(SwitchView {
+            left: switch_centre - switch_width / 2.0,
+            width: switch_width,
+            on: space,
+            unread,
+        });
+    }
+    // It comes and goes with `motion` when a panel, the keyboard or a chat
+    // takes the bottom edge, as the cards there do.
+    let switch_pres =
+        crate::systems::motion::presence(&ctx, egui::Id::new("space_switch"), switch_shown && !lib);
+    if switch_pres.visible() {
+        let (width, centre) = (switch_width, switch_centre);
         egui::Area::new(egui::Id::new("space_switch"))
             .interactable(switch_pres.open)
             .anchor(
@@ -436,7 +628,41 @@ pub fn render_dock(
     let bar_shown = !covered && !keyboard && people.chat.world.is_none() && !covers.walk.active;
     let mut search_clicked = false;
     let mut face_clicked = false;
-    if bar_shown {
+    if bar_shown && lib {
+        let width = search_width(viewport, map.width());
+        let with_face = !community_open;
+        #[cfg(feature = "comms")]
+        let back = people.talk.bridges.back.as_ref().map(|b| b.label.clone());
+        #[cfg(not(feature = "comms"))]
+        let back: Option<String> = None;
+        // The face as egui places it, for the sheet's tap-outside test
+        // (`ui::MainMenu::face`): at the bar's right end, `SEARCH_H` across
+        // beside the way back, `FACE` inside the pill.
+        let right = map.right() - theme::OSD_MARGIN;
+        let mid = theme::OSD_MARGIN + SEARCH_H / 2.0;
+        if with_face {
+            let (size, inset) = if back.is_some() {
+                (SEARCH_H, 0.0)
+            } else {
+                (FACE, 4.0)
+            };
+            menu.face = Some(egui::Rect::from_center_size(
+                egui::pos2(right - inset - size / 2.0, mid),
+                egui::Vec2::splat(size),
+            ));
+        }
+        view.bar = Some(BarView {
+            right: viewport.x - right,
+            width,
+            open: right_panel.is(RightPanel::Search),
+            back,
+            face: with_face.then(|| FaceView {
+                me: me.clone(),
+                waiting,
+                open: menu.open,
+            }),
+        });
+    } else if bar_shown {
         let width = search_width(viewport, map.width());
         // On a desktop with Community open the panel wears your face at its
         // own top right; one face, not two.
@@ -495,7 +721,34 @@ pub fn render_dock(
     #[cfg_attr(not(feature = "comms"), allow(unused_mut))]
     let mut say_clicked = false;
     let mut holes = Vec::new();
-    if !panel_open && !keyboard {
+    // The lens (`systems::scenario`) is on while a scenario is.
+    let has_lens = data_layers.scenario.is_some();
+    #[cfg(feature = "comms")]
+    let composing = people.talk.say.composing;
+    #[cfg(not(feature = "comms"))]
+    let composing = false;
+    if !panel_open && !keyboard && lib {
+        let col = right_column(viewport, has_avatar, has_camera);
+        holes.push(col.rect(viewport));
+        let say_disc = has_session && cfg!(feature = "comms");
+        holes.push(left_rect(viewport, if say_disc { 4 } else { 3 }));
+        let look = mode_look(&camera_state, &session, has_avatar);
+        view.right = Some(RightView {
+            layers: col.layers,
+            mode: col.mode,
+            mode_icon: look.icon,
+            mode_word: look.word,
+            mode_hint: look.hint,
+            camera: col.camera,
+            camera_on: camera_open,
+        });
+        view.left = Some(LeftView {
+            lens: left_slot(viewport, 1),
+            lens_on: crate::systems::scenario::lens_disc_on(&lens, has_lens),
+            say: say_disc.then(|| left_slot(viewport, 3)),
+            say_on: composing,
+        });
+    } else if !panel_open && !keyboard {
         let col = right_column(viewport, has_avatar, has_camera);
         // What the map's overlays keep off (`place_pins::clear_of_chrome`):
         // both sets, edge to edge of their discs and words.
@@ -536,7 +789,6 @@ pub fn render_dock(
         // The lens (`systems::scenario`): figures you read, one at a time,
         // apart from the switches Layers holds. Under the compass, a control
         // of the view as it is.
-        let has_lens = data_layers.scenario.is_some();
         let left = |id: &str, slot: usize| {
             egui::Area::new(egui::Id::new(id))
                 .anchor(egui::Align2::LEFT_TOP, left_slot(viewport, slot))
@@ -572,8 +824,37 @@ pub fn render_dock(
     }
 
     crate::systems::place_pins::set_chrome_holes(&ctx, holes);
+    set_if_changed(&mut chrome.lib.dock, view);
 
     // ── Acting on it ─────────────────────────────────────────────────────
+    // The library's taps (`lib_chrome`), folded into what egui's would have
+    // set: one set of consequences for both editions.
+    for act in acts {
+        match act {
+            // As egui's switch: a tap on the side already chosen does
+            // nothing, except World, which puts a side panel away.
+            ChromeAct::Space(side) if side != space || side == Space::World => {
+                picked = Some(side);
+            }
+            ChromeAct::Search => search_clicked = true,
+            ChromeAct::Face => face_clicked = true,
+            ChromeAct::Back => {
+                #[cfg(feature = "comms")]
+                {
+                    people.talk.bridges.back_pressed = true;
+                }
+            }
+            ChromeAct::Layers => clicked = Some(RightPanel::Layers),
+            ChromeAct::Mode => step_mode(&mut camera_state, &session, has_avatar),
+            ChromeAct::Camera => camera_clicked = true,
+            ChromeAct::Lens => {
+                crate::systems::scenario::press_lens_disc(&mut lens, has_lens);
+                menu.open = false;
+            }
+            ChromeAct::Say => say_clicked = true,
+            _ => {}
+        }
+    }
     match picked {
         Some(Space::World) => {
             // World is the map with no panel: a tap from anywhere comes back
@@ -977,8 +1258,40 @@ fn mode_disc(
     session: &crate::systems::session::SessionState,
     has_avatar: bool,
 ) {
+    let look = mode_look(camera_state, session, has_avatar);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let resp = theme::round_button(ui, look.icon, &look.hint, false);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(theme::ROUND_BUTTON_SIZE, MODE_WORD_H),
+        egui::Sense::hover(),
+    );
+    word_under(
+        ui.painter(),
+        rect.center() + egui::vec2(0.0, 1.0),
+        look.word,
+    );
+    if resp.clicked() {
+        step_mode(camera_state, session, has_avatar);
+    }
+}
+
+/// What the view-mode disc wears: the mode's glyph, its word under the disc,
+/// and the hint that says where a tap goes — for both editions.
+pub struct ModeLook {
+    pub icon: &'static str,
+    pub word: &'static str,
+    pub hint: String,
+}
+
+/// The view-mode disc's look in the current mode.
+#[must_use]
+pub fn mode_look(
+    camera_state: &crate::resources::CameraState,
+    session: &crate::systems::session::SessionState,
+    has_avatar: bool,
+) -> ModeLook {
     use crate::resources::CameraMode;
-    use crate::systems::free_camera::{enter_mode, follow_available, next_camera_mode};
+    use crate::systems::free_camera::{follow_available, next_camera_mode};
     use crate::systems::icons;
     let badge = |mode: CameraMode| match mode {
         CameraMode::Avatar => (icons::CAM_FOLLOW, "Follow"),
@@ -998,22 +1311,23 @@ fn mode_disc(
     } else {
         name
     };
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let resp = theme::round_button(
-        ui,
+    ModeLook {
         icon,
-        &format!("{name} view — switch to {next_name}"),
-        false,
-    );
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(theme::ROUND_BUTTON_SIZE, MODE_WORD_H),
-        egui::Sense::hover(),
-    );
-    word_under(ui.painter(), rect.center() + egui::vec2(0.0, 1.0), word);
-    if resp.clicked() {
-        enter_mode(camera_state, next);
-        camera_state.mode = next;
+        word,
+        hint: format!("{name} view — switch to {next_name}"),
     }
+}
+
+/// A tap on the view-mode disc: the next mode on offer, as Tab steps.
+pub fn step_mode(
+    camera_state: &mut crate::resources::CameraState,
+    session: &crate::systems::session::SessionState,
+    has_avatar: bool,
+) {
+    use crate::systems::free_camera::{enter_mode, follow_available, next_camera_mode};
+    let next = next_camera_mode(camera_state.mode, follow_available(session, has_avatar));
+    enter_mode(camera_state, next);
+    camera_state.mode = next;
 }
 
 #[cfg(test)]

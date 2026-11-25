@@ -161,6 +161,146 @@ pub struct ChatOverlay {
     /// literally unphotographable in the harness the repo checks its UI with.
     /// Set nowhere but `shot_harness::open_scripted_ui`.
     pub demo: bool,
+    /// The component library draws the bubbles, the chip and the sheet
+    /// (`systems::lib_chat_overlay`). egui's three systems still decide
+    /// everything — whether the overlay may show, what it says, where it
+    /// goes — publish it in [`Self::lib_view`] and do what the library's
+    /// taps ask ([`Self::lib_chip`], [`Self::lib_sheet`]); they paint nothing.
+    pub lib: bool,
+    /// What the library draws this frame.
+    pub lib_view: ChatOverlayView,
+    /// A tap on the library's chip, done by [`render_chat_chip`].
+    pub lib_chip: Option<ChipAct>,
+    /// What the library's sheet asked for, done by [`render_chat_sheet`].
+    pub lib_sheet: SheetActs,
+}
+
+/// The overlay as the library draws it: placed, measured and worded by
+/// egui's systems.
+#[derive(Default, Clone, Debug)]
+pub struct ChatOverlayView {
+    pub bubbles: Vec<BubbleItem>,
+    /// The chip, and how strongly it shows (it fades).
+    pub chip: Option<(ChipView, f32)>,
+    pub sheet: Option<SheetView>,
+}
+
+/// A bubble over a head, placed as egui's `Area` is: its bottom-left
+/// corner, its width as egui measured the words, the tail's distance from
+/// its left edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BubbleItem {
+    pub key: String,
+    pub left: f32,
+    pub bottom: f32,
+    pub width: f32,
+    pub tail: f32,
+    pub alpha: f32,
+    pub speaker: String,
+    /// The speaker's name's colour: their tone, lightened (content).
+    pub tone: [u8; 3],
+    pub bodies: Vec<String>,
+}
+
+/// The chip, placed and worded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipView {
+    /// Left, bottom (from the viewport's bottom) and width, in points.
+    pub left: f32,
+    pub bottom: f32,
+    pub width: f32,
+    /// It takes taps only while it can be read.
+    pub live: bool,
+    /// The chat's disc: its name and kind.
+    pub chat: (String, crate::systems::discs::ChatKind),
+    /// The key of the chat the newest line is in: what a tap opens.
+    pub open: Option<String>,
+    /// Who said the newest line, in their colour, or none while only
+    /// talking nearby keeps the chip up.
+    pub sender: Option<(String, [u8; 3])>,
+    pub body: String,
+    pub unread: usize,
+    pub talking: bool,
+    pub muted: bool,
+}
+
+/// What a tap on the library's chip asked for.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChipAct {
+    /// Open the sheet, on this chat.
+    Open(Option<String>),
+    Mute,
+    Leave,
+}
+
+/// The sheet, placed and worded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetView {
+    /// Left, top, width, height, in points.
+    pub rect: [f32; 4],
+    pub compact: bool,
+    /// Each tab: its chat's index, name, kind, whether something waits in
+    /// it, whether it is the open one.
+    pub tabs: Vec<(usize, String, crate::systems::discs::ChatKind, bool, bool)>,
+    pub kind: crate::systems::discs::ChatKind,
+    /// Who reads this chat, and whether that is the public.
+    pub subtitle: String,
+    pub public: bool,
+    /// The round key beside the tabs: talking nearby (on or not), or a call
+    /// (others are in it or not).
+    pub voice_key: Option<bool>,
+    pub call_key: Option<bool>,
+    pub strip: Option<SheetStrip>,
+    pub runs: Vec<RunView>,
+    /// The extras under the field are open, Shout is on, the open chat is
+    /// Here, the field has something to send.
+    pub plus: bool,
+    pub shout: bool,
+    pub here: bool,
+    pub ready: bool,
+}
+
+/// The strip across the sheet: the voices nearby, or the call.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SheetStrip {
+    Voice {
+        /// Who is heard, and whether they talk now.
+        people: Vec<(String, bool)>,
+        talker: String,
+        muted: bool,
+    },
+    Call {
+        status: String,
+        /// Whether the camera is on, when there is one.
+        camera: Option<bool>,
+        muted: bool,
+    },
+}
+
+/// One speaker's run of lines in the sheet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunView {
+    pub sender: String,
+    pub mine: bool,
+    pub tone: [u8; 3],
+    pub lines: Vec<String>,
+    /// The last line's words, for a report raised from the name's menu.
+    pub last: Option<String>,
+}
+
+/// A colour as the library's views take one.
+fn rgb(c: egui::Color32) -> [u8; 3] {
+    [c.r(), c.g(), c.b()]
+}
+
+/// A speaker's name's colour: their tone, lightened, as both editions draw it.
+fn name_tone(speaker: &str) -> egui::Color32 {
+    crate::systems::chats::blend(
+        crate::systems::chats::tone_for(speaker),
+        egui::Color32::WHITE,
+        0.5,
+    )
 }
 
 impl ChatOverlay {
@@ -400,7 +540,7 @@ fn clear_of_keyboard(mut rect: egui::Rect, slab: Option<egui::Rect>) -> egui::Re
 pub fn render_chat_bubbles(
     mut egui: EguiMut,
     chat: Res<ChatState>,
-    overlay: Res<ChatOverlay>,
+    mut overlay: ResMut<ChatOverlay>,
     online: Option<Res<OnlineSession>>,
     right_panel: Res<RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -411,6 +551,13 @@ pub fn render_chat_bubbles(
 ) {
     // Redrawn on the frames the speakers or the camera move, as the pins are.
     let mut anchored = crate::systems::egui_manager::WorldAnchored::new(egui.ctx(), "chat_bubbles");
+    // The library's edition: placed here, drawn there. An early return
+    // leaves it no bubbles.
+    let lib = overlay.lib;
+    if lib {
+        overlay.lib_view.bubbles.clear();
+    }
+    let mut lib_bubbles: Vec<BubbleItem> = Vec::new();
     let compact = egui.compact();
     if suppressed(
         online.is_some() || overlay.demo,
@@ -515,14 +662,80 @@ pub fn render_chat_bubbles(
         if alpha <= 0.0 {
             continue;
         }
+        let speaker = lines.last().map(|l| l.sender.clone()).unwrap_or_default();
+        let bodies: Vec<String> = lines.iter().map(|l| l.body.clone()).collect();
+        if lib {
+            lib_bubbles.push(bubble_item(
+                &ctx, map_rect, id, head, alpha, speaker, bodies,
+            ));
+            continue;
+        }
         if alpha < 1.0 {
             // A fade reads the clock; egui has to be told it moves.
             ctx.request_repaint();
         }
-        let speaker = lines.last().map(|l| l.sender.clone()).unwrap_or_default();
-        let bodies: Vec<String> = lines.iter().map(|l| l.body.clone()).collect();
         anchored.at(head);
         bubble(&ctx, map_rect, id, head, alpha, &speaker, &bodies);
+    }
+    if lib {
+        overlay.lib_view.bubbles = lib_bubbles;
+    }
+}
+
+/// Gap between the head and the bottom of a balloon, in points.
+const BUBBLE_GAP: f32 = 10.0;
+
+/// A [`bubble`] placed for the library's edition: as egui's `Area` places
+/// it — centred over the head, [`BUBBLE_GAP`] above it, as wide as its
+/// widest line wrapped at [`BUBBLE_WIDTH`], and kept on the map.
+fn bubble_item(
+    ctx: &egui::Context,
+    map_rect: egui::Rect,
+    id: u64,
+    head: egui::Pos2,
+    alpha: f32,
+    speaker: String,
+    bodies: Vec<String>,
+) -> BubbleItem {
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let column = BUBBLE_WIDTH - 22.0;
+    let name = painter.layout(
+        speaker.clone(),
+        egui::FontId::proportional(NAME_PT),
+        egui::Color32::WHITE,
+        column,
+    );
+    let (mut wide, mut high) = (name.size().x, name.size().y);
+    for body in &bodies {
+        let g = painter.layout(
+            body.clone(),
+            egui::FontId::proportional(BODY_PT),
+            egui::Color32::WHITE,
+            column,
+        );
+        wide = wide.max(g.size().x);
+        high += g.size().y + 1.0;
+    }
+    let width = wide.min(column) + 22.0;
+    let height = high + 14.0;
+    let left = (head.x - width / 2.0)
+        .min(map_rect.right() - width)
+        .max(map_rect.left());
+    let bottom = (head.y - BUBBLE_GAP)
+        .max(map_rect.top() + height)
+        .min(map_rect.bottom());
+    BubbleItem {
+        key: format!("bubble:{id}"),
+        left,
+        bottom,
+        width,
+        // Over the speaker, wherever the map pushed the box.
+        // (`max`, or a bubble narrower than two tails would panic `clamp`.)
+        tail: (head.x - left).clamp(14.0, (width - 14.0).max(14.0)),
+        alpha,
+        tone: rgb(name_tone(&speaker)),
+        speaker,
+        bodies,
     }
 }
 
@@ -541,8 +754,6 @@ fn bubble(
     speaker: &str,
     bodies: &[String],
 ) {
-    /// Gap between the head and the bottom of the balloon, in points.
-    const BUBBLE_GAP: f32 = 10.0;
     egui::Area::new(egui::Id::new(("chat_bubble", id)))
         .order(egui::Order::Middle)
         .interactable(false)
@@ -562,7 +773,6 @@ fn bubble(
             // The transcript's glass bubble, and the speaker's name in the
             // colour their initial has there, so the balloon and the line it
             // also appears as read as one person.
-            let tone = crate::systems::chats::tone_for(speaker);
             let frame = egui::Frame::NONE
                 .fill(theme::p().glass)
                 .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
@@ -573,9 +783,12 @@ fn bubble(
                     ui.set_max_width(BUBBLE_WIDTH);
                     ui.spacing_mut().item_spacing.y = 1.0;
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(speaker).size(NAME_PT).strong().color(
-                            crate::systems::chats::blend(tone, egui::Color32::WHITE, 0.5),
-                        ));
+                        ui.label(
+                            egui::RichText::new(speaker)
+                                .size(NAME_PT)
+                                .strong()
+                                .color(name_tone(speaker)),
+                        );
                         for body in bodies {
                             ui.add(
                                 egui::Label::new(
@@ -645,6 +858,14 @@ pub fn render_chat_chip(
     if !overlay.composing {
         overlay.covers = None;
     }
+    // The library's tap of the last frame, done below if the chip is still
+    // up; and no chip for it until this frame says there is one.
+    let lib_act = if overlay.lib {
+        overlay.lib_view.chip = None;
+        overlay.lib_chip.take()
+    } else {
+        None
+    };
     let compact = egui.compact();
     let panel_open = !right_panel.is(RightPanel::None);
     if suppressed(
@@ -696,7 +917,7 @@ pub fn render_chat_chip(
         return;
     }
     let ctx = egui.ctx_mut().clone();
-    if alpha < 1.0 {
+    if alpha < 1.0 && !overlay.lib {
         ctx.request_repaint();
     }
 
@@ -726,127 +947,173 @@ pub fn render_chat_chip(
     let mut toggle_mute = false;
     let mut leave_voice = false;
 
-    let shown = egui::Area::new(egui::Id::new("chat_chip"))
-        .order(egui::Order::Middle)
-        // Live only while it can be read: a chip on its way out leaves the
-        // map its taps, the rule the old transcript was inert for.
-        .interactable(alpha > 0.5)
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(theme::OSD_MARGIN, -corner),
-        )
-        .show(&ctx, |ui| {
-            ui.set_opacity(alpha);
-            ui.set_width(width);
-            let frame = crate::systems::theme::glass_frame()
-                .fill(if talking {
-                    VOICE_FILL
-                } else {
-                    theme::p().glass
-                })
-                .corner_radius(egui::CornerRadius::same(18))
-                .inner_margin(egui::Margin::symmetric(8, 6))
-                .shadow(lift())
-                .show(ui, |ui| {
-                    ui.set_width(width - 16.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if let Some((key, label, _, _, _)) = &newest {
-                            let kind = crate::systems::chats::kind_of(key);
-                            let name = crate::systems::chats::display_name(key, label);
-                            crate::systems::chats::avatar(ui, &name, kind, 26.0);
-                        } else {
-                            crate::systems::chats::avatar(
-                                ui,
-                                "Here",
-                                crate::systems::chats::ChatKind::Here,
-                                26.0,
-                            );
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if talking {
-                                if crate::systems::chats::circle_button(
+    if overlay.lib {
+        // The library draws it from this, and its tap comes back here.
+        let chat_disc = match &newest {
+            Some((key, label, _, _, _)) => (
+                crate::systems::chats::display_name(key, label),
+                crate::systems::chats::kind_of(key),
+            ),
+            None => ("Here".to_string(), crate::systems::chats::ChatKind::Here),
+        };
+        let live = alpha > 0.5;
+        let chip = ChipView {
+            left: theme::OSD_MARGIN,
+            bottom: corner,
+            width,
+            live,
+            chat: chat_disc,
+            open: newest.as_ref().map(|n| n.0.clone()),
+            sender: newest.as_ref().map(|n| (n.2.clone(), rgb(name_tone(&n.2)))),
+            body: newest
+                .as_ref()
+                .map_or_else(|| "Talking nearby".to_string(), |n| n.3.clone()),
+            unread,
+            talking,
+            muted,
+        };
+        // Roughly its height: a 26 pt disc in a 6 pt margin, and the rim.
+        let viewport = egui.viewport_pts();
+        overlay.covers = Some(egui::Rect::from_min_size(
+            egui::pos2(theme::OSD_MARGIN, viewport.y - corner - 40.0),
+            egui::vec2(width, 40.0),
+        ));
+        overlay.lib_view.chip = Some((chip, alpha));
+        match lib_act.filter(|_| live) {
+            Some(ChipAct::Open(key)) => open_on = Some(key),
+            Some(ChipAct::Mute) => toggle_mute = true,
+            Some(ChipAct::Leave) => leave_voice = true,
+            None => {}
+        }
+    } else {
+        let shown = egui::Area::new(egui::Id::new("chat_chip"))
+            .order(egui::Order::Middle)
+            // Live only while it can be read: a chip on its way out leaves the
+            // map its taps, the rule the old transcript was inert for.
+            .interactable(alpha > 0.5)
+            .anchor(
+                egui::Align2::LEFT_BOTTOM,
+                egui::vec2(theme::OSD_MARGIN, -corner),
+            )
+            .show(&ctx, |ui| {
+                ui.set_opacity(alpha);
+                ui.set_width(width);
+                let frame = crate::systems::theme::glass_frame()
+                    .fill(if talking {
+                        VOICE_FILL
+                    } else {
+                        theme::p().glass
+                    })
+                    .corner_radius(egui::CornerRadius::same(18))
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .shadow(lift())
+                    .show(ui, |ui| {
+                        ui.set_width(width - 16.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            if let Some((key, label, _, _, _)) = &newest {
+                                let kind = crate::systems::chats::kind_of(key);
+                                let name = crate::systems::chats::display_name(key, label);
+                                crate::systems::chats::avatar(ui, &name, kind, 26.0);
+                            } else {
+                                crate::systems::chats::avatar(
                                     ui,
-                                    icons::CLEAR,
-                                    false,
-                                    true,
-                                    "Stop talking nearby",
-                                )
-                                .clicked()
-                                {
-                                    leave_voice = true;
-                                }
-                                let (icon, tip) = if muted {
-                                    (icons::MIC_OFF, "Unmute")
-                                } else {
-                                    (icons::MIC, "Mute")
-                                };
-                                if crate::systems::chats::circle_button(ui, icon, !muted, true, tip)
-                                    .clicked()
-                                {
-                                    toggle_mute = true;
-                                }
-                            }
-                            if unread > 0 {
-                                unread_pill(ui, unread);
+                                    "Here",
+                                    crate::systems::chats::ChatKind::Here,
+                                    26.0,
+                                );
                             }
                             ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
+                                egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let text = match &newest {
-                                        Some((_, _, sender, body, _)) => {
-                                            let tone = crate::systems::chats::tone_for(sender);
-                                            let mut job = egui::text::LayoutJob::default();
-                                            job.append(
-                                                sender,
-                                                0.0,
-                                                egui::TextFormat::simple(
-                                                    egui::FontId::proportional(NAME_PT),
-                                                    crate::systems::chats::blend(
-                                                        tone,
-                                                        egui::Color32::WHITE,
-                                                        0.5,
-                                                    ),
-                                                ),
-                                            );
-                                            job.append(
-                                                body,
-                                                6.0,
-                                                egui::TextFormat::simple(
-                                                    egui::FontId::proportional(BODY_PT),
-                                                    theme::p().text,
-                                                ),
-                                            );
-                                            job
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    if talking {
+                                        if crate::systems::chats::circle_button(
+                                            ui,
+                                            icons::CLEAR,
+                                            false,
+                                            true,
+                                            "Stop talking nearby",
+                                        )
+                                        .clicked()
+                                        {
+                                            leave_voice = true;
                                         }
-                                        None => egui::text::LayoutJob::simple_singleline(
-                                            "Talking nearby".into(),
-                                            egui::FontId::proportional(BODY_PT),
-                                            theme::p().cream,
-                                        ),
-                                    };
-                                    let mut text = text;
-                                    text.wrap = egui::text::TextWrapping::truncate_at_width(
-                                        ui.available_width().max(20.0),
+                                        let (icon, tip) = if muted {
+                                            (icons::MIC_OFF, "Unmute")
+                                        } else {
+                                            (icons::MIC, "Mute")
+                                        };
+                                        if crate::systems::chats::circle_button(
+                                            ui, icon, !muted, true, tip,
+                                        )
+                                        .clicked()
+                                        {
+                                            toggle_mute = true;
+                                        }
+                                    }
+                                    if unread > 0 {
+                                        unread_pill(ui, unread);
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let text = match &newest {
+                                                Some((_, _, sender, body, _)) => {
+                                                    let tone =
+                                                        crate::systems::chats::tone_for(sender);
+                                                    let mut job = egui::text::LayoutJob::default();
+                                                    job.append(
+                                                        sender,
+                                                        0.0,
+                                                        egui::TextFormat::simple(
+                                                            egui::FontId::proportional(NAME_PT),
+                                                            crate::systems::chats::blend(
+                                                                tone,
+                                                                egui::Color32::WHITE,
+                                                                0.5,
+                                                            ),
+                                                        ),
+                                                    );
+                                                    job.append(
+                                                        body,
+                                                        6.0,
+                                                        egui::TextFormat::simple(
+                                                            egui::FontId::proportional(BODY_PT),
+                                                            theme::p().text,
+                                                        ),
+                                                    );
+                                                    job
+                                                }
+                                                None => egui::text::LayoutJob::simple_singleline(
+                                                    "Talking nearby".into(),
+                                                    egui::FontId::proportional(BODY_PT),
+                                                    theme::p().cream,
+                                                ),
+                                            };
+                                            let mut text = text;
+                                            text.wrap = egui::text::TextWrapping::truncate_at_width(
+                                                ui.available_width().max(20.0),
+                                            );
+                                            ui.add(egui::Label::new(text).selectable(false));
+                                        },
                                     );
-                                    ui.add(egui::Label::new(text).selectable(false));
                                 },
                             );
                         });
                     });
-                });
-            // The whole chip opens the sheet, on the chat of the line in it.
-            let resp = ui.interact(
-                frame.response.rect,
-                egui::Id::new("chat_chip_open"),
-                egui::Sense::click(),
-            );
-            if theme::named(ui, resp, "Open the chat").clicked() {
-                open_on = Some(newest.as_ref().map(|n| n.0.clone()));
-            }
-        });
-    overlay.covers = Some(shown.response.rect);
+                // The whole chip opens the sheet, on the chat of the line in it.
+                let resp = ui.interact(
+                    frame.response.rect,
+                    egui::Id::new("chat_chip_open"),
+                    egui::Sense::click(),
+                );
+                if theme::named(ui, resp, "Open the chat").clicked() {
+                    open_on = Some(newest.as_ref().map(|n| n.0.clone()));
+                }
+            });
+        overlay.covers = Some(shown.response.rect);
+    }
 
     if toggle_mute {
         voice.set_mode(if muted {
@@ -1011,20 +1278,27 @@ pub fn sheet_tabs(chat: &ChatState, now: f64, keep: &[&str]) -> Vec<usize> {
     out
 }
 
-/// What the sheet asked for this frame.
+/// What the sheet asked for this frame: egui's drawing fills it, or the
+/// library's (`lib_chat_overlay`, through [`ChatOverlay::lib_sheet`]), and
+/// [`render_chat_sheet`] does it either way.
 #[derive(Default)]
-struct SheetActs {
-    tab: Option<usize>,
-    close: bool,
-    send: bool,
-    voice: Option<crate::systems::voice::VoiceMode>,
-    call: Option<crate::systems::calls::CallRequest>,
-    unfold_call: bool,
-    toggle_mic: bool,
-    toggle_camera: bool,
-    toggle_shout: bool,
-    open_in_community: bool,
-    person: Option<(String, PersonAction)>,
+pub struct SheetActs {
+    pub tab: Option<usize>,
+    pub close: bool,
+    pub send: bool,
+    pub voice: Option<crate::systems::voice::VoiceMode>,
+    pub call: Option<crate::systems::calls::CallRequest>,
+    /// Join (or start) the open chat's call: the library's call key, which
+    /// does not know the chat's group; made a `call` from it here.
+    pub join_call: bool,
+    pub unfold_call: bool,
+    pub toggle_mic: bool,
+    pub toggle_camera: bool,
+    pub toggle_shout: bool,
+    /// The "+" under the field: the extras' row, open or shut.
+    pub toggle_plus: bool,
+    pub open_in_community: bool,
+    pub person: Option<(String, PersonAction)>,
 }
 
 /// The chat sheet: a row of chats, the open chat's lines, the field.
@@ -1050,6 +1324,14 @@ pub fn render_chat_sheet(
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
+    // What the library's sheet asked for last frame, done below if the
+    // sheet is still up; and no sheet for it until this frame says so.
+    let lib_act = if overlay.lib {
+        overlay.lib_view.sheet = None;
+        Some(std::mem::take(&mut overlay.lib_sheet))
+    } else {
+        None
+    };
     let compact = egui.compact();
     let panel_open = !right_panel.is(RightPanel::None);
     // Note the sheet does *not* step aside for the keyboard: it is the one
@@ -1162,365 +1444,467 @@ pub fn render_chat_sheet(
     let ctx = egui.ctx_mut().clone();
     let mut act = SheetActs::default();
 
-    egui::Area::new(egui::Id::new("chat_sheet"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.min)
-        .show(&ctx, |ui| {
-            let corners = if compact {
-                egui::CornerRadius {
-                    nw: 22,
-                    ne: 22,
-                    sw: 0,
-                    se: 0,
-                }
-            } else {
-                egui::CornerRadius::same(18)
-            };
-            let inner = egui::Frame::NONE
-                .fill(theme::p().glass)
-                .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
-                .corner_radius(corners)
-                .shadow(lift())
-                .inner_margin(egui::Margin::symmetric(10, 6));
-            inner.show(ui, |ui| {
-                let size = rect.size() - egui::vec2(20.0, 12.0);
-                ui.set_min_size(size);
-                ui.set_max_size(size);
-                ui.spacing_mut().item_spacing.y = 6.0;
+    if let Some(lib_act) = lib_act {
+        // The library draws the sheet from this; what it asked for is done
+        // below as egui's taps are. Its field is bridged to `chat.input`
+        // by `lib_chat_overlay`, so "ready" is the same test.
+        use crate::systems::chats::ChatKind;
+        let ready = !chat.input.trim().is_empty();
+        act = lib_act;
+        act.send &= ready;
+        if std::mem::take(&mut act.join_call) {
+            act.call = group.clone().map(crate::systems::calls::CallRequest::Join);
+        }
+        let strip = if kind == ChatKind::Here && voice_on {
+            let talker = voice_people
+                .iter()
+                .find(|(_, s)| *s)
+                .map_or("nobody is talking", |(n, _)| n.as_str());
+            Some(SheetStrip::Voice {
+                people: voice_people.clone(),
+                talker: format!("public · {talker}"),
+                muted: muted_voice,
+            })
+        } else if in_call_here {
+            Some(SheetStrip::Call {
+                status: call_status.clone(),
+                camera: crate::systems::calls::camera_available().then_some(calls.camera_on),
+                muted: calls.muted,
+            })
+        } else {
+            None
+        };
+        let sheet = SheetView {
+            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
+            compact,
+            tabs: tab_items
+                .iter()
+                .map(|(i, name, kind, unread)| {
+                    (*i, name.clone(), *kind, *unread, *i == chat.active)
+                })
+                .collect(),
+            kind,
+            subtitle: crate::systems::chats::subtitle(kind),
+            public: !matches!(kind, ChatKind::Private | ChatKind::Topic),
+            voice_key: (kind == ChatKind::Here && can_voice).then_some(voice_on),
+            call_key: (matches!(kind, ChatKind::Private | ChatKind::Topic)
+                && !in_call_here
+                && group.is_some())
+            .then_some(others_calling),
+            strip,
+            runs: runs
+                .iter()
+                .map(|run| RunView {
+                    sender: run.sender.clone(),
+                    mine: run.mine,
+                    tone: rgb(name_tone(&run.sender)),
+                    lines: run.lines.iter().map(summary).collect(),
+                    last: run.lines.last().map(|l| l.body.clone()),
+                })
+                .collect(),
+            plus: overlay.plus,
+            shout,
+            here: kind == ChatKind::Here,
+            ready,
+        };
+        overlay.lib_view.sheet = Some(sheet);
+    } else {
+        egui::Area::new(egui::Id::new("chat_sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(&ctx, |ui| {
+                let corners = if compact {
+                    egui::CornerRadius {
+                        nw: 22,
+                        ne: 22,
+                        sw: 0,
+                        se: 0,
+                    }
+                } else {
+                    egui::CornerRadius::same(18)
+                };
+                let inner = egui::Frame::NONE
+                    .fill(theme::p().glass)
+                    .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
+                    .corner_radius(corners)
+                    .shadow(lift())
+                    .inner_margin(egui::Margin::symmetric(10, 6));
+                inner.show(ui, |ui| {
+                    let size = rect.size() - egui::vec2(20.0, 12.0);
+                    ui.set_min_size(size);
+                    ui.set_max_size(size);
+                    ui.spacing_mut().item_spacing.y = 6.0;
 
-                // The grab handle: drag it down to close.
-                if compact {
-                    let (handle, resp) =
-                        ui.allocate_exact_size(egui::vec2(size.x, 10.0), egui::Sense::drag());
-                    ui.painter().rect_filled(
-                        egui::Rect::from_center_size(handle.center(), egui::vec2(38.0, 4.0)),
-                        egui::CornerRadius::same(2),
-                        theme::p().line,
-                    );
-                    if resp.drag_stopped() && resp.drag_delta().y >= 0.0 {
-                        let moved = ui.input(|i| {
-                            i.pointer
-                                .press_origin()
-                                .zip(i.pointer.interact_pos())
-                                .map_or(0.0, |(a, b)| b.y - a.y)
-                        });
-                        if moved > 40.0 {
-                            act.close = true;
+                    // The grab handle: drag it down to close.
+                    if compact {
+                        let (handle, resp) =
+                            ui.allocate_exact_size(egui::vec2(size.x, 10.0), egui::Sense::drag());
+                        ui.painter().rect_filled(
+                            egui::Rect::from_center_size(handle.center(), egui::vec2(38.0, 4.0)),
+                            egui::CornerRadius::same(2),
+                            theme::p().line,
+                        );
+                        if resp.drag_stopped() && resp.drag_delta().y >= 0.0 {
+                            let moved = ui.input(|i| {
+                                i.pointer
+                                    .press_origin()
+                                    .zip(i.pointer.interact_pos())
+                                    .map_or(0.0, |(a, b)| b.y - a.y)
+                            });
+                            if moved > 40.0 {
+                                act.close = true;
+                            }
                         }
                     }
-                }
 
-                // ── The tab row ────────────────────────────────────────────
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::systems::chats::circle_button(
-                            ui,
-                            icons::CLEAR,
-                            false,
-                            true,
-                            "Close the chat",
-                        )
-                        .clicked()
-                        {
-                            act.close = true;
-                        }
-                        match kind {
-                            crate::systems::chats::ChatKind::Here if can_voice => {
-                                let tip = if voice_on {
-                                    "Stop talking nearby"
-                                } else {
-                                    "Talk with the people near you (public)"
-                                };
-                                if voice_key(ui, voice_on, tip).clicked() {
-                                    act.voice = Some(if voice_on {
-                                        crate::systems::voice::VoiceMode::Off
-                                    } else {
-                                        crate::systems::voice::VoiceMode::Open
-                                    });
-                                }
-                            }
-                            crate::systems::chats::ChatKind::Private
-                            | crate::systems::chats::ChatKind::Topic
-                                if !in_call_here =>
+                    // ── The tab row ────────────────────────────────────────────
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::systems::chats::circle_button(
+                                ui,
+                                icons::CLEAR,
+                                false,
+                                true,
+                                "Close the chat",
+                            )
+                            .clicked()
                             {
-                                if let Some(g) = group.clone() {
-                                    let tip = if others_calling {
-                                        "Join the call"
+                                act.close = true;
+                            }
+                            match kind {
+                                crate::systems::chats::ChatKind::Here if can_voice => {
+                                    let tip = if voice_on {
+                                        "Stop talking nearby"
                                     } else {
-                                        "Call (end-to-end encrypted)"
+                                        "Talk with the people near you (public)"
                                     };
-                                    if crate::systems::chats::circle_button(
+                                    if voice_key(ui, voice_on, tip).clicked() {
+                                        act.voice = Some(if voice_on {
+                                            crate::systems::voice::VoiceMode::Off
+                                        } else {
+                                            crate::systems::voice::VoiceMode::Open
+                                        });
+                                    }
+                                }
+                                crate::systems::chats::ChatKind::Private
+                                | crate::systems::chats::ChatKind::Topic
+                                    if !in_call_here =>
+                                {
+                                    if let Some(g) = group.clone() {
+                                        let tip = if others_calling {
+                                            "Join the call"
+                                        } else {
+                                            "Call (end-to-end encrypted)"
+                                        };
+                                        if crate::systems::chats::circle_button(
+                                            ui,
+                                            icons::CALL,
+                                            others_calling,
+                                            true,
+                                            tip,
+                                        )
+                                        .clicked()
+                                        {
+                                            act.call =
+                                                Some(crate::systems::calls::CallRequest::Join(g));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    egui::ScrollArea::horizontal()
+                                        .id_salt("chat_sheet_tabs")
+                                        .scroll_bar_visibility(
+                                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                        )
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 6.0;
+                                                for (i, name, kind, unread) in &tab_items {
+                                                    if tab(
+                                                        ui,
+                                                        name,
+                                                        *kind,
+                                                        *i == chat.active,
+                                                        *unread,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        act.tab = Some(*i);
+                                                    }
+                                                }
+                                            });
+                                        });
+                                },
+                            );
+                        });
+                    });
+
+                    // Who reads this chat, in one quiet line.
+                    ui.label(
+                        egui::RichText::new(crate::systems::chats::subtitle(kind))
+                            .size(NAME_PT - 1.0)
+                            .color(match kind {
+                                crate::systems::chats::ChatKind::Private
+                                | crate::systems::chats::ChatKind::Topic => theme::p().text_dim,
+                                _ => PUBLIC_INK,
+                            }),
+                    );
+
+                    // ── The strip: the voices, or the call ─────────────────────
+                    if kind == crate::systems::chats::ChatKind::Here && voice_on {
+                        strip(ui, |ui| {
+                            for (name, speaking) in &voice_people {
+                                face(ui, name, *speaking);
+                            }
+                            let talker = voice_people
+                                .iter()
+                                .find(|(_, s)| *s)
+                                .map_or("nobody is talking", |(n, _)| n.as_str());
+                            strip_label(ui, "Talking nearby", &format!("public · {talker}"));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::call_button(
                                         ui,
-                                        icons::CALL,
-                                        others_calling,
-                                        true,
-                                        tip,
+                                        icons::CLEAR,
+                                        "Stop talking nearby",
+                                        theme::CallTone::HangUp,
+                                        theme::CALL_BUTTON_SMALL,
                                     )
                                     .clicked()
                                     {
-                                        act.call =
-                                            Some(crate::systems::calls::CallRequest::Join(g));
+                                        act.voice = Some(crate::systems::voice::VoiceMode::Off);
                                     }
-                                }
-                            }
-                            _ => {}
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            egui::ScrollArea::horizontal()
-                                .id_salt("chat_sheet_tabs")
-                                .scroll_bar_visibility(
-                                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                                )
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        for (i, name, kind, unread) in &tab_items {
-                                            if tab(ui, name, *kind, *i == chat.active, *unread)
-                                                .clicked()
-                                            {
-                                                act.tab = Some(*i);
-                                            }
-                                        }
-                                    });
-                                });
-                        });
-                    });
-                });
-
-                // Who reads this chat, in one quiet line.
-                ui.label(
-                    egui::RichText::new(crate::systems::chats::subtitle(kind))
-                        .size(NAME_PT - 1.0)
-                        .color(match kind {
-                            crate::systems::chats::ChatKind::Private
-                            | crate::systems::chats::ChatKind::Topic => theme::p().text_dim,
-                            _ => PUBLIC_INK,
-                        }),
-                );
-
-                // ── The strip: the voices, or the call ─────────────────────
-                if kind == crate::systems::chats::ChatKind::Here && voice_on {
-                    strip(ui, |ui| {
-                        for (name, speaking) in &voice_people {
-                            face(ui, name, *speaking);
-                        }
-                        let talker = voice_people
-                            .iter()
-                            .find(|(_, s)| *s)
-                            .map_or("nobody is talking", |(n, _)| n.as_str());
-                        strip_label(ui, "Talking nearby", &format!("public · {talker}"));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::call_button(
-                                ui,
-                                icons::CLEAR,
-                                "Stop talking nearby",
-                                theme::CallTone::HangUp,
-                                theme::CALL_BUTTON_SMALL,
-                            )
-                            .clicked()
-                            {
-                                act.voice = Some(crate::systems::voice::VoiceMode::Off);
-                            }
-                            let (icon, tip, tone) = if muted_voice {
-                                (icons::MIC_OFF, "Unmute", theme::CallTone::Off)
-                            } else {
-                                (icons::MIC, "Mute", theme::CallTone::On)
-                            };
-                            if theme::call_button(ui, icon, tip, tone, theme::CALL_BUTTON_SMALL)
-                                .clicked()
-                            {
-                                act.voice = Some(if muted_voice {
-                                    crate::systems::voice::VoiceMode::Open
-                                } else {
-                                    crate::systems::voice::VoiceMode::PushToTalk
-                                });
-                            }
-                        });
-                    });
-                } else if in_call_here {
-                    strip(ui, |ui| {
-                        strip_label(
-                            ui,
-                            &call_status,
-                            &format!("{} end-to-end encrypted", icons::LOCK),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::call_button(
-                                ui,
-                                icons::CALL_END,
-                                "Hang up",
-                                theme::CallTone::HangUp,
-                                theme::CALL_BUTTON_SMALL,
-                            )
-                            .clicked()
-                            {
-                                act.call = Some(crate::systems::calls::CallRequest::Leave);
-                            }
-                            if theme::call_button(
-                                ui,
-                                icons::OPEN_EXTERNAL,
-                                "Full screen",
-                                theme::CallTone::On,
-                                theme::CALL_BUTTON_SMALL,
-                            )
-                            .clicked()
-                            {
-                                act.unfold_call = true;
-                            }
-                            if crate::systems::calls::camera_available() {
-                                let (icon, tip, tone) = if calls.camera_on {
-                                    (icons::VIDEOCAM, "Camera off", theme::CallTone::On)
-                                } else {
-                                    (icons::VIDEOCAM_OFF, "Camera on", theme::CallTone::Off)
-                                };
-                                if theme::call_button(ui, icon, tip, tone, theme::CALL_BUTTON_SMALL)
+                                    let (icon, tip, tone) = if muted_voice {
+                                        (icons::MIC_OFF, "Unmute", theme::CallTone::Off)
+                                    } else {
+                                        (icons::MIC, "Mute", theme::CallTone::On)
+                                    };
+                                    if theme::call_button(
+                                        ui,
+                                        icon,
+                                        tip,
+                                        tone,
+                                        theme::CALL_BUTTON_SMALL,
+                                    )
                                     .clicked()
-                                {
-                                    act.toggle_camera = true;
+                                    {
+                                        act.voice = Some(if muted_voice {
+                                            crate::systems::voice::VoiceMode::Open
+                                        } else {
+                                            crate::systems::voice::VoiceMode::PushToTalk
+                                        });
+                                    }
+                                },
+                            );
+                        });
+                    } else if in_call_here {
+                        strip(ui, |ui| {
+                            strip_label(
+                                ui,
+                                &call_status,
+                                &format!("{} end-to-end encrypted", icons::LOCK),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::call_button(
+                                        ui,
+                                        icons::CALL_END,
+                                        "Hang up",
+                                        theme::CallTone::HangUp,
+                                        theme::CALL_BUTTON_SMALL,
+                                    )
+                                    .clicked()
+                                    {
+                                        act.call = Some(crate::systems::calls::CallRequest::Leave);
+                                    }
+                                    if theme::call_button(
+                                        ui,
+                                        icons::OPEN_EXTERNAL,
+                                        "Full screen",
+                                        theme::CallTone::On,
+                                        theme::CALL_BUTTON_SMALL,
+                                    )
+                                    .clicked()
+                                    {
+                                        act.unfold_call = true;
+                                    }
+                                    if crate::systems::calls::camera_available() {
+                                        let (icon, tip, tone) = if calls.camera_on {
+                                            (icons::VIDEOCAM, "Camera off", theme::CallTone::On)
+                                        } else {
+                                            (icons::VIDEOCAM_OFF, "Camera on", theme::CallTone::Off)
+                                        };
+                                        if theme::call_button(
+                                            ui,
+                                            icon,
+                                            tip,
+                                            tone,
+                                            theme::CALL_BUTTON_SMALL,
+                                        )
+                                        .clicked()
+                                        {
+                                            act.toggle_camera = true;
+                                        }
+                                    }
+                                    let (icon, tip, tone) = if calls.muted {
+                                        (icons::MIC_OFF, "Unmute", theme::CallTone::Off)
+                                    } else {
+                                        (icons::MIC, "Mute", theme::CallTone::On)
+                                    };
+                                    if theme::call_button(
+                                        ui,
+                                        icon,
+                                        tip,
+                                        tone,
+                                        theme::CALL_BUTTON_SMALL,
+                                    )
+                                    .clicked()
+                                    {
+                                        act.toggle_mic = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+
+                    // ── The lines ──────────────────────────────────────────────
+                    let below = composer_height() + 4.0;
+                    let lines_h = (ui.available_height() - below).max(40.0);
+                    let column = ui.available_width();
+                    egui::ScrollArea::vertical()
+                        .id_salt(("chat_sheet_lines", key.as_str()))
+                        .max_height(lines_h)
+                        .min_scrolled_height(lines_h)
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_width(column);
+                            ui.spacing_mut().item_spacing.y = 6.0;
+                            if runs.is_empty() {
+                                ui.add_space(lines_h * 0.35);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Nothing said yet")
+                                            .size(NAME_PT)
+                                            .color(theme::p().text_dim),
+                                    );
+                                });
+                            }
+                            // A short conversation sits on the field, as a
+                            // messenger's does, not at the top of the sheet: the
+                            // runs are pushed down by what they measured last frame.
+                            let measured = egui::Id::new("chat_sheet_runs_h");
+                            let last_h: f32 = ui.data(|d| d.get_temp(measured)).unwrap_or(lines_h);
+                            if !runs.is_empty() && last_h < lines_h {
+                                ui.add_space(lines_h - last_h - 6.0);
+                            }
+                            let top = ui.cursor().top();
+                            for run in &runs {
+                                if let Some(hit) = sheet_run(ui, run, column) {
+                                    act.person = Some((run.sender.clone(), hit));
                                 }
                             }
-                            let (icon, tip, tone) = if calls.muted {
-                                (icons::MIC_OFF, "Unmute", theme::CallTone::Off)
-                            } else {
-                                (icons::MIC, "Mute", theme::CallTone::On)
-                            };
-                            if theme::call_button(ui, icon, tip, tone, theme::CALL_BUTTON_SMALL)
-                                .clicked()
+                            let h = ui.cursor().top() - top;
+                            ui.data_mut(|d| d.insert_temp(measured, h));
+                        });
+
+                    // ── The field ──────────────────────────────────────────────
+                    if overlay.plus {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if kind == crate::systems::chats::ChatKind::Here
+                                && chip(ui, &format!("{} Shout", icons::FLAG), shout).clicked()
                             {
-                                act.toggle_mic = true;
+                                act.toggle_shout = true;
+                            }
+                            if chip(
+                                ui,
+                                &format!("{} Pictures, points and plans", icons::ADD),
+                                false,
+                            )
+                            .on_hover_text("Open this chat in Community")
+                            .clicked()
+                            {
+                                act.open_in_community = true;
                             }
                         });
-                    });
-                }
-
-                // ── The lines ──────────────────────────────────────────────
-                let below = composer_height() + 4.0;
-                let lines_h = (ui.available_height() - below).max(40.0);
-                let column = ui.available_width();
-                egui::ScrollArea::vertical()
-                    .id_salt(("chat_sheet_lines", key.as_str()))
-                    .max_height(lines_h)
-                    .min_scrolled_height(lines_h)
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_width(column);
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        if runs.is_empty() {
-                            ui.add_space(lines_h * 0.35);
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Nothing said yet")
-                                        .size(NAME_PT)
-                                        .color(theme::p().text_dim),
-                                );
-                            });
-                        }
-                        // A short conversation sits on the field, as a
-                        // messenger's does, not at the top of the sheet: the
-                        // runs are pushed down by what they measured last frame.
-                        let measured = egui::Id::new("chat_sheet_runs_h");
-                        let last_h: f32 = ui.data(|d| d.get_temp(measured)).unwrap_or(lines_h);
-                        if !runs.is_empty() && last_h < lines_h {
-                            ui.add_space(lines_h - last_h - 6.0);
-                        }
-                        let top = ui.cursor().top();
-                        for run in &runs {
-                            if let Some(hit) = sheet_run(ui, run, column) {
-                                act.person = Some((run.sender.clone(), hit));
-                            }
-                        }
-                        let h = ui.cursor().top() - top;
-                        ui.data_mut(|d| d.insert_temp(measured, h));
-                    });
-
-                // ── The field ──────────────────────────────────────────────
-                if overlay.plus {
+                    }
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        if kind == crate::systems::chats::ChatKind::Here
-                            && chip(ui, &format!("{} Shout", icons::FLAG), shout).clicked()
-                        {
-                            act.toggle_shout = true;
-                        }
-                        if chip(
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if crate::systems::chats::circle_button(
                             ui,
-                            &format!("{} Pictures, points and plans", icons::ADD),
-                            false,
+                            icons::ADD,
+                            overlay.plus || shout,
+                            true,
+                            "More",
                         )
-                        .on_hover_text("Open this chat in Community")
                         .clicked()
                         {
-                            act.open_in_community = true;
+                            overlay.plus = !overlay.plus;
                         }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if crate::systems::chats::circle_button(
-                        ui,
-                        icons::ADD,
-                        overlay.plus || shout,
-                        true,
-                        "More",
-                    )
-                    .clicked()
-                    {
-                        overlay.plus = !overlay.plus;
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ready = !chat.input.trim().is_empty();
-                        let send = crate::systems::chats::circle_button(
-                            ui,
-                            icons::SEND,
-                            true,
-                            ready,
-                            "Send",
-                        );
-                        let hint = if shout {
-                            "Shout to the street…"
-                        } else {
-                            "Message"
-                        };
-                        let field = egui::Frame::NONE
-                            .fill(theme::p().surface_raised)
-                            .corner_radius(egui::CornerRadius::same(19))
-                            .inner_margin(egui::Margin::symmetric(14, 9))
-                            .show(ui, |ui| {
-                                // `desired_width`, not `add_sized`: this layout's
-                                // available *height* is the rest of the row.
-                                crate::systems::text_touch::field(
-                                    ui,
-                                    egui::TextEdit::singleline(&mut chat.input)
-                                        .id(field_id)
-                                        .frame(egui::Frame::NONE)
-                                        .font(egui::FontId::proportional(BODY_PT))
-                                        .text_color(theme::p().text)
-                                        .desired_width(ui.available_width())
-                                        .hint_text(
-                                            egui::RichText::new(hint).color(theme::p().line),
-                                        ),
-                                )
-                            })
-                            .inner;
-                        if claim {
-                            field.request_focus();
-                        }
-                        let entered =
-                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        act.send = (send.clicked() || entered) && ready;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let ready = !chat.input.trim().is_empty();
+                            let send = crate::systems::chats::circle_button(
+                                ui,
+                                icons::SEND,
+                                true,
+                                ready,
+                                "Send",
+                            );
+                            let hint = if shout {
+                                "Shout to the street…"
+                            } else {
+                                "Message"
+                            };
+                            let field = egui::Frame::NONE
+                                .fill(theme::p().surface_raised)
+                                .corner_radius(egui::CornerRadius::same(19))
+                                .inner_margin(egui::Margin::symmetric(14, 9))
+                                .show(ui, |ui| {
+                                    // `desired_width`, not `add_sized`: this layout's
+                                    // available *height* is the rest of the row.
+                                    crate::systems::text_touch::field(
+                                        ui,
+                                        egui::TextEdit::singleline(&mut chat.input)
+                                            .id(field_id)
+                                            .frame(egui::Frame::NONE)
+                                            .font(egui::FontId::proportional(BODY_PT))
+                                            .text_color(theme::p().text)
+                                            .desired_width(ui.available_width())
+                                            .hint_text(
+                                                egui::RichText::new(hint).color(theme::p().line),
+                                            ),
+                                    )
+                                })
+                                .inner;
+                            if claim {
+                                field.request_focus();
+                            }
+                            let entered =
+                                field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            act.send = (send.clicked() || entered) && ready;
+                        });
                     });
                 });
             });
-        });
-    if wants_keys {
-        // The sheet lifts itself onto the keys: the keyboard must not dodge
-        // to the top edge on the frame the field is tapped.
-        onscreen_keyboard::field_makes_room(&ctx, field_id);
+        if wants_keys {
+            // The sheet lifts itself onto the keys: the keyboard must not dodge
+            // to the top edge on the frame the field is tapped.
+            onscreen_keyboard::field_makes_room(&ctx, field_id);
+        }
     }
 
     // ── Acting on it ──────────────────────────────────────────────────────
+    if act.toggle_plus {
+        overlay.plus = !overlay.plus;
+    }
     if let Some(i) = act.tab {
         if i != chat.active {
             chat.active = i;

@@ -91,7 +91,12 @@ pub fn prepare_bevy(
             || lib.scenario
             || lib.design_room
             || lib.admin
-            || lib.keyboard)
+            || lib.keyboard
+            || lib.chrome
+            || lib.osd
+            || lib.pins
+            || lib.place_names
+            || lib.chat_overlay)
     {
         return;
     }
@@ -105,13 +110,25 @@ pub fn prepare_bevy(
     // after the upscale, past where `bevy_ui`'s pass sits. On the world's
     // camera every egui button lay over the library's cards. It draws to
     // the world camera's target (`follow_world_target`).
+    //
+    // Unlike the world's (HDR, its own MSAA) it has a texture of its own,
+    // laid over the target after: so it clears that texture to transparent
+    // each frame and lays it over premultiplied. Left uncleared, every
+    // frame drew its shadows onto the last's, and a 10 % shadow came out
+    // a black ring.
     let target = targets.get(camera).cloned().unwrap_or_default();
     let overlay = commands
         .spawn((
             bevy::prelude::Camera2d,
             bevy::prelude::Camera {
                 order: 100,
-                clear_color: bevy::camera::ClearColorConfig::None,
+                clear_color: bevy::camera::ClearColorConfig::Custom(bevy::prelude::Color::NONE),
+                output_mode: bevy::camera::CameraOutputMode::Write {
+                    blend_state: Some(
+                        bevy::render::render_resource::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                    ),
+                    clear_color: bevy::camera::ClearColorConfig::None,
+                },
                 ..Default::default()
             },
             bevy::prelude::Msaa::Off,
@@ -131,6 +148,7 @@ pub fn prepare_bevy(
             .map(|d| fonts.add(bevy::prelude::Font::from_bytes(d.font.to_vec())))
             .unwrap_or(body),
         icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
+        icon_scale: theme::ICON_SCALE,
     });
     *ready = true;
 }

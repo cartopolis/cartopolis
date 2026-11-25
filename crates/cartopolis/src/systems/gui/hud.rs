@@ -29,6 +29,96 @@ use crate::resources::CameraState;
 use crate::systems::driver::GpsQuality;
 use crate::systems::theme;
 
+/// What the view controls show this frame, for the library's edition
+/// (`lib_chrome`, through `dock::ChromeLib`): egui's system decides all of
+/// it and draws none of it then. Points from the screen's edges (the
+/// library's px on the Bevy backend); `None` is a control not shown.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct HudView {
+    pub compass: Option<CompassView>,
+    pub locate: Option<LocateView>,
+    pub light: Option<LightView>,
+    pub scale: Option<ScaleView>,
+}
+
+/// The compass rose: from the screen's left and top.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct CompassView {
+    pub left: f32,
+    pub top: f32,
+    /// The view's bearing, degrees clockwise from north, to half a degree.
+    pub heading: f32,
+    pub interactive: bool,
+    pub locked: bool,
+    pub caption: Option<&'static str>,
+    pub hover: &'static str,
+}
+
+/// How the locate disc's ring reads ([`locate_overlay`]'s `tone`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum LocateTone {
+    /// Not tracking.
+    Ring,
+    /// Tracking, the receiver behaving.
+    Bright,
+    /// Tracking, the fix poor, stale or refused.
+    Warn,
+}
+
+/// The locate disc: how far its right edge stands in from the screen's.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct LocateView {
+    pub right: f32,
+    pub top: f32,
+    /// In a lying row: the caption goes under the disc, not beside it.
+    pub lying: bool,
+    pub on: bool,
+    pub tone: LocateTone,
+    /// A fix is in hand: the arrow is filled.
+    pub filled: bool,
+    /// Waiting for a fix: an arc travels round the ring.
+    pub searching: bool,
+    pub caption: Option<String>,
+    pub hover: String,
+}
+
+/// The light disc and, open, its three choices.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct LightView {
+    pub left: f32,
+    pub top: f32,
+    pub lying: bool,
+    pub mode: crate::resources::SunMode,
+    pub open: bool,
+}
+
+/// The scale bar: from the screen's left and bottom, its length and words.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct ScaleView {
+    pub left: f32,
+    pub bottom: f32,
+    pub pts: f32,
+    pub label: String,
+}
+
+/// The light disc's choices, for the library's edition: each light and its
+/// word, in the order the disc offers them.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub const LIGHTS: [(crate::resources::SunMode, &str); 3] = LIGHT_CHOICES;
+
+/// What the light disc's hover says, for the library's edition.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[must_use]
+pub fn light_hint(mode: crate::resources::SunMode) -> &'static str {
+    light_hover(mode)
+}
+
 /// Diameter (points) of the compass overlay — [`theme::ROUND_BUTTON_SIZE`], the
 /// one disc this app draws over a map.
 ///
@@ -809,198 +899,284 @@ pub fn render_map_controls(
     room: Res<crate::systems::design_room::DesignRoom>,
     // Whether the light disc's three choices are open beside it.
     mut light_open: Local<bool>,
+    // The library's edition (`lib_chrome`): with `lib.on` egui draws none of
+    // this, publishes what to draw in `lib.hud`, and acts on `lib.acts`.
+    mut chrome: ResMut<crate::systems::dock::MapChrome>,
 ) {
-    // The design room is a white room, with its own bar and nothing else.
-    if room.spot.is_some() {
-        return;
-    }
-    // The camera is the whole screen. A chat's World view keeps these: its
-    // header is one slim pill at the top centre (`chats::render_chat_world`).
-    #[cfg(feature = "comms")]
-    let camera_open = camera_screen.is_open();
-    #[cfg(not(feature = "comms"))]
-    let camera_open = false;
-    if camera_open && !driver.active {
-        return;
-    }
-    // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
-    // always paints floating Areas on top of panels (panels live on the bottom-most
-    // background layer, and even `Order::Background` Areas paint above it), so the
-    // only way to keep these *behind* one is to drop them while it is open. Driver
-    // mode is the exception: the compass is part of its chrome, and the planner it
-    // was started from is closed anyway.
-    //
-    // `RightPanel` is the whole answer. This used to also OR in `DataLayers::
-    // panel_open` and `BookmarksState::panel_open` — the booleans the panels
-    // carried before the shared dock existed. None of them is
-    // cleared anywhere, and the old status readout *set* the bookmarks one when
-    // you saved a place, so a single press of ☆ hid the compass and the locate
-    // button for the rest of the session. Nothing writes them now
-    // except the `--shot` harness, which sets `RightPanel` alongside them from the
-    // same `--ui` list, so the scripted chrome is unchanged.
-    if !right_panel.is(crate::resources::RightPanel::None) && !driver.active {
-        return;
-    }
-    let Ok((cell, tf, projection)) = camera.single() else {
-        return;
-    };
-    let in_space = globe.in_space(cell, tf);
-    // Over the globe the bearing is measured against the spin axis, not the local
-    // flat frame (see `space_view_heading`).
-    let heading = if in_space {
-        space_view_heading(tf, globe.north_axis_local())
-    } else {
-        view_heading(tf)
-    };
-    let Some(heading) = heading else {
-        return;
-    };
-
-    // The scale bar, whenever the view has a single ground scale to state.
-    // Skipped in the space tier on purpose: up there the local flat frame is not
-    // the ground, the visible arc is a fraction of a sphere, and a straight bar
-    // of metres would be wrong by however much of the limb is in shot.
-    if !in_space && !driver.active {
-        let fov_y = match projection {
-            Projection::Perspective(p) => Some(p.fov),
-            _ => None,
-        };
-        let viewport_h = egui.viewport_pts().y;
-        // `-forward.y` is the sine of the view's depression below horizontal —
-        // 1 looking straight down, 0 at the horizon.
-        let depression = -(tf.rotation * Vec3::NEG_Z).normalize().y;
-        if let Some((metres, pts)) = fov_y
-            .and_then(|fov| {
-                ground_metres_per_point(
-                    globe.altitude_m(cell, tf) as f32,
-                    depression,
-                    fov,
-                    viewport_h,
-                )
-            })
-            .and_then(|per_pt| nice_scale_bar(per_pt, SCALE_MAX_PTS))
-        {
-            // What the bottom-left corner already holds. `cluster_for` is a pure
-            // function of the same state `map_osd` reads, so asking it here costs
-            // two resources and cannot disagree with what is actually drawn —
-            // where a second copy of the rule ("is there a stick right now?")
-            // would drift the first time either side gained a suppression.
-            let reserved = crate::systems::map_osd::bottom_left_reserved(
-                crate::systems::map_osd::cluster_for(
-                    camera_state.mode,
-                    driver.active,
-                    !right_panel.is(crate::resources::RightPanel::None),
-                    keyboard.is_open(),
-                    theme::touch_layout() || touch.ever(),
-                ),
-            );
-            scale_bar_overlay(egui.ctx(), metres, pts, reserved);
+    let lib = chrome.lib.on;
+    let acts = chrome
+        .lib
+        .take_acts(crate::systems::dock::ChromeAct::is_hud);
+    let tapped = |a: crate::systems::dock::ChromeAct| acts.contains(&a);
+    let mut out = HudView::default();
+    'draw: {
+        // The design room is a white room, with its own bar and nothing else.
+        if room.spot.is_some() {
+            break 'draw;
         }
-    }
-
-    if driver.active {
-        // Driving: the rose steps through the navigation orientations
-        // (`driver::MapOrientation`), and stacks under the manoeuvre card that has
-        // taken the corner.
-        use crate::systems::driver::{CARD_HEIGHT, CARD_MARGIN};
-        let cfg = Compass {
-            interactive: true,
-            locked: driver.orientation == crate::systems::driver::MapOrientation::NorthUp,
-            top: CARD_MARGIN + CARD_HEIGHT + 8.0,
-            left: theme::OSD_MARGIN,
-            caption: Some(driver.orientation.label()),
-            hover: "Change the map orientation (heading up / north up / 3D)",
-        };
-        if compass_overlay(egui.ctx(), heading, &cfg) {
-            driver.orientation = driver.orientation.next();
+        // The camera is the whole screen. A chat's World view keeps these: its
+        // header is one slim pill at the top centre (`chats::render_chat_world`).
+        #[cfg(feature = "comms")]
+        let camera_open = camera_screen.is_open();
+        #[cfg(not(feature = "comms"))]
+        let camera_open = false;
+        if camera_open && !driver.active {
+            break 'draw;
         }
-        return;
-    }
-
-    // Clicking toggles the north-up lock in globe (Orbit) mode only; fly/avatar are
-    // free-form, so there the rose is a passive indicator.
-    let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
-    let locked = orbit && camera_state.orbit_north_lock;
-    let view = egui.viewport_pts();
-    let slot = crate::systems::dock::left_slot(view, 0);
-    let cfg = Compass {
-        interactive: orbit,
-        locked,
-        // Under the search bar, at the head of the left column; lying, at the
-        // head of the left row beside it (`dock::left_slot`).
-        top: slot.y,
-        left: slot.x,
-        caption: None,
-        hover: if locked {
-            "North-up locked — click to release"
-        } else {
-            "Lock the view north-up"
-        },
-    };
-    if compass_overlay(egui.ctx(), heading, &cfg) {
-        // Toggle the lock; engaging it also eases the view back to north (the lock
-        // holds it there from then on).
-        camera_state.orbit_north_lock = !locked;
-        camera_state.orbit_north_reset = camera_state.orbit_north_lock;
-    }
-
-    // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
-    // the viewer that owns a local avatar — and deliberately *not* gated on a
-    // session, unlike the mode switcher's Follow: "where am I on the map" is a
-    // traditional map-viewer verb and offline is exactly where a viewer lives.
-    // It takes no camera mode of its own (`systems::locate`), so there is nothing
-    // for the offline mode guard to exempt: the button answers where you are in
-    // whatever view you were already using. Not drawn while driving: the arrow is
-    // already centred and the camera is held, so there is nothing left for it to
-    // do.
-    let col = crate::systems::dock::right_column(view, true, false);
-    if let Some(at) = col.locate.filter(|_| !avatars.is_empty()) {
-        let state = if tracking.active {
-            LocateState::Tracking
-        } else {
-            LocateState::Off
+        // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
+        // always paints floating Areas on top of panels (panels live on the bottom-most
+        // background layer, and even `Order::Background` Areas paint above it), so the
+        // only way to keep these *behind* one is to drop them while it is open. Driver
+        // mode is the exception: the compass is part of its chrome, and the planner it
+        // was started from is closed anyway.
+        //
+        // `RightPanel` is the whole answer. This used to also OR in `DataLayers::
+        // panel_open` and `BookmarksState::panel_open` — the booleans the panels
+        // carried before the shared dock existed. None of them is
+        // cleared anywhere, and the old status readout *set* the bookmarks one when
+        // you saved a place, so a single press of ☆ hid the compass and the locate
+        // button for the rest of the session. Nothing writes them now
+        // except the `--shot` harness, which sets `RightPanel` alongside them from the
+        // same `--ui` list, so the scripted chrome is unchanged.
+        if !right_panel.is(crate::resources::RightPanel::None) && !driver.active {
+            break 'draw;
+        }
+        let Ok((cell, tf, projection)) = camera.single() else {
+            break 'draw;
         };
-        let hover = locate_hover(state, &tracking);
-        let toggled = locate_overlay(egui.ctx(), at, col.lying, state, tracking.gps, &hover);
-        if toggled {
-            match state {
-                // Recenter, in the view the user is already in. The button used to
-                // force Follow on the way in, which made "where am I" a one-way
-                // door out of Fly and Earth; `systems::locate` moves the camera
-                // that is there instead, and owns the rotate-follow rig too — it
-                // has to, because arriving in Follow later (Tab, the mode disc)
-                // must arm the same thing this press would have.
-                LocateState::Off => {
-                    tracking.enter();
-                    tracking.enter_walk_view(&mut camera_state);
-                }
-                LocateState::Tracking => {
-                    camera_state.follow_rotate = false;
-                    tracking.leave_walk_view(&mut camera_state);
-                    tracking.exit();
-                    // The camera mode rides on the button's fixes; switching
-                    // the button off ends it too.
-                    high.on = false;
+        let in_space = globe.in_space(cell, tf);
+        // Over the globe the bearing is measured against the spin axis, not the local
+        // flat frame (see `space_view_heading`).
+        let heading = if in_space {
+            space_view_heading(tf, globe.north_axis_local())
+        } else {
+            view_heading(tf)
+        };
+        let Some(heading) = heading else {
+            break 'draw;
+        };
+
+        // The scale bar, whenever the view has a single ground scale to state.
+        // Skipped in the space tier on purpose: up there the local flat frame is not
+        // the ground, the visible arc is a fraction of a sphere, and a straight bar
+        // of metres would be wrong by however much of the limb is in shot.
+        if !in_space && !driver.active {
+            let fov_y = match projection {
+                Projection::Perspective(p) => Some(p.fov),
+                _ => None,
+            };
+            let viewport_h = egui.viewport_pts().y;
+            // `-forward.y` is the sine of the view's depression below horizontal —
+            // 1 looking straight down, 0 at the horizon.
+            let depression = -(tf.rotation * Vec3::NEG_Z).normalize().y;
+            if let Some((metres, pts)) = fov_y
+                .and_then(|fov| {
+                    ground_metres_per_point(
+                        globe.altitude_m(cell, tf) as f32,
+                        depression,
+                        fov,
+                        viewport_h,
+                    )
+                })
+                .and_then(|per_pt| nice_scale_bar(per_pt, SCALE_MAX_PTS))
+            {
+                // What the bottom-left corner already holds. `cluster_for` is a pure
+                // function of the same state `map_osd` reads, so asking it here costs
+                // two resources and cannot disagree with what is actually drawn —
+                // where a second copy of the rule ("is there a stick right now?")
+                // would drift the first time either side gained a suppression.
+                let reserved = crate::systems::map_osd::bottom_left_reserved(
+                    crate::systems::map_osd::cluster_for(
+                        camera_state.mode,
+                        driver.active,
+                        !right_panel.is(crate::resources::RightPanel::None),
+                        keyboard.is_open(),
+                        theme::touch_layout() || touch.ever(),
+                    ),
+                );
+                if lib {
+                    out.scale = Some(ScaleView {
+                        left: theme::OSD_MARGIN,
+                        bottom: reserved + theme::OSD_GAP,
+                        pts,
+                        label: format_scale(metres),
+                    });
+                } else {
+                    scale_bar_overlay(egui.ctx(), metres, pts, reserved);
                 }
             }
         }
-    }
 
-    // The light disc, under the lens in the left column: Auto, Light or
-    // Dark, as a theme switcher offers them (`docs/mockups/zoom-ladder/`,
-    // v2). The same setting as Settings ▸ World's Light row, which also holds
-    // a set time.
-    if let Some(mode) = light_overlay(
-        egui.ctx(),
-        crate::systems::dock::left_slot(view, 2),
-        crate::systems::dock::lying(view),
-        dev.sun_mode,
-        &mut light_open,
-    ) {
-        if dev.sun_mode != mode {
-            dev.sun_mode = mode;
+        // One compass, either edition: what it shows in `out`, or drawn by
+        // egui; answers whether it was pressed.
+        let compass = |cfg: &Compass, out: &mut HudView| -> bool {
+            if lib {
+                out.compass = Some(CompassView {
+                    left: cfg.left,
+                    top: cfg.top,
+                    heading: (heading * 2.0).round() / 2.0,
+                    interactive: cfg.interactive,
+                    locked: cfg.locked,
+                    caption: cfg.caption,
+                    hover: cfg.hover,
+                });
+                cfg.interactive && tapped(crate::systems::dock::ChromeAct::Compass)
+            } else {
+                compass_overlay(egui.ctx(), heading, cfg)
+            }
+        };
+
+        if driver.active {
+            // Driving: the rose steps through the navigation orientations
+            // (`driver::MapOrientation`), and stacks under the manoeuvre card that has
+            // taken the corner.
+            use crate::systems::driver::{CARD_HEIGHT, CARD_MARGIN};
+            let cfg = Compass {
+                interactive: true,
+                locked: driver.orientation == crate::systems::driver::MapOrientation::NorthUp,
+                top: CARD_MARGIN + CARD_HEIGHT + 8.0,
+                left: theme::OSD_MARGIN,
+                caption: Some(driver.orientation.label()),
+                hover: "Change the map orientation (heading up / north up / 3D)",
+            };
+            if compass(&cfg, &mut out) {
+                driver.orientation = driver.orientation.next();
+            }
+            break 'draw;
+        }
+
+        // Clicking toggles the north-up lock in globe (Orbit) mode only; fly/avatar are
+        // free-form, so there the rose is a passive indicator.
+        let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
+        let locked = orbit && camera_state.orbit_north_lock;
+        let view = egui.viewport_pts();
+        let slot = crate::systems::dock::left_slot(view, 0);
+        let cfg = Compass {
+            interactive: orbit,
+            locked,
+            // Under the search bar, at the head of the left column; lying, at the
+            // head of the left row beside it (`dock::left_slot`).
+            top: slot.y,
+            left: slot.x,
+            caption: None,
+            hover: if locked {
+                "North-up locked — click to release"
+            } else {
+                "Lock the view north-up"
+            },
+        };
+        if compass(&cfg, &mut out) {
+            // Toggle the lock; engaging it also eases the view back to north (the lock
+            // holds it there from then on).
+            camera_state.orbit_north_lock = !locked;
+            camera_state.orbit_north_reset = camera_state.orbit_north_lock;
+        }
+
+        // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
+        // the viewer that owns a local avatar — and deliberately *not* gated on a
+        // session, unlike the mode switcher's Follow: "where am I on the map" is a
+        // traditional map-viewer verb and offline is exactly where a viewer lives.
+        // It takes no camera mode of its own (`systems::locate`), so there is nothing
+        // for the offline mode guard to exempt: the button answers where you are in
+        // whatever view you were already using. Not drawn while driving: the arrow is
+        // already centred and the camera is held, so there is nothing left for it to
+        // do.
+        let col = crate::systems::dock::right_column(view, true, false);
+        if let Some(at) = col.locate.filter(|_| !avatars.is_empty()) {
+            let state = if tracking.active {
+                LocateState::Tracking
+            } else {
+                LocateState::Off
+            };
+            let hover = locate_hover(state, &tracking);
+            let toggled = if lib {
+                let on = matches!(state, LocateState::Tracking);
+                let gps = tracking.gps;
+                out.locate = Some(LocateView {
+                    right: column_x(at.x, LOCATE_SIZE),
+                    top: at.y,
+                    lying: col.lying,
+                    on,
+                    tone: match (on, gps) {
+                        (false, _) => LocateTone::Ring,
+                        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => {
+                            LocateTone::Warn
+                        }
+                        (true, _) => LocateTone::Bright,
+                    },
+                    filled: gps.has_position(),
+                    searching: matches!(gps, GpsQuality::Waiting),
+                    caption: gps.caption().filter(|_| on),
+                    hover,
+                });
+                tapped(crate::systems::dock::ChromeAct::Locate)
+            } else {
+                locate_overlay(egui.ctx(), at, col.lying, state, tracking.gps, &hover)
+            };
+            if toggled {
+                match state {
+                    // Recenter, in the view the user is already in. The button used to
+                    // force Follow on the way in, which made "where am I" a one-way
+                    // door out of Fly and Earth; `systems::locate` moves the camera
+                    // that is there instead, and owns the rotate-follow rig too — it
+                    // has to, because arriving in Follow later (Tab, the mode disc)
+                    // must arm the same thing this press would have.
+                    LocateState::Off => {
+                        tracking.enter();
+                        tracking.enter_walk_view(&mut camera_state);
+                    }
+                    LocateState::Tracking => {
+                        camera_state.follow_rotate = false;
+                        tracking.leave_walk_view(&mut camera_state);
+                        tracking.exit();
+                        // The camera mode rides on the button's fixes; switching
+                        // the button off ends it too.
+                        high.on = false;
+                    }
+                }
+            }
+        }
+
+        // The light disc, under the lens in the left column: Auto, Light or
+        // Dark, as a theme switcher offers them (`docs/mockups/zoom-ladder/`,
+        // v2). The same setting as Settings ▸ World's Light row, which also holds
+        // a set time.
+        let chosen = if lib {
+            if tapped(crate::systems::dock::ChromeAct::LightDisc) {
+                *light_open = !*light_open;
+            }
+            let chosen = acts.iter().find_map(|a| match a {
+                crate::systems::dock::ChromeAct::Light(m) => Some(*m),
+                _ => None,
+            });
+            if chosen.is_some() {
+                *light_open = false;
+            }
+            let at = crate::systems::dock::left_slot(view, 2);
+            out.light = Some(LightView {
+                left: column_x(at.x, theme::ROUND_BUTTON_SIZE),
+                top: at.y,
+                lying: crate::systems::dock::lying(view),
+                mode: chosen.unwrap_or(dev.sun_mode),
+                open: *light_open,
+            });
+            chosen
+        } else {
+            light_overlay(
+                egui.ctx(),
+                crate::systems::dock::left_slot(view, 2),
+                crate::systems::dock::lying(view),
+                dev.sun_mode,
+                &mut light_open,
+            )
+        };
+        if let Some(mode) = chosen {
+            if dev.sun_mode != mode {
+                dev.sun_mode = mode;
+            }
         }
     }
+    crate::systems::dock::set_if_changed(&mut chrome.lib.hud, out);
 }
 
 /// Compass bearing (deg, 0 = north, 90 = east) of the direction that reads as

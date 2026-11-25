@@ -34,6 +34,13 @@
 //! pin sits on its building. In space that frame is meaningless, so the point is
 //! taken on the globe itself (`globe::GlobeState::direction_local`) and pins on
 //! the far side are dropped by the horizon test.
+//!
+//! **Two editions, one placing.** Where every marker goes, which are culled
+//! and what a tap on one does are worked out here once; egui paints them, or
+//! — with [`PlacePins::lib`] on — the component library does
+//! (`systems::lib_pins`), from the list this system publishes in
+//! [`PlacePins::lib_view`], and its taps come back through
+//! [`PlacePins::lib_tapped`] to the same code a click on egui's pin runs.
 
 use crate::components::FreeCamera;
 #[cfg(feature = "comms")]
@@ -42,6 +49,7 @@ use crate::resources::MapAnchor;
 #[cfg(feature = "comms")]
 use crate::systems::chat_people;
 use crate::systems::egui_manager::{EguiMut, WorldAnchored};
+use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -81,11 +89,7 @@ const POST_PIN_IDS: u64 = 1 << 50;
 ///
 /// Drawn from this system because it is the last UI system to run (the module
 /// note says why), so nothing composed later can cover it.
-fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> Option<String> {
-    let now = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+fn sharing_chip(ctx: &egui::Context, lines: &[(String, String)]) -> Option<String> {
     let mut stop = None;
     egui::Area::new(egui::Id::new("real_location_sharing_chip"))
         // Under the search bar, which has the top edge.
@@ -100,24 +104,9 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
                 .corner_radius(12.0)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
-                    for share in &chat.sharing {
-                        let who = chat
-                            .channels
-                            .iter()
-                            .find(|c| c.key == share.channel)
-                            .map(|c| {
-                                crate::systems::private_chat::peer_of_label(&c.label).to_string()
-                            })
-                            .unwrap_or_else(|| "a chat".into());
+                    for (channel, line) in lines {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} {who} sees where your phone is · {} min",
-                                    crate::systems::icons::HERE,
-                                    share.until_ms.saturating_sub(now) / 60_000 + 1
-                                ))
-                                .color(theme::DARK.ink),
-                            );
+                            ui.label(egui::RichText::new(line).color(theme::DARK.ink));
                             // A word on the location-sharing chip, whose fill is one
                             // colour in both themes, so its ink is the dark theme's
                             // whatever the palette.
@@ -126,13 +115,155 @@ fn sharing_chip(ctx: &egui::Context, chat: &crate::systems::chat::ChatState) -> 
                                 egui::RichText::new("Stop").color(theme::DARK.ink).strong(),
                             );
                             if ui.add(word).clicked() {
-                                stop = Some(share.channel.clone());
+                                stop = Some(channel.clone());
                             }
                         });
                     }
                 });
         });
     stop
+}
+
+#[cfg(feature = "comms")]
+/// The sharing chip's lines, one per chat this phone's location goes to: the
+/// chat's key, and "◎ sanne sees where your phone is · 12 min". Both
+/// editions' chips say these words (`lib_pins`).
+fn sharing_lines(chat: &crate::systems::chat::ChatState) -> Vec<(String, String)> {
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    chat.sharing
+        .iter()
+        .map(|share| {
+            let who = chat
+                .channels
+                .iter()
+                .find(|c| c.key == share.channel)
+                .map(|c| crate::systems::private_chat::peer_of_label(&c.label).to_string())
+                .unwrap_or_else(|| "a chat".into());
+            (
+                share.channel.clone(),
+                format!(
+                    "{} {who} sees where your phone is · {} min",
+                    crate::systems::icons::HERE,
+                    share.until_ms.saturating_sub(now) / 60_000 + 1
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The pins' own state: whether the component library draws them
+/// (`systems::lib_pins`), and what goes back and forth with it. Inserted by
+/// the library's system when it takes the pins over; absent, egui draws.
+#[derive(Resource, Default)]
+pub struct PlacePins {
+    /// The library draws the markers; egui's system still places, culls and
+    /// acts, and paints nothing.
+    pub lib: bool,
+    /// What the library draws this frame, written by [`render_place_pins`].
+    pub lib_view: PinsView,
+    /// The key of the marker the library's tap landed on ([`PinItem::key`]),
+    /// done next frame as a click on egui's pin is.
+    pub lib_tapped: Option<String>,
+    /// A Stop on the library's sharing chip: the chat to stop telling.
+    pub lib_stop: Option<String>,
+}
+
+/// Every marker of one frame, placed and culled, for the library.
+#[derive(Default, Clone, Debug)]
+pub struct PinsView {
+    pub pins: Vec<PinItem>,
+    /// What people last said, over their markers, after every marker.
+    pub balloons: Vec<BalloonItem>,
+    /// The "you are sharing your real location" chip's lines: the chat's
+    /// key and what the line says.
+    pub sharing: Vec<(String, String)>,
+}
+
+/// One marker where it stands this frame.
+#[derive(Clone, Debug)]
+pub struct PinItem {
+    /// Stable across frames: what the library keys the marker's node by.
+    pub key: String,
+    /// The tip, in egui points (the library's px natively).
+    pub tip: egui::Pos2,
+    pub name: String,
+    pub look: PinLook,
+}
+
+/// What a marker looks like: everything about it that does not move.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PinLook {
+    /// A saved place's teardrop, or a community post's, in its colour.
+    Place { color: [f32; 3] },
+    /// A chat's point: its number, and the label's width as egui measures it.
+    #[cfg(feature = "comms")]
+    Point { number: String, width: f32 },
+    /// A person (`chat_people::marker`), with the width of the name's chip.
+    #[cfg(feature = "comms")]
+    Person {
+        kind: chat_people::MarkerKind,
+        chip: f32,
+    },
+}
+
+/// A speech balloon over a person's marker (`chat_people::balloon`), placed:
+/// its bottom-left corner, width and where its tail points from its left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BalloonItem {
+    pub key: String,
+    pub left: f32,
+    pub bottom: f32,
+    pub width: f32,
+    pub tail: f32,
+    pub text: String,
+    pub alpha: f32,
+    pub mine: bool,
+}
+
+/// What a tap on a marker does, resolved after every marker is placed: the
+/// lists it indexes are this frame's.
+#[derive(Clone)]
+enum PinTap {
+    /// `store.data.bookmarks[i]`.
+    Bookmark(usize),
+    /// Your own marker: fly there.
+    #[cfg(feature = "comms")]
+    Jump(Teleport, String),
+    /// The chat's points, a community's posts and people's shared phones,
+    /// by their index this frame.
+    #[cfg(feature = "comms")]
+    ChatPoint(usize),
+    #[cfg(feature = "comms")]
+    Post(usize),
+    #[cfg(feature = "comms")]
+    Phone(usize),
+    /// A person's card, by username.
+    #[cfg(feature = "comms")]
+    Person(String),
+}
+
+/// The width `text` takes at `font`, as egui lays it out: what the library's
+/// edition centres a label of unknown width by (its root has no box to centre
+/// in, and a wide box would take the taps meant for what is under it).
+/// Only people's markers and a chat's points need it (`comms`).
+#[cfg_attr(not(feature = "comms"), allow(dead_code))]
+pub(crate) fn text_width(ctx: &egui::Context, text: &str, font: egui::FontId) -> f32 {
+    ctx.layer_painter(egui::LayerId::background())
+        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE)
+        .size()
+        .x
+}
+
+/// The frame around the pins, bundled under Bevy's parameter cap.
+#[derive(SystemParam)]
+pub struct PinsFrame<'w> {
+    keyboard: Res<'w, crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    driver: Res<'w, crate::systems::driver::DriverState>,
+    route: Res<'w, crate::systems::navigation::RouteState>,
+    lib: Option<ResMut<'w, PlacePins>>,
 }
 
 /// Beyond this ground distance a pin is dropped below the space tier. The
@@ -154,9 +285,9 @@ pub fn render_place_pins(
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
-    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
-    driver: Res<crate::systems::driver::DriverState>,
-    route: Res<crate::systems::navigation::RouteState>,
+    // The keyboard, the driver bar, the route sheet, and the library's
+    // edition when it has the pins ([`PlacePins`]).
+    mut frame: PinsFrame,
     // The points of the private chat whose World view is on (the chat panel's
     // "Map" toggle). Drawn by the same code as saved places so they share the
     // projection, the culling and the one ordering rule this system obeys.
@@ -175,22 +306,47 @@ pub fn render_place_pins(
     >,
     // A community's public posts, when its page asked for them on the map.
     #[cfg(feature = "comms")] communities: Res<crate::systems::communities::Communities>,
-    // Your own name, for the marker over your own avatar. The sixteenth
-    // parameter, which is Bevy's cap: the next one needs a `SystemParam`.
+    // Your own name, for the marker over your own avatar. Bevy's cap is
+    // sixteen parameters: the next one goes into `PinsFrame`.
     #[cfg(feature = "comms")] identity: Option<Res<crate::resources::AuthIdentity>>,
 ) {
     // Where every marker went this frame, so egui redraws on the frames the map
     // moved under them and on no others (`WorldAnchored`). First, so each early
     // return below reads as the markers going.
     let mut anchored = WorldAnchored::new(egui.ctx(), "place_pins");
+    // The library's edition, when it has the pins: egui paints nothing, and
+    // an early return below leaves it an empty frame, which reads as the
+    // markers going there too.
+    let mut lib = frame.lib.as_deref_mut().filter(|l| l.lib);
+    let tapped_key = lib.as_mut().and_then(|l| {
+        l.lib_view = PinsView::default();
+        l.lib_tapped.take()
+    });
+    #[cfg(not(feature = "comms"))]
+    if let Some(l) = lib.as_mut() {
+        l.lib_stop = None;
+    }
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
     // is the one thing this feature must never be.
     #[cfg(feature = "comms")]
-    if !chat.sharing.is_empty() {
-        let ctx = egui.ctx_mut().clone();
-        if let Some(channel) = sharing_chip(&ctx, &chat) {
-            chat.stop_sharing(&channel);
+    {
+        let stop = lib.as_mut().and_then(|l| l.lib_stop.take());
+        if !chat.sharing.is_empty() {
+            let lines = sharing_lines(&chat);
+            let stop = match lib.as_mut() {
+                Some(l) => {
+                    l.lib_view.sharing = lines;
+                    stop
+                }
+                None => {
+                    let ctx = egui.ctx_mut().clone();
+                    sharing_chip(&ctx, &lines)
+                }
+            };
+            if let Some(channel) = stop {
+                chat.stop_sharing(&channel);
+            }
         }
     }
     // Driver mode owns the screen and strips the map to the route — but this
@@ -198,7 +354,7 @@ pub fn render_place_pins(
     // navigation view, and every one of them is a live `Area` whose click is a
     // `Teleport`. Tapping a saved place at 50 km/h is not a gesture that should
     // be reachable.
-    if driver.active {
+    if frame.driver.active {
         return;
     }
     #[cfg(feature = "comms")]
@@ -248,7 +404,7 @@ pub fn render_place_pins(
         return;
     };
 
-    let map_rect = map_area(&mut egui, &keyboard, &route);
+    let map_rect = map_area(&mut egui, &frame.keyboard, &frame.route);
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -279,52 +435,41 @@ pub fn render_place_pins(
     // shared magnitude — back out of every point it is added to.
     let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
 
-    // Carries the place's name alongside the teleport: the address bar's recents
-    // list reads `pending_label`, and a jump that arrives without one shows up
-    // there as a bare coordinate pair rather than as the place you saved.
-    let mut jump: Option<(Teleport, String)> = None;
-    #[cfg_attr(not(feature = "comms"), allow(unused_mut))]
-    let mut card: Option<crate::systems::place_card::CardPlace> = None;
-    #[cfg(feature = "comms")]
-    let mut person_card: Option<String> = None;
-    let mut drawn = 0usize;
-    for b in &store.data.bookmarks {
-        let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain)
-        else {
-            continue;
-        };
-        let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
-            continue; // behind the camera
-        };
+    // Where a place stands on the screen this frame: `None` behind the camera,
+    // over the horizon, off the map or under the map's buttons.
+    let project = |lat: f64, lng: f64| -> Option<egui::Pos2> {
+        let delta = place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)?;
+        let screen = cam.world_to_viewport(&cam_view, delta.as_vec3()).ok()?;
         let tip = to_ui(screen);
-        if !shown(&ctx, map_rect, tip) {
+        shown(&ctx, map_rect, tip).then_some(tip)
+    };
+    // The library's edition centres its labels by egui's measure of them
+    // (`text_width`); egui's own needs none.
+    #[cfg(feature = "comms")]
+    let for_lib = lib.is_some();
+    // Every marker of this frame in the order they stack, the last on top,
+    // and what a tap on each does. Placed once for both editions.
+    let mut placed: Vec<(PinItem, PinTap)> = Vec::new();
+    for (i, b) in store.data.bookmarks.iter().enumerate() {
+        let Some(tip) = project(b.lat, b.lng) else {
             continue;
-        }
-        drawn += 1;
-        anchored.at(tip);
-        if pin(
-            &ctx,
-            map_rect,
-            b.id,
-            tip,
-            store.pin_color(b.folder),
-            &b.name,
-        ) {
-            // Same jump the panel's row does: keep the current camera mode and
-            // move it to the spot (`pose: None`).
-            jump = Some((
-                Teleport {
-                    lat: b.lat,
-                    lng: b.lng,
-                    altitude: Some(b.altitude),
-                    pose: None,
-                    silent: false,
-                    look: false,
+        };
+        placed.push((
+            PinItem {
+                key: format!("place:{}", b.id),
+                tip,
+                name: b.name.clone(),
+                look: PinLook::Place {
+                    color: store.pin_color(b.folder),
                 },
-                b.name.clone(),
-            ));
-        }
+            },
+            PinTap::Bookmark(i),
+        ));
     }
+    // What people last said, over their markers: whose, where (the top of
+    // the marker), the words, how strongly, and whether they are yours.
+    #[cfg(feature = "comms")]
+    let mut balloons: Vec<(String, egui::Pos2, String, f32, bool)> = Vec::new();
     // Everything that comes from a chat or a community (`comms`): the web
     // build pins saved places only, and the page around it has the rest.
     #[cfg(feature = "comms")]
@@ -334,46 +479,28 @@ pub fn render_place_pins(
         // of your own saved places. Ids from a range no bookmark reaches, since egui
         // keys each pin's `Area` by it.
         for (i, (point, label)) in chat_points.iter().enumerate() {
-            let Some(delta) = place_delta(
-                &globe,
-                anchor,
-                cam_world,
-                in_space,
-                point.latitude,
-                point.longitude,
-                &terrain,
-            ) else {
+            let Some(tip) = project(point.latitude, point.longitude) else {
                 continue;
             };
-            let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
-                continue;
-            };
-            let tip = to_ui(screen);
-            if !shown(&ctx, map_rect, tip) {
-                continue;
-            }
-            drawn += 1;
-            anchored.at(tip);
             // `world_points` numbers each label "<n>  <name>", matching the card.
             let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
-            if point_pin(&ctx, map_rect, CHAT_PIN_IDS + i as u64, tip, number, name) {
-                // Bridge ①: the place's card, saying it is the chat's, with the
-                // way back into the chat (`bridges`).
-                if let Some(key) = chat.world.clone() {
-                    let chat_name = chat.channels.iter().find(|c| c.key == key).map_or_else(
-                        || key.clone(),
-                        |c| crate::systems::chats::display_name(&key, &c.label),
-                    );
-                    card = Some(marker_card(
-                        point.name.clone().unwrap_or_else(|| name.to_string()),
-                        point.latitude,
-                        point.longitude,
-                        format!("{chat_name} · place"),
-                        crate::systems::bridges::OpenIn::Chat(key),
-                        None,
-                    ));
-                }
-            }
+            let width = if for_lib {
+                point_head_width(&ctx, name)
+            } else {
+                0.0
+            };
+            placed.push((
+                PinItem {
+                    key: format!("point:{}", CHAT_PIN_IDS + i as u64),
+                    tip,
+                    name: name.to_string(),
+                    look: PinLook::Point {
+                        number: number.to_string(),
+                        width,
+                    },
+                },
+                PinTap::ChatPoint(i),
+            ));
         }
         // A community's public posts, where they were written, in the colour
         // that means "public" everywhere else (`community_posts`).
@@ -383,93 +510,47 @@ pub fn render_place_pins(
             f32::from(lavender.g()) / 255.0,
             f32::from(lavender.b()) / 255.0,
         ];
-        let mut tapped_post = None;
-        for (i, (community, post, point, label)) in post_points.iter().enumerate() {
-            let Some(delta) = place_delta(
-                &globe,
-                anchor,
-                cam_world,
-                in_space,
-                point.latitude,
-                point.longitude,
-                &terrain,
-            ) else {
+        for (i, (_, _, point, label)) in post_points.iter().enumerate() {
+            let Some(tip) = project(point.latitude, point.longitude) else {
                 continue;
             };
-            let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
-                continue;
-            };
-            let tip = to_ui(screen);
-            if !shown(&ctx, map_rect, tip) {
-                continue;
-            }
-            drawn += 1;
-            anchored.at(tip);
-            if pin(
-                &ctx,
-                map_rect,
-                POST_PIN_IDS + i as u64,
-                tip,
-                lavender,
-                label,
-            ) {
-                // Bridge ①: the post's card over the map, saying whose it is,
-                // with Open in Community to read it there (`bridges`).
-                tapped_post = Some((*community, *post, point.clone(), label.clone()));
-            }
-        }
-        if let Some((community, post, point, label)) = tapped_post {
-            let from = communities
-                .get(community)
-                .map_or_else(|| "Community".to_string(), |c| c.settings.name.clone());
-            card = Some(marker_card(
-                label,
-                point.latitude,
-                point.longitude,
-                format!("{from} · post"),
-                crate::systems::bridges::OpenIn::Post { community, post },
-                None,
+            placed.push((
+                PinItem {
+                    key: format!("post:{}", POST_PIN_IDS + i as u64),
+                    tip,
+                    name: label.clone(),
+                    look: PinLook::Place { color: lavender },
+                },
+                PinTap::Post(i),
             ));
         }
+        // The width of a person's name chip, for the library's edition.
+        let chip = |name: &str| {
+            if for_lib {
+                chat_people::chip_width(&ctx, name)
+            } else {
+                0.0
+            }
+        };
         // People's real locations, shared with a private chat: a person's marker,
         // not a place's teardrop, in the blue that means nothing else
         // (`chat_people::MarkerKind::Phone`, `theme::REAL_LOCATION`).
-        for l in &people {
-            let Some(delta) = place_delta(
-                &globe,
-                anchor,
-                cam_world,
-                in_space,
-                l.latitude,
-                l.longitude,
-                &terrain,
-            ) else {
+        for (i, l) in people.iter().enumerate() {
+            let Some(tip) = project(l.latitude, l.longitude) else {
                 continue;
             };
-            let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
-                continue;
-            };
-            let tip = to_ui(screen);
-            if !shown(&ctx, map_rect, tip) {
-                continue;
-            }
-            drawn += 1;
-            anchored.at(tip);
-            if chat_people::marker(&ctx, map_rect, tip, &l.from, chat_people::MarkerKind::Phone) {
-                // Bridge ①: "sanne · sharing location", Open chat, and a route
-                // that follows them.
-                // The name is the title; the line over it says what kind of
-                // thing it is, and for how long (it said the name twice).
-                let mins = l.until_ms.saturating_sub(now_ms) / 60_000 + 1;
-                card = Some(marker_card(
-                    l.from.clone(),
-                    l.latitude,
-                    l.longitude,
-                    format!("Sharing location · {mins} min left"),
-                    crate::systems::bridges::OpenIn::Chat(l.channel.clone()),
-                    Some((l.channel.clone(), l.from.clone())),
-                ));
-            }
+            placed.push((
+                PinItem {
+                    key: format!("phone:{}", l.from.to_lowercase()),
+                    tip,
+                    name: l.from.clone(),
+                    look: PinLook::Person {
+                        kind: chat_people::MarkerKind::Phone,
+                        chip: chip(&l.from),
+                    },
+                },
+                PinTap::Phone(i),
+            ));
         }
         // The people in the chat whose World view is open, at their avatars, with
         // what each last said floating over them (`chat_people`, design v5 B).
@@ -485,7 +566,6 @@ pub fn render_place_pins(
             } else {
                 DVec3::Y * chat_people::HEAD_HEIGHT_M
             };
-            let mut balloons: Vec<(String, egui::Pos2, String, f32, bool)> = Vec::new();
             for w in &contacts.whereabouts {
                 let (lat, lng) = w.at(now);
                 let Some(ground) =
@@ -509,20 +589,18 @@ pub fn render_place_pins(
                 if !shown(&ctx, map_rect, tip) {
                     continue;
                 }
-                drawn += 1;
-                anchored.at(tip);
-                if chat_people::marker(
-                    &ctx,
-                    map_rect,
-                    tip,
-                    &w.username,
-                    chat_people::MarkerKind::Avatar,
-                ) {
-                    // Bridge ①, for a person: their card (`contacts`), whose
-                    // Message is the way into the chat. Opened after the loop,
-                    // which is reading the list the card's lookup writes beside.
-                    person_card = Some(w.username.clone());
-                }
+                placed.push((
+                    PinItem {
+                        key: format!("avatar:{}", w.username.to_lowercase()),
+                        tip,
+                        name: w.username.clone(),
+                        look: PinLook::Person {
+                            kind: chat_people::MarkerKind::Avatar,
+                            chip: chip(&w.username),
+                        },
+                    },
+                    PinTap::Person(w.username.clone()),
+                ));
                 if let Some((text, alpha)) = chat_people::latest_said(&chat, &key, &w.username) {
                     let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
                     balloons.push((w.username.clone(), over, text, alpha, false));
@@ -549,28 +627,171 @@ pub fn render_place_pins(
                     .map(to_ui)
                     .filter(|tip| shown(&ctx, map_rect, *tip));
                 if let Some(tip) = tip {
-                    drawn += 1;
-                    anchored.at(tip);
-                    if chat_people::marker(
-                        &ctx,
-                        map_rect,
-                        tip,
-                        name,
-                        chat_people::MarkerKind::Avatar,
-                    ) {
-                        jump = Some((Teleport::geo(lat, lng, None), name.clone()));
-                    }
+                    placed.push((
+                        PinItem {
+                            key: "me".to_string(),
+                            tip,
+                            name: name.clone(),
+                            look: PinLook::Person {
+                                kind: chat_people::MarkerKind::Avatar,
+                                chip: chip(name),
+                            },
+                        },
+                        PinTap::Jump(Teleport::geo(lat, lng, None), name.clone()),
+                    ));
                     if let Some((text, alpha)) = chat_people::latest_mine(&chat, &key) {
                         let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
                         balloons.push((String::new(), over, text, alpha, true));
                     }
                 }
             }
+        }
+    }
+
+    // Drawn by egui, or handed to the library; a tap either way is one of the
+    // markers just placed.
+    let drawn = placed.len();
+    let mut tapped: Option<PinTap> = None;
+    match lib.as_mut() {
+        Some(l) => {
+            if let Some(key) = &tapped_key {
+                tapped = placed
+                    .iter()
+                    .find(|(p, _)| &p.key == key)
+                    .map(|(_, t)| t.clone());
+            }
+            #[cfg(feature = "comms")]
+            {
+                l.lib_view.balloons = balloons
+                    .iter()
+                    .map(|(who, over, text, alpha, mine)| {
+                        chat_people::balloon_item(&ctx, map_rect, who, *over, text, *alpha, *mine)
+                    })
+                    .collect();
+            }
+            l.lib_view.pins = placed.into_iter().map(|(p, _)| p).collect();
+        }
+        None => {
+            for (p, tap) in &placed {
+                anchored.at(p.tip);
+                let hit = match &p.look {
+                    PinLook::Place { color } => pin(&ctx, map_rect, &p.key, p.tip, *color, &p.name),
+                    #[cfg(feature = "comms")]
+                    PinLook::Point { number, .. } => {
+                        point_pin(&ctx, map_rect, &p.key, p.tip, number, &p.name)
+                    }
+                    #[cfg(feature = "comms")]
+                    PinLook::Person { kind, .. } => {
+                        chat_people::marker(&ctx, map_rect, p.tip, &p.name, *kind)
+                    }
+                };
+                if hit {
+                    tapped = Some(tap.clone());
+                }
+            }
             // After every marker, so a balloon is never under somebody's disc.
-            for (who, over, text, alpha, mine) in balloons {
-                chat_people::balloon(&ctx, map_rect, &who, over, &text, alpha, mine);
+            #[cfg(feature = "comms")]
+            for (who, over, text, alpha, mine) in &balloons {
+                chat_people::balloon(&ctx, map_rect, who, *over, text, *alpha, *mine);
             }
         }
+    }
+
+    // What the tap asked for, the same for both editions.
+    //
+    // A jump carries the place's name alongside the teleport: the address
+    // bar's recents list reads `pending_label`, and a jump that arrives
+    // without one shows up there as a bare coordinate pair rather than as the
+    // place you saved.
+    let mut jump: Option<(Teleport, String)> = None;
+    #[cfg_attr(not(feature = "comms"), allow(unused_mut))]
+    let mut card: Option<crate::systems::place_card::CardPlace> = None;
+    #[cfg(feature = "comms")]
+    let mut person_card: Option<String> = None;
+    match tapped {
+        Some(PinTap::Bookmark(i)) => {
+            if let Some(b) = store.data.bookmarks.get(i) {
+                // Same jump the panel's row does: keep the current camera mode
+                // and move it to the spot (`pose: None`).
+                jump = Some((
+                    Teleport {
+                        lat: b.lat,
+                        lng: b.lng,
+                        altitude: Some(b.altitude),
+                        pose: None,
+                        silent: false,
+                        look: false,
+                    },
+                    b.name.clone(),
+                ));
+            }
+        }
+        #[cfg(feature = "comms")]
+        Some(PinTap::Jump(tp, name)) => jump = Some((tp, name)),
+        #[cfg(feature = "comms")]
+        Some(PinTap::ChatPoint(i)) => {
+            // Bridge ①: the place's card, saying it is the chat's, with the
+            // way back into the chat (`bridges`).
+            if let (Some((point, label)), Some(key)) = (chat_points.get(i), chat.world.clone()) {
+                let name = label.split_once("  ").map_or(label.as_str(), |(_, n)| n);
+                let chat_name = chat.channels.iter().find(|c| c.key == key).map_or_else(
+                    || key.clone(),
+                    |c| crate::systems::chats::display_name(&key, &c.label),
+                );
+                card = Some(marker_card(
+                    point.name.clone().unwrap_or_else(|| name.to_string()),
+                    point.latitude,
+                    point.longitude,
+                    format!("{chat_name} · place"),
+                    crate::systems::bridges::OpenIn::Chat(key),
+                    None,
+                ));
+            }
+        }
+        #[cfg(feature = "comms")]
+        Some(PinTap::Post(i)) => {
+            // Bridge ①: the post's card over the map, saying whose it is,
+            // with Open in Community to read it there (`bridges`).
+            if let Some((community, post, point, label)) = post_points.get(i) {
+                let from = communities
+                    .get(*community)
+                    .map_or_else(|| "Community".to_string(), |c| c.settings.name.clone());
+                card = Some(marker_card(
+                    label.clone(),
+                    point.latitude,
+                    point.longitude,
+                    format!("{from} · post"),
+                    crate::systems::bridges::OpenIn::Post {
+                        community: *community,
+                        post: *post,
+                    },
+                    None,
+                ));
+            }
+        }
+        #[cfg(feature = "comms")]
+        Some(PinTap::Phone(i)) => {
+            // Bridge ①: "sanne · sharing location", Open chat, and a route
+            // that follows them. The name is the title; the line over it
+            // says what kind of thing it is, and for how long (it said the
+            // name twice).
+            if let Some(l) = people.get(i) {
+                let mins = l.until_ms.saturating_sub(now_ms) / 60_000 + 1;
+                card = Some(marker_card(
+                    l.from.clone(),
+                    l.latitude,
+                    l.longitude,
+                    format!("Sharing location · {mins} min left"),
+                    crate::systems::bridges::OpenIn::Chat(l.channel.clone()),
+                    Some((l.channel.clone(), l.from.clone())),
+                ));
+            }
+        }
+        // Bridge ①, for a person: their card (`contacts`), whose Message is
+        // the way into the chat.
+        #[cfg(feature = "comms")]
+        Some(PinTap::Person(name)) => person_card = Some(name),
+        None => {}
     }
     // "The pins aren't showing" has three very different causes — no anchor, all
     // projected off-map, or drawn-but-invisible — and only this tells them apart.
@@ -761,7 +982,7 @@ pub(crate) fn place_delta(
 fn pin(
     ctx: &egui::Context,
     map_rect: egui::Rect,
-    id: u64,
+    id: &str,
     tip: egui::Pos2,
     color: [f32; 3],
     name: &str,
@@ -848,6 +1069,13 @@ fn pin(
         .clicked()
 }
 
+/// The width of [`point_pin`]'s label for `name`: the number's disc, the
+/// name (cut at 170 pt) and the label's edges.
+#[cfg(feature = "comms")]
+fn point_head_width(ctx: &egui::Context, name: &str) -> f32 {
+    4.0 + 22.0 + 7.0 + text_width(ctx, name, egui::FontId::proportional(12.5)).min(170.0) + 10.0
+}
+
 /// A chat's point on its World view: the design's `.ppin` — a cream label with
 /// the point's number in an ink circle and its name, on a thin stem down to a
 /// dot on the ground. Always labelled: a conversation has a handful of places,
@@ -855,7 +1083,7 @@ fn pin(
 fn point_pin(
     ctx: &egui::Context,
     map_rect: egui::Rect,
-    id: u64,
+    id: &str,
     tip: egui::Pos2,
     number: &str,
     name: &str,

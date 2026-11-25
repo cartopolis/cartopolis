@@ -52,6 +52,15 @@ impl Plugin for GuiPlugin {
                     systems::lib_scenario::drive_lib_scenario,
                     systems::lib_design_room::drive_lib_design_room,
                 ),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    systems::lib_chrome::drive_lib_chrome,
+                    systems::lib_map_osd::drive_lib_map_osd,
+                    systems::lib_place_names::drive_lib_place_names,
+                    systems::lib_pins::drive_lib_pins,
+                ),
             );
         app.init_resource::<systems::settings::SettingsState>()
             .init_resource::<systems::place_names::PlaceNames>()

@@ -34,9 +34,25 @@ pub struct FontMap {
     /// (`font-family: 'Material Symbols Rounded'`); `None` falls back to
     /// the regular face.
     pub icons: Option<Handle<Font>>,
+    /// The icon face drawn this much larger than its `font-size`, as an
+    /// egui `FontTweak::scale` does; 1 for none.
+    pub icon_scale: f32,
 }
 
 impl FontMap {
+    fn is_icons(&self, family: &str) -> bool {
+        self.icons.is_some() && (family.contains("Symbols") || family.contains("icons"))
+    }
+
+    /// The size `px` of `family` is drawn at.
+    fn size(&self, family: &str, px: f32) -> f32 {
+        if self.is_icons(family) {
+            px * self.icon_scale
+        } else {
+            px
+        }
+    }
+
     fn pick(&self, family: &str, weight: u16) -> Handle<Font> {
         if family.contains("monospace") || family.contains("mono") {
             return self.mono.clone();
@@ -763,7 +779,7 @@ fn write_components(
     if is_text {
         let text_font = fonts.map(|f| TextFont {
             font: f.pick(&c.font_family, c.font_weight).into(),
-            font_size: bevy::text::FontSize::Px(c.font_size),
+            font_size: bevy::text::FontSize::Px(f.size(&c.font_family, c.font_size)),
             ..default()
         });
         let mut em = world.entity_mut(e);
@@ -998,7 +1014,10 @@ fn write_components(
                     x_offset: Val::Px(s.x),
                     y_offset: Val::Px(s.y),
                     spread_radius: Val::Px(s.spread),
-                    blur_radius: Val::Px(s.blur),
+                    // CSS's blur is twice the Gaussian's deviation; Bevy's
+                    // `blur_radius` is the deviation itself (its shadow reaches
+                    // three of them out), so CSS's 6 px came out as 12.
+                    blur_radius: Val::Px(s.blur / 2.0),
                 })
                 .collect(),
         ));
@@ -1074,7 +1093,7 @@ fn write_components(
         let tf = match fonts {
             Some(f) => TextFont {
                 font: f.pick(&c.font_family, c.font_weight).into(),
-                font_size: bevy::text::FontSize::Px(c.font_size),
+                font_size: bevy::text::FontSize::Px(f.size(&c.font_family, c.font_size)),
                 ..default()
             },
             None => TextFont {
@@ -1163,7 +1182,7 @@ fn write_components(
             let tf = match fonts {
                 Some(f) => TextFont {
                     font: f.pick(&c.font_family, c.font_weight).into(),
-                    font_size: bevy::text::FontSize::Px(c.font_size),
+                    font_size: bevy::text::FontSize::Px(f.size(&c.font_family, c.font_size)),
                     ..default()
                 },
                 None => TextFont {
