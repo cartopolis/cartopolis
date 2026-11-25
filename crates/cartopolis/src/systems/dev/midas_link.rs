@@ -266,6 +266,9 @@ pub struct MidasLink {
     pub code_draft: String,
     pub hub_draft: String,
     pub text_draft: String,
+    /// How many pushes have gone (each clears `text_draft`), so the library's
+    /// field, which keeps its own words, knows when to clear.
+    pushed: u32,
     waiting: Vec<Waiting>,
     sense: Sense,
     worker: Option<worker::Worker>,
@@ -334,6 +337,67 @@ pub struct ToldView {
     pub text: String,
 }
 
+/// A tap in Developer tools ▸ Midas, from either edition, done by
+/// [`MidasLink::apply_tab`]. The library's fields keep their own words, so
+/// the acts that use them carry them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MidasAct {
+    /// Pair with the hub, with the code its page shows.
+    Pair {
+        hub: String,
+        code: String,
+    },
+    /// Link on, or off.
+    LinkOn(bool),
+    /// The session Send goes to.
+    SendTo(Option<String>),
+    /// Ask the hub again for the open sessions.
+    Refresh,
+    /// Send the precision log, with these words.
+    SendLog(String),
+    /// Send a screenshot, with these words.
+    SendShot(String),
+    /// Send these words alone.
+    SendWords(String),
+    Unpair,
+}
+
+/// Developer tools ▸ Midas as plain data, for the library's edition.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct MidasTabView {
+    pub paired: bool,
+    /// The pairing fields as the app holds them, to fill the library's when
+    /// they are drawn. Its words field keeps its own words.
+    pub hub_draft: String,
+    pub code_draft: String,
+    /// Pushes gone so far: a new one clears the words field.
+    pub pushed: u32,
+    /// "name · hub".
+    pub who: String,
+    pub on: bool,
+    /// The link's state in words, or what Off means.
+    pub state: String,
+    /// "s579 asked for screenshot", in the last half minute.
+    pub recent: Option<String>,
+    /// The sessions Send may go to: (id, "id · title"). The chosen one is
+    /// among them even when the hub no longer lists it.
+    pub sessions: Vec<(String, String)>,
+    pub send_to: Option<String>,
+    /// The answer to the last Pair, Send or Refresh.
+    pub message: Option<String>,
+}
+
+/// Over the pairing fields.
+pub const PAIR_NOTE: &str = "Pair this app with your Midas hub, and your sessions can ask it for screenshots, camera frames, the precision log and sensor recordings while it is open.";
+/// Where the code comes from.
+pub const PAIR_HOW: &str =
+    "On the Midas page: Settings > This device > Paired apps > Pair a device. Type the code it shows here.";
+/// Under Link on, off.
+pub const OFF_NOTE: &str = "Off: no session can reach this app.";
+/// The words field, empty.
+pub const WORDS_HINT: &str = "a few words with it (optional)";
+
 #[cfg(mcp)]
 type McpJobs = futures_channel::mpsc::UnboundedSender<cartopolis_mcp::protocol::Job>;
 
@@ -347,6 +411,7 @@ impl Default for MidasLink {
             code_draft: String::new(),
             hub_draft: DEFAULT_HUB.to_string(),
             text_draft: String::new(),
+            pushed: 0,
             waiting: Vec::new(),
             sense: Sense::default(),
             worker: None,
@@ -370,6 +435,114 @@ impl MidasLink {
             LinkAct::Toggle => self.card_open = !self.card_open,
             LinkAct::CloseCard => self.card_open = false,
             LinkAct::DismissTold => self.told = None,
+        }
+    }
+
+    /// A tap in Developer tools ▸ Midas: what both editions' buttons do.
+    /// `log` is what Precision log sends; `commands` takes a screenshot.
+    pub fn apply_tab(&mut self, a: MidasAct, log: &HighPrecisionLog, commands: &mut Commands) {
+        match a {
+            MidasAct::Pair { hub, code } => {
+                self.hub_draft = hub;
+                self.code_draft = code;
+                if self.code_draft.trim().is_empty() {
+                    return;
+                }
+                let (hub, code) = (
+                    self.hub_draft.trim().to_string(),
+                    self.code_draft.trim().to_string(),
+                );
+                self.worker().pair(
+                    &hub,
+                    &code,
+                    &crate::platform::precise_sensors::device_name(),
+                );
+            }
+            MidasAct::LinkOn(on) => {
+                if self.config.on != on {
+                    self.config.on = on;
+                }
+            }
+            MidasAct::SendTo(id) => {
+                if self.config.send_to != id {
+                    self.config.send_to = id;
+                }
+            }
+            MidasAct::Refresh => {
+                let (hub, token) = (
+                    self.config.hub.clone(),
+                    self.config.token.clone().unwrap_or_default(),
+                );
+                self.worker().sessions(&hub, &token);
+            }
+            MidasAct::SendLog(words) => {
+                use base64::Engine as _;
+                self.text_draft = words;
+                let file = json!({"name": "precision.log", "data": base64::engine::general_purpose::STANDARD.encode(log.text())});
+                push(self, "The precision log.", vec![file]);
+            }
+            MidasAct::SendShot(words) => {
+                // One at a time: the words go with the screenshot when it is
+                // in (`serve_calls`).
+                if self.push_shot.is_none() {
+                    self.text_draft = words;
+                    self.push_shot = Some(capture(commands, |png| png));
+                }
+            }
+            MidasAct::SendWords(words) => {
+                self.text_draft = words;
+                if !self.text_draft.trim().is_empty() {
+                    push(self, "", vec![]);
+                }
+            }
+            MidasAct::Unpair => {
+                self.config = LinkConfig {
+                    hub: self.config.hub.clone(),
+                    ..LinkConfig::default()
+                };
+                self.shared().message =
+                    Some("Unpaired here. Forget it on the Midas page too.".into());
+            }
+        }
+    }
+
+    /// Developer tools ▸ Midas as the library's edition draws it.
+    #[must_use]
+    pub fn tab_view(&self) -> MidasTabView {
+        let (state, message, listed) = {
+            let s = self.shared();
+            (s.state.clone(), s.message.clone(), s.sessions.clone())
+        };
+        let mut sessions: Vec<(String, String)> = listed
+            .into_iter()
+            .map(|(id, title)| {
+                let label = format!("{id} · {title}");
+                (id, label)
+            })
+            .collect();
+        if let Some(id) = &self.config.send_to {
+            if !sessions.iter().any(|(s, _)| s == id) {
+                sessions.push((id.clone(), id.clone()));
+            }
+        }
+        MidasTabView {
+            paired: self.config.paired(),
+            hub_draft: self.hub_draft.clone(),
+            code_draft: self.code_draft.clone(),
+            pushed: self.pushed,
+            who: format!("{} · {}", self.config.name, self.config.hub),
+            on: self.config.on,
+            state: if self.config.on {
+                state
+            } else {
+                OFF_NOTE.to_string()
+            },
+            recent: self
+                .recent_call(30.0)
+                .map(|(tool, session)| format!("{session} asked for {tool}")),
+            sessions,
+            send_to: self.config.send_to.clone(),
+            message,
         }
     }
 
@@ -1244,9 +1417,11 @@ fn push(link: &mut MidasLink, text: &str, files: Vec<Value>) {
     let hub = link.config.hub.clone();
     link.worker().push(&hub, &token, body);
     link.text_draft.clear();
+    link.pushed = link.pushed.wrapping_add(1);
 }
 
-/// Developer tools ▸ Midas.
+/// Developer tools ▸ Midas, egui's edition. Its buttons do
+/// [`MidasLink::apply_tab`], as the library's do (`lib_dev_panel`).
 pub fn midas_tab(
     ui: &mut egui::Ui,
     link: &mut MidasLink,
@@ -1256,8 +1431,8 @@ pub fn midas_tab(
     theme::section(ui, "Midas");
     let message = link.shared().message.clone();
     if !link.config.paired() {
-        theme::note(ui, "Pair this app with your Midas hub, and your sessions can ask it for screenshots, camera frames, the precision log and sensor recordings while it is open.");
-        theme::note(ui, "On the Midas page: Settings > This device > Paired apps > Pair a device. Type the code it shows here.");
+        theme::note(ui, PAIR_NOTE);
+        theme::note(ui, PAIR_HOW);
         ui.horizontal(|ui| {
             ui.label("hub");
             ui.text_edit_singleline(&mut link.hub_draft);
@@ -1266,18 +1441,12 @@ pub fn midas_tab(
             ui.label("code");
             ui.text_edit_singleline(&mut link.code_draft);
         });
-        if theme::primary_button_sized(ui, "Pair", 140.0).clicked()
-            && !link.code_draft.trim().is_empty()
-        {
-            let (hub, code) = (
-                link.hub_draft.trim().to_string(),
-                link.code_draft.trim().to_string(),
-            );
-            link.worker().pair(
-                &hub,
-                &code,
-                &crate::platform::precise_sensors::device_name(),
-            );
+        if theme::primary_button_sized(ui, "Pair", 140.0).clicked() {
+            let act = MidasAct::Pair {
+                hub: link.hub_draft.clone(),
+                code: link.code_draft.clone(),
+            };
+            link.apply_tab(act, log, commands);
         }
         if let Some(m) = message {
             theme::note(ui, &m);
@@ -1286,15 +1455,12 @@ pub fn midas_tab(
     }
     let state = link.shared().state.clone();
     ui.label(format!("{} · {}", link.config.name, link.config.hub));
-    theme::checkbox(ui, &mut link.config.on, "Link on");
-    theme::note(
-        ui,
-        if link.config.on {
-            &state
-        } else {
-            "Off: no session can reach this app."
-        },
-    );
+    let mut on = link.config.on;
+    theme::checkbox(ui, &mut on, "Link on");
+    if on != link.config.on {
+        link.apply_tab(MidasAct::LinkOn(on), log, commands);
+    }
+    theme::note(ui, if link.config.on { &state } else { OFF_NOTE });
     if let Some((tool, session)) = link.recent_call(30.0) {
         theme::note(ui, &format!("{session} asked for {tool}"));
     }
@@ -1311,56 +1477,53 @@ pub fn midas_tab(
                 .map_or_else(|| id.to_string(), |(s, t)| format!("{s} · {t}"))
         },
     );
+    let mut send_to = chosen.clone();
+    let mut refresh = false;
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt("midas_send_to")
             .selected_text(label)
             .width(200.0)
             .show_ui(ui, |ui| {
                 for (id, title) in &sessions {
-                    ui.selectable_value(
-                        &mut link.config.send_to,
-                        Some(id.clone()),
-                        format!("{id} · {title}"),
-                    );
+                    ui.selectable_value(&mut send_to, Some(id.clone()), format!("{id} · {title}"));
                 }
             });
-        if ui.button("Refresh").clicked() {
-            let (hub, token) = (
-                link.config.hub.clone(),
-                link.config.token.clone().unwrap_or_default(),
-            );
-            link.worker().sessions(&hub, &token);
-        }
+        refresh = ui.button("Refresh").clicked();
     });
+    if send_to != chosen {
+        link.apply_tab(MidasAct::SendTo(send_to), log, commands);
+    }
+    if refresh {
+        link.apply_tab(MidasAct::Refresh, log, commands);
+    }
     ui.add(
         egui::TextEdit::multiline(&mut link.text_draft)
-            .hint_text("a few words with it (optional)")
+            .hint_text(WORDS_HINT)
             .desired_rows(2),
     );
+    let mut act = None;
     ui.horizontal_wrapped(|ui| {
+        let words = link.text_draft.clone();
         if ui.button("Precision log").clicked() {
-            use base64::Engine as _;
-            let file = json!({"name": "precision.log", "data": base64::engine::general_purpose::STANDARD.encode(log.text())});
-            push(link, "The precision log.", vec![file]);
+            act = Some(MidasAct::SendLog(words.clone()));
         }
-        if ui.button("Screenshot").clicked() && link.push_shot.is_none() {
-            link.push_shot = Some(capture(commands, |png| png));
+        if ui.button("Screenshot").clicked() {
+            act = Some(MidasAct::SendShot(words.clone()));
         }
-        if ui.button("Words only").clicked() && !link.text_draft.trim().is_empty() {
-            push(link, "", vec![]);
+        if ui.button("Words only").clicked() {
+            act = Some(MidasAct::SendWords(words));
         }
     });
+    if let Some(a) = act {
+        link.apply_tab(a, log, commands);
+    }
     if let Some(m) = message {
         theme::note(ui, &m);
     }
     crate::systems::release_approval::key_section(ui);
     ui.separator();
     if ui.button("Unpair").clicked() {
-        link.config = LinkConfig {
-            hub: link.config.hub.clone(),
-            ..LinkConfig::default()
-        };
-        link.shared().message = Some("Unpaired here. Forget it on the Midas page too.".into());
+        link.apply_tab(MidasAct::Unpair, log, commands);
     }
 }
 

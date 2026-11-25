@@ -523,7 +523,76 @@ fn a_double_tap_survives_a_handsets_frame_time() {
 fn stick_region() -> UiClaimRegions {
     UiClaimRegions {
         rects: vec![Rect::new(20.0, 690.0, 130.0, 780.0)],
+        ..Default::default()
     }
+}
+
+/// A mouse press on a control is the control's: gone from `ButtonInput`, so
+/// no world consumer sees it, held until the button lifts, and reported
+/// lifted for exactly one frame. A press beside it stays the world's.
+#[test]
+fn a_mouse_press_on_a_control_is_taken_from_the_world() {
+    let regions = UiClaimRegions {
+        pointer: vec![Rect::new(300.0, 700.0, 340.0, 740.0)],
+        ..Default::default()
+    };
+    let mut g = TouchGestures::default();
+    let mut buttons = ButtonInput::<MouseButton>::default();
+    buttons.press(MouseButton::Left);
+    let on = Vec2::new(320.0, 720.0);
+    claim_mouse(&mut g, &mut buttons, &regions, Some(on), false);
+    assert!(!buttons.pressed(MouseButton::Left));
+    assert!(!buttons.just_pressed(MouseButton::Left));
+    assert_eq!(g.ui_mouse(), Some(on));
+
+    // Held and moved: followed. Then the lift is silent in `ButtonInput`.
+    buttons.clear();
+    let moved = Vec2::new(325.0, 690.0);
+    claim_mouse(&mut g, &mut buttons, &regions, Some(moved), false);
+    assert_eq!(g.ui_mouse(), Some(moved));
+    assert_eq!(g.ui_mouse_from(), Some(on));
+    buttons.release(MouseButton::Left);
+    assert!(!buttons.just_released(MouseButton::Left));
+    claim_mouse(&mut g, &mut buttons, &regions, Some(moved), true);
+    assert_eq!(g.ui_mouse(), None);
+    assert_eq!(g.ui_mouse_released(), Some(moved));
+    assert_eq!(g.ui_mouse_from(), Some(on));
+    claim_mouse(&mut g, &mut buttons, &regions, Some(moved), false);
+    assert_eq!(g.ui_mouse_released(), None);
+
+    // Beside the control: the world's.
+    buttons.clear();
+    buttons.press(MouseButton::Left);
+    claim_mouse(
+        &mut g,
+        &mut buttons,
+        &regions,
+        Some(Vec2::new(100.0, 100.0)),
+        false,
+    );
+    assert!(buttons.just_pressed(MouseButton::Left));
+    assert_eq!(g.ui_mouse(), None);
+}
+
+/// A click inside one frame still reaches the control as a press, then a
+/// lift on the next frame.
+#[test]
+fn a_mouse_click_inside_one_frame_is_a_press_then_a_lift() {
+    let regions = UiClaimRegions {
+        pointer: vec![Rect::new(300.0, 700.0, 340.0, 740.0)],
+        ..Default::default()
+    };
+    let mut g = TouchGestures::default();
+    let mut buttons = ButtonInput::<MouseButton>::default();
+    buttons.press(MouseButton::Left);
+    buttons.release(MouseButton::Left);
+    let on = Vec2::new(320.0, 720.0);
+    claim_mouse(&mut g, &mut buttons, &regions, Some(on), true);
+    assert_eq!(g.ui_mouse(), Some(on));
+    assert!(!buttons.just_released(MouseButton::Left));
+    buttons.clear();
+    claim_mouse(&mut g, &mut buttons, &regions, Some(on), false);
+    assert_eq!(g.ui_mouse_released(), Some(on));
 }
 
 /// Drive whole frames of finger positions through the split, returning what

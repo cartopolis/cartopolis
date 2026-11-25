@@ -390,9 +390,7 @@ fn details_view(v: &ApprovalView) -> View {
 /// Self-contained: its buttons call `release_approval::key_act`, the code
 /// egui's call, from the tap itself (no ECS needed), and redraw it from
 /// `release_approval::key_view`. For the screen that draws the Midas tab to
-/// put under its own sections.
-// Until the Midas tab is drawn by the library: delete with its first caller.
-#[allow(dead_code)]
+/// put under its own sections (`lib_dev_panel`'s Midas tab).
 pub fn key_section_view() -> View {
     let Some(first) = release_approval::key_view() else {
         return View::Empty;

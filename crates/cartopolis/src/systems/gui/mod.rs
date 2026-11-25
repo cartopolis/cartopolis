@@ -70,6 +70,8 @@ pub mod lib_chat_overlay;
 pub mod lib_chrome;
 #[cfg(feature = "ui-lib")]
 pub mod lib_cosmos;
+#[cfg(feature = "ui-probe")]
+pub mod lib_cosmos_sky;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
 #[cfg(feature = "ui-lib")]

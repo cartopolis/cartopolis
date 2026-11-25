@@ -97,6 +97,7 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_locate::drive_lib_locate,
                     crate::systems::lib_driver::drive_lib_driver,
                     crate::systems::lib_cosmos::drive_lib_cosmos,
+                    crate::systems::lib_cosmos_sky::drive_lib_cosmos_sky,
                     crate::systems::lib_splash::drive_lib_splash,
                     crate::systems::lib_face_viewfinder::drive_lib_face_viewfinder,
                     crate::systems::lib_dev_panel::drive_lib_dev_panel,

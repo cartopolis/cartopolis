@@ -6,9 +6,9 @@
 //!
 //! On with `CARTO_UI_LIB=cosmos` (or `1`). egui's system keeps all of the
 //! maths — the projection and its squeeze, the fades, which labels find
-//! room — and with `CosmosLib::lib` on paints only the space round the
-//! globe's hole and the two star fields, publishing the rest of its frame
-//! in `CosmosLib::lib_view`. This mounts while that is `Some` and clears
+//! room — and with `CosmosLib::lib` on paints at most the space round the
+//! globe's hole and the two star fields (below), publishing the rest of its
+//! frame in `CosmosLib::lib_view`. This mounts while that is `Some` and clears
 //! when it is `None` (below the ceiling).
 //!
 //! **One mount, restyled.** Every shape is one absolutely placed box and
@@ -28,12 +28,13 @@
 //! direction and the point on that axis), lit inside it for a gibbous
 //! phase and outside it for a crescent — a hard edge, as egui's.
 //!
-//! **What stays egui's**: the space behind everything (a full-screen fill
-//! with the globe's round hole, under the star fields), the Milky Way's
-//! ~7,000 points and the galaxies' up to 50,000 — a node each would be the
-//! heaviest screen the library has, for one-pixel squares. The library
-//! draws over egui, so those three cannot move without the rest of the
-//! backdrop, and stay painted on egui's background layer under it.
+//! **Not boxes**: the space behind everything (a full-screen fill with the
+//! globe's round hole, under the star fields), the Milky Way's ~7,000
+//! points and the galaxies' up to 50,000 — a node each would be the
+//! heaviest screen the library has, for one-pixel squares. On the Bevy
+//! backend `lib_cosmos_sky` draws them as two meshes on the library's own
+//! camera, under its UI; as DOM (the web) there is no such camera, and they
+//! stay painted on egui's background layer, under the DOM.
 //!
 //! What differs: egui's halo is four offset copies of the text in the dark
 //! theme's ink, and so is this one's. On the Bevy backend a border radius
@@ -253,7 +254,7 @@ pub fn drive_lib_cosmos(
     let Some(mut cosmos) = cosmos else {
         commands.insert_resource(CosmosLib {
             lib: true,
-            lib_view: None,
+            ..Default::default()
         });
         return;
     };

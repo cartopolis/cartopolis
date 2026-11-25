@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
-updated: 2026-11-22
+updated: 2026-11-25
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -284,6 +284,22 @@ reason `Press` carries `strayed` and `long_press_sent`.
 
 Nothing else asks for the double tap yet. It is a gate to reach for when a
 click consumer *opens* something over the map, not a new default.
+
+## The on-screen controls take their input from Bevy, not egui (2026-11-25)
+
+Drawn by the component library (`lib_map_osd`), the controls are worked by
+`map_osd`'s library edition (`lib_pair`, `lib_stick`, `lib_jump`, `lib_hand`,
+`lib_rail`) from Bevy's input, against the rects it publishes — no egui widget,
+visible or not. Fingers were already `TouchGestures` claims; a mouse press on a
+control is claimed the same way (`touch::claim_mouse`, rects in
+`UiClaimRegions::pointer`): taken out of `ButtonInput<MouseButton>` before
+picking, the gizmo or the camera drag see it, so a drag on the zoom rail no
+longer also turns the map. The library's own nodes for the controls stay
+non-listening on purpose: a listening node makes the library's single pointer
+the world's click gate, and a thumb resting on the stick would swallow every
+tap on the map beside it. A long press on the hand disc is `BodyControls`'
+`LongPress` (touch's `LONG_PRESS_SECS` / `HOLD_SLOP_PTS`), and its lift is not
+also a tap.
 
 ## The on-screen controls, and why Earth is the touch camera
 

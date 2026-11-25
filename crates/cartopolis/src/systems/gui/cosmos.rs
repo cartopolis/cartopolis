@@ -46,7 +46,10 @@
 //! panels and the map's chrome stay on top. With the component library on
 //! (`CosmosLib::lib`, `lib_cosmos`) egui paints only the space and the two
 //! star fields, and every body, ring, orbit, line and label it worked out is
-//! published in `CosmosLib::lib_view` for the library to draw as boxes.
+//! published in `CosmosLib::lib_view` for the library to draw as boxes. Where
+//! the library has a camera of its own (`CosmosLib::sky`, the Bevy backend)
+//! egui paints nothing: the space and the star fields go out in
+//! `CosmosLib::lib_sky` for `lib_cosmos_sky` to draw as meshes under the boxes.
 
 use crate::systems::egui_manager::EguiRef;
 use crate::systems::theme;
@@ -502,8 +505,8 @@ fn place_tags(p: &egui::Painter, tags: Vec<Tag>, screen: egui::Rect) -> Vec<(Tag
 
 /// The cosmos for the component library: everything but the space behind
 /// it and the two star fields (the Milky Way's 7,000 points and up to
-/// 50,000 galaxies, which stay egui's meshes — a box each would be a node
-/// each), as egui would paint it this frame. Points, egui's.
+/// 50,000 galaxies, which a box each would make a node each: `CosmosSky`),
+/// as egui would paint it this frame. Points, egui's.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CosmosFrame {
     /// In egui's paint order.
@@ -573,13 +576,45 @@ pub struct CosmosTag {
     pub alpha: f32,
 }
 
+/// The space behind the cosmos and its two star fields, for the library's
+/// own camera to draw as meshes (`lib_cosmos_sky`). Points, egui's.
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CosmosSky {
+    /// egui's points to physical pixels.
+    pub pixels_per_point: f32,
+    /// Space, its alpha the fade in past the ceiling, over the whole screen.
+    pub space: Color32,
+    /// The round hole the 3D globe shows through (`fill_around`): its
+    /// middle and radius, `None` once the Earth is a painted disc.
+    pub hole: Option<(Pos2, f32)>,
+    /// The Milky Way's points, then the galaxies', in egui's paint order.
+    pub dots: Vec<SkyDot>,
+}
+
+/// One star field point: a square `r` each way from `at`.
+#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyDot {
+    pub at: Pos2,
+    pub r: f32,
+    pub ink: Color32,
+}
+
 /// The library's edition of the cosmos (`lib_cosmos`), inserted by it: with
 /// `lib` on, egui paints only the space and the star fields and publishes
 /// the rest in `lib_view` (`None` while the view is below the ceiling).
+/// With `sky` on as well (the library has a camera of its own to draw
+/// meshes on, `lib_cosmos_sky`), egui paints nothing at all and publishes
+/// the space and the star fields in `lib_sky`, counting each change in
+/// `sky_rev` so the meshes are rebuilt only when it moved.
 #[derive(Resource, Default)]
 pub struct CosmosLib {
     pub lib: bool,
     pub lib_view: Option<CosmosFrame>,
+    pub sky: bool,
+    pub lib_sky: Option<CosmosSky>,
+    pub sky_rev: u64,
 }
 
 /// Where the bodies, rings and lines go: painted by egui, or kept for the
@@ -785,6 +820,9 @@ pub fn render_cosmos(
 ) {
     // Nothing for the library unless a frame below says otherwise.
     let mut published: Option<CosmosFrame> = None;
+    let mut published_sky: Option<CosmosSky> = None;
+    let lib_on = lib.as_ref().is_some_and(|l| l.lib);
+    let sky_on = lib_on && lib.as_ref().is_some_and(|l| l.sky);
     render_cosmos_frame(
         &egui,
         &mut camera_state,
@@ -795,18 +833,24 @@ pub fn render_cosmos(
         &mut camera_lens,
         &mut galaxy,
         &catalogue,
-        lib.as_ref().is_some_and(|l| l.lib),
+        lib_on,
+        sky_on.then_some(&mut published_sky),
         &mut published,
     );
     if let Some(lib) = lib.as_mut() {
         if lib.lib_view != published {
             lib.lib_view = published;
         }
+        if lib.lib_sky != published_sky {
+            lib.lib_sky = published_sky;
+            lib.sky_rev = lib.sky_rev.wrapping_add(1);
+        }
     }
 }
 
 /// [`render_cosmos`]'s frame: with `lib` on, paints only the space and the
-/// star fields and leaves the rest in `published`.
+/// star fields and leaves the rest in `published`; given `sky` as well, paints
+/// nothing and leaves the space and the star fields in it.
 #[allow(clippy::too_many_arguments)]
 fn render_cosmos_frame(
     egui: &EguiRef,
@@ -819,6 +863,7 @@ fn render_cosmos_frame(
     galaxy: &mut Vec<(DVec3, f32, Color32)>,
     catalogue: &GalaxyCatalogue,
     lib: bool,
+    sky_out: Option<&mut Option<CosmosSky>>,
     published: &mut Option<CosmosFrame>,
 ) {
     let alt = camera_state.cosmos_alt;
@@ -842,6 +887,11 @@ fn render_cosmos_frame(
         p: &p,
         lib: lib.then(Vec::new),
     };
+    // The space and the star fields, for the library's camera.
+    let mut sky = sky_out.is_some().then(|| CosmosSky {
+        pixels_per_point: ctx.pixels_per_point(),
+        ..Default::default()
+    });
     // Where the 3D camera waits, from the Earth's centre, and its height there.
     let wait_m = crate::systems::free_camera::ORBIT_MAX_DISTANCE_SPACE;
     let ceiling = wait_m - f64::from(globe.radius);
@@ -929,9 +979,13 @@ fn render_cosmos_frame(
     if lens.sub_camera_view != sub {
         lens.sub_camera_view = sub;
     }
-    if solid {
-        // A little past the limb, for the atmosphere's rim.
-        fill_around(&p, screen, earth_at, globe_r * 1.05, alpha(SPACE, bd));
+    // A little past the limb, for the atmosphere's rim.
+    let hole = solid.then_some((earth_at, globe_r * 1.05));
+    if let Some(sky) = sky.as_mut() {
+        sky.space = alpha(SPACE, bd);
+        sky.hole = hole;
+    } else if let Some((c, r)) = hole {
+        fill_around(&p, screen, c, r, alpha(SPACE, bd));
     } else {
         p.rect_filled(screen, 0.0, alpha(SPACE, bd));
     }
@@ -987,6 +1041,10 @@ fn render_cosmos_frame(
                     continue;
                 }
                 let ink = alpha(*ink, gx * b);
+                if let Some(sky) = sky.as_mut() {
+                    sky.dots.push(SkyDot { at: q, r, ink });
+                    continue;
+                }
                 let i = mesh.vertices.len() as u32;
                 for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
                     mesh.colored_vertex(q + d, ink);
@@ -994,7 +1052,9 @@ fn render_cosmos_frame(
                 mesh.add_triangle(i, i + 1, i + 2);
                 mesh.add_triangle(i, i + 2, i + 3);
             }
-            p.add(egui::Shape::mesh(mesh));
+            if !mesh.is_empty() {
+                p.add(egui::Shape::mesh(mesh));
+            }
         } else {
             out.disc("milky way", gc_at, mw_r.max(2.5), GALAXY_STAR, gx);
         }
@@ -1045,6 +1105,7 @@ fn render_cosmos_frame(
     if !catalogue.galaxies.is_empty() && near_a > 0.01 {
         let mut named = paint_galaxies(
             &p,
+            sky.as_mut().map(|s| &mut s.dots),
             &view,
             screen,
             &catalogue.galaxies,
@@ -1384,6 +1445,9 @@ fn render_cosmos_frame(
             *published = Some(CosmosFrame { shapes, tags });
         }
     }
+    if let Some(sky_out) = sky_out {
+        *sky_out = sky;
+    }
 }
 
 /// One galaxy past the Milky Way, placed in the map's frame.
@@ -1487,10 +1551,12 @@ fn galaxy_dot(log_lum: f32) -> f32 {
 /// The galaxies, one mesh of small squares (forty thousand circles would each
 /// be their own shape), at most one per two-pixel bin so the survey's far shell,
 /// squeezed into the rim, is not drawn over itself many times. Answers the
-/// named ones on screen, brightest first, for labels.
+/// named ones on screen, brightest first, for labels. Given `dots`, paints
+/// nothing and leaves the squares there for the library's camera.
 #[allow(clippy::too_many_arguments)]
 fn paint_galaxies<'a>(
     p: &egui::Painter,
+    mut dots: Option<&mut Vec<SkyDot>>,
     view: &View,
     screen: egui::Rect,
     galaxies: &'a [PlacedGalaxy],
@@ -1534,17 +1600,23 @@ fn paint_galaxies<'a>(
             (galaxy_dot(g.log_lum).max(1.0), 0.8)
         };
         let ink = alpha(GALAXY_DOT, a * ink);
-        let i = mesh.vertices.len() as u32;
-        for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
-            mesh.colored_vertex(q + d, ink);
+        if let Some(dots) = dots.as_mut() {
+            dots.push(SkyDot { at: q, r, ink });
+        } else {
+            let i = mesh.vertices.len() as u32;
+            for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
+                mesh.colored_vertex(q + d, ink);
+            }
+            mesh.add_triangle(i, i + 1, i + 2);
+            mesh.add_triangle(i, i + 2, i + 3);
         }
-        mesh.add_triangle(i, i + 1, i + 2);
-        mesh.add_triangle(i, i + 2, i + 3);
         if !g.name.is_empty() {
             named.push((g, q, a));
         }
     }
-    p.add(egui::Shape::mesh(mesh));
+    if !mesh.is_empty() {
+        p.add(egui::Shape::mesh(mesh));
+    }
     named
 }
 

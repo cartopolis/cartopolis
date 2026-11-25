@@ -55,6 +55,12 @@
 //! [`TouchGestures::ui_released`] hand them back to the control that owns them,
 //! which is how `map_osd` steers the stick from a finger that egui's single
 //! pointer has never heard of.
+//!
+//! The mouse is partitioned the same way once the library draws the controls
+//! (`UiClaimRegions::pointer`): no egui widget stands under them then to take
+//! a press, so [`claim_mouse`] takes it — out of `ButtonInput<MouseButton>`,
+//! where every world consumer reads it, and into
+//! [`TouchGestures::ui_mouse`], where the control does.
 
 use bevy::input::mouse::MouseButtonInput;
 use bevy::input::touch::Touches;
@@ -64,10 +70,12 @@ use bevy::prelude::*;
 /// How far (points) a finger may travel and still count as held in place. Used
 /// for the long-press verdict; generous, because a finger resting on glass
 /// wanders a few points on its own.
-const HOLD_SLOP_PTS: f32 = 14.0;
+pub(crate) const HOLD_SLOP_PTS: f32 = 14.0;
 
 /// How long the primary finger must stay put before it counts as a right-click.
-const LONG_PRESS_SECS: f32 = 0.55;
+/// Also the on-screen hand disc's long press (`map_osd`), which reads its own
+/// claimed finger since no emulated button is written for one.
+pub(crate) const LONG_PRESS_SECS: f32 = 0.55;
 
 /// How long after a tap lifts a second one still counts as a double tap.
 ///
@@ -114,6 +122,13 @@ const MAX_PINCH_PER_FRAME: f32 = 1.6;
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
 pub struct UiClaimRegions {
     pub rects: Vec<Rect>,
+    /// Where a **mouse** press is the UI's: the controls themselves, without
+    /// the finger's padding (a cursor lands where it is aimed). Empty while
+    /// egui draws the controls, whose widgets take the mouse themselves; the
+    /// library's edition has no widget under the cursor, so a press here is
+    /// taken out of `ButtonInput<MouseButton>` and handed to the control
+    /// ([`TouchGestures::ui_mouse`]) — the mouse's version of a claimed finger.
+    pub pointer: Vec<Rect>,
 }
 
 impl UiClaimRegions {
@@ -121,6 +136,25 @@ impl UiClaimRegions {
     fn claims(&self, at: Vec2) -> bool {
         self.rects.iter().any(|r| r.contains(at))
     }
+
+    /// Does any mouse region contain this point?
+    fn claims_pointer(&self, at: Vec2) -> bool {
+        self.pointer.iter().any(|r| r.contains(at))
+    }
+}
+
+/// A mouse press an on-screen control owns ([`UiClaimRegions::pointer`]),
+/// window points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MouseClaim {
+    /// Where the cursor is now.
+    at: Vec2,
+    /// Where the press landed — a click is a press and a release on one
+    /// control.
+    from: Vec2,
+    /// Pressed and released inside one frame: the release is owed to the
+    /// next, so the control sees a press before it sees the lift.
+    lifting: bool,
 }
 
 /// This frame's recognised touch gestures, in logical points.
@@ -174,6 +208,13 @@ pub struct TouchGestures {
     /// control whose verb is an edge (a jump, a toggle) can see the release it
     /// would otherwise have to learn from egui's pointer.
     ui_released: Vec<(u64, Vec2)>,
+    /// The mouse's `Left` press, while a control owns it — see
+    /// [`UiClaimRegions::pointer`] and [`claim_mouse`].
+    ui_mouse: Option<MouseClaim>,
+    /// …and the frame it lifted: where, and where it had landed.
+    ui_mouse_released: Option<(Vec2, Vec2)>,
+    /// A `Right` press a control took this frame (the hand disc's menu).
+    ui_secondary: Option<Vec2>,
 
     // ── recogniser state ────────────────────────────────────────────────
     /// Last frame's finger positions, id-sorted. Every finger, claimed or not:
@@ -258,6 +299,9 @@ impl Default for TouchGestures {
             lock: PairLock::Off,
             ui_held: Vec::new(),
             ui_released: Vec::new(),
+            ui_mouse: None,
+            ui_mouse_released: None,
+            ui_secondary: None,
             seen: Vec::new(),
             primary: None,
             press: None,
@@ -293,6 +337,30 @@ impl TouchGestures {
     /// release edge for a control whose verb is an event rather than a rate.
     pub fn ui_released(&self) -> &[(u64, Vec2)] {
         &self.ui_released
+    }
+
+    /// The mouse's `Left` press a control owns, where the cursor is now
+    /// (window points) — the held state, as [`Self::ui_held`] for a finger.
+    /// The world never saw the press: it was taken out of `ButtonInput`.
+    pub fn ui_mouse(&self) -> Option<Vec2> {
+        self.ui_mouse.map(|c| c.at)
+    }
+
+    /// Where that press landed, while it is held and on the frame it lifts.
+    pub fn ui_mouse_from(&self) -> Option<Vec2> {
+        self.ui_mouse
+            .map(|c| c.from)
+            .or(self.ui_mouse_released.map(|(_, from)| from))
+    }
+
+    /// The owned press lifted this frame, at its last position.
+    pub fn ui_mouse_released(&self) -> Option<Vec2> {
+        self.ui_mouse_released.map(|(at, _)| at)
+    }
+
+    /// A `Right` press a control took this frame, where.
+    pub fn ui_secondary(&self) -> Option<Vec2> {
+        self.ui_secondary
     }
 
     /// True when a finger the UI owns is down *beside* one it does not.
@@ -346,12 +414,21 @@ impl TouchGestures {
 /// Recognise this frame's gestures and emulate the mouse from the primary
 /// finger. Runs in `PreUpdate` after `InputSystems`, so [`Touches`] already
 /// holds this frame's events.
+///
+/// It also hands the on-screen controls the mouse presses that land on them
+/// ([`claim_mouse`]), which is why it reads the mouse's messages as well as
+/// writing them: `Messages` rather than a reader and a writer, which would
+/// conflict, and a cursor of its own that it moves past what it wrote, so
+/// the emulated buttons are never read back as the mouse's.
+#[allow(clippy::too_many_arguments)]
 pub fn recognize_touch_gestures(
     touches: Res<Touches>,
     time: Res<Time>,
     regions: Res<UiClaimRegions>,
     mut gestures: ResMut<TouchGestures>,
-    mut mouse_button: MessageWriter<MouseButtonInput>,
+    mut mouse_messages: ResMut<bevy::ecs::message::Messages<MouseButtonInput>>,
+    mut mouse_read: Local<bevy::ecs::message::MessageCursor<MouseButtonInput>>,
+    mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut windows: Query<(Entity, &mut Window)>,
 ) {
     // Last frame's press is the one `ButtonInput` reports this frame, so its
@@ -359,9 +436,19 @@ pub fn recognize_touch_gestures(
     gestures.touch_click = std::mem::take(&mut gestures.pending_click);
     gestures.double_tap = std::mem::take(&mut gestures.pending_double);
 
+    // The mouse's own messages since this system last wrote: did its `Left`
+    // lift? Read before this frame's emulated buttons are written.
+    // Every message read (a fold, not `any`), so the cursor ends past them.
+    let left_lifted = mouse_read.read(&*mouse_messages).fold(false, |lifted, m| {
+        lifted || (m.button == MouseButton::Left && m.state == ButtonState::Released)
+    });
+
     // A frame with no window at all (shutdown, or a `--shot` run, which has no
     // touchscreen by construction) has nothing to emulate against.
     let Some((window_entity, mut window)) = windows.iter_mut().next() else {
+        gestures.ui_mouse = None;
+        gestures.ui_mouse_released = None;
+        gestures.ui_secondary = None;
         return;
     };
 
@@ -404,6 +491,11 @@ pub fn recognize_touch_gestures(
     gestures.ui_held = ui_held;
     gestures.ui_released = ui_released;
 
+    // The mouse's presses on a control, before the cursor is moved to a
+    // finger below: it is the mouse's position that decides.
+    let cursor = window.cursor_position();
+    claim_mouse(&mut gestures, &mut buttons, &regions, cursor, left_lifted);
+
     let emulated = emulate_mouse(&mut gestures, &free, time.delta_secs());
     if let Some(aim) = emulated.cursor {
         // Physical pixels: that is the window's own storage, and
@@ -412,12 +504,14 @@ pub fn recognize_touch_gestures(
         window.set_physical_cursor_position(Some(physical));
     }
     for (button, state) in emulated.buttons {
-        mouse_button.write(MouseButtonInput {
+        mouse_messages.write(MouseButtonInput {
             button,
             state,
             window: window_entity,
         });
     }
+    // Past what was just written: those are the finger's, not the mouse's.
+    for _ in mouse_read.read(&*mouse_messages) {}
 
     gestures.seen = fingers;
 }
@@ -513,6 +607,68 @@ fn update_claims(
         .filter(|(id, _)| !held.iter().any(|(owned, _)| owned == id))
         .copied()
         .collect()
+}
+
+/// Hand the on-screen controls the mouse presses that land on them
+/// ([`UiClaimRegions::pointer`]), and take those presses out of
+/// `ButtonInput<MouseButton>`, so nothing in the world — picking, the gizmo,
+/// the camera's drag — ever sees them. The mouse's half of [`update_claims`]:
+/// claimed on the frame it lands, held until the button lifts.
+///
+/// Taking a press out of `ButtonInput` is enough to hide the whole gesture:
+/// `reset` clears it from `pressed`, and `ButtonInput::release` reports a
+/// release only for a button it holds, so the lift is silent too. Which is
+/// also why the lift has to be learnt from the messages (`left_lifted`).
+///
+/// A press a finger wrote (`touch_click`) is never taken: a finger is claimed
+/// by where it *landed*, in [`update_claims`], and one that landed on the map
+/// stays the map's wherever its emulated press arrives. Nor is a `Right` taken
+/// while a finger is down — that is the long press's emulated menu.
+fn claim_mouse(
+    gestures: &mut TouchGestures,
+    buttons: &mut ButtonInput<MouseButton>,
+    regions: &UiClaimRegions,
+    cursor: Option<Vec2>,
+    left_lifted: bool,
+) {
+    gestures.ui_mouse_released = None;
+    gestures.ui_secondary = None;
+    // A press owned since an earlier frame follows the cursor until it lifts.
+    if let Some(mut claim) = gestures.ui_mouse.take() {
+        if claim.lifting || left_lifted {
+            gestures.ui_mouse_released = Some((claim.at, claim.from));
+        } else {
+            if let Some(at) = cursor {
+                claim.at = at;
+            }
+            gestures.ui_mouse = Some(claim);
+        }
+    }
+    let Some(at) = cursor else {
+        return;
+    };
+    if buttons.just_pressed(MouseButton::Left)
+        && !gestures.touch_click
+        && gestures.ui_mouse.is_none()
+        && regions.claims_pointer(at)
+    {
+        // Down and up inside one frame: still a press first, then a lift.
+        let lifting = !buttons.pressed(MouseButton::Left);
+        buttons.reset(MouseButton::Left);
+        gestures.ui_mouse = Some(MouseClaim {
+            at,
+            from: at,
+            lifting,
+        });
+    }
+    if buttons.just_pressed(MouseButton::Right)
+        && gestures.fingers == 0
+        && gestures.ui_held.is_empty()
+        && regions.claims_pointer(at)
+    {
+        buttons.reset(MouseButton::Right);
+        gestures.ui_secondary = Some(at);
+    }
 }
 
 /// What one frame's finger positions say, given the previous frame's. The pure

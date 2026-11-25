@@ -3,15 +3,19 @@
 //! pair, the jump, face and hand discs, the expressions, the zoom rail with
 //! its list of scales, the hand's first-use card and the hand's menu.
 //!
-//! On with `CARTO_UI_LIB=osd` (or `1`), on the web `?ui=osd`. egui's system
-//! keeps doing everything but paint (`OsdLib::lib`): it lays every control
-//! out, reads every finger (`TouchGestures` — several at once, where the
-//! library has one pointer) and every click, keeps the *slots* so a press
-//! there is never the world's, and publishes what it laid out
+//! On unless `CARTO_UI_LIB=0`; on the web `?ui=osd`. `map_osd`'s system
+//! keeps the logic and makes no egui widget (`OsdLib::lib`): it lays every
+//! control out, works it from Bevy's input — the claimed fingers
+//! (`TouchGestures`, several at once, where the library has one pointer)
+//! and the mouse's presses on a control, which `touch::claim_mouse` takes
+//! out of the world's input — and publishes what it laid out
 //! (`OsdLib::view`). This draws that, rect for rect, in egui's points (as
 //! DOM the page's px are `ui_scale` times larger: [`Pen`]). Nothing here
 //! listens but the hand card and the hand menu, so a press goes through to
-//! egui's slot beneath — as DOM by `pointer-events: none`.
+//! the canvas, where Bevy reads it — as DOM by `pointer-events: none`. A
+//! listening node would make the library's pointer the world's gate
+//! (`UiPointer`), which has one pointer: a thumb resting on the stick would
+//! then swallow every tap on the map beside it.
 //!
 //! **Built from boxes.** egui painted every mark with its `Painter`; here a
 //! stroke is a thin box turned by `transform: rotate`, a disc or a ring a
@@ -19,8 +23,8 @@
 //! coloured, turned to where it belongs (`Pen`).
 //!
 //! **The hand menu.** Opened as egui's was, by a right-click or a long
-//! press on the hand disc's slot (`OsdLib::hand_menu`, set by
-//! `map_osd::hand_button`, which then makes no popup of its own); drawn
+//! press on the hand disc (`OsdLib::hand_menu`, set by
+//! `map_osd::lib_hand`); drawn
 //! here as a popover over the disc, right-aligned to it. Which hand, Start
 //! again (only while the tracking is on), what is wrong, and the line on
 //! what it uses. A choice closes it, as a tap in egui's menu did; a tap

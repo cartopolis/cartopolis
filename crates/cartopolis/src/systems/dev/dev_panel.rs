@@ -49,7 +49,9 @@
 //! The readouts are worked out once, as [`DevSection`]s both editions draw;
 //! with [`DevTools::lib`] on this system publishes [`DevTools::lib_view`] and
 //! does the library's taps through `apply`, the code egui's controls run.
-//! The Midas tab stays egui's in the apps (see `render_dev_panel`).
+//! Midas too: `midas_link` publishes the tab as `MidasTabView` and does its
+//! taps (`MidasAct`) in `MidasLink::apply_tab`, the code egui's
+//! `midas_link::midas_tab` runs.
 
 use crate::systems::egui_manager::EguiMut;
 use web_time::Instant;
@@ -76,8 +78,7 @@ pub struct DevTools {
     pub tab: DevTab,
     /// The library draws the panel (`lib_dev_panel`, `CARTO_UI_LIB=dev_panel`):
     /// [`render_dev_panel`] draws nothing and publishes
-    /// [`lib_view`](Self::lib_view) instead — on every tab but Midas in the
-    /// apps, whose body is `midas_link::midas_tab`'s and stays egui's.
+    /// [`lib_view`](Self::lib_view) instead, on every tab.
     pub lib: bool,
     /// What the library's edition shows, while `lib` is on and the panel is
     /// open.
@@ -166,7 +167,12 @@ pub enum DevBody {
         rows: Vec<SwitchRow>,
     },
     Precision(PrecisionView),
+    /// Midas in the phone and desktop apps: the link, as
+    /// `midas_link::MidasLink::tab_view` has it.
+    #[cfg(not(target_arch = "wasm32"))]
+    Midas(crate::systems::midas_link::MidasTabView),
     /// A tab with nothing but a line (Midas in the browser).
+    #[cfg(target_arch = "wasm32")]
     Note(&'static str),
 }
 
@@ -197,6 +203,9 @@ pub enum DevAct {
     StandIn(bool),
     CopyLog,
     ClearLog,
+    /// A tap on the Midas tab, done by `MidasLink::apply_tab`.
+    #[cfg(not(target_arch = "wasm32"))]
+    Midas(crate::systems::midas_link::MidasAct),
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -334,6 +343,14 @@ pub fn render_dev_panel(
         let acts = std::mem::take(&mut tools.lib_acts);
         let fix = view.fix();
         for act in acts {
+            #[cfg(not(target_arch = "wasm32"))]
+            let act = match act {
+                DevAct::Midas(a) => {
+                    midas.apply_tab(a, &precision_log, &mut commands);
+                    continue;
+                }
+                other => other,
+            };
             apply(
                 act,
                 &mut tools,
@@ -382,11 +399,7 @@ pub fn render_dev_panel(
     let fix = view.fix();
 
     // The library's edition is showing: hand it what to draw, draw nothing.
-    // Midas in the apps stays egui's whole window, tab row and all: its body
-    // is `midas_link::midas_tab`, which holds the link's own pairing, sending
-    // and release-key code.
-    let midas_in_egui = cfg!(not(target_arch = "wasm32")) && tab == DevTab::Midas;
-    if tools.lib && !midas_in_egui {
+    if tools.lib {
         // Frame and Profiler numbers change every frame, and a library row
         // rebuilt every frame is never laid out: the tab showed nothing. Twice
         // a second, as the census already is, unless the tab changed.
@@ -427,6 +440,9 @@ pub fn render_dev_panel(
             DevTab::Precision => {
                 DevBody::Precision(precision_view(&precision_log, &precise_hand, &high))
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            DevTab::Midas => DevBody::Midas(midas.tab_view()),
+            #[cfg(target_arch = "wasm32")]
             DevTab::Midas => DevBody::Note(MIDAS_IN_THE_APPS),
         };
         let next = DevPanelView { tab, body };
@@ -512,6 +528,7 @@ pub fn render_dev_panel(
 }
 
 /// What the Midas tab says in the browser.
+#[cfg(target_arch = "wasm32")]
 const MIDAS_IN_THE_APPS: &str =
     "The link to Midas is in the phone and desktop apps, not the browser.";
 
@@ -636,6 +653,9 @@ fn apply(
         }
         DevAct::CopyLog => crate::utils::clipboard::set_text(&log.text()),
         DevAct::ClearLog => log.clear(),
+        // Done by `MidasLink::apply_tab` before this is called.
+        #[cfg(not(target_arch = "wasm32"))]
+        DevAct::Midas(_) => {}
     }
 }
 

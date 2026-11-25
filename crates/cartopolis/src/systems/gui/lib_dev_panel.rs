@@ -1,7 +1,7 @@
 //! Developer tools drawn by the component library (`lib_host`), beside
 //! egui's (`dev_panel::render_dev_panel`): the tab row, then Frame, View,
-//! Profiler, Switches or Precision — every readout, switch and button egui
-//! has, as a plain sheet of sections.
+//! Profiler, Switches, Precision or Midas — every readout, switch and button
+//! egui has, as a plain sheet of sections.
 //!
 //! On with `CARTO_UI_LIB=dev_panel` (or `1`), on the web `?ui=lib`. egui's
 //! system steps aside (`DevTools::lib`) but still measures everything —
@@ -10,10 +10,14 @@
 //! handed back in `DevTools::lib_acts` and done by `dev_panel::apply`, the
 //! code egui's controls run.
 //!
-//! **The Midas tab stays egui's in the apps.** Its body is
-//! `midas_link::midas_tab` (pairing, sending, the release key), with its
-//! own private helpers; picking it there unmounts this sheet and egui's
-//! window, tab row and all, comes back until another tab is picked.
+//! **Midas** in the apps is `midas_link`'s: it publishes the tab as
+//! `MidasTabView` (in `DevBody::Midas`) and does its taps, `MidasAct` in
+//! `DevAct::Midas`, in `MidasLink::apply_tab`, the code egui's
+//! `midas_link::midas_tab` runs. The fields keep their own words and the
+//! acts carry them; the words field clears when a push goes
+//! (`MidasTabView::pushed`). Release key is `lib_release_approval::
+//! key_section_view`, which does its own taps. In the browser the tab is a
+//! line.
 //!
 //! **Placement.** Where egui's window opens: `DEV_PANEL_LEFT` + `OSD_GAP`
 //! in, `OSD_MARGIN` down, 300 wide. egui's window is draggable and
@@ -40,6 +44,8 @@ use crate::systems::egui_manager::EguiRef;
 use crate::systems::high_precision::HandWord;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::systems::midas_link::{MidasAct, MidasTabView, PAIR_HOW, PAIR_NOTE, WORDS_HINT};
 use crate::systems::{icons, theme};
 
 /// The sheet's name in the library's host.
@@ -106,6 +112,35 @@ struct Live {
     /// The precision log's tail, for the scroller to follow.
     log: Signal<Option<String>>,
     acts: Acts,
+    #[cfg(not(target_arch = "wasm32"))]
+    midas: MidasLive,
+}
+
+/// The Midas tab's own state, kept across its redraws.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct MidasLive {
+    /// Paired or not, alone: the view moving does not rebuild the form (and
+    /// the fields keep their focus).
+    paired: Signal<bool>,
+    /// The words to send with a push, kept across tabs; cleared when one goes.
+    words: Signal<String>,
+    /// The newest Midas view, to fill the pairing fields from when they are
+    /// drawn. Set before the tab moves, so a Midas body built on the switch
+    /// finds it.
+    latest: Rc<RefCell<Option<MidasTabView>>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MidasLive {
+    fn of(v: &DevPanelView) -> Self {
+        let m = midas_of(v);
+        MidasLive {
+            paired: signal(m.is_some_and(|m| m.paired)),
+            words: signal(String::new()),
+            latest: Rc::new(RefCell::new(m.cloned())),
+        }
+    }
 }
 
 impl Live {
@@ -121,6 +156,10 @@ struct Mounted {
     /// the field moving from it is typing, the resource moving from it is
     /// the app's.
     group_seen: String,
+    /// The Midas pushes last seen (`MidasTabView::pushed`), once the tab
+    /// has been shown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pushed_seen: Option<u32>,
 }
 
 thread_local! {
@@ -131,6 +170,15 @@ thread_local! {
 fn group_of(v: &DevPanelView) -> Option<&String> {
     match &v.body {
         DevBody::View { group, .. } => Some(group),
+        _ => None,
+    }
+}
+
+/// The link a view carries, on the Midas tab.
+#[cfg(not(target_arch = "wasm32"))]
+fn midas_of(v: &DevPanelView) -> Option<&MidasTabView> {
+    match &v.body {
+        DevBody::Midas(m) => Some(m),
         _ => None,
     }
 }
@@ -194,9 +242,13 @@ pub fn drive_lib_dev_panel(
         match m.as_mut() {
             None => {
                 let group = group_of(&view).cloned().unwrap_or_default();
+                #[cfg(not(target_arch = "wasm32"))]
+                let pushed_seen = midas_of(&view).map(|m| m.pushed);
                 let live = Live {
                     dark,
                     k,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    midas: MidasLive::of(&view),
                     tab: signal(view.tab),
                     log: signal(log_of(&view)),
                     view: signal(view),
@@ -218,9 +270,25 @@ pub fn drive_lib_dev_panel(
                 *m = Some(Mounted {
                     live,
                     group_seen: group,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    pushed_seen,
                 });
             }
             Some(x) => {
+                // The link first, so a Midas body built when the tab moves
+                // below finds it.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(now) = midas_of(&view) {
+                    let midas = &x.live.midas;
+                    *midas.latest.borrow_mut() = Some(now.clone());
+                    if x.pushed_seen.is_some_and(|seen| seen != now.pushed) {
+                        midas.words.set(String::new());
+                    }
+                    x.pushed_seen = Some(now.pushed);
+                    if midas.paired.get_untracked() != now.paired {
+                        midas.paired.set(now.paired);
+                    }
+                }
                 // The app moved the group (or the View tab came back): into
                 // the field, unless the person is mid-way through typing.
                 if let Some(group) = group_of(&view) {
@@ -295,6 +363,9 @@ fn view_of(l: &Live) -> View {
                 DevTab::View => view_tab(&l),
                 DevTab::Switches => switches_tab(&l),
                 DevTab::Precision => precision_tab(&l),
+                #[cfg(not(target_arch = "wasm32"))]
+                DevTab::Midas => midas_tab(&l),
+                #[cfg(target_arch = "wasm32")]
                 DevTab::Midas => note_tab(&l),
             }
         }
@@ -634,6 +705,7 @@ fn log_view(l: &Live) -> View {
 }
 
 /// A tab that is one line (Midas in the browser).
+#[cfg(target_arch = "wasm32")]
 fn note_tab(l: &Live) -> View {
     let view = l.view.clone();
     (move || -> View {
@@ -643,4 +715,193 @@ fn note_tab(l: &Live) -> View {
         }
     })
     .into_view()
+}
+
+// ─── Midas ───────────────────────────────────────────────────────────────────
+
+/// A tap on the Midas tab, made when it is tapped (so it carries the fields'
+/// words as they are then).
+#[cfg(not(target_arch = "wasm32"))]
+fn midas_tap(l: &Live, make: impl Fn() -> MidasAct + 'static) -> Option<Handler> {
+    let acts = l.acts.clone();
+    Some(Rc::new(move |_: &Event| acts.borrow_mut().push(DevAct::Midas(make()))) as Handler)
+}
+
+/// Midas in the apps: pairing until paired, then the link, Send to a
+/// session, the release key and Unpair, as egui's `midas_link::midas_tab`.
+#[cfg(not(target_arch = "wasm32"))]
+fn midas_tab(l: &Live) -> View {
+    let l = l.clone();
+    (move || -> View {
+        if l.midas.paired.get() {
+            paired_view(&l)
+        } else {
+            pair_view(&l)
+        }
+    })
+    .into_view()
+}
+
+/// The answer to the last Pair, Send or Refresh, following the view.
+#[cfg(not(target_arch = "wasm32"))]
+fn midas_message(l: &Live) -> View {
+    let view = l.view.clone();
+    (move || -> View {
+        match view.get().body {
+            DevBody::Midas(m) => match m.message {
+                Some(text) => note(text),
+                None => View::Empty,
+            },
+            _ => View::Empty,
+        }
+    })
+    .into_view()
+}
+
+/// Not paired: what pairing does, the hub and the code, and Pair.
+#[cfg(not(target_arch = "wasm32"))]
+fn pair_view(l: &Live) -> View {
+    let (hub, code) = match l.midas.latest.borrow().as_ref() {
+        Some(m) => (m.hub_draft.clone(), m.code_draft.clone()),
+        None => (
+            crate::systems::midas_link::DEFAULT_HUB.to_string(),
+            String::new(),
+        ),
+    };
+    let (hub, code) = (signal(hub), signal(code));
+    let pair = {
+        let (hub, code) = (hub.clone(), code.clone());
+        midas_tap(l, move || MidasAct::Pair {
+            hub: hub.get_untracked(),
+            code: code.get_untracked(),
+        })
+    };
+    view! {
+        <Section title="Midas">
+            <div style="display: flex; flex-direction: column; gap: 10px">
+                {note(PAIR_NOTE)}
+                {note(PAIR_HOW)}
+                <FieldText model={hub} label="hub" autocomplete="off" id="midas-hub" />
+                <FieldText model={code} label="code" autocomplete="off" id="midas-code" />
+                <div style="display: flex">
+                    <Button variant=Variant::Primary onclick={pair}>"Pair"</Button>
+                </div>
+                {midas_message(l)}
+            </div>
+        </Section>
+    }
+}
+
+/// Paired: the link and Send to a session, then Release key and Unpair.
+#[cfg(not(target_arch = "wasm32"))]
+fn paired_view(l: &Live) -> View {
+    let status = {
+        let l = l.clone();
+        move || -> View {
+            let DevBody::Midas(m) = l.view.get().body else {
+                return View::Empty;
+            };
+            link_status(&l, &m)
+        }
+    };
+    let send_to = {
+        let l = l.clone();
+        move || -> View {
+            let DevBody::Midas(m) = l.view.get().body else {
+                return View::Empty;
+            };
+            send_to_row(&l, &m)
+        }
+    };
+    let send = |make: fn(String) -> MidasAct| -> Option<Handler> {
+        let words = l.midas.words.clone();
+        midas_tap(l, move || make(words.get_untracked()))
+    };
+    // Where releases are approved (the owner's Android phone): its own
+    // section, its taps done there.
+    let key: View = if crate::systems::release_approval::key_view().is_some() {
+        let section = crate::systems::lib_release_approval::key_section_view();
+        view! {
+            <div style="border-top: 1px solid var(--m-border)">{section}</div>
+        }
+    } else {
+        View::Empty
+    };
+    view! {
+        <Section title="Midas">
+            <div style="display: flex; flex-direction: column; gap: 8px">{status}</div>
+        </Section>
+        <Section title="Send to a session">
+            <div style="display: flex; flex-direction: column; gap: 10px">
+                {send_to}
+                <FieldTextarea model={l.midas.words.clone()} placeholder={WORDS_HINT} rows={2u32} id="midas-words" />
+                <div style="display: flex; flex-wrap: wrap; gap: 8px">
+                    <Button size=Size::Sm onclick={send(MidasAct::SendLog)}>"Precision log"</Button>
+                    <Button size=Size::Sm onclick={send(MidasAct::SendShot)}>"Screenshot"</Button>
+                    <Button size=Size::Sm onclick={send(MidasAct::SendWords)}>"Words only"</Button>
+                </div>
+                {midas_message(l)}
+            </div>
+        </Section>
+        {key}
+        <div style="border-top: 1px solid var(--m-border); padding-top: 14px; display: flex">
+            <Button size=Size::Sm onclick={l.act(DevAct::Midas(MidasAct::Unpair))}>"Unpair"</Button>
+        </div>
+    }
+}
+
+/// Which hub, as whom; Link on; what the link says; who asked last.
+#[cfg(not(target_arch = "wasm32"))]
+fn link_status(l: &Live, m: &MidasTabView) -> View {
+    let change: Rc<dyn Fn(&bool)> = {
+        let acts = l.acts.clone();
+        Rc::new(move |v: &bool| acts.borrow_mut().push(DevAct::Midas(MidasAct::LinkOn(*v))))
+    };
+    let who = m.who.clone();
+    let state: View = if m.state.is_empty() {
+        View::Empty
+    } else {
+        note(m.state.clone())
+    };
+    let recent: View = match &m.recent {
+        Some(r) => note(r.clone()),
+        None => View::Empty,
+    };
+    view! {
+        <p style="margin: 0; color: var(--m-text); line-height: 1.4; overflow-wrap: anywhere">{who}</p>
+        <FieldSwitch model={signal(m.on)} label="Link on" onchange={Some(change)} id="midas-on" />
+        {state}
+        {recent}
+    }
+}
+
+/// The session Send goes to, and Refresh.
+#[cfg(not(target_arch = "wasm32"))]
+fn send_to_row(l: &Live, m: &MidasTabView) -> View {
+    let options: Vec<Opt<String>> = m
+        .sessions
+        .iter()
+        .map(|(id, label)| Opt::new(id.clone(), label.clone()))
+        .collect();
+    let change: Rc<dyn Fn(&Option<String>)> = {
+        let acts = l.acts.clone();
+        Rc::new(move |v: &Option<String>| {
+            acts.borrow_mut()
+                .push(DevAct::Midas(MidasAct::SendTo(v.clone())))
+        })
+    };
+    let select = mithril::view::render(FieldSelect {
+        model: signal(m.send_to.clone()),
+        options,
+        placeholder: Some("choose…".to_owned()),
+        id: Some("midas-send-to".to_owned()),
+        onchange: Some(change),
+        ..Default::default()
+    });
+    view! {
+        <div style="display: flex; align-items: center; gap: 8px">
+            <div style="flex: 1; min-width: 0">{select}</div>
+            <Button size=Size::Sm onclick={l.act(DevAct::Midas(MidasAct::Refresh))}>"Refresh"</Button>
+        </div>
+    }
 }
