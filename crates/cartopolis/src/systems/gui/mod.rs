@@ -64,14 +64,20 @@ pub mod lib_chat_overlay;
 pub mod lib_chrome;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_dialogs;
 #[cfg(feature = "ui-lib")]
 pub mod lib_host;
+#[cfg(feature = "ui-lib")]
+pub mod lib_interact;
 #[cfg(feature = "ui-probe")]
 pub mod lib_keyboard;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_login;
+#[cfg(feature = "ui-lib")]
+pub mod lib_main_menu;
 #[cfg(feature = "ui-lib")]
 pub mod lib_map_osd;
 #[cfg(feature = "ui-lib")]
@@ -87,6 +93,8 @@ pub mod lib_places;
 #[cfg(feature = "ui-lib")]
 pub mod lib_plans;
 #[cfg(feature = "ui-lib")]
+pub mod lib_poi_card;
+#[cfg(feature = "ui-lib")]
 pub mod lib_route;
 #[cfg(feature = "ui-lib")]
 pub mod lib_scenario;
@@ -96,6 +104,10 @@ pub mod lib_script;
 pub mod lib_search;
 #[cfg(feature = "ui-lib")]
 pub mod lib_settings;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_share;
+#[cfg(feature = "ui-lib")]
+pub mod lib_walk_guide;
 // The library's screens that talk: the app's only, as their egui ones (`comms`).
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_admin;

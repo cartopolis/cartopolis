@@ -32,6 +32,105 @@ pub struct MainMenu {
     /// Where a face was drawn last frame. Taken by the sheet each frame and
     /// written again by whichever face draws.
     pub face: Option<egui::Rect>,
+    /// When Sign out was first tapped (egui's clock): a second tap within
+    /// [`SIGN_OUT_ARMED_S`] signs out ([`MainMenu::tap_sign_out`]).
+    sign_out_at: Option<f64>,
+    /// The component library draws the sheet (`lib_main_menu`): egui's
+    /// system draws nothing, publishes [`MainMenu::lib_view`] and does the
+    /// taps handed back in [`MainMenu::lib_acts`].
+    pub lib: bool,
+    /// The sheet as the library draws it, while it is open.
+    pub lib_view: Option<MenuView>,
+    /// The library's taps, done by [`render_main_menu`] next frame.
+    pub lib_acts: Vec<SheetAct>,
+}
+
+/// How long a first tap on Sign out stays armed, s.
+const SIGN_OUT_ARMED_S: f64 = 3.0;
+
+impl MainMenu {
+    /// Sign out is armed at `now`: the next tap signs out.
+    #[must_use]
+    pub fn sign_out_armed(&self, now: f64) -> bool {
+        self.sign_out_at.is_some_and(|t| now - t < SIGN_OUT_ARMED_S)
+    }
+
+    /// A tap on Sign out, at `now`: the first arms it, a second while armed
+    /// answers true (sign out), and a stray tap times out.
+    pub fn tap_sign_out(&mut self, now: f64) -> bool {
+        if self.sign_out_armed(now) {
+            self.sign_out_at = None;
+            true
+        } else {
+            self.sign_out_at = Some(now);
+            false
+        }
+    }
+}
+
+/// Where a sheet over the map stands, in egui points: standing on the World |
+/// Community switch (a phone, and the Share sheet), or hanging under your
+/// face (a desktop).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SheetSpot {
+    /// `left` from the left edge, `bottom` up from the bottom edge.
+    Bottom {
+        left: f32,
+        bottom: f32,
+        width: f32,
+        max_height: f32,
+    },
+    /// `right` in from the right edge, `top` down from the top.
+    Hang {
+        right: f32,
+        top: f32,
+        width: f32,
+        max_height: f32,
+    },
+}
+
+/// Your face's sheet as the library draws it (`lib_main_menu`): what egui's
+/// `sheet_body` reads, read the same way by [`render_main_menu`].
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct MenuView {
+    pub spot: SheetSpot,
+    pub signed_in: bool,
+    /// Your name for your face's disc, signed in.
+    pub face: Option<String>,
+    /// The orange dot on your face.
+    pub waiting: bool,
+    /// The heading and the line under it (`who_line`).
+    pub title: String,
+    pub sub: String,
+    /// Reports waiting, for an account that may run something.
+    pub admin: Option<usize>,
+    pub error: Option<String>,
+    /// Developer tools and Share diagnostics are offered.
+    pub dev: bool,
+    pub diagnostics: Option<String>,
+    /// The first tap on Sign out has armed it.
+    pub armed: bool,
+}
+
+/// The sheet's heading and the line under it: who you are, or that you are
+/// not signed in.
+fn who_line(signed_in: bool, me: Option<&str>, server: &str) -> (String, String) {
+    match (signed_in, me) {
+        (true, Some(me)) => (
+            me.to_string(),
+            if server.is_empty() {
+                "Signed in".to_string()
+            } else {
+                cartopolis_core::address::person(me, server)
+            },
+        ),
+        (true, None) => ("Signed in".to_string(), String::new()),
+        _ => (
+            "Not signed in".to_string(),
+            "Meet people, chat and join communities".to_string(),
+        ),
+    }
 }
 
 /// Width of the sheet on a desktop, where it hangs under your face. Fixed
@@ -75,17 +174,24 @@ pub struct SignInMenu<'w> {
     contacts: Res<'w, crate::systems::contacts::Contacts>,
 }
 
-/// What a row of the sheet asked for.
-enum SheetAct {
+/// What a row of the sheet asked for — egui's, or the library's
+/// (`MainMenu::lib_acts`).
+#[derive(Clone, Copy, PartialEq)]
+pub enum SheetAct {
     Panel(RightPanel),
     Profile,
     ShareLink,
     SignIn,
     DevTools,
     Diagnostics,
+    /// A tap on Sign out: arms it, or signs out when armed
+    /// ([`MainMenu::tap_sign_out`]).
     SignOut,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Exit,
+    /// The ✕.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    Close,
 }
 
 /// Your face's sheet: who you are, and everything that is not a place on the
@@ -115,12 +221,24 @@ pub fn render_main_menu(
     // Written here, read and cleared by `diagnostics::share_diagnostics`.
     mut diagnostics: ResMut<crate::resources::DiagnosticsRequest>,
     prefs: Res<crate::resources::AppPrefs>,
+    // Whether the pointer is over one of the library's screens, for the
+    // library's sheet's tap-outside test. As DOM a tap on one never reaches
+    // the canvas, so only the Bevy backend has to say.
+    #[cfg(feature = "ui-probe")] lib_pointer: Option<Res<mithril_bevy::UiPointer>>,
 ) {
     let face = menu.face.take();
+    let lib_acts = std::mem::take(&mut menu.lib_acts);
     // It rises and fades in, and sinks out (`motion`), as the cards do; while
-    // it leaves it takes no taps.
-    let pres = crate::systems::motion::presence(egui.ctx(), egui::Id::new("face_sheet"), menu.open);
-    if !pres.visible() {
+    // it leaves it takes no taps. The library's edition (`lib_main_menu`)
+    // comes and goes with `open`.
+    let pres = (!menu.lib).then(|| {
+        crate::systems::motion::presence(egui.ctx(), egui::Id::new("face_sheet"), menu.open)
+    });
+    let showing = pres.map_or(menu.open, |p| p.visible());
+    if !showing {
+        if menu.lib_view.is_some() {
+            menu.lib_view = None;
+        }
         return;
     }
 
@@ -151,96 +269,106 @@ pub fn render_main_menu(
     #[cfg(not(feature = "comms"))]
     let (admin, waiting) = (None, false);
     let ctx = egui.ctx_mut().clone();
+    let now = ctx.input(|i| i.time);
+    let armed = menu.sign_out_armed(now);
     let mut act: Option<SheetAct> = None;
     let mut close = false;
 
-    // Keyed on the band it may fill: an `Area` remembers its first frame's
-    // size and the `ScrollArea` inside never reports more, so a sheet first
-    // laid out against a smaller band (the window's first frame, a resize)
-    // stayed that short — Settings and About fell off the bottom.
-    // …and on what is in it: a sheet first laid out signed out (or before a
-    // capture's stand-in session arrived) kept the signed-out height when it
-    // grew rows, and Sign out fell under the fold again.
-    let sheet_id = egui::Id::new((
-        "main_menu",
-        compact,
-        viewport.x as i32,
-        viewport.y as i32,
-        signed_in,
-        admin.is_some(),
-        prefs.developer_menu,
-        sign_in.session.error.is_some(),
-    ));
-    let (area, max_height) = if compact {
+    let spot = if compact {
         // A card standing on the World | Community switch, not over it: the
         // switch is the way back, and the sheet has to fit above it with Sign
         // out in sight (2026-11-11; it was a bottom sheet over the switch,
         // and Sign out was under the fold).
         let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-        (
-            egui::Area::new(sheet_id).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom)),
-            (viewport.y - bottom - theme::OSD_MARGIN).max(160.0),
-        )
+        SheetSpot::Bottom {
+            left: ((viewport.x - width) / 2.0).max(0.0),
+            bottom,
+            width,
+            max_height: (viewport.y - bottom - theme::OSD_MARGIN).max(160.0),
+        }
     } else {
         let top = face.map_or(crate::systems::dock::reserved_top(), |f| f.bottom() + 8.0);
         let right = face.map_or(viewport.x - theme::OSD_MARGIN, |f| f.right() + 2.0);
-        (
-            egui::Area::new(sheet_id)
-                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(right - viewport.x, top)),
-            (viewport.y - top - 24.0).max(160.0),
-        )
+        SheetSpot::Hang {
+            right: viewport.x - right,
+            top,
+            width,
+            max_height: (viewport.y - top - 24.0).max(160.0),
+        }
     };
-    let corner = egui::CornerRadius::same(theme::RADIUS_LG);
-    let area = area
-        .order(egui::Order::Foreground)
-        // **The sizing pass decides how tall this card may ever be.** An
-        // `Area` lays out its first frame against `Spacing::default_area_size`
-        // (600×400), remembers the content's size and uses *that* as the
-        // `max_rect` from then on; a `ScrollArea` inside shrinks to the room it
-        // is given, so container and content settle on a truncated height and
-        // the rows below the fold are simply not there. The sizing pass gets
-        // the whole band instead (`a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass`).
-        .default_size(egui::vec2(width, max_height))
-        .interactable(pres.open)
-        .show(&ctx, |ui| {
-            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
-            egui::Frame::NONE
-                .fill(theme::p().panel)
-                .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
-                .shadow(theme::card_shadow())
-                .corner_radius(corner)
-                .inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 14,
-                    bottom: 12,
+
+    // Dismissed by a click that landed outside the sheet — but not on a face,
+    // which toggles it itself (see `MainMenu::face`). Escape and Back are
+    // `systems::dismiss`'s.
+    let clicked_out = match pres {
+        // The library draws it (`lib_main_menu`): egui publishes what it
+        // shows, and does its taps of the frame before below, as its own.
+        None => {
+            let (title, sub) = who_line(signed_in, me.as_deref(), &server);
+            let view = MenuView {
+                spot,
+                signed_in,
+                face: me.clone().filter(|_| signed_in),
+                waiting,
+                title,
+                sub,
+                admin,
+                error: sign_in.session.error.clone(),
+                dev: prefs.developer_menu,
+                diagnostics: diagnostics.last.clone(),
+                armed,
+            };
+            // The tap that opened it is not a tap outside it.
+            let fresh = menu.lib_view.is_none();
+            if menu.lib_view.as_ref() != Some(&view) {
+                menu.lib_view = Some(view);
+            }
+            // One tap a frame, as egui's sheet takes.
+            act = lib_acts.last().copied();
+            // Outside is on none of the library's screens: the sheet is one.
+            #[cfg(feature = "ui-probe")]
+            let over_lib = lib_pointer.is_some_and(|p| p.owns_pointer());
+            #[cfg(not(feature = "ui-probe"))]
+            let over_lib = false;
+            !fresh
+                && !over_lib
+                && ctx.input(|i| {
+                    i.pointer.any_click()
+                        && i.pointer
+                            .interact_pos()
+                            .is_some_and(|p| !face.is_some_and(|f| f.contains(p)))
                 })
-                .show(ui, |ui| {
-                    let inner = width - 28.0;
-                    ui.set_width(inner);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_height - 32.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_width(inner);
-                            sheet_body(
-                                ui,
-                                SheetIn {
-                                    signed_in,
-                                    me: me.as_deref(),
-                                    server: &server,
-                                    waiting,
-                                    admin,
-                                    error: sign_in.session.error.as_deref(),
-                                    dev: prefs.developer_menu,
-                                    diagnostics: diagnostics.last.as_deref(),
-                                },
-                                &mut act,
-                                &mut close,
-                            );
-                        });
-                });
-        });
+        }
+        Some(pres) => {
+            let rect = draw_sheet(
+                &ctx,
+                pres,
+                spot,
+                viewport,
+                compact,
+                SheetIn {
+                    signed_in,
+                    me: me.as_deref(),
+                    server: &server,
+                    waiting,
+                    admin,
+                    error: sign_in.session.error.as_deref(),
+                    dev: prefs.developer_menu,
+                    diagnostics: diagnostics.last.as_deref(),
+                    armed,
+                },
+                &mut act,
+                &mut close,
+            );
+            pres.open
+                && ctx.input(|i| {
+                    i.pointer.any_click()
+                        && i.pointer.interact_pos().is_some_and(|p| {
+                            !rect.contains(p) && !face.is_some_and(|f| f.contains(p))
+                        })
+                })
+        }
+    };
 
     let mut log_out = false;
     match act {
@@ -281,14 +409,19 @@ pub fn render_main_menu(
             close = true;
         }
         Some(SheetAct::Diagnostics) => diagnostics.pending = true,
+        // Arms in place, as `theme::confirm_button` does: the first tap
+        // asks, the second signs out, and a stray tap times out.
         Some(SheetAct::SignOut) => {
-            log_out = true;
-            close = true;
+            if menu.tap_sign_out(now) {
+                log_out = true;
+                close = true;
+            }
         }
         Some(SheetAct::Exit) => {
             app_exit.write(AppExit::Success);
             close = true;
         }
+        Some(SheetAct::Close) => close = true,
         None => {}
     }
     #[cfg(target_arch = "wasm32")]
@@ -297,22 +430,109 @@ pub fn render_main_menu(
         crate::systems::session::sign_out(&mut sign_in.session, &mut store);
         *right_panel = RightPanel::None;
     }
-    // Dismiss on a click that landed outside the sheet — but not on a face,
-    // which toggles it itself (see `MainMenu::face`). Escape and Back are
-    // `systems::dismiss`'s.
-    let clicked_out = pres.open
-        && ctx.input(|i| {
-            i.pointer.any_click()
-                && i.pointer.interact_pos().is_some_and(|p| {
-                    !area.response.rect.contains(p) && !face.is_some_and(|f| f.contains(p))
-                })
-        });
+    // Armed, the label has to fall back by itself.
+    if menu.sign_out_armed(now) {
+        ctx.request_repaint();
+    }
     if close || clicked_out {
         menu.open = false;
     }
 }
 
+/// egui's edition of the sheet, at `spot`, on a `viewport` of egui points.
+/// Answers the rect it took.
+#[allow(clippy::too_many_arguments)]
+fn draw_sheet(
+    ctx: &egui::Context,
+    pres: crate::systems::motion::Presence,
+    spot: SheetSpot,
+    viewport: egui::Vec2,
+    compact: bool,
+    s: SheetIn<'_>,
+    act: &mut Option<SheetAct>,
+    close: &mut bool,
+) -> egui::Rect {
+    // Keyed on the band it may fill: an `Area` remembers its first frame's
+    // size and the `ScrollArea` inside never reports more, so a sheet first
+    // laid out against a smaller band (the window's first frame, a resize)
+    // stayed that short — Settings and About fell off the bottom.
+    // …and on what is in it: a sheet first laid out signed out (or before a
+    // capture's stand-in session arrived) kept the signed-out height when it
+    // grew rows, and Sign out fell under the fold again.
+    let sheet_id = egui::Id::new((
+        "main_menu",
+        compact,
+        viewport.x as i32,
+        viewport.y as i32,
+        s.signed_in,
+        s.admin.is_some(),
+        s.dev,
+        s.error.is_some(),
+    ));
+    let (area, width, max_height) = match spot {
+        SheetSpot::Bottom {
+            bottom,
+            width,
+            max_height,
+            ..
+        } => (
+            egui::Area::new(sheet_id).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom)),
+            width,
+            max_height,
+        ),
+        SheetSpot::Hang {
+            right,
+            top,
+            width,
+            max_height,
+        } => (
+            egui::Area::new(sheet_id).anchor(egui::Align2::RIGHT_TOP, egui::vec2(-right, top)),
+            width,
+            max_height,
+        ),
+    };
+    let corner = egui::CornerRadius::same(theme::RADIUS_LG);
+    let area = area
+        .order(egui::Order::Foreground)
+        // **The sizing pass decides how tall this card may ever be.** An
+        // `Area` lays out its first frame against `Spacing::default_area_size`
+        // (600×400), remembers the content's size and uses *that* as the
+        // `max_rect` from then on; a `ScrollArea` inside shrinks to the room it
+        // is given, so container and content settle on a truncated height and
+        // the rows below the fold are simply not there. The sizing pass gets
+        // the whole band instead (`a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass`).
+        .default_size(egui::vec2(width, max_height))
+        .interactable(pres.open)
+        .show(ctx, |ui| {
+            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
+            egui::Frame::NONE
+                .fill(theme::p().panel)
+                .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
+                .shadow(theme::card_shadow())
+                .corner_radius(corner)
+                .inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: 14,
+                    bottom: 12,
+                })
+                .show(ui, |ui| {
+                    let inner = width - 28.0;
+                    ui.set_width(inner);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_height - 32.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_width(inner);
+                            sheet_body(ui, s, act, close);
+                        });
+                });
+        });
+    area.response.rect
+}
+
 /// What the sheet shows, read before it is drawn.
+#[derive(Clone, Copy)]
 struct SheetIn<'a> {
     signed_in: bool,
     me: Option<&'a str>,
@@ -322,6 +542,8 @@ struct SheetIn<'a> {
     error: Option<&'a str>,
     dev: bool,
     diagnostics: Option<&'a str>,
+    /// The first tap on Sign out has armed it ([`MainMenu::tap_sign_out`]).
+    armed: bool,
 }
 
 fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, close: &mut bool) {
@@ -345,21 +567,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.add_space(3.0);
-                let (title, sub) = match (s.signed_in, s.me) {
-                    (true, Some(me)) => (
-                        me.to_string(),
-                        if s.server.is_empty() {
-                            "Signed in".to_string()
-                        } else {
-                            cartopolis_core::address::person(me, s.server)
-                        },
-                    ),
-                    (true, None) => ("Signed in".to_string(), String::new()),
-                    _ => (
-                        "Not signed in".to_string(),
-                        "Meet people, chat and join communities".to_string(),
-                    ),
-                };
+                let (title, sub) = who_line(s.signed_in, s.me, s.server);
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(title)
@@ -533,12 +741,9 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
     if s.signed_in && cfg!(feature = "comms") {
         ui.add_space(4.0);
         // Arms in place, as `theme::confirm_button` does: the first tap asks,
-        // the second signs out, and a stray tap times out.
-        let id = egui::Id::new("main_menu_sign_out");
-        let now = ui.input(|i| i.time);
-        let armed = ui
-            .memory(|m| m.data.get_temp::<f64>(id))
-            .is_some_and(|t| now - t < 3.0);
+        // the second signs out, and a stray tap times out
+        // (`MainMenu::tap_sign_out`).
+        let armed = s.armed;
         let label = if armed {
             "Tap again to sign out"
         } else {
@@ -562,15 +767,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             theme::p().error,
         );
         if resp.clicked() {
-            if armed {
-                ui.memory_mut(|m| m.data.remove::<f64>(id));
-                *act = Some(SheetAct::SignOut);
-            } else {
-                ui.memory_mut(|m| m.data.insert_temp(id, now));
-            }
-        }
-        if armed {
-            ui.ctx().request_repaint();
+            *act = Some(SheetAct::SignOut);
         }
     }
 }

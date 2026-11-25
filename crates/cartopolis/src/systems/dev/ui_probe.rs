@@ -76,6 +76,11 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_plans::drive_lib_plans,
                     crate::systems::lib_scenario::drive_lib_scenario,
                     crate::systems::lib_design_room::drive_lib_design_room,
+                    crate::systems::lib_walk_guide::drive_lib_walk_guide,
+                    crate::systems::lib_interact::drive_lib_interact,
+                    crate::systems::lib_interact::drive_lib_attach_chip,
+                    crate::systems::lib_poi_card::drive_lib_poi_card,
+                    crate::systems::lib_main_menu::drive_lib_main_menu,
                 )
                     .chain()
                     .after(crate::systems::lib_host::prepare_bevy)
@@ -96,6 +101,8 @@ impl Plugin for UiProbePlugin {
                 crate::systems::lib_post_composer::drive_lib_post_composer,
                 crate::systems::lib_login::drive_lib_login,
                 crate::systems::lib_welcome::drive_lib_welcome,
+                crate::systems::lib_dialogs::drive_lib_dialogs,
+                crate::systems::lib_share::drive_lib_share,
             )
                 .chain()
                 .after(crate::systems::lib_host::prepare_bevy)

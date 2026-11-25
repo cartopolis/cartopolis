@@ -96,7 +96,14 @@ pub fn prepare_bevy(
             || lib.osd
             || lib.pins
             || lib.place_names
-            || lib.chat_overlay)
+            || lib.chat_overlay
+            || lib.walk_guide
+            || lib.interact
+            || lib.attach_chip
+            || lib.poi_card
+            || lib.dialogs
+            || lib.main_menu
+            || lib.share_sheet)
     {
         return;
     }

@@ -60,9 +60,16 @@ impl Plugin for GuiPlugin {
                     systems::lib_map_osd::drive_lib_map_osd,
                     systems::lib_place_names::drive_lib_place_names,
                     systems::lib_pins::drive_lib_pins,
+                    systems::lib_walk_guide::drive_lib_walk_guide,
+                    systems::lib_interact::drive_lib_interact,
+                    systems::lib_interact::drive_lib_attach_chip,
+                    systems::lib_poi_card::drive_lib_poi_card,
+                    systems::lib_main_menu::drive_lib_main_menu,
                 ),
             );
         app.init_resource::<systems::settings::SettingsState>()
+            // The tapped POI's card, egui's or the library's (`data_layers`).
+            .init_resource::<systems::data_layers::PoiCard>()
             .init_resource::<systems::place_names::PlaceNames>()
             .init_resource::<systems::facade_check::FacadeCheck>()
             // The scenario over the map, if one is open (`systems::scenario`).

@@ -93,6 +93,14 @@ pub struct CameraAttach {
     /// camera's job: the frame the target goes away, the camera still has to
     /// re-seed the mode it returns to from where it now is.
     pub(crate) rig: Option<AttachRig>,
+    /// The library draws the chip (`lib_interact`, `CARTO_UI_LIB=attach_chip`):
+    /// [`render_attach_chip`] draws nothing and publishes what it follows in
+    /// [`lib_view`](Self::lib_view) instead.
+    pub lib: bool,
+    /// What the library's chip names, while it shows.
+    pub lib_view: Option<String>,
+    /// Its ✕ tapped, for [`render_attach_chip`] to do next frame.
+    pub lib_release: bool,
 }
 
 impl CameraAttach {
@@ -188,11 +196,27 @@ pub fn render_attach_chip(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut attach: ResMut<CameraAttach>,
 ) {
+    // The library's ✕ last frame: let go, as egui's does.
+    if attach.lib_release {
+        attach.lib_release = false;
+        attach.detach();
+    }
     let Some(label) = attach.label().map(str::to_owned) else {
+        if attach.lib_view.is_some() {
+            attach.lib_view = None;
+        }
         return;
     };
     if keyboard.just_pressed(KeyCode::Escape) && !egui.ctx.text_edit_focused() {
         attach.detach();
+        attach.lib_view = None;
+        return;
+    }
+    // The library's edition is showing: hand it the name, draw nothing.
+    if attach.lib {
+        if attach.lib_view.as_deref() != Some(label.as_str()) {
+            attach.lib_view = Some(label);
+        }
         return;
     }
     let mut release = false;

@@ -138,6 +138,15 @@ pub struct ChatsView {
     /// panel's width, and still runs what only it can (the picture picker,
     /// the picture viewer, the report and delete dialogs).
     pub lib: bool,
+    /// The component library draws the report form and the account-delete
+    /// confirmation (`systems::lib_dialogs`, `CARTO_UI_LIB=dialogs`): egui's
+    /// system still decides when each is up, and paints neither.
+    pub lib_dialogs: bool,
+    /// The account whose deletion `egui_only` would ask about this frame,
+    /// for `lib_dialogs`, which takes it each frame: `None` on a frame
+    /// `egui_only` did not run, as egui's window would not have shown.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub lib_confirm: Option<String>,
 }
 
 /// Which screen the Chats panel shows: one answer for egui's panel and the
@@ -1034,9 +1043,10 @@ pub fn render_chats_panel(
     // the picker is in front of it.
     poll_picture_capture(&mut view, &mut chat);
     // The report dialog is not part of the panel: it hangs off names in the
-    // overlay and over avatars too, and must stay up with the panel shut.
+    // overlay and over avatars too, and must stay up with the panel shut. The
+    // library's edition (`lib_dialogs`) shows it on the same test.
     if !right_panel.is(RightPanel::Chat) || (online.is_none() && !view.demo) {
-        if let Some(online) = online.as_deref() {
+        if let Some(online) = online.as_deref().filter(|_| !view.lib_dialogs) {
             crate::systems::chat::render_report_dialog(&mut egui, &mut chat, online);
         }
         return;
@@ -1324,6 +1334,13 @@ pub(crate) fn settle(
 /// What only egui's system can do for the panel, whichever edition draws
 /// it: the account-delete confirmation, the community picture's picker, the
 /// full-size picture viewer (an egui texture) and the report dialog.
+///
+/// With `lib_dialogs` on, the confirmation and the report form are the
+/// library's (`systems::lib_dialogs`): the confirmation is handed over in
+/// `ChatsView::lib_confirm`, and the report form needs nothing handed over,
+/// being up whenever `ChatState::report` is and a session is there. The
+/// picker has nothing to draw — the platform's own sheet is in front — and
+/// the viewer stays egui's (see `lib_dialogs`).
 fn egui_only(
     egui: &mut crate::systems::egui_manager::EguiManager,
     chat: &mut ChatState,
@@ -1332,7 +1349,11 @@ fn egui_only(
     communities: &mut crate::systems::communities::Communities,
     pictures: &mut crate::systems::chat_pictures::ChatPictures,
 ) {
-    crate::systems::communities::confirm_account_delete(&egui.ctx, communities);
+    if view.lib_dialogs {
+        view.lib_confirm = communities.confirm_delete.clone();
+    } else {
+        crate::systems::communities::confirm_account_delete(&egui.ctx, communities);
+    }
     if std::mem::take(&mut communities.pick_picture) {
         match crate::platform::photo::start_from(crate::platform::photo::Source::File) {
             Ok(capture) => communities.capture = Some(capture),
@@ -1360,7 +1381,7 @@ fn egui_only(
     }
     let viewport = egui.viewport_pts();
     picture_viewer(&egui.ctx, viewport, view, pictures);
-    if let Some(online) = online {
+    if let Some(online) = online.filter(|_| !view.lib_dialogs) {
         crate::systems::chat::render_report_dialog(egui, chat, online);
     }
 }

@@ -1072,55 +1072,86 @@ pub(crate) fn render_report_dialog(
                 egui::TextEdit::multiline(&mut draft.note)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Anything else we should know (optional)"),
+                    .hint_text(REPORT_NOTE_HINT),
             );
-            theme::note(
-                ui,
-                if draft.community.is_some() {
-                    "This goes to the community's moderators, with your copy of the line: \
-                     they cannot read the topic otherwise. Blocking is separate."
-                } else {
-                    "Reports go to the people who run this world. Blocking is separate \
-                     and takes effect immediately."
-                },
-            );
+            theme::note(ui, report_goes_to(draft));
             ui.horizontal(|ui| {
                 submit = theme::action_button(ui, "Send report").clicked();
                 cancel = theme::action_button(ui, "Cancel").clicked();
             });
         });
 
-    let to_community = draft.community.clone().filter(|_| submit);
-    if let Some((id, group, seq)) = to_community {
-        online.send(
-            "report to moderators",
-            NetMessage::CommunityReport {
-                request_id: 0,
-                id,
-                address: draft.username.clone(),
-                group,
-                seq,
-                reason: draft.reason,
-                note: draft.note.clone(),
-                line: draft.message.clone().unwrap_or_default(),
-            },
-        );
-    } else if submit {
-        online.send(
-            "report user",
-            NetMessage::ReportUser(msg::ReportUser {
-                request_id: 0,
-                username: draft.username.clone(),
-                reason: draft.reason,
-                note: draft.note.clone(),
-                message: draft.message.clone(),
-                asset: draft.asset.clone(),
-            }),
-        );
+    if submit {
+        report_act(chat, online, ReportAction::Send);
+    } else if cancel || !open {
+        report_act(chat, online, ReportAction::Cancel);
     }
-    if submit || cancel || !open {
-        chat.report = None;
+}
+
+/// The report form's hint in its note field.
+pub(crate) const REPORT_NOTE_HINT: &str = "Anything else we should know (optional)";
+
+/// Where a report goes, said under the form.
+pub(crate) fn report_goes_to(draft: &ReportDraft) -> &'static str {
+    if draft.community.is_some() {
+        "This goes to the community's moderators, with your copy of the line: \
+         they cannot read the topic otherwise. Blocking is separate."
+    } else {
+        "Reports go to the people who run this world. Blocking is separate \
+         and takes effect immediately."
     }
+}
+
+/// What a tap on the report form asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReportAction {
+    /// Send report.
+    Send,
+    /// Cancel, or the window's ✕.
+    Cancel,
+}
+
+/// Do what the report form asked for, whichever edition drew it
+/// (`lib_dialogs` draws it beside egui): send the draft as it stands to the
+/// community's moderators or the world's operators, or drop it.
+pub(crate) fn report_act(
+    chat: &mut ChatState,
+    online: &crate::resources::OnlineSession,
+    a: ReportAction,
+) {
+    let Some(draft) = chat.report.as_ref() else {
+        return;
+    };
+    if a == ReportAction::Send {
+        if let Some((id, group, seq)) = draft.community.clone() {
+            online.send(
+                "report to moderators",
+                NetMessage::CommunityReport {
+                    request_id: 0,
+                    id,
+                    address: draft.username.clone(),
+                    group,
+                    seq,
+                    reason: draft.reason,
+                    note: draft.note.clone(),
+                    line: draft.message.clone().unwrap_or_default(),
+                },
+            );
+        } else {
+            online.send(
+                "report user",
+                NetMessage::ReportUser(msg::ReportUser {
+                    request_id: 0,
+                    username: draft.username.clone(),
+                    reason: draft.reason,
+                    note: draft.note.clone(),
+                    message: draft.message.clone(),
+                    asset: draft.asset.clone(),
+                }),
+            );
+        }
+    }
+    chat.report = None;
 }
 
 #[cfg(test)]

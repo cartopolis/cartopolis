@@ -1205,7 +1205,7 @@ pub fn update_data_layers(
 /// world-space ray against thin, short poles.
 pub fn handle_poi_click(
     mouse: Res<ButtonInput<MouseButton>>,
-    mut egui: EguiMut,
+    egui: EguiMut,
     mut dl: ResMut<DataLayers>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
@@ -1213,8 +1213,10 @@ pub fn handle_poi_click(
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    // Clicks on the UI (panels, the popup itself) are egui's, not the world's.
-    if egui.ctx_mut().egui_wants_pointer_input() {
+    // Clicks on the UI (panels, the popup itself) are egui's, not the world's
+    // — or the component library's (`lib_poi_card`), which `owns_click` asks
+    // after too.
+    if egui.owns_click(false, None) {
         return;
     }
     let Some(cursor) = windows.iter().next().and_then(|w| w.cursor_position()) else {
@@ -1292,13 +1294,78 @@ pub fn handle_poi_click(
     });
 }
 
+/// The POI card as the component library draws it (`lib_poi_card`,
+/// `CARTO_UI_LIB=poi_card`): while `lib` is on, [`render_poi_popup`] still
+/// projects the POI and publishes the frame's card in `view` — `None` when
+/// there is none or it is behind the camera — and paints nothing. A tap there
+/// is done by [`poi_act`], the code egui's buttons call.
+#[derive(Resource, Default)]
+pub struct PoiCard {
+    pub lib: bool,
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub view: Option<PoiCardView>,
+}
+
+/// One frame of the POI card: where it stands and what it says.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, PartialEq, Debug)]
+pub struct PoiCardView {
+    /// The point under the card's bottom centre, egui points.
+    pub at: (f32, f32),
+    pub title: String,
+    pub subtitle: String,
+    pub website: Option<String>,
+    pub osm_id: i64,
+}
+
+/// What a tap on the POI card asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PoiAction {
+    Close,
+    /// The POI's own website.
+    Website,
+    /// Its node on openstreetmap.org.
+    Osm,
+}
+
+/// Shown on hover where the card's buttons are dead, so the greying is
+/// explained rather than merely observed.
+pub const NO_BROWSER: &str = "Opening links isn't available on this platform";
+
+/// The OSM page of a POI.
+pub fn osm_url(osm_id: i64) -> String {
+    format!("https://www.openstreetmap.org/node/{osm_id}")
+}
+
+/// Do what a tap on the POI card asked for, whichever edition drew it.
+pub fn poi_act(dl: &mut DataLayers, a: PoiAction) {
+    match a {
+        PoiAction::Close => dl.popup = None,
+        PoiAction::Website => {
+            if let Some(url) = dl.popup.as_ref().and_then(|p| p.website.clone()) {
+                open_url(&url);
+            }
+        }
+        PoiAction::Osm => {
+            if let Some(id) = dl.popup.as_ref().map(|p| p.osm_id) {
+                open_url(&osm_url(id));
+            }
+        }
+    }
+}
+
 /// The clicked-POI info card: name, category/address, and Website / OSM
 /// buttons. Anchored above the POI's pole; closes via ✕ or a click elsewhere.
 pub fn render_poi_popup(
     mut egui: EguiMut,
     mut dl: ResMut<DataLayers>,
+    mut card: ResMut<PoiCard>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
 ) {
+    // Published afresh each frame below, when there is a card to show.
+    if card.view.is_some() {
+        card.view = None;
+    }
     let Some(popup) = dl.popup.clone() else {
         return;
     };
@@ -1319,9 +1386,19 @@ pub fn render_poi_popup(
     };
     // Window points out of the projection, egui points into the `Area`.
     let anchor = egui.window_to_ui(screen);
+    // The library draws the card: hand it this frame's, and paint nothing.
+    if card.lib {
+        card.view = Some(PoiCardView {
+            at: (anchor.x, anchor.y),
+            title: popup.title.clone(),
+            subtitle: popup.subtitle.clone(),
+            website: popup.website.clone(),
+            osm_id: popup.osm_id,
+        });
+        return;
+    }
 
-    let mut close = false;
-    let mut open: Option<String> = None;
+    let mut act: Option<PoiAction> = None;
     egui::Area::new(egui::Id::new("poi_popup"))
         .fixed_pos(anchor)
         .pivot(egui::Align2::CENTER_BOTTOM)
@@ -1347,7 +1424,7 @@ pub fn render_poi_popup(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if theme::close_button(ui).clicked() {
-                                        close = true;
+                                        act = Some(PoiAction::Close);
                                     }
                                 },
                             );
@@ -1364,11 +1441,7 @@ pub fn render_poi_popup(
                             // rather than let a press do nothing — a control that
                             // swallows a tap is indistinguishable from a broken app.
                             let can_open = open_url_supported();
-                            /// Shown on hover where the buttons are dead, so the
-                            /// greying is explained rather than merely observed.
-                            const NO_BROWSER: &str =
-                                "Opening links isn't available on this platform";
-                            if let Some(url) = &popup.website {
+                            if popup.website.is_some() {
                                 if ui
                                     .add_enabled_ui(can_open, |ui| {
                                         theme::secondary_button(
@@ -1382,7 +1455,7 @@ pub fn render_poi_popup(
                                     .on_disabled_hover_text(NO_BROWSER)
                                     .clicked()
                                 {
-                                    open = Some(url.clone());
+                                    act = Some(PoiAction::Website);
                                 }
                             }
                             if ui
@@ -1391,20 +1464,14 @@ pub fn render_poi_popup(
                                 .on_disabled_hover_text(NO_BROWSER)
                                 .clicked()
                             {
-                                open = Some(format!(
-                                    "https://www.openstreetmap.org/node/{}",
-                                    popup.osm_id
-                                ));
+                                act = Some(PoiAction::Osm);
                             }
                         });
                     });
             })
         });
-    if let Some(url) = open {
-        open_url(&url);
-    }
-    if close {
-        dl.popup = None;
+    if let Some(a) = act {
+        poi_act(&mut dl, a);
     }
 }
 

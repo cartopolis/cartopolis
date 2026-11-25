@@ -80,6 +80,65 @@ pub struct InteractState {
     /// A signal button pressed at the prompt (its pole, world XZ), for
     /// `give_way::press_buttons` to take.
     pub pressed_button: Option<Vec2>,
+    /// The library draws the prompt (`lib_interact`,
+    /// `CARTO_UI_LIB=interact`): [`render_interaction_prompt`] draws nothing
+    /// and publishes [`lib_view`](Self::lib_view) instead.
+    pub lib: bool,
+    /// What the library's prompt shows, while `lib` is on.
+    pub lib_view: Option<PromptView>,
+    /// Taps on the library's prompt, done by [`render_interaction_prompt`]
+    /// next frame through the code egui's buttons run.
+    pub lib_acts: Vec<PromptAct>,
+}
+
+/// A tap on the prompt: one set, for egui's buttons and the library's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptAct {
+    /// Take the greeting offered.
+    Greet,
+    /// Let it go unanswered.
+    Ignore,
+    /// What E does: sit, stand up, press, pick up, throw.
+    Act,
+    /// Put down what is carried.
+    PutDown,
+    ClimbUp,
+    /// Sit on the edge in front.
+    SitDown,
+    /// Make the place prompted for the destination.
+    Route,
+}
+
+/// One control on the prompt.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PromptItem {
+    /// A secondary button: its glyph (`""` for none) and words.
+    Button {
+        glyph: &'static str,
+        label: String,
+        act: PromptAct,
+    },
+    /// A small icon button, with what it does as its hint.
+    Icon {
+        glyph: &'static str,
+        hint: &'static str,
+        act: PromptAct,
+    },
+}
+
+/// What the prompt shows this frame, for the library's edition.
+#[derive(Clone, Debug, PartialEq, Default)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct PromptView {
+    /// Where the prompt's bottom centre stands, egui points: the map area's
+    /// centre, [`PROMPT_BOTTOM_MARGIN`] above its bottom.
+    pub x: f32,
+    pub y: f32,
+    /// Its controls, left to right.
+    pub items: Vec<PromptItem>,
+    /// With no controls, the line naming what was last acted on: a receipt,
+    /// not a button.
+    pub receipt: Option<String>,
 }
 
 /// How far into the `throw` clip the hand lets go, seconds: CMU 15_12's
@@ -952,13 +1011,18 @@ pub fn render_interaction_prompt(
     mut greetings: ResMut<crate::systems::greet::Greetings>,
     edges: Res<crate::systems::climb::Edges>,
 ) {
+    // A tap on the library's prompt last frame (`lib_interact`), done below
+    // by the code egui's buttons run. One a frame, as a pointer gives.
+    let lib_asked = if state.lib && !state.lib_acts.is_empty() {
+        std::mem::take(&mut state.lib_acts).pop()
+    } else {
+        None
+    };
     // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
     // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
     // bottom-centre, in the speed pill's band, while driving past one.
-    if driver.active {
-        return;
-    }
-    if camera_state.mode != CameraMode::Avatar {
+    if driver.active || camera_state.mode != CameraMode::Avatar {
+        hide_lib_prompt(&mut state);
         return;
     }
     let target = state.target.clone();
@@ -986,184 +1050,212 @@ pub fn render_interaction_prompt(
         && offer.is_none()
         && edge.is_none()
     {
+        hide_lib_prompt(&mut state);
         return;
     }
 
     let compact = egui_manager.compact();
     let map = egui_manager.ui_mut().available_rect_before_wrap();
     if map.width() < 1.0 || map.height() < 1.0 {
+        hide_lib_prompt(&mut state);
         return;
     }
     let pos = egui::pos2(map.center().x, map.bottom() - PROMPT_BOTTOM_MARGIN);
-    let mut acted = false;
-    let mut routed = false;
-    let mut put_down = false;
-    let mut greet = false;
-    let mut ignore = false;
-    let mut climb_up = false;
-    let mut sit_down = false;
-    egui::Area::new(egui::Id::new("interact_prompt"))
-        .order(egui::Order::Background)
-        // A live prompt is a control; the receipt left behind after acting is not.
-        .interactable(target.is_some() || seated || carrying || offer.is_some() || edge.is_some())
-        .fixed_pos(pos)
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .show(&egui_manager.ctx.clone(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(o) = &offer {
-                        // A button to take it — E's job on a keyboard, the only
-                        // way on a phone — and one to let it go unanswered.
-                        let hint = if compact { "" } else { "   [E]" };
-                        if theme::secondary_button(
-                            ui,
-                            crate::systems::icons::HAND,
-                            &format!("{}{hint}", o.line()),
-                            0.0,
-                        )
-                        .clicked()
-                        {
-                            greet = true;
+    let items = prompt_items(
+        compact,
+        target.as_ref(),
+        seated,
+        carrying,
+        held_name.as_deref(),
+        offer.as_ref(),
+        edge.as_ref(),
+    );
+
+    let asked = if state.lib {
+        // The library's edition is showing: hand it what to draw, draw nothing.
+        let view = PromptView {
+            x: pos.x,
+            y: pos.y,
+            receipt: if items.is_empty() { receipt } else { None },
+            items,
+        };
+        if state.lib_view.as_ref() != Some(&view) {
+            state.lib_view = Some(view);
+        }
+        lib_asked
+    } else {
+        let mut asked: Option<PromptAct> = None;
+        egui::Area::new(egui::Id::new("interact_prompt"))
+            .order(egui::Order::Background)
+            // A live prompt is a control; the receipt left behind after acting is not.
+            .interactable(!items.is_empty())
+            .fixed_pos(pos)
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .show(&egui_manager.ctx.clone(), |ui| {
+                theme::overlay_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if items.is_empty() {
+                            // Nothing in range: what is left is the line naming
+                            // what was last acted on, which is a receipt and not
+                            // a button.
+                            if let Some(last) = &receipt {
+                                ui.label(egui::RichText::new(last).color(theme::p().text).strong());
+                            }
+                            return;
                         }
-                        if theme::icon_button_small(ui, crate::systems::icons::CLEAR, "Not now")
-                            .clicked()
-                        {
-                            ignore = true;
-                        }
-                        return;
-                    }
-                    if seated {
-                        // The glyph is the thing being sat on where there is one,
-                        // so the button that put you there and the button that
-                        // takes you off it are visibly the same control.
-                        let glyph = target.as_ref().map_or("", |t| t.glyph);
-                        let hint = if compact { "" } else { "   [E]" };
-                        if theme::secondary_button(ui, glyph, &format!("Stand up{hint}"), 0.0)
-                            .clicked()
-                        {
-                            acted = true;
-                        }
-                        return;
-                    }
-                    if carrying {
-                        // Two buttons rather than a long press for the second,
-                        // because a long press on a phone already means the
-                        // context menu (`touch-input.md`), and both are the
-                        // same kind of control the rest of the prompt is.
-                        let what = held_name.as_deref().unwrap_or("it");
-                        let (throw_hint, down_hint) = if compact {
-                            ("", "")
-                        } else {
-                            ("   [E]", "   [G]")
-                        };
-                        if theme::secondary_button(
-                            ui,
-                            crate::systems::icons::SEND,
-                            &format!("Throw {what}{throw_hint}"),
-                            0.0,
-                        )
-                        .clicked()
-                        {
-                            acted = true;
-                        }
-                        if theme::secondary_button(
-                            ui,
-                            crate::systems::icons::DOWNLOAD,
-                            &format!("Put down{down_hint}"),
-                            0.0,
-                        )
-                        .clicked()
-                        {
-                            put_down = true;
-                        }
-                        return;
-                    }
-                    if let Some(e) = &edge {
-                        // E takes the first: the climb where there is one. The
-                        // seat beside it is a button, on a keyboard as on a
-                        // phone.
-                        let hint = if compact { "" } else { "   [E]" };
-                        if e.climb.is_some()
-                            && theme::secondary_button(
-                                ui,
-                                crate::systems::icons::LANDSCAPE,
-                                &format!("Climb up{hint}"),
-                                0.0,
-                            )
-                            .clicked()
-                        {
-                            climb_up = true;
-                        }
-                        if e.sit.is_some() {
-                            let hint = if e.climb.is_some() { "" } else { hint };
-                            if theme::secondary_button(
-                                ui,
-                                crate::systems::icons::BENCH,
-                                &format!("Sit{hint}"),
-                                0.0,
-                            )
-                            .clicked()
-                            {
-                                sit_down = true;
+                        for item in &items {
+                            match item {
+                                PromptItem::Button { glyph, label, act } => {
+                                    if theme::secondary_button(ui, glyph, label, 0.0).clicked() {
+                                        asked = Some(*act);
+                                    }
+                                }
+                                PromptItem::Icon { glyph, hint, act } => {
+                                    if theme::icon_button_small(ui, glyph, hint).clicked() {
+                                        asked = Some(*act);
+                                    }
+                                }
                             }
                         }
-                        return;
-                    }
-                    let Some(t) = &target else {
-                        // Nothing in range: what is left is the line naming what
-                        // was last acted on, which is a receipt and not a button.
-                        if let Some(last) = &receipt {
-                            ui.label(egui::RichText::new(last).color(theme::p().text).strong());
-                        }
-                        return;
-                    };
-                    // The key hint is a fact about the *input*, not about the
-                    // action, so it is only stated where a keyboard is plausible.
-                    let hint = if compact { "" } else { "   [E]" };
-                    if theme::secondary_button(ui, t.glyph, &format!("{}{hint}", t.line()), 0.0)
-                        .clicked()
-                    {
-                        acted = true;
-                    }
-                    // The Route panel's own icon, so the button and the panel it
-                    // opens read as one thing.
-                    if theme::icon_button_small(
-                        ui,
-                        RightPanel::Route.icon(),
-                        "Route here — make this the destination",
-                    )
-                    .clicked()
-                    {
-                        routed = true;
-                    }
+                    });
                 });
             });
-        });
+        asked
+    };
 
-    if greet {
-        if let Some(session) = online.as_deref() {
-            greetings.accept(session);
+    match asked {
+        Some(PromptAct::Greet) => {
+            if let Some(session) = online.as_deref() {
+                greetings.accept(session);
+            }
         }
-    } else if ignore {
-        greetings.dismiss();
-    } else if acted {
-        send_act(online.as_ref(), state.act(&mut avatar_state));
-    } else if put_down {
-        send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
-    } else if climb_up {
-        avatar_state.wants_climb = true;
-    } else if sit_down {
-        edges.sit(&mut avatar_state);
-    }
-    if routed {
-        // The store holds anchored world XZ; the planner speaks lat/lng. Without
-        // an anchor there is no mapping between them yet, and the button simply
-        // does nothing rather than routing to null island.
-        if let (Some(t), Some(anchor)) = (&target, map_anchor.geo) {
-            let (lat, lng) = world_to_lat_lng(anchor, t.pos.x as f64, t.pos.y as f64);
-            nav.route_to(t.name.clone(), lat, lng);
+        Some(PromptAct::Ignore) => greetings.dismiss(),
+        Some(PromptAct::Act) => send_act(online.as_ref(), state.act(&mut avatar_state)),
+        Some(PromptAct::PutDown) => {
+            send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
         }
+        Some(PromptAct::ClimbUp) => avatar_state.wants_climb = true,
+        Some(PromptAct::SitDown) => edges.sit(&mut avatar_state),
+        Some(PromptAct::Route) => {
+            // The store holds anchored world XZ; the planner speaks lat/lng.
+            // Without an anchor there is no mapping between them yet, and the
+            // button simply does nothing rather than routing to null island.
+            if let (Some(t), Some(anchor)) = (&target, map_anchor.geo) {
+                let (lat, lng) = world_to_lat_lng(anchor, t.pos.x as f64, t.pos.y as f64);
+                nav.route_to(t.name.clone(), lat, lng);
+            }
+        }
+        None => {}
     }
+}
+
+/// The library's prompt goes (`lib_interact`), when it was up.
+fn hide_lib_prompt(state: &mut InteractState) {
+    if state.lib_view.is_some() {
+        state.lib_view = None;
+    }
+}
+
+/// The prompt's controls, left to right, for both editions: a greeting
+/// offered first, then getting up, then the two ways out of carrying, then
+/// the wall or edge in front, then what the avatar stands next to. Empty when
+/// there is nothing to press (what is left is the receipt).
+fn prompt_items(
+    compact: bool,
+    target: Option<&TargetInfo>,
+    seated: bool,
+    carrying: bool,
+    held_name: Option<&str>,
+    offer: Option<&crate::systems::greet::Offer>,
+    edge: Option<&crate::systems::climb::Edges>,
+) -> Vec<PromptItem> {
+    use crate::systems::icons;
+    // The key hint is a fact about the *input*, not about the action, so it
+    // is only stated where a keyboard is plausible.
+    let hint = if compact { "" } else { "   [E]" };
+    if let Some(o) = offer {
+        // A button to take it — E's job on a keyboard, the only way on a
+        // phone — and one to let it go unanswered.
+        return vec![
+            PromptItem::Button {
+                glyph: icons::HAND,
+                label: format!("{}{hint}", o.line()),
+                act: PromptAct::Greet,
+            },
+            PromptItem::Icon {
+                glyph: icons::CLEAR,
+                hint: "Not now",
+                act: PromptAct::Ignore,
+            },
+        ];
+    }
+    if seated {
+        // The glyph is the thing being sat on where there is one, so the
+        // button that put you there and the button that takes you off it are
+        // visibly the same control.
+        return vec![PromptItem::Button {
+            glyph: target.map_or("", |t| t.glyph),
+            label: format!("Stand up{hint}"),
+            act: PromptAct::Act,
+        }];
+    }
+    if carrying {
+        // Two buttons rather than a long press for the second, because a long
+        // press on a phone already means the context menu (`touch-input.md`),
+        // and both are the same kind of control the rest of the prompt is.
+        let what = held_name.unwrap_or("it");
+        let down_hint = if compact { "" } else { "   [G]" };
+        return vec![
+            PromptItem::Button {
+                glyph: icons::SEND,
+                label: format!("Throw {what}{hint}"),
+                act: PromptAct::Act,
+            },
+            PromptItem::Button {
+                glyph: icons::DOWNLOAD,
+                label: format!("Put down{down_hint}"),
+                act: PromptAct::PutDown,
+            },
+        ];
+    }
+    if let Some(e) = edge {
+        // E takes the first: the climb where there is one. The seat beside it
+        // is a button, on a keyboard as on a phone.
+        let mut items = Vec::new();
+        if e.climb.is_some() {
+            items.push(PromptItem::Button {
+                glyph: icons::LANDSCAPE,
+                label: format!("Climb up{hint}"),
+                act: PromptAct::ClimbUp,
+            });
+        }
+        if e.sit.is_some() {
+            let hint = if e.climb.is_some() { "" } else { hint };
+            items.push(PromptItem::Button {
+                glyph: icons::BENCH,
+                label: format!("Sit{hint}"),
+                act: PromptAct::SitDown,
+            });
+        }
+        return items;
+    }
+    let Some(t) = target else {
+        return Vec::new();
+    };
+    vec![
+        PromptItem::Button {
+            glyph: t.glyph,
+            label: format!("{}{hint}", t.line()),
+            act: PromptAct::Act,
+        },
+        // The Route panel's own icon, so the button and the panel it opens
+        // read as one thing.
+        PromptItem::Icon {
+            glyph: RightPanel::Route.icon(),
+            hint: "Route here — make this the destination",
+            act: PromptAct::Route,
+        },
+    ]
 }
 
 /// Gap between the prompt and the bottom of the map area. Clear of the bottom
