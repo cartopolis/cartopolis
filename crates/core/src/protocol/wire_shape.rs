@@ -44,6 +44,7 @@ fn traced() -> String {
         ChatScope,
         CommunityRole,
         DirectoryOrder,
+        CarKind,
         Emote,
         Expression,
         crate::greet::Greeting,

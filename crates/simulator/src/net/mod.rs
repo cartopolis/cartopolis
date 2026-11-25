@@ -1249,6 +1249,7 @@ async fn dispatch<T: FrameTransport>(
             expression,
             seated,
             geo,
+            driving,
             ..
         }) => {
             avatar::on_intent(
@@ -1262,6 +1263,7 @@ async fn dispatch<T: FrameTransport>(
                     expression,
                     seated,
                     geo,
+                    driving,
                 },
             )
             .await

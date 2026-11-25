@@ -90,6 +90,9 @@ pub struct InteractState {
     /// Taps on the library's prompt, done by [`render_interaction_prompt`]
     /// next frame through the code egui's buttons run.
     pub lib_acts: Vec<PromptAct>,
+    /// Offer to call this person's own car: on foot, with none of their cars
+    /// near (`systems::driving`).
+    pub call_car: bool,
 }
 
 /// A tap on the prompt: one set, for egui's buttons and the library's.
@@ -108,6 +111,8 @@ pub enum PromptAct {
     SitDown,
     /// Make the place prompted for the destination.
     Route,
+    /// Bring this person's own car to them (`systems::driving`).
+    CallCar,
 }
 
 /// One control on the prompt.
@@ -181,6 +186,9 @@ pub struct TargetInfo {
     /// what the prompt is for (`systems::give_way`). Pressing it is this
     /// client's alone: the traffic it stops is invented per viewer.
     pub button: Option<Vec2>,
+    /// The car to get into, when the prompt is "Drive this car" or "Drive my
+    /// car" (`systems::driving`).
+    pub car: Option<crate::systems::driving::CarSpot>,
 }
 
 /// The name a prim goes by in a prompt: its own, or "object" when it has none.
@@ -204,6 +212,7 @@ impl TargetInfo {
             prim_id: None,
             pickup: false,
             button: None,
+            car: None,
         }
     }
 
@@ -221,6 +230,7 @@ impl TargetInfo {
             prim_id: None,
             pickup: false,
             button: Some(pole),
+            car: None,
         }
     }
 
@@ -236,6 +246,7 @@ impl TargetInfo {
             prim_id: Some(id),
             pickup: true,
             button: None,
+            car: None,
         }
     }
 
@@ -257,6 +268,7 @@ impl TargetInfo {
             prim_id: Some(id),
             pickup: false,
             button: None,
+            car: None,
         }
     }
 
@@ -343,6 +355,16 @@ impl InteractState {
     /// systems, and the network handle belongs to the caller.
     #[must_use]
     fn act(&mut self, avatar_state: &mut AvatarState) -> Option<WorldAct> {
+        // At the wheel the control gets out (`systems::driving`), and while
+        // walking up to a car or away from one it does nothing.
+        if avatar_state.car_control {
+            if avatar_state.driving.is_some() {
+                avatar_state.wants_out = true;
+            }
+            self.last = None;
+            self.last_ttl = 0.0;
+            return None;
+        }
         // Sitting is the one interaction that is a *state* rather than a gesture,
         // so the same control leaves it. Asked for while seated, this is "stand
         // up" whatever the prompt is standing next to.
@@ -360,6 +382,13 @@ impl InteractState {
         let Some(target) = self.target.clone() else {
             return None;
         };
+        if let Some(car) = target.car {
+            // The car is the receipt: the avatar walks to it and gets in.
+            avatar_state.wants_car = Some(car);
+            self.last = None;
+            self.last_ttl = 0.0;
+            return None;
+        }
         if let (true, Some(id)) = (target.pickup, target.prim_id) {
             // No receipt: the thing in the hands is the feedback, and the
             // prompt turns into "Throw" as soon as the sim says so.
@@ -515,6 +544,7 @@ pub fn track_interaction_target(
     detail: Res<crate::systems::street_detail::StreetDetail>,
     buttons: Res<crate::systems::give_way::SignalButtons>,
     clock: Res<crate::systems::anim_clock::AnimClock>,
+    garage: Res<crate::systems::driving::Garage>,
 ) {
     if state.last_ttl > 0.0 {
         state.last_ttl -= time.delta_secs();
@@ -535,6 +565,44 @@ pub fn track_interaction_target(
     // were converted into on insertion, and the same one the building colliders
     // use. No transform needed here, which is the point of converting once.
     let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
+
+    // In a car, or getting into or out of one: nothing whizzing past is
+    // offered, and the prompt is "Get out" (`systems::driving`).
+    let near_car = garage
+        .left
+        .filter(|l| l.pos.distance(pos) < crate::systems::driving::CAR_REACH_M);
+    let call_car = !avatar_state.car_control
+        && garage
+            .left
+            .is_none_or(|l| l.pos.distance(pos) > CALL_CAR_BEYOND_M);
+    if state.call_car != call_car {
+        state.call_car = call_car;
+    }
+    if avatar_state.car_control {
+        if state.target.is_some() {
+            state.target = None;
+        }
+        return;
+    }
+    // This person's own car, beside them: drive it.
+    if let Some(spot) = near_car {
+        let same = state.target.as_ref().is_some_and(|t| t.car == Some(spot));
+        if !same {
+            state.target = Some(TargetInfo {
+                name: "my car".to_string(),
+                glyph: crate::systems::icons::CAR,
+                verb: "Drive",
+                detail: None,
+                pos: spot.pos,
+                seat: None,
+                prim_id: None,
+                pickup: false,
+                button: None,
+                car: Some(spot),
+            });
+        }
+        return;
+    }
 
     // Hands full: the prompt is "Throw" and "Put down", whatever is near, so
     // there is no target — only the name of what is held, for the button.
@@ -634,7 +702,20 @@ pub fn track_interaction_target(
         _ => true,
     };
     if changed {
-        state.target = nearest.map(|i| TargetInfo::of(i, pos));
+        state.target = nearest.map(|i| {
+            let mut t = TargetInfo::of(i, pos);
+            // A parked car is driven away (`systems::driving`).
+            if i.kind
+                == crate::systems::world_places::InteractKind::Prop(
+                    crate::systems::furniture::FurnitureKind::Car,
+                )
+            {
+                t.car = places
+                    .parked_car_at(i.pos)
+                    .map(|c| crate::systems::driving::CarSpot::parked(&c));
+            }
+            t
+        });
     } else if let (Some(t), Some(i)) = (state.target.as_mut(), nearest) {
         // Same thing, but not necessarily the same *place* on it: walking along a
         // bench slides where you would sit, and a seat resolved when you first
@@ -976,6 +1057,9 @@ pub fn handle_interaction_input(
             }
             _ => send_act(online.as_ref(), state.act(&mut avatar_state)),
         }
+    } else if keyboard.just_pressed(KeyCode::KeyC) && state.call_car && !avatar_state.is_seated() {
+        // C calls this person's own car (`systems::driving`).
+        avatar_state.wants_call_car = true;
     } else if keyboard.just_pressed(KeyCode::KeyG) {
         // G puts down: the key games drop with, and bound to nothing else.
         send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
@@ -1036,6 +1120,9 @@ pub fn render_interaction_prompt(
     // on a phone these buttons are the only way to either.
     let carrying = !seated && avatar_state.holding.is_some();
     let held_name = state.held_name.clone();
+    // At the wheel the prompt is "Get out", in place of "Stand up".
+    let driving = avatar_state.driving.is_some();
+    let call_car = state.call_car && !seated && !carrying;
     // Somebody offering a greeting: the first thing the prompt says, since it
     // lapses and the bench beside you does not.
     let offer = accepts_greeting(&avatar_state, &greetings)
@@ -1050,6 +1137,7 @@ pub fn render_interaction_prompt(
         && !carrying
         && offer.is_none()
         && edge.is_none()
+        && !call_car
     {
         hide_lib_prompt(&mut state);
         return;
@@ -1070,6 +1158,7 @@ pub fn render_interaction_prompt(
         held_name.as_deref(),
         offer.as_ref(),
         edge.as_ref(),
+        Cars { driving, call_car },
     );
 
     let asked = if state.lib {
@@ -1136,6 +1225,7 @@ pub fn render_interaction_prompt(
             send_act(online.as_ref(), state.let_go(&mut avatar_state, false));
         }
         Some(PromptAct::ClimbUp) => avatar_state.wants_climb = true,
+        Some(PromptAct::CallCar) => avatar_state.wants_call_car = true,
         Some(PromptAct::SitDown) => edges.sit(&mut avatar_state),
         Some(PromptAct::Route) => {
             // The store holds anchored world XZ; the planner speaks lat/lng.
@@ -1161,6 +1251,19 @@ fn hide_lib_prompt(state: &mut InteractState) {
 /// offered first, then getting up, then the two ways out of carrying, then
 /// the wall or edge in front, then what the avatar stands next to. Empty when
 /// there is nothing to press (what is left is the receipt).
+/// What the prompt offers about cars (`systems::driving`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Cars {
+    /// At the wheel: "Get out".
+    driving: bool,
+    /// On foot with no car of one's own near: the small "Call my car".
+    call_car: bool,
+}
+
+/// Beyond this, a car left at the kerb is far enough away to call it, m.
+const CALL_CAR_BEYOND_M: f32 = 40.0;
+
+#[allow(clippy::too_many_arguments)]
 fn prompt_items(
     compact: bool,
     target: Option<&TargetInfo>,
@@ -1169,6 +1272,7 @@ fn prompt_items(
     held_name: Option<&str>,
     offer: Option<&crate::systems::greet::Offer>,
     edge: Option<&crate::systems::climb::Edges>,
+    cars: Cars,
 ) -> Vec<PromptItem> {
     use crate::systems::icons;
     // The key hint is a fact about the *input*, not about the action, so it
@@ -1189,6 +1293,13 @@ fn prompt_items(
                 act: PromptAct::Ignore,
             },
         ];
+    }
+    if cars.driving {
+        return vec![PromptItem::Button {
+            glyph: icons::CAR,
+            label: format!("Get out{hint}"),
+            act: PromptAct::Act,
+        }];
     }
     if seated {
         // The glyph is the thing being sat on where there is one, so the
@@ -1241,7 +1352,16 @@ fn prompt_items(
         return items;
     }
     let Some(t) = target else {
-        return Vec::new();
+        return if cars.call_car {
+            let hint = if compact { "" } else { "   [C]" };
+            vec![PromptItem::Button {
+                glyph: icons::CAR,
+                label: format!("Call my car{hint}"),
+                act: PromptAct::CallCar,
+            }]
+        } else {
+            Vec::new()
+        };
     };
     vec![
         PromptItem::Button {

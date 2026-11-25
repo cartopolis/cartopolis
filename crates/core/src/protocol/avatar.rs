@@ -279,6 +279,51 @@ pub struct AvatarStateDto {
     /// of it by the sim until it is thrown, put down, or the hold ends. A
     /// level, resent every snapshot, as `seated` is.
     pub holding: Option<i64>,
+    /// The car this avatar is driving (protocol 52), resent every snapshot
+    /// while it drives, as `seated` is: a level, so an avatar that comes into
+    /// range mid-drive is drawn at the wheel. The car's place is the avatar's
+    /// and its heading is [`Self::yaw`].
+    pub driving: Option<Driving>,
+}
+
+/// The body of a car an avatar drives: the four the client's traffic and car
+/// parks are built from, named here so a receiver draws the same shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CarKind {
+    Hatchback,
+    Saloon,
+    Estate,
+    Van,
+}
+
+/// A car being driven, as every viewer draws it (protocol 52).
+///
+/// Only what a viewer cannot work out for itself: which car, its colour, where
+/// its front wheels point and whether its brake lights are on. Its speed and
+/// heading are the avatar's own `velocity` and `yaw`; the handling is the
+/// driver's client's (`crate::car`), since only it has the walls.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Driving {
+    pub kind: CarKind,
+    /// Paint, sRGB.
+    pub paint: [u8; 3],
+    /// Front wheel angle in hundredths of a radian, positive to the left.
+    pub steer: i8,
+    pub braking: bool,
+}
+
+impl Driving {
+    /// The front wheel angle, rad.
+    #[must_use]
+    pub fn steer_rad(&self) -> f32 {
+        f32::from(self.steer) / 100.0
+    }
+
+    /// [`Self::steer`] for an angle in radians.
+    #[must_use]
+    pub fn steer_of(rad: f32) -> i8 {
+        (rad * 100.0).round().clamp(-127.0, 127.0) as i8
+    }
 }
 
 /// How far a seat may draw an avatar from the position the sim holds for it.

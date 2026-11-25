@@ -1132,6 +1132,13 @@ impl BuildingColliders {
         })
     }
 
+    /// Whether the move `from → to` is refused for `body` — what a car asks
+    /// of each corner it drives (`systems::driving`).
+    #[must_use]
+    pub fn refuses(&self, from: Vec2, to: Vec2, body: Body) -> bool {
+        self.blocked_move(from, to, body)
+    }
+
     /// The footprint containing `p`, if any is in the way.
     fn hit(&self, p: Vec2, body: Body) -> Option<&Footprint> {
         self.iter_at(body).find(|f| f.holds(p, self.open(f), body))

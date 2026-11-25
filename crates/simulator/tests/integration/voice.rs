@@ -63,6 +63,7 @@ fn stand_here() -> Bytes {
                 latitude: 53.2194,
                 longitude: 6.5665,
             }),
+            driving: None,
         }))
         .unwrap(),
     )

@@ -91,6 +91,11 @@ struct AvatarSim {
     /// tick; sitting, a teleport, leaving, or the prim ceasing to be a
     /// carryable physical prim lets go of it.
     holding: Option<i64>,
+    /// The car this avatar is at the wheel of (protocol 52,
+    /// [`SimWorld::set_driving`]). The sim draws nothing from it but the
+    /// speed cap: the handling, and the walls that stop a car, are its
+    /// driver's client's.
+    driving: Option<cartopolis_core::protocol::Driving>,
     /// Seconds a greeting still holds this avatar's facing (protocol 49,
     /// [`cartopolis_core::greet::GREET_HOLD_SECS`]): the sim turned it to its
     /// partner, and an intent sent before its client heard must not turn it
@@ -355,6 +360,7 @@ impl SimWorld {
                 look: None,
                 seated: None,
                 holding: None,
+                driving: None,
                 greet_hold: 0.0,
             },
         );
@@ -645,8 +651,11 @@ impl SimWorld {
         // is clamped to it.
         let mut v = Vec3::new(move_x, 0.0, move_z);
         let mag = v.length();
+        // At the wheel the cap is a car's (`motion::MAX_DRIVE_SPEED`), the one
+        // thing the sim takes from `driving`.
+        let driving = av.driving.is_some();
         if mag > 1e-4 {
-            v = v / mag * motion::sim_speed_for_wish(mag);
+            v = v / mag * motion::sim_speed_for_wish_capped(mag, driving);
         } else {
             v = Vec3::ZERO;
         }
@@ -666,7 +675,8 @@ impl SimWorld {
         // limited on top (`net::MIN_INTENT_INTERVAL`), so a jump that shared a tick
         // with a later "not jumping" intent would be silently dropped. `step`
         // clears it.
-        av.jump_requested |= jump;
+        // Nobody jumps out of a moving car.
+        av.jump_requested |= jump && !driving;
         // The seat. A *level*, unlike the jump and the emote beside it: it holds
         // until the client says otherwise, so an avatar that comes into range
         // mid-sit is drawn sitting.
@@ -682,7 +692,7 @@ impl SimWorld {
                 && o[1].is_finite()
                 && (o[0] * o[0] + o[1] * o[1]) <= MAX_SEAT_OFFSET_M * MAX_SEAT_OFFSET_M
         });
-        if moves {
+        if moves || driving {
             av.seated = None;
         }
         // Sitting down puts down whatever was being carried: the seated pose
@@ -718,6 +728,26 @@ impl SimWorld {
         if moves || seated.is_some() {
             self.withdraw_greetings_of(avatar_id);
         }
+    }
+
+    /// Put an avatar at the wheel of a car, or take it out (protocol 52).
+    ///
+    /// Checked as an intent's floats are: a car whose wheel angle is past any
+    /// lock is not one a client of ours describes, and is refused. Getting in
+    /// puts down whatever was being carried — both hands are on the wheel.
+    pub fn set_driving(
+        &mut self,
+        avatar_id: u64,
+        driving: Option<cartopolis_core::protocol::Driving>,
+    ) {
+        let Some(av) = self.avatars.get_mut(&avatar_id) else {
+            return;
+        };
+        let driving = driving.filter(|d| d.steer_rad().abs() <= 0.8);
+        if driving.is_some() {
+            av.holding = None;
+        }
+        av.driving = driving;
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -984,6 +1014,7 @@ impl SimWorld {
                         seated: a.seated,
                         velocity: a.moved,
                         holding: a.holding,
+                        driving: a.driving,
                     },
                 ))
             })
@@ -1744,6 +1775,50 @@ mod tests {
             (o2.x - o.x).abs() < 1e-3 && (-o2.z - expect).abs() < 1e-2,
             "walking +z for half a second should go {expect} m south: {o2:?}"
         );
+    }
+
+    /// A car may go at a car's speed, and only a car: the cap lifts for an
+    /// avatar at the wheel and comes straight back down when it gets out.
+    #[test]
+    fn a_driver_may_go_at_a_cars_speed_and_a_walker_may_not() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        world.teleport_avatar(id, here(), 0.0);
+        let car = cartopolis_core::protocol::Driving {
+            kind: cartopolis_core::protocol::CarKind::Hatchback,
+            paint: [200, 30, 30],
+            steer: 0,
+            braking: false,
+        };
+        // 30 m/s, as a wish.
+        let wish = motion::wish_for_speed_capped(30.0, true);
+        world.set_driving(id, Some(car));
+        world.apply_intent(id, wish, 0.0, 0.0, false, None, None, None);
+        world.step(1.0);
+        let driven = offset_m(&world, id).x;
+        assert!((driven - 30.0).abs() < 0.1, "drove {driven} m in a second");
+        assert_eq!(dto(&world, id).expect("in view").driving, Some(car));
+
+        // No jump from the driver's seat, and no seat beside it.
+        world.apply_intent(id, 0.0, 0.0, 0.0, true, None, Some([0.3, 0.0]), None);
+        world.step(0.1);
+        let d = dto(&world, id).expect("in view");
+        assert!(d.alt_m <= motion::GROUND_Y + 1e-3 && d.seated.is_none());
+
+        // Out of the car the same wish is a run.
+        world.set_driving(id, None);
+        world.apply_intent(id, wish, 0.0, 0.0, false, None, None, None);
+        world.step(1.0);
+        let walked = offset_m(&world, id).x - driven;
+        assert!((walked - motion::MAX_SPEED).abs() < 0.1, "ran {walked} m");
+        assert_eq!(dto(&world, id).expect("in view").driving, None);
+
+        // A wheel turned past any lock is no car of ours.
+        world.set_driving(
+            id,
+            Some(cartopolis_core::protocol::Driving { steer: 120, ..car }),
+        );
+        assert_eq!(dto(&world, id).expect("in view").driving, None);
     }
 
     /// A hostile client must not be able to write a non-number into the

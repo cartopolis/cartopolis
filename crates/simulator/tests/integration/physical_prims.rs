@@ -101,6 +101,7 @@ pub(super) fn stand(geo: GeoAnchor, yaw: f32, emote: Option<Emote>) -> NetMessag
         expression: None,
         seated: None,
         geo: Some(geo),
+        driving: None,
     })
 }
 

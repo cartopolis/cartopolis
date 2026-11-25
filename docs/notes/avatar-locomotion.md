@@ -9,9 +9,10 @@ updated: 2026-11-15
 The avatar is a person: it strolls, walks, runs, jumps and swims. **It does
 not fly.** Avatar flight existed from protocol 12 until the
 owner removed it on 2026-11-14 as unrealistic; what it was and what it taught
-are in [retired/avatar-flight.md](retired/avatar-flight.md). The camera still
-flies — the Fly (Free) camera, Earth, the zoom out to the globe — and none of
-that is about the avatar.
+are in [retired/avatar-flight.md](retired/avatar-flight.md). Since 2026-11-25
+the Fly camera does not fly either; the avatar goes fast **in a car**
+([driving.md](driving.md)). Earth and the zoom out to the globe still move the
+camera, and none of that is about the avatar.
 
 check: `! grep -rqw is_flying crates/cartopolis/src crates/simulator/src`
 

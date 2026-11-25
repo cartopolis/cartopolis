@@ -1295,7 +1295,9 @@ pub fn mode_look(
     use crate::systems::icons;
     let badge = |mode: CameraMode| match mode {
         CameraMode::Avatar => (icons::CAM_FOLLOW, "Follow"),
-        CameraMode::Free => (icons::CAM_FLY, "Fly"),
+        // The placed view a shared place or a capture opens in: looked
+        // around in, never flown (the camera stopped flying on 2026-11-25).
+        CameraMode::Free => (icons::CAM_FLY, "View"),
         CameraMode::Orbit => (icons::CAM_EARTH, "Earth"),
     };
     let next = next_camera_mode(camera_state.mode, follow_available(session, has_avatar));

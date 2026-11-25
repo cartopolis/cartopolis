@@ -199,6 +199,9 @@ pub struct RemoteAvatar {
     pub seat_lift: f32,
     /// Sitting with the legs hanging (`dangle`), by the same measure.
     pub seat_dangle: bool,
+    /// The car this avatar is driving (protocol 52), drawn under it by
+    /// `driving::draw_cars`; its body sits in the driver's seat.
+    pub driving: Option<cartopolis_core::protocol::Driving>,
 }
 
 /// The terrain height a prim is drawn raised by on this client

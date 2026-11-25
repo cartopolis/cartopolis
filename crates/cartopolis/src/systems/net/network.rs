@@ -62,7 +62,6 @@ pub struct AuthWriteback<'w, 's> {
     time: Option<Res<'w, Time>>,
 }
 use crate::platform::sync::{mpsc, Arc, Mutex};
-use crate::systems::locomotion;
 use crate::systems::model_assets;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
@@ -1362,7 +1361,8 @@ fn sync_remote_avatar_entities(
                 // A level, not an edge: the sim re-sends it in every snapshot for
                 // as long as the sit lasts, and the *blend* onto it is this
                 // client's own business (`avatar::update_avatar_model_pose`).
-                r.seated = a.state.seated.map(Vec2::from);
+                r.seated = remote_seat(&a.state);
+                r.driving = a.state.driving;
                 // Fire only on a sequence we haven't seen: the sim re-sends a live
                 // emote in every snapshot for a couple of seconds, so diffing on
                 // the emote itself would restart the clip 20 times a second.
@@ -1400,7 +1400,7 @@ fn sync_remote_avatar_entities(
                     // sitting, and slides onto the seat from here like everyone
                     // else — a fraction of a second of one stranger arriving
                     // upright is cheaper than a special case.
-                    seated: a.state.seated.map(Vec2::from),
+                    seated: remote_seat(&a.state),
                     seat_blend: 0.0,
                     // Stood on this viewer's ground by `avatar::smooth_remote_avatars`.
                     terrain_lift: 0.0,
@@ -1411,6 +1411,7 @@ fn sync_remote_avatar_entities(
                     climb: None,
                     seat_lift: 0.0,
                     seat_dangle: false,
+                    driving: a.state.driving,
                 },
                 Transform::from_translation(a.position)
                     .with_rotation(Quat::from_rotation_y(wrap_angle_pi(y)))
@@ -1641,6 +1642,7 @@ pub struct SentIntent {
     display_yaw: f32,
     /// The seat, only so the change test can see it start and stop.
     seated: Option<[f32; 2]>,
+    driving: Option<cartopolis_core::protocol::Driving>,
 }
 
 /// Whether an intent carries an *edge* — something that happens once and is lost
@@ -1690,6 +1692,17 @@ fn standing_intent(yaw: f32, geo: cartopolis_core::GeoAnchor) -> NetMessage {
         expression: None,
         seated: None,
         geo: Some(geo),
+        driving: None,
+    })
+}
+
+/// Where another avatar's body is drawn from its place: its seat, or at the
+/// wheel of the car it drives (`systems::driving`).
+fn remote_seat(state: &AvatarStateDto) -> Option<Vec2> {
+    state.seated.map(Vec2::from).or_else(|| {
+        state
+            .driving
+            .map(|_| crate::systems::driving::driver_seat_offset(state.yaw))
     })
 }
 
@@ -1771,7 +1784,10 @@ pub fn send_network_intent(
     // comes up the wish is already zero, and the avatar still has speed to shed
     // along the heading it had.
     let speed = avatar_state.ground_speed;
-    let mut v = avatar_state.move_dir * locomotion::wish_for_speed(speed);
+    // At the wheel the sim allows a car's speed (protocol 52); the car has
+    // already met its walls (`systems::driving`), so it is not steered again.
+    let driving = avatar_state.driving.is_some();
+    let mut v = avatar_state.move_dir * motion::wish_for_speed_capped(speed, driving);
     // Building collision (the sim is authoritative but has no building geometry —
     // that streams only on the client): steer the walk velocity so the avatar
     // slides along walls and can't enter a building, and auto-walk it out if it
@@ -1794,7 +1810,8 @@ pub fn send_network_intent(
     // snapped for the reason this whole branch exists: the sim owns the position
     // online and would overwrite a snap with the next snapshot.
     let in_bore = crate::systems::tunnels::inside(avatar_state.floor_lift);
-    if in_bore || (layers.buildings_enabled && !colliders.is_empty()) {
+    if !avatar_state.car_control && (in_bore || (layers.buildings_enabled && !colliders.is_empty()))
+    {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
         let wish = Vec2::new(v.x, v.z);
         let mut body = crate::systems::collision::Body::new(
@@ -1839,7 +1856,7 @@ pub fn send_network_intent(
         (avatar_state.display_position.y - avatar_state.terrain_lift - avatar_state.floor_lift)
             .max(motion::GROUND_Y);
     let horizontal = if mag > 1e-4 {
-        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag)
+        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish_capped(mag, driving)
     } else {
         Vec2::ZERO
     };
@@ -1883,6 +1900,7 @@ pub fn send_network_intent(
         move_z: v.z,
         display_yaw,
         seated,
+        driving: avatar_state.driving,
     };
     let changed = last_sent.map_or(true, |p| {
         (p.move_x - intent.move_x).abs() > INTENT_EPS_DIR
@@ -1891,6 +1909,8 @@ pub fn send_network_intent(
             // Sitting down and standing up are changes, so they reach the sim on
             // the frame they happen rather than on the next keepalive.
             || p.seated.is_some() != intent.seated.is_some()
+            // Getting in and out, the wheel and the brake lights: others draw them.
+            || p.driving != intent.driving
     });
     // An edge is never throttled: a skipped jump is a jump that did not happen,
     // where a skipped movement frame is one the next intent corrects anyway.
@@ -1929,6 +1949,7 @@ pub fn send_network_intent(
             expression,
             seated,
             geo,
+            driving: avatar_state.driving,
         }));
 }
 

@@ -109,6 +109,7 @@ fn an_avatar(id: u64) -> AvatarStateDto {
         seated: (id % 5 == 0).then_some([0.4, -1.0]),
         velocity: Vec3::new(1.8, 0.0, -0.5),
         holding: (id % 7 == 0).then_some(id as i64 * 300),
+        driving: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn roundtrip_seated_app_frames() {
             expression: None,
             seated,
             geo: None,
+            driving: None,
         });
         let b = encode_app_frame(&m).unwrap();
         assert_eq!(decode_app_frame(&b).unwrap(), m);
@@ -178,6 +180,7 @@ fn roundtrip_seated_app_frames() {
                 seated,
                 velocity: Vec3::new(1.8, 0.0, -0.5),
                 holding: None,
+                driving: None,
             }],
         };
         let b = encode_app_frame(&m).unwrap();

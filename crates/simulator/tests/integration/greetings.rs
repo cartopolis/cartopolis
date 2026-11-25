@@ -276,6 +276,7 @@ async fn an_offer_lapses_and_walking_off_withdraws_it() {
             expression: None,
             seated: None,
             geo: None,
+            driving: None,
         }),
     )
     .await;

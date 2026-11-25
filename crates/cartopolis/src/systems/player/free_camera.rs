@@ -15,35 +15,8 @@ use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::gizmo::GizmoState;
 
 // Simple constants
-const FREE_CAMERA_SPEED: f32 = 45.0;
-const FREE_CAMERA_SPEED_FAST: f32 = 180.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
 const MIN_CAMERA_HEIGHT: f32 = 0.5;
-
-/// Altitude (m) at which the fly speeds above are taken literally; above it the
-/// speed grows in proportion to altitude, so how fast the ground slides past
-/// stays roughly constant as you climb (the Google Earth rule — a fixed 45 m/s
-/// is a brisk walk over a city and a crawl over a continent).
-const FREE_SPEED_ALT_REF: f32 = 120.0;
-/// Ceiling on that scaling. Past ~240 km up the speed stops growing; without a
-/// cap the 45,000 km space orbit would multiply it by six figures and a tap of W
-/// would leave the solar system.
-const FREE_SPEED_MAX_FACTOR: f32 = 2_000.0;
-/// Fly inertia, as exponential-approach time constants (s): the velocity chases
-/// the key wish quickly, and coasts to rest more slowly when the keys let go.
-const FREE_ACCEL_TAU: f32 = 0.12;
-const FREE_DECEL_TAU: f32 = 0.5;
-/// Coasting stops for good below this fraction of the current fly speed. The
-/// camera is the big_space floating origin, so a velocity that only ever halves
-/// would rewrite its transform — and re-propagate every entity in the scene —
-/// for the rest of the session.
-const FREE_REST_FRACTION: f32 = 0.005;
-
-/// Fly speed (m/s) at `altitude_m` above the surface, for a base speed of
-/// `base` — [`FREE_SPEED_ALT_REF`] and [`FREE_SPEED_MAX_FACTOR`] applied.
-fn fly_speed(base: f32, altitude_m: f32) -> f32 {
-    base * (altitude_m / FREE_SPEED_ALT_REF).clamp(1.0, FREE_SPEED_MAX_FACTOR)
-}
 
 /// One exponential zoom step applied to the Earth-mode zoom *target* (the
 /// camera glides toward it, so this never moves the view directly). Shared by
@@ -1162,17 +1135,22 @@ pub fn follow_available(session: &crate::systems::session::SessionState, has_ava
     session.is_online() && has_avatar
 }
 
-/// The mode a switch lands on from `mode`: Follow → Fly → Earth → Follow, with
-/// Follow skipped when it is not on offer ([`follow_available`]). Pure, and
-/// shared by the Tab cycle and the mode disc so the two never disagree about
-/// what "next" means.
+/// The mode a switch lands on from `mode`: Follow ⇄ Earth, with Follow
+/// skipped when it is not on offer ([`follow_available`]). Pure, and shared by
+/// the Tab cycle and the mode disc so the two never disagree about what "next"
+/// means.
+///
+/// Fly is not on the cycle: the camera stopped flying on 2026-11-25 (the car
+/// is how the avatar goes fast, `systems::driving`). [`CameraMode::Free`] is
+/// still a mode — the placed view a `--shot`, a copied place or the camera's
+/// Mixed picture puts the camera in — and the switch leaves it for Follow, or
+/// Earth where Follow is not on offer.
 #[must_use]
 pub fn next_camera_mode(mode: CameraMode, follow: bool) -> CameraMode {
     match mode {
-        CameraMode::Avatar => CameraMode::Free,
-        CameraMode::Free => CameraMode::Orbit,
-        CameraMode::Orbit if follow => CameraMode::Avatar,
-        CameraMode::Orbit => CameraMode::Free,
+        CameraMode::Avatar => CameraMode::Orbit,
+        CameraMode::Free | CameraMode::Orbit if follow => CameraMode::Avatar,
+        CameraMode::Free | CameraMode::Orbit => CameraMode::Orbit,
     }
 }
 
@@ -1185,9 +1163,10 @@ pub fn camera_mode_toggle(
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     let follow = follow_available(&session, !avatars.is_empty());
-    // Follow without a session (or an avatar) is dropped to Fly — this is also
-    // what lands the camera in Fly when a live session ends, or on the first
-    // frame of an offline start (the `CameraState` default is still Avatar).
+    // Follow without a session (or an avatar) is dropped to Earth — this is
+    // also what lands the camera in Earth when a live session ends, or on the
+    // first frame of an offline start (the `CameraState` default is still
+    // Avatar). It dropped to Fly until the camera stopped flying (2026-11-25).
     // Driver mode is exempt: it enters the follow camera itself, it is an offline
     // feature on purpose, and it stands down on its own, restoring the saved mode
     // on the way out. Device tracking (`systems::locate`) used to be exempted for
@@ -1203,8 +1182,8 @@ pub fn camera_mode_toggle(
         && !session.is_reconnecting()
         && camera_state.mode == CameraMode::Avatar
     {
-        enter_mode(&mut camera_state, CameraMode::Free);
-        camera_state.mode = CameraMode::Free;
+        enter_mode(&mut camera_state, CameraMode::Orbit);
+        camera_state.mode = CameraMode::Orbit;
     }
     if !keyboard_input.just_pressed(KeyCode::Tab) {
         return;
@@ -1280,7 +1259,13 @@ pub fn follow_on_sign_in(
     if resumed || driver.active {
         return;
     }
-    if remembered.is_some_and(|m| m != crate::systems::geo_nav::mode_name(CameraMode::Avatar)) {
+    // A remembered Earth stays Earth. A remembered Fly does not stay: the
+    // camera stopped flying (2026-11-25), so it signs in to Follow like a
+    // remembered Follow does.
+    if remembered.is_some_and(|m| {
+        m != crate::systems::geo_nav::mode_name(CameraMode::Avatar)
+            && m != crate::systems::geo_nav::mode_name(CameraMode::Free)
+    }) {
         return;
     }
     enter_mode(&mut camera_state, CameraMode::Avatar);
@@ -1764,6 +1749,9 @@ struct ModeCtx<'a, 'cw, 'cs, 'ww, 'ws, 'rw, 'rs, 'p> {
 
 /// Follow mode (`CameraMode::Avatar`): the third-person rig behind the avatar,
 /// first person inside its head, and driver mode's chase camera.
+/// The shortest boom behind a car being driven, m.
+const CAR_BOOM_M: f32 = 9.0;
+
 fn follow_mode(ctx: ModeCtx) {
     let ModeCtx {
         keyboard_input,
@@ -1965,7 +1953,10 @@ fn follow_mode(ctx: ModeCtx) {
     // `device_rotation` is set.
     //
     // The camera's selfie chases the face instead: in front at `azimuth ≡ face`.
-    if camera_state.follow_rotate && device_rotation.is_none() {
+    // At the wheel the camera rides behind the car, as a chase camera does
+    // (`systems::driving`).
+    let driving = avatar_state.driving.is_some();
+    if (camera_state.follow_rotate || driving) && device_rotation.is_none() {
         if let Some((_, avatar_tf)) = avatar {
             let face = avatar_tf.rotation.to_euler(EulerRot::YXZ).0;
             let target = if camera_state.selfie {
@@ -2025,7 +2016,14 @@ fn follow_mode(ctx: ModeCtx) {
     // the boom is what shortens when a wall gets between the camera and
     // the avatar, and scaling the eye offset with it would sink the view
     // into the pavement as it came in.
+    // A car is longer than a person: at the wheel the boom is at least
+    // `CAR_BOOM_M`, without touching the distance the settings keep.
     let reach = camera_state.aim_reach.unwrap_or(camera_state.distance);
+    let reach = if driving {
+        reach.max(CAR_BOOM_M)
+    } else {
+        reach
+    };
     let horizontal_distance = reach * camera_state.pitch.cos();
     let vertical_offset = reach * camera_state.pitch.sin();
     let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
@@ -2303,12 +2301,9 @@ fn fly_mode(ctx: ModeCtx) {
         mouse_input,
         cursor_moved_events,
         touch,
-        osd,
         camera_state,
-        delta_time,
         gizmo_state,
         ui_input,
-        globe,
         terrain,
         camera_transform,
         camera_cell,
@@ -2382,120 +2377,12 @@ fn fly_mode(ctx: ModeCtx) {
     );
     camera_transform.rotation = rotation_quat;
 
-    // Movement - calculate forward/right from rotation, keep vertical independent
-    let forward = rotation_quat * -Vec3::Z;
-    let right = rotation_quat * Vec3::X;
-
-    // Flatten to horizontal plane for WASD movement
-    // `normalize_or_zero`, not `normalize`: at a pitch of exactly ±90°
-    // the horizontal projection is the zero vector, and a NaN here
-    // poisons the transform and every metric derived from it for the
-    // rest of the run. The pose paths clamp the pitch (`CameraPose::
-    // apply`), so this is the belt to that suspender.
-    let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-    let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
-
-    let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft)
-        || keyboard_input.pressed(KeyCode::ShiftRight)
-    {
-        FREE_CAMERA_SPEED_FAST
-    } else {
-        FREE_CAMERA_SPEED
-    };
-    // Speed rides altitude. Read it geocentrically (`GlobeState::altitude_m`) —
-    // the local `y` is only altitude near the anchor and goes negative on the
-    // far side of the globe, where a y-based scale would collapse to the
-    // ground speed exactly where the distances are largest.
-    let altitude = globe.altitude_m(&camera_cell, &camera_transform) as f32;
-    let speed = fly_speed(base_speed, altitude);
-
-    let mut move_direction = Vec3::ZERO;
-
-    if keyboard_input.pressed(KeyCode::KeyW) {
-        move_direction += forward_horizontal;
-    }
-    if keyboard_input.pressed(KeyCode::KeyS) {
-        move_direction -= forward_horizontal;
-    }
-    if keyboard_input.pressed(KeyCode::KeyA) {
-        move_direction -= right_horizontal;
-    }
-    if keyboard_input.pressed(KeyCode::KeyD) {
-        move_direction += right_horizontal;
-    }
-
-    // Vertical movement — ALWAYS world-space, never affects rotation.
-    // E up, Q down: the editor flycam convention (Unreal, Unity, Godot,
-    // Blender), and *only* those two. Space used to be a second "up",
-    // which made the vertical axis read as three keys with one of them
-    // duplicated and left the most reachable key on the board spent on an
-    // alias; it is a discrete verb now (see `avatar::handle_avatar_movement`).
-    // Shift is the speed boost and *only* that — it used to also mean
-    // "down, if no WASD is held", so holding it to cross a city dropped you
-    // out of the sky the moment you let go of W. Ctrl, the obvious
-    // alternative, isn't available: `UiInput::ui_owns_keyboard` reads
-    // any Ctrl press as a UI chord.
-    if keyboard_input.pressed(KeyCode::KeyE) {
-        move_direction += Vec3::Y;
-    }
-    if keyboard_input.pressed(KeyCode::KeyQ) {
-        move_direction -= Vec3::Y;
-    }
-
-    // Suppress keyboard-driven movement while the UI owns the keyboard (text
-    // field focused or a Ctrl chord like Ctrl+Shift+A).
-    if ui_input.ui_owns_keyboard(false, &keyboard_input) {
-        move_direction = Vec3::ZERO;
-    }
-
-    // Touch flight: the on-screen stick and climb pair
-    // (`systems::map_osd`), which stand in for WASD and E/Q. They join
-    // `move_direction` rather than nudging the translation, so the same
-    // accelerate/glide curve applies and a released control coasts to a
-    // stop instead of stopping dead.
-    //
-    // **This used to be the two-finger gestures, and they are gone on
-    // purpose.** Pinch was W/S and the two-finger drag was A/D + E/Q,
-    // with only the *sign* of each read — so the smallest deliberate
-    // spread was a full-speed press of W held for as long as the fingers
-    // stayed down, and the one gesture whose meaning is settled
-    // everywhere else in this client (pinch = zoom) meant something
-    // different in this one mode. The stick's magnitude is kept instead
-    // (below), which is the whole difference between steering and
-    // pointing.
-    move_direction += forward_horizontal * osd.fly.y + right_horizontal * osd.fly.x;
-    move_direction += Vec3::Y * osd.climb;
-
-    // The keys steer a velocity, not the translation: it chases the wish on
-    // an exponential approach (frame-rate independent), so a release glides
-    // to a stop instead of the camera stopping dead mid-flight. Braking is
-    // deliberately slower than accelerating — the glide is the point, and a
-    // symmetric curve makes the start feel mushy to get it.
-    //
-    // The throttle is what makes a half-pushed stick fly at half speed.
-    // A key contributes a unit vector, so a single key is throttle 1 and
-    // any combination of them saturates at 1 — i.e. the keyboard behaves
-    // exactly as it did before the stick existed.
-    let throttle = move_direction.length().min(1.0);
-    let wish = if throttle > 0.0 {
-        move_direction.normalize() * speed * throttle
-    } else {
-        Vec3::ZERO
-    };
-    let tau = if wish == Vec3::ZERO {
-        FREE_DECEL_TAU
-    } else {
-        FREE_ACCEL_TAU
-    };
-    let blend = 1.0 - (-delta_time / tau).exp();
-    let mut velocity = camera_state.free_velocity + (wish - camera_state.free_velocity) * blend;
-    if wish == Vec3::ZERO && velocity.length_squared() <= (speed * FREE_REST_FRACTION).powi(2) {
-        velocity = Vec3::ZERO;
-    }
-    camera_state.free_velocity = velocity;
-    if velocity != Vec3::ZERO {
-        camera_transform.translation += velocity * delta_time;
-    }
+    // The placed view moves nowhere: it is looked around in, and placed by
+    // a pose (a `--shot`, a copied place, the camera's Mixed picture). It
+    // flew — WASD, E/Q and an on-screen stick — until 2026-11-25, when the
+    // owner took flying out of the app: the avatar goes fast in a car
+    // (`systems::driving`), and the map is seen from above in Earth.
+    camera_state.free_velocity = Vec3::ZERO;
 
     // Prevent going below ground — including the measured ground, or flying
     // low over the Veluwe puts the camera inside the hill.
@@ -3921,7 +3808,7 @@ mod tests {
         app.world_mut().spawn(Avatar);
         // Offline, and in the mode `camera_mode_toggle` drops an offline client
         // into — this is the state every sign-in actually starts from.
-        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Free;
+        app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Orbit;
         app.update();
         app
     }
@@ -3937,7 +3824,7 @@ mod tests {
     #[test]
     fn a_sign_in_lands_in_follow() {
         let mut app = sign_in_app();
-        assert_eq!(mode(&app), CameraMode::Free, "offline is the map viewer");
+        assert_eq!(mode(&app), CameraMode::Orbit, "offline is the map viewer");
         go_online(&mut app);
         app.update();
         assert_eq!(mode(&app), CameraMode::Avatar);
@@ -3976,7 +3863,7 @@ mod tests {
         use crate::systems::user_store::RestoredCameraMode;
         for (saved, map_mode, expect) in [
             ("earth", CameraMode::Orbit, CameraMode::Orbit),
-            ("free", CameraMode::Free, CameraMode::Free),
+            ("free", CameraMode::Orbit, CameraMode::Avatar),
             ("avatar", CameraMode::Free, CameraMode::Avatar),
         ] {
             let mut app = sign_in_app();
@@ -4046,10 +3933,10 @@ mod tests {
         app.update();
         assert_eq!(mode(&app), CameraMode::Avatar);
 
-        // Given up on, the client is offline for real and drops to Fly as ever.
+        // Given up on, the client is offline for real and drops to Earth as ever.
         app.world_mut().insert_resource(SessionState::default());
         app.update();
-        assert_eq!(mode(&app), CameraMode::Free);
+        assert_eq!(mode(&app), CameraMode::Orbit);
     }
 
     /// A refused reconnect must not make the next hand-typed sign-in look like a
@@ -4158,30 +4045,6 @@ mod tests {
         // Only the real ground clamps, and by exactly the shortfall.
         assert_eq!(ground_lift(0.0, 0.2, 0.5), 0.3);
         assert!((ground_lift(-1.0, 9_999.0, 0.5) - 1.5).abs() < 1e-3);
-    }
-
-    #[test]
-    fn fly_speed_rides_altitude_between_a_floor_and_a_ceiling() {
-        // Down among the buildings the constant is taken literally — scaling it
-        // *down* near the ground would make the last few metres of a descent
-        // unusable.
-        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 0.0), FREE_CAMERA_SPEED);
-        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 5.0), FREE_CAMERA_SPEED);
-        // Above the reference altitude it is proportional: ten times as high is
-        // ten times as fast, so the ground slides past at a constant rate.
-        assert!(
-            (fly_speed(FREE_CAMERA_SPEED, FREE_SPEED_ALT_REF * 10.0) - FREE_CAMERA_SPEED * 10.0)
-                .abs()
-                < 1e-3
-        );
-        // …until the cap, which every orbital altitude shares — the 45,000 km
-        // space orbit must not multiply the speed by six figures.
-        let capped = FREE_CAMERA_SPEED * FREE_SPEED_MAX_FACTOR;
-        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 1.0e6), capped);
-        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 4.5e7), capped);
-        // A negative altitude (below the surface, or the local-y fallback on the
-        // far side before the globe is ready) falls on the floor, never negative.
-        assert_eq!(fly_speed(FREE_CAMERA_SPEED, -500.0), FREE_CAMERA_SPEED);
     }
 
     fn latitude(dir: DVec3) -> f64 {

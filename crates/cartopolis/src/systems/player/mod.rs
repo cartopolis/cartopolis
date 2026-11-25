@@ -13,6 +13,8 @@ pub mod avatar_video;
 pub mod camera_attach;
 pub mod climb;
 pub mod collision;
+/// Driving a car: getting in and out, the handling, the walls, the drawing.
+pub mod driving;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod face_tracking;
 /// The feet stood on the ground under each of them, over the clip.

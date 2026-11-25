@@ -47,6 +47,26 @@ impl Plugin for PlayerPlugin {
             .init_resource::<crate::grid::StreamCentre>();
 
         app.add_systems(Startup, systems::free_camera::setup_camera);
+        // Driving a car (`systems::driving`): the cars, and the meshes they share.
+        app.init_resource::<systems::driving::Garage>()
+            .add_systems(Startup, systems::driving::setup_car_assets)
+            .add_systems(
+                Update,
+                // Before the walk, which stands aside while a car moves the
+                // avatar, and so before the intent that reports what it did.
+                systems::driving::drive
+                    .after(network::apply_network_snapshot)
+                    .before(avatar::handle_avatar_movement)
+                    .in_set(ClientPhase::Move),
+            )
+            .add_systems(
+                Update,
+                (
+                    systems::driving::draw_cars.after(avatar::update_avatar_model_pose),
+                    systems::driving::fold_taken_cars,
+                )
+                    .in_set(ClientPhase::Present),
+            );
 
         // Touch → gestures + the emulated mouse (`systems::touch`). MUST run after
         // `InputSystems`, which is what fills `Touches` from this frame's events;

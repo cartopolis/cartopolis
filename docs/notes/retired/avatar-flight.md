@@ -63,5 +63,6 @@ that were flight's alone:
 ## If it is asked for again
 
 It was removed on purpose, by the owner, as unrealistic; propose it as a
-decision, not as a fix. A vehicle or a ride that moves the avatar fast would
-need `MAX_SPEED` raised and would meet every lesson above again.
+decision, not as a fix. The fast way about is a car since 2026-11-25
+([../driving.md](../driving.md)): the sim lifts the cap to
+`motion::MAX_DRIVE_SPEED` only for an intent that says it is driving.

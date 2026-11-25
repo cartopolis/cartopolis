@@ -22,8 +22,6 @@
 //! second squared gives the fast gaits the longer run-up they should have:
 //! 1.1 m/s arrives in 0.16 s, 6 m/s takes 0.86 s ([`GROUND_ACCEL`]).
 
-pub use cartopolis_core::motion::wish_for_speed;
-
 // ── Gaits ────────────────────────────────────────────────────────────────────
 
 /// Alt held: a stroll (m/s). Slow enough to read as ambling rather than
@@ -243,7 +241,7 @@ pub fn clip_speed_for(ground_speed: f32, clip_reference_speed: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cartopolis_core::motion::{sim_speed_for_wish, MAX_SPEED};
+    use cartopolis_core::motion::{sim_speed_for_wish, wish_for_speed, MAX_SPEED};
 
     /// The throttle round-trips through the sim's own formula: what the client
     /// asks for is what the sim computes. This is the single property the whole

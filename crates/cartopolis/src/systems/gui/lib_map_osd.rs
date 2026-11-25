@@ -550,20 +550,6 @@ fn mark(p: Pen, m: map_osd::Mark, c: (f32, f32), s: f32, ink: &str) -> Vec<View>
             ));
             v
         }
-        Mark::Up => {
-            let (dx, dy) = (s, s * 0.6);
-            vec![
-                p.line(at(-dx, dy), at(0.0, -dy), w, ink),
-                p.line(at(0.0, -dy), at(dx, dy), w, ink),
-            ]
-        }
-        Mark::Down => {
-            let (dx, dy) = (s, s * 0.6);
-            vec![
-                p.line(at(-dx, -dy), at(0.0, dy), w, ink),
-                p.line(at(0.0, dy), at(dx, -dy), w, ink),
-            ]
-        }
     }
 }
 

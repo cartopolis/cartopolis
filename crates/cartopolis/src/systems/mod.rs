@@ -141,7 +141,7 @@ pub use player::avatar_video;
 #[cfg(not(target_arch = "wasm32"))]
 pub use player::face_tracking;
 pub use player::{
-    avatar, avatar_face, camera_attach, climb, collision, feet, free_camera, gizmo, greet,
+    avatar, avatar_face, camera_attach, climb, collision, driving, feet, free_camera, gizmo, greet,
     held_phone, human_avatar, interact, local_avatar, locomotion, picking, prim_geo, splashes,
     touch,
 };

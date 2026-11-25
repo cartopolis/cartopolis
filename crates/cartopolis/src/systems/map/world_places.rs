@@ -179,6 +179,7 @@ impl InteractKind {
             Self::Prop(FurnitureKind::Bench | FurnitureKind::PicnicTable) => "Sit at",
             Self::Prop(FurnitureKind::Board) => "Read",
             Self::Prop(FurnitureKind::Fountain) => "Watch",
+            Self::Prop(FurnitureKind::Car) => "Drive",
             Self::Prop(_) => "Use",
         }
     }
@@ -221,11 +222,9 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         // vehicles below are: making one interactable later should be a decision,
         // not a panic.
         FurnitureKind::Lamp => "Street light",
-        // Never reached: parked vehicles are not interactables (see
-        // `CellPlaces::vehicles`). Here because the match is exhaustive, and
-        // written as what it *would* say rather than as an `unreachable!`, so
-        // making one interactable later is a one-line decision and not a panic.
-        FurnitureKind::Car => "Parked car",
+        // A parked car is driven away (`systems::driving`, asked for
+        // 2026-11-25): the prompt reads "Drive this car".
+        FurnitureKind::Car => "this car",
         FurnitureKind::Bicycle => "Bicycle",
         FurnitureKind::Person => "Person",
         FurnitureKind::Boat => "Boat",
@@ -365,10 +364,34 @@ pub struct WorldPlaces {
     /// in anchored world XZ: what `systems::splashes` sprays, sounds and
     /// splashes a swimmer at.
     jets: HashMap<(i64, i64), Vec<Vec2>>,
+    /// The parked cars per cell, in anchored world XZ: what a "Drive this car"
+    /// prompt gets into (`systems::driving`).
+    cars: HashMap<(i64, i64), Vec<ParkedCar>>,
+    /// Where cars stood that have been driven away this session, anchored world
+    /// XZ. A taken car offers no prompt and stops nobody; its drawing is folded
+    /// away by `driving::fold_taken_cars`.
+    taken: Vec<Vec2>,
+    /// Solid circles that are not the map's: the car the player left at the
+    /// kerb (`driving::Garage::left`).
+    extra_props: Vec<(Vec2, f32)>,
     /// Bumped whenever the contents change, so consumers that cache a nearest
     /// answer know to recompute rather than diffing the maps.
     pub revision: u32,
 }
+
+/// A parked car somebody could drive away: where, which way, which body and
+/// what colour — the shape `furniture::parked_body` drew it as.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParkedCar {
+    pub pos: Vec2,
+    pub yaw: f32,
+    pub body: cartopolis_geo::agent_models::CarBody,
+    /// sRGB, `0xRRGGBB`.
+    pub paint: u32,
+}
+
+/// How near to where a car stood a circle or a prompt counts as that car's.
+const TAKEN_REACH_M: f32 = 1.4;
 
 impl WorldPlaces {
     pub fn insert_cell(&mut self, cell: (i64, i64), wx: f32, wz: f32, places: CellPlaces) {
@@ -427,9 +450,31 @@ impl WorldPlaces {
             })
             .collect();
 
-        // Solid, but never interactable — `CellPlaces::vehicles` says why.
+        // Solid, and since 2026-11-25 a parked *car* can be driven away
+        // (`systems::driving`); bikes and boats are still only solid.
+        let mut cars = Vec::new();
         for v in &places.vehicles {
-            vehicle_circles(v, origin + Vec2::new(v.x, v.z), &mut props);
+            let pos = origin + Vec2::new(v.x, v.z);
+            vehicle_circles(v, pos, &mut props);
+            if v.kind == FurnitureKind::Car {
+                interactables.push(Interactable {
+                    pos,
+                    yaw: v.yaw,
+                    name: prop_name(v.kind).to_string(),
+                    kind: InteractKind::Prop(v.kind),
+                });
+                cars.push(ParkedCar {
+                    pos,
+                    yaw: v.yaw,
+                    body: cartopolis_geo::furniture::parked_body(v),
+                    paint: v.paint,
+                });
+            }
+        }
+        if cars.is_empty() {
+            self.cars.remove(&cell);
+        } else {
+            self.cars.insert(cell, cars);
         }
         // …and the bare circles, which are solid and silent by construction: they
         // reach `props` and nothing else, so no crossing mast can grow a prompt
@@ -468,6 +513,7 @@ impl WorldPlaces {
             | self.props.remove(cell).is_some()
             | self.addresses.remove(cell).is_some()
             | self.paving.remove(cell).is_some()
+            | self.cars.remove(cell).is_some()
             | self.surveyed.remove(cell).is_some();
         if had {
             self.revision = self.revision.wrapping_add(1);
@@ -488,6 +534,7 @@ impl WorldPlaces {
         self.props.clear();
         self.addresses.clear();
         self.paving.clear();
+        self.cars.clear();
         self.surveyed.clear();
         self.revision = self.revision.wrapping_add(1);
     }
@@ -544,9 +591,69 @@ impl WorldPlaces {
         })
     }
 
-    /// Every solid prop, for the collider index.
+    /// Every solid prop, for the collider index: the map's, less the cars
+    /// driven away, and the car left at the kerb.
     pub fn props(&self) -> impl Iterator<Item = &(Vec2, f32)> {
-        self.props.values().flatten()
+        self.props
+            .values()
+            .flatten()
+            .filter(|(c, _)| !self.is_taken(*c))
+            .chain(self.extra_props.iter())
+    }
+
+    /// Whether `p` is where a car stood that has been driven away.
+    #[must_use]
+    pub fn is_taken(&self, p: Vec2) -> bool {
+        self.taken
+            .iter()
+            .any(|t| t.distance_squared(p) < TAKEN_REACH_M * TAKEN_REACH_M)
+    }
+
+    /// The car standing at `pos` has been driven away.
+    pub fn take_car(&mut self, pos: Vec2) {
+        self.taken.push(pos);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Forget every taken car: the frame they were measured in has gone (the
+    /// map re-anchored), and the cells that held them will stream in afresh.
+    pub fn clear_taken(&mut self) {
+        if !self.taken.is_empty() {
+            self.taken.clear();
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// The cars driven away, anchored world XZ.
+    #[must_use]
+    pub fn taken(&self) -> &[Vec2] {
+        &self.taken
+    }
+
+    /// Replace the circles that are not the map's.
+    pub fn set_extra_props(&mut self, props: Vec<(Vec2, f32)>) {
+        if self.extra_props != props {
+            self.extra_props = props;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// The parked car standing at `pos`, if one does and it is still there.
+    #[must_use]
+    pub fn parked_car_at(&self, pos: Vec2) -> Option<ParkedCar> {
+        if self.is_taken(pos) {
+            return None;
+        }
+        self.cars
+            .values()
+            .flatten()
+            .filter(|c| c.pos.distance_squared(pos) < 0.25)
+            .min_by(|a, b| {
+                a.pos
+                    .distance_squared(pos)
+                    .total_cmp(&b.pos.distance_squared(pos))
+            })
+            .copied()
     }
 
     /// The nearest interactable within `radius` metres of `pos`, or `None`.
@@ -561,6 +668,7 @@ impl WorldPlaces {
         self.cells
             .values()
             .flatten()
+            .filter(|i| !(i.kind == InteractKind::Prop(FurnitureKind::Car) && self.is_taken(i.pos)))
             .map(|i| (i, i.pos.distance_squared(pos)))
             .filter(|(_, d2)| *d2 <= r2)
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -764,28 +872,39 @@ mod tests {
         assert_eq!(places.nearest_address(Vec2::new(500.0, 0.0), 5.0), None);
     }
 
-    /// A parked car is solid and silent: the collider index gets it, the prompt
-    /// never does. OSM surveys the car park, not the cars in it, so naming one
-    /// would be this client asserting something it made up.
+    /// A parked car is solid, and since 2026-11-25 it offers to be driven
+    /// (`systems::driving`); once driven away it is neither.
     #[test]
-    fn a_parked_car_is_solid_but_never_promptable() {
+    fn a_parked_car_is_solid_and_can_be_driven_away() {
         let mut places = WorldPlaces::default();
         places.insert_cell(
             (0, 0),
             0.0,
             0.0,
             CellPlaces {
-                vehicles: vec![vehicle(0.0, 0.0, 0.0, FurnitureKind::Car)],
+                vehicles: vec![
+                    vehicle(0.0, 0.0, 0.0, FurnitureKind::Car),
+                    vehicle(20.0, 0.0, 0.0, FurnitureKind::Bicycle),
+                ],
                 ..Default::default()
             },
         );
+        let prompt = places
+            .nearest(Vec2::ZERO, 5.0)
+            .expect("a prompt for the car");
+        assert_eq!(prompt.kind.verb(), "Drive");
         assert!(
-            places.nearest(Vec2::ZERO, 5.0).is_none(),
-            "no prompt for a vehicle"
+            places.nearest(Vec2::new(20.0, 0.0), 5.0).is_none(),
+            "a bike is still only solid"
         );
+        assert!(places.parked_car_at(Vec2::ZERO).is_some());
         // Two circles down the car's own length, not one — see `vehicle_circles`.
-        assert_eq!(places.props().count(), 2);
-        let ends: Vec<Vec2> = places.props().map(|(p, _)| *p).collect();
+        let ends: Vec<Vec2> = places
+            .props()
+            .map(|(p, _)| *p)
+            .filter(|p| p.x.abs() < 5.0)
+            .collect();
+        assert_eq!(ends.len(), 2);
         assert!(
             ends.iter().all(|p| p.x.abs() < 1e-5),
             "a car at yaw 0 runs along +z, so both circles stay on the axis: {ends:?}"
@@ -794,6 +913,14 @@ mod tests {
             ends.iter().any(|p| p.y > 0.5) && ends.iter().any(|p| p.y < -0.5),
             "one circle each side of the centre: {ends:?}"
         );
+
+        // Driven away: no prompt, no car to get into, nothing to bump into.
+        let before = places.revision;
+        places.take_car(Vec2::ZERO);
+        assert_ne!(places.revision, before, "the colliders must be told");
+        assert!(places.nearest(Vec2::ZERO, 5.0).is_none());
+        assert!(places.parked_car_at(Vec2::ZERO).is_none());
+        assert!(places.props().all(|(p, _)| p.x.abs() > 5.0));
     }
 
     /// A crossing mast is solid and silent: it lands in the collider index at the

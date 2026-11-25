@@ -775,8 +775,9 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// "(Ctrl+Enter)" and the `[E]` on the interact prompt. So a desktop user who
 /// never guessed a key saw an avatar they could not move, and the keys that are
 /// *silently* mode-dependent — Space and the emotes do nothing outside Follow, E
-/// means "interact" in Follow and "up" in Fly — had nothing to explain
-/// themselves.
+/// meant "interact" in Follow and "up" in Fly — had nothing to explain
+/// themselves. (The camera stopped flying on 2026-11-25; Driving took its
+/// place.)
 ///
 /// It lives in About because About already exists, is already in the main menu,
 /// already scrolls, and ships on the phone — where the gesture half of this
@@ -817,8 +818,13 @@ fn controls_section(ui: &mut egui::Ui) {
     );
     row(ui, "Shift / Alt", "Run / stroll");
     row(ui, "Space", "Jump");
-    row(ui, "E", "Interact with whatever is in front of you");
+    row(
+        ui,
+        "E",
+        "Interact with whatever is in front of you — or get into a car",
+    );
     row(ui, "E / G", "Carrying something: throw it / put it down");
+    row(ui, "C", "Call your car");
     row(
         ui,
         "1 – 6",
@@ -826,14 +832,19 @@ fn controls_section(ui: &mut egui::Ui) {
     );
 
     ui.add_space(4.0);
-    theme::note(ui, "Flying");
-    row(ui, "W A S D", "Move the camera");
-    row(ui, "E / Q", "Up / down");
-    row(ui, "Shift", "Move faster");
+    theme::note(ui, "Driving");
+    row(
+        ui,
+        "W / S",
+        "Accelerate / brake — held at a stop, S reverses",
+    );
+    row(ui, "A / D", "Steer");
+    row(ui, "Space", "Handbrake");
+    row(ui, "E", "Stop and get out");
 
     ui.add_space(4.0);
     theme::note(ui, "Anywhere");
-    row(ui, "Tab", "Next camera: walk → fly → whole Earth");
+    row(ui, "Tab", "Next camera: walk → whole Earth → walk");
     row(ui, "Esc", "Close whatever is open, innermost first");
     row(ui, "Ctrl+L", "Search");
     row(ui, "Ctrl+Shift+A", "AI assistant");

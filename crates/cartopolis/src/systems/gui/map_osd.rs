@@ -192,7 +192,7 @@ pub fn right_edge_reach(lying: bool) -> f32 {
 #[must_use]
 pub fn bottom_left_reserved(cluster: Option<Cluster>) -> f32 {
     match cluster {
-        Some(Cluster::Fly | Cluster::Walk) => bottom_offset() + STICK_RADIUS * 2.0,
+        Some(Cluster::Walk) => bottom_offset() + STICK_RADIUS * 2.0,
         // Earth mode has no stick, and neither has a run with no controls at all.
         Some(Cluster::Zoom) | None => crate::systems::dock::reserved_bottom(),
     }
@@ -248,12 +248,6 @@ pub struct OsdInput {
     /// is. A rate, not a step — the consumer scales it by the frame time, so a
     /// held button zooms smoothly instead of by notches.
     pub zoom: f32,
-    /// Fly translation wish in the camera's horizontal frame: `x` = strafe
-    /// right, `y` = forward. Inside the unit disc, and *proportional*: this is
-    /// the difference between a stick and four keys.
-    pub fly: Vec2,
-    /// Fly vertical wish: `+1` climbing, `-1` descending.
-    pub climb: f32,
     /// Follow-mode edge: a jump this frame.
     ///
     /// **An edge, not a held state**, and the distinction is the same one the
@@ -262,17 +256,16 @@ pub struct OsdInput {
     /// this is true for exactly the frame the button was released on, and the
     /// consumer must act on it rather than sample it.
     pub jump: bool,
-    /// Follow-mode travel wish, in the same camera-horizontal frame as [`fly`]
-    /// and read by `avatar::handle_avatar_movement` (which then owns it in every
-    /// run mode — the online path consumes the same ramp through
-    /// `network::send_network_intent`).
+    /// Follow-mode travel wish in the camera's horizontal frame: `x` = strafe
+    /// right, `y` = forward, inside the unit disc and *proportional* — the
+    /// difference between a stick and four keys. Read by
+    /// `avatar::handle_avatar_movement` (which then owns it in every run mode —
+    /// the online path consumes the same ramp through
+    /// `network::send_network_intent`), and at the wheel by
+    /// `driving::drive` as the accelerator, the brake and the steering.
     ///
-    /// A separate field rather than a second meaning for `fly`: the two have
-    /// different consumers — one moves the camera, one moves a body the server
-    /// may be authoritative for — and one field with a mode-dependent meaning is
-    /// how a future edit gets to fly the camera by walking.
-    ///
-    /// [`fly`]: Self::fly
+    /// There was a second stick, `fly`, for the Fly camera, until the camera
+    /// stopped flying (2026-11-25): the car is how the avatar goes fast now.
     pub walk: Vec2,
     /// A height the zoom rail asked for (metres above the ground): a drag along
     /// it, or a tap on one of its rungs. Earth mode glides there and holds the
@@ -531,8 +524,6 @@ impl Fingers {
 /// Which cluster the current camera wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cluster {
-    /// Fly: the thumbstick and the climb/descend pair.
-    Fly,
     /// Follow: the thumbstick (walking the avatar) and the zoom pair.
     Walk,
     /// Earth: the zoom pair. It already pinch-zooms; this is the one-handed path
@@ -550,9 +541,7 @@ pub enum Cluster {
 #[must_use]
 pub fn reserved_left_bottom(cluster: Option<Cluster>) -> f32 {
     match cluster {
-        Some(Cluster::Fly | Cluster::Walk) => {
-            bottom_offset() + STICK_RADIUS * 2.0 + theme::OSD_GROUP_GAP
-        }
+        Some(Cluster::Walk) => bottom_offset() + STICK_RADIUS * 2.0 + theme::OSD_GROUP_GAP,
         Some(Cluster::Zoom) | None => crate::systems::dock::reserved_bottom() + theme::OSD_MARGIN,
     }
 }
@@ -581,11 +570,13 @@ pub fn cluster_for(
     if !touch_ui || driving || panel_open || keyboard_open {
         return None;
     }
-    Some(match mode {
-        CameraMode::Free => Cluster::Fly,
-        CameraMode::Avatar => Cluster::Walk,
-        CameraMode::Orbit => Cluster::Zoom,
-    })
+    // The placed view (`CameraMode::Free`) is looked around in with a finger
+    // and moves nowhere, so it has no controls of its own.
+    match mode {
+        CameraMode::Free => None,
+        CameraMode::Avatar => Some(Cluster::Walk),
+        CameraMode::Orbit => Some(Cluster::Zoom),
+    }
 }
 
 /// The stick's reading, given where the thumb is relative to the well's centre.
@@ -724,11 +715,6 @@ pub fn render_map_osd(
             let at = spots(crate::systems::dock::lying(screen));
             let s = &mut *stick;
             match cluster {
-                Cluster::Fly => {
-                    next.climb =
-                        lib_pair(screen, &input, &mut areas, Mark::Up, Mark::Down, &mut view);
-                    next.fly = lib_stick(screen, &input, &mut s.0, &mut s.1, &mut areas, &mut view);
-                }
                 Cluster::Walk => {
                     next.zoom = lib_pair(
                         screen,
@@ -800,14 +786,6 @@ pub fn render_map_osd(
         let ctx = egui.ctx();
         let at = spots(crate::systems::dock::lying(egui.viewport_pts()));
         match cluster {
-            Cluster::Fly => {
-                next.climb =
-                    vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
-                next.fly = {
-                    let s = &mut *stick;
-                    thumbstick(ctx, &fingers, &mut s.0, &mut s.1, &mut areas)
-                };
-            }
             Cluster::Walk => {
                 // The avatar has no vertical of its own (it walks), so the
                 // right-edge pair zooms the camera.
@@ -1581,8 +1559,6 @@ fn jump_button(
 pub enum Mark {
     Plus,
     Minus,
-    Up,
-    Down,
     /// Jump: a chevron with a bar under it — an arrow leaving the ground.
     Jump,
     /// A face: the expressions (`avatar_face`), a ring with two eyes and a
@@ -1950,8 +1926,6 @@ impl Mark {
         match self {
             Self::Plus => "Zoom in",
             Self::Minus => "Zoom out",
-            Self::Up => "Climb",
-            Self::Down => "Descend",
             Self::Jump => "Jump",
             Self::Face => "Expressions",
             Self::Hand => "Hand",
@@ -2019,19 +1993,8 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
                 ],
                 stroke,
             );
-        }
-        // Chevrons, not filled triangles: at 44 pt a solid arrowhead reads as a
-        // blob, and the same two segments scale to any control size.
-        Mark::Up => {
-            let (dx, dy) = (s, s * 0.6);
-            p.line_segment([c + egui::vec2(-dx, dy), c + egui::vec2(0.0, -dy)], stroke);
-            p.line_segment([c + egui::vec2(0.0, -dy), c + egui::vec2(dx, dy)], stroke);
-        }
-        Mark::Down => {
-            let (dx, dy) = (s, s * 0.6);
-            p.line_segment([c + egui::vec2(-dx, -dy), c + egui::vec2(0.0, dy)], stroke);
-            p.line_segment([c + egui::vec2(0.0, dy), c + egui::vec2(dx, -dy)], stroke);
-        }
+        } // Chevrons, not filled triangles: at 44 pt a solid arrowhead reads as a
+          // blob, and the same two segments scale to any control size.
     }
 }
 
@@ -2979,12 +2942,13 @@ mod tests {
         assert_eq!(r.max, Vec2::new(45.0, 90.0));
     }
 
-    /// The two modes that translate something get the stick; Earth, whose whole
-    /// vocabulary is drag/pinch/twist, gets the zoom pair alone.
+    /// Follow gets the stick; Earth, whose whole vocabulary is
+    /// drag/pinch/twist, gets the zoom pair alone; the placed view, which
+    /// moves nowhere, gets nothing.
     #[test]
     fn the_translating_modes_get_the_stick() {
         let touch = |mode| cluster_for(mode, false, false, false, true);
-        assert_eq!(touch(CameraMode::Free), Some(Cluster::Fly));
+        assert_eq!(touch(CameraMode::Free), None);
         assert_eq!(touch(CameraMode::Avatar), Some(Cluster::Walk));
         assert_eq!(touch(CameraMode::Orbit), Some(Cluster::Zoom));
     }
@@ -3122,7 +3086,7 @@ mod tests {
     #[test]
     fn the_bottom_left_reservation_covers_the_stick() {
         let stick_top = bottom_offset() + STICK_RADIUS * 2.0;
-        for cluster in [Cluster::Fly, Cluster::Walk] {
+        for cluster in [Cluster::Walk] {
             assert!(
                 bottom_left_reserved(Some(cluster)) >= stick_top,
                 "{cluster:?} draws a stick reaching {stick_top} and reserves {}",

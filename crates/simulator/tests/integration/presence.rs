@@ -65,6 +65,7 @@ async fn stand(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
+        driving: None,
     }))
     .unwrap();
     c.send(Bytes::from(frame)).await.unwrap();

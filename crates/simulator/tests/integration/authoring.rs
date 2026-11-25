@@ -157,6 +157,7 @@ async fn stand_at(c: &mut Client, lat: f64, lng: f64) {
             latitude: lat,
             longitude: lng,
         }),
+        driving: None,
     });
     c.send(Bytes::from(encode_app_frame(&msg).unwrap()))
         .await
@@ -1420,6 +1421,7 @@ async fn a_kick_into_the_north_goal_is_called_a_goal() {
                 latitude: behind.0,
                 longitude: behind.1,
             }),
+            driving: None,
         })
     };
     for msg in [intent(None), intent(Some(cartopolis_core::Emote::Kick))] {

@@ -149,6 +149,11 @@ pub struct ClientIntent {
     /// `None` from a client that does not know yet (before the map has
     /// anchored).
     pub geo: Option<GeoAnchor>,
+    /// The car this avatar is driving (protocol 52), a level like `seated`.
+    /// While it is set the sim lets the wish reach
+    /// [`crate::motion::MAX_DRIVE_SPEED`] instead of a run, grants no jump and
+    /// holds no seat; the car's handling is the client's (`crate::car`).
+    pub driving: Option<Driving>,
 }
 
 /// The fields of [`NetMessage::CreatePrim`](super::NetMessage::CreatePrim).

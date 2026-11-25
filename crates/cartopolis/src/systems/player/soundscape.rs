@@ -205,8 +205,12 @@ pub fn play_avatar_sounds(
 
     // Timed by the legs, which a GPS walk moves too (`AvatarState::stride_speed`).
     let speed = avatar_state.stride_speed();
-    // A swimmer has no footfalls.
-    if !avatar_state.grounded || avatar_state.swimming || speed < locomotion::MOVING_EPS {
+    // A swimmer has no footfalls, and nor has a driver.
+    if !avatar_state.grounded
+        || avatar_state.swimming
+        || avatar_state.driving.is_some()
+        || speed < locomotion::MOVING_EPS
+    {
         // Keep the phase where it is: stopping mid-stride and starting again from
         // there is exactly what a person does.
         return;

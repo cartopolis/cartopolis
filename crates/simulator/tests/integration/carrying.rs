@@ -252,6 +252,7 @@ async fn a_ball_is_picked_up_carried_and_thrown() {
             expression: None,
             seated: None,
             geo: None,
+            driving: None,
         }),
     )
     .await;

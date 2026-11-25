@@ -41,6 +41,7 @@ AvatarStateDto = struct
   .6 seated: Option<[F32; 2]>
   .7 velocity: Vec3
   .8 holding: Option<I64>
+  .9 driving: Option<Driving>
 CallAction = enum
   #0 Hand(Bool)
   #1 Sharing(Bool)
@@ -133,6 +134,11 @@ CallWaiter = struct
 CallWatch = struct
   .0 group: Vec<U8>
   .1 cameras: Option<Vec<U64>>
+CarKind = enum
+  #0 Hatchback
+  #1 Saloon
+  #2 Estate
+  #3 Van
 ChatScope = enum
   #0 Local { shout: Bool }
   #1 Global
@@ -153,6 +159,7 @@ ClientIntent = struct
   .9 expression: Option<Expression>
   .10 seated: Option<[F32; 2]>
   .11 geo: Option<GeoAnchor>
+  .12 driving: Option<Driving>
 CommunityDto = struct
   .0 id: Bytes
   .1 home: Str
@@ -249,6 +256,11 @@ DirectoryOrder = enum
   #0 Popular
   #1 New
   #2 Near
+Driving = struct
+  .0 kind: CarKind
+  .1 paint: [U8; 3]
+  .2 steer: I8
+  .3 braking: Bool
 E2eeClaimKeyPackages = struct
   .0 request_id: U32
   .1 address: Str

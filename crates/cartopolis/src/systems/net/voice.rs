@@ -1284,6 +1284,7 @@ mod loopback {
                 latitude: 53.2194,
                 longitude: 6.5665,
             }),
+            driving: None,
         }))
         .unwrap();
         c.send(Bytes::from(stand)).await.unwrap();

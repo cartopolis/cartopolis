@@ -1689,7 +1689,10 @@ pub fn smooth_remote_avatars(
                 let pose = e.pose(shown.y, fit);
                 (pose.lift, pose.dangle)
             });
-        if remote.seated.is_some() || remote.seat_blend <= 0.0 {
+        if remote.driving.is_some() {
+            remote.seat_lift = crate::systems::driving::DRIVER_LIFT;
+            remote.seat_dangle = false;
+        } else if remote.seated.is_some() || remote.seat_blend <= 0.0 {
             remote.seat_lift = seat_lift;
             remote.seat_dangle = seat_dangle;
         }
@@ -2124,6 +2127,11 @@ pub fn handle_avatar_movement(
     terrain: Res<crate::systems::terrain::TerrainField>,
     footing: crate::systems::interiors::Footing,
 ) {
+    // A car moves the avatar while one is involved — getting in, driving,
+    // getting out (`systems::driving`, which ran first).
+    if avatar_state.car_control {
+        return;
+    }
     // Don't move avatar unless the follow camera is active (Free and Earth
     // modes decouple the camera from the avatar).
     if camera_state.mode != crate::resources::CameraMode::Avatar {

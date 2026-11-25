@@ -156,6 +156,7 @@ async fn the_next_sign_in_is_told_where_the_avatar_was_left() {
         expression: None,
         seated: None,
         geo: Some(left),
+        driving: None,
     }))
     .unwrap();
     first.send(Bytes::from(intent)).await.unwrap();

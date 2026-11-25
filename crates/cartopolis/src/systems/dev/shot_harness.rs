@@ -3337,6 +3337,7 @@ fn seed_scripted_chat(open: bool, rest: bool, chat: &mut ScriptedChat) {
             climb: None,
             seat_lift: 0.0,
             seat_dangle: false,
+            driving: None,
         },
         crate::systems::chat_overlay::ScriptedSpeaker,
         Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
@@ -4286,6 +4287,7 @@ pub fn seat_scripted_avatar(
         With<crate::systems::street_detail::PropFar>,
     >,
     mesh_assets: Res<Assets<Mesh>>,
+    garage: Res<crate::systems::driving::Garage>,
 ) {
     use crate::systems::climb;
     let panels = harness.ui_for(progress.index);
@@ -4436,6 +4438,23 @@ pub fn seat_scripted_avatar(
                 }
                 avatar_state.facing_yaw = seat.yaw();
             }
+        }
+        return;
+    }
+    // `--ui drive`: at the wheel of a car standing where the avatar stands,
+    // facing its way (`systems::driving`), so a capture shows the car and
+    // the driver in it. Asked again after a teleport, which leaves the car.
+    if exactly("drive") {
+        if garage.car.is_none() && avatar_state.wants_car.is_none() {
+            let (pos, _) =
+                climb::avatar_frame(false, avatar_state.display_position, avatars.single().ok());
+            avatar_state.wants_car = Some(crate::resources::CarSpot {
+                pos,
+                yaw: avatar_state.facing_yaw,
+                kind: garage.own.0,
+                paint: garage.own.1,
+                from_lot: false,
+            });
         }
         return;
     }

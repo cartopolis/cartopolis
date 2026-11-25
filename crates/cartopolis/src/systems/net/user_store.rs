@@ -481,8 +481,8 @@ pub struct SavedAvatar {
 /// The camera mode the startup restore put back, held until the launch's first
 /// sign-in reads it (`free_camera::follow_on_sign_in`).
 ///
-/// Offline has no Follow, so a remembered Follow is dropped to Fly on the first
-/// frame and the autosave then records "free" — the live mode by the time the
+/// Offline has no Follow, so a remembered Follow is dropped to Earth on the first
+/// frame and the autosave then records "earth" — the live mode by the time the
 /// session comes up is no longer what the user left. This keeps what the *file*
 /// said. `None` when nothing was restored (a fresh install, or a launch link,
 /// which names a view of its own) and after the first sign-in has taken it.
@@ -1169,6 +1169,14 @@ pub fn restore_start_location(
     }
 
     restored_mode.0 = Some(loc.pose.mode.clone()).filter(|m| !m.is_empty());
+    // A view left in Fly comes back in Earth: the camera stopped flying on
+    // 2026-11-25, and the placed view it left behind moves nowhere, which is
+    // no place to open the app in. Earth's own angles were saved with it.
+    let mut pose = loc.pose.clone();
+    if pose.mode == crate::systems::geo_nav::mode_name(crate::resources::CameraMode::Free) {
+        pose.mode =
+            crate::systems::geo_nav::mode_name(crate::resources::CameraMode::Orbit).to_string();
+    }
     // Silent: restoring where you were last time is the app putting the world
     // back, not the avatar going anywhere. Announcing it would whoosh at every
     // launch.
@@ -1176,7 +1184,7 @@ pub fn restore_start_location(
         lat: loc.lat,
         lng: loc.lng,
         altitude: Some(loc.altitude),
-        pose: Some(loc.pose.clone()),
+        pose: Some(pose),
         silent: true,
         look: false,
     });

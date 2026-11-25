@@ -240,6 +240,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "drafts from the design room — PrimDto.draft and CreatePrim.draft: a prim created as a draft is sent only to its owner's connections, is not touched, carried or collided with by anyone else and its script senses nobody until it is placed (POST /api/inventory/drafts/place), which clears the flag and sends it to everyone within reach; and groups — PrimDto.groups is the chain of groups a prim is in, outermost first, set over HTTP (/api/inventory/groups) and sent in its PrimUpsert (docs/notes/design-room.md)",
     },
+    ProtocolRevision {
+        version: 52,
+        adr: "",
+        summary: "driving a car — ClientIntent.driving and AvatarStateDto.driving carry the car an avatar is at the wheel of (Driving: its kind, paint, front wheel angle and brake lights); while it is set the sim lets the avatar reach motion::MAX_DRIVE_SPEED instead of a run's, grants no jump and holds no seat. The handling is the driver's client's (core::car), since only it has the walls (docs/notes/driving.md)",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects

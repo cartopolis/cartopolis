@@ -224,6 +224,7 @@ fn go_online(app: &mut App) {
         climb: None,
         seat_lift: 0.0,
         seat_dangle: false,
+        driving: None,
     });
 }
 

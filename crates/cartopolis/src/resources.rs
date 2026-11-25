@@ -1658,6 +1658,33 @@ pub struct AvatarState {
     /// decides it; the client only reads it to offer "Throw" and "Put down"
     /// in place of the usual prompt (`systems::interact`).
     pub holding: Option<i64>,
+    /// The car this avatar is at the wheel of, as the wire describes it
+    /// (protocol 52), while `systems::driving` drives it; `None` on foot and
+    /// while walking up to a car or away from one.
+    pub driving: Option<cartopolis_core::protocol::Driving>,
+    /// `systems::driving` moves the avatar this frame — walking up to a car,
+    /// driving it, or getting out — and the walk (`avatar::handle_avatar_movement`)
+    /// stands aside.
+    pub car_control: bool,
+    /// Asked for by the prompt ("Drive this car", "Call my car"): get into this
+    /// car. Taken by `systems::driving`.
+    pub wants_car: Option<CarSpot>,
+    /// Asked for by the prompt or E at the wheel: stop and get out.
+    pub wants_out: bool,
+    /// Asked for by the car key: bring this person's own car to them.
+    pub wants_call_car: bool,
+}
+
+/// A car somebody could get into (`systems::driving`): where (anchored world
+/// XZ), which way it points, which body, what colour, and whether it came out
+/// of a car park (so its bay empties when it is taken).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarSpot {
+    pub pos: Vec2,
+    pub yaw: f32,
+    pub kind: cartopolis_core::protocol::CarKind,
+    pub paint: [u8; 3],
+    pub from_lot: bool,
 }
 
 impl AvatarState {
@@ -1731,6 +1758,11 @@ impl Default for AvatarState {
             climb: None,
             wants_climb: false,
             holding: None,
+            driving: None,
+            car_control: false,
+            wants_car: None,
+            wants_out: false,
+            wants_call_car: false,
         }
     }
 }

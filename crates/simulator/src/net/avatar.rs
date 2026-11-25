@@ -14,6 +14,7 @@ pub(super) struct Intent {
     pub expression: Option<Expression>,
     pub seated: Option<[f32; 2]>,
     pub geo: Option<GeoAnchor>,
+    pub driving: Option<cartopolis_core::protocol::Driving>,
 }
 
 pub(super) async fn on_intent<T: FrameTransport>(
@@ -32,6 +33,8 @@ pub(super) async fn on_intent<T: FrameTransport>(
     }
     ctx.gates.last_intent = Instant::now();
     let mut w = ctx.world.write().await;
+    // Before the intent, so the speed it asks for is capped for a car.
+    w.set_driving(ctx.avatar_id, intent.driving);
     w.apply_intent(
         ctx.avatar_id,
         intent.move_x,
