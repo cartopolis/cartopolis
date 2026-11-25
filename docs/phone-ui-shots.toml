@@ -436,3 +436,12 @@ look = [-15.0, 0.0]
 time = 12.0
 mode = "avatar"
 ui = ["walk"]
+
+# Past Earth's ceiling: the solar system's discs, orbits and labels
+# (`cosmos`).
+[[shot]]
+name = "cosmos"
+at = [53.2190, 6.5680, 2000000000.0]
+look = [-90.0, 0.0]
+time = 12.0
+ui = []

@@ -107,7 +107,12 @@ pub fn prepare_bevy(
             || lib.action_ring
             || lib.satellite_menu
             || lib.locate
-            || lib.driver)
+            || lib.driver
+            || lib.camera
+            || lib.call
+            || lib.cosmos
+            || lib.splash
+            || lib.face_viewfinder)
     {
         return;
     }
@@ -172,6 +177,24 @@ pub struct LibCamera;
 /// The library's camera draws where the world's does: a capture moves the
 /// world's camera onto an image (`shot_harness`), and the library has to
 /// land in the same picture.
+///
+/// And it stands down while a picture of the map is taken
+/// (`ScreenshotState::hide_ui`: a chat snapshot, a post's polaroid, your
+/// face's), as egui does: drawn on its own camera, every library screen
+/// open then was in the picture.
+#[cfg(feature = "ui-probe")]
+pub fn hide_for_snapshots(
+    shots: Option<bevy::prelude::Res<crate::resources::ScreenshotState>>,
+    mut lib: bevy::prelude::Query<&mut bevy::prelude::Camera, bevy::prelude::With<LibCamera>>,
+) {
+    let hide = shots.is_some_and(|s| s.hide_ui);
+    for mut camera in &mut lib {
+        if camera.is_active == hide {
+            camera.is_active = !hide;
+        }
+    }
+}
+
 #[cfg(feature = "ui-probe")]
 pub fn follow_world_target(
     world: bevy::prelude::Query<

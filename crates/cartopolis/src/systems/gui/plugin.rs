@@ -69,6 +69,9 @@ impl Plugin for GuiPlugin {
                     systems::lib_satellite_menu::drive_lib_satellite_menu,
                     systems::lib_locate::drive_lib_locate,
                     systems::lib_driver::drive_lib_driver,
+                    systems::lib_cosmos::drive_lib_cosmos,
+                    systems::lib_splash::drive_lib_splash,
+                    systems::lib_face_viewfinder::drive_lib_face_viewfinder,
                 ),
             );
         app.init_resource::<systems::settings::SettingsState>()

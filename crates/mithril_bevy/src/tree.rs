@@ -986,6 +986,18 @@ fn write_components(
     em.insert(BackgroundColor(
         c.background.map_or(Color::NONE, |b| colour(b, opacity)),
     ));
+    let gradient = ["background-image", "background"]
+        .iter()
+        .find_map(|p| c.other.get(*p))
+        .and_then(|v| crate::gradients::parse(v, opacity));
+    match gradient {
+        Some(g) => {
+            em.insert(BackgroundGradient(g));
+        }
+        None => {
+            em.remove::<BackgroundGradient>();
+        }
+    }
     let side = |b: Option<Rgba>| b.map_or(Color::NONE, |b| colour(b, opacity));
     em.insert(BorderColor {
         top: side(c.border_top_color.or(c.border_color)),

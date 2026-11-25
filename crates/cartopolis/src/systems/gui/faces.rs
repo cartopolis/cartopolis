@@ -49,6 +49,8 @@ const UNSEEN_S: f64 = 30.0;
 /// is cropped to the same share of the window's, so what is in the frame is
 /// what is in the picture.
 const FINDER_SHARE: f32 = 0.8;
+/// The viewfinder's buttons stand this far above the window's bottom edge.
+pub(crate) const FINDER_CONTROLS_BOTTOM: f32 = 28.0;
 /// How far in front of your avatar Face me puts the camera, and how high.
 const FACE_ME_DISTANCE_M: f32 = 2.4;
 const FACE_ME_PITCH: f32 = 0.12;
@@ -179,6 +181,44 @@ pub struct Faces {
     pub shooting: bool,
     /// The window, as `ui::drive_screenshots` captured it for the polaroid.
     pub snapshot_in: Option<(Vec<u8>, [usize; 2])>,
+    /// The component library draws the viewfinder (`lib_face_viewfinder`,
+    /// `CARTO_UI_LIB=face_viewfinder`): [`render_face_viewfinder`] draws
+    /// nothing, publishes [`Self::lib_view`] and does what comes back in
+    /// [`Self::lib_acts`].
+    pub lib: bool,
+    /// What the library's viewfinder shows, while `lib` is on and the
+    /// viewfinder is up.
+    pub lib_view: Option<FinderView>,
+    /// The library's taps, done next frame by [`Faces::finder_act`].
+    pub lib_acts: Vec<FinderAct>,
+}
+
+/// What the library's viewfinder shows (`lib_face_viewfinder`); where the
+/// square stands follows from the window ([`finder_rect`]).
+#[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct FinderView {
+    /// The shutter was pressed and the picture is on its way: the shutter
+    /// waits.
+    pub shooting: bool,
+}
+
+/// A press on the viewfinder's controls, in either edition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FinderAct {
+    Cancel,
+    /// Swing the follow camera round in front of your avatar.
+    FaceMe,
+    /// Take it: the chrome-free capture, cropped to the square.
+    Shoot,
+}
+
+/// The viewfinder's square on a `screen`: [`FINDER_SHARE`] of its shorter
+/// side, centred — the crop `crop_finder` takes from the capture.
+#[must_use]
+pub fn finder_rect(screen: egui::Rect) -> egui::Rect {
+    let side = screen.width().min(screen.height()) * FINDER_SHARE;
+    egui::Rect::from_center_size(screen.center(), egui::Vec2::splat(side))
 }
 
 impl Faces {
@@ -222,6 +262,50 @@ impl Faces {
     fn start_prepare(&mut self, work: impl FnOnce() -> Prepared + Send + 'static) {
         self.note = None;
         self.prepare = Some(IoTaskPool::get().spawn(async move { work() }));
+    }
+
+    /// Do a press on the viewfinder, for both editions; `true` when it is
+    /// done with (Cancel, or the picture taken).
+    pub fn finder_act(
+        &mut self,
+        act: FinderAct,
+        avatar: Option<&Transform>,
+        camera_state: &mut CameraState,
+        screenshot: &mut crate::resources::ScreenshotState,
+    ) -> bool {
+        match act {
+            FinderAct::Cancel => true,
+            FinderAct::FaceMe => {
+                if let Some(body) = avatar {
+                    if camera_state.mode != CameraMode::Avatar {
+                        crate::systems::free_camera::enter_mode(camera_state, CameraMode::Avatar);
+                        camera_state.mode = CameraMode::Avatar;
+                    }
+                    // In front: the follow rig sits behind the avatar at
+                    // `facing + π`, so at `facing` it looks back at them.
+                    let face = body.rotation.to_euler(EulerRot::YXZ).0;
+                    camera_state.follow_rotate = false;
+                    camera_state.first_person = false;
+                    camera_state.azimuth = face;
+                    camera_state.pitch = FACE_ME_PITCH;
+                    camera_state.distance = FACE_ME_DISTANCE_M;
+                } else {
+                    self.note = Some("Sign in to stand somewhere first.".into());
+                }
+                false
+            }
+            FinderAct::Shoot => {
+                if self.shooting {
+                    return false;
+                }
+                // Taken next frame by `ui::drive_screenshots` with the UI
+                // hidden, so neither this frame nor the shade is in it.
+                screenshot.face_snapshot = true;
+                screenshot.hide_ui = true;
+                self.shooting = true;
+                true
+            }
+        }
     }
 }
 
@@ -270,8 +354,10 @@ pub fn drive_faces(
             b.shown.clear();
             b.seen.clear();
         }
+        // The edition drawing the viewfinder is the app's, not the account's.
         *faces = Faces {
             account: account.clone(),
+            lib: faces.lib,
             ..Faces::default()
         };
     }
@@ -727,12 +813,54 @@ pub fn render_face_viewfinder(
     #[cfg(feature = "comms")] mut chats_view: ResMut<crate::systems::chats::ChatsView>,
 ) {
     if !faces.viewfinder {
+        if faces.lib_view.is_some() {
+            faces.lib_view = None;
+        }
+        if !faces.lib_acts.is_empty() {
+            faces.lib_acts.clear();
+        }
         return;
     }
+    // The presses of the frame: the library's, handed back since the last,
+    // or egui's below.
+    let mut acts: Vec<FinderAct> = Vec::new();
+    if faces.lib {
+        // `lib_face_viewfinder` draws it; this system does what it asks.
+        acts = std::mem::take(&mut faces.lib_acts);
+        let view = FinderView {
+            shooting: faces.shooting,
+        };
+        if faces.lib_view.as_ref() != Some(&view) {
+            faces.lib_view = Some(view);
+        }
+    } else {
+        if faces.lib_view.is_some() {
+            faces.lib_view = None;
+        }
+        draw_face_viewfinder(&mut egui, faces.shooting, &mut acts);
+    }
+    let body = avatar.single().ok();
+    let mut done = false;
+    for act in acts {
+        done |= faces.finder_act(act, body, &mut camera_state, &mut screenshot);
+    }
+    if done {
+        faces.viewfinder = false;
+        faces.lib_view = None;
+        *right_panel = RightPanel::Chat;
+        #[cfg(feature = "comms")]
+        {
+            chats_view.you = true;
+        }
+    }
+}
+
+/// egui's viewfinder: the shade, the square's rim and the three buttons,
+/// whose presses go into `acts`.
+fn draw_face_viewfinder(egui: &mut EguiMut, shooting: bool, acts: &mut Vec<FinderAct>) {
     let ctx = egui.ctx_mut().clone();
     let screen = ctx.viewport_rect();
-    let side = screen.width().min(screen.height()) * FINDER_SHARE;
-    let frame = egui::Rect::from_center_size(screen.center(), egui::Vec2::splat(side));
+    let frame = finder_rect(screen);
     // The frame: the world outside it dimmed, the square itself outlined.
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
@@ -759,35 +887,19 @@ pub fn render_face_viewfinder(
         egui::Stroke::new(2.0, theme::p().cream),
         egui::StrokeKind::Outside,
     );
-    let mut done = false;
     egui::Area::new(egui::Id::new("face_viewfinder_controls"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -28.0))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -FINDER_CONTROLS_BOTTOM),
+        )
         .show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.add(pill(icons::CLEAR, "Cancel")).clicked() {
-                    done = true;
+                    acts.push(FinderAct::Cancel);
                 }
                 if ui.add(pill(icons::CAM_FOLLOW, "Face me")).clicked() {
-                    if let Ok(body) = avatar.single() {
-                        if camera_state.mode != CameraMode::Avatar {
-                            crate::systems::free_camera::enter_mode(
-                                &mut camera_state,
-                                CameraMode::Avatar,
-                            );
-                            camera_state.mode = CameraMode::Avatar;
-                        }
-                        // In front: the follow rig sits behind the avatar at
-                        // `facing + π`, so at `facing` it looks back at them.
-                        let face = body.rotation.to_euler(EulerRot::YXZ).0;
-                        camera_state.follow_rotate = false;
-                        camera_state.first_person = false;
-                        camera_state.azimuth = face;
-                        camera_state.pitch = FACE_ME_PITCH;
-                        camera_state.distance = FACE_ME_DISTANCE_M;
-                    } else {
-                        faces.note = Some("Sign in to stand somewhere first.".into());
-                    }
+                    acts.push(FinderAct::FaceMe);
                 }
                 // egui's own: the camera shutter, a round accent pill over the viewfinder.
                 let shutter = egui::Button::new(
@@ -799,24 +911,11 @@ pub fn render_face_viewfinder(
                 .fill(theme::p().accent)
                 .corner_radius(egui::CornerRadius::same(18))
                 .min_size(egui::vec2(0.0, 40.0));
-                if ui.add_enabled(!faces.shooting, shutter).clicked() {
-                    // Taken next frame by `ui::drive_screenshots` with the UI
-                    // hidden, so neither this frame nor the shade is in it.
-                    screenshot.face_snapshot = true;
-                    screenshot.hide_ui = true;
-                    faces.shooting = true;
-                    done = true;
+                if ui.add_enabled(!shooting, shutter).clicked() {
+                    acts.push(FinderAct::Shoot);
                 }
             });
         });
-    if done {
-        faces.viewfinder = false;
-        *right_panel = RightPanel::Chat;
-        #[cfg(feature = "comms")]
-        {
-            chats_view.you = true;
-        }
-    }
 }
 
 #[cfg(test)]

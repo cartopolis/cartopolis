@@ -21,8 +21,22 @@ pub(crate) struct ImageCache {
     by_src: HashMap<u64, Option<Handle<Image>>>,
 }
 
+/// Images the app draws into, by name, for `<img src="bevy:NAME">`: a
+/// camera's viewfinder, a call's video tiles. The handle stays and its
+/// pixels change, so a frame shows the frame's picture; nothing is copied
+/// into the view, and nothing is cached here. Register the name before
+/// the view that shows it mounts — an `<img>` reads its source when it is
+/// styled.
+#[derive(Resource, Default)]
+pub struct LiveImages(pub HashMap<String, Handle<Image>>);
+
 /// The image a source names, decoding it the first time it is seen.
 pub(crate) fn resolve(world: &mut World, src: &str) -> Option<Handle<Image>> {
+    if let Some(name) = src.strip_prefix("bevy:") {
+        return world
+            .get_resource::<LiveImages>()
+            .and_then(|live| live.0.get(name).cloned());
+    }
     let key = {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         src.hash(&mut h);

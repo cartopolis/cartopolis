@@ -49,6 +49,7 @@ impl Plugin for UiProbePlugin {
                 (
                     crate::systems::lib_host::prepare_bevy,
                     crate::systems::lib_host::follow_world_target,
+                    crate::systems::lib_host::hide_for_snapshots,
                     crate::systems::lib_settings::drive_lib_settings,
                     crate::systems::lib_layers::drive_lib_layers,
                     crate::systems::lib_search::drive_lib_search,
@@ -95,9 +96,35 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_satellite_menu::drive_lib_satellite_menu,
                     crate::systems::lib_locate::drive_lib_locate,
                     crate::systems::lib_driver::drive_lib_driver,
+                    crate::systems::lib_cosmos::drive_lib_cosmos,
+                    crate::systems::lib_splash::drive_lib_splash,
+                    crate::systems::lib_face_viewfinder::drive_lib_face_viewfinder,
                 )
                     .chain()
                     .after(crate::systems::lib_main_menu::drive_lib_main_menu)
+                    .before(crate::systems::lib_host::bridge_input),
+            )
+            // The splash's images fade by their tint, which the library's
+            // restyle would overwrite: after it.
+            .add_systems(
+                PostUpdate,
+                crate::systems::lib_splash::fade_lib_splash.after(mithril_bevy::DriveUi),
+            );
+        // The camera and a call, the app's only: their pictures are images
+        // the app writes each frame (`mithril_bevy::LiveImages`).
+        #[cfg(all(feature = "comms", not(target_arch = "wasm32")))]
+        app.add_systems(
+            PostUpdate,
+            crate::systems::lib_camera::drive_lib_camera
+                .after(crate::systems::lib_host::prepare_bevy)
+                .before(crate::systems::lib_host::bridge_input),
+        );
+        #[cfg(feature = "comms")]
+        app.init_resource::<crate::systems::call_screen::CallScreenLib>()
+            .add_systems(
+                PostUpdate,
+                crate::systems::lib_call::drive_lib_call
+                    .after(crate::systems::lib_host::prepare_bevy)
                     .before(crate::systems::lib_host::bridge_input),
             );
         // The screens that talk, the app's only (`comms`): between the

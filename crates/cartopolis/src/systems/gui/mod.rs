@@ -61,15 +61,23 @@ pub mod lib_avatar;
 #[cfg(feature = "ui-lib")]
 pub mod lib_building_card;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
+pub mod lib_call;
+#[cfg(all(feature = "ui-lib", feature = "comms", not(target_arch = "wasm32")))]
+pub mod lib_camera;
+#[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_chat_overlay;
 #[cfg(feature = "ui-lib")]
 pub mod lib_chrome;
+#[cfg(feature = "ui-lib")]
+pub mod lib_cosmos;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_dialogs;
 #[cfg(feature = "ui-lib")]
 pub mod lib_driver;
+#[cfg(feature = "ui-lib")]
+pub mod lib_face_viewfinder;
 #[cfg(feature = "ui-lib")]
 pub mod lib_host;
 #[cfg(feature = "ui-lib")]
@@ -114,6 +122,8 @@ pub mod lib_search;
 pub mod lib_settings;
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_share;
+#[cfg(feature = "ui-lib")]
+pub mod lib_splash;
 #[cfg(feature = "ui-lib")]
 pub mod lib_walk_guide;
 // The library's screens that talk: the app's only, as their egui ones (`comms`).

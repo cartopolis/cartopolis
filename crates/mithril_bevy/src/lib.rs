@@ -30,12 +30,14 @@ use mithril::view::{Handler, Kind, Mounted, Renderer, View};
 
 mod ellipsis;
 mod events;
+mod gradients;
 mod images;
 mod popup;
 mod tree;
 mod typing;
 
 pub use events::{UiEvents, UiPointer};
+pub use images::LiveImages;
 pub use tree::{FontMap, UiTree};
 pub use typing::{type_into_focused, KeyEdit, KeyEdits};
 
@@ -339,6 +341,7 @@ impl Plugin for MithrilUiPlugin {
         HOST.with(|h| *h.borrow_mut() = Some(UiHost::new(tokens)));
         app.init_resource::<UiTree>()
             .init_resource::<images::ImageCache>()
+            .init_resource::<LiveImages>()
             .init_resource::<UiEvents>()
             .init_resource::<UiPointer>()
             .init_resource::<KeyEdits>()

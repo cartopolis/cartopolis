@@ -150,6 +150,7 @@ ui-probe = [
     "bevy/bevy_ui_widgets",
     "bevy/ui_picking",
     "bevy/bevy_input_focus",
+    "dep:tiny-skia",
 ]
 
 [dependencies]
@@ -208,6 +209,10 @@ egui.workspace = true
 # (docs/mockups/component-library, phase 3); not in a shipped build yet.
 mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "3dedb903", optional = true }
 mithril_bevy = { path = "../mithril_bevy", optional = true }
+# The splash's street plan and mark, rasterised once into an image for the
+# library's Bevy backend (`lib_splash`). Already in the lock through another
+# dependency, at these features.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"], optional = true }
 # The library's design tokens, typed: cartopolis' own `Tokens` (`theme::tokens`)
 # are what the web's `theme.css` is written from and what the Bevy backend
 # draws with. Bevy-free and dependency-free, so every lane carries it.

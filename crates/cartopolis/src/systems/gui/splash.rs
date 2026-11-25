@@ -47,7 +47,7 @@ use crate::systems::theme;
 /// The line under the wordmark. Named because `index.html` carries the same
 /// words: the two splashes are one screen handed over mid-load, and a motto that
 /// changes on the handover is the tell that they are not.
-const MOTTO: &str = "Explore our world";
+pub(crate) const MOTTO: &str = "Explore our world";
 
 /// Shortest time the splash stays up, in seconds — long enough to be read
 /// rather than glimpsed, since a warm cache would otherwise dismiss it within a
@@ -118,23 +118,42 @@ const FADE_IN_S: f32 = 0.45;
 /// made by atlas's backdrop pipeline from OpenStreetMap): Groningen's centre,
 /// the canal ring in the middle. Read from the web's own file at compile time,
 /// so the splash, `index.html`'s loader and cartopolis.org draw one drawing.
-const STREETS_SVG: &str = include_str!("../../../../atlas/web/src/img/groningen.svg");
+pub(crate) const STREETS_SVG: &str = include_str!("../../../../atlas/web/src/img/groningen.svg");
 
 /// How strongly the streets show: `--c-map` in the web theme, which is
 /// [`theme::Palette::text_dim`] at 9 % over the page (`web_theme.rs`).
 const STREETS_INK: f32 = 0.09;
 
+/// The streets' ink, opaque: the page colour with the streets already mixed
+/// in. One writer for egui's strokes and the library's raster
+/// (`lib_splash`).
+pub(crate) fn streets_ink() -> egui::Color32 {
+    theme::DARK
+        .surface
+        .lerp_to_gamma(theme::DARK.text_dim, STREETS_INK)
+}
+
+/// Where the plan stands to cover a `size` box as the web's
+/// `mask: … center / cover` does: its top-left corner and the scale from the
+/// drawing's units, both in the box's own units.
+pub(crate) fn streets_cover(size: egui::Vec2) -> (egui::Pos2, f32) {
+    let (plan, _) = streets();
+    let scale = (size.x / plan.x).max(size.y / plan.y);
+    let origin = egui::pos2(size.x * 0.5, size.y * 0.5) - *plan * scale * 0.5;
+    (origin, scale)
+}
+
 /// One stroke width's worth of the plan, in the drawing's own units.
-struct StreetLayer {
-    width: f32,
-    lines: Vec<Vec<egui::Pos2>>,
+pub(crate) struct StreetLayer {
+    pub(crate) width: f32,
+    pub(crate) lines: Vec<Vec<egui::Pos2>>,
 }
 
 /// The plan's polylines, parsed once: its `viewBox` size and each `<path>` as
 /// a stroke width and the polylines its `M`/`L` commands draw. The filled water
 /// path is drawn as its outline — egui fills only convex shapes, and a bank
 /// reads the same as a filled canal at this strength.
-fn streets() -> &'static (egui::Vec2, Vec<StreetLayer>) {
+pub(crate) fn streets() -> &'static (egui::Vec2, Vec<StreetLayer>) {
     static PLAN: std::sync::OnceLock<(egui::Vec2, Vec<StreetLayer>)> = std::sync::OnceLock::new();
     PLAN.get_or_init(|| parse_streets(STREETS_SVG))
 }
@@ -234,12 +253,10 @@ fn parse_path(d: &str) -> Vec<Vec<egui::Pos2>> {
 /// than a translucent stroke: overlapping translucent strokes darken where
 /// they cross, and a CSS mask does not, so every junction would be a dot.
 fn paint_streets(painter: &egui::Painter, rect: egui::Rect, alpha: f32) {
-    let (size, layers) = streets();
-    let scale = (rect.width() / size.x).max(rect.height() / size.y);
-    let origin = rect.center() - *size * scale * 0.5;
-    let ink = theme::DARK
-        .surface
-        .lerp_to_gamma(theme::DARK.text_dim, STREETS_INK);
+    let (_, layers) = streets();
+    let (origin, scale) = streets_cover(rect.size());
+    let origin = rect.min + origin.to_vec2();
+    let ink = streets_ink();
     let ink =
         egui::Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), (alpha * 255.0) as u8);
     let mut shapes = Vec::new();
@@ -262,10 +279,10 @@ fn ease(t: f32) -> f32 {
 }
 
 /// Height of the progress track, in points (`index.html`'s `#track` is 3 px).
-const TRACK_H: f32 = 3.0;
+pub(crate) const TRACK_H: f32 = 3.0;
 /// The status line under the track. Smaller than [`theme::SPLASH_MOTTO`] on
 /// purpose: the motto is the brand and this is a caption under it.
-const STATUS_TEXT: f32 = 13.0;
+pub(crate) const STATUS_TEXT: f32 = 13.0;
 /// One 35 %-wide sweep of the indeterminate bar, in seconds. `index.html`'s
 /// `@keyframes sweep` runs at 1.1 s and the two splashes are one screen.
 const SWEEP_S: f32 = 1.1;
@@ -428,6 +445,46 @@ fn bar_closing(held: f32, t: f32) -> f32 {
     held + (1.0 - held) * ease(t)
 }
 
+/// The lit part of the track, as its left edge and width in fractions of the
+/// track: a measured fill from the left, or — nothing measured yet, so no
+/// number — the segment sweeping it ([`BAR_SWEEP_BELOW`]). Both editions draw
+/// from this.
+fn bar_span(bar: f32, elapsed: f32) -> (f32, f32) {
+    if bar > BAR_SWEEP_BELOW {
+        (0.0, bar.min(1.0))
+    } else {
+        let t = (elapsed / SWEEP_S).fract();
+        let x = t * (1.0 + SWEEP_FRAC) - SWEEP_FRAC;
+        let (left, right) = (x.max(0.0), (x + SWEEP_FRAC).min(1.0));
+        (left, (right - left).max(0.0))
+    }
+}
+
+/// The track's width on a `w`-point-wide screen: `index.html`'s
+/// `min(22rem, 70vw)`.
+pub(crate) fn track_width(w: f32) -> f32 {
+    (w * 0.7).min(352.0)
+}
+
+/// What the library's splash draws this frame (`lib_splash`), while
+/// [`BootSplash::lib`] is on.
+#[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct SplashView {
+    /// The area to fill, egui points.
+    pub size: egui::Vec2,
+    /// The window in physical pixels: what the street plan is rasterised at.
+    pub physical: [u32; 2],
+    /// The backdrop's alpha: the dismissal fade.
+    pub backdrop: f32,
+    /// The marks' alpha: the entrance fade times the backdrop's.
+    pub content: f32,
+    /// The lit part of the track ([`bar_span`]).
+    pub bar: (f32, f32),
+    /// The line under the track.
+    pub label: String,
+}
+
 /// The sign-in half of the status line, when there is one to report.
 ///
 /// A launch with a remembered session enters it during the splash
@@ -480,6 +537,14 @@ pub struct BootSplash {
     /// decided. [`bar_closing`] runs from here rather than from zero.
     held: f32,
     finished: bool,
+    /// The component library draws the splash (`lib_splash`,
+    /// `CARTO_UI_LIB=splash`): this system still keeps the clock, the bar
+    /// and the dismissal, and publishes [`Self::lib_view`] instead of
+    /// painting.
+    pub lib: bool,
+    /// What the library's edition shows, while `lib` is on; `None` once the
+    /// splash is gone (or with no window to cover).
+    pub lib_view: Option<SplashView>,
 }
 
 impl BootSplash {
@@ -548,6 +613,7 @@ pub fn boot_splash(
             splash.fading = Some(left);
             if left <= 0.0 {
                 splash.finished = true;
+                splash.lib_view = None;
                 return;
             }
             ease(left / FADE_S)
@@ -602,7 +668,26 @@ pub fn boot_splash(
     // The window is still queried, but only as a *gate*: a headless `--shot` run
     // has no primary window, and that is what keeps the splash out of every
     // captured image. The size comes from `viewport_pts` above.
-    if window.single().is_err() {
+    let Ok(window) = window.single() else {
+        if splash.lib_view.is_some() {
+            splash.lib_view = None;
+        }
+        return;
+    };
+    let span = bar_span(splash.bar, splash.elapsed);
+    // The library's edition: the same numbers, drawn by `lib_splash`.
+    if splash.lib {
+        let view = SplashView {
+            size: viewport,
+            physical: [window.physical_width(), window.physical_height()],
+            backdrop,
+            content,
+            bar: span,
+            label,
+        };
+        if splash.lib_view.as_ref() != Some(&view) {
+            splash.lib_view = Some(view);
+        }
         return;
     }
     let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), viewport);
@@ -645,7 +730,7 @@ pub fn boot_splash(
     // palette entries (`SURFACE_RAISED` is its `#263842`, `ACCENT` its `#fd6012`).
     // The `min(22rem, 70vw)` is its sizing rule too: on a phone in portrait a
     // fixed 352 pt track runs past both margins.
-    let track_w = (viewport.x * 0.7).min(352.0);
+    let track_w = track_width(viewport.x);
     let track =
         egui::Rect::from_center_size(egui::pos2(c.x, c.y + 104.0), egui::vec2(track_w, TRACK_H));
     painter.rect_filled(
@@ -653,22 +738,14 @@ pub fn boot_splash(
         TRACK_H * 0.5,
         fade(theme::DARK.surface_raised, content, 1.0),
     );
-    let bar = if splash.bar > BAR_SWEEP_BELOW {
-        // A measured fill, from the left.
-        egui::Rect::from_min_size(track.min, egui::vec2(track_w * splash.bar, TRACK_H))
-    } else {
-        // Nothing measured yet, so no number: a segment sweeping the track
-        // instead. The alternative is a bar sitting at zero, which is what a
-        // *stalled* loader looks like — the one reading this screen must not
-        // give.
-        let t = (splash.elapsed / SWEEP_S).fract();
-        let x = track.min.x + (t * (1.0 + SWEEP_FRAC) - SWEEP_FRAC) * track_w;
-        egui::Rect::from_min_size(
-            egui::pos2(x, track.min.y),
-            egui::vec2(track_w * SWEEP_FRAC, TRACK_H),
-        )
-        .intersect(track)
-    };
+    // A measured fill from the left or, nothing measured yet, a segment
+    // sweeping the track. The alternative is a bar sitting at zero, which is
+    // what a *stalled* loader looks like — the one reading this screen must
+    // not give.
+    let bar = egui::Rect::from_min_size(
+        egui::pos2(track.min.x + span.0 * track_w, track.min.y),
+        egui::vec2(span.1 * track_w, TRACK_H),
+    );
     if bar.width() > 0.0 {
         painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::DARK.accent, content, 1.0));
     }
@@ -827,6 +904,18 @@ mod tests {
     fn a_fast_stream_outruns_the_creep() {
         assert!(bar_streaming(0.2, Some(0.9)) > bar_streaming(0.2, Some(0.1)));
         assert!((bar_streaming(0.0, Some(1.0)) - BAR_STREAMING).abs() < 1e-6);
+    }
+
+    /// The lit part of the track stays on the track: a fill from the left,
+    /// or the sweep cut at both ends.
+    #[test]
+    fn the_lit_part_stays_on_the_track() {
+        assert_eq!(bar_span(0.4, 0.0), (0.0, 0.4));
+        for i in 0..=40 {
+            let (left, width) = bar_span(0.0, i as f32 * SWEEP_S / 40.0);
+            assert!(left >= 0.0 && width >= 0.0 && left + width <= 1.0 + 1e-6);
+            assert!(width <= SWEEP_FRAC + 1e-6);
+        }
     }
 
     /// A streamer that has a set but nothing in it must not paint an empty
