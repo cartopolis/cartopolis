@@ -19,7 +19,9 @@ fn main() {
             all(any(windows, target_os = "linux", target_os = "android", target_os = "freebsd"), feature = "vulkan"),
             // On Apple platforms, however, we require the `vulkan-portability` feature
             // to explicitly opt-in to Vulkan since it's meant to be used with MoltenVK.
-            all(target_vendor = "apple", feature = "vulkan-portability")
+            all(target_vendor = "apple", feature = "vulkan-portability"),
+            // Pinnacle: its own Vulkan driver, linked in (docs/notes/pinnacle.md).
+            all(target_os = "pinnacle", feature = "vulkan")
         ) },
         drm: { all(
             feature = "drm",

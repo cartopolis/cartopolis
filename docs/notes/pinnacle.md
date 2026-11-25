@@ -16,10 +16,18 @@ runs on it. Rust knows it as `aarch64-unknown-pinnacle`, `target_os =
 Not from this repo: Pinnacle's repo holds the crates from crates.io that
 needed a Pinnacle branch (`ports/` there: getrandom, mio, tokio, winit, ring,
 bevy_asset and more), and switches them in for one build with `--config
-patch.crates-io…`. This repo's manifest stays as it is everywhere else. As of
-2026-11-24 the whole client `cargo check`s for Pinnacle; it does not yet run,
-because Pinnacle has no GPU API for wgpu (Vulkan via QEMU's Venus is the
-chosen route).
+patch.crates-io…`. This repo's manifest stays as it is everywhere else.
+`cargo xtask cartopolis <checkout of this repo>` there builds the client
+(release) for Pinnacle; it leaves `wgpu` to this repo's own copy
+(`crates/wgpu`, whose build script turns the Vulkan backend on for
+Pinnacle too: its Vulkan is Pinnacle's own driver, through QEMU's Venus).
+
+As of 2026-11-25 the client **builds and links** for Pinnacle (20 minutes
+on a Mac node, cold): a program of 141 MiB, 106 MiB of it loaded (86 MiB
+code, 20 MiB read-only data), no debug info. It does not run yet: Pinnacle's
+kernel loads a program whole into one allocation (26 MiB already failed) and
+its QEMU guest has 256 MiB of memory. wgpu itself runs there (a window drawn
+by the host's GPU: Pinnacle's `cargo xtask wgpu-demo`).
 
 ## What this repo does for it
 
@@ -44,7 +52,8 @@ is Unix-only), hence their `allow(dead_code)` on Pinnacle.
 
 ## Checking a change against it
 
-From the Pinnacle repo, with its std and ports: `cargo check` of this
+From the Pinnacle repo, with its std and ports: `cargo xtask cartopolis` (a
+build), or `cargo check` of this
 workspace for `std/aarch64-unknown-pinnacle.json` with `-Zbuild-std` and the
 ports' patches (Pinnacle's `xtask` has the flags). Nothing in this repo's gate
 checks it yet, so a desktop-only crate added under plain `not(wasm32)` breaks
