@@ -923,6 +923,11 @@ fn public_tile(l: &ChatsLive, r: &RowV) -> View {
     }
 }
 
+/// A row's second line on one line, cut with "…" as egui's: a list
+/// item's sub wraps, and a preview ran to three lines beside its time.
+const ONE_LINE: &str =
+    "display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis";
+
 /// One conversation or community: its disc, its name (a private chat's with
 /// the padlock), its last line, the time and the unread count.
 fn chat_row(l: &ChatsLive, r: &RowV, sending: bool) -> View {
@@ -937,17 +942,17 @@ fn chat_row(l: &ChatsLive, r: &RowV, sending: bool) -> View {
     } else {
         name.into_view()
     };
-    let (preview, style) = if sending && r.kind == ChatKind::Private {
+    let (preview, colour) = if sending && r.kind == ChatKind::Private {
         (
             "Tap to send the view here".to_string(),
-            "color: var(--m-accent-text)",
+            "color: var(--m-accent-text); ",
         )
     } else if r.unread > 0 {
-        (r.preview.clone(), "color: var(--m-text)")
+        (r.preview.clone(), "color: var(--m-text); ")
     } else {
         (r.preview.clone(), "")
     };
-    let sub: View = view! { <span style={style}>{preview}</span> };
+    let sub: View = view! { <span style={format!("{colour}{ONE_LINE}")}>{preview}</span> };
     let time = r.time.clone();
     let end: View = view! { <span>{time}</span>{count(r.unread)} };
     view! {
@@ -986,8 +991,9 @@ fn coming_up(l: &ChatsLive, c: &ComingV) -> View {
                     None => View::Empty,
                 };
                 let (title, line) = (s.title.clone(), s.line.clone());
+                let sub: View = view! { <span style={ONE_LINE}>{line}</span> };
                 view! {
-                    <ListItem icon={icon(glyph)} sub={line.into_view()} end={end} onclick={tap}>{title}</ListItem>
+                    <ListItem icon={icon(glyph)} sub={sub} end={end} onclick={tap}>{title}</ListItem>
                 }
             })
             .collect();

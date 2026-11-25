@@ -395,6 +395,12 @@ fn html(l: &Live) -> String {
 /// Points of indentation per tree level.
 const INDENT: usize = 16;
 
+/// The middle of a row, around its `ListItem`: the row already pads its
+/// sides and indents (`row_style`), so the item's own side padding comes
+/// down to a hair. With both, a name had some 87 px between the marker and
+/// the ⋯ and read "Laan Corpu…".
+const ROW_BODY: &str = "flex: 1; min-width: 0; --m-space-4: 4px";
+
 fn icon(glyph: &'static str) -> View {
     view! {
         <span style="font-family: 'Material Symbols Rounded'; font-size: 20px; line-height: 1">{glyph}</span>
@@ -567,7 +573,7 @@ fn rename_row(l: &Live, item: Item, depth: usize, first: bool) -> View {
     );
     view! {
         <div style={style}>
-            <div style="flex: 1; min-width: 0">
+            <div style={ROW_BODY}>
                 <FieldText model={l.rename.clone()} autofocus=true onkeydown={Some(keys)} placeholder="Name" autocomplete="off" id="places-rename" />
             </div>
             <Button variant=Variant::Primary icon={icon(icons::CHECK)} icon_only=true onclick={Some(commit)} title="Apply" />
@@ -637,7 +643,7 @@ fn folder_row(
             <button title={fold_title} style="flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; margin: 0; padding: 0; border: 0; background: none; cursor: pointer" on:click={fold}>
                 <span style={arrow}></span>
             </button>
-            <div style="flex: 1; min-width: 0">
+            <div style={ROW_BODY}>
                 <ListItem sub={sub} end={swatch} onclick={l.act(Act::Fold(id))}><span style={title_style}>{name}</span></ListItem>
             </div>
             {kebab(l, Item::Folder(id), "Actions for this folder")}
@@ -732,7 +738,7 @@ fn place_row(
     view! {
         <div style={row_style(depth, first)}>
             {marker}
-            <div style="flex: 1; min-width: 0">
+            <div style={ROW_BODY}>
                 <ListItem sub={sub} onclick={l.act(Act::Jump(id))}>{title}</ListItem>
             </div>
             {kebab(l, Item::Place(id), "Actions for this place")}
