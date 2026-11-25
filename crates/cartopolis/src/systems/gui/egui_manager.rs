@@ -118,12 +118,12 @@ pub struct EguiManager {
     /// is drawn at the full rate and not the idle one.
     ui_animating: bool,
     /// The pointer is over a screen drawn beside egui (the component
-    /// library's, `lib_settings`): a world click yields to it as it does to
-    /// a panel. Set each frame by that screen's system, for the next frame.
+    /// library's): a world click yields to it as it does to a panel. Set
+    /// each frame by `lib_host::bridge_input`, for the next frame.
     overlay_owns_pointer: bool,
     /// A text field of a screen drawn beside egui holds the keyboard, so the
     /// game keys yield to it as to egui's own fields. Set each frame by
-    /// `lib_host::bridge_keyboard`, for the next frame.
+    /// `lib_host::bridge_input`, for the next frame.
     overlay_owns_keyboard: bool,
 }
 

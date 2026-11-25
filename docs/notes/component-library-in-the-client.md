@@ -1,6 +1,6 @@
 ---
 topic: component-library-in-the-client
-triggers: [mithril_bevy, lib_search.rs, systems::lib_search, SearchView, bridge_keyboard, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
+triggers: [mithril_bevy, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
 updated: 2026-11-24
 ---
 
@@ -69,8 +69,10 @@ with each node's size; that is how they were found.
   differs, because its `is_changed()` gates re-run work (the same rule egui's
   panel keeps with its `edited` copy).
 - **A world click under the library's panel yields** through
-  `EguiManager::set_overlay_owns_pointer(UiPointer::owns_pointer())`, set by
-  the screen's system for the next frame.
+  `EguiManager::set_overlay_owns_pointer(UiPointer::owns_pointer())`, set
+  for every library screen at once by `lib_host::bridge_input`; and each
+  screen mounts under its own key (`lib_host::mount_keyed`), so a card over
+  the map and a panel stand side by side and clear independently.
 
 Captures: `--shots docs/phone-ui-shots.toml --only settings` with
 `CARTO_UI_LIB=settings` (`CARTO_UI_LIB_PAGE=general|graphics|world` for a
@@ -107,7 +109,7 @@ first whose field drives the world. Two rules came out of it:
   camera is, what is possible) and runs the action the library hands back.
 
 A library text field with the keyboard holds the game keys off
-(`lib_host::bridge_keyboard` → `EguiManager::set_overlay_owns_keyboard`,
+(`lib_host::bridge_input` → `EguiManager::set_overlay_owns_keyboard`,
 read by `ui_owns_keyboard`); before it, typing a Settings password walked
 the avatar. A field takes the keyboard on mount with `autofocus` (the
 renderer action `@focus`), only when asked (Ctrl+L, `--ui search`), so a

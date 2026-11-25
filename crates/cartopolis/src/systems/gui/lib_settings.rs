@@ -56,12 +56,19 @@ pub struct LibScreens {
     pub settings: bool,
     pub layers: bool,
     pub search: bool,
+    pub route: bool,
+    pub places: bool,
+    pub place_card: bool,
+    pub building_card: bool,
     /// Open Settings at once (a capture, a page's `?panel=settings`).
     pub open_settings: bool,
     /// Open Layers at once (`?panel=layers`).
     pub open_layers: bool,
     /// Open Search at once (`?panel=search`).
     pub open_search: bool,
+    /// Open Route or Places at once (`?panel=route`, `?panel=places`).
+    pub open_route: bool,
+    pub open_places: bool,
     /// The Settings page to open on, by label or name.
     pub page: Option<String>,
 }
@@ -80,9 +87,15 @@ impl LibScreens {
                 settings: all || named("settings"),
                 layers: all || named("layers"),
                 search: all || named("search"),
+                route: all || named("route"),
+                places: all || named("places"),
+                place_card: all || named("place_card"),
+                building_card: all || named("building_card"),
                 open_settings: false,
                 open_layers: false,
                 open_search: false,
+                open_route: false,
+                open_places: false,
                 page: std::env::var("CARTO_UI_LIB_PAGE").ok(),
             }
         }
@@ -100,21 +113,19 @@ impl LibScreens {
                 settings: named("settings"),
                 layers: named("layers"),
                 search: named("search"),
+                route: named("route"),
+                places: named("places"),
+                place_card: named("place_card"),
+                building_card: named("building_card"),
                 open_settings: panel.as_deref() == Some("settings"),
                 open_layers: panel.as_deref() == Some("layers"),
                 open_search: panel.as_deref() == Some("search"),
+                open_route: panel.as_deref() == Some("route"),
+                open_places: panel.as_deref() == Some("places"),
                 page: get("page"),
             }
         }
     }
-}
-
-/// What the Bevy backend tells the panel: whether the pointer is over it.
-/// (Its camera, faces and scale are `lib_host::prepare_bevy`'s.)
-#[cfg(feature = "ui-probe")]
-#[derive(SystemParam)]
-pub struct BevyBackend<'w> {
-    pointer: Res<'w, mithril_bevy::UiPointer>,
 }
 
 /// The app's state the pages read and write, in one parameter.
@@ -654,9 +665,7 @@ pub fn drive_lib_settings(
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<SettingsState>,
     mut app: AppState,
-    // Written to only by the Bevy backend (the pointer's ownership).
-    #[cfg_attr(not(feature = "ui-probe"), allow(unused_mut))] mut egui: EguiMut,
-    #[cfg(feature = "ui-probe")] bevy: BevyBackend,
+    egui: EguiMut,
     mut commands: Commands,
     mut opened: Local<bool>,
 ) {
@@ -672,10 +681,6 @@ pub fn drive_lib_settings(
         *right_panel = RightPanel::Settings;
     }
     let open = right_panel.is(RightPanel::Settings);
-    // A world click under the panel is the panel's. (As DOM the panel sits
-    // over the canvas and the click never reaches it.)
-    #[cfg(feature = "ui-probe")]
-    egui.set_overlay_owns_pointer(open && bevy.pointer.owns_pointer());
     let signed_in = app.identity.username.is_some() && app.online.is_some();
     let who = signed_in.then(|| app.identity.username.clone()).flatten();
     LIVE.with(|live| {
@@ -684,7 +689,7 @@ pub fn drive_lib_settings(
             (false, None) => {}
             (false, Some(_)) => {
                 *live = None;
-                crate::systems::lib_host::clear();
+                crate::systems::lib_host::clear_keyed("settings");
                 // What egui's panel does on closing: the microphone off, the
                 // typed password gone, the tokens forgotten.
                 state.page = None;
@@ -699,7 +704,8 @@ pub fn drive_lib_settings(
                 let l = Live::new(&app, &state, lib.page.as_deref(), who, signed_in);
                 let compact = egui.compact();
                 let p = theme::p();
-                crate::systems::lib_host::mount(
+                crate::systems::lib_host::mount_keyed(
+                    "settings",
                     panel(&l, compact),
                     p.ink == theme::DARK.ink,
                     theme::touch_layout(),

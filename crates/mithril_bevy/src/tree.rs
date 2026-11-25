@@ -610,6 +610,7 @@ fn inherit_only(parent: &Computed) -> Computed {
         letter_spacing: parent.letter_spacing,
         text_align: parent.text_align,
         nowrap: parent.nowrap,
+        ellipsis: parent.ellipsis,
         uppercase: parent.uppercase,
         visible: parent.visible,
         custom: parent.custom.clone(),
@@ -754,7 +755,9 @@ fn write_components(
         }
         em.insert(TextColor(colour(c.color, opacity)));
         em.insert(LineHeight::RelativeToFont(c.line_height));
-        let mut layout = if c.nowrap {
+        // No ellipsis in Bevy's text: a line the browser would end in "…"
+        // wraps instead of being cut off mid-letter.
+        let mut layout = if c.nowrap && !c.ellipsis {
             TextLayout::no_wrap()
         } else {
             TextLayout::default()

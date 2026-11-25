@@ -90,6 +90,10 @@ pub struct BookmarksState {
     viewing: Option<PhotoView>,
     /// Why the last photo failed, shown in the panel until the next attempt.
     photo_error: Option<String>,
+    /// The library draws the Places panel (`lib_places`): egui's panel keeps
+    /// only an empty strip of its width, and still draws the photo viewer,
+    /// which needs egui's textures.
+    pub lib: bool,
 }
 
 /// A photo the user asked for and has not got yet.
@@ -161,6 +165,76 @@ impl BookmarksState {
             })
             .detach();
     }
+
+    /// The place a photo is being waited for, if any.
+    pub(crate) fn capturing_for(&self) -> Option<u64> {
+        self.capture.as_ref().map(|c| c.place)
+    }
+
+    /// Why the last photo failed, until it is dismissed or retried.
+    pub(crate) fn photo_error(&self) -> Option<&str> {
+        self.photo_error.as_deref()
+    }
+
+    /// The full-size photo is up (egui's window, over either edition).
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub(crate) fn viewing_photo(&self) -> bool {
+        self.viewing.is_some()
+    }
+
+    /// Do what a panel asked for this frame: egui's and the library's both
+    /// collect an [`Actions`] and hand it here, so the two cannot drift.
+    /// `current` is where the camera is now ([`current_view`]), for a new
+    /// place and for "Update to the current view".
+    ///
+    /// Returns true when the panel jumped to a place, and so should close:
+    /// jumping is the last thing anyone wants the Places list for, and on a
+    /// phone the panel *is* the screen — it would stay open covering exactly
+    /// the view it was asked to fly to. Only a jump does this: renaming,
+    /// recolouring, moving a row into a folder and taking a photo are all
+    /// list work, and a list that shut itself after every edit would be
+    /// unusable.
+    pub(crate) fn apply_actions(
+        &mut self,
+        store: &mut UserStore,
+        nav: &mut GeoNavState,
+        current: Option<CurrentView>,
+        act: Actions,
+    ) -> bool {
+        if act.new_place {
+            if let Some((lat, lng, alt, pose)) = current.clone() {
+                let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
+                // Named by reverse geocoding, like every other new place — the
+                // placeholder is what shows until the address lands.
+                self.request_address(id, lat, lng);
+            }
+        }
+        // Read before `apply` takes `act`.
+        let jumped = act.teleport.is_some();
+        apply_photo_actions(self, store, &act);
+        apply(store, nav, act.update.zip(current), act);
+        jumped
+    }
+}
+
+/// Where the camera is now and how it looks: what a new place saves, and
+/// what "Update to the current view" repoints a place at. `None` before the
+/// world anchor exists.
+pub(crate) type CurrentView = (f64, f64, f64, CameraPose);
+
+/// The camera's [`CurrentView`], for either edition of the panel.
+pub(crate) fn current_view(
+    camera: &AnchoredCamera,
+    camera_state: &CameraState,
+    map_anchor: &MapAnchor,
+) -> Option<CurrentView> {
+    camera
+        .world_position_f64()
+        .zip(map_anchor.geo)
+        .map(|(world, anchor)| {
+            let (lat, lng) = world_to_lat_lng(anchor, world.x, world.z);
+            (lat, lng, world.y, CameraPose::capture(camera_state))
+        })
 }
 
 /// First few segments of a Nominatim display_name — enough to recognise the
@@ -208,8 +282,10 @@ const INDENT: f32 = 12.0;
 const MARKER_SLOT: f32 = crate::utils::photo::THUMB_POINTS;
 
 /// One line of the flattened tree. Owned copies of what the row draws, so the
-/// render loop holds no borrow of the store and can queue mutations freely.
-enum Row {
+/// render loop holds no borrow of the store and can queue mutations freely —
+/// and, for the library's edition, what it compares from frame to frame.
+#[derive(Clone, PartialEq)]
+pub(crate) enum Row {
     Folder {
         id: u64,
         depth: usize,
@@ -231,6 +307,13 @@ enum Row {
         /// Stem of the place's photo, if it has one.
         photo: Option<String>,
     },
+}
+
+/// The tree as both editions draw it ([`flatten`] from the top).
+pub(crate) fn rows(store: &UserStore) -> Vec<Row> {
+    let mut rows = Vec::new();
+    flatten(store, None, 0, &mut rows);
+    rows
 }
 
 /// Flatten the directory tree into draw order: each folder, then its child
@@ -277,38 +360,58 @@ fn flatten(store: &UserStore, parent: Option<u64>, depth: usize, out: &mut Vec<R
 }
 
 /// Everything the panel wants done, collected while drawing (the store is
-/// borrowed immutably there) and applied afterwards.
+/// borrowed immutably there) and applied afterwards by
+/// [`BookmarksState::apply_actions`] — by egui's panel and the library's alike.
 #[derive(Default)]
-struct Actions {
-    new_folder: bool,
+pub(crate) struct Actions {
+    pub(crate) new_folder: bool,
     /// Save where the camera is now as a place. It was the status HUD's ☆, which
     /// is a strange place for it to have been: the HUD is a readout, it is hidden
     /// by default now, and pressing ☆ opened *this* panel anyway to show what had
     /// just been saved. So the button lives where its result appears.
-    new_place: bool,
-    delete_place: Option<u64>,
-    delete_folder: Option<u64>,
-    update: Option<u64>,
-    teleport: Option<Teleport>,
+    pub(crate) new_place: bool,
+    pub(crate) delete_place: Option<u64>,
+    pub(crate) delete_folder: Option<u64>,
+    pub(crate) update: Option<u64>,
+    pub(crate) teleport: Option<Teleport>,
     /// What to call the teleport's destination in the location history.
-    teleport_label: Option<String>,
+    pub(crate) teleport_label: Option<String>,
     /// "Route here" on a place: its name and where it is.
-    route: Option<(String, f64, f64)>,
-    rename: Option<(Item, String)>,
-    recolor: Option<(u64, [f32; 3])>,
-    toggle_collapse: Option<u64>,
+    pub(crate) route: Option<(String, f64, f64)>,
+    pub(crate) rename: Option<(Item, String)>,
+    pub(crate) recolor: Option<(u64, [f32; 3])>,
+    pub(crate) toggle_collapse: Option<u64>,
     /// (what was dragged, which folder it was dropped on — `None` = top level).
-    drop: Option<(Item, Option<u64>)>,
+    pub(crate) drop: Option<(Item, Option<u64>)>,
     /// Start a photo capture for this place.
-    take_photo: Option<u64>,
+    pub(crate) take_photo: Option<u64>,
     /// Forget this place's photo.
-    clear_photo: Option<u64>,
+    pub(crate) clear_photo: Option<u64>,
     /// Open the full-size viewer: the place, its name and its photo stem.
-    view_photo: Option<(u64, String, String)>,
+    pub(crate) view_photo: Option<(u64, String, String)>,
     /// Abandon the capture in flight.
-    cancel_photo: bool,
+    pub(crate) cancel_photo: bool,
     /// Clear the last photo failure from the panel.
-    dismiss_photo_error: bool,
+    pub(crate) dismiss_photo_error: bool,
+}
+
+impl Actions {
+    /// Fly to a saved place, keeping the *current* camera mode and moving it
+    /// to the place's spot, rather than snapping back to the mode it was saved
+    /// in (`pose: None` skips `CameraPose::apply`, so `apply_teleport`
+    /// repositions the mode you're in — in Follow that means the avatar walks
+    /// there).
+    pub(crate) fn jump(&mut self, name: &str, (lat, lng, altitude): (f64, f64, f64)) {
+        self.teleport = Some(Teleport {
+            lat,
+            lng,
+            altitude: Some(altitude),
+            pose: None,
+            silent: false,
+            look: false,
+        });
+        self.teleport_label = Some(name.to_string());
+    }
 }
 
 fn egui_color(c: [f32; 3]) -> egui::Color32 {
@@ -458,29 +561,43 @@ pub fn render_bookmarks_panel(
     if !open_before {
         return;
     }
+    // The library's edition is showing (`lib_places`): keep an empty strip of
+    // the panel's width, so the dock and the pins move aside and a click
+    // there is not the world's (as Search's and Settings' do). The viewer
+    // above stays egui's, since the photos are egui textures.
+    if bookmarks.lib {
+        let compact = egui.compact();
+        let viewport_w = egui.viewport_pts().x;
+        let mut open = true;
+        let mut strip = crate::systems::egui_manager::responsive_right_panel(
+            "bookmarks_panel",
+            compact,
+            viewport_w,
+            300.0,
+        )
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false);
+        if !compact {
+            strip = strip.resizable(false).exact_size(300.0);
+        }
+        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+        return;
+    }
 
     // Current location + view, for the per-place "update to here" action.
-    let current = camera
-        .world_position_f64()
-        .zip(map_anchor.geo)
-        .map(|(world, anchor)| {
-            let (lat, lng) = world_to_lat_lng(anchor, world.x, world.z);
-            let alt = world.y;
-            (lat, lng, alt, CameraPose::capture(&camera_state))
-        });
+    let current = current_view(&camera, &camera_state, &map_anchor);
 
     let has_place = current.is_some();
 
-    let mut rows = Vec::new();
-    flatten(&store, None, 0, &mut rows);
+    let rows = rows(&store);
 
     let mut act = Actions::default();
     let mut editing = bookmarks.editing.take();
     // Taken out and put back for the same reason `editing` is: the draw closure
     // cannot hold a borrow of the resource it is being called from.
     let mut thumbs = std::mem::take(&mut bookmarks.photo_textures);
-    let capturing_for = bookmarks.capture.as_ref().map(|c| c.place);
-    let photo_error = bookmarks.photo_error.clone();
+    let capturing_for = bookmarks.capturing_for();
+    let photo_error = bookmarks.photo_error().map(str::to_owned);
 
     crate::systems::egui_manager::right_panel(
         &mut egui,
@@ -665,27 +782,9 @@ pub fn render_bookmarks_panel(
     bookmarks.photo_textures = thumbs;
     drag_ghost(&egui.ctx, &rows);
 
-    if act.new_place {
-        if let Some((lat, lng, alt, pose)) = current.clone() {
-            let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
-            // Named by reverse geocoding, like every other new place — the
-            // placeholder is what shows until the address lands.
-            bookmarks.request_address(id, lat, lng);
-        }
-    }
-    // Jumping to a place is the last thing anyone wants the Places list for, and
-    // on a phone the panel *is* the screen — so it stays open covering exactly the
-    // view it was asked to fly to. Closing it is the panel getting out of the way
-    // of its own result. Only a jump does this: renaming, recolouring, dropping a
-    // row into a folder and taking a photo are all list work, and a list that shut
-    // itself after every edit would be unusable.
-    //
-    // Read before `apply` takes `act`, and applied after the `right_panel` borrow
-    // the draw closure held has ended.
-    let jumped = act.teleport.is_some();
-    apply_photo_actions(&mut bookmarks, &mut store, &act);
-    apply(&mut store, &mut nav, act.update.zip(current), act);
-    if jumped {
+    // A jump closes the panel (`BookmarksState::apply_actions` says why) — applied
+    // after the `right_panel` borrow the draw closure held has ended.
+    if bookmarks.apply_actions(&mut store, &mut nav, current, act) {
         *right_panel = crate::resources::RightPanel::None;
     }
 }
@@ -913,20 +1012,7 @@ fn place_row(
                 // phone would also fly the camera to the place behind it, which is
                 // exactly the view the menu is covering.
                 if name_response.clicked() && !name_response.long_touched() {
-                    // Keep the *current* camera mode and move it to the place's
-                    // spot, rather than snapping back to the mode it was saved in
-                    // (`pose: None` skips `CameraPose::apply`, so `apply_teleport`
-                    // repositions the mode you're in — in Follow that means the
-                    // avatar walks there).
-                    act.teleport = Some(Teleport {
-                        lat,
-                        lng,
-                        altitude: Some(altitude),
-                        pose: None,
-                        silent: false,
-                        look: false,
-                    });
-                    act.teleport_label = Some(title.clone());
+                    act.jump(&title, (lat, lng, altitude));
                 }
 
                 // Kept beside the kebab rather than replaced by it: right-click is

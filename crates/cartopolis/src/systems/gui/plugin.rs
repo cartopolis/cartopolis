@@ -39,6 +39,10 @@ impl Plugin for GuiPlugin {
                     systems::lib_settings::drive_lib_settings,
                     systems::lib_layers::drive_lib_layers,
                     systems::lib_search::drive_lib_search,
+                    systems::lib_route::drive_lib_route,
+                    systems::lib_places::drive_lib_places,
+                    systems::lib_place_card::drive_lib_place_card,
+                    systems::lib_building_card::drive_lib_building_card,
                 ),
             );
         app.init_resource::<systems::settings::SettingsState>()

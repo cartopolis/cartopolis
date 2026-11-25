@@ -455,7 +455,7 @@ pub fn drive_lib_layers(
             (false, None) => {}
             (false, Some(_)) => {
                 *m = None;
-                crate::systems::lib_host::clear();
+                crate::systems::lib_host::clear_keyed("layers");
             }
             (true, None) => {
                 // A category asked for by name (`CARTO_UI_LIB_PAGE=city`,
@@ -472,7 +472,8 @@ pub fn drive_lib_layers(
                 let mounted = Mounted::new(dl.bypass_change_detection(), in_space, tdbag_available);
                 let compact = egui.compact();
                 let p = theme::p();
-                crate::systems::lib_host::mount(
+                crate::systems::lib_host::mount_keyed(
+                    "layers",
                     panel(&mounted.l, &mounted.counts, compact),
                     p.ink == theme::DARK.ink,
                     theme::touch_layout(),

@@ -24,6 +24,12 @@
 //! mode, the on-screen keyboard and (on a compact viewport) an open panel each
 //! own the screen the card would float over. Suppression *hides* the card rather
 //! than closing it — the place survives a trip through the Route panel.
+//!
+//! The component library draws it too (`lib_place_card`, `CARTO_UI_LIB=place_card`):
+//! with [`PlaceCard::lib`] on this system draws nothing, but still spends the
+//! pick, works out the suppression and the camera's side ([`PlaceView`]) and
+//! does the verb the library's card asks for — through [`PlaceCard::act`],
+//! the same code egui's buttons call.
 
 use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
@@ -38,7 +44,7 @@ use web_time::Instant;
 
 /// A place the card can show: what the user picked, where it is, and the words
 /// that described it on the row they picked it from.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CardPlace {
     pub name: String,
     /// What kind of place it is ("town", "restaurant", "recent") — the small
@@ -104,6 +110,138 @@ pub struct PlaceCard {
     pub rest: crate::systems::motion::Rest,
     /// The finger on its grabber.
     pub drag: crate::systems::motion::SheetDrag,
+    /// When Save last saved this place: its ✔ for a moment.
+    saved_at: Option<Instant>,
+    /// The library draws the card (`lib_place_card`): egui's system draws
+    /// nothing, and publishes [`lib_view`](Self::lib_view) instead.
+    pub lib: bool,
+    /// What egui's system and the library's card pass each other while
+    /// `lib` is on.
+    pub lib_view: PlaceView,
+}
+
+/// A verb on the place shown: one set, for both editions of the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceAction {
+    /// Route here — to a person sharing their location, follow them.
+    RouteHere,
+    /// Start a route here.
+    RouteFrom,
+    /// Save into Places.
+    Save,
+    /// Jump there (signed in only).
+    Jump,
+    /// Send the place to a chat or community (`bridges`, the app only).
+    Share,
+    /// A Community marker's way back into Community (`bridges`).
+    OpenOrigin,
+}
+
+/// The side of the card only egui's system can work out — the camera, the
+/// session, what owns the bottom of the screen — for the library's edition.
+#[derive(Default, Clone, PartialEq, Debug)]
+pub struct PlaceView {
+    /// Something owns the bottom of the screen: the card steps aside.
+    pub hidden: bool,
+    /// How far the place is from the camera, when the camera is placed.
+    pub distance: Option<String>,
+    /// Signed in: Jump there is offered.
+    pub online: bool,
+    /// Save just saved it (its ✔).
+    pub saved: bool,
+    /// A verb the library's card asked for, done by egui's system.
+    pub action: Option<PlaceAction>,
+}
+
+impl PlaceCard {
+    /// Show a place, at the peek.
+    pub fn open(&mut self, place: CardPlace) {
+        self.place = Some(place);
+        self.rest = crate::systems::motion::Rest::Peek;
+        self.drag = Default::default();
+        self.saved_at = None;
+    }
+
+    /// Put the card away.
+    pub fn close(&mut self) {
+        self.place = None;
+    }
+
+    /// Save saved this place within the last moment.
+    #[must_use]
+    pub fn saved(&self) -> bool {
+        self.saved_at
+            .is_some_and(|at| at.elapsed().as_secs_f32() < 1.5)
+    }
+
+    /// Do a verb on `place`. Share and OpenOrigin are the Community side's
+    /// ([`to_bridges`]), not done here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn act(
+        &mut self,
+        action: PlaceAction,
+        place: &CardPlace,
+        nav: &mut GeoNavState,
+        store: &mut crate::systems::user_store::UserStore,
+        camera_state: &CameraState,
+        altitude: Option<f64>,
+    ) {
+        match action {
+            PlaceAction::RouteHere => match place.from.as_ref().and_then(|f| f.person.as_ref()) {
+                Some((key, who)) => nav.route_to_person(key, who, place.lat, place.lng),
+                None => nav.route_to(&place.name, place.lat, place.lng),
+            },
+            PlaceAction::RouteFrom => nav.route_from(&place.name, place.lat, place.lng),
+            PlaceAction::Save => {
+                if self.saved() {
+                    return;
+                }
+                // The name the user just read, not a reverse lookup — the
+                // row's name is the better one. Altitude and pose come from
+                // the camera, as every saved place's do: a place is a
+                // remembered view as well as a coordinate.
+                store.add_bookmark(
+                    place.name.clone(),
+                    place.lat,
+                    place.lng,
+                    altitude.unwrap_or(geo_nav::MIN_TELEPORT_ALTITUDE),
+                    geo_nav::CameraPose::capture(camera_state),
+                );
+                self.saved_at = Some(Instant::now());
+            }
+            PlaceAction::Jump => {
+                nav.pending_label = Some(place.name.clone());
+                nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
+            }
+            PlaceAction::Share | PlaceAction::OpenOrigin => {}
+        }
+    }
+}
+
+/// The verbs that reach Community (`bridges`): Share hands the place to the
+/// Share sheet, OpenOrigin opens where a marker's place came from.
+#[cfg(feature = "comms")]
+pub fn to_bridges(
+    action: PlaceAction,
+    place: &CardPlace,
+    bridges: &mut crate::systems::bridges::Bridges,
+) {
+    match action {
+        PlaceAction::Share => {
+            bridges.share = Some(crate::systems::bridges::SharePlace {
+                name: place.name.clone(),
+                lat: place.lat,
+                lng: place.lng,
+                view: None,
+            });
+        }
+        PlaceAction::OpenOrigin => {
+            if let Some(from) = &place.from {
+                bridges.open = Some(from.open.clone());
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The card's two rests: there is not enough on a place for a third.
@@ -133,7 +271,6 @@ pub fn render_place_card(
     map_anchor: Res<crate::resources::MapAnchor>,
     camera: AnchoredCamera,
     camera_state: Res<CameraState>,
-    mut saved_at: Local<Option<Instant>>,
     #[cfg(feature = "comms")] mut bridges: ResMut<crate::systems::bridges::Bridges>,
 ) {
     // A pick made in the Search panel: take it, close the panel that made it.
@@ -141,10 +278,7 @@ pub fn render_place_card(
     // in one place — every path that opens the card is a path that closes the
     // panel, or the card floats over the list it came from.
     if let Some(place) = nav.pending_card.take() {
-        card.place = Some(place);
-        card.rest = crate::systems::motion::Rest::Peek;
-        card.drag = Default::default();
-        *saved_at = None;
+        card.open(place);
         if right_panel.is(RightPanel::Search) {
             *right_panel = RightPanel::None;
         }
@@ -169,6 +303,43 @@ pub fn render_place_card(
         || (egui.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
         || sharing;
+    let cam = camera.get();
+    let viewer = cam
+        .zip(map_anchor.geo)
+        .map(|((cell, tf), anchor)| geo_nav::camera_geo(anchor, &globe, cell, tf));
+    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
+
+    // The library's edition is showing (`lib_place_card`): hand it the side
+    // only this system can work out, do the verb it asked for, draw nothing.
+    if card.lib {
+        // Read before taking, so a quiet frame leaves the resource unchanged.
+        let action = if card.lib_view.action.is_some() {
+            card.lib_view.action.take()
+        } else {
+            None
+        };
+        let view = PlaceView {
+            hidden,
+            distance: card
+                .place
+                .as_ref()
+                .zip(viewer)
+                .map(|(p, here)| geo_nav::distance_label(here, (p.lat, p.lng))),
+            online: session.is_online(),
+            saved: card.saved(),
+            action: None,
+        };
+        if card.lib_view != view {
+            card.lib_view = view;
+        }
+        if let (Some(a), Some(place)) = (action, card.place.clone()) {
+            card.act(a, &place, &mut nav, &mut store, &camera_state, altitude);
+            #[cfg(feature = "comms")]
+            to_bridges(a, &place, &mut bridges);
+        }
+        return;
+    }
+
     // The card rises from the dock and sinks back (`motion::linger`): the place
     // it was showing is still drawn, untouchable, for the last `motion::LEAVE`
     // after `card.place` is cleared.
@@ -181,12 +352,8 @@ pub fn render_place_card(
         return;
     };
 
-    let cam = camera.get();
-    let viewer = cam
-        .zip(map_anchor.geo)
-        .map(|((cell, tf), anchor)| geo_nav::camera_geo(anchor, &globe, cell, tf));
-    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
-
+    let saved = card.saved();
+    let mut asked: Option<PlaceAction> = None;
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let mut close = false;
     egui::Area::new(egui::Id::new("place_card"))
@@ -289,7 +456,6 @@ pub fn render_place_card(
                 // behind ⋯. They were four equal plates — From · To · Save ·
                 // Beam — with From first, though getting *to* a place is what a
                 // search for it is nearly always for (`docs/mockups/ux-review`).
-                let saved = saved_at.is_some_and(|at| at.elapsed().as_secs_f32() < 1.5);
                 // A Community marker: the way into Community is the main verb,
                 // and the way there the other (N3). No Save, no Share: it is
                 // somebody else's thing, not a place of the map's.
@@ -302,17 +468,11 @@ pub fn render_place_card(
                     )
                     .clicked()
                     {
-                        #[cfg(feature = "comms")]
-                        {
-                            bridges.open = Some(from.open.clone());
-                        }
+                        asked = Some(PlaceAction::OpenOrigin);
                     }
                     ui.add_space(2.0);
                     if theme::secondary_button(ui, icons::ROUTE, "Route here", w).clicked() {
-                        match &from.person {
-                            Some((key, who)) => nav.route_to_person(key, who, place.lat, place.lng),
-                            None => nav.route_to(&place.name, place.lat, place.lng),
-                        }
+                        asked = Some(PlaceAction::RouteHere);
                     }
                     return;
                 }
@@ -324,7 +484,7 @@ pub fn render_place_card(
                 if theme::primary_button_sized(ui, &format!("{}  Route here", icons::FINISH), w)
                     .clicked()
                 {
-                    nav.route_to(&place.name, place.lat, place.lng);
+                    asked = Some(PlaceAction::RouteHere);
                 }
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
@@ -343,18 +503,7 @@ pub fn render_place_card(
                         cell,
                     );
                     if save.on_hover_text("Save this place").clicked() && !saved {
-                        // The name the user just read, not a reverse lookup —
-                        // the row's name is the better one. Altitude and pose
-                        // come from the camera, as every saved place's do: a
-                        // place is a remembered view as well as a coordinate.
-                        store.add_bookmark(
-                            place.name.clone(),
-                            place.lat,
-                            place.lng,
-                            altitude.unwrap_or(geo_nav::MIN_TELEPORT_ALTITUDE),
-                            geo_nav::CameraPose::capture(&camera_state),
-                        );
-                        *saved_at = Some(Instant::now());
+                        asked = Some(PlaceAction::Save);
                     }
                     // Share (bridge ③): the one way a place goes to people.
                     // No orange dot on it, as N2 drew one: the person asked
@@ -364,17 +513,12 @@ pub fn render_place_card(
                         .on_hover_text("Send this place to a chat or community")
                         .clicked()
                     {
-                        bridges.share = Some(crate::systems::bridges::SharePlace {
-                            name: place.name.clone(),
-                            lat: place.lat,
-                            lng: place.lng,
-                            view: None,
-                        });
+                        asked = Some(PlaceAction::Share);
                     }
                     let more = theme::secondary_button(ui, icons::MORE, "More", cell);
                     egui::Popup::menu(&more).show(|ui| {
                         if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
-                            nav.route_from(&place.name, place.lat, place.lng);
+                            asked = Some(PlaceAction::RouteFrom);
                             ui.close();
                         }
                         // Signed in only: a body in a shared world is what makes
@@ -384,8 +528,7 @@ pub fn render_place_card(
                         if session.is_online()
                             && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
                         {
-                            nav.pending_label = Some(place.name.clone());
-                            nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
+                            asked = Some(PlaceAction::Jump);
                             ui.close();
                         }
                     });
@@ -395,13 +538,12 @@ pub fn render_place_card(
                     ui.add_space(6.0);
                     ui.separator();
                     if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
-                        nav.route_from(&place.name, place.lat, place.lng);
+                        asked = Some(PlaceAction::RouteFrom);
                     }
                     if session.is_online()
                         && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
                     {
-                        nav.pending_label = Some(place.name.clone());
-                        nav.pending_teleport = Some(Teleport::geo(place.lat, place.lng, None));
+                        asked = Some(PlaceAction::Jump);
                     }
                     ui.add_space(4.0);
                     ui.label(
@@ -412,7 +554,12 @@ pub fn render_place_card(
                 }
             });
         });
+    if let Some(a) = asked {
+        card.act(a, &place, &mut nav, &mut store, &camera_state, altitude);
+        #[cfg(feature = "comms")]
+        to_bridges(a, &place, &mut bridges);
+    }
     if close {
-        card.place = None;
+        card.close();
     }
 }

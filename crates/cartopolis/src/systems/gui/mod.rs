@@ -53,9 +53,17 @@ pub mod js_highlight;
 pub mod layer_tiles;
 pub mod layers_panel;
 #[cfg(feature = "ui-lib")]
+pub mod lib_building_card;
+#[cfg(feature = "ui-lib")]
 pub mod lib_host;
 #[cfg(feature = "ui-lib")]
 pub mod lib_layers;
+#[cfg(feature = "ui-lib")]
+pub mod lib_place_card;
+#[cfg(feature = "ui-lib")]
+pub mod lib_places;
+#[cfg(feature = "ui-lib")]
+pub mod lib_route;
 #[cfg(feature = "ui-lib")]
 pub mod lib_search;
 #[cfg(feature = "ui-lib")]

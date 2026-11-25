@@ -13,11 +13,13 @@
 
 use mithril::view::View;
 
-/// Mounts a screen, dark or light, for a coarse pointer or not.
-pub fn mount(view: View, dark: bool, coarse_pointer: bool) {
+/// Mounts a screen under `key` (its name), dark or light, for a coarse
+/// pointer or not, beside whatever else is mounted (a card over the map
+/// beside a panel); [`clear_keyed`] takes it down alone.
+pub fn mount_keyed(key: &str, view: View, dark: bool, coarse_pointer: bool) {
     #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
     {
-        dom::mount(view, dark, coarse_pointer);
+        dom::mount_keyed(key, view, dark, coarse_pointer);
     }
     #[cfg(not(all(feature = "ui-dom", target_arch = "wasm32")))]
     {
@@ -25,10 +27,25 @@ pub fn mount(view: View, dark: bool, coarse_pointer: bool) {
         mithril_bevy::with_host(|host| {
             host.env.dark = dark;
             host.env.coarse_pointer = coarse_pointer;
-            host.mount(view);
+            host.mount_keyed(key, view);
         });
         #[cfg(not(feature = "ui-probe"))]
-        let _ = (view, dark, coarse_pointer);
+        let _ = (key, view, dark, coarse_pointer);
+    }
+}
+
+/// Unmounts the screen under `key`.
+pub fn clear_keyed(key: &str) {
+    #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
+    {
+        dom::clear_keyed(key);
+    }
+    #[cfg(not(all(feature = "ui-dom", target_arch = "wasm32")))]
+    {
+        #[cfg(feature = "ui-probe")]
+        mithril_bevy::with_host(|host| host.clear_keyed(key));
+        #[cfg(not(feature = "ui-probe"))]
+        let _ = key;
     }
 }
 
@@ -50,7 +67,15 @@ pub fn prepare_bevy(
     mut ready: bevy::prelude::Local<bool>,
 ) {
     use crate::systems::{icons, theme};
-    if *ready || !(lib.settings || lib.layers || lib.search) {
+    if *ready
+        || !(lib.settings
+            || lib.layers
+            || lib.search
+            || lib.route
+            || lib.places
+            || lib.place_card
+            || lib.building_card)
+    {
         return;
     }
     let Ok(camera) = cameras.single() else {
@@ -68,33 +93,29 @@ pub fn prepare_bevy(
     *ready = true;
 }
 
-/// A library text field with the keyboard holds the game keys off, as an
-/// egui field does (`EguiManager::ui_owns_keyboard`). As DOM a focused
-/// field is outside the canvas, whose keyboard Bevy reads, so only the
-/// Bevy backend needs telling.
+/// The library's screens hold the input they are under, as egui's panels
+/// do: a world click under any of them yields (`EguiManager::owns_click`),
+/// and a text field with the keyboard holds the game keys off
+/// (`ui_owns_keyboard`). As DOM the screens sit over the canvas, whose
+/// pointer and keyboard Bevy reads, so only the Bevy backend needs telling.
 #[cfg(feature = "ui-probe")]
-pub fn bridge_keyboard(
+pub fn bridge_input(
     focus: Option<bevy::prelude::Res<bevy::input_focus::InputFocus>>,
     fields: bevy::prelude::Query<(), bevy::prelude::With<bevy::text::EditableText>>,
+    mut pointer: bevy::prelude::ResMut<mithril_bevy::UiPointer>,
+    live: bevy::prelude::Query<(), bevy::prelude::With<bevy::ui::Node>>,
     mut egui: crate::systems::egui_manager::EguiMut,
 ) {
     let owns = focus
         .and_then(|f| f.get())
         .is_some_and(|e| fields.contains(e));
     egui.set_overlay_owns_keyboard(owns);
-}
-
-/// Unmounts everything mounted.
-pub fn clear() {
-    #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
-    {
-        dom::clear();
+    // A node despawned under the pointer (a card closed by its ✕) never
+    // sees the pointer leave, and would hold every world click after it.
+    if pointer.over.iter().any(|e| !live.contains(*e)) {
+        pointer.over.retain(|e| live.contains(*e));
     }
-    #[cfg(not(all(feature = "ui-dom", target_arch = "wasm32")))]
-    {
-        #[cfg(feature = "ui-probe")]
-        mithril_bevy::with_host(|host| host.clear());
-    }
+    egui.set_overlay_owns_pointer(pointer.owns_pointer());
 }
 
 #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
@@ -113,7 +134,7 @@ mod dom {
     const STYLE: &str = "cartopolis-ui-css";
 
     thread_local! {
-        static APPS: RefCell<Vec<App>> = const { RefCell::new(Vec::new()) };
+        static KEYED: RefCell<Vec<(String, App)>> = const { RefCell::new(Vec::new()) };
     }
 
     fn document() -> Option<web_sys::Document> {
@@ -159,21 +180,34 @@ mod dom {
         }
     }
 
-    pub fn mount(view: View, dark: bool, _coarse_pointer: bool) {
+    pub fn mount_keyed(key: &str, view: View, dark: bool, coarse_pointer: bool) {
+        clear_keyed(key);
         if ensure_page().is_none() {
             return;
         }
+        let _ = coarse_pointer;
         // The container's own theme, not the page's: the frame's theme
         // follows the app's setting (`ui_theme`), the site's its own.
         if let Some(c) = document().and_then(|d| d.get_element_by_id(CONTAINER)) {
             let _ = c.set_attribute("data-theme", if dark { "dark" } else { "light" });
         }
         let app = mithril::dom::mount_to(CONTAINER, view);
-        APPS.with(|apps| apps.borrow_mut().push(app));
+        KEYED.with(|k| k.borrow_mut().push((key.to_owned(), app)));
     }
 
-    pub fn clear() {
-        let apps: Vec<App> = APPS.with(|apps| std::mem::take(&mut *apps.borrow_mut()));
+    pub fn clear_keyed(key: &str) {
+        let gone: Vec<App> = KEYED.with(|k| {
+            let mut k = k.borrow_mut();
+            let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *k)
+                .into_iter()
+                .partition(|(name, _)| name == key);
+            *k = kept;
+            gone.into_iter().map(|(_, app)| app).collect()
+        });
+        unmount(gone);
+    }
+
+    fn unmount(apps: Vec<App>) {
         let Some(parent) = document().and_then(|d| d.get_element_by_id(CONTAINER)) else {
             return;
         };

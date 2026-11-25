@@ -245,6 +245,24 @@ impl Waypoint {
     fn clear(&mut self) {
         *self = Self::default();
     }
+
+    /// The places the field's lookup answered, while they are up.
+    #[must_use]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn suggestions(&self) -> &[GeoSuggestion] {
+        if self.show_suggestions {
+            &self.suggestions
+        } else {
+            &[]
+        }
+    }
+
+    /// The field's lookup is under way.
+    #[must_use]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn looking_up(&self) -> bool {
+        self.in_flight
+    }
 }
 
 /// What the solver is doing, and what the panel shows because of it.
@@ -349,6 +367,72 @@ pub struct RouteState {
     cache: Arc<GraphCache>,
     /// Reverse-geocoded names for map-picked points: `(endpoint, label)`.
     reverse: Arc<Mutex<Vec<(Endpoint, String)>>>,
+    /// The library draws the planner (`lib_route`): egui's system draws
+    /// nothing, and still does what needs the avatar, the camera, the
+    /// keyboard and the trip's resources ([`Self::lib_view`],
+    /// [`Self::lib_trip`]).
+    pub lib: bool,
+    /// What egui's system hands the library's sheet each frame while `lib`
+    /// is on.
+    pub lib_view: RouteView,
+    /// A trip the library's sheet asked to start, started by egui's system,
+    /// which holds the driver, the walk guide and the camera.
+    pub lib_trip: Option<Trip>,
+}
+
+/// The side of the planner only egui's system can see, for the library's
+/// edition (`lib_route`): published each frame by [`render_route_sheet`].
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct RouteView {
+    /// Where "My position" is: the avatar, or the camera with no avatar.
+    pub here: Option<(f64, f64)>,
+    /// This device gives a position fix (riding and driving follow it).
+    pub gps: bool,
+    /// There is an avatar to walk the route.
+    pub avatar: bool,
+    /// The sheet's bottom edge above the viewport's, in points: clear of the
+    /// dock or of the on-screen keyboard ([`sheet_bottom`]).
+    pub bottom: f32,
+    /// The viewport, in points.
+    pub viewport: [f32; 2],
+    /// The solved route's arrival on the clock, "14:32".
+    pub arrive: Option<String>,
+}
+
+/// Starting along the solved route, as the sheet's buttons ask for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trip {
+    /// Ride or drive it (`systems::driver`).
+    Drive,
+    /// Walk it in the world (`systems::walk_guide`); `auto` is "Walk me
+    /// there", the avatar following the route by itself.
+    Walk { auto: bool },
+}
+
+/// The library's sheet's outer width for a viewport this wide, in points:
+/// egui's sheet's content width plus a frame's padding.
+#[must_use]
+pub fn lib_sheet_width(viewport_w: f32) -> f32 {
+    (viewport_w - 2.0 * theme::OSD_MARGIN)
+        .min(SHEET_MAX_WIDTH + 40.0)
+        .max(0.0)
+}
+
+/// The library's header: the height its `lib_route` header is drawn at.
+pub const LIB_SHEET_HEADER_PTS: f32 = 56.0;
+
+/// What the library's sheet at its peek is taken to cost, for the pins
+/// ([`RouteState::sheet_rect`]); it is laid out by `bevy_ui`, which egui
+/// cannot ask.
+const LIB_SHEET_PEEK_PTS: f32 = 250.0;
+
+/// The tallest the library's sheet gets: egui's body budget plus its header,
+/// and never past the top of the screen.
+#[must_use]
+pub fn lib_sheet_max_height(viewport_h: f32, bottom: f32) -> f32 {
+    (viewport_h * SHEET_MAX_FRACTION + LIB_SHEET_HEADER_PTS)
+        .min(viewport_h - bottom - theme::OSD_MARGIN)
+        .max(SHEET_BODY_MIN_PTS)
 }
 
 impl Default for RouteState {
@@ -378,6 +462,9 @@ impl Default for RouteState {
             progress: Arc::new((AtomicUsize::new(0), AtomicUsize::new(0))),
             cache: Arc::new(Mutex::new(None)),
             reverse: Arc::new(Mutex::new(Vec::new())),
+            lib: false,
+            lib_view: RouteView::default(),
+            lib_trip: None,
         }
     }
 }
@@ -613,6 +700,214 @@ impl RouteState {
         self.invalidate();
         true
     }
+
+    /// One end, to read.
+    #[must_use]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn waypoint(&self, end: Endpoint) -> &Waypoint {
+        match end {
+            Endpoint::From => &self.from,
+            Endpoint::To => &self.to,
+        }
+    }
+
+    /// The detent the sheet is drawn at ([`effective_detent`]).
+    #[must_use]
+    pub fn detent(&self) -> SheetDetent {
+        effective_detent(self.sheet, self.route.is_some(), self.picking.is_some())
+    }
+
+    /// The start is a field rather than a line: it is being changed, or it is
+    /// still empty ([`start_line`]).
+    #[must_use]
+    pub fn start_open(&self) -> bool {
+        self.from_editing || self.from.coord.is_none()
+    }
+
+    /// The end the fill chips under the card are for, if any: the start while
+    /// it is open, the destination while it is empty, neither while a map
+    /// pick is armed ([`fill_chips`]).
+    #[must_use]
+    pub fn fill_end(&self) -> Option<Endpoint> {
+        if self.picking.is_some() {
+            None
+        } else if self.start_open() {
+            Some(Endpoint::From)
+        } else if self.to.label.trim().is_empty() {
+            Some(Endpoint::To)
+        } else {
+            None
+        }
+    }
+
+    /// The start reads "My position" and is placed: the "My position" chip
+    /// has nothing to add.
+    #[must_use]
+    pub fn start_is_here(&self) -> bool {
+        self.from.label == HERE_LABEL && self.from.coord.is_some()
+    }
+
+    /// A field's text, as a field's `changed()` hands it: the end is
+    /// unresolved until its lookup answers or a place is chosen.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn edit_label(&mut self, end: Endpoint, text: String) {
+        self.waypoint_mut(end).label = text;
+        self.label_edited(end);
+    }
+
+    /// What follows an edit of a field's text, whoever drew the field.
+    fn label_edited(&mut self, end: Endpoint) {
+        let wp = self.waypoint_mut(end);
+        wp.coord = None;
+        wp.last_edit = Some(Instant::now());
+        if end == Endpoint::To {
+            self.following = None;
+        }
+        self.invalidate();
+    }
+
+    /// Close a field's suggestions (Escape).
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn dismiss_suggestions(&mut self, end: Endpoint) {
+        let wp = self.waypoint_mut(end);
+        if wp.show_suggestions {
+            wp.show_suggestions = false;
+        }
+    }
+
+    /// The quiet line under a solved route's time: its distance, "to the
+    /// door" when it ends at one, and where it goes.
+    #[must_use]
+    pub fn destination_line(&self, r: &Route) -> String {
+        let door = if self.door.is_some() && self.door == self.to.coord {
+            " · to the door"
+        } else {
+            ""
+        };
+        let to = self.to.label.trim_start_matches(PICKED_PREFIX).trim();
+        if to.is_empty() {
+            format!("{}{door}", format_distance(r.distance_m))
+        } else {
+            format!("{}{door} · to {to}", format_distance(r.distance_m))
+        }
+    }
+
+    /// The start as its one line reads at rest: "My position", or the place,
+    /// without the map-pick mark.
+    #[must_use]
+    pub fn start_text(&self) -> String {
+        if self.from.label == HERE_LABEL {
+            HERE_LABEL.to_string()
+        } else {
+            self.from
+                .label
+                .trim_start_matches(PICKED_PREFIX)
+                .to_string()
+        }
+    }
+
+    /// Apply everything a sheet asked for in one frame — egui's and the
+    /// library's alike — except starting a trip ([`start_trip`]).
+    pub fn apply(
+        &mut self,
+        actions: &PanelActions,
+        nav: &mut GeoNavState,
+        here: Option<(f64, f64)>,
+    ) {
+        if let Some(mode) = actions.mode {
+            self.select_mode(mode);
+        }
+        // Any hand on the destination field, or a swap or Clear, is a different
+        // destination from the person being followed.
+        let touched_to = [
+            actions.edited,
+            actions.cleared,
+            actions.chose.as_ref().map(|c| c.0),
+        ]
+        .contains(&Some(Endpoint::To));
+        if touched_to || actions.swap || actions.clear {
+            self.following = None;
+        }
+        if let Some(end) = actions.edited {
+            self.label_edited(end);
+        }
+        if let Some(end) = actions.cleared {
+            self.waypoint_mut(end).clear();
+            self.invalidate();
+            self.status = SolveStatus::Idle;
+        }
+        if let Some((end, s)) = actions.chose.clone() {
+            self.waypoint_mut(end).set(s.label, (s.lat, s.lng));
+            self.invalidate();
+            // A start with a place in it folds back to its line, as egui's
+            // field does when the tap on the suggestion takes its focus.
+            if end == Endpoint::From {
+                self.from_editing = false;
+            }
+        }
+        if let (Some(end), Some(here)) = (actions.use_here, here) {
+            self.waypoint_mut(end).set(HERE_LABEL, here);
+            self.invalidate();
+            // Setting the start to "here" is the one thing the footnote form does
+            // best; there is nothing left to type, so fold it back.
+            if end == Endpoint::From {
+                self.from_editing = false;
+            }
+        }
+        if let Some(end) = actions.pick {
+            self.pick_on_map(end);
+        }
+        if actions.swap {
+            std::mem::swap(&mut self.from, &mut self.to);
+            self.invalidate();
+        }
+        if actions.edit_start {
+            self.from_editing = true;
+        }
+        if actions.collapse_start {
+            self.from_editing = false;
+        }
+        if actions.clear {
+            self.from.clear();
+            self.to.clear();
+            self.from_editing = false;
+            self.invalidate();
+            self.status = SolveStatus::Idle;
+        }
+        if let Some(i) = actions.goto_step {
+            if let Some(step) = self.route.as_ref().and_then(|r| r.steps.get(i)) {
+                nav.pending_teleport = Some(Teleport::geo(step.at[0], step.at[1], Some(220.0)));
+            }
+        }
+    }
+}
+
+/// Start along the solved route: the planner gets out of the way, since
+/// driving takes the whole screen and walking puts the camera behind the
+/// avatar. Nothing without a route.
+pub fn start_trip(
+    trip: Trip,
+    route: &RouteState,
+    driver: &mut crate::systems::driver::DriverState,
+    walk_guide: &mut crate::systems::walk_guide::WalkGuide,
+    camera_state: &mut crate::resources::CameraState,
+    right_panel: &mut RightPanel,
+) {
+    if route.route.is_none() {
+        return;
+    }
+    match trip {
+        // The turn list is on the manoeuvre card now.
+        Trip::Drive => {
+            walk_guide.stop();
+            driver.enter();
+        }
+        Trip::Walk { auto } => {
+            walk_guide.start(auto);
+            camera_state.mode = crate::resources::CameraMode::Avatar;
+        }
+    }
+    *right_panel = RightPanel::None;
 }
 
 /// How far the avatar walks before a "My position" start follows it
@@ -1441,7 +1736,9 @@ pub fn handle_route_map_pick(
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    if egui_manager.ctx.egui_wants_pointer_input() {
+    // egui's widgets, or a screen of the library's under the pointer (its
+    // route sheet, whose taps must not drop a pin on the map behind it).
+    if egui_manager.owns_click(false, None) {
         return;
     }
     let (Ok(window), Ok(anchor)) = (windows.single(), map_anchor.geo.ok_or(())) else {
@@ -2131,7 +2428,11 @@ fn chip_label(mode: TravelMode, duration_s: Option<f64>) -> String {
 /// with the device in your hand: driver mode follows the position fix, and on a
 /// device with no location source it would be narrating an avatar nobody is
 /// moving — so the button says what is missing instead.
-fn start_action(mode: TravelMode, gps: bool, avatar: bool) -> Result<&'static str, &'static str> {
+pub(crate) fn start_action(
+    mode: TravelMode,
+    gps: bool,
+    avatar: bool,
+) -> Result<&'static str, &'static str> {
     match mode {
         TravelMode::Foot if avatar => Ok("Walk"),
         TravelMode::Foot => Err("Sign in to walk it"),
@@ -2206,6 +2507,57 @@ pub fn render_route_sheet(
 
     let viewport = egui.viewport_pts();
     let bottom = sheet_bottom(&egui, &keyboard);
+
+    // The library's edition is showing (`lib_route`): hand it what only this
+    // system can see, start the trip it asked for, and publish where its
+    // sheet is for the pins. egui draws nothing: the sheet floats, so there
+    // is no strip to keep, and a click on the library's sheet is held off
+    // the world by the pointer's ownership (`lib_route`).
+    if route.lib {
+        let arrive = route.route.as_ref().map(|r| {
+            let ((h, m, _), local) = clock.hms();
+            crate::systems::driver::arrival_clock(h, m, r.duration_s, local)
+        });
+        let view = RouteView {
+            here,
+            gps: LocationWatch::available(),
+            avatar: !bodies.is_empty(),
+            bottom,
+            viewport: [viewport.x, viewport.y],
+            arrive,
+        };
+        if route.lib_view != view {
+            route.lib_view = view;
+        }
+        if let Some(trip) = route.lib_trip.take() {
+            start_trip(
+                trip,
+                &route,
+                &mut driver,
+                &mut walk_guide,
+                &mut camera_state,
+                &mut right_panel,
+            );
+        }
+        // Estimated, not measured: `bevy_ui` lays the sheet out, and egui
+        // cannot ask it. At its peek the sheet is about the header, the
+        // modes, the summary and the actions; open it is at most its cap.
+        let width = lib_sheet_width(viewport.x);
+        let max_h = lib_sheet_max_height(viewport.y, bottom);
+        let height = match route.detent() {
+            SheetDetent::Full => max_h,
+            SheetDetent::Peek => LIB_SHEET_PEEK_PTS.min(max_h),
+        };
+        let rect = egui::Rect::from_min_max(
+            egui::pos2((viewport.x - width) / 2.0, viewport.y - bottom - height),
+            egui::pos2((viewport.x + width) / 2.0, viewport.y - bottom),
+        );
+        if route.sheet_rect != Some(rect) {
+            route.sheet_rect = Some(rect);
+        }
+        return;
+    }
+
     let body_height = sheet_body_height(viewport.y, bottom, route.route.is_some());
     // The width the *content* gets. The frame's own margins are outside it, so
     // they come off first — sized against the raw viewport the sheet reaches both
@@ -2214,7 +2566,7 @@ pub fn render_route_sheet(
     let frame = theme::overlay_frame();
     let inset = frame.inner_margin.sum().x + 2.0 * frame.stroke.width;
     let width = (viewport.x - 2.0 * theme::OSD_MARGIN - inset).min(SHEET_MAX_WIDTH);
-    let detent = effective_detent(route.sheet, route.route.is_some(), route.picking.is_some());
+    let detent = route.detent();
 
     let mut actions = PanelActions::default();
     let mut close = false;
@@ -2339,22 +2691,21 @@ pub fn render_route_sheet(
     if let Some(d) = asked_detent {
         route.sheet = d;
     }
-    let drive = actions.drive;
-    let walk = actions.walk;
-    apply_actions(actions, &mut route, &mut nav, here);
-    // Driving takes the whole screen over, so the planner that started it gets out
-    // of the way — the turn list is on the manoeuvre card now.
-    if drive && route.route.is_some() {
-        walk_guide.stop();
-        driver.enter();
-        *right_panel = RightPanel::None;
-    }
-    // Walking keeps the world and puts the camera behind the avatar; the planner
-    // goes for the same reason.
-    if let (Some(auto), true) = (walk, route.route.is_some()) {
-        walk_guide.start(auto);
-        camera_state.mode = crate::resources::CameraMode::Avatar;
-        *right_panel = RightPanel::None;
+    route.apply(&actions, &mut nav, here);
+    let trip = if actions.drive {
+        Some(Trip::Drive)
+    } else {
+        actions.walk.map(|auto| Trip::Walk { auto })
+    };
+    if let Some(trip) = trip {
+        start_trip(
+            trip,
+            &route,
+            &mut driver,
+            &mut walk_guide,
+            &mut camera_state,
+            &mut right_panel,
+        );
     }
     if close {
         *right_panel = RightPanel::None;
@@ -2400,17 +2751,7 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), 
                     );
                 });
             });
-            let door = if route.door.is_some() && route.door == route.to.coord {
-                " · to the door"
-            } else {
-                ""
-            };
-            let to = route.to.label.trim_start_matches(PICKED_PREFIX).trim();
-            let line = if to.is_empty() {
-                format!("{}{door}", format_distance(r.distance_m))
-            } else {
-                format!("{}{door} · to {to}", format_distance(r.distance_m))
-            };
+            let line = route.destination_line(r);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(line)
@@ -2515,16 +2856,27 @@ fn action_row(
 
 /// The start button's words, as [`start_button`] writes them.
 fn start_label(mode: TravelMode, gps: bool, avatar: bool) -> String {
+    let (icon, words) = start_parts(mode, gps, avatar);
+    format!("{icon}  {words}")
+}
+
+/// The start button's glyph and words, apart — the library sets the glyph
+/// in the icon font, egui in one string ([`start_label`]).
+pub(crate) fn start_parts(
+    mode: TravelMode,
+    gps: bool,
+    avatar: bool,
+) -> (&'static str, &'static str) {
     match start_action(mode, gps, avatar) {
-        Ok(_) if mode == TravelMode::Foot => format!("{}  Walk me there", icons::PLAY),
-        Ok(verb) => format!("{}  {verb}", icons::PLAY),
+        Ok(_) if mode == TravelMode::Foot => (icons::PLAY, "Walk me there"),
+        Ok(verb) => (icons::PLAY, verb),
         Err(missing) => {
             let icon = if mode == TravelMode::Foot {
                 icons::WALK
             } else {
                 icons::HERE
             };
-            format!("{icon}  {missing}")
+            (icon, missing)
         }
     }
 }
@@ -2621,31 +2973,32 @@ fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) 
     }
 }
 
-/// What the panel's widgets asked for this frame. Collected rather than applied
-/// inline because the widgets borrow `route` while they draw.
-#[derive(Default)]
-struct PanelActions {
-    swap: bool,
-    clear: bool,
+/// What a sheet's widgets asked for this frame — egui's or the library's
+/// (`lib_route`), applied by [`RouteState::apply`] for both. Collected rather
+/// than applied inline because egui's widgets borrow `route` while they draw.
+#[derive(Default, Clone)]
+pub struct PanelActions {
+    pub swap: bool,
+    pub clear: bool,
     /// Start driving the solved route (`systems::driver`).
-    drive: bool,
+    pub drive: bool,
     /// Start walking it in the world (`systems::walk_guide`); `true` is "Walk me
     /// there".
-    walk: Option<bool>,
-    mode: Option<TravelMode>,
-    goto_step: Option<usize>,
+    pub walk: Option<bool>,
+    pub mode: Option<TravelMode>,
+    pub goto_step: Option<usize>,
     /// Endpoint set to the current position.
-    use_here: Option<Endpoint>,
+    pub use_here: Option<Endpoint>,
     /// Endpoint armed for a map click.
-    pick: Option<Endpoint>,
+    pub pick: Option<Endpoint>,
     /// Endpoint resolved from a suggestion.
-    chose: Option<(Endpoint, GeoSuggestion)>,
+    pub chose: Option<(Endpoint, GeoSuggestion)>,
     /// Endpoint whose text changed (invalidates its coordinate).
-    edited: Option<Endpoint>,
-    cleared: Option<Endpoint>,
+    pub edited: Option<Endpoint>,
+    pub cleared: Option<Endpoint>,
     /// Open the start as an editable field / fold it back to a footnote.
-    edit_start: bool,
-    collapse_start: bool,
+    pub edit_start: bool,
+    pub collapse_start: bool,
 }
 
 /// The two ends of the route, as one card: a rail down the left (a ring for the
@@ -2741,21 +3094,15 @@ fn start_line(
     here: Option<(f64, f64)>,
     actions: &mut PanelActions,
 ) -> egui::Rect {
-    if route.from_editing || route.from.coord.is_none() {
+    if route.start_open() {
         return endpoint_line(ui, route, Endpoint::From, here, actions);
     }
     let mine = route.from.label == HERE_LABEL;
-    let (text, colour) = if mine {
-        (HERE_LABEL.to_string(), theme::p().accent)
+    let text = route.start_text();
+    let colour = if mine {
+        theme::p().accent
     } else {
-        (
-            route
-                .from
-                .label
-                .trim_start_matches(PICKED_PREFIX)
-                .to_string(),
-            theme::p().text,
-        )
+        theme::p().text
     };
     let h = card_line_height();
     let w = ui.available_width();
@@ -2863,18 +3210,11 @@ fn fill_chips(
     here: Option<(f64, f64)>,
     actions: &mut PanelActions,
 ) {
-    if route.picking.is_some() {
-        return;
-    }
-    let end = if route.from_editing || route.from.coord.is_none() {
-        Endpoint::From
-    } else if route.to.label.trim().is_empty() {
-        Endpoint::To
-    } else {
+    let Some(end) = route.fill_end() else {
         return;
     };
     ui.horizontal_wrapped(|ui| {
-        let mine = route.from.label == HERE_LABEL && route.from.coord.is_some();
+        let mine = route.start_is_here();
         if end == Endpoint::From
             && here.is_some()
             && !mine
@@ -2963,76 +3303,6 @@ fn suggestions_popup(
         });
     if let Some(s) = picked {
         actions.chose = Some((end, s));
-    }
-}
-
-/// Apply everything the panel asked for, now that the borrows are released.
-fn apply_actions(
-    actions: PanelActions,
-    route: &mut RouteState,
-    nav: &mut GeoNavState,
-    here: Option<(f64, f64)>,
-) {
-    if let Some(mode) = actions.mode {
-        route.select_mode(mode);
-    }
-    // Any hand on the destination field, or a swap or Clear, is a different
-    // destination from the person being followed.
-    let touched_to = [
-        actions.edited,
-        actions.cleared,
-        actions.chose.as_ref().map(|c| c.0),
-    ]
-    .contains(&Some(Endpoint::To));
-    if touched_to || actions.swap || actions.clear {
-        route.following = None;
-    }
-    if let Some(end) = actions.edited {
-        let _ = end;
-        route.invalidate();
-    }
-    if let Some(end) = actions.cleared {
-        route.waypoint_mut(end).clear();
-        route.invalidate();
-        route.status = SolveStatus::Idle;
-    }
-    if let Some((end, s)) = actions.chose {
-        route.waypoint_mut(end).set(s.label, (s.lat, s.lng));
-        route.invalidate();
-    }
-    if let (Some(end), Some(here)) = (actions.use_here, here) {
-        route.waypoint_mut(end).set(HERE_LABEL, here);
-        route.invalidate();
-        // Setting the start to "here" is the one thing the footnote form does
-        // best; there is nothing left to type, so fold it back.
-        if end == Endpoint::From {
-            route.from_editing = false;
-        }
-    }
-    if let Some(end) = actions.pick {
-        route.pick_on_map(end);
-    }
-    if actions.swap {
-        std::mem::swap(&mut route.from, &mut route.to);
-        route.invalidate();
-    }
-    if actions.edit_start {
-        route.from_editing = true;
-    }
-    if actions.collapse_start {
-        route.from_editing = false;
-    }
-    if actions.clear {
-        route.from.clear();
-        route.to.clear();
-        route.from_editing = false;
-        route.invalidate();
-        route.status = SolveStatus::Idle;
-    }
-    if let Some(i) = actions.goto_step {
-        if let Some(step) = route.route.as_ref().and_then(|r| r.steps.get(i)) {
-            nav.pending_teleport = Some(Teleport::geo(step.at[0], step.at[1], Some(220.0)));
-        }
     }
 }
 

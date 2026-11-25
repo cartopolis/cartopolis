@@ -199,6 +199,9 @@ pub const ROOT: NodeId = NodeId(0);
 pub struct UiHost {
     pub renderer: Rc<RefCell<BevyRenderer>>,
     mounted: Vec<Mounted<NodeId>>,
+    /// Screens mounted under a name, each cleared on its own: a card over
+    /// the map beside a panel.
+    keyed: HashMap<String, Mounted<NodeId>>,
     /// The renderer's own popup over everything (a select's options).
     popup: Vec<Mounted<NodeId>>,
     /// Handlers by node and event name.
@@ -215,6 +218,7 @@ impl UiHost {
         UiHost {
             renderer: Rc::new(RefCell::new(BevyRenderer::default())),
             mounted: Vec::new(),
+            keyed: HashMap::new(),
             popup: Vec::new(),
             handlers: HashMap::new(),
             internal: Vec::new(),
@@ -236,7 +240,26 @@ impl UiHost {
         for m in old {
             m.unmount(&self.renderer, &ROOT);
         }
+        for (_, m) in std::mem::take(&mut self.keyed) {
+            m.unmount(&self.renderer, &ROOT);
+        }
         self.handlers.clear();
+    }
+
+    /// Mounts a screen under `key`, replacing one mounted under it before.
+    pub fn mount_keyed(&mut self, key: &str, view: View) {
+        self.clear_keyed(key);
+        let mounted = mithril::view::mount(view, &self.renderer, &ROOT, None);
+        self.keyed.insert(key.to_owned(), mounted);
+    }
+
+    /// Unmounts the screen under `key`, leaving the others. Its handlers
+    /// go when `drive_ui` sees its nodes removed.
+    pub fn clear_keyed(&mut self, key: &str) {
+        if let Some(m) = self.keyed.remove(key) {
+            self.close_popup();
+            m.unmount(&self.renderer, &ROOT);
+        }
     }
 
     /// Mounts the popup's views over everything, after closing any other.
@@ -374,6 +397,7 @@ pub fn drive_ui(world: &mut World) {
             return;
         }
         let count = ops.len();
+        let removed = ops.iter().any(|op| matches!(op, Op::Remove { .. }));
         let mut listeners = Vec::new();
         for op in ops {
             if let Op::Listen { id, event, handler } = op {
@@ -390,6 +414,15 @@ pub fn drive_ui(world: &mut World) {
         }
         for (id, event) in listeners {
             events::listen(world, id, &event);
+        }
+        // A screen cleared on its own leaves its handlers behind (they
+        // hold its signals): drop those whose node is gone.
+        if removed {
+            let tree = world.resource::<UiTree>();
+            with_host(|host| {
+                host.handlers
+                    .retain(|(id, _), _| tree.nodes.contains_key(id))
+            });
         }
         let tree = world.resource::<UiTree>();
         debug!(

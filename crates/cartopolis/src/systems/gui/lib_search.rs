@@ -179,7 +179,7 @@ pub fn drive_lib_search(
     let refocus = open && nav.focus_search && MOUNTED.with(|m| m.borrow().is_some());
     if refocus {
         MOUNTED.with(|m| *m.borrow_mut() = None);
-        crate::systems::lib_host::clear();
+        crate::systems::lib_host::clear_keyed("search");
     }
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
@@ -187,7 +187,7 @@ pub fn drive_lib_search(
             (false, None) => {}
             (false, Some(_)) => {
                 *m = None;
-                crate::systems::lib_host::clear();
+                crate::systems::lib_host::clear_keyed("search");
                 if nav.search_has_focus {
                     nav.search_has_focus = false;
                 }
@@ -208,7 +208,8 @@ pub fn drive_lib_search(
                 let focus = std::mem::take(&mut nav.focus_search);
                 let compact = live.compact;
                 let p = theme::p();
-                crate::systems::lib_host::mount(
+                crate::systems::lib_host::mount_keyed(
+                    "search",
                     panel(&live, compact, focus),
                     p.ink == theme::DARK.ink,
                     theme::touch_layout(),

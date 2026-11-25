@@ -20,6 +20,14 @@
 //! `place_card`'s reasons — driver mode, the on-screen keyboard and (on a compact
 //! viewport) an open panel each own the screen it would float over. Suppression
 //! *hides* it: the building stays selected, and its glass stays on the map.
+//!
+//! The component library draws it too (`lib_building_card`,
+//! `CARTO_UI_LIB=building_card`): with `BuildingSelection::card_lib` on this system
+//! draws nothing, but still works out what the card shows ([`CardContent`],
+//! the same struct egui's card is drawn from) and does the verb the library's
+//! card asks for, through [`run`] — the same code egui's buttons call.
+
+use std::sync::Arc;
 
 use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
@@ -85,7 +93,206 @@ pub(crate) fn override_url(id: &str) -> String {
     )
 }
 
+/// A verb on the building card: one set, for both editions of the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardAction {
+    /// Send the building to a chat or community (`bridges`, the app only).
+    Share,
+    /// Look inside it, or stop looking.
+    Inside,
+    /// Its floor plan in the atlas editor.
+    Plan,
+    /// Its Overrides tab, to put a model in its place.
+    Replace,
+    /// The facade measured again from street photos (`facade_check`).
+    Wrong,
+    /// The facade measured from a photo the user takes.
+    Photo,
+    /// Stop taking that photo.
+    CancelPhoto,
+    /// The Kadaster's own record of it.
+    Record,
+}
+
+/// What the card shows of one building, worked out once and drawn by either
+/// edition (egui's below, the library's in `lib_building_card`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct CardContent {
+    pub id: Arc<str>,
+    /// The street line, or "Building".
+    pub title: String,
+    /// The register's uses, "" when it lists none.
+    pub subtitle: String,
+    /// Every fact the register holds, one name/value row each.
+    pub rows: Vec<(&'static str, String)>,
+    /// The verbs offered as the card's buttons, two to a row, in order.
+    pub actions: Vec<CardAction>,
+    /// Looking inside this building now.
+    pub looking: bool,
+    /// The facade is being measured (its buttons wait).
+    pub busy: bool,
+    /// The camera is out for the facade photo (Cancel is offered).
+    pub capturing: bool,
+    /// This platform can open a link.
+    pub can_open: bool,
+    /// What the facade measurement says, when it says something.
+    pub note: Option<String>,
+}
+
+impl CardContent {
+    #[must_use]
+    pub fn of(
+        id: &Arc<str>,
+        fact: &BuildingFact,
+        shell: Option<ShellMeasure>,
+        addresses: &[AddressFact],
+        cutaway: &crate::systems::cutaway::Cutaway,
+        identity: &crate::resources::AuthIdentity,
+        facade: &crate::systems::facade_check::FacadeCheck,
+    ) -> Self {
+        let (title, subtitle) = titles(fact, addresses);
+        // A building has an inside when the game can build one: an entrance to
+        // come in by (the generated layout needs it), or a design its owner drew.
+        let has_inside =
+            !fact.doors.is_empty() || crate::systems::building_designs::get(id).is_some();
+        // One row of the place card's kind of button (N2): Share, Look inside,
+        // Floor plan, and Replace for an account allowed to — two to a row,
+        // equal widths, so nothing is bare text beside an outlined button and
+        // nothing runs off a phone's card. Share hands the building to a chat,
+        // which only the app has (`comms`): on the web the page around the
+        // World tab does.
+        let mut actions = if cfg!(feature = "comms") {
+            vec![CardAction::Share]
+        } else {
+            Vec::new()
+        };
+        if has_inside {
+            actions.push(CardAction::Inside);
+        }
+        actions.push(CardAction::Plan);
+        if identity.may(cartopolis_core::permissions::Permission::BuildingOverride) {
+            actions.push(CardAction::Replace);
+        }
+        // The facade measured again (`facade_check`): anybody signed in, since
+        // atlas files who asked.
+        if identity.username.is_some() && middle(fact).is_some() {
+            actions.push(CardAction::Wrong);
+            if crate::platform::photo::is_available() {
+                actions.push(CardAction::Photo);
+            }
+        }
+        CardContent {
+            id: id.clone(),
+            title,
+            subtitle,
+            rows: fact_rows(fact, shell, addresses),
+            actions,
+            looking: cutaway.looking.as_deref() == Some(&**id),
+            busy: facade.busy(),
+            capturing: facade.capturing(),
+            can_open: open_url_supported(),
+            note: facade.note(id).map(str::to_owned),
+        }
+    }
+}
+
+/// What egui's card system and the library's card pass each other while
+/// `BuildingSelection::card_lib` is on.
+#[derive(Default, Clone, PartialEq, Debug)]
+pub struct CardBridge {
+    /// The building as shown; `None` while nothing is selected, or while
+    /// something else owns the bottom of the screen.
+    pub content: Option<CardContent>,
+    /// A verb the library's card asked for, done by egui's system.
+    pub action: Option<CardAction>,
+}
+
+/// The building's middle: where Share points, and how atlas finds its cell.
+fn middle(fact: &BuildingFact) -> Option<(f64, f64)> {
+    (!fact.footprint.is_empty()).then(|| {
+        let n = fact.footprint.len() as f64;
+        let (lat, lng) = fact
+            .footprint
+            .iter()
+            .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+        (lat / n, lng / n)
+    })
+}
+
+/// The addresses registered against the building.
+fn addresses_of(facts: &BuildingFacts, id: &str) -> Vec<AddressFact> {
+    facts
+        .addresses()
+        .filter(|a| a.pand.as_deref() == Some(id))
+        .cloned()
+        .collect()
+}
+
+/// Do a verb on the building `id`. Share is the Community side's
+/// ([`share_building`]), not done here.
+pub fn run(
+    action: CardAction,
+    id: &Arc<str>,
+    fact: &BuildingFact,
+    cutaway: &mut crate::systems::cutaway::Cutaway,
+    facade: &mut crate::systems::facade_check::FacadeCheck,
+) {
+    let link = |url: String| {
+        if open_url_supported() {
+            open_url(&url);
+        }
+    };
+    match action {
+        CardAction::Inside => {
+            if cutaway.looking.as_deref() == Some(&**id) {
+                cutaway.stop_looking();
+            } else {
+                cutaway.look_inside(id.clone());
+            }
+        }
+        CardAction::Plan => link(floor_plan_url(id, &fact.footprint)),
+        CardAction::Replace => link(override_url(id)),
+        CardAction::Record => link(bag_viewer_url(id)),
+        CardAction::Wrong => {
+            if let Some(near) = middle(fact) {
+                facade.recheck(id.clone(), near);
+            }
+        }
+        CardAction::Photo => {
+            if let Some(near) = middle(fact) {
+                facade.photo(id.clone(), near);
+            }
+        }
+        CardAction::CancelPhoto => facade.cancel(),
+        CardAction::Share => {}
+    }
+}
+
+/// Share: the building to the Share sheet (`bridges`), named by its first
+/// address.
+#[cfg(feature = "comms")]
+pub fn share_building(
+    fact: &BuildingFact,
+    addresses: &[AddressFact],
+    bridges: &mut crate::systems::bridges::Bridges,
+) {
+    let Some((lat, lng)) = middle(fact) else {
+        return;
+    };
+    let name = addresses
+        .iter()
+        .find_map(AddressFact::label)
+        .unwrap_or_else(|| "this building".to_string());
+    bridges.share = Some(crate::systems::bridges::SharePlace {
+        name,
+        lat,
+        lng,
+        view: None,
+    });
+}
+
 /// Draw the card for the selected building.
+#[allow(clippy::too_many_arguments)]
 pub fn render_building_card(
     egui: EguiRef,
     mut selection: ResMut<BuildingSelection>,
@@ -97,7 +304,7 @@ pub fn render_building_card(
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     mut cutaway: ResMut<crate::systems::cutaway::Cutaway>,
     identity: Res<crate::resources::AuthIdentity>,
-    mut last_shown: Local<Option<std::sync::Arc<str>>>,
+    mut last_shown: Local<Option<Arc<str>>>,
     #[cfg(feature = "comms")] mut bridges: ResMut<crate::systems::bridges::Bridges>,
     mut facade: ResMut<crate::systems::facade_check::FacadeCheck>,
 ) {
@@ -116,6 +323,67 @@ pub fn render_building_card(
         || (egui.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
         || sharing;
+    // A new building starts at the peek, however far the last one was pulled.
+    if let Some(id) = selection.selected.clone() {
+        if last_shown.as_deref() != Some(&*id) {
+            selection.card_rest = Default::default();
+            selection.card_drag = Default::default();
+            *last_shown = Some(id);
+        }
+    }
+
+    // The library's edition is showing (`lib_building_card`): hand it what
+    // the card shows, do the verb it asked for, draw nothing.
+    if selection.card_lib {
+        // Read before taking, so a quiet frame leaves the resource unchanged.
+        let action = if selection.card_bridge.action.is_some() {
+            selection.card_bridge.action.take()
+        } else {
+            None
+        };
+        let selected = selection.selected.clone();
+        let fact = selected
+            .as_deref()
+            .and_then(|id| facts.building(id).cloned());
+        // A building whose cell has streamed out from under the selection:
+        // the card goes, and the selection with it (as below).
+        if !hidden && selected.is_some() && fact.is_none() {
+            selection.clear();
+        }
+        let shown = selected.zip(fact).map(|(id, fact)| {
+            let addresses = addresses_of(&facts, &id);
+            (id, fact, addresses)
+        });
+        let content = if hidden {
+            None
+        } else {
+            shown.as_ref().map(|(id, fact, addresses)| {
+                CardContent::of(
+                    id,
+                    fact,
+                    lod.shell_measure(id),
+                    addresses,
+                    &cutaway,
+                    &identity,
+                    &facade,
+                )
+            })
+        };
+        if selection.card_bridge.content != content {
+            selection.card_bridge.content = content;
+        }
+        if let (Some(a), Some((id, fact, addresses))) = (action, shown.as_ref()) {
+            run(a, id, fact, &mut cutaway, &mut facade);
+            #[cfg(feature = "comms")]
+            if a == CardAction::Share {
+                share_building(fact, addresses, &mut bridges);
+            }
+            #[cfg(not(feature = "comms"))]
+            let _ = addresses;
+        }
+        return;
+    }
+
     // The card rises from the dock and sinks back (`motion::linger`): the
     // building it was showing is still drawn, untouchable, for the last
     // `motion::LEAVE` after the selection is cleared.
@@ -142,41 +410,14 @@ pub fn render_building_card(
         return;
     };
     let shell = lod.shell_measure(&id);
-    let addresses: Vec<AddressFact> = facts
-        .addresses()
-        .filter(|a| a.pand.as_deref() == Some(&*id))
-        .cloned()
-        .collect();
+    let addresses = addresses_of(&facts, &id);
+    let content = CardContent::of(&id, &fact, shell, &addresses, &cutaway, &identity, &facade);
 
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
     let full_h = egui.viewport_pts().y * 0.5;
-    // A new building starts at the peek, however far the last one was pulled.
-    if last_shown.as_deref() != Some(&*id) {
-        selection.card_rest = Default::default();
-        selection.card_drag = Default::default();
-        *last_shown = Some(id.clone());
-    }
     let mut close = false;
-    let mut open: Option<String> = None;
-    let mut look: Option<bool> = None;
-    let mut share = false;
-    let mut recheck = false;
-    let mut photo = false;
-    let mut cancel_photo = false;
-    // The building's middle: where Share points, and how atlas finds its cell.
-    let middle = (!fact.footprint.is_empty()).then(|| {
-        let n = fact.footprint.len() as f64;
-        let (lat, lng) = fact
-            .footprint
-            .iter()
-            .fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
-        (lat / n, lng / n)
-    });
-    // A building has an inside when the game can build one: an entrance to come
-    // in by (the generated layout needs it), or a design its owner drew.
-    let has_inside = !fact.doors.is_empty() || crate::systems::building_designs::get(&id).is_some();
-    let looking = cutaway.looking.as_deref() == Some(&*id);
+    let mut asked: Option<CardAction> = None;
     egui::Area::new(egui::Id::new("building_card"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .interactable(pres.open)
@@ -207,7 +448,7 @@ pub fn render_building_card(
                     SheetMove::Close => close = true,
                 }
                 let rest = selection.card_rest;
-                header(ui, &fact, &addresses, &mut close);
+                header(ui, &content.title, &content.subtitle, &mut close);
                 ui.add_space(4.0);
                 if rest >= Rest::Half {
                     egui::ScrollArea::vertical()
@@ -219,64 +460,31 @@ pub fn render_building_card(
                         // strip above it.
                         .max_height(if rest == Rest::Full { full_h } else { 260.0 })
                         .show(ui, |ui| {
-                            rows(ui, &fact, shell, &addresses);
+                            rows(ui, &content.rows);
                         });
                 }
                 ui.add_space(6.0);
                 // The two ways into the building: look inside it here, or open its
                 // floor plan in the editor — where its owner changes it, and
-                // anybody else sees what they drew.
-                // One row of the place card's kind of button (N2): Share, Look
-                // inside, Floor plan, and Replace for an account allowed to —
-                // two to a row, equal widths, so nothing is bare text beside an
-                // outlined button and nothing runs off a phone's card.
-                let can_open = open_url_supported();
-                let may_replace =
-                    identity.may(cartopolis_core::permissions::Permission::BuildingOverride);
-                #[derive(Clone, Copy)]
-                enum Act {
-                    Share,
-                    Inside,
-                    Plan,
-                    Replace,
-                    Wrong,
-                    Photo,
-                }
-                // Share hands the building to a chat, which only the app has
-                // (`comms`): on the web the page around the World tab does.
-                let mut acts = if cfg!(feature = "comms") {
-                    vec![Act::Share]
-                } else {
-                    Vec::new()
-                };
-                if has_inside {
-                    acts.push(Act::Inside);
-                }
-                acts.push(Act::Plan);
-                if may_replace {
-                    acts.push(Act::Replace);
-                }
-                // The facade measured again (`facade_check`): anybody signed
-                // in, since atlas files who asked.
-                let signed_in = identity.username.is_some() && middle.is_some();
-                if signed_in {
-                    acts.push(Act::Wrong);
-                    if crate::platform::photo::is_available() {
-                        acts.push(Act::Photo);
-                    }
-                }
-                let busy = facade.busy();
-                for pair in acts.chunks(2) {
+                // anybody else sees what they drew. The verbs and their order
+                // are `CardContent::of`'s.
+                let can_open = content.can_open;
+                let busy = content.busy;
+                let looking = content.looking;
+                for pair in content.actions.chunks(2) {
                     ui.horizontal(|ui| {
                         let w = theme::equal_width(ui, 2);
                         for act in pair {
                             match act {
-                                Act::Share => {
-                                    share = theme::secondary_button(ui, icons::SHARE, "Share", w)
+                                CardAction::Share => {
+                                    if theme::secondary_button(ui, icons::SHARE, "Share", w)
                                         .on_hover_text("Send this building to a chat or community")
-                                        .clicked();
+                                        .clicked()
+                                    {
+                                        asked = Some(CardAction::Share);
+                                    }
                                 }
-                                Act::Inside => {
+                                CardAction::Inside => {
                                     if theme::secondary_toggle(
                                         ui,
                                         icons::BUILDINGS,
@@ -291,10 +499,10 @@ pub fn render_building_card(
                                     })
                                     .clicked()
                                     {
-                                        look = Some(!looking);
+                                        asked = Some(CardAction::Inside);
                                     }
                                 }
-                                Act::Plan => {
+                                CardAction::Plan => {
                                     let resp = ui.add_enabled_ui(can_open, |ui| {
                                         theme::secondary_button(
                                             ui,
@@ -310,22 +518,25 @@ pub fn render_building_card(
                                         )
                                         .clicked()
                                     {
-                                        open = Some(floor_plan_url(&id, &fact.footprint));
+                                        asked = Some(CardAction::Plan);
                                     }
                                 }
-                                Act::Wrong => {
+                                CardAction::Wrong => {
                                     let resp = ui.add_enabled_ui(!busy, |ui| {
                                         theme::secondary_button(ui, icons::FLAG, "Facade wrong", w)
                                     });
-                                    recheck = resp
+                                    if resp
                                         .inner
                                         .on_hover_text(
                                             "The walls' colour or material is not right: \
                                              measure them again from street photos",
                                         )
-                                        .clicked();
+                                        .clicked()
+                                    {
+                                        asked = Some(CardAction::Wrong);
+                                    }
                                 }
-                                Act::Photo => {
+                                CardAction::Photo => {
                                     let resp = ui.add_enabled_ui(!busy, |ui| {
                                         theme::secondary_button(
                                             ui,
@@ -334,16 +545,19 @@ pub fn render_building_card(
                                             w,
                                         )
                                     });
-                                    photo = resp
+                                    if resp
                                         .inner
                                         .on_hover_text(
                                             "Take a photo of the front: its colour and \
                                              material are measured from it, and the photo \
                                              is not kept",
                                         )
-                                        .clicked();
+                                        .clicked()
+                                    {
+                                        asked = Some(CardAction::Photo);
+                                    }
                                 }
-                                Act::Replace => {
+                                CardAction::Replace => {
                                     let resp = ui.add_enabled_ui(can_open, |ui| {
                                         theme::secondary_button(
                                             ui,
@@ -360,14 +574,16 @@ pub fn render_building_card(
                                         )
                                         .clicked()
                                     {
-                                        open = Some(override_url(&id));
+                                        asked = Some(CardAction::Replace);
                                     }
                                 }
+                                // Not among the paired buttons.
+                                CardAction::CancelPhoto | CardAction::Record => {}
                             }
                         }
                     });
                 }
-                if let Some(note) = facade.note(&id) {
+                if let Some(note) = &content.note {
                     ui.horizontal(|ui| {
                         if busy {
                             ui.spinner();
@@ -380,8 +596,8 @@ pub fn render_building_card(
                             )
                             .wrap(),
                         );
-                        if facade.capturing() && theme::ghost_button(ui, "", "Cancel").clicked() {
-                            cancel_photo = true;
+                        if content.capturing && theme::ghost_button(ui, "", "Cancel").clicked() {
+                            asked = Some(CardAction::CancelPhoto);
                         }
                     });
                 }
@@ -407,7 +623,7 @@ pub fn render_building_card(
                         .on_disabled_hover_text(NO_BROWSER)
                         .clicked()
                     {
-                        open = Some(bag_viewer_url(&id));
+                        asked = Some(CardAction::Record);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // The id itself, small and selectable — it is the join to
@@ -426,58 +642,37 @@ pub fn render_building_card(
             });
         });
 
-    if let Some(url) = open {
-        open_url(&url);
-    }
-    if let (true, Some(near)) = (recheck, middle) {
-        facade.recheck(id.clone(), near);
-    }
-    if let (true, Some(near)) = (photo, middle) {
-        facade.photo(id.clone(), near);
-    }
-    if cancel_photo {
-        facade.cancel();
-    }
-    #[cfg(not(feature = "comms"))]
-    let _ = (share, middle);
-    #[cfg(feature = "comms")]
-    if let (true, Some((lat, lng))) = (share, middle) {
-        let name = addresses
-            .iter()
-            .find_map(AddressFact::label)
-            .unwrap_or_else(|| "this building".to_string());
-        bridges.share = Some(crate::systems::bridges::SharePlace {
-            name,
-            lat,
-            lng,
-            view: None,
-        });
-    }
-    match look {
-        Some(true) => cutaway.look_inside(id.clone()),
-        Some(false) => cutaway.stop_looking(),
-        None => {}
+    if let Some(a) = asked {
+        run(a, &id, &fact, &mut cutaway, &mut facade);
+        #[cfg(feature = "comms")]
+        if a == CardAction::Share {
+            share_building(&fact, &addresses, &mut bridges);
+        }
     }
     if close {
         selection.clear();
     }
 }
 
-/// The header: the street the building is on, or the register's own word for it.
+/// The card's title and the line under it: the street the building is on
+/// (or the register's own word for it), and the uses the register lists.
+pub(crate) fn titles(fact: &BuildingFact, addresses: &[AddressFact]) -> (String, String) {
+    let title = street_line(addresses).unwrap_or_else(|| "Building".to_string());
+    let uses = use_labels(fact.uses);
+    let subtitle = if uses.is_empty() {
+        String::new()
+    } else {
+        uses.join(" · ")
+    };
+    (title, subtitle)
+}
+
+/// The header: the title, and the uses under it.
 ///
 /// The close button is laid out **first**, because a truncating label asks for
 /// every point available and the other way round it pushes the ✕ off the card —
 /// the rule every header row in this tree follows.
-fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], close: &mut bool) {
-    let title = street_line(addresses).unwrap_or_else(|| "Building".to_string());
-    let subtitle = {
-        let uses = use_labels(fact.uses);
-        if uses.is_empty() {
-            String::new()
-        } else {
-            uses.join(" · ")
-        }
-    };
+fn header(ui: &mut egui::Ui, title: &str, subtitle: &str, close: &mut bool) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             *close = theme::close_button(ui).clicked();
@@ -488,7 +683,7 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
                 |ui| {
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(&title)
+                            egui::RichText::new(title)
                                 .size(theme::SIZE_TITLE)
                                 .color(theme::p().cream),
                         )
@@ -502,7 +697,7 @@ fn header(ui: &mut egui::Ui, fact: &BuildingFact, addresses: &[AddressFact], clo
     if !subtitle.is_empty() {
         ui.add(
             egui::Label::new(
-                egui::RichText::new(&subtitle)
+                egui::RichText::new(subtitle)
                     .size(theme::SIZE_SUB)
                     .color(theme::p().text_dim),
             )
@@ -561,14 +756,60 @@ pub(crate) fn street_line(addresses: &[AddressFact]) -> Option<String> {
     })
 }
 
-/// Every fact, one row each. A fact the register does not hold gets no row —
-/// a card of "unknown"s says less than a short card.
-fn rows(
-    ui: &mut egui::Ui,
+/// Every fact, one name/value row each. A fact the register does not hold
+/// gets no row — a card of "unknown"s says less than a short card.
+pub(crate) fn fact_rows(
     fact: &BuildingFact,
     shell: Option<ShellMeasure>,
     addresses: &[AddressFact],
-) {
+) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    if let Some(year) = fact.year {
+        out.push(("Built", year.to_string()));
+    }
+    if let Some(status) = fact.status.label() {
+        out.push(("Status", status.to_string()));
+    }
+    if fact.units > 0 {
+        out.push(("Units", fact.units.to_string()));
+    }
+    // The register's floor area is a *range* over the units inside, which
+    // is the honest shape: a block with a shop and twelve flats has no one
+    // number. Collapsed when the ends agree.
+    match (fact.area_m2, fact.area_max_m2) {
+        (Some(a), Some(b)) if a != b => out.push(("Floor area", format!("{a}–{b} m²"))),
+        (Some(a), _) => out.push(("Floor area", format!("{a} m²"))),
+        _ => {}
+    }
+    if let Some(m) = shell {
+        out.push(("Height", format!("{:.1} m", m.datum_m)));
+        // The sloping area, so a pitched roof measures more than the
+        // footprint under it — the same quantity 3DBAG's flat and pitched
+        // columns add up to.
+        out.push(("Roof area", format!("{:.0} m²", m.roof_area_m2)));
+        out.push(("Volume", format!("{:.0} m³", m.volume_m3)));
+    }
+    if fact.monument.is_some() {
+        // The register's own category, in its own language. It is the
+        // difference between "a listed building" and "a listed church",
+        // which is most of what a person wants from the word.
+        let what = fact.monument_category.as_deref().map_or_else(
+            || "national monument".to_string(),
+            |c| format!("national monument · {c}"),
+        );
+        out.push(("Listed", what));
+    }
+    if let Some(district) = &fact.district {
+        out.push(("District", district.to_string()));
+    }
+    if !addresses.is_empty() {
+        out.push(("Addresses", address_list(addresses)));
+    }
+    out
+}
+
+/// The facts as egui's card draws them.
+fn rows(ui: &mut egui::Ui, rows: &[(&'static str, String)]) {
     egui::Grid::new("building_facts")
         .num_columns(2)
         .spacing([16.0, 4.0])
@@ -576,46 +817,8 @@ fn rows(
         // across the card and read as a spreadsheet pasted into it.
         .striped(false)
         .show(ui, |ui| {
-            if let Some(year) = fact.year {
-                row(ui, "Built", &year.to_string());
-            }
-            if let Some(status) = fact.status.label() {
-                row(ui, "Status", status);
-            }
-            if fact.units > 0 {
-                row(ui, "Units", &fact.units.to_string());
-            }
-            // The register's floor area is a *range* over the units inside, which
-            // is the honest shape: a block with a shop and twelve flats has no one
-            // number. Collapsed when the ends agree.
-            match (fact.area_m2, fact.area_max_m2) {
-                (Some(a), Some(b)) if a != b => row(ui, "Floor area", &format!("{a}–{b} m²")),
-                (Some(a), _) => row(ui, "Floor area", &format!("{a} m²")),
-                _ => {}
-            }
-            if let Some(m) = shell {
-                row(ui, "Height", &format!("{:.1} m", m.datum_m));
-                // The sloping area, so a pitched roof measures more than the
-                // footprint under it — the same quantity 3DBAG's flat and pitched
-                // columns add up to.
-                row(ui, "Roof area", &format!("{:.0} m²", m.roof_area_m2));
-                row(ui, "Volume", &format!("{:.0} m³", m.volume_m3));
-            }
-            if fact.monument.is_some() {
-                // The register's own category, in its own language. It is the
-                // difference between "a listed building" and "a listed church",
-                // which is most of what a person wants from the word.
-                let what = fact.monument_category.as_deref().map_or_else(
-                    || "national monument".to_string(),
-                    |c| format!("national monument · {c}"),
-                );
-                row(ui, "Listed", &what);
-            }
-            if let Some(district) = &fact.district {
-                row(ui, "District", district);
-            }
-            if !addresses.is_empty() {
-                row(ui, "Addresses", &address_list(addresses));
+            for (name, value) in rows {
+                row(ui, name, value);
             }
         });
 }
