@@ -6,7 +6,9 @@
 //! reach it through [`texture_for`], a small shared table this module rewrites
 //! every frame, and a disc asking for a name it has no picture for is how this
 //! module learns whom to look up. Twenty call sites draw pictures with no edit,
-//! and a new one will too.
+//! and a new one will too. The component library's discs (`lib_chats::disc`)
+//! ask the same table by name through [`face_url`], which answers a `data:`
+//! thumbnail scaled on a worker to the disc's size.
 //!
 //! **A picture is a hash, looked up by name.** The account names one
 //! (`PUT /api/pictures/mine`) out of the picture store everything else uses, so
@@ -22,7 +24,7 @@
 //! panels hidden, the same chrome-free capture a chat's snapshot makes.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
@@ -67,9 +69,116 @@ struct Bridge {
     server: Option<String>,
     /// Off while signed out: there is nobody to ask.
     on: bool,
+    /// The component library's discs ([`face_url`]): each name's picture's
+    /// hash, as far as it is known.
+    hashes: HashMap<String, String>,
+    /// Thumbnails made, by (hash, edge px).
+    thumbs: HashMap<(String, u32), Arc<str>>,
+    /// Thumbnails a disc asked for since the last frame.
+    want: HashSet<(String, u32)>,
+    /// Moves whenever `hashes` or `thumbs` does: the library's discs redraw
+    /// on it (`lib_chats::follow_faces`).
+    revision: u64,
 }
 
 static BRIDGE: LazyLock<Mutex<Bridge>> = LazyLock::new(Default::default);
+
+/// A person's picture for the component library's discs: a `data:image/jpeg`
+/// URL `edge` px square ([`thumb_edge`]), if they have one and it is made.
+/// Asking is also what gets it looked up, fetched and scaled — on a worker,
+/// once per picture and size; a disc asks again when [`face_revision`] moves.
+#[must_use]
+#[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+pub fn face_url(name: &str, edge: u32) -> Option<Arc<str>> {
+    let mut bridge = BRIDGE.lock().ok()?;
+    if !bridge.on {
+        return None;
+    }
+    let key = key_of(name, bridge.server.as_deref())?;
+    let hash = bridge.hashes.get(&key).cloned();
+    bridge.seen.insert(key);
+    let wanted = (hash?, edge);
+    if let Some(url) = bridge.thumbs.get(&wanted) {
+        return Some(url.clone());
+    }
+    bridge.want.insert(wanted);
+    None
+}
+
+/// How many times what [`face_url`] answers has changed.
+#[must_use]
+#[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+pub fn face_revision() -> u64 {
+    BRIDGE.lock().map_or(0, |b| b.revision)
+}
+
+/// The edge, px, of a thumbnail drawn `points` long on its longer side: the
+/// next power of two at or above its physical size — so never more than
+/// twice it, and few sizes for one picture — and never past `cap`, the
+/// picture's own.
+#[must_use]
+#[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+pub fn thumb_edge(points: f32, px_per_pt: f32, cap: u32) -> u32 {
+    let need = (points * px_per_pt).ceil().clamp(16.0, 4096.0) as u32;
+    need.next_power_of_two().min(cap.max(1))
+}
+
+/// `bytes` (any format `image` reads) as a `data:image/jpeg` URL no longer
+/// than `edge` px on its longer side, never enlarged: what an `<img>` shows
+/// in the app (`mithril_bevy::images`) and in the browser alike. Decoding
+/// and encoding take milliseconds, so this runs on a worker
+/// (`platform::workers`), never on the frame.
+pub(crate) fn thumbnail_url(bytes: &[u8], edge: u32) -> Result<String, String> {
+    let (rgba, [w, h]) = crate::utils::photo::decode_rgba(bytes)?;
+    let image = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+        .ok_or("the picture was the wrong size")?;
+    let (w, h) = image.dimensions();
+    let edge = edge.max(1);
+    let image = if w.max(h) > edge {
+        let s = edge as f32 / w.max(h) as f32;
+        let tw = ((w as f32 * s).round() as u32).max(1);
+        let th = ((h as f32 * s).round() as u32).max(1);
+        image::imageops::resize(&image, tw, th, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82)
+        .encode_image(&rgb)
+        .map_err(|e| e.to_string())?;
+    Ok(jpeg_data_url(&out))
+}
+
+/// A JPEG as a `data:` URL. Base64 by hand: the `base64` crate is not in
+/// the web build.
+#[must_use]
+pub(crate) fn jpeg_data_url(jpeg: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(23 + jpeg.len().div_ceil(3) * 4);
+    out.push_str("data:image/jpeg;base64,");
+    for chunk in jpeg.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(ABC[(n >> 18) as usize & 63] as char);
+        out.push(ABC[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ABC[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ABC[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
 
 /// The account name a disc's label stands for, if it can be looked up here.
 fn key_of(name: &str, server: Option<&str>) -> Option<String> {
@@ -141,10 +250,21 @@ struct Known {
     seen: f64,
 }
 
-/// A picture by hash: on its way, a texture, or not to be had.
+/// A picture by hash: on its way, a texture (and the JPEG it came from, for
+/// the library's thumbnails), or not to be had.
 enum Picture {
-    Loading(Task<Result<(Vec<u8>, [usize; 2]), String>>),
-    Ready(egui::TextureHandle),
+    Loading(Task<Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String>>),
+    Ready {
+        texture: egui::TextureHandle,
+        jpeg: Vec<u8>,
+    },
+    Failed,
+}
+
+/// A thumbnail for the library's discs, by (hash, edge px).
+enum Thumb {
+    Making(Task<Option<Result<String, String>>>),
+    Made,
     Failed,
 }
 
@@ -153,9 +273,24 @@ pub struct Preview {
     jpeg: Vec<u8>,
     pixels: Option<(Vec<u8>, [usize; 2])>,
     texture: Option<egui::TextureHandle>,
+    /// The JPEG as a `data:` URL, made with it on the worker: the library's
+    /// polaroid. Already 256 px (`utils::photo::FACE_EDGE`), under twice the
+    /// 168 pt it is drawn at, so it is not scaled again.
+    src: Arc<str>,
+}
+
+impl Preview {
+    /// The preview for an `<img>` (`lib_chats`' polaroid).
+    #[must_use]
+    #[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
+    pub fn src(&self) -> Arc<str> {
+        self.src.clone()
+    }
 }
 
 type Prepared = Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String>;
+/// [`Prepared`] with its `data:` URL.
+type Made = Result<(Vec<u8>, (Vec<u8>, [usize; 2]), String), String>;
 type Lookup = Result<HashMap<String, Option<String>>, String>;
 
 #[derive(Resource, Default)]
@@ -169,7 +304,11 @@ pub struct Faces {
     /// A source the You page asked for, started next frame.
     pub pick: Option<Source>,
     capture: Option<Capture>,
-    prepare: Option<Task<Prepared>>,
+    prepare: Option<Task<Made>>,
+    /// The library's thumbnails being made or made (the URLs are in the
+    /// bridge), and the ones asked for whose picture has not arrived yet.
+    thumbs: HashMap<(String, u32), Thumb>,
+    thumbs_waiting: HashSet<(String, u32)>,
     pub preview: Option<Preview>,
     /// Upload and naming; the answer is the new hash, or `None` for removed.
     saving: Option<Task<Result<Option<String>, String>>>,
@@ -261,7 +400,12 @@ impl Faces {
 
     fn start_prepare(&mut self, work: impl FnOnce() -> Prepared + Send + 'static) {
         self.note = None;
-        self.prepare = Some(IoTaskPool::get().spawn(async move { work() }));
+        self.prepare = Some(IoTaskPool::get().spawn(async move {
+            work().map(|(jpeg, pixels)| {
+                let src = jpeg_data_url(&jpeg);
+                (jpeg, pixels, src)
+            })
+        }));
     }
 
     /// Do a press on the viewfinder, for both editions; `true` when it is
@@ -353,6 +497,10 @@ pub fn drive_faces(
         if let Ok(mut b) = BRIDGE.lock() {
             b.shown.clear();
             b.seen.clear();
+            b.hashes.clear();
+            b.thumbs.clear();
+            b.want.clear();
+            b.revision += 1;
         }
         // The edition drawing the viewfinder is the app's, not the account's.
         *faces = Faces {
@@ -449,7 +597,8 @@ pub fn drive_faces(
         faces.pictures.entry(hash.clone()).or_insert_with(|| {
             Picture::Loading(IoTaskPool::get().spawn(async move {
                 let jpeg = crate::systems::model_assets::fetch_picture(&hash).await?;
-                crate::utils::photo::decode_rgba(&jpeg)
+                let pixels = crate::utils::photo::decode_rgba(&jpeg)?;
+                Ok((jpeg, pixels))
             }))
         });
     }
@@ -457,11 +606,14 @@ pub fn drive_faces(
         if let Picture::Loading(task) = picture {
             if let Some(result) = crate::platform::http::poll_task(task) {
                 *picture = match result {
-                    Ok((rgba, size)) => Picture::Ready(ctx.load_texture(
-                        format!("face_{}", &hash[..hash.len().min(16)]),
-                        egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
-                        egui::TextureOptions::LINEAR,
-                    )),
+                    Ok((jpeg, (rgba, size))) => Picture::Ready {
+                        texture: ctx.load_texture(
+                            format!("face_{}", &hash[..hash.len().min(16)]),
+                            egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
+                            egui::TextureOptions::LINEAR,
+                        ),
+                        jpeg,
+                    },
                     Err(why) => {
                         tracing::warn!(error = %why, "a person's picture did not load");
                         Picture::Failed
@@ -475,7 +627,7 @@ pub fn drive_faces(
     let ready = faces
         .pictures
         .values()
-        .filter(|p| matches!(p, Picture::Ready(_)))
+        .filter(|p| matches!(p, Picture::Ready { .. }))
         .count();
     if ready > MAX_TEXTURES {
         let recent: HashSet<String> = faces
@@ -486,21 +638,103 @@ pub fn drive_faces(
             .collect();
         faces
             .pictures
-            .retain(|hash, p| !matches!(p, Picture::Ready(_)) || recent.contains(hash));
+            .retain(|hash, p| !matches!(p, Picture::Ready { .. }) || recent.contains(hash));
     }
     let shown: HashMap<String, egui::TextureId> = faces
         .known
         .iter()
         .filter_map(|(name, k)| match faces.pictures.get(k.hash.as_ref()?) {
-            Some(Picture::Ready(t)) => Some((name.clone(), t.id())),
+            Some(Picture::Ready { texture, .. }) => Some((name.clone(), texture.id())),
             _ => None,
         })
         .collect();
     if let Ok(mut b) = BRIDGE.lock() {
         b.shown = shown;
     }
+    drive_thumbs(&mut faces);
 
     drive_picker(&mut faces, ctx, account.as_deref().unwrap_or_default(), now);
+}
+
+/// The library's discs (`face_url`): publish each name's hash, make the
+/// thumbnails they asked for on a worker once the picture is here, and hand
+/// the finished ones over.
+fn drive_thumbs(faces: &mut Faces) {
+    let hashes: HashMap<String, String> = faces
+        .known
+        .iter()
+        .filter_map(|(name, k)| Some((name.clone(), k.hash.clone()?)))
+        .collect();
+    let asked = match BRIDGE.lock() {
+        Ok(mut b) => {
+            if b.hashes != hashes {
+                b.hashes = hashes.clone();
+                b.revision += 1;
+            }
+            std::mem::take(&mut b.want)
+        }
+        Err(_) => return,
+    };
+    faces.thumbs_waiting.extend(asked);
+    // Start the ones whose picture is here; drop the ones it never will be.
+    let waiting: Vec<(String, u32)> = faces.thumbs_waiting.iter().cloned().collect();
+    for key in waiting {
+        if faces.thumbs.contains_key(&key) {
+            faces.thumbs_waiting.remove(&key);
+            continue;
+        }
+        match faces.pictures.get(&key.0) {
+            Some(Picture::Ready { jpeg, .. }) => {
+                let (jpeg, edge) = (jpeg.clone(), key.1);
+                let task = IoTaskPool::get().spawn(async move {
+                    crate::platform::workers::compute("face thumbnail", move || {
+                        thumbnail_url(&jpeg, edge)
+                    })
+                    .await
+                });
+                faces.thumbs_waiting.remove(&key);
+                faces.thumbs.insert(key, Thumb::Making(task));
+            }
+            Some(Picture::Failed) => {
+                faces.thumbs_waiting.remove(&key);
+            }
+            // On its way, or let go and asked for again next frame.
+            _ => {}
+        }
+    }
+    let mut made: Vec<((String, u32), Arc<str>)> = Vec::new();
+    for (key, thumb) in &mut faces.thumbs {
+        if let Thumb::Making(task) = thumb {
+            if let Some(result) = crate::platform::http::poll_task(task) {
+                *thumb = match result {
+                    Some(Ok(url)) => {
+                        made.push((key.clone(), Arc::from(url)));
+                        Thumb::Made
+                    }
+                    Some(Err(why)) => {
+                        tracing::warn!(error = %why, "a person's picture was not scaled");
+                        Thumb::Failed
+                    }
+                    None => Thumb::Failed,
+                };
+            }
+        }
+    }
+    // A thumbnail lives while somebody known has its picture: a picture
+    // changed or forgotten takes its thumbnails with it.
+    let live: HashSet<&String> = hashes.values().collect();
+    faces.thumbs.retain(|(hash, _), _| live.contains(hash));
+    faces.thumbs_waiting.retain(|(hash, _)| live.contains(hash));
+    if let Ok(mut b) = BRIDGE.lock() {
+        let before = b.thumbs.len();
+        b.thumbs.retain(|(hash, _), _| live.contains(hash));
+        let dropped = b.thumbs.len() != before;
+        made.retain(|((hash, _), _)| live.contains(hash));
+        if dropped || !made.is_empty() {
+            b.thumbs.extend(made);
+            b.revision += 1;
+        }
+    }
 }
 
 /// The most names one lookup asks about; the server answers up to 100.
@@ -538,11 +772,12 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
         if let Some(result) = crate::platform::http::poll_task(task) {
             faces.prepare = None;
             match result {
-                Ok((jpeg, pixels)) => {
+                Ok((jpeg, pixels, src)) => {
                     faces.preview = Some(Preview {
                         jpeg,
                         pixels: Some(pixels),
                         texture: None,
+                        src: Arc::from(src),
                     });
                 }
                 Err(why) => faces.note = Some(why),
@@ -569,8 +804,14 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
                     // Shown at once from the preview's own pixels, rather than
                     // fetched back from where it was just sent.
                     if let (Some(h), Some(preview)) = (hash.as_ref(), faces.preview.take()) {
-                        if let Some(t) = preview.texture {
-                            faces.pictures.insert(h.clone(), Picture::Ready(t));
+                        if let Some(texture) = preview.texture {
+                            faces.pictures.insert(
+                                h.clone(),
+                                Picture::Ready {
+                                    texture,
+                                    jpeg: preview.jpeg,
+                                },
+                            );
                         }
                     }
                     faces.preview = None;
@@ -590,7 +831,7 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
 }
 
 /// A way to change your picture on the You page, for both editions
-/// (`you_picture`, and the library's `lib_chats`). The You page is the
+/// (the library's `lib_chats`). The You page is the
 /// messenger's, so all of this is unused in a build without `comms`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(not(feature = "comms"), allow(dead_code))]
@@ -686,69 +927,6 @@ impl Faces {
     }
 }
 
-/// Your picture on the You page: the disc, or the preview as a polaroid, and
-/// the ways to change it.
-///
-/// **Kept for a gap, not drawn**: the library's You page (`lib_chats`) shows
-/// the preview as a line ("Your new picture is ready") and every face as its
-/// initial, because it has no edition of a picture from `Faces` yet. This and
-/// [`polaroid`] are what to port when it does; delete them then.
-#[allow(dead_code)]
-pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut Option<RightPanel>) {
-    if let Some(preview) = faces.preview.as_ref() {
-        if let Some(texture) = preview.texture.as_ref() {
-            polaroid(ui, texture, me);
-        }
-        ui.add_space(8.0);
-        let enabled = faces.choices_enabled();
-        centred_row(ui, 230.0, |ui| {
-            for choice in faces.choices(me) {
-                if ui
-                    .add_enabled(enabled, pill(choice.icon(), choice.label()))
-                    .clicked()
-                {
-                    faces.choose(choice, panel);
-                }
-            }
-        });
-    } else {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(96.0), egui::Sense::hover());
-        ui.painter().circle_stroke(
-            rect.center(),
-            48.0,
-            egui::Stroke::new(1.5, theme::p32().text_dim.gamma_multiply(0.4)),
-        );
-        let name = if me.is_empty() { "?" } else { me };
-        crate::systems::discs::paint_avatar(
-            ui.painter(),
-            rect.center(),
-            name,
-            crate::systems::discs::ChatKind::Private,
-            90.0,
-        );
-        ui.add_space(6.0);
-        let enabled = faces.choices_enabled();
-        let choices = faces.choices(me);
-        centred_row(ui, 92.0 * choices.len() as f32, |ui| {
-            for choice in choices {
-                if ui
-                    .add_enabled(enabled, pill(choice.icon(), choice.label()))
-                    .clicked()
-                {
-                    faces.choose(choice, panel);
-                }
-            }
-        });
-    }
-    if let Some(note) = faces.note.as_deref() {
-        ui.label(
-            egui::RichText::new(note)
-                .size(12.5)
-                .color(theme::p32().text_dim),
-        );
-    }
-}
-
 fn pill(icon: &str, text: &str) -> egui::Button<'static> {
     // egui's own: the camera's rounded pill, placed by the caller over the viewfinder.
     egui::Button::new(
@@ -759,53 +937,6 @@ fn pill(icon: &str, text: &str) -> egui::Button<'static> {
     .fill(theme::p32().surface_raised)
     .corner_radius(egui::CornerRadius::same(12))
     .min_size(egui::vec2(0.0, 32.0))
-}
-
-/// A row of buttons, centred as a group of about `width` points.
-#[allow(dead_code)]
-fn centred_row(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    let w = ui.available_width();
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, 36.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.add_space(((w - width) / 2.0).max(0.0));
-            add(ui);
-        },
-    );
-}
-
-/// The picture as a polaroid: warm white card, narrow edge, deep foot with
-/// your name written on it. Kept with [`you_picture`], for its gap.
-#[allow(dead_code)]
-fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
-    /// A Polaroid's paper: warm white rather than pure white, which would
-    /// glare against the ink of the panel.
-    const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
-    /// What is written on it.
-    const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);
-    const PHOTO: f32 = 168.0;
-    const EDGE: f32 = 10.0;
-    const FOOT: f32 = 36.0;
-    let size = egui::vec2(PHOTO + 2.0 * EDGE, PHOTO + EDGE + FOOT);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(
-        rect.translate(egui::vec2(0.0, 3.0)).expand(1.0),
-        egui::CornerRadius::same(3),
-        egui::Color32::from_black_alpha(70),
-    );
-    p.rect_filled(rect, egui::CornerRadius::same(2), POLAROID_WHITE);
-    let photo =
-        egui::Rect::from_min_size(rect.min + egui::vec2(EDGE, EDGE), egui::Vec2::splat(PHOTO));
-    egui::Image::new(texture).paint_at(ui, photo);
-    ui.painter().text(
-        egui::pos2(rect.center().x, photo.max.y + FOOT / 2.0),
-        egui::Align2::CENTER_CENTER,
-        me,
-        egui::FontId::proportional(15.0),
-        POLAROID_INK,
-    );
 }
 
 /// The polaroid's viewfinder: a square over the map, the shutter, Face me and

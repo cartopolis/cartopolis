@@ -22,9 +22,11 @@
 //! rest. What is shown is mirrored from the world every frame into the
 //! signals of [`ConversationLive`], each written only when it moved.
 //!
-//! What the library cannot draw yet: a picture is a tile naming it, which
-//! opens egui's full-size viewer (`a.view_picture`); a point's card has the
-//! pin where its picture would go. The thread does not stick to its bottom
+//! **Pictures** are thumbnails (`ChatPictures::thumb`: a `data:` JPEG
+//! scaled on a worker to what the bubble draws, at most twice it in
+//! physical pixels), with a spinner until one is made; a tap opens the
+//! full-size viewer (`a.view_picture`). What the library cannot draw yet:
+//! a point's card has the pin where its picture would go. The thread does not stick to its bottom
 //! (the renderer has no scroll action), so it shows the last [`PAGE`] items
 //! and a way to the earlier ones.
 
@@ -37,7 +39,7 @@ use mithril::prelude::*;
 
 use crate::systems::calls::CallRequest;
 use crate::systems::chat::{ChatLine, ChatState, PersonAction};
-use crate::systems::chat_pictures::PictureRef;
+use crate::systems::chat_pictures::{PictureRef, Thumb};
 use crate::systems::chats::{
     self, Attach, CallButton, ChatsScreen, MeetingForm, TopicContext, UntilStep,
 };
@@ -51,7 +53,7 @@ use crate::utils::clock::unix_ms;
 /// How many of the thread's last items show before "Show earlier messages".
 const PAGE: usize = 40;
 
-/// The longest edge of a picture's tile, px: `chats::PICTURE_MAX_PT`.
+/// The longest edge of a picture in the thread, px: egui's `PICTURE_MAX_PT`.
 const PICTURE_MAX: f32 = 240.0;
 
 /// A raised block in the composer: the meet-up, the "+" menu, the forms.
@@ -141,6 +143,10 @@ enum What {
     Picture {
         picture: PictureRef,
         caption: Option<String>,
+        /// Drawn this size, pt: fitted to the bubble's width.
+        size: (u32, u32),
+        /// Its thumbnail, or where it is (`fill_pictures`).
+        shown: Thumb,
     },
     Point(PointV),
 }
@@ -445,7 +451,9 @@ pub(crate) fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
         set(&c.multiple, *multiple);
     }
     set(&c.head, head_v(w, &key, now));
-    set(&c.thread, thread_v(w, &key, now));
+    let mut thread = thread_v(w, &key, now);
+    fill_pictures(&mut thread, w, c.shown.get_untracked());
+    set(&c.thread, thread);
     set(&c.foot, foot_v(w, &key, now));
     set(&c.attach_open, w.view.attach);
     set(&c.ready, !w.view.draft.trim().is_empty());
@@ -707,11 +715,21 @@ fn thread_v(w: &ChatsWorld, key: &str, now: u64) -> ThreadV {
             None => line.sender.clone(),
         });
         let what = if let Some(picture) = &line.picture {
+            let size = crate::systems::chat_pictures::fit(
+                picture,
+                picture_max_width(w).min(PICTURE_MAX),
+                PICTURE_MAX,
+            );
             What::Picture {
                 picture: picture.clone(),
                 caption: crate::systems::private_chat::caption_of(&line.body)
                     .map(cartopolis_core::photo_pose::display_caption)
                     .filter(|c| !c.is_empty()),
+                size: (
+                    (size.x.round() as u32).max(1),
+                    (size.y.round() as u32).max(1),
+                ),
+                shown: Thumb::Loading,
             }
         } else if let (Some(point), Some(n)) = (&line.point, n) {
             What::Point(point_v(point, n, &line.body))
@@ -746,6 +764,56 @@ fn thread_v(w: &ChatsWorld, key: &str, now: u64) -> ThreadV {
         },
     }
 }
+
+/// The widest a picture can be drawn in the thread, pt: the panel (the
+/// screen on a phone) less the thread's 20 px sides and the card's 10 px
+/// edges and 1 px border.
+fn picture_max_width(w: &ChatsWorld) -> f32 {
+    let panel = if w.metrics.compact() {
+        w.metrics.viewport_pts().x
+    } else {
+        360.0
+    };
+    (panel - 2.0 * (20.0 + 10.0 + 1.0)).max(80.0)
+}
+
+/// Each picture's thumbnail into the thread, at what it is drawn at
+/// (`faces::thumb_edge`): asking starts the fetch and the scaling, on a
+/// worker, once per picture and size (`ChatPictures::thumb`).
+///
+/// Only the `last` items (the ones the thread shows), and of those only the
+/// newest [`PICTURES_HELD`]: `ChatPictures` holds 48 at once, and asking
+/// for more every frame would let go of one to fetch another, for ever.
+/// An older one beyond that keeps its spinner until it is among them.
+fn fill_pictures(t: &mut ThreadV, w: &mut ChatsWorld, last: usize) {
+    let px = crate::systems::lib_chats::px_per_pt();
+    let from = t.items.len().saturating_sub(last);
+    let mut held = 0usize;
+    for item in t.items[from..].iter_mut().rev() {
+        if held >= PICTURES_HELD {
+            break;
+        }
+        if let Item::Line(LineV {
+            what:
+                What::Picture {
+                    picture,
+                    size,
+                    shown,
+                    ..
+                },
+            ..
+        }) = item
+        {
+            let long = picture.width.max(picture.height).max(1);
+            let edge = crate::systems::faces::thumb_edge(size.0.max(size.1) as f32, px, long);
+            *shown = w.pictures.thumb(picture, edge);
+            held += 1;
+        }
+    }
+}
+
+/// The most pictures one thread asks `ChatPictures` for (it holds 48).
+const PICTURES_HELD: usize = 40;
 
 /// A point's card as `chats::point_card` words it.
 fn point_v(point: &Point, number: usize, caption: &str) -> PointV {
@@ -1311,7 +1379,12 @@ fn line_view(l: &ChatsLive, key: &str, x: &Extras, line: &LineV) -> View {
     };
     let body = match &line.what {
         What::Text => text_bubble(line),
-        What::Picture { picture, caption } => picture_view(l, line, picture, caption),
+        What::Picture {
+            picture,
+            caption,
+            size,
+            shown,
+        } => picture_view(l, line, picture, caption, *size, shown),
         What::Point(p) => point_view(l, line, p),
     };
     let menu: View = if line.who.is_some() {
@@ -1369,24 +1442,58 @@ fn text_bubble(line: &LineV) -> View {
     }
 }
 
-/// A picture: the library has no image node, so a tile of the picture's
-/// own shape naming it, which opens egui's full-size viewer; its caption on
-/// the card's deep bottom edge, as the Polaroid egui draws.
+/// A picture: its thumbnail, fitted to the bubble's width, which opens the
+/// full-size viewer (`lib_picture_viewer`); while it is on its way a tile
+/// of its own size with a spinner, so the thread does not jump when it
+/// lands; if it cannot be had, a tile naming it. Its caption on the card's
+/// deep bottom edge, as the Polaroid egui draws.
 fn picture_view(
     l: &ChatsLive,
     line: &LineV,
     picture: &PictureRef,
     caption: &Option<String>,
+    (w, h): (u32, u32),
+    shown: &Thumb,
 ) -> View {
-    let size = crate::systems::chat_pictures::fit(picture, PICTURE_MAX, PICTURE_MAX);
     let p = picture.clone();
     let open = l.tap(move |_, a| a.view_picture = Some(p.clone()));
-    let tile = format!(
-        "display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: {:.0}px; height: {:.0}px; margin: 0; padding: 0; border: 0; border-radius: 4px; background: var(--m-surface-sunken); color: var(--m-text-dim); font-family: inherit; cursor: pointer",
-        size.x.max(140.0),
-        size.y.max(100.0)
-    );
-    let label = format!("A picture · {} × {}", picture.width, picture.height);
+    let button = "margin: 0; padding: 0; border: 0; font-family: inherit; cursor: pointer";
+    let face: View = match shown {
+        Thumb::Ready(src) => {
+            let style = format!("{button}; display: flex; border-radius: 1px; background: none");
+            let img = format!("flex: none; width: {w}px; height: {h}px; border-radius: 1px");
+            let src = src.to_string();
+            view! {
+                <button title="Open full size" style={style} on:click={open}>
+                    <img src={src} alt="A picture" style={img} />
+                </button>
+            }
+        }
+        Thumb::Loading => {
+            let tile = format!(
+                "display: flex; align-items: center; justify-content: center; width: {w}px; height: {h}px; border-radius: 4px; background: var(--m-surface-sunken)"
+            );
+            view! {
+                <div title="The picture is on its way" style={tile}>
+                    <Spinner size=Size::Md />
+                </div>
+            }
+        }
+        Thumb::Failed => {
+            let tile = format!(
+                "{button}; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: {}px; height: {}px; border-radius: 4px; background: var(--m-surface-sunken); color: var(--m-text-dim)",
+                w.max(140),
+                h.max(100)
+            );
+            let label = format!("A picture · {} × {}", picture.width, picture.height);
+            view! {
+                <button title="Open full size" style={tile} on:click={open}>
+                    {glyph(icons::CAMERA, 32)}
+                    <span style="font-size: var(--m-font-size-sm)">{label}</span>
+                </button>
+            }
+        }
+    };
     let caption: View = match caption {
         Some(c) => {
             let c = c.clone();
@@ -1396,10 +1503,7 @@ fn picture_view(
     };
     view! {
         <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 8px; border: 1px solid var(--m-border); border-radius: 6px; background: var(--m-surface); box-shadow: var(--m-shadow)">
-            <button title="Open full size" style={tile} on:click={open}>
-                {glyph(icons::CAMERA, 32)}
-                <span style="font-size: var(--m-font-size-sm)">{label}</span>
-            </button>
+            {face}
             {caption}
             {time_view(&line.time)}
         </div>

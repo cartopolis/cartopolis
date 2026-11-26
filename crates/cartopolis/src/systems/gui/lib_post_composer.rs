@@ -13,12 +13,15 @@
 //! the screen wide and the screen's height; held upright, along the bottom,
 //! the screen's width and at most 55 % of its height.
 //!
-//! The library has no image node, so the polaroid and the picture are rows
-//! naming them, each with its remove; the public colour is the library's
-//! info tone, the nearest token.
+//! The polaroid and the picture show as they will look, each with its
+//! remove in its corner (`lib_communities::picture_box`), from `data:`
+//! thumbnails made on a worker (`Communities::picture`); until one is made
+//! it is a row naming it. The public colour is the library's info tone,
+//! the nearest token.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
@@ -32,8 +35,10 @@ use crate::systems::communities::Communities;
 use crate::systems::community_posts::{
     composer_act, reach_words, ready_to_post, ComposerAction, Draft,
 };
+use crate::systems::lib_communities::picture_box;
 use crate::systems::lib_place_card::{cell, icon};
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::thumbs::Fit;
 use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
@@ -135,6 +140,9 @@ struct Live {
     /// A polaroid, a picture on the post.
     snapshot: Signal<bool>,
     picture: Signal<bool>,
+    /// Each as drawn, once its thumbnail is made.
+    snapshot_pic: Signal<Option<Pic>>,
+    picture_pic: Signal<Option<Pic>>,
     /// A picture or a polaroid is on its way: Camera and Upload wait.
     busy: Signal<bool>,
     sending: Signal<bool>,
@@ -188,6 +196,42 @@ fn put<T: Clone + PartialEq + 'static>(s: &Signal<T>, v: T) {
 
 thread_local! {
     static MOUNTED: RefCell<Option<Live>> = const { RefCell::new(None) };
+}
+
+/// A picture on the draft as drawn: its `data:` URL and its size, px.
+#[derive(Clone, PartialEq)]
+struct Pic {
+    src: Arc<str>,
+    w: f32,
+    h: f32,
+}
+
+/// The widest a polaroid is drawn while it is written, points (egui's 300);
+/// its height follows its frame, up to [`POLAROID_MAX_H`].
+const POLAROID_MAX_W: f32 = 300.0;
+const POLAROID_MAX_H: f32 = 520.0;
+/// The tallest the post's picture is drawn, points (egui's 200).
+const PICTURE_MAX_H: f32 = 200.0;
+
+/// The draft's picture `hash` fitted into `max_w` × `max_h` points and
+/// drawn at `k` px a point, once its thumbnail — twice those points,
+/// rounded up to 32 px so a few points' change does not make another — is
+/// made.
+fn attached(
+    cs: &mut Communities,
+    hash: Option<&str>,
+    max_w: f32,
+    max_h: f32,
+    k: f32,
+) -> Option<Pic> {
+    let px = |pts: f32| ((pts.max(16.0) * 2.0 / 32.0).ceil() as u32) * 32;
+    let t = cs.picture(hash, Fit::Within(px(max_w), px(max_h)))?;
+    let (w, h) = t.fitted(max_w, max_h);
+    Some(Pic {
+        src: t.url,
+        w: w * k,
+        h: h * k,
+    })
 }
 
 /// What the composer shows besides the fields, this frame.
@@ -265,10 +309,36 @@ pub fn drive_lib_post_composer(
             *m = None;
             crate::systems::lib_host::clear_keyed(KEY);
         }
-        let (Some(view), Some(draft)) = (view, cs.posts.draft.as_ref()) else {
+        let Some(view) = view else {
             return;
         };
         let placement = Placement::of(size.x, size.y, view.sideways, metrics.ui_scale());
+        // The pictures fitted to the card's width less its 20 px a side, in
+        // points; drawn in px, which on the web's DOM are points times the
+        // UI's scale (`Placement::of`).
+        let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
+            metrics.ui_scale()
+        } else {
+            1.0
+        };
+        let inner = (placement.width / k.max(0.01) - 40.0).max(80.0);
+        let (snapshot, picture) = cs
+            .posts
+            .draft
+            .as_ref()
+            .map(|d| (d.snapshot.clone(), d.picture.clone()))
+            .unwrap_or_default();
+        let snapshot_pic = attached(
+            &mut cs,
+            snapshot.as_deref(),
+            inner.min(POLAROID_MAX_W),
+            POLAROID_MAX_H,
+            k,
+        );
+        let picture_pic = attached(&mut cs, picture.as_deref(), inner, PICTURE_MAX_H, k);
+        let Some(draft) = cs.posts.draft.as_ref() else {
+            return;
+        };
         let fields = Fields::of(draft);
         let info = info_of(&cs, draft);
         let reach = reach_words(view.federating, view.followers);
@@ -285,6 +355,8 @@ pub fn drive_lib_post_composer(
                     place: signal(info.place),
                     snapshot: signal(info.snapshot),
                     picture: signal(info.picture),
+                    snapshot_pic: signal(snapshot_pic),
+                    picture_pic: signal(picture_pic),
                     busy: signal(info.busy),
                     sending: signal(info.sending),
                     not_ready: signal(!info.ready),
@@ -317,6 +389,8 @@ pub fn drive_lib_post_composer(
                 put(&live.place, info.place);
                 put(&live.snapshot, info.snapshot);
                 put(&live.picture, info.picture);
+                put(&live.snapshot_pic, snapshot_pic);
+                put(&live.picture_pic, picture_pic);
                 put(&live.busy, info.busy);
                 put(&live.sending, info.sending);
                 put(&live.not_ready, !info.ready);
@@ -410,23 +484,39 @@ fn view_of(l: &Live) -> View {
     let attachments = {
         let l = l.clone();
         move || -> View {
-            let snapshot = if l.snapshot.get() {
-                attachment(
+            // Each as it will look once its thumbnail is made; the polaroid
+            // square-cornered, its frame being part of it.
+            let snapshot = match (l.snapshot.get(), l.snapshot_pic.get()) {
+                (true, Some(p)) => picture_box(
+                    &p.src,
+                    p.w,
+                    p.h,
+                    false,
+                    "Polaroid of the view",
+                    l.act(ComposerAction::RemoveSnapshot),
+                ),
+                (true, None) => attachment(
                     icons::CAMERA,
                     "Polaroid of the view",
                     l.act(ComposerAction::RemoveSnapshot),
-                )
-            } else {
-                View::Empty
+                ),
+                (false, _) => View::Empty,
             };
-            let picture = if l.picture.get() {
-                attachment(
+            let picture = match (l.picture.get(), l.picture_pic.get()) {
+                (true, Some(p)) => picture_box(
+                    &p.src,
+                    p.w,
+                    p.h,
+                    true,
+                    "Picture",
+                    l.act(ComposerAction::RemovePicture),
+                ),
+                (true, None) => attachment(
                     icons::UPLOAD,
                     "Picture",
                     l.act(ComposerAction::RemovePicture),
-                )
-            } else {
-                View::Empty
+                ),
+                (false, _) => View::Empty,
             };
             view! { {snapshot}{picture} }
         }

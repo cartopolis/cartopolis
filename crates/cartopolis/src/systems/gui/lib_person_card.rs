@@ -12,7 +12,8 @@
 //!
 //! **Placement.** As egui's: centred over the bottom edge, above the dock
 //! (`lib_place_card::Placement`), the sheet lifted over the keyboard. The
-//! avatar is the person's initial in a disc: the library has no image node.
+//! avatar is the person's picture (`lib_chats::face_src`), or their initial
+//! in a disc while they have none.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -263,8 +264,23 @@ fn html(l: &Live) -> String {
     out
 }
 
-/// The person's initial in an accent disc, where egui draws their avatar.
+/// The person's picture where egui draws their avatar, round
+/// (`lib_chats::face_src`); their initial in an accent disc while they have
+/// none, or it is on its way.
 fn initial(name: &str, size: f32) -> View {
+    let name = name.to_string();
+    let px = size.round() as u32;
+    (move || -> View {
+        match crate::systems::lib_chats::face_src(&name, px) {
+            Some(src) => crate::systems::lib_chats::face_img(&src, &name, px),
+            None => letter_disc(&name, size),
+        }
+    })
+    .into_view()
+}
+
+/// The person's initial in an accent disc.
+fn letter_disc(name: &str, size: f32) -> View {
     let letter: String = name
         .chars()
         .next()

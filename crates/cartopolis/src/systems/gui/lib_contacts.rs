@@ -18,7 +18,8 @@
 //! under it. Block on a request asks to be pressed again, as the person
 //! menu's does. The QR code is an `<img>` from a PNG data URL, made once
 //! per link. A declined or a waiting row's words are the same; a person's
-//! picture is their disc, as everywhere on the library.
+//! disc is their picture when they have one (`lib_chats::disc`), as
+//! everywhere on the library.
 
 use std::cell::RefCell;
 use std::rc::Rc;

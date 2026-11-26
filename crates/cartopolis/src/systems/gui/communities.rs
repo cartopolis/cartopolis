@@ -206,9 +206,42 @@ pub struct Communities {
     /// The picture being picked is for a post, not the community's face: kept
     /// full size, and handed to the post being written.
     pub picture_for_post: bool,
+    /// Pictures from the picture store as the library's screens draw them:
+    /// a community's in its disc, a post's photo and polaroid
+    /// ([`Communities::picture`]).
+    #[cfg(feature = "ui-lib")]
+    thumbs: crate::systems::thumbs::Thumbs,
 }
 
 impl Communities {
+    /// A picture from the picture store (a community's, a post's photo or
+    /// polaroid) as a thumbnail cut to `fit`, fetching it the first time it
+    /// is asked for: `None` while it is on its way, or when it did not come.
+    /// Not encrypted, unlike a chat's: these pictures are public.
+    #[cfg(feature = "ui-lib")]
+    pub fn picture(
+        &mut self,
+        hash: Option<&str>,
+        fit: crate::systems::thumbs::Fit,
+    ) -> Option<crate::systems::thumbs::Thumb> {
+        use crate::systems::thumbs::Start;
+        let hash = hash?;
+        self.thumbs.get(hash, fit, || {
+            // A scripted capture's picture is drawn here, never fetched.
+            if let Some(demo) = crate::systems::chat_pictures::demo_jpeg_for(hash) {
+                return match demo {
+                    Ok(jpeg) => Start::Bytes(jpeg),
+                    Err(why) => Start::Fetch(IoTaskPool::get().spawn(async move { Err(why) })),
+                };
+            }
+            let h = hash.to_string();
+            Start::Fetch(
+                IoTaskPool::get()
+                    .spawn(async move { crate::systems::model_assets::fetch_picture(&h).await }),
+            )
+        })
+    }
+
     #[must_use]
     pub fn get(&self, id: Uuid) -> Option<&CommunityDto> {
         self.list.iter().find(|c| c.id == id)

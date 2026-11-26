@@ -183,9 +183,18 @@ Not yet: the camera test (a live picture; the library has no image node),
 the General page's receiver, storage and editor-access sections, and
 cartopolis' own `Tokens` (phase 4).
 - **An `<img>`** whose `src` is a `data:` URL (`data:image/jpeg;base64,…`)
-  is decoded once and shown as an `ImageNode` (`images.rs`); the browser
-  shows the same tag as it is. A screen hands over thumbnails this way,
-  scaled down first, since the URL sits in the view and in its HTML dump.
+  is decoded into an asset shared by every node with that source and shown
+  as an `ImageNode` (`images.rs`); the browser shows the same tag as it
+  is. **The cache frees what nothing shows**: an image no mounted `<img>`
+  has named for `IDLE_FRAMES` (120) frames is evicted, and while the
+  decoded pixels pass `CAP_BYTES` (48 MB) unshown ones go earlier, least
+  recently used first; a shown one is never evicted. The asset leaves
+  `Assets<Image>` one sweep after its entry, never in the frame that may
+  have drawn it (`egui-texture-lifetime.md`); shown again, it decodes
+  again. So screens may show pictures — chats, avatars, community
+  pictures, post photos — as `data:` thumbnails scaled to the size they
+  draw, since the URL sits in the view and in its HTML dump. `bevy:NAME`
+  live images (`LiveImages`) are the app's and not cached.
 - **`text-overflow: ellipsis`**, which Bevy's text lacks
   (`ellipsis.rs`): the line stays one line, asks for its whole text's
   width (`Node::width`, measured while the whole text shows), may shrink

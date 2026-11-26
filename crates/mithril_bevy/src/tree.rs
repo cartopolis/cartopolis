@@ -966,9 +966,11 @@ fn write_components(
         node.flex_grow = 1.0;
         node.min_width = Val::Px(0.0);
     }
-    // An `<img>`: its `data:` source decoded once (`images.rs`).
+    // An `<img>`: its `data:` source decoded and shared while shown
+    // (`images.rs`).
     let picture = if tag == "img" {
-        props_or_attr(&id, world, "src").and_then(|src| crate::images::resolve(world, &src))
+        let src = props_or_attr(&id, world, "src");
+        crate::images::picture(world, id, src.as_deref())
     } else {
         None
     };

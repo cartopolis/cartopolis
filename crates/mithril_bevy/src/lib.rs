@@ -482,6 +482,8 @@ pub fn drive_ui(world: &mut World) {
     // 3. Focus and pointer states, then style.
     tree::sync_states(world);
     let styled = tree::restyle(world);
+    // Pictures no mounted `<img>` shows any more leave the cache.
+    images::sweep(world);
     if styled > 0 {
         let tree = world.resource::<UiTree>();
         let hidden = tree

@@ -145,6 +145,8 @@ pub mod lib_share;
 pub mod lib_splash;
 #[cfg(feature = "ui-lib")]
 pub mod lib_walk_guide;
+#[cfg(feature = "ui-lib")]
+pub mod thumbs;
 // The library's screens that talk: the app's only, as their egui ones (`comms`).
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub mod lib_admin;

@@ -93,7 +93,7 @@ pub use gui::{
 #[cfg(feature = "ui-probe")]
 pub use gui::{lib_cosmos_sky, lib_keyboard};
 #[cfg(feature = "ui-lib")]
-pub use gui::{lib_dev_panel, lib_marquee, lib_object_editor};
+pub use gui::{lib_dev_panel, lib_marquee, lib_object_editor, thumbs};
 #[cfg(all(feature = "ui-lib", not(target_arch = "wasm32")))]
 pub use gui::{lib_midas_link, lib_release_approval};
 // What talks rather than shows the world: the app's, not the web build's

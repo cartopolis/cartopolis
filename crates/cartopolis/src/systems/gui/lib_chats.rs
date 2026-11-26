@@ -20,10 +20,13 @@
 //! and they queue work with [`ChatsLive::on`] / [`ChatsLive::later`], which
 //! hand them the whole [`ChatsWorld`] and the frame's `Actions`.
 //!
-//! The library has no image node yet, so every picture is a disc: a
-//! person's or a community's picture (`faces::texture_for`,
-//! `communities::picture`) is its coloured initial ([`disc`]), and the You
-//! page's preview polaroid is a line saying a picture is ready.
+//! **People's pictures.** A person's disc ([`disc`], `ChatKind::Private`)
+//! is their picture when they have one: an `<img>` of a `data:` thumbnail
+//! `faces` scales on a worker to the disc's size ([`face_src`]), else their
+//! coloured initial. The disc asks `faces` by name, as egui's discs do, so
+//! every screen that draws one shows faces with no edit of its own; it
+//! redraws when what `faces` can answer moves ([`follow_faces`], run at the
+//! top of [`drive_lib_chats`]). The You page's new picture is a polaroid.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,10 +71,14 @@ pub struct ChatsWorld<'w> {
     pub faces: ResMut<'w, Faces>,
     pub calendar: ResMut<'w, Calendar>,
     pub menu: ResMut<'w, crate::systems::ui::MainMenu>,
-    /// The pictures on their way out (`lib_chat_conversation`'s composer).
-    pub pictures: Res<'w, crate::systems::chat_pictures::ChatPictures>,
+    /// The pictures on their way out (`lib_chat_conversation`'s composer),
+    /// and the thread's thumbnails, made on first sight.
+    pub pictures: ResMut<'w, crate::systems::chat_pictures::ChatPictures>,
     /// How far the on-screen keyboard reaches up: the composer lifts by it.
     pub keyboard: Option<Res<'w, crate::systems::onscreen_keyboard::KeyboardInset>>,
+    /// The screen's size: a community's photos are fitted to the panel's
+    /// width (`lib_communities`), which on a phone is the screen's.
+    pub metrics: Res<'w, UiMetrics>,
     // A screen that needs more (the conversation: `ChatPictures`, `Calls`'
     // state) adds its resource here. Every field must be read somewhere, or
     // `unused = "deny"` fails the build.
@@ -176,6 +183,9 @@ pub struct RowV {
     pub time: String,
     pub unread: usize,
     pub community: Option<uuid::Uuid>,
+    /// Its picture as a `data:` URL, once there is one: a community's
+    /// (`Communities::picture`).
+    pub picture: Option<std::sync::Arc<str>>,
 }
 
 impl RowV {
@@ -188,7 +198,23 @@ impl RowV {
             time: r.time.clone(),
             unread: r.unread,
             community: r.community,
+            picture: None,
         }
+    }
+
+    /// [`RowV::of`], with a community's picture cut for a `size`-point disc.
+    fn with_picture(r: &chats::Row, communities: &mut Communities, size: u32) -> Self {
+        let mut v = RowV::of(r);
+        if let Some(id) = r.community {
+            let hash = communities.get(id).and_then(|c| c.settings.picture.clone());
+            v.picture = communities
+                .picture(
+                    hash.as_deref(),
+                    crate::systems::thumbs::Fit::Square(size * 2),
+                )
+                .map(|t| t.url);
+        }
+        v
     }
 }
 
@@ -245,8 +271,8 @@ pub struct YouState {
     pub admin: Option<usize>,
     pub faces: Vec<FaceChoice>,
     pub faces_enabled: bool,
-    /// A new picture waits for Use this or Again.
-    pub preview: bool,
+    /// A new picture waits for Use this or Again: it, as a `data:` URL.
+    pub preview: Option<std::sync::Arc<str>>,
     pub note: Option<String>,
 }
 
@@ -336,6 +362,9 @@ pub fn drive_lib_chats(
     metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
+    // Before the panel's own work, and whether or not it is the library's:
+    // the call screen, the overlay and the pins draw people's discs too.
+    follow_faces(&metrics);
     if !lib.chats {
         return;
     }
@@ -533,8 +562,16 @@ fn list_state(w: &mut ChatsWorld, now: u64) -> ListState {
             first: people.first().cloned().unwrap_or_default(),
             count: w.contacts.incoming.len(),
         }),
-        public: model.public.iter().map(RowV::of).collect(),
-        rows: model.rows.iter().map(RowV::of).collect(),
+        public: model
+            .public
+            .iter()
+            .map(|r| RowV::with_picture(r, &mut w.communities, 28))
+            .collect(),
+        rows: model
+            .rows
+            .iter()
+            .map(|r| RowV::with_picture(r, &mut w.communities, 32))
+            .collect(),
         sending: model.sending,
         searching: model.searching,
         coming,
@@ -551,7 +588,7 @@ fn you_state(w: &ChatsWorld) -> YouState {
         admin: w.view.admin,
         faces: w.faces.choices(&me),
         faces_enabled: w.faces.choices_enabled(),
-        preview: w.faces.preview.is_some(),
+        preview: w.faces.preview.as_ref().map(|p| p.src()),
         note: w.faces.note.clone(),
     }
 }
@@ -645,12 +682,76 @@ pub(crate) fn body_style(l: &ChatsLive) -> String {
     )
 }
 
-/// A chat's disc with no picture: its initial (or icon) on its colour, round
-/// for a person and a rounded square for a community — `discs::disc_look`,
-/// the same look egui paints. The tone is the person's or the community's
-/// own (`discs::AVATAR_TONES`), content rather than chrome, so it is not a
-/// theme token. A picture is drawn as this disc too (no image node yet).
+thread_local! {
+    /// `faces::face_revision` as last seen: every person's disc reads it, so
+    /// a picture arriving (or changing, or going) redraws the discs.
+    static FACES: Signal<u64> = signal(0);
+    /// Physical pixels per point, which sizes the thumbnails.
+    static PX_PER_PT: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// What `faces` can answer and the screen's scale → [`FACES`] and
+/// [`PX_PER_PT`], once a frame, before any screen draws.
+pub(crate) fn follow_faces(metrics: &UiMetrics) {
+    PX_PER_PT.with(|s| s.set(metrics.pixels_per_point().max(0.5)));
+    let revision = crate::systems::faces::face_revision();
+    FACES.with(|s| {
+        if s.get_untracked() != revision {
+            s.set(revision);
+        }
+    });
+}
+
+/// Physical pixels per point, as of this frame.
+pub(crate) fn px_per_pt() -> f32 {
+    PX_PER_PT.with(std::cell::Cell::get)
+}
+
+/// A person's picture for a disc `size` px across, as an `<img>` source,
+/// if they have one and its thumbnail is made; asking starts both
+/// (`faces::face_url`). Subscribes the caller to [`FACES`], so a reactive
+/// view that asks is drawn again when the answer can have changed.
+pub(crate) fn face_src(name: &str, size: u32) -> Option<std::sync::Arc<str>> {
+    FACES.with(|s| s.get());
+    let edge = crate::systems::faces::thumb_edge(size as f32, px_per_pt(), FACE_PX);
+    crate::systems::faces::face_url(name, edge)
+}
+
+/// A person's picture's own size, px (`utils::photo::FACE_EDGE`): no
+/// thumbnail is made larger.
+const FACE_PX: u32 = 256;
+
+/// A chat's disc: for a person with a picture, the picture, round
+/// ([`face_src`]); else its initial (or icon) on its colour, round for a
+/// person and a rounded square for a community — `discs::disc_look`, the
+/// same look egui paints. The tone is the person's or the community's own
+/// (`discs::AVATAR_TONES`), content rather than chrome, so it is not a
+/// theme token.
 pub(crate) fn disc(name: &str, kind: ChatKind, size: u32) -> View {
+    if kind != ChatKind::Private {
+        return initial_disc(name, kind, size);
+    }
+    let name = name.to_string();
+    (move || -> View {
+        match face_src(&name, size) {
+            Some(src) => face_img(&src, &name, size),
+            None => initial_disc(&name, ChatKind::Private, size),
+        }
+    })
+    .into_view()
+}
+
+/// A person's picture as a round disc `size` px across.
+pub(crate) fn face_img(src: &str, name: &str, size: u32) -> View {
+    let style = format!(
+        "flex: none; width: {size}px; height: {size}px; border-radius: var(--m-radius-full); background: var(--m-surface-sunken)"
+    );
+    let (src, alt) = (src.to_string(), name.to_string());
+    view! { <img src={src} alt={alt} style={style} /> }
+}
+
+/// [`disc`] with no picture: the initial, icon or `#` on its colour.
+fn initial_disc(name: &str, kind: ChatKind, size: u32) -> View {
     let look = disc_look(name, kind);
     let radius = if look.square {
         format!("{}px", (size as f32 * 0.29).round())
@@ -670,6 +771,26 @@ pub(crate) fn disc(name: &str, kind: ChatKind, size: u32) -> View {
         (size as f32 * look.scale).round(),
     );
     view! { <span style={style}>{look.text}</span> }
+}
+
+/// A disc with its picture where there is one (`src`, a `data:` URL cut
+/// to the disc: `Communities::picture`), clipped to the disc's shape —
+/// round for a person, a rounded square for a community — and [`disc`]
+/// where there is none.
+pub(crate) fn picture_disc(name: &str, kind: ChatKind, size: u32, src: Option<&str>) -> View {
+    let Some(src) = src else {
+        return disc(name, kind, size);
+    };
+    let radius = if disc_look(name, kind).square {
+        format!("{}px", (size as f32 * 0.29).round())
+    } else {
+        "var(--m-radius-full)".to_string()
+    };
+    let style = format!(
+        "flex: none; width: {size}px; height: {size}px; border-radius: {radius}; background: var(--m-surface-sunken)"
+    );
+    let (src, alt) = (src.to_string(), name.to_string());
+    view! { <img src={src} alt={alt} style={style} /> }
 }
 
 /// An unread count, as a pill.
@@ -908,7 +1029,7 @@ fn public_tile(l: &ChatsLive, r: &RowV) -> View {
     view! {
         <button title={name.clone()} style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px; border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); background: var(--m-surface); color: var(--m-text); text-align: start; font: inherit; cursor: pointer" on:click={open}>
             <span style="display: flex; align-items: center; gap: 10px; min-width: 0">
-                {disc(&r.name, r.kind, 28)}
+                {picture_disc(&r.name, r.kind, 28, r.picture.as_deref())}
                 <span style="flex: 1; min-width: 0; color: var(--m-text-strong); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; overflow: hidden">{name}</span>
                 {count(r.unread)}
             </span>
@@ -950,7 +1071,7 @@ fn chat_row(l: &ChatsLive, r: &RowV, sending: bool) -> View {
     let time = r.time.clone();
     let end: View = view! { <span>{time}</span>{count(r.unread)} };
     view! {
-        <ListItem icon={disc(&r.name, r.kind, 32)} sub={sub} end={end} onclick={open}>{title}</ListItem>
+        <ListItem icon={picture_disc(&r.name, r.kind, 32, r.picture.as_deref())} sub={sub} end={end} onclick={open}>{title}</ListItem>
     }
 }
 
@@ -1130,19 +1251,22 @@ fn you_body(l: &ChatsLive, me: &Me, y: &YouState) -> View {
         })
         .collect();
     // The preview is a picture, which the library cannot draw yet.
-    let ready: View = if y.preview {
-        note("Your new picture is ready: use it?")
-    } else {
-        View::Empty
+    // Your disc, or the new picture as a polaroid while it waits for Use
+    // this or Again — as egui's `faces::you_picture` drew it.
+    let face: View = match &y.preview {
+        Some(src) => polaroid(src, &me.name),
+        None => {
+            let name = if me.name.is_empty() {
+                "?"
+            } else {
+                me.name.as_str()
+            };
+            disc(name, ChatKind::Private, 96)
+        }
     };
     let face_note: View = match &y.note {
         Some(n) => note(n.clone()),
         None => View::Empty,
-    };
-    let disc_name = if me.name.is_empty() {
-        "?"
-    } else {
-        me.name.as_str()
     };
     let (name, address) = (me.name.clone(), me.address.clone());
     let policy = y.policy;
@@ -1155,8 +1279,7 @@ fn you_body(l: &ChatsLive, me: &Me, y: &YouState) -> View {
     let contacts = y.contacts.to_string();
     view! {
         <div style="display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center">
-            {disc(disc_name, ChatKind::Private, 96)}
-            {ready}
+            {face}
             <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px">{choices}</div>
             {face_note}
             <div style="display: flex; flex-direction: column; gap: 4px">
@@ -1178,5 +1301,35 @@ fn you_body(l: &ChatsLive, me: &Me, y: &YouState) -> View {
             {admin}
             <ListItem icon={icon(icons::LOGOUT)} onclick={entry(YouEntry::SignOut)}>"Sign out"</ListItem>
         </List>
+    }
+}
+
+/// A Polaroid's paper: warm white rather than pure white, which would glare
+/// against the ink of the panel. Content (a photograph's card), not chrome.
+const POLAROID_WHITE: theme::Rgba8 = theme::Rgba8::from_rgb(0xF4, 0xF2, 0xEC);
+/// What is written on it.
+const POLAROID_INK: theme::Rgba8 = theme::Rgba8::from_rgb(0x2A, 0x2E, 0x33);
+
+/// Your new picture as a polaroid: the warm white card, a narrow edge and a
+/// deep foot with your name written on it — egui's `faces::polaroid`.
+fn polaroid(src: &str, me: &str) -> View {
+    const PHOTO: u32 = 168;
+    const EDGE: u32 = 10;
+    const FOOT: u32 = 36;
+    let card = format!(
+        "flex: none; display: flex; flex-direction: column; align-items: center; padding: {EDGE}px {EDGE}px 0; border-radius: 2px; background: {}; box-shadow: var(--m-shadow)",
+        theme::tokens::hex(POLAROID_WHITE),
+    );
+    let photo = format!("flex: none; width: {PHOTO}px; height: {PHOTO}px");
+    let foot = format!(
+        "display: flex; align-items: center; justify-content: center; height: {FOOT}px; max-width: {PHOTO}px; color: {}; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden",
+        theme::tokens::hex(POLAROID_INK),
+    );
+    let (src, name) = (src.to_string(), me.to_string());
+    view! {
+        <div style={card}>
+            <img src={src} alt="Your new picture" style={photo} />
+            <span style={foot}>{name}</span>
+        </div>
     }
 }

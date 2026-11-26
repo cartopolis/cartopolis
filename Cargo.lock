@@ -6762,6 +6762,7 @@ dependencies = [
  "base64 0.22.1",
  "bevy",
  "bevy_image",
+ "image",
  "mithril",
 ]
 

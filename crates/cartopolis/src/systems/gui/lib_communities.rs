@@ -22,9 +22,16 @@
 //! `chats::drive_chats` (Choose sets `Communities::pick_picture`), and the
 //! account-delete confirmation is `lib_dialogs`'.
 //!
-//! **What differs from egui's.** The library has no image node: a
-//! community's picture is its disc (`lib_chats::disc`), a post's photo and
-//! polaroid a tile naming them. egui's context menu on a person is a row of
+//! **Pictures** are `<img>`s from `data:` thumbnails (`pictures`,
+//! `Communities::picture`): fetched from the picture store and cut to
+//! twice the size they are drawn at on a worker, once, and published in
+//! the `pics` signal as they are made. Until one is, a community's picture
+//! is its initial (`lib_chats::disc`) and a post's photo or polaroid a tile
+//! naming it. A post's photo is fitted into the card's width and egui's
+//! 220 px height, its proportions kept rather than stretched as egui's
+//! were.
+//!
+//! **What differs from egui's.** egui's context menu on a person is a row of
 //! actions under the person, opened by a tap. A "tap again" confirmation is
 //! a button that changes its words on the first press ([`confirm`]). The
 //! public colour (`theme::PUBLIC`) is the library's info tone, the nearest
@@ -33,7 +40,9 @@
 //! may lose the keyboard when the list changes under it; its text is kept.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cartopolis_core::posts::{
     NoticeKind, PostDto, PostNotices, PostReport, PostThread, PublicInfo, ReportAction, SourceKind,
@@ -54,9 +63,10 @@ use crate::systems::community_posts::{self as cp, ComposerAction, PostTap, Tab};
 use crate::systems::discs::ChatKind;
 use crate::systems::icons;
 use crate::systems::lib_chats::{
-    back, body_style, disc, group, header, icon, note, ChatsLive, ChatsWorld,
+    back, body_style, disc, group, header, icon, note, picture_disc, ChatsLive, ChatsWorld,
 };
 use crate::systems::private_chat::channel_key;
+use crate::systems::thumbs::{Fit, Thumb};
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -168,9 +178,70 @@ enum Page {
     People(Option<Box<PeopleV>>),
     PostTo {
         place: Option<String>,
-        mine: Vec<(Uuid, String)>,
+        /// Each community's id, name and picture.
+        mine: Vec<(Uuid, String, Option<String>)>,
     },
     Activity(Option<PostNotices>),
+}
+
+/// A picture as drawn: its `data:` URL and the size it is drawn at, px.
+#[derive(Clone, PartialEq)]
+struct Shown {
+    src: Arc<str>,
+    w: f32,
+    h: f32,
+}
+
+impl Shown {
+    /// `t` fitted into a `max_w` × `max_h` box, its proportions kept.
+    fn of(t: Thumb, max_w: f32, max_h: f32) -> Self {
+        let (w, h) = t.fitted(max_w, max_h);
+        Shown { src: t.url, w, h }
+    }
+}
+
+/// The pictures the showing screen draws, once they are made
+/// (`Communities::picture`): a picture still on its way is drawn as what
+/// stood in for it before, a disc's initial or a tile naming it.
+#[derive(Clone, PartialEq, Default)]
+struct Pics {
+    /// Community pictures, by hash and the disc's size in points.
+    discs: BTreeMap<(String, u32), Arc<str>>,
+    /// Post photos and polaroids, by hash, fitted to the feed.
+    photos: BTreeMap<String, Shown>,
+    polaroids: BTreeMap<String, Shown>,
+    /// The post being written: its polaroid and its picture.
+    draft_polaroid: Option<Shown>,
+    draft_picture: Option<Shown>,
+    /// The picture picked on the Create or Edit form, for its 48-point disc.
+    form: Option<Arc<str>>,
+}
+
+impl Pics {
+    /// A community picture for a `size`-point disc.
+    fn disc(&self, hash: Option<&str>, size: u32) -> Option<&str> {
+        let hash = hash?;
+        self.discs.get(&(hash.to_string(), size)).map(|s| &**s)
+    }
+}
+
+/// How high a post's photo is drawn at most, px: egui's 220.
+const PHOTO_MAX_H: f32 = 220.0;
+/// How wide a polaroid is drawn at most, px: egui's 420 in a post, 300
+/// while it is being written. Its height follows its own proportions.
+const POLAROID_MAX_W: f32 = 420.0;
+const DRAFT_POLAROID_MAX_W: f32 = 300.0;
+/// How high the picture of the post being written is drawn at most, px.
+const DRAFT_PHOTO_MAX_H: f32 = 200.0;
+/// The tallest a polaroid is let be drawn, px: a frame is about square.
+const POLAROID_MAX_H: f32 = 520.0;
+
+/// A thumbnail box for a picture drawn at most `w` × `h` points: twice
+/// that in pixels, rounded up to 32 so a screen a few points wider does not
+/// make a new thumbnail.
+fn within(w: f32, h: f32) -> Fit {
+    let px = |pts: f32| ((pts.max(16.0) * 2.0 / 32.0).ceil() as u32) * 32;
+    Fit::Within(px(w), px(h))
 }
 
 /// The fields' models and the flags beside them, mirrored from the world.
@@ -236,6 +307,8 @@ pub(crate) struct CommunitiesLive {
     armed: Signal<Option<String>>,
     /// The person on People whose actions are open.
     person: Signal<Option<String>>,
+    /// The pictures the screen draws, as they are made.
+    pics: Signal<Pics>,
 }
 
 impl CommunitiesLive {
@@ -291,6 +364,7 @@ impl CommunitiesLive {
             }),
             armed: signal(None),
             person: signal(None),
+            pics: signal(Pics::default()),
         }
     }
 }
@@ -350,6 +424,7 @@ pub(crate) fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
     let l = &live.communities;
     let showing = w.screen() == ChatsScreen::Communities;
     let (_, me) = w.me();
+    let panel = panel_width(live, w);
     let cs: &mut Communities = &mut w.communities;
     let route = route_of(cs, showing);
     // What egui's screens do while they are drawn, done here while the
@@ -373,8 +448,119 @@ pub(crate) fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
         put(&l.person, None);
     }
     put(&l.route, route.clone());
+    put(&l.pics, pictures(&route, cs, panel));
     put(&l.page, page_of(&route, cs, &me));
     fields(&l.f, &route, cs);
+}
+
+/// The panel's width, px: the screen's on a phone, 360 beside the map
+/// (`lib_chats::panel`). On the web's DOM a px is a point times the UI's
+/// scale, as `lib_post_composer` places itself.
+fn panel_width(live: &ChatsLive, w: &ChatsWorld) -> f32 {
+    if !live.compact {
+        return 360.0;
+    }
+    let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
+        w.metrics.ui_scale()
+    } else {
+        1.0
+    };
+    w.metrics.viewport_pts().x * k
+}
+
+/// The pictures `route`'s screen draws, asked for every frame it shows:
+/// the first ask fetches and cuts one on a worker, and it is drawn from the
+/// frame it is ready. `panel` is the panel's width, px, which a post's
+/// photo is fitted to.
+fn pictures(route: &Route, cs: &mut Communities, panel: f32) -> Pics {
+    let mut pics = Pics::default();
+    // The body's 20 px a side (`body_style`), and a card's 16 and border.
+    let body = (panel - 40.0).max(120.0);
+    let card = (body - 34.0).max(100.0);
+    let mut discs: Vec<(Option<String>, u32)> = Vec::new();
+    let mut polaroids: Vec<String> = Vec::new();
+    let mut photos: Vec<String> = Vec::new();
+    match route {
+        Route::Find => discs.extend(cs.directory.iter().map(|x| (x.picture.clone(), 40))),
+        // The hero's disc (`hero`).
+        Route::Preview | Route::Invite => {
+            discs.extend(cs.directory.iter().map(|x| (x.picture.clone(), 64)));
+        }
+        // The form's disc follows the picture picked (`form_page`).
+        Route::Create | Route::Edit(_) => {
+            let hash = cs.draft.picture.clone();
+            pics.form = cs
+                .picture(hash.as_deref(), Fit::Square(48 * 2))
+                .map(|t| t.url);
+        }
+        // The communities to post in (`post_to_page`).
+        Route::PostTo => discs.extend(
+            cs.list
+                .iter()
+                .filter(|c| c.role.is_some())
+                .map(|c| (c.settings.picture.clone(), 32)),
+        ),
+        Route::Community(id, composing) => {
+            // The page's head (`page_head`), or the hero of one this
+            // account only asked to join.
+            let c = cs.get(*id);
+            let size = if c.is_some_and(|c| c.role.is_none()) {
+                64
+            } else {
+                40
+            };
+            discs.push((c.and_then(|c| c.settings.picture.clone()), size));
+            if *composing {
+                let d = cs.posts.draft.as_ref();
+                let snapshot = d.and_then(|d| d.snapshot.clone());
+                let picture = d.and_then(|d| d.picture.clone());
+                let pw = body.min(DRAFT_POLAROID_MAX_W);
+                pics.draft_polaroid = cs
+                    .picture(snapshot.as_deref(), within(pw, POLAROID_MAX_H))
+                    .map(|t| Shown::of(t, pw, POLAROID_MAX_H));
+                pics.draft_picture = cs
+                    .picture(picture.as_deref(), within(body, DRAFT_PHOTO_MAX_H))
+                    .map(|t| Shown::of(t, body, DRAFT_PHOTO_MAX_H));
+            } else {
+                let p = &cs.posts;
+                let thread = p
+                    .thread
+                    .as_ref()
+                    .filter(|t| Some(t.post.id) == p.thread_open);
+                let shown = p
+                    .feeds
+                    .get(id)
+                    .into_iter()
+                    .flatten()
+                    .chain(thread.map(|t| &t.post))
+                    .chain(thread.into_iter().flat_map(|t| t.replies.iter()));
+                for post in shown {
+                    polaroids.extend(post.snapshot.clone());
+                    photos.extend(post.picture.clone());
+                    photos.extend(post.more_pictures.iter().map(|x| x.hash.clone()));
+                }
+            }
+        }
+        _ => {}
+    }
+    for (hash, size) in discs {
+        let Some(hash) = hash else { continue };
+        if let Some(t) = cs.picture(Some(&hash), Fit::Square(size * 2)) {
+            pics.discs.insert((hash, size), t.url);
+        }
+    }
+    let pw = card.min(POLAROID_MAX_W);
+    for h in polaroids {
+        if let Some(t) = cs.picture(Some(&h), within(pw, POLAROID_MAX_H)) {
+            pics.polaroids.insert(h, Shown::of(t, pw, POLAROID_MAX_H));
+        }
+    }
+    for h in photos {
+        if let Some(t) = cs.picture(Some(&h), within(card, PHOTO_MAX_H)) {
+            pics.photos.insert(h, Shown::of(t, card, PHOTO_MAX_H));
+        }
+    }
+    pics
 }
 
 /// What `route`'s screen shows.
@@ -416,7 +602,7 @@ fn page_of(route: &Route, cs: &Communities, me: &str) -> Page {
                 .list
                 .iter()
                 .filter(|c| c.role.is_some())
-                .map(|c| (c.id, c.settings.name.clone()))
+                .map(|c| (c.id, c.settings.name.clone(), c.settings.picture.clone()))
                 .collect(),
         },
         Route::Activity => Page::Activity(cs.posts.notices.clone()),
@@ -759,7 +945,49 @@ fn split_row(
     }
 }
 
-/// A picture the library cannot draw yet: a tile that names it.
+/// A post's photo (`rounded`, as egui's 10 px corners) or polaroid (its
+/// frame square-cornered, as it was made), at the size it was fitted to.
+/// `alt` is what it shows, in words.
+fn shown_picture(s: &Shown, alt: &str, rounded: bool) -> View {
+    picture_box(&s.src, s.w, s.h, rounded, alt, None)
+}
+
+/// A picture `w` × `h` px from its `data:` URL, with a remove in its
+/// corner when `remove` is given: the picture on a post being written
+/// (here and in `lib_post_composer`).
+pub(crate) fn picture_box(
+    src: &str,
+    w: f32,
+    h: f32,
+    rounded: bool,
+    alt: &str,
+    remove: Option<Handler>,
+) -> View {
+    let radius = if rounded {
+        "border-radius: var(--m-radius); "
+    } else {
+        ""
+    };
+    let img_style =
+        format!("width: {w:.0}px; height: {h:.0}px; {radius}background: var(--m-surface-sunken)");
+    let (src, alt) = (src.to_string(), alt.to_string());
+    let img = view! { <img src={src} alt={alt.clone()} title={alt} style={img_style} /> };
+    let remove: View = match remove {
+        Some(go) => view! {
+            <div style="position: absolute; top: 6px; right: 6px">
+                <Button variant=Variant::Secondary size=Size::Sm icon={icon(icons::DELETE)} icon_only=true onclick={Some(go)} title="Remove it from the post" />
+            </div>
+        },
+        None => View::Empty,
+    };
+    let frame = format!(
+        "position: relative; flex: none; align-self: flex-start; width: {w:.0}px; height: {h:.0}px"
+    );
+    view! { <div style={frame}>{img}{remove}</div> }
+}
+
+/// A picture still on its way (or one that did not come): a tile that
+/// names it.
 fn picture_tile(glyph: &'static str, what: String) -> View {
     view! {
         <div style="display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 16px; border-radius: var(--m-radius); background: var(--m-surface-sunken); color: var(--m-text-dim)">
@@ -819,7 +1047,13 @@ fn segmented(
 }
 
 /// A community's picture, its name, what it is for and a line of facts.
-fn hero(name: &str, about: &str, facts: String, place: Option<String>) -> View {
+fn hero(
+    name: &str,
+    picture: Option<&str>,
+    about: &str,
+    facts: String,
+    place: Option<String>,
+) -> View {
     let about: View = if about.trim().is_empty() {
         View::Empty
     } else {
@@ -833,7 +1067,7 @@ fn hero(name: &str, about: &str, facts: String, place: Option<String>) -> View {
     let title = name.to_string();
     view! {
         <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 4px; text-align: center">
-            {disc(name, ChatKind::Community, 64)}
+            {picture_disc(name, ChatKind::Community, 64, picture)}
             <h2 style="margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">{title}</h2>
             {about}
             <span style="color: var(--m-text-dim); font-size: var(--m-font-size-sm)">{facts}</span>
@@ -842,10 +1076,11 @@ fn hero(name: &str, about: &str, facts: String, place: Option<String>) -> View {
     }
 }
 
-/// A listing's hero.
-fn listing_hero(l: &CommunityListing) -> View {
+/// A listing's hero, its picture from `pics`.
+fn listing_hero(l: &CommunityListing, pics: &Pics) -> View {
     hero(
         &l.name,
+        pics.disc(l.picture.as_deref(), 64),
         &l.about,
         format!("{} people · {}", l.members, cm::rule_word(l.join)),
         l.place.as_ref().map(cm::place_words),
@@ -978,8 +1213,14 @@ fn listing_row(l: &ChatsLive, x: &CommunityListing) -> View {
         ),
     };
     let name = x.name.clone();
+    let face = picture_disc(
+        &x.name,
+        ChatKind::Community,
+        40,
+        l.communities.pics.get().disc(x.picture.as_deref(), 40),
+    );
     view! {
-        <ListItem icon={disc(&x.name, ChatKind::Community, 40)} sub={sub.into_view()} end={view! { <Badge tone={tone}>{word}</Badge> }} onclick={tap(l, Tap::Listing(x.id, x.mine))}>{name}</ListItem>
+        <ListItem icon={face} sub={sub.into_view()} end={view! { <Badge tone={tone}>{word}</Badge> }} onclick={tap(l, Tap::Listing(x.id, x.mine))}>{name}</ListItem>
     }
 }
 
@@ -1060,7 +1301,7 @@ fn preview_body(l: &ChatsLive, x: &CommunityListing) -> View {
         }
     };
     view! {
-        {listing_hero(x)}
+        {listing_hero(x, &l.communities.pics.get())}
         {topics}
         <div style={BLOCK}>
             {group("Moderators")}
@@ -1096,7 +1337,7 @@ fn invite_page(l: &ChatsLive) -> View {
             }
         };
         view! {
-            {listing_hero(x)}
+            {listing_hero(x, &l.communities.pics.get())}
             <div style="display: flex; flex-direction: column; gap: 12px">{act}</div>
         }
     });
@@ -1131,15 +1372,19 @@ fn form_page(l: &ChatsLive, edit: Option<Uuid>) -> View {
             })
         }
     };
-    // The disc follows the name as it is typed: only it is drawn again.
+    // The disc follows the name as it is typed, and shows the picture once
+    // one is picked: only it is drawn again.
     let face = {
         let name = f.name.clone();
+        let pics = l.communities.pics.clone();
         move || -> View {
             let n = name.get();
-            disc(
+            let picture = pics.get().form;
+            picture_disc(
                 if n.trim().is_empty() { "?" } else { n.trim() },
                 ChatKind::Community,
                 48,
+                picture.as_deref(),
             )
         }
     };
@@ -1356,8 +1601,10 @@ fn community_page(l: &ChatsLive, id: Uuid) -> View {
             return note("You are no longer in this community.");
         };
         let Some(role) = c.role else {
+            let pics = l.communities.pics.get();
+            let picture = pics.disc(c.settings.picture.as_deref(), 64);
             return view! {
-                {hero(&c.settings.name, &c.settings.about, String::new(), None)}
+                {hero(&c.settings.name, picture, &c.settings.about, String::new(), None)}
                 {note("You asked to join. A moderator will answer.")}
                 <Button onclick={tap(l, Tap::Withdraw(id, false))}>"Withdraw the request"</Button>
             };
@@ -1443,9 +1690,18 @@ fn page_head(l: &ChatsLive, c: &CommunityDto) -> View {
         }
     );
     let name = c.settings.name.clone();
+    let face = picture_disc(
+        &c.settings.name,
+        ChatKind::Community,
+        40,
+        l.communities
+            .pics
+            .get()
+            .disc(c.settings.picture.as_deref(), 40),
+    );
     let lead = view! {
         {back(tap(l, Tap::Back), "Back")}
-        {disc(&c.settings.name, ChatKind::Community, 40)}
+        {face}
     };
     let title = view! {
         <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
@@ -2014,21 +2270,28 @@ fn post_card(
             </div>
         }
     } else {
+        // Each picture once it is made; until then the tile that names it.
+        // The polaroid keeps its own proportions and no rounding: its frame
+        // is part of the picture.
+        let pics = l.communities.pics.get();
         let mut tiles = Vec::new();
-        if p.snapshot.is_some() {
-            tiles.push(picture_tile(icons::CAMERA, "Polaroid of the view".into()));
+        if let Some(h) = &p.snapshot {
+            tiles.push(match pics.polaroids.get(h) {
+                Some(s) => shown_picture(s, "Polaroid of the view", false),
+                None => picture_tile(icons::CAMERA, "Polaroid of the view".into()),
+            });
         }
-        if p.picture.is_some() {
-            tiles.push(picture_tile(
-                icons::UPLOAD,
-                p.picture_alt.clone().unwrap_or_else(|| "Photo".into()),
-            ));
-        }
-        for x in &p.more_pictures {
-            tiles.push(picture_tile(
-                icons::UPLOAD,
-                x.alt.clone().unwrap_or_else(|| "Photo".into()),
-            ));
+        let photos = p
+            .picture
+            .iter()
+            .map(|h| (h, &p.picture_alt))
+            .chain(p.more_pictures.iter().map(|x| (&x.hash, &x.alt)));
+        for (h, alt) in photos {
+            let alt = alt.clone().unwrap_or_else(|| "Photo".into());
+            tiles.push(match pics.photos.get(h) {
+                Some(s) => shown_picture(s, &alt, true),
+                None => picture_tile(icons::UPLOAD, alt),
+            });
         }
         tiles.into_view()
     };
@@ -2447,19 +2710,36 @@ fn compose_page(l: &ChatsLive, id: Uuid) -> View {
                 </div>
             }
         };
-        let snapshot = if v.snapshot {
-            attachment(
+        // Each as it will look, with its own remove, once it is made; the
+        // row naming it until then.
+        let pics = l.communities.pics.get();
+        let snapshot = match (v.snapshot, &pics.draft_polaroid) {
+            (true, Some(s)) => picture_box(
+                &s.src,
+                s.w,
+                s.h,
+                false,
+                "Polaroid of the view",
+                compose(l, ComposerAction::RemoveSnapshot),
+            ),
+            (true, None) => attachment(
                 icons::CAMERA,
                 "Polaroid of the view",
                 ComposerAction::RemoveSnapshot,
-            )
-        } else {
-            View::Empty
+            ),
+            (false, _) => View::Empty,
         };
-        let picture = if v.picture {
-            attachment(icons::UPLOAD, "Picture", ComposerAction::RemovePicture)
-        } else {
-            View::Empty
+        let picture = match (v.picture, &pics.draft_picture) {
+            (true, Some(s)) => picture_box(
+                &s.src,
+                s.w,
+                s.h,
+                true,
+                "Picture",
+                compose(l, ComposerAction::RemovePicture),
+            ),
+            (true, None) => attachment(icons::UPLOAD, "Picture", ComposerAction::RemovePicture),
+            (false, _) => View::Empty,
         };
         let (camera, upload) = if v.picture {
             ("Retake", "Replace")
@@ -2693,11 +2973,18 @@ fn post_to_page(l: &ChatsLive) -> View {
         let list: View = if mine.is_empty() {
             note("You're not in a community yet. Find one, or start one, first.")
         } else {
+            let pics = l.communities.pics.get();
             let rows: Vec<View> = mine
                 .iter()
-                .map(|(id, name)| {
+                .map(|(id, name, picture)| {
+                    let face = picture_disc(
+                        name,
+                        ChatKind::Community,
+                        32,
+                        pics.disc(picture.as_deref(), 32),
+                    );
                     view! {
-                        <ListItem icon={disc(name, ChatKind::Community, 32)} chevron=true onclick={ptap(l, PostTap::PostIn(*id))}>{name.clone()}</ListItem>
+                        <ListItem icon={face} chevron=true onclick={ptap(l, PostTap::PostIn(*id))}>{name.clone()}</ListItem>
                     }
                 })
                 .collect();

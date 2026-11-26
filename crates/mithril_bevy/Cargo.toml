@@ -18,8 +18,11 @@ mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "3dedb903
 # The client's image decoders, so a lone `cargo check -p mithril_bevy` resolves
 # bevy_image the way the client does (zstd needs a backend named).
 bevy_image.workspace = true
-# `<img>` sources are `data:` URLs (`images.rs`).
+# `<img>` sources are `data:` URLs (`images.rs`), decoded by `image` (the
+# client's JPEG and PNG decoders): bevy_image's JPEG feature is off in this
+# workspace, so a thumbnail decoded through it failed and showed nothing.
 base64.workspace = true
+image.workspace = true
 bevy = { workspace = true, features = [
     "bevy_ui",
     "bevy_ui_render",

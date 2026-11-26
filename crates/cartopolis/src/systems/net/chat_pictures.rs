@@ -9,15 +9,17 @@
 //! the key exists.
 //!
 //! Everything slow happens on a worker: re-encoding, encrypting and the upload
-//! on the way out; the download, the decryption and the decode on the way in.
-//! What the main thread does is turn decoded pixels into an egui texture, once
-//! per picture, and the textures are kept here rather than made per frame —
-//! a texture created and dropped each frame is the one shape egui's deferred
-//! free cannot save (`docs/notes/egui-texture-lifetime.md`).
+//! on the way out; the download and the decryption on the way in, and the
+//! thumbnail the thread shows — the JPEG scaled to what its bubble draws and
+//! handed over as a `data:image/jpeg` URL ([`ChatPictures::thumb`]), made
+//! once per picture and size and kept here, so a frame never encodes one.
+//! The same URL is an `<img>` in the app (`mithril_bevy::images`) and in the
+//! browser.
 
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use crate::platform::http::poll_task;
 
@@ -48,38 +50,30 @@ pub struct Uploaded {
 /// fetches the rest again, from the cache.
 const MAX_HELD: usize = 48;
 
-struct Decoded {
-    jpeg: Vec<u8>,
-    rgba: Vec<u8>,
-    size: [usize; 2],
-}
-
 enum Held {
-    Loading(Task<Result<Decoded, String>>),
-    Ready {
-        jpeg: Vec<u8>,
-        /// Pixels until the texture is made, then gone. Read only by
-        /// [`ChatPictures::show`], which is kept for its gap.
-        #[allow(dead_code)]
-        rgba: Option<(Vec<u8>, [usize; 2])>,
-        #[allow(dead_code)]
-        texture: Option<egui::TextureHandle>,
-    },
+    /// The JPEG on its way: fetched and opened.
+    Loading(Task<Result<Vec<u8>, String>>),
+    Ready(Vec<u8>),
     Failed(String),
 }
 
-/// What the UI and the agent ask about one picture.
-///
-/// **Kept for a gap, not drawn**: egui's thread drew each picture inline
-/// through [`ChatPictures::show`]; the library's thread
-/// (`lib_chat_conversation::picture_view`) draws a tile naming it, and only
-/// the full-size viewer (`lib_picture_viewer`, from [`ChatPictures::jpeg`])
-/// shows the pixels. Delete this and `show` once the thread draws them.
-#[allow(dead_code)]
-pub enum Shown {
+/// A thumbnail of one picture at one size.
+enum Small {
+    Making(Task<Option<Result<String, String>>>),
+    Made(Arc<str>),
+    Failed,
+}
+
+/// A picture's thumbnail, as the thread draws it ([`ChatPictures::thumb`]).
+#[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum Thumb {
+    /// Fetching, opening or scaling it.
     Loading,
-    Ready(egui::TextureHandle),
-    Failed(String),
+    /// A `data:image/jpeg` URL. An `Arc`, so a view compares it by pointer
+    /// and copies a count, not the picture, every frame.
+    Ready(Arc<str>),
+    Failed,
 }
 
 #[derive(Resource, Default)]
@@ -88,6 +82,8 @@ pub struct ChatPictures {
     held: HashMap<String, Held>,
     /// Hashes in the order they were first asked for, for eviction.
     order: VecDeque<String>,
+    /// Thumbnails by (hash, edge px), let go with their picture.
+    small: HashMap<(String, u32), Small>,
 }
 
 impl ChatPictures {
@@ -168,8 +164,7 @@ impl ChatPictures {
         if self.held.contains_key(hash) {
             return;
         }
-        let task = IoTaskPool::get().spawn(async move { decode(jpeg) });
-        self.hold(hash, Held::Loading(task));
+        self.hold(hash, Held::Ready(jpeg));
     }
 
     /// Start fetching a picture if it is not already here or on its way.
@@ -178,7 +173,7 @@ impl ChatPictures {
             return;
         }
         if r.hash == DEMO_HASH {
-            let task = IoTaskPool::get().spawn(async move { decode(demo_jpeg()?) });
+            let task = IoTaskPool::get().spawn(async move { demo_jpeg() });
             self.hold(DEMO_HASH, Held::Loading(task));
             return;
         }
@@ -186,9 +181,7 @@ impl ChatPictures {
         let hash = r.hash.clone();
         let task = IoTaskPool::get().spawn(async move {
             let sealed = crate::systems::model_assets::fetch_picture(&r.hash).await?;
-            let jpeg = cartopolis_e2ee::open_attachment(&sealed, &r.key, &r.nonce)
-                .map_err(|e| e.to_string())?;
-            decode(jpeg)
+            cartopolis_e2ee::open_attachment(&sealed, &r.key, &r.nonce).map_err(|e| e.to_string())
         });
         self.hold(&hash, Held::Loading(task));
     }
@@ -205,33 +198,38 @@ impl ChatPictures {
                     break;
                 }
                 self.held.remove(&old);
+                self.small.retain(|(hash, _), _| *hash != old);
             }
         }
     }
 
-    /// The picture as a texture, fetching it on first sight. Kept for
-    /// [`Shown`]'s gap.
-    #[allow(dead_code)]
-    pub fn show(&mut self, ctx: &egui::Context, r: &PictureRef) -> Shown {
+    /// The picture as a thumbnail `edge` px on its longer side
+    /// (`faces::thumb_edge`), fetching and scaling it on first sight — on a
+    /// worker, once per picture and size.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn thumb(&mut self, r: &PictureRef, edge: u32) -> Thumb {
         self.want(r);
-        match self.held.get_mut(&r.hash) {
-            Some(Held::Ready { rgba, texture, .. }) => {
-                if texture.is_none() {
-                    if let Some((pixels, size)) = rgba.take() {
-                        let image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                        *texture = Some(ctx.load_texture(
-                            format!("chat_picture_{}", &r.hash[..r.hash.len().min(16)]),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                }
-                texture
-                    .clone()
-                    .map_or(Shown::Failed("no pixels".into()), Shown::Ready)
+        let jpeg = match self.held.get(&r.hash) {
+            Some(Held::Ready(jpeg)) => jpeg,
+            Some(Held::Failed(_)) => return Thumb::Failed,
+            _ => return Thumb::Loading,
+        };
+        let key = (r.hash.clone(), edge);
+        match self.small.get(&key) {
+            Some(Small::Made(url)) => Thumb::Ready(url.clone()),
+            Some(Small::Failed) => Thumb::Failed,
+            Some(Small::Making(_)) => Thumb::Loading,
+            None => {
+                let jpeg = jpeg.clone();
+                let task = IoTaskPool::get().spawn(async move {
+                    crate::platform::workers::compute("chat picture thumbnail", move || {
+                        crate::systems::faces::thumbnail_url(&jpeg, edge)
+                    })
+                    .await
+                });
+                self.small.insert(key, Small::Making(task));
+                Thumb::Loading
             }
-            Some(Held::Failed(why)) => Shown::Failed(why.clone()),
-            _ => Shown::Loading,
         }
     }
 
@@ -241,10 +239,16 @@ impl ChatPictures {
     pub fn jpeg(&mut self, r: &PictureRef) -> Option<Result<Vec<u8>, String>> {
         self.want(r);
         match self.held.get(&r.hash) {
-            Some(Held::Ready { jpeg, .. }) => Some(Ok(jpeg.clone())),
+            Some(Held::Ready(jpeg)) => Some(Ok(jpeg.clone())),
             Some(Held::Failed(why)) => Some(Err(why.clone())),
             _ => None,
         }
+    }
+
+    /// Something is on its way: a picture or a thumbnail.
+    fn busy(&self) -> bool {
+        self.held.values().any(|h| matches!(h, Held::Loading(_)))
+            || self.small.values().any(|s| matches!(s, Small::Making(_)))
     }
 
     /// Fold in whatever finished loading.
@@ -253,15 +257,25 @@ impl ChatPictures {
             if let Held::Loading(task) = held {
                 if let Some(result) = poll_task(task) {
                     *held = match result {
-                        Ok(d) => Held::Ready {
-                            jpeg: d.jpeg,
-                            rgba: Some((d.rgba, d.size)),
-                            texture: None,
-                        },
+                        Ok(jpeg) => Held::Ready(jpeg),
                         Err(why) => {
                             tracing::warn!(error = %why, "a chat picture did not load");
                             Held::Failed(why)
                         }
+                    };
+                }
+            }
+        }
+        for small in self.small.values_mut() {
+            if let Small::Making(task) = small {
+                if let Some(result) = poll_task(task) {
+                    *small = match result {
+                        Some(Ok(url)) => Small::Made(Arc::from(url)),
+                        Some(Err(why)) => {
+                            tracing::warn!(error = %why, "a chat picture's thumbnail was not made");
+                            Small::Failed
+                        }
+                        None => Small::Failed,
                     };
                 }
             }
@@ -347,18 +361,9 @@ fn demo_jpeg() -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn decode(jpeg: Vec<u8>) -> Result<Decoded, String> {
-    let (rgba, size) = crate::utils::photo::decode_rgba(&jpeg)?;
-    Ok(Decoded { jpeg, rgba, size })
-}
-
-/// Fold finished fetches into [`ChatPictures`] each frame.
+/// Fold finished fetches and thumbnails into [`ChatPictures`] each frame.
 pub fn poll_chat_pictures(mut pictures: ResMut<ChatPictures>) {
-    if pictures
-        .held
-        .values()
-        .any(|h| matches!(h, Held::Loading(_)))
-    {
+    if pictures.busy() {
         pictures.poll();
     }
 }

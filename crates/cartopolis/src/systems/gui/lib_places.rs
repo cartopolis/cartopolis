@@ -10,11 +10,15 @@
 //! A row is moved by "Move to" in its actions rather than dragged onto a
 //! folder, and a folder's colour is picked from the palette new folders are
 //! given (`FOLDER_PALETTE`) rather than from a free colour picker. A place's
-//! photo is a photo glyph in the row; tapping it (or "View the photo") opens
+//! photo is its thumbnail in the row ([`PlaceThumbs`]: the stored square,
+//! cut to twice `photo::THUMB_POINTS` on a worker and kept by its stem), a
+//! photo glyph until that is made; tapping it (or "View the photo") opens
 //! it full size (`Actions::view_photo`), drawn by `lib_picture_viewer`.
 
 use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
@@ -185,6 +189,8 @@ enum Armed {
 struct Live {
     listing: Signal<Listing>,
     status: Signal<Status>,
+    /// The photos' thumbnails made so far, by stem, as `data:` URLs.
+    thumbs: Signal<BTreeMap<String, Arc<str>>>,
     /// The row whose actions are open under it.
     menu: Signal<Option<Item>>,
     /// The row being renamed, and the name as typed.
@@ -218,6 +224,57 @@ thread_local! {
     static MOUNTED: RefCell<Option<Live>> = const { RefCell::new(None) };
 }
 
+/// How many frames a thumbnail that could not be read waits before it is
+/// read again: on the web it may still be loading, natively it is gone,
+/// and a file read a frame for every such row is not free.
+const THUMB_RETRY_FRAMES: u64 = 120;
+
+/// The places' thumbnails: `photo_store::read_thumb`'s square JPEG, cut to
+/// twice `photo::THUMB_POINTS` on a worker (`thumbs`), once per photo.
+#[derive(Default)]
+pub struct PlaceThumbs {
+    thumbs: crate::systems::thumbs::Thumbs,
+    /// Stems whose thumbnail was not there, and the frame it was looked for.
+    missing: HashMap<String, u64>,
+    frame: u64,
+}
+
+impl PlaceThumbs {
+    /// Every place's thumbnail that is made, asking for the rest.
+    fn of(&mut self, store: &UserStore) -> BTreeMap<String, Arc<str>> {
+        use crate::systems::thumbs::{Fit, Start};
+        self.frame += 1;
+        let frame = self.frame;
+        let edge = (crate::utils::photo::THUMB_POINTS * 2.0).round() as u32;
+        let mut out = BTreeMap::new();
+        for stem in store.data.bookmarks.iter().filter_map(|b| b.photo.as_ref()) {
+            let missing = &mut self.missing;
+            let made = self.thumbs.get(stem, Fit::Square(edge), || {
+                if missing
+                    .get(stem)
+                    .is_some_and(|at| frame < at + THUMB_RETRY_FRAMES)
+                {
+                    return Start::Wait;
+                }
+                match crate::utils::photo_store::read_thumb(stem) {
+                    Some(jpeg) => {
+                        missing.remove(stem);
+                        Start::Bytes(jpeg)
+                    }
+                    None => {
+                        missing.insert(stem.clone(), frame);
+                        Start::Wait
+                    }
+                }
+            });
+            if let Some(t) = made {
+                out.insert(stem.clone(), t.url);
+            }
+        }
+        out
+    }
+}
+
 /// Mounts, bridges and unmounts the Places panel. `PostUpdate`, before
 /// `DriveUi`, as every library screen.
 #[allow(clippy::too_many_arguments)]
@@ -233,6 +290,7 @@ pub fn drive_lib_places(
     map_anchor: Res<MapAnchor>,
     metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
+    mut thumbs: Local<PlaceThumbs>,
 ) {
     if !lib.places {
         return;
@@ -255,6 +313,7 @@ pub fn drive_lib_places(
                 let live = Live {
                     listing: signal(Listing::of(&store)),
                     status: signal(Status::of(&bookmarks, &store, current.is_some())),
+                    thumbs: signal(thumbs.of(&store)),
                     menu: signal(None),
                     editing: signal(None),
                     rename: signal(String::new()),
@@ -288,6 +347,10 @@ pub fn drive_lib_places(
                     }
                 }
                 mirror(live, &bookmarks, &store, has_place);
+                let made = thumbs.of(&store);
+                if live.thumbs.get_untracked() != made {
+                    live.thumbs.set(made);
+                }
             }
         }
     });
@@ -672,9 +735,11 @@ fn folder_actions(
     actions_box(depth, body)
 }
 
-/// A place's row: its pin in its folder's colour — or, with a photo, a photo
-/// glyph framed in that colour, which opens the photo — its name (a tap
-/// flies there) and its actions.
+/// A place's row: its pin in its folder's colour — or, with a photo, the
+/// photo's thumbnail framed in that colour (a photo glyph until it is
+/// read), which opens the photo — its name (a tap flies there) and its
+/// actions. `photo`: the place has one, and its thumbnail's `data:` URL
+/// once it is made.
 fn place_row(
     l: &Live,
     first: bool,
@@ -682,18 +747,28 @@ fn place_row(
     depth: usize,
     name: &str,
     color: [f32; 3],
-    photo: bool,
+    photo: Option<Option<&str>>,
 ) -> View {
     let c = hex(color);
     // One fixed square either way, so a photo does not move the name
     // (`bookmarks::marker_slot`).
-    let marker: View = if photo {
+    let marker: View = if let Some(thumb) = photo {
         let style = format!(
-            "flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; margin: 0; padding: 0; border: 1.5px solid {c}; border-radius: var(--m-radius); background: var(--m-surface-raised); color: var(--m-text); cursor: pointer"
+            "flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; margin: 0; padding: 0; border: 1.5px solid {c}; border-radius: var(--m-radius); background: var(--m-surface-raised); color: var(--m-text); cursor: pointer; overflow: hidden"
         );
         let acts = l.acts.clone();
         let open = move |_: &Event| acts.borrow_mut().push(Act::ViewPhoto(id));
-        view! { <button title="Open the photo" style={style} on:click={open}>{icon(icons::UPLOAD)}</button> }
+        // `photo::THUMB_POINTS` square inside the frame's border.
+        let inside: View = match thumb {
+            Some(src) => {
+                let side = crate::utils::photo::THUMB_POINTS;
+                let style = format!("width: {side:.0}px; height: {side:.0}px; border-radius: 4px");
+                let src = src.to_string();
+                view! { <img src={src} alt="The place's photo" style={style} /> }
+            }
+            None => icon(icons::UPLOAD),
+        };
+        view! { <button title="Open the photo" style={style} on:click={open}>{inside}</button> }
     } else {
         let style = format!(
             "flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; color: {c}"
@@ -844,6 +919,7 @@ fn panel(l: &Live) -> View {
         move || -> View {
             let listing = l.listing.get();
             let status = l.status.get();
+            let thumbs = l.thumbs.get();
             let menu = l.menu.get();
             let editing = l.editing.get();
             if listing.rows.is_empty() {
@@ -898,7 +974,7 @@ fn panel(l: &Live) -> View {
                             *depth,
                             name,
                             *color,
-                            photo.is_some(),
+                            photo.as_ref().map(|stem| thumbs.get(stem).map(|t| &**t)),
                         ));
                         if menu == Some(item) {
                             out.push(place_actions(
