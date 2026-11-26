@@ -1,7 +1,7 @@
 ---
 topic: pinnacle
-triggers: ["pinnacle", target_os = "pinnacle", aarch64-unknown-pinnacle, crates/cartopolis/Cargo.toml, platform/photo.rs, platform/model_file.rs, platform/gnss_receiver.rs, utils/clipboard.rs, face_tracking.rs, log_ring.rs, blake3, ring, rustls]
-updated: 2026-11-24
+triggers: ["pinnacle", pinnacle-store.sh, target_os = "pinnacle", aarch64-unknown-pinnacle, crates/cartopolis/Cargo.toml, platform/photo.rs, platform/model_file.rs, platform/gnss_receiver.rs, utils/clipboard.rs, face_tracking.rs, log_ring.rs, blake3, ring, rustls]
+updated: 2026-11-26
 ---
 
 # Cartopolis on Pinnacle
@@ -75,3 +75,16 @@ relative name and Bevy joined it onto the program's folder a second time.
 `cargo xtask cartopolis <checkout>` in Pinnacle runs it; `PINNACLE_CLOCK`
 fixes the time of day, and the haze over the city in those shots is the live
 weather, which an offline `--shot` does not fetch.
+
+## In Pinnacle's Store
+
+`midas deploy pinnacle-store` publishes the client as an app in Pinnacle's
+hosted Store, https://pinnacle-os.eu/store/cartopolis/, which every
+Pinnacle system disk lists (ARM only). `deploy/build/pinnacle-store.sh`
+builds it on a Mac node with a checkout of Pinnacle's main of its own
+(`$TOOLS/pinnacle`), as an **unsigned** package; the deploy host signs it
+there with the Store's key, which no node ever sees, and checks every file
+against its hash before it replaces what is published. The version is the
+build number (20000 + commits), as the APK's: a device offers Update when it
+differs. Pinnacle's `docs/store.md` has the format. Not after landings: a
+cold build is 20 minutes on a Mac node, so it is deployed when asked.
