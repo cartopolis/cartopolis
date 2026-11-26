@@ -52,10 +52,10 @@ impl Plugin for NetPlugin {
             .add_systems(
                 Update,
                 // The call screen: a call ringing, or the one you are in, full
-                // screen or folded to a bar (`systems::call_screen`). Its own
-                // `Foreground` areas, so it is not in the panel chain; after the
-                // pins only so it is drawn over them.
-                systems::call_screen::render_call_screen
+                // screen or folded to a bar (`systems::call_screen`; the library
+                // draws it, `lib_call`). Not in the panel chain; after the pins,
+                // where it stood when it drew over them.
+                systems::call_screen::drive_call_screen
                     .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             );
@@ -110,7 +110,6 @@ impl Plugin for NetPlugin {
             (
                 network::apply_network_snapshot,
                 network::request_wanted_textures.after(network::apply_network_snapshot),
-                network::create_egui_texture_handles.after(network::apply_network_snapshot),
                 // The session — which world this client is in (`systems::session`).
                 // The driver runs after the sign-in screen so a mode picked this
                 // frame is applied this frame: a sign-in that visibly waits a frame

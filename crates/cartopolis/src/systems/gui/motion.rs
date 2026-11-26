@@ -23,10 +23,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use egui::emath::TSTransform;
-use egui::{Context, Id, Response, Ui};
+use egui::{Context, Id, Ui};
 
-/// A control under the finger: scale 0.94, back on release.
-pub const PRESS: f32 = 0.12;
 /// A state change: colour and rim of on/off, hover, a tab, a label appearing,
 /// the crossfade between the two spaces. Also egui's `Style::animation_time`.
 pub const STATE: f32 = 0.2;
@@ -39,9 +37,6 @@ pub const LEAVE: f32 = 0.24;
 /// the palette crossfade in `ui_theme`, is the design's fifth step.)
 #[allow(dead_code)]
 pub const AMBIENT: f32 = 0.6;
-
-/// How much a pressed control shrinks.
-const PRESS_SCALE: f32 = 0.06;
 
 static REDUCED: AtomicBool = AtomicBool::new(false);
 
@@ -230,25 +225,6 @@ pub fn shift_painted(ctx: &Context, layer: egui::LayerId, pres: Presence, lift: 
     }
 }
 
-/// The scale of a control under the finger: 1 at rest, 0.94 pressed, over
-/// [`PRESS`] each way. Read from the response of the previous pass, as every
-/// hand-painted control reads its hover.
-#[must_use]
-pub fn press(resp: &Response) -> f32 {
-    let down = resp.is_pointer_button_down_on();
-    let t =
-        resp.ctx
-            .animate_bool_with_time_and_easing(resp.id.with("press"), down, PRESS, ease_out);
-    1.0 - PRESS_SCALE * t
-}
-
-/// A state that is on or off, eased over `secs` (a [`STATE`] unless the site
-/// has a reason): the only way to animate a bool outside this module.
-#[must_use]
-pub fn toggle(ctx: &Context, id: Id, on: bool, secs: f32) -> f32 {
-    ctx.animate_bool_with_time_and_easing(id, on, secs, ease_out)
-}
-
 /// A sheet's resting heights, lowest first: the title and the one action; the
 /// tiles and the first facts; everything, scrolling.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -292,12 +268,11 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_keeps_press_and_state() {
+    fn reduced_motion_keeps_state() {
         set_reduced(true);
         assert_eq!(enter_time(), 0.0);
         assert_eq!(leave_time(), 0.0);
         assert_eq!(ambient_time(), 0.0);
-        assert_eq!(PRESS, 0.12);
         assert_eq!(STATE, 0.2);
         set_reduced(false);
         assert_eq!(enter_time(), ENTER);

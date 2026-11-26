@@ -16,9 +16,11 @@ fn animating_ui_is_redrawn_on_its_deadline_and_not_before() {
     assert!(geometry_still_current(forever, 0.0));
     assert!(geometry_still_current(forever, 3_600.0));
 
-    assert!(geometry_still_current(ANIMATING_REDRAW, 0.0));
-    assert!(geometry_still_current(ANIMATING_REDRAW, 0.2));
-    assert!(!geometry_still_current(ANIMATING_REDRAW, 0.3));
+    // A widget asking for a look within a quarter second.
+    let soon = std::time::Duration::from_millis(250);
+    assert!(geometry_still_current(soon, 0.0));
+    assert!(geometry_still_current(soon, 0.2));
+    assert!(!geometry_still_current(soon, 0.3));
 }
 
 use bevy::input::InputPlugin;
@@ -129,13 +131,7 @@ fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
     let metrics = UiMetrics::with_ui_scale(1.0);
     let at = |p: egui::Pos2| Vec2::new(p.x, p.y);
     let mut input = UiInput::default();
-    input.set_egui(verdict_of(
-        &ctx,
-        map_rect,
-        false,
-        &metrics,
-        Some(at(on_map)),
-    ));
+    input.set_egui(verdict_of(&ctx, map_rect, &metrics, Some(at(on_map))));
     assert!(
         !input.owns_click(true, Some(at(on_map))),
         "UiInput: the map is the world's"
@@ -144,13 +140,7 @@ fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
         input.owns_click(false, Some(at(on_map))),
         "UiInput: a mouse asks egui, as before"
     );
-    input.set_egui(verdict_of(
-        &ctx,
-        map_rect,
-        false,
-        &metrics,
-        Some(at(on_panel)),
-    ));
+    input.set_egui(verdict_of(&ctx, map_rect, &metrics, Some(at(on_panel))));
     assert!(
         input.owns_click(true, Some(at(on_panel))),
         "UiInput: a panel is egui's"
@@ -158,21 +148,9 @@ fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
 
     let scaled = UiMetrics::with_ui_scale(1.5);
     let window = |p: egui::Pos2| Vec2::new(p.x * 1.5, p.y * 1.5);
-    input.set_egui(verdict_of(
-        &ctx,
-        map_rect,
-        false,
-        &scaled,
-        Some(window(on_map)),
-    ));
+    input.set_egui(verdict_of(&ctx, map_rect, &scaled, Some(window(on_map))));
     assert!(!input.owns_click(true, Some(window(on_map))));
-    input.set_egui(verdict_of(
-        &ctx,
-        map_rect,
-        false,
-        &scaled,
-        Some(window(on_panel)),
-    ));
+    input.set_egui(verdict_of(&ctx, map_rect, &scaled, Some(window(on_panel))));
     assert!(input.owns_click(true, Some(window(on_panel))));
     // A cursor the verdict was not taken at falls back to the map rect,
     // carried back into window points.
@@ -537,7 +515,7 @@ fn click_checkbox_with_drift(overlay: impl Fn(&egui::Context, egui::Rect), drift
             &mut root,
             &mut open,
             |ui| {
-                let resp = crate::systems::theme::checkbox(ui, checked_ref, "Buildings");
+                let resp = ui.checkbox(checked_ref, "Buildings");
                 rect.set(Some(resp.rect));
             },
         );

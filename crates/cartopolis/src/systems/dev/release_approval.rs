@@ -13,7 +13,7 @@
 //! the fingerprint.
 //!
 //! Developer tools ▸ Midas also makes the key and keeps the Claude API key
-//! ([`key_section`]), and the link's `release_key` tool tells a session the
+//! ([`key_view`], [`key_act`]), and the link's `release_key` tool tells a session the
 //! key's public half, which goes into the server's and the app's
 //! `RELEASE_KEYS`.
 
@@ -24,9 +24,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::platform::release_key::{self, Signing};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::release_review::{self, Verdict};
-use crate::systems::theme;
 
 /// Where the code of a release is read from, by commit id: a commit id names
 /// its content, so this host can refuse but not substitute.
@@ -35,6 +33,7 @@ const REPOSITORY: &str = "https://code.garage44.eu/jeroen/cartopolis";
 /// Largest package this phone downloads to check: the APK is about 80 MB.
 const MAX_PACKAGE: u64 = 300 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 64 * 1024;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const CARD_WIDTH: f32 = 420.0;
 
 /// What a release says it is: the server's `release.json`, with the APK
@@ -103,16 +102,14 @@ struct State {
     outcome: Option<(String, String)>,
     /// Developer tools ▸ Midas ▸ Release key, read once.
     key: Option<KeyView>,
-    /// The component library draws the card (`lib_release_approval`):
-    /// [`render_release_approval`] keeps its logic and draws nothing.
-    lib: bool,
-    /// The card as the library draws it, published each frame.
+    /// The card as the library draws it (`lib_release_approval`), published
+    /// each frame by [`drive_release_approval`].
     lib_view: Option<ApprovalView>,
     /// The library's taps, done next frame by [`act`].
     lib_acts: Vec<ApprovalAct>,
 }
 
-/// A tap on the card, from either edition.
+/// A tap on the card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub enum ApprovalAct {
@@ -170,7 +167,7 @@ pub struct KeySectionView {
     pub message: Option<String>,
 }
 
-/// A tap in the Release key section, from either edition.
+/// A tap in the Release key section.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub enum KeyAct {
@@ -189,28 +186,17 @@ struct KeyView {
     public: Option<String>,
     location: Option<String>,
     message: Option<String>,
-    /// Whether a Claude API key is kept, and the field to type a new one in.
+    /// Whether a Claude API key is kept.
     has_api_key: bool,
-    api_key_draft: String,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     request: None,
     outcome: None,
     key: None,
-    lib: false,
     lib_view: None,
     lib_acts: Vec::new(),
 });
-
-/// The library draws the card from now on (`lib_release_approval`).
-#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
-pub fn set_lib() {
-    let mut s = state();
-    if !s.lib {
-        s.lib = true;
-    }
-}
 
 /// The card as published this frame, for the library.
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
@@ -507,7 +493,7 @@ fn hash(url: &str, package: &Package) -> Result<(), String> {
     Ok(())
 }
 
-/// Developer tools ▸ Midas ▸ Release key as both editions show it, read once;
+/// Developer tools ▸ Midas ▸ Release key as the library shows it, read once;
 /// `None` where releases are not approved (not the owner's Android phone).
 pub fn key_view() -> Option<KeySectionView> {
     if !release_key::available() {
@@ -554,7 +540,7 @@ pub fn key_view() -> Option<KeySectionView> {
     })
 }
 
-/// Make the release key or keep a Claude API key: what both editions' buttons
+/// Make the release key or keep a Claude API key: what the library's buttons
 /// do.
 pub fn key_act(a: KeyAct) {
     match a {
@@ -586,57 +572,11 @@ pub fn key_act(a: KeyAct) {
     }
 }
 
-/// Developer tools ▸ Midas ▸ Release key.
-pub fn key_section(ui: &mut egui::Ui) {
-    let Some(view) = key_view() else {
-        return;
-    };
-    ui.separator();
-    theme::section(ui, "Release key");
-    match &view.public {
-        None => {
-            theme::note(ui, KEY_MAKE_NOTE);
-            if theme::primary_button_sized(ui, "Make release key", 200.0).clicked() {
-                key_act(KeyAct::Make);
-            }
-        }
-        Some(key) => {
-            theme::note(ui, &view.kept);
-            ui.label(egui::RichText::new(&view.short).monospace());
-            if ui.button("Copy public key").clicked() {
-                ui.ctx().copy_text(key.clone());
-            }
-            theme::note(ui, KEY_TOOL_NOTE);
-        }
-    }
-    theme::note(ui, view.api_note);
-    let mut draft = state()
-        .key
-        .as_ref()
-        .map_or_else(String::new, |k| k.api_key_draft.clone());
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut draft)
-                .password(true)
-                .hint_text("sk-ant-…")
-                .desired_width(200.0),
-        );
-        if ui.button("Save key").clicked() {
-            key_act(KeyAct::SaveApiKey(std::mem::take(&mut draft)));
-        }
-    });
-    if let Some(k) = state().key.as_mut() {
-        k.api_key_draft = draft;
-    }
-    if let Some(m) = &view.message {
-        let _ = theme::inline_error(ui, m);
-    }
-}
-
 /// The release in front of the owner, over everything; and the fingerprint
-/// sheet's outcome once it is answered.
-pub fn render_release_approval(egui: EguiRef) {
-    // The library's taps of last frame, done as egui's buttons do them.
+/// sheet's outcome once it is answered. Publishes the card for
+/// `lib_release_approval` and does its taps.
+pub fn drive_release_approval() {
+    // The library's taps of last frame.
     let acts = std::mem::take(&mut state().lib_acts);
     for a in acts {
         let open = state().request.clone();
@@ -686,135 +626,13 @@ pub fn render_release_approval(egui: EguiRef) {
                 }
             }
         }
-        egui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(300));
     }
-    let ctx = egui.ctx();
-    // The checks and the review run on a thread: show their progress.
-    if matches!(request.phase, Phase::Checking(_)) || matches!(request.review, Review::Pending(_)) {
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
-    }
-    {
-        let mut s = state();
-        if s.lib {
-            let view = approval_view(&request);
-            if s.lib_view.as_ref() != Some(&view) {
-                s.lib_view = Some(view);
-            }
-            return;
-        }
-    }
-    let screen = ctx.content_rect();
-    let width = CARD_WIDTH.min(screen.width() - 2.0 * theme::OSD_MARGIN);
-    egui::Area::new(egui::Id::new("release_approval_veil"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(screen.min)
-        .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen, 0.0, theme::DARK32.ink.gamma_multiply(0.86));
-            // unnamed: a blocker under the card, not a control
-            ui.allocate_rect(screen, egui::Sense::click_and_drag());
-        });
-    let mut approve = false;
-    let mut decline = false;
-    egui::Area::new(egui::Id::new("release_approval_card"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width);
-                let title = approval_title(&request);
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(theme::SIZE_HEADING)
-                        .color(theme::p32().cream),
-                );
-                line(
-                    ui,
-                    &format!("Asked by {} · {}", request.session, request.source),
-                );
-                ui.add_space(6.0);
-                verdict_block(ui, &request.review);
-                egui::ScrollArea::vertical()
-                    .max_height(screen.height() * 0.45)
-                    .show(ui, |ui| {
-                        if let Review::Done(v) = &request.review {
-                            for f in &v.findings {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(egui::RichText::new("!").color(theme::p32().error));
-                                    ui.label(
-                                        egui::RichText::new(format!("{} {}", f.file, f.lines))
-                                            .monospace(),
-                                    );
-                                });
-                                line(ui, &f.why);
-                            }
-                        }
-                        egui::CollapsingHeader::new("What changes, and what this phone checked")
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                if let Some(r) = &request.release {
-                                    theme::section(
-                                        ui,
-                                        &format!("What changes · {}", r.changes.len()),
-                                    );
-                                    if r.changes.is_empty() {
-                                        line(ui, "The release lists no changes.");
-                                    }
-                                    for c in &r.changes {
-                                        ui.label(format!("• {c}"));
-                                    }
-                                    line(ui, &format!("Version code {}", r.code));
-                                }
-                                theme::section(ui, "Checks");
-                                if let Phase::Checking(what) = &request.phase {
-                                    ui.horizontal(|ui| {
-                                        ui.add(egui::Spinner::new().color(theme::p32().accent));
-                                        line(ui, what);
-                                    });
-                                }
-                                for c in &request.checks {
-                                    let mark = if c.ok {
-                                        crate::systems::icons::CHECK
-                                    } else {
-                                        "!"
-                                    };
-                                    let colour = if c.ok {
-                                        theme::p32().accent
-                                    } else {
-                                        theme::p32().error
-                                    };
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(egui::RichText::new(mark).color(colour));
-                                        ui.label(&c.line);
-                                    });
-                                }
-                            });
-                    });
-                ui.add_space(8.0);
-                let ready = ready(&request);
-                let label = approve_label(&request);
-                let width = ui.available_width();
-                if ui
-                    .add_enabled_ui(ready, |ui| theme::primary_button_sized(ui, label, width))
-                    .inner
-                    .clicked()
-                {
-                    approve = true;
-                }
-                if not_green(&request) {
-                    line(ui, NOT_GREEN);
-                }
-                if ui.button("Not now").clicked() {
-                    decline = true;
-                }
-            });
-        });
-    if approve {
-        act(&request, ApprovalAct::Approve);
-    }
-    if decline {
-        act(&request, ApprovalAct::Decline);
+    // The checks and the review run on a thread: their progress shows as the
+    // view moves.
+    let view = approval_view(&request);
+    let mut s = state();
+    if s.lib_view.as_ref() != Some(&view) {
+        s.lib_view = Some(view);
     }
 }
 
@@ -840,15 +658,7 @@ fn not_green(request: &Request) -> bool {
     request.phase == Phase::Ready && !ready(request) && settled
 }
 
-fn approve_label(request: &Request) -> &'static str {
-    if request.phase == Phase::Signing {
-        "Waiting for your fingerprint…"
-    } else {
-        "Approve with fingerprint"
-    }
-}
-
-/// A tap on Approve or Not now, from either edition.
+/// A tap on Approve or Not now.
 fn act(request: &Request, a: ApprovalAct) {
     match a {
         ApprovalAct::Approve => {
@@ -953,36 +763,6 @@ fn approval_view(request: &Request) -> ApprovalView {
     }
 }
 
-/// Claude's verdict, at the top of the card: what the owner decides on.
-fn verdict_block(ui: &mut egui::Ui, review: &Review) {
-    match verdict_view(review) {
-        VerdictView::Pending(what) => {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().color(theme::p32().accent));
-                ui.label(
-                    egui::RichText::new("Claude is checking this release")
-                        .size(theme::SIZE_BODY)
-                        .color(theme::p32().cream),
-                );
-            });
-            line(ui, &what);
-        }
-        VerdictView::Said { title, green, body } => {
-            let colour = if green {
-                theme::p32().accent
-            } else {
-                theme::p32().error
-            };
-            ui.label(
-                egui::RichText::new(title)
-                    .size(theme::SIZE_BODY)
-                    .color(colour),
-            );
-            ui.label(body);
-        }
-    }
-}
-
 fn set_phase(phase: Phase) {
     if let Some(r) = state().request.as_mut() {
         r.phase = phase;
@@ -995,12 +775,4 @@ fn answer(request: &Request, words: String) {
     s.request = None;
     s.lib_view = None;
     s.outcome = Some((request.session.clone(), words));
-}
-
-fn line(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::SIZE_SUB)
-            .color(theme::p32().text_dim),
-    );
 }

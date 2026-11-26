@@ -45,23 +45,17 @@
 //! frame, jitter, triangles by producer, upload and residency), and does not
 //! need a second per-frame moving average of its own kept alive to say it.
 //!
-//! **The library draws it too** (`lib_dev_panel`, `CARTO_UI_LIB=dev_panel`).
-//! The readouts are worked out once, as [`DevSection`]s both editions draw;
-//! with [`DevTools::lib`] on this system publishes [`DevTools::lib_view`] and
-//! does the library's taps through `apply`, the code egui's controls run.
+//! **The library draws it** (`lib_dev_panel`). The readouts are worked out
+//! here, as [`DevSection`]s; [`drive_dev_panel`] publishes
+//! [`DevTools::lib_view`] and does the library's taps through `apply`.
 //! Midas too: `midas_link` publishes the tab as `MidasTabView` and does its
-//! taps (`MidasAct`) in `MidasLink::apply_tab`, the code egui's
-//! `midas_link::midas_tab` runs.
+//! taps (`MidasAct`) in `MidasLink::apply_tab`.
 
-use crate::systems::egui_manager::EguiMut;
 use web_time::Instant;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-
-use crate::systems::icons;
-use crate::systems::theme;
 
 /// Which screen of the developer panel is showing.
 ///
@@ -76,14 +70,10 @@ use crate::systems::theme;
 #[derive(Resource, Default)]
 pub struct DevTools {
     pub tab: DevTab,
-    /// The library draws the panel (`lib_dev_panel`, `CARTO_UI_LIB=dev_panel`):
-    /// [`render_dev_panel`] draws nothing and publishes
-    /// [`lib_view`](Self::lib_view) instead, on every tab.
-    pub lib: bool,
-    /// What the library's edition shows, while `lib` is on and the panel is
-    /// open.
+    /// What the library's edition (`lib_dev_panel`) shows, while the panel
+    /// is open.
     pub lib_view: Option<DevPanelView>,
-    /// Taps on the library's edition, done by [`render_dev_panel`] next
+    /// Taps on the library's edition, done by [`drive_dev_panel`] next
     /// frame (`apply`).
     pub lib_acts: Vec<DevAct>,
     /// When the library's readouts were last handed over (`READOUT_PERIOD_S`).
@@ -101,7 +91,7 @@ pub enum DevTone {
 /// One line of a readout section.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DevRow {
-    /// `name  value` ([`stat`]). A name led by two spaces is a sub-row.
+    /// `name  value`. A name led by two spaces is a sub-row.
     Stat {
         name: String,
         value: String,
@@ -109,12 +99,11 @@ pub enum DevRow {
     },
     /// A monospace line on its own: a failed pipeline's label.
     Mono(String, DevTone),
-    /// A quiet explanation (`theme::note`).
+    /// A quiet explanation.
     Note(String),
 }
 
-/// A titled run of readout rows. Both editions draw the same sections, so
-/// the numbers and their wording are worked out once.
+/// A titled run of readout rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DevSection {
     pub title: &'static str,
@@ -177,7 +166,7 @@ pub enum DevBody {
 }
 
 /// What the developer panel shows this frame, published by
-/// [`render_dev_panel`] for the library's edition (`lib_dev_panel`).
+/// [`drive_dev_panel`] for the library's edition (`lib_dev_panel`).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct DevPanelView {
@@ -185,7 +174,7 @@ pub struct DevPanelView {
     pub body: DevBody,
 }
 
-/// A tap on the library's edition, done by [`render_dev_panel`].
+/// A tap on the library's edition, done by [`drive_dev_panel`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub enum DevAct {
@@ -256,14 +245,13 @@ pub fn toggle_dev_panel_shortcut(
     }
 }
 
-/// Where the window opens, clear of the top-left disc column.
-///
-/// egui's default cascade puts a window near that corner, which is where the
-/// layers disc, the compass and the locate button already are. Only a default —
-/// the window is draggable and egui remembers where it was put.
+/// Where the sheet stands, clear of the top-left disc column (the layers
+/// disc, the compass and the locate button).
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const DEV_PANEL_LEFT: f32 = 160.0;
 
-/// The window's width, egui's default and the library's sheet.
+/// The sheet's width.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const DEV_PANEL_WIDTH: f32 = 300.0;
 
 /// How often the draw/triangle census is re-walked while the panel is open.
@@ -320,9 +308,9 @@ pub struct DevView<'w, 's> {
     interact: Res<'w, crate::systems::interact::InteractState>,
 }
 
-/// Draw the developer panel.
-pub fn render_dev_panel(
-    mut egui: EguiMut,
+/// Measure what the developer panel shows, publish it for `lib_dev_panel`
+/// and do its taps.
+pub fn drive_dev_panel(
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut tools: ResMut<DevTools>,
     mut shot: ResMut<crate::resources::ScreenshotState>,
@@ -339,7 +327,7 @@ pub fn render_dev_panel(
     mut commands: Commands,
 ) {
     // The library's taps of last frame, before anything is measured.
-    if tools.lib && !tools.lib_acts.is_empty() {
+    if !tools.lib_acts.is_empty() {
         let acts = std::mem::take(&mut tools.lib_acts);
         let fix = view.fix();
         for act in acts {
@@ -365,23 +353,17 @@ pub fn render_dev_panel(
             );
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = &mut commands;
     if !dev.open {
         if tools.lib_view.is_some() {
             tools.lib_view = None;
         }
         return;
     }
-    // Every number in this panel changes on its own, so the window has to be
-    // redrawn on its own — without this the readout only updates on the frames
-    // something else caused, i.e. it measures the frames *you* caused, which is
-    // the opposite of what it is for.
-    egui.animating();
 
-    // The census is throttled and the fix is not, but both are measured before
-    // the closure so the tab bodies are pure layout — and so the fix is measured
-    // once for the two things that read it (the View rows and Copy as preset),
-    // which it was not: it used to be re-derived from the same query on every
-    // frame the panel was open, for a value only a click consumes.
+    // The census is throttled and the fix is not; the fix is measured once
+    // for the two things that read it (the View rows and Copy as preset).
     let tab = tools.tab;
     let now = time.elapsed_secs_f64();
     let counts = if tab == DevTab::Frame {
@@ -398,132 +380,54 @@ pub fn render_dev_panel(
     };
     let fix = view.fix();
 
-    // The library's edition is showing: hand it what to draw, draw nothing.
-    if tools.lib {
-        // Frame and Profiler numbers change every frame, and a library row
-        // rebuilt every frame is never laid out: the tab showed nothing. Twice
-        // a second, as the census already is, unless the tab changed.
-        let ticking = matches!(tab, DevTab::Frame | DevTab::Profiler);
-        let same_tab = tools.lib_view.as_ref().is_some_and(|v| v.tab == tab);
-        if ticking && same_tab && tools.lib_at.is_some_and(|t| now - t < READOUT_PERIOD_S) {
-            return;
-        }
-        tools.lib_at = Some(now);
-        let body = match tab {
-            DevTab::Frame => {
-                DevBody::Readouts(frame_sections(&readouts, counts, readouts.entities.count()))
-            }
-            DevTab::View => DevBody::View {
-                sections: camera_sections(fix, view.interact.address.as_deref()),
-                group: shot.preset_group.clone(),
-                can_copy: fix.is_some(),
-                copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < COPIED_S),
-            },
-            DevTab::Profiler => DevBody::Readouts(profiler_sections(&readouts.diagnostics)),
-            DevTab::Switches => {
-                let rows: Vec<SwitchRow> = crate::resources::DebugSwitches::SWITCHES
-                    .iter()
-                    .filter_map(|&(name, label, help)| {
-                        Some(SwitchRow {
-                            name,
-                            label,
-                            help,
-                            on: prefs.debug_switches.get(name)?,
-                        })
-                    })
-                    .collect();
-                DevBody::Switches {
-                    on: rows.iter().filter(|r| r.on).count(),
-                    rows,
-                }
-            }
-            DevTab::Precision => {
-                DevBody::Precision(precision_view(&precision_log, &precise_hand, &high))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            DevTab::Midas => DevBody::Midas(midas.tab_view()),
-            #[cfg(target_arch = "wasm32")]
-            DevTab::Midas => DevBody::Note(MIDAS_IN_THE_APPS),
-        };
-        let next = DevPanelView { tab, body };
-        if tools.lib_view.as_ref() != Some(&next) {
-            tools.lib_view = Some(next);
-        }
+    // Frame and Profiler numbers change every frame, and a library row
+    // rebuilt every frame is never laid out: the tab showed nothing. Twice a
+    // second, as the census already is, unless the tab changed.
+    let ticking = matches!(tab, DevTab::Frame | DevTab::Profiler);
+    let same_tab = tools.lib_view.as_ref().is_some_and(|v| v.tab == tab);
+    if ticking && same_tab && tools.lib_at.is_some_and(|t| now - t < READOUT_PERIOD_S) {
         return;
     }
-    if tools.lib_view.is_some() {
-        tools.lib_view = None;
-    }
-
-    // Edited as a copy and written back below, so an open Switches tab does not
-    // mark `AppPrefs` changed on every frame it is open — which would put the
-    // preferences autosave on the frame loop. The Settings panel does exactly
-    // this, for exactly this reason.
-    let mut edited = *prefs;
-
-    let ctx = egui.ctx_mut();
-    let mut open = true;
-    egui::Window::new("Developer tools")
-        .open(&mut open)
-        .default_width(DEV_PANEL_WIDTH)
-        .default_pos([DEV_PANEL_LEFT + theme::OSD_GAP, theme::OSD_MARGIN])
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-            ui.horizontal_wrapped(|ui| {
-                for candidate in DevTab::ALL {
-                    ui.selectable_value(&mut tools.tab, candidate, candidate.label());
-                }
-            });
-            ui.separator();
-            // A scroll area on every tab, not only the long ones: Switches is
-            // nine checkboxes each with a paragraph under it, and a window that
-            // is taller than a phone has no way to reach its own bottom.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .max_height(520.0)
-                .show(ui, |ui| match tools.tab {
-                    DevTab::Frame => {
-                        frame_tab(ui, &readouts, counts, readouts.entities.count());
-                    }
-                    DevTab::View => {
-                        view_tab(
-                            ui,
-                            fix,
-                            view.interact.address.as_deref(),
-                            &dev,
-                            &mut shot,
-                            &mut copied_at,
-                        );
-                    }
-                    DevTab::Profiler => profiler_tab(ui, &readouts.diagnostics),
-                    DevTab::Switches => switches_tab(ui, &mut edited),
-                    DevTab::Precision => {
-                        precision_tab(ui, &mut precision_log, &mut precise_hand, &mut high);
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    DevTab::Midas => {
-                        crate::systems::midas_link::midas_tab(
-                            ui,
-                            &mut midas,
-                            &precision_log,
-                            &mut commands,
-                        );
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    DevTab::Midas => {
-                        let _ = &mut commands;
-                        theme::note(ui, MIDAS_IN_THE_APPS);
-                    }
-                });
-        });
-    if edited != *prefs {
-        *prefs = edited;
-    }
-    // Closing via the window's [x] only writes when it actually changed, to avoid
-    // marking the resource changed every frame (which would re-run the lighting
-    // update).
-    if !open && dev.open {
-        dev.open = false;
+    tools.lib_at = Some(now);
+    let body = match tab {
+        DevTab::Frame => {
+            DevBody::Readouts(frame_sections(&readouts, counts, readouts.entities.count()))
+        }
+        DevTab::View => DevBody::View {
+            sections: camera_sections(fix, view.interact.address.as_deref()),
+            group: shot.preset_group.clone(),
+            can_copy: fix.is_some(),
+            copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < COPIED_S),
+        },
+        DevTab::Profiler => DevBody::Readouts(profiler_sections(&readouts.diagnostics)),
+        DevTab::Switches => {
+            let rows: Vec<SwitchRow> = crate::resources::DebugSwitches::SWITCHES
+                .iter()
+                .filter_map(|&(name, label, help)| {
+                    Some(SwitchRow {
+                        name,
+                        label,
+                        help,
+                        on: prefs.debug_switches.get(name)?,
+                    })
+                })
+                .collect();
+            DevBody::Switches {
+                on: rows.iter().filter(|r| r.on).count(),
+                rows,
+            }
+        }
+        DevTab::Precision => {
+            DevBody::Precision(precision_view(&precision_log, &precise_hand, &high))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        DevTab::Midas => DevBody::Midas(midas.tab_view()),
+        #[cfg(target_arch = "wasm32")]
+        DevTab::Midas => DevBody::Note(MIDAS_IN_THE_APPS),
+    };
+    let next = DevPanelView { tab, body };
+    if tools.lib_view.as_ref() != Some(&next) {
+        tools.lib_view = Some(next);
     }
 }
 
@@ -536,17 +440,21 @@ const MIDAS_IN_THE_APPS: &str =
 const COPIED_S: f32 = 1.5;
 
 /// The shot preset's group field, explained.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const GROUP_HELP: &str = "Subject this viewpoint is for — tunnels, bridges, doors. \
      Captured by `cargo shots --only <group>`, into docs/img/<group>/. \
      Leave blank to add it to the published documentation set.";
 
 /// Copy as preset, explained.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const COPY_HELP: &str = "Copies this camera as a [[shot]] block for docs/shots.toml";
 
 /// Under the View tab.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const CLOCK_NOTE: &str = "The clock and the weather are in Settings, under World.";
 
 /// The indoor walk test's steps, before it starts.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const WALK_STEPS: [&str; 4] = [
     "1. Start outside, under open sky.",
     "2. Hold the phone still, then move it a little, until it says following.",
@@ -555,26 +463,31 @@ pub(crate) const WALK_STEPS: [&str; 4] = [
 ];
 
 /// Under a greyed Start.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const NEEDS_A_PHONE: &str =
     "Needs a phone: its back camera, motion sensors and magnetometer.";
 
 /// Under Start.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const WALK_NOTE: &str =
     "Uses the back camera and the motion sensors. Nothing the camera sees \
      is kept. While it runs, things that sense hands near you feel yours.";
 
 /// Under "Stand-in hand".
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const STAND_IN_NOTE: &str =
     "Lets your avatar's hand (or the view, in fly mode) play hand-sensing \
      objects such as a theremin before high precision can place your phone. \
      Scripts are told it is not precise.";
 
 /// The precision log, empty.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const LOG_EMPTY_NOTE: &str =
     "Nothing yet. Start the walk test above; what the camera and sensors \
      report is written here every few seconds.";
 
 /// Over the switches, none on.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const SWITCHES_NOTE: &str =
     "Each switch removes a layer, or adds an instrument. All of them are \
      read once, at startup — restart the app to apply a change. An \
@@ -582,11 +495,12 @@ pub(crate) const SWITCHES_NOTE: &str =
      what is set here.";
 
 /// Over the switches, `on` of them on.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) fn switches_on(on: usize) -> String {
     format!("{on} on — this run's rendering is not evidence. Restart to apply a change.")
 }
 
-/// Do a tap on the library's edition: the same code egui's controls run.
+/// Do a tap on the library's edition.
 ///
 /// Each resource is written only when the tap changes it: `DevPanelState`'s
 /// `is_changed()` re-runs the lighting, `AppPrefs`' the autosave.
@@ -719,51 +633,6 @@ fn row_toned(name: impl Into<String>, value: impl Into<String>, tone: DevTone) -
         value: value.into(),
         tone,
     }
-}
-
-/// Draw readout sections as egui's panel always has: a header, its rows, and
-/// 5 pt between sections.
-fn draw_sections(ui: &mut egui::Ui, sections: &[DevSection]) {
-    for (i, s) in sections.iter().enumerate() {
-        if i > 0 {
-            ui.add_space(5.0);
-        }
-        theme::section(ui, s.title);
-        for r in &s.rows {
-            match r {
-                DevRow::Stat { name, value, tone } => {
-                    stat_colored(ui, name, value, tone_color(*tone));
-                }
-                DevRow::Mono(text, tone) => {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .monospace()
-                            .size(theme::SIZE_TINY)
-                            .color(tone_color(*tone)),
-                    );
-                }
-                DevRow::Note(text) => theme::note(ui, text),
-            }
-        }
-    }
-}
-
-fn tone_color(tone: DevTone) -> egui::Color32 {
-    match tone {
-        DevTone::Value => theme::p32().cream,
-        DevTone::Dim => theme::p32().text_dim,
-        DevTone::Error => theme::p32().error,
-    }
-}
-
-/// Frame: is it fast, and what is it drawing?
-fn frame_tab(
-    ui: &mut egui::Ui,
-    readouts: &DevReadouts,
-    counts: crate::systems::render_census::RenderCounts,
-    entity_count: usize,
-) {
-    draw_sections(ui, &frame_sections(readouts, counts, entity_count));
 }
 
 /// The Frame tab's readouts.
@@ -924,62 +793,6 @@ fn camera_sections(fix: Option<ViewFix>, address: Option<&str>) -> Vec<DevSectio
     ]
 }
 
-/// View: where the camera is, and how to reproduce this shot.
-fn view_tab(
-    ui: &mut egui::Ui,
-    fix: Option<ViewFix>,
-    address: Option<&str>,
-    dev: &crate::resources::DevPanelState,
-    shot: &mut crate::resources::ScreenshotState,
-    copied_at: &mut Option<Instant>,
-) {
-    draw_sections(ui, &camera_sections(fix, address));
-
-    ui.add_space(5.0);
-    theme::section(ui, "Shot presets");
-    // Every remembered camera position lives in `docs/shots.toml` and is captured
-    // by `cargo shots`, not by this button — but a *new* position has to be found
-    // by flying to it, so this copies the current camera out as a pasteable
-    // `[[shot]]` block. That is the whole handoff from "looks good here" to
-    // reproducible.
-    //
-    // **The group is the field worth filling in.** Left empty the preset joins the
-    // documentation set, which is published: `cargo shots` regenerates it and the
-    // README links every file. Named — `tunnels`, `bridges`, `doors` — it becomes a
-    // subject to go and look at, captured by `cargo shots --only <group>` into its
-    // own directory, and it stays out of the published set. A viewpoint that
-    // clearly shows a tunnel mouth is worth keeping and is not a README image.
-    ui.horizontal(|ui| {
-        ui.label("group");
-        ui.add(
-            egui::TextEdit::singleline(&mut shot.preset_group)
-                .hint_text("blank = README set")
-                .desired_width(120.0),
-        )
-        .on_hover_text(GROUP_HELP);
-    });
-    ui.horizontal(|ui| {
-        let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < COPIED_S);
-        if ui
-            .add_enabled(
-                fix.is_some(),
-                egui::Button::new(format!("{}  Copy as preset", icons::COPY)),
-            )
-            .on_hover_text(COPY_HELP)
-            .clicked()
-        {
-            if let Some(v) = fix {
-                copy_preset(v, &shot.preset_group, dev, copied_at);
-            }
-        }
-        if copied {
-            ui.label("copied");
-        }
-    });
-
-    theme::note(ui, CLOCK_NOTE);
-}
-
 /// Profiler: Bevy's own diagnostics, live.
 ///
 /// **The app was already registering these and reading them from nowhere.**
@@ -1008,11 +821,6 @@ fn view_tab(
 /// Absent columns say what would supply them. A profiler that shows an empty
 /// table is indistinguishable from a profiler that measured zero, and the whole
 /// argument for `--dump-state`'s "not measured" rows applies here unchanged.
-fn profiler_tab(ui: &mut egui::Ui, store: &DiagnosticsStore) {
-    draw_sections(ui, &profiler_sections(store));
-}
-
-/// The Profiler tab's readouts.
 fn profiler_sections(store: &DiagnosticsStore) -> Vec<DevSection> {
     use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
     use bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin;
@@ -1158,160 +966,6 @@ fn profiler_sections(store: &DiagnosticsStore) -> Vec<DevSection> {
     ]
 }
 
-/// Switches: the `CARTO_*` bisecting switches, on the device.
-///
-/// **They were in Settings ▸ Graphics**, collapsed and last, under a header that
-/// had to say what they were not — because they are not quality knobs: several of
-/// them make the picture worse on purpose, and a run with one on is a run whose
-/// rendering proves nothing. A section that has to apologise for the panel it is
-/// in belongs in a different panel, and this is it.
-///
-/// They are on a *device* at all for the reason [`crate::resources::DebugSwitches`]
-/// records: on Android the alternative is `debug.carto.*` properties, i.e. a
-/// cable, an `adb` and a machine that is not the phone — and the Adreno sky bug
-/// spent four days with its own instrument built and unreachable by the person
-/// holding the device.
-/// The high-precision mode's log: what its sensors reported, as text to copy
-/// off the phone and paste into a chat — and, at the top, the indoor walk test
-/// (`docs/notes/indoor-positioning.md`) started from here, so it needs no avatar,
-/// no walk mode and no hidden button: the hand button only exists on foot.
-fn precision_tab(
-    ui: &mut egui::Ui,
-    log: &mut crate::systems::high_precision::HighPrecisionLog,
-    hand: &mut crate::systems::prim_hand::PreciseHand,
-    high: &mut crate::systems::high_precision::HighPrecision,
-) {
-    walk_test(ui, log, high);
-    ui.separator();
-    theme::checkbox(ui, &mut hand.camera_stands_in, "Stand-in hand");
-    theme::note(ui, STAND_IN_NOTE);
-    ui.separator();
-    if log.is_empty() {
-        theme::note(ui, LOG_EMPTY_NOTE);
-        return;
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Copy").clicked() {
-            crate::utils::clipboard::set_text(&log.text());
-        }
-        if ui.button("Clear").clicked() {
-            log.clear();
-        }
-    });
-    egui::ScrollArea::vertical()
-        .max_height(320.0)
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(log.tail())
-                    .monospace()
-                    .size(theme::SIZE_CHIP),
-            );
-        });
-}
-
-/// The indoor walk test: Start, what the tracking needs from you right now, a
-/// Round button that marks each pass in the log, and Stop.
-fn walk_test(
-    ui: &mut egui::Ui,
-    log: &mut crate::systems::high_precision::HighPrecisionLog,
-    high: &mut crate::systems::high_precision::HighPrecision,
-) {
-    use crate::systems::high_precision::{HandWord, HighPrecision};
-    theme::section(ui, "Indoor walk test");
-    let Some(word) = high.hand_word() else {
-        for step in WALK_STEPS {
-            ui.label(step);
-        }
-        ui.add_space(theme::OSD_GAP);
-        // Drawn on a desktop too, greyed, so a capture shows the test as a
-        // phone does.
-        let available = HighPrecision::available();
-        ui.add_enabled_ui(available, |ui| {
-            if theme::primary_button_sized(ui, "Start", 140.0).clicked() {
-                high.on = true;
-            }
-        });
-        if !available {
-            theme::note(ui, NEEDS_A_PHONE);
-        }
-        theme::note(ui, WALK_NOTE);
-        return;
-    };
-    let tone = match word {
-        HandWord::Following => theme::p32().accent_bright,
-        HandWord::CameraBusy => theme::p32().warn,
-        _ => theme::p32().text_dim,
-    };
-    ui.label(
-        egui::RichText::new(word.text())
-            .size(theme::SIZE_TITLE)
-            .strong()
-            .color(tone),
-    );
-    if let Some(problem) = high.problem() {
-        ui.label(egui::RichText::new(problem).color(theme::p32().warn));
-    }
-    if let Some((ran, readings)) = high.running_for() {
-        let s = ran.as_secs();
-        theme::note(
-            ui,
-            &format!(
-                "{}:{:02} running · round {} · {readings} field readings",
-                s / 60,
-                s % 60,
-                high.rounds()
-            ),
-        );
-    }
-    ui.add_space(theme::OSD_GAP);
-    ui.horizontal(|ui| {
-        let next = format!("Round {}", high.rounds() + 1);
-        if theme::primary_button_sized(ui, &next, 140.0).clicked() {
-            high.mark_round(log);
-        }
-        if theme::secondary_button(ui, "", "Stop", 100.0).clicked() {
-            high.on = false;
-        }
-    });
-}
-
-fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
-    use crate::resources::DebugSwitches;
-
-    let on = DebugSwitches::SWITCHES
-        .iter()
-        .filter(|(name, _, _)| prefs.debug_switches.get(name) == Some(true))
-        .count();
-    // The count, at the top, because these are read once at startup and "why does
-    // it look like that" has to be answerable without remembering that you set one
-    // a week ago.
-    if on == 0 {
-        theme::note(ui, SWITCHES_NOTE);
-    } else {
-        ui.label(
-            egui::RichText::new(switches_on(on))
-                .small()
-                .color(theme::p32().accent_text),
-        );
-    }
-    ui.add_space(4.0);
-    for (name, label, help) in DebugSwitches::SWITCHES {
-        let Some(value) = prefs.debug_switches.get_mut(name) else {
-            // Unreachable while the table and `get_mut` agree, and a test pins
-            // that they do. Skipping beats an `unwrap` in a UI system.
-            continue;
-        };
-        theme::checkbox(ui, value, label);
-        ui.label(
-            egui::RichText::new(help)
-                .small()
-                .color(theme::p32().text_dim),
-        );
-        ui.add_space(4.0);
-    }
-}
-
 /// A camera fix, measured once per frame and read by both the View rows and the
 /// "Copy as preset" button.
 #[derive(Clone, Copy)]
@@ -1347,35 +1001,6 @@ impl DevView<'_, '_> {
             space_factor: self.globe.space_factor(cell, tf),
         })
     }
-}
-
-/// One `name  value` row of a readout, with the name in a fixed column so a stack
-/// of them lines up and the value monospaced so a changing digit does not shift
-/// the ones beside it.
-///
-/// This is the whole layout vocabulary of the developer panel, deliberately: a
-/// panel of numbers wants to be scanned down the left edge, and the moment two
-/// rows disagree about where the value starts it stops being scannable.
-///
-/// The value in a chosen colour: cream for a measurement, another for the
-/// rows that report a failure or an absence.
-fn stat_colored(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color32) {
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [88.0, ui.spacing().interact_size.y],
-            egui::Label::new(
-                egui::RichText::new(name)
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p32().text_dim),
-            ),
-        );
-        ui.label(
-            egui::RichText::new(value)
-                .monospace()
-                .size(theme::SIZE_MONO)
-                .color(color),
-        );
-    });
 }
 
 /// `1234567` → `"1 234 567"`. A thin space rather than a comma because these are

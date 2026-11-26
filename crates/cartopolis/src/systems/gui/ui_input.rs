@@ -283,8 +283,6 @@ pub struct EguiVerdict {
     /// A text field has the keyboard (`text_edit_focused()`, never
     /// `egui_wants_keyboard_input()` — `egui-shared-root-ui.md`).
     pub text_focused: bool,
-    /// A modal (the sign-in screen) owns the screen.
-    pub modal: bool,
     /// A drag is under way that started on the bare map.
     pub map_dragged: bool,
     /// The window cursor (window logical points) [`Self::press_over_ui`] was
@@ -312,6 +310,14 @@ pub struct UiInput {
     /// A library text field has the keyboard (`InputFocus` on an
     /// `EditableText`). Set by `lib_host::bridge_input`, for the next frame.
     lib_keyboard: bool,
+    /// A modal owns the screen: the sign-in card (`LoginScreen::modal`), set
+    /// each frame by `login_screen::drive_login_screen` in `Input`, before
+    /// anything that moves reads the keys. Pointer input takes care of
+    /// itself (the card's backdrop is a library screen under the pointer);
+    /// the keyboard does not, since the gate otherwise yields only to a
+    /// focused field, which would leave WASD walking the avatar behind a
+    /// card that has the user's attention.
+    modal: bool,
     /// The UI moved on its own last pass (an egui animation in progress), as
     /// opposed to merely wanting a look within a quarter second. Written after
     /// `end_egui_frame`; the idle throttle counts it as busy.
@@ -374,7 +380,7 @@ impl UiInput {
     ) -> bool {
         self.egui.text_focused
             || self.lib_keyboard
-            || self.egui.modal
+            || self.modal
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)
@@ -425,6 +431,19 @@ impl UiInput {
     pub fn set_overlay(&mut self, owns_pointer: bool, owns_keyboard: bool) {
         self.lib_pointer = owns_pointer;
         self.lib_keyboard = owns_keyboard;
+    }
+
+    /// Whether a modal owns the screen this frame (`login_screen`).
+    #[cfg_attr(not(feature = "comms"), allow(dead_code))]
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
+    /// A modal owns the screen.
+    #[must_use]
+    #[cfg_attr(not(feature = "comms"), allow(dead_code))]
+    pub fn modal(&self) -> bool {
+        self.modal
     }
 
     /// Whether the UI animated on its last pass (`egui_manager`).
@@ -590,10 +609,9 @@ mod tests {
             ..default()
         });
         assert!(input.ui_owns_keyboard(false, &none), "an egui field");
-        input.set_egui(EguiVerdict {
-            modal: true,
-            ..default()
-        });
+
+        let mut input = UiInput::default();
+        input.set_modal(true);
         assert!(input.ui_owns_keyboard(false, &none), "a modal");
     }
 }

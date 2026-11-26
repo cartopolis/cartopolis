@@ -1,21 +1,15 @@
-//! The first-launch card drawn by the component library (`lib_host`),
-//! beside egui's (`welcome::render_welcome`): what signing in is for, the
-//! two ways in, and a way to just look at the map.
+//! The first-launch card drawn by the component library (`lib_host`): what
+//! signing in is for, the two ways in, and a way to just look at the map.
 //!
-//! On with `CARTO_UI_LIB=welcome` (or `1`). egui's system steps aside
-//! (`Welcome::lib`) but keeps deciding whether the card shows — the saved
+//! `welcome::drive_welcome` decides whether the card shows — the saved
 //! answer, the capture override, Community chosen signed out, and
 //! everything that owns the bottom of the screen — and publishes that in
 //! `Welcome::lib_view`. An answer tapped here goes back in
-//! `Welcome::lib_action` and is given by `welcome::answer`, the code egui's
-//! buttons call, so the two editions cannot drift apart.
+//! `Welcome::lib_action` and is given by `welcome::answer`.
 //!
 //! **Placement.** The place card's (`lib_place_card::Placement`): centred
 //! over the bottom edge, above the dock. The card's own node listens, so a
 //! tap on its padding stays off the world.
-//!
-//! **What differs from egui's.** Nothing but the look: wider, with 20 px
-//! edges, as the library's cards are.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -65,22 +59,19 @@ pub fn drive_lib_welcome(
     if !lib.welcome {
         return;
     }
-    if !welcome.lib {
-        welcome.lib = true;
-    }
     let size = metrics.viewport_pts();
     let placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());
     let view = welcome.lib_view;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The answer of the frame, for egui's system to give next frame.
+        // The answer of the frame, for `drive_welcome` to give next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<WelcomeAction> = std::mem::take(&mut *live.acts.borrow_mut());
             if let Some(a) = acts.last() {
                 welcome.lib_action = Some(*a);
             }
         }
-        // Answered: gone now, rather than a frame later when egui's system
+        // Answered: gone now, rather than a frame later when `drive_welcome`
         // has given the answer.
         let open = view.shown && welcome.lib_action.is_none();
         if !open {

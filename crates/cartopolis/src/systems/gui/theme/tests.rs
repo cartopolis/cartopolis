@@ -614,38 +614,6 @@ fn install_binds_the_brand_family_for_the_first_frame() {
     );
 }
 
-/// The two brand primitives paint, on the first pass, into a bare context.
-///
-/// Cheap, and it covers the one way this could fail at runtime rather than at
-/// compile time: [`paint_wordmark`] lays its galleys out in
-/// [`brand_family`], and an unbound family is a panic deep in epaint, not a
-/// fallback. The splash paints on frame one — there is no second chance to
-/// find that out.
-#[test]
-fn the_mark_and_the_wordmark_paint_on_the_first_pass() {
-    let ctx = egui::Context::default();
-    install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let out = ctx.run_ui_unpainted(
-        egui::RawInput {
-            screen_rect: Some(screen),
-            ..Default::default()
-        },
-        |ui| {
-            let p = ui.painter();
-            paint_mark(p, egui::pos2(200.0, 100.0), 60.0, 1.0);
-            paint_wordmark(p, egui::pos2(200.0, 220.0), SPLASH_WORDMARK, 1.0);
-        },
-    );
-    // The tile, the street plan, the pin and its dot, and the wordmark's
-    // two galleys.
-    assert!(
-        out.shapes.len() >= 30,
-        "the brand painted only {} shapes",
-        out.shapes.len()
-    );
-}
-
 /// Every `RightPanel`, walked by index rather than hand-listed.
 ///
 /// The list under the test used to be written out by hand, and `Script` was
@@ -1153,12 +1121,11 @@ fn the_type_scale_is_a_scale() {
     assert_eq!(s.text_styles[&TextStyle::Heading].size, SIZE_HEADING);
 }
 
-/// The radius scale, same argument: four values, each visibly a step from the
-/// next, and [`RADIUS_PILL`] beyond any box this app draws.
+/// The radius scale, same argument: three values, each visibly a step from
+/// the next.
 #[test]
 fn the_radius_scale_is_a_scale() {
     assert!(RADIUS_SM < RADIUS && RADIUS < RADIUS_LG);
-    assert!(RADIUS_LG < RADIUS_PILL);
     // The widgets take the default one — this is the value a caller who
     // needed it used to read back off the widget table instead.
     assert_eq!(

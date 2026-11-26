@@ -22,51 +22,6 @@ const AVATAR_TONES: [egui::Color32; 6] = [
     egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
 ];
 
-/// Blend `base` toward `over` by `k`.
-pub(crate) fn blend(base: egui::Color32, over: egui::Color32, k: f32) -> egui::Color32 {
-    let ch = |b: u8, o: u8| (f32::from(b) + (f32::from(o) - f32::from(b)) * k).round() as u8;
-    egui::Color32::from_rgb(
-        ch(base.r(), over.r()),
-        ch(base.g(), over.g()),
-        ch(base.b(), over.b()),
-    )
-}
-
-/// A disc lit from above: `tone` in the middle, lighter at the top rim and
-/// deeper at the bottom, with a faint light edge. What makes an initial read
-/// as a token rather than a flat sticker.
-fn lit_disc(p: &egui::Painter, c: egui::Pos2, r: f32, tone: egui::Color32) {
-    const SEGMENTS: u32 = 40;
-    let light = blend(tone, egui::Color32::WHITE, 0.30);
-    let deep = blend(tone, egui::Color32::BLACK, 0.22);
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(c, tone);
-    for i in 0..=SEGMENTS {
-        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-        let d = egui::vec2(a.cos(), a.sin());
-        // `d.y` is -1 at the top of the disc and +1 at the bottom.
-        let k = (d.y + 1.0) / 2.0;
-        let rim = if k < 0.5 {
-            blend(light, tone, k * 2.0)
-        } else {
-            blend(tone, deep, (k - 0.5) * 2.0)
-        };
-        mesh.colored_vertex(c + r * d, rim);
-        if i > 0 {
-            mesh.add_triangle(0, i, i + 1);
-        }
-    }
-    p.add(mesh);
-    p.circle_stroke(
-        c,
-        r - 0.5,
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 40),
-        ),
-    );
-}
-
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
 const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x3F, 0x3B, 0x38);
 
@@ -101,45 +56,9 @@ pub(crate) fn tone_for(name: &str) -> egui::Color32 {
     AVATAR_TONES[h as usize % AVATAR_TONES.len()]
 }
 
-pub(crate) fn paint_avatar(
-    p: &egui::Painter,
-    c: egui::Pos2,
-    name: &str,
-    kind: ChatKind,
-    size: f32,
-) {
-    // A person with a picture is their picture (`systems::faces`).
-    if matches!(kind, ChatKind::Private) {
-        if let Some(texture) = crate::systems::faces::texture_for(name) {
-            crate::systems::faces::paint_face(p, c, size / 2.0, texture);
-            return;
-        }
-    }
-    let DiscLook {
-        tone,
-        text,
-        scale,
-        square,
-        ..
-    } = disc_look(name, kind);
-    if square {
-        let rect = egui::Rect::from_center_size(c, egui::Vec2::splat(size));
-        p.rect_filled(rect, egui::CornerRadius::same((size * 0.29) as u8), tone);
-    } else {
-        lit_disc(p, c, size / 2.0, tone);
-    }
-    p.text(
-        c,
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(size * scale),
-        egui::Color32::WHITE,
-    );
-}
-
 /// How a chat's disc looks when it has no picture: its tone, what is on it
-/// (white), how large that is against the disc, and its shape — for egui's
-/// [`paint_avatar`] and the component library's discs (`lib_chats`).
+/// (white), how large that is against the disc, and its shape — for the
+/// component library's discs (`lib_chats`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiscLook {
     pub tone: egui::Color32,

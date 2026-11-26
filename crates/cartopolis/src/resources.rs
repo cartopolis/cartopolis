@@ -967,7 +967,7 @@ impl<'de> serde::Deserialize<'de> for SunMode {
 /// measurement: frame timing, draw counts, upload and residency, pipeline health,
 /// Bevy's own diagnostics, the capture tools, and the `CARTO_*` startup switches
 /// — which came back the other way, out of Settings ▸ Graphics, for the mirror of
-/// this reason. See [`crate::systems::dev_panel::render_dev_panel`].
+/// this reason. See [`crate::systems::dev_panel::drive_dev_panel`].
 ///
 /// What this struct must *not* grow is a render setting. Those moved to
 /// [`AppPrefs`] and Settings ▸ Graphics, and the reason is still live: nothing
@@ -1172,12 +1172,11 @@ pub struct MarqueeState {
     pub shift_add: bool,
 }
 
-/// Texture catalog with decoded egui handles for thumbnail display.
+/// The texture catalogue. Its thumbnails are the fetched textures themselves
+/// (`PrimTextureCache::handles`, shown by `lib_object_editor`).
 #[derive(Resource, Default)]
 pub struct TextureLibrary {
     pub entries: Vec<TextureEntry>,
-    /// Registered egui textures (same key as `entries[i].id`) for thumbnail rendering.
-    pub egui_handles: HashMap<String, egui::TextureHandle>,
 }
 
 /// Client-side cache of decoded texture images, keyed by texture id.

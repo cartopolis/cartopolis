@@ -1,14 +1,12 @@
-//! The Midas corner drawn by the component library (`lib_host`), beside
-//! egui's (`midas_link::draw_link_button`): the Midas disc while the link is
-//! up, the card a tap on it opens (which session asked for what, and as
-//! whom), and the bubble with what a session `tell`s the person.
+//! The Midas corner drawn by the component library (`lib_host`): the Midas
+//! disc while the link is up, the card a tap on it opens (which session
+//! asked for what, and as whom), and the bubble with what a session `tell`s
+//! the person.
 //!
-//! On with `CARTO_UI_LIB=midas_link` (or `1`). egui's system steps aside
-//! (`MidasLink::lib`) but still decides everything — up or not, under a
+//! `midas_link::drive_link_button` decides everything — up or not, under a
 //! panel or in driver mode, the glow, the card's words, the bubble's timeout
 //! — and publishes it in `MidasLink::lib_view`. A tap here goes back in
-//! `MidasLink::lib_acts` and is done next frame by `MidasLink::apply`, the
-//! code egui's taps call.
+//! `MidasLink::lib_acts` and is done next frame by `MidasLink::apply`.
 //!
 //! **Drawn from boxes.** The disc is `theme::map_disc`'s plate; the Midas
 //! mark (`theme::paint_midas_mark`, an M of five joined points) is four
@@ -17,13 +15,13 @@
 //! linked dot a green circle with an ink rim. The bubble's tail is a box of
 //! borders, three clear and the left one inked, as `lib_chrome`'s needle.
 //!
-//! **Placement.** As egui's: the disc `MidasLink::lib_view.right` in from
+//! **Placement.** The disc `MidasLink::lib_view.right` in from
 //! the right edge (left of the map's round buttons, `dock::right_column`)
 //! at `dock::reserved_top`; the card and the bubble in one column left of it,
 //! `OSD_GAP` away, the bubble under the card when both are up, its tail at
 //! the disc only when nothing stands between.
 //!
-//! Native only, as the link (`not(wasm32)`): one px per egui point.
+//! Native only, as the link (`not(wasm32)`): one px per ui point.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -92,13 +90,10 @@ pub fn drive_lib_midas_link(
     if !lib.midas_link {
         return;
     }
-    if !link.lib {
-        link.lib = true;
-    }
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `drive_link_button` next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<LinkAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {

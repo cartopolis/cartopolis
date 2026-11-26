@@ -110,6 +110,8 @@ impl Plugin for GuiPlugin {
             // What the on-screen navigation controls asked for this frame
             // (`systems::map_osd`); read by `free_camera::camera_controls`.
             .init_resource::<systems::map_osd::OsdInput>()
+            // …and what of them the library draws (`lib_map_osd`).
+            .init_resource::<systems::map_osd::OsdLib>()
             .insert_resource({
                 let mut layers = crate::systems::layer_state::DataLayers::default();
                 layers.aerial_enabled = self.aerial;
@@ -156,27 +158,28 @@ impl Plugin for GuiPlugin {
                 systems::ui_theme::follow_the_light,
                 // And how much it moves (`systems::motion`), for the same reason.
                 systems::motion::apply_pref,
+                // egui's own style follows it, for what egui still draws.
+                systems::egui_manager::follow_theme_visuals
+                    .after(systems::ui_theme::follow_the_light),
             )
                 .in_set(ClientPhase::Input),
         );
 
-        // The app's own updates (`systems::app_update`): a `Foreground` pill or
-        // card over everything, so not in the panel chain; last, so the too-old
-        // card's veil lies over every other area.
+        // The app's own updates (`systems::app_update`): its pill or card is
+        // the library's (`lib_app_update`); this keeps the check's clock.
         app.add_systems(
             Update,
-            // After the calendar's reminder too, which that one says.
-            systems::app_update::render_app_update
+            systems::app_update::drive_app_update
                 .after(systems::place_pins::place_map_pins)
                 .in_set(ClientPhase::Present),
         );
-        // A release in front of the owner (`systems::release_approval`): over
-        // everything, the update card included, like it outside the chain.
+        // A release in front of the owner (`systems::release_approval`): the
+        // library draws it (`lib_release_approval`) over everything.
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(
             Update,
-            systems::release_approval::render_release_approval
-                .after(systems::app_update::render_app_update)
+            systems::release_approval::drive_release_approval
+                .after(systems::app_update::drive_app_update)
                 .in_set(ClientPhase::Present),
         );
 
@@ -196,7 +199,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::chats::drive_chats),
                 systems::calendar::drive_reminder
                     .after(systems::place_pins::place_map_pins)
-                    .before(systems::app_update::render_app_update)
+                    .before(systems::app_update::drive_app_update)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -259,7 +262,7 @@ impl Plugin for GuiPlugin {
                     .after(systems::geo_nav::apply_teleport)
                     .before(systems::free_camera::camera_controls)
                     .in_set(ClientPhase::Anchor),
-                systems::camera_screen::render_camera
+                systems::camera_screen::publish_camera
                     .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
                 systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
@@ -314,7 +317,7 @@ impl Plugin for GuiPlugin {
                 systems::faces::drive_faces
                     .before(systems::ui::drive_main_menu)
                     .in_set(ClientPhase::Input),
-                systems::faces::render_face_viewfinder
+                systems::faces::drive_face_viewfinder
                     .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             ),
@@ -387,7 +390,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::ui::drive_main_menu),
                 // The screenshot driver runs after the dev panel so a button click
                 // is seen the same frame it's captured.
-                systems::ui::drive_screenshots.after(systems::dev_panel::render_dev_panel),
+                systems::ui::drive_screenshots.after(systems::dev_panel::drive_dev_panel),
                 // The map's ring (the library draws it, `lib_action_ring`).
                 systems::ui::drive_context_menu,
                 // Follow selection changes from picking before live edits apply.
@@ -465,7 +468,7 @@ impl Plugin for GuiPlugin {
             // **before the camera**, so a held control is acted on in the frame it
             // was pushed — a frame of lag on a *held* control reads as the camera
             // lagging the thumb, and at 20 fps on a phone that is visible.
-            systems::map_osd::render_map_osd
+            systems::map_osd::drive_map_osd
                 .after(systems::driver::drive_driver_mode)
                 .before(systems::free_camera::camera_controls)
                 .in_set(ClientPhase::Camera),
@@ -485,20 +488,16 @@ impl Plugin for GuiPlugin {
                 // The first-launch card (`systems::welcome`): floating above the
                 // dock on the place card's terms. After it, since it stands
                 // aside for an open card.
-                systems::welcome::render_welcome
+                systems::welcome::drive_welcome
                     .after(systems::place_card::drive_place_card)
                     .before(systems::ui::drive_main_menu),
-                // The sign-in screen (`systems::login_screen`). It draws into its
-                // own floating `Area` (a modal must sit above the main menu, which
-                // is itself a `Foreground` area), so it is deliberately *not* in
-                // the panel chain — it never touches the shared root `Ui`. It still
-                // runs after the main menu, which is where it is opened from; the
-                // session driver it feeds runs after it (`net::plugin`). Its
-                // fields are drawn before the on-screen keyboard looks for them.
-                systems::login_screen::render_login_screen
+                // The sign-in screen (`systems::login_screen`; the library draws
+                // the card, `lib_login`). It runs after the main menu, which is
+                // where it is opened from; the session driver it feeds runs after
+                // it (`net::plugin`).
+                systems::login_screen::drive_login_screen
                     .after(systems::ui::drive_main_menu)
-                    .before(systems::session::drive_session)
-                    .before(systems::onscreen_keyboard::render_onscreen_keyboard),
+                    .before(systems::session::drive_session),
             )
                 .in_set(ClientPhase::Input),
         );
@@ -718,7 +717,7 @@ impl Plugin for GuiPlugin {
                 // which used to hold only because it was registered after it; the
                 // edge to the chain's last system says so now.
                 systems::dismiss::handle_escape.after(systems::locate::place_locate_arrow),
-                systems::splash::boot_splash,
+                systems::splash::drive_boot_splash,
             )
                 .in_set(ClientPhase::Present),
         );

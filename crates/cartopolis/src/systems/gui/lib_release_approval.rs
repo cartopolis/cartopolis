@@ -1,26 +1,21 @@
-//! The release approval drawn by the component library (`lib_host`), beside
-//! egui's (`release_approval::render_release_approval`): the release in front
-//! of the owner over everything, Claude's verdict at the top, and **Approve
-//! with fingerprint** only when it is green. Also Developer tools ▸ Midas ▸
-//! Release key as a library view ([`key_section_view`]), for the screen that
-//! draws that tab.
+//! The release approval drawn by the component library (`lib_host`): the
+//! release in front of the owner over everything, Claude's verdict at the
+//! top, and **Approve with fingerprint** only when it is green. Also
+//! Developer tools ▸ Midas ▸ Release key as a library view
+//! ([`key_section_view`]), for the screen that draws that tab.
 //!
-//! On with `CARTO_UI_LIB=release_approval` (or `1`). egui's system steps
-//! aside (`release_approval::set_lib`) but still fetches, checks, asks Claude
+//! `release_approval::drive_release_approval` fetches, checks, asks Claude
 //! and follows the fingerprint sheet, and publishes the card as plain data
 //! (`release_approval::lib_view`). A tap here goes back through
 //! `release_approval::lib_act` and is done next frame by `release_approval::
-//! act`, the code egui's buttons call.
+//! act`.
 //!
-//! **Placement.** As egui's: a veil over the whole window that listens (no
-//! tap reaches the map or a panel), the card centred in it. egui sets the
-//! card's *content* `CARD_WIDTH` or the screen less its margins wide and the
-//! frame adds 30 px on that, so at a phone's 275 pt the card ran 6 pt past
-//! both edges; here the whole card is at most the screen less its margins.
-//! The list under the verdict scrolls past 45 % of the window's height, as
-//! egui's.
+//! **Placement.** A veil over the whole window that listens (no tap reaches
+//! the map or a panel), the card centred in it, at most `CARD_WIDTH` of
+//! content or the screen less its margins. The list under the verdict
+//! scrolls past 45 % of the window's height.
 //!
-//! Native only, as the module it draws (`not(wasm32)`): one px per egui
+//! Native only, as the module it draws (`not(wasm32)`): one px per ui
 //! point, no DOM scale.
 
 use std::cell::RefCell;
@@ -95,7 +90,6 @@ pub fn drive_lib_release_approval(
     if !lib.release_approval {
         return;
     }
-    release_approval::set_lib();
     let size = metrics.viewport_pts();
     let placement = Placement {
         w: size.x,

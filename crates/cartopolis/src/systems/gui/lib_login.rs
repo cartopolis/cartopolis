@@ -1,26 +1,21 @@
-//! The sign-in card drawn by the component library (`lib_host`), beside
-//! egui's (`login_screen::render_login_screen`): which server, as whom, a
-//! modal over the running world.
+//! The sign-in card drawn by the component library (`lib_host`): which
+//! server, as whom, a modal over the running world.
 //!
-//! On with `CARTO_UI_LIB=login` (or `1`). egui's system steps aside
-//! (`LoginScreen::lib`) but keeps what only it does — closing the card on a
-//! live session (`settle`), telling the keyboard gate (`set_modal`), and
-//! collecting a sign-in the browser finished (`external_signin`). Everything
-//! a press here asks for goes through the same `LoginScreen` methods egui's
-//! card calls (`submit`, `dismiss`, `choose_external`, `missing`), so the
-//! two editions cannot drift apart.
+//! `login_screen::drive_login_screen` keeps what is not the card's — closing
+//! it on a live session (`settle`), saying it owns the screen
+//! (`LoginScreen::modal`), and collecting a sign-in the browser finished
+//! (`external_signin`). Everything a press here asks for goes through the
+//! `LoginScreen` methods (`submit`, `dismiss`, `choose_external`, `missing`).
 //!
 //! **Placement.** A dimmed full-window backdrop with the card centred, at
 //! most [`CARD_WIDTH`] wide with 20 px kept clear on every side. The
 //! backdrop is four click-to-dismiss spacers *around* the card, not a parent
 //! of it: as DOM a click on the card would bubble into a backdrop it sat in.
 //!
-//! **What differs from egui's.** No fade-and-rise on opening; the mark is
-//! left out (the library has no image node) and the wordmark is text; the
-//! card does not move into the band an on-screen keyboard leaves, and the
-//! app's own on-screen keyboard does not open for these fields
-//! (`onscreen_keyboard` looks for egui's); the providers' buttons carry the
-//! name's first letter, as egui's do.
+//! **Not done yet.** No fade-and-rise on opening; the mark is left out and
+//! the wordmark is text; the card does not move into the band an on-screen
+//! keyboard leaves, and the app's own on-screen keyboard does not open for
+//! these fields; the providers' buttons carry the name's first letter.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -58,7 +53,7 @@ struct Frame {
 }
 
 impl Frame {
-    /// For a viewport of `w` × `h` egui points; as DOM the page's px are
+    /// For a viewport of `w` × `h` UI points; as DOM the page's px are
     /// `ui_scale` times larger (`lib_place_card::Placement`).
     fn of(w: f32, h: f32, ui_scale: f32) -> Self {
         let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
@@ -225,15 +220,12 @@ pub fn drive_lib_login(
     if !lib.login {
         return;
     }
-    if !screen.lib {
-        screen.lib = true;
-    }
     // A request that came back offline is no longer awaited. Before this
     // frame's presses: one made now has not reached the driver yet.
     if screen.is_busy() && !session.status.is_busy() {
         screen.settle_awaiting(&session);
     }
-    // Wait behind the boot splash, as egui's card does.
+    // Wait behind the boot splash (`LoginScreen::modal` says why).
     let open = screen.open && !splash.covering();
     let size = metrics.viewport_pts();
     let frame = Frame::of(size.x, size.y, metrics.ui_scale());

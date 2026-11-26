@@ -1518,7 +1518,7 @@ fn decode_png_to_image(png_bytes: &[u8]) -> Option<Image> {
     let rgba = dynamic.to_rgba8();
     let (w, h) = rgba.dimensions();
     // Mipmapped + repeat addressing (repeat_u/v > 1 tiles). MAIN_WORLD keeps the
-    // mip-0 CPU bytes available for `create_egui_texture_handles`.
+    // CPU bytes; egui's thumbnails were their last reader.
     Some(crate::systems::rendering::mipmapped_image(
         w,
         h,
@@ -1570,51 +1570,6 @@ pub fn request_wanted_textures(
                 texture_id: id,
             }),
         );
-    }
-}
-
-/// Creates egui thumbnail handles for any texture in the library that doesn't have one yet.
-/// Runs every Update frame; no-ops once all entries are covered.
-pub fn create_egui_texture_handles(
-    mut texture_lib: ResMut<TextureLibrary>,
-    texture_cache: Res<PrimTextureCache>,
-    images: Res<Assets<Image>>,
-    egui_manager: crate::systems::egui_manager::EguiRef,
-) {
-    let entries: Vec<String> = texture_lib
-        .entries
-        .iter()
-        .filter(|e| !texture_lib.egui_handles.contains_key(&e.id))
-        .map(|e| e.id.clone())
-        .collect();
-
-    for id in entries {
-        let Some(img_handle) = texture_cache.handles.get(&id) else {
-            continue;
-        };
-        let Some(img) = images.get(img_handle) else {
-            continue;
-        };
-        let Some(data) = &img.data else {
-            continue;
-        };
-        let w = img.width();
-        let h = img.height();
-        // `data` now holds the full mip chain; the thumbnail only needs mip 0
-        // (the first w·h·4 bytes).
-        let mip0_len = (w * h * 4) as usize;
-        if data.len() < mip0_len {
-            continue;
-        }
-        let pixels: Vec<egui::Color32> = data[..mip0_len]
-            .chunks_exact(4)
-            .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
-            .collect();
-        let color_image = egui::ColorImage::new([w as usize, h as usize], pixels);
-        let handle = egui_manager
-            .ctx
-            .load_texture(&id, color_image, egui::TextureOptions::LINEAR);
-        texture_lib.egui_handles.insert(id, handle);
     }
 }
 

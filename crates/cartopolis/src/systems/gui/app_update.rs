@@ -6,25 +6,19 @@
 //! where it is and passes the tap on. Ignored, the pill's update still goes in:
 //! the updater installs it when the person leaves the app.
 //!
-//! Both are `Foreground` areas over everything, outside the panel chain, like
-//! the calendar's reminder. The too-old card claims the whole screen, so no
-//! tap reaches the map or a panel beneath it: nothing there works until the
-//! update is in.
+//! The component library draws both (`systems::lib_app_update`);
+//! [`drive_app_update`] asks the updater, publishes what shows and does what a
+//! tap there asked for. The too-old card claims the whole screen, so no tap
+//! reaches the map or a panel beneath it: nothing there works until the update
+//! is in.
 
 use bevy::prelude::*;
 
 use crate::platform::update::{self, UpdateStatus};
-use crate::systems::egui_manager::EguiRef;
-use crate::systems::{icons, theme};
 
 /// How often the updater is asked: a JNI call, and a download's progress moves
 /// visibly at this rate.
 const POLL_S: f64 = 0.5;
-
-/// Width of the pill and of the card, fixed for the reason
-/// [`crate::systems::place_card`]'s is: a size-to-content `Area` grows otherwise.
-const PILL_WIDTH: f32 = 340.0;
-const CARD_WIDTH: f32 = 360.0;
 
 #[derive(Resource, Default)]
 pub struct AppUpdate {
@@ -35,15 +29,11 @@ pub struct AppUpdate {
     /// What a scripted capture shows instead (`--ui updateready`, `updatetooold`,
     /// `updating`), as on a phone; `None` on every other shot and in use.
     pub capture: Option<Capture>,
-    /// The component library draws the pill and the card
-    /// (`systems::lib_app_update`): this system then draws nothing, but still
-    /// asks the updater, publishes what to show ([`Self::lib_view`]) and does
-    /// what a tap there asked for ([`Self::lib_action`]).
-    pub lib: bool,
+    /// What to show, for the library's edition, which hands a tap back in
+    /// [`Self::lib_action`].
     pub lib_view: UpdateView,
     pub lib_action: Option<UpdateAction>,
 }
-
 /// A stand-in for the updater and the server's answer, for a capture.
 #[derive(Clone, Debug)]
 pub struct Capture {
@@ -51,7 +41,7 @@ pub struct Capture {
     pub too_old: bool,
 }
 
-/// What is on screen, in either edition.
+/// What is on screen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum UpdateView {
     #[default]
@@ -84,7 +74,7 @@ pub enum TooOld {
     Elsewhere,
 }
 
-/// A tap, in either edition.
+/// A tap on the pill or the card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateAction {
     Install,
@@ -95,7 +85,7 @@ pub enum UpdateAction {
 /// The line under "Installing…" and a download on the too-old card.
 pub const CLOSES: &str = "Cartopolis closes when the update is in; a notification opens it again.";
 
-/// The too-old card's text, in either edition: the title and the lines.
+/// The too-old card's text: the title and the lines.
 #[must_use]
 pub fn too_old_text(t: &TooOld) -> (&'static str, &'static str) {
     match t {
@@ -171,7 +161,8 @@ impl AppUpdate {
     }
 }
 
-pub fn render_app_update(egui: EguiRef, mut state: ResMut<AppUpdate>, time: Res<Time<Real>>) {
+/// Asks the updater, publishes what shows, and does what a tap asked for.
+pub fn drive_app_update(mut state: ResMut<AppUpdate>, time: Res<Time<Real>>) {
     // A tap the library's edition handed back.
     if let Some(action) = state.lib_action {
         state.lib_action = None;
@@ -189,153 +180,9 @@ pub fn render_app_update(egui: EguiRef, mut state: ResMut<AppUpdate>, time: Res<
         (update::too_old(), update::can_install())
     };
     let view = state.view(too_old, installable);
-    if state.lib {
-        if state.lib_view != view {
-            state.lib_view = view;
-        }
-        return;
+    if state.lib_view != view {
+        state.lib_view = view;
     }
-    let action = match &view {
-        UpdateView::None => None,
-        UpdateView::Pill { title, line, ready } => pill(&egui, title, line, *ready),
-        UpdateView::TooOld(t) => too_old_card(&egui, t),
-    };
-    if let Some(action) = action {
-        state.act(action);
-    }
-}
-
-/// "Update ready", with Install — and once tapped, how far it is.
-fn pill(egui: &EguiRef, title: &str, line: &str, ready: bool) -> Option<UpdateAction> {
-    let ctx = egui.ctx();
-    let width = PILL_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-    let mut action = None;
-    egui::Area::new(egui::Id::new("app_update_pill"))
-        .order(egui::Order::Foreground)
-        // Under the search bar, which has the top edge.
-        .anchor(
-            egui::Align2::CENTER_TOP,
-            egui::vec2(0.0, crate::systems::dock::reserved_top()),
-        )
-        .show(ctx, |ui| {
-            crate::systems::theme::glass_frame().show(ui, |ui| {
-                ui.set_width(width);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(icons::DOWNLOAD)
-                            .size(theme::SIZE_TITLE)
-                            .color(theme::p32().accent),
-                    );
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(theme::SIZE_BODY)
-                                .color(theme::p32().cream),
-                        );
-                        ui.label(
-                            egui::RichText::new(line)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ready {
-                            if theme::close_button(ui).clicked() {
-                                action = Some(UpdateAction::Dismiss);
-                            }
-                            if theme::primary_button_sized(ui, "Install", 0.0).clicked() {
-                                action = Some(UpdateAction::Install);
-                            }
-                        } else {
-                            ui.add(
-                                egui::Spinner::new()
-                                    .size(theme::SIZE_BODY)
-                                    .color(theme::p32().accent),
-                            );
-                        }
-                    });
-                });
-            });
-        });
-    action
-}
-
-/// "Update Cartopolis to continue": the map dimmed, nothing else answers.
-fn too_old_card(egui: &EguiRef, t: &TooOld) -> Option<UpdateAction> {
-    let ctx = egui.ctx();
-    let screen = ctx.content_rect();
-    let width = CARD_WIDTH.min(screen.width() - 2.0 * theme::OSD_MARGIN);
-    egui::Area::new(egui::Id::new("app_update_veil"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(screen.min)
-        .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen, 0.0, theme::DARK32.ink.gamma_multiply(0.82));
-            // Every tap on the veil is taken here, so none reaches the world.
-            // unnamed: a blocker under the card, not a control
-            ui.allocate_rect(screen, egui::Sense::click_and_drag());
-        });
-    let mut tapped = false;
-    let (heading, text) = too_old_text(t);
-    egui::Area::new(egui::Id::new("app_update_card"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(icons::DOWNLOAD)
-                            .size(theme::SIZE_PANEL_TITLE)
-                            .color(theme::p32().accent),
-                    );
-                    ui.add_space(4.0);
-                    title(ui, heading);
-                    if let TooOld::Fetching { fraction, line: mb } = t {
-                        ui.add_space(8.0);
-                        ui.add(
-                            egui::ProgressBar::new(*fraction)
-                                .desired_height(8.0)
-                                .fill(theme::p32().accent),
-                        );
-                        line(ui, mb);
-                    }
-                    line(ui, text);
-                    if let TooOld::Offer { failed } = t {
-                        if let Some(why) = failed {
-                            ui.add_space(4.0);
-                            let _ = theme::inline_error(ui, &format!("Did not work: {why}"));
-                        }
-                        ui.add_space(8.0);
-                        let label = if failed.is_some() {
-                            "Try again"
-                        } else {
-                            "Update now"
-                        };
-                        if theme::primary_button_sized(ui, label, ui.available_width()).clicked() {
-                            tapped = true;
-                        }
-                    }
-                });
-            });
-        });
-    tapped.then_some(UpdateAction::Install)
-}
-
-fn title(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::SIZE_HEADING)
-            .color(theme::p32().cream),
-    );
-}
-
-fn line(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::SIZE_SUB)
-            .color(theme::p32().text_dim),
-    );
 }
 
 /// "34 of 80 MB", or "34 MB" when the server sent no length.

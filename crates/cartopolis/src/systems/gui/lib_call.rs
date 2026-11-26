@@ -1,16 +1,14 @@
-//! The call screen drawn by the component library (`lib_host`), beside
-//! egui's (`call_screen::render_call_screen`): a call ringing over the whole
-//! screen, the call you are in with its video tiles, the sheets over it
-//! (More, People, Leave, Notes), and at the top the folded call (the green
-//! bar, or the row of tiles over the map), ringing banners and notices.
+//! The call screen drawn by the component library (`lib_host`): a call
+//! ringing over the whole screen, the call you are in with its video tiles,
+//! the sheets over it (More, People, Leave, Notes), and at the top the
+//! folded call (the green bar, or the row of tiles over the map), ringing
+//! banners and notices.
 //!
-//! On with `CARTO_UI_LIB=call` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`CallScreenLib::lib`) but keeps every decision — what
-//! rings, when the screen unfolds, when the controls fade over a picture,
-//! who is large in Speaker view, what a host may do to whom — and publishes
-//! it in `CallScreenLib::view`. A tap here is a `CallAct`, handed back in
-//! `CallScreenLib::acts` and done by `call_screen::apply`, the code egui's
-//! buttons run.
+//! `call_screen::drive_call_screen` keeps every decision — what rings, when
+//! the screen unfolds, when the controls fade over a picture, who is large
+//! in Speaker view, what a host may do to whom — and publishes it in
+//! `CallScreenLib::view`. A tap here is a `CallAct`, handed back in
+//! `CallScreenLib::acts` and done by `call_screen::apply`.
 //!
 //! **Pictures.** Each video tile is `<img src="bevy:call_tile_<id>">` (a
 //! shared screen `bevy:call_tile_screen_<id>`): this system writes each
@@ -47,9 +45,9 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::systems::call_screen::{
-    contain, BannerView, CallAct, CallScreenLib, CallView, FoldedView, FullView, InCallView,
-    MoreView, NotesView, PeopleView, PersonView, Sheet, SheetView, Tint, TopView, BOTTOM_EDGE,
-    EDGE, REACTIONS,
+    BannerView, CallAct, CallScreenLib, CallView, FoldedView, FullView, InCallView, MoreView,
+    NotesView, PeopleView, PersonView, Sheet, SheetView, Tint, TopView, BOTTOM_EDGE, EDGE,
+    REACTIONS,
 };
 use crate::systems::calls::{CallRequest, Calls, SELF_TILE};
 use crate::systems::discs::ChatKind;
@@ -110,7 +108,13 @@ struct ScreenLive {
     /// The theme it was mounted in.
     dark: bool,
     size: Signal<(f32, f32)>,
+    /// The screen with its status line blanked (`split_full`): the stage is
+    /// rebuilt when this moves, and a stage rebuilt is not laid out in the
+    /// frame it is built — with the timer in it, every second, a capture in
+    /// that frame showed the screen empty.
     full: Signal<Option<FullView>>,
+    /// The status line (the call's timer), written into its text in place.
+    status: Signal<String>,
     /// Which sheet is open: its frame and the note field follow only this.
     sheet_kind: Signal<Option<Sheet>>,
     sheet: Signal<Option<SheetView>>,
@@ -128,8 +132,31 @@ struct ScreenLive {
 struct BarLive {
     k: f32,
     dark: bool,
+    /// The top with the folded bar's timer blanked (`split_top`), for the
+    /// reason `ScreenLive::full` has.
     top: Signal<Option<(TopView, f32)>>,
+    /// The folded bar's timer, written into its text in place.
+    status: Signal<String>,
     acts: Acts,
+}
+
+/// The screen without its status line, and the line: the timer moves every
+/// second and must not rebuild the stage.
+fn split_full(mut full: FullView) -> (FullView, String) {
+    let status = match &mut full {
+        FullView::InCall(v) => std::mem::take(&mut v.status),
+        _ => String::new(),
+    };
+    (full, status)
+}
+
+/// The top without the folded bar's timer, and the timer.
+fn split_top(mut top: TopView) -> (TopView, String) {
+    let status = match &mut top.folded {
+        Some(FoldedView::Bar { status, .. }) => std::mem::take(status),
+        _ => String::new(),
+    };
+    (top, status)
 }
 
 thread_local! {
@@ -179,9 +206,6 @@ pub fn drive_lib_call(
     let Some(mut bridge) = bridge else {
         return;
     };
-    if !bridge.lib {
-        bridge.lib = true;
-    }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
     } else {
@@ -233,6 +257,7 @@ pub fn drive_lib_call(
         let (Some(v), Some(full)) = (view.as_ref(), full) else {
             return;
         };
+        let (full, status) = split_full(full);
         let size = (v.w, v.h);
         let sheet = v.sheet.clone();
         let kind = sheet.as_ref().map(SheetView::kind);
@@ -248,6 +273,7 @@ pub fn drive_lib_call(
                     dark,
                     size: signal(size),
                     full: signal(Some(full)),
+                    status: signal(status),
                     sheet_kind: signal(kind),
                     sheet: signal(sheet),
                     note_kind: signal(note_kind.unwrap_or(NoteKind::Note)),
@@ -272,6 +298,9 @@ pub fn drive_lib_call(
             Some(live) => {
                 if live.size.get_untracked() != size {
                     live.size.set(size);
+                }
+                if live.status.peek(|now| *now != status) {
+                    live.status.set(status);
                 }
                 if live.full.peek(|now| now.as_ref() != Some(&full)) {
                     live.full.set(Some(full));
@@ -308,12 +337,15 @@ pub fn drive_lib_call(
         let Some(top) = top else {
             return;
         };
+        let (top, w) = top;
+        let (top, status) = split_top(top);
         match m.as_ref() {
             None => {
                 let live = BarLive {
                     k,
                     dark,
-                    top: signal(Some(top)),
+                    top: signal(Some((top, w))),
+                    status: signal(status),
                     acts: acts.clone(),
                 };
                 crate::systems::lib_host::mount_keyed(
@@ -325,6 +357,10 @@ pub fn drive_lib_call(
                 *m = Some(live);
             }
             Some(live) => {
+                if live.status.peek(|now| *now != status) {
+                    live.status.set(status);
+                }
+                let top = (top, w);
                 if live.top.peek(|now| now.as_ref() != Some(&top)) {
                     live.top.set(Some(top));
                 }
@@ -464,6 +500,17 @@ fn pos2(x: f32, y: f32) -> egui::Pos2 {
     egui::pos2(x, y)
 }
 
+/// The largest rect of shape `aspect` inside `rect`, centred.
+fn contain(aspect: f32, rect: Rect) -> Rect {
+    let target = rect.width() / rect.height().max(1.0);
+    let size = if aspect > target {
+        egui::vec2(rect.width(), rect.width() / aspect)
+    } else {
+        egui::vec2(rect.height() * aspect, rect.height())
+    };
+    Rect::from_center_size(rect.center(), size)
+}
+
 /// An absolutely placed box over `r`, in px, then the rest.
 fn bx(k: f32, r: Rect, rest: &str) -> String {
     format!(
@@ -519,6 +566,8 @@ fn ring(k: f32, c: egui::Pos2, radius: f32, width: f32, colour: &str) -> View {
 enum Seg {
     I(&'static str),
     T(String),
+    /// Words that follow a signal in place (the timer).
+    D(Signal<String>),
 }
 
 fn line(segs: Vec<Seg>, size: f32) -> View {
@@ -536,6 +585,13 @@ fn line(segs: Vec<Seg>, size: f32) -> View {
                     let style = format!(
                         "min-width: 0; font-size: {size}px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"
                     );
+                    view! { <span style={style}>{t}</span> }
+                }
+                Seg::D(s) => {
+                    let style = format!(
+                        "min-width: 0; font-size: {size}px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"
+                    );
+                    let t = View::DynText(Rc::new(move || s.get()));
                     view! { <span style={style}>{t}</span> }
                 }
             })
@@ -1241,7 +1297,7 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
             x,
             c.y + disc * 0.5 + 72.0,
             band,
-            vec![Seg::T(v.status.clone())],
+            vec![Seg::D(l.status.clone())],
             theme::SIZE_BODY,
             &css(pal.text),
         ));
@@ -1331,7 +1387,7 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
                 x,
                 EDGE + 38.0,
                 title_band,
-                vec![Seg::I(icons::LOCK), Seg::T(v.status.clone())],
+                vec![Seg::I(icons::LOCK), Seg::D(l.status.clone())],
                 theme::SIZE_SUB,
                 &css(pal.text),
             ));
@@ -2388,9 +2444,7 @@ fn top_column(l: &BarLive, t: &TopView, w: f32) -> View {
         t.width * k
     );
     let folded: View = match &t.folded {
-        Some(FoldedView::Bar { who, status, muted }) => {
-            folded_bar(l, pal, t.width, who, status, *muted)
-        }
+        Some(FoldedView::Bar { who, muted, .. }) => folded_bar(l, pal, t.width, who, *muted),
         Some(FoldedView::Tiles {
             people,
             controls,
@@ -2430,14 +2484,7 @@ fn top_column(l: &BarLive, t: &TopView, w: f32) -> View {
 
 /// The call folded to a bar: green, with who and how long, the microphone
 /// and hang-up. A tap on the bar unfolds it.
-fn folded_bar(
-    l: &BarLive,
-    pal: &Palette,
-    width: f32,
-    who: &str,
-    status: &str,
-    muted: bool,
-) -> View {
+fn folded_bar(l: &BarLive, pal: &Palette, width: f32, who: &str, muted: bool) -> View {
     let k = l.k;
     let h = CALL_BUTTON_SMALL + 12.0;
     let style = format!(
@@ -2496,7 +2543,11 @@ fn folded_bar(
         vec![Seg::I(icons::CALL), Seg::T(format!(" {who}"))],
         theme::SIZE_BODY,
     );
-    let status = status.to_string();
+    // The timer follows its signal in place (`BarLive::status`).
+    let status = {
+        let s = l.status.clone();
+        View::DynText(Rc::new(move || s.get()))
+    };
     view! {
         <div title="Back to the call" style={style} on:click={tap(unfold)}>
             <div style={words}>
@@ -2687,5 +2738,19 @@ fn banner(l: &BarLive, pal: &Palette, width: f32, b: &BannerView) -> View {
             {decline}
             {answer}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_letterboxed_picture_keeps_its_shape() {
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+        let r = contain(0.75, rect);
+        assert!((r.height() - 900.0).abs() < 1e-3);
+        assert!((r.width() / r.height() - 0.75).abs() < 1e-4);
+        assert!((r.center().x - 800.0).abs() < 1e-3);
     }
 }

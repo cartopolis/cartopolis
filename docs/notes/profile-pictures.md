@@ -1,7 +1,7 @@
 ---
 topic: people's pictures
-triggers: [faces.rs, pictures.rs, faces, profile picture, "/api/pictures/mine", "/api/pictures/people", texture_for, paint_face, you_picture, face_snapshot, viewfinder, "accounts.picture", FACE_EDGE]
-updated: 2026-10-16
+triggers: [faces.rs, pictures.rs, faces, profile picture, "/api/pictures/mine", "/api/pictures/people", face_url, thumb_edge, you_picture, face_snapshot, viewfinder, "accounts.picture", FACE_EDGE]
+updated: 2026-11-26
 ---
 
 # People's pictures
@@ -40,13 +40,14 @@ a few times in an account's life.
 
 ## How every disc gets it without an edit
 
-`chats::paint_avatar` is the one function every disc goes through, and it
-takes a painter and a name — no `World`. So `faces` keeps a small shared table
-(`texture_for`) that it rewrites each frame, and a disc asking for a name is
-how it learns whom to look up. A name is looked up only if it is a plausible
-account name on this server: `name@elsewhere` is left alone. At most
-`MAX_TEXTURES` (64) pictures are held as textures; past that the ones nobody
-has drawn for 30 s are let go, and come back from the disk cache.
+Every disc asks one function by name, `faces::face_url` — no `World`. So
+`faces` keeps a small shared table that it rewrites each frame, and a disc
+asking for a name is how it learns whom to look up; the answer is a `data:`
+thumbnail scaled on a worker to the disc's size. A name is looked up only if
+it is a plausible account name on this server: `name@elsewhere` is left
+alone. At most `MAX_PICTURES` (64) pictures are held; past that the ones
+nobody has drawn for 30 s are let go, and come back from the disk cache.
+(Until 2026-11-26 the table held egui textures for `chats::paint_avatar`.)
 
 ## The polaroid
 

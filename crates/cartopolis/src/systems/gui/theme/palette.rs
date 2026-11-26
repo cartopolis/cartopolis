@@ -324,51 +324,21 @@ pub(super) static DARK_PALETTE: Palette = DARK;
 pub(super) static LIGHT_PALETTE: Palette = LIGHT;
 pub(super) static LIGHT_ON: AtomicBool = AtomicBool::new(false);
 
-thread_local! {
-    /// Set while [`dark_here`] draws something that is dark in both themes.
-    static DARK_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// The palette in force. Read it where a colour is painted, never into a
 /// `const`, a `static` or a cached field: a copy taken before [`set_light`]
 /// keeps the other theme's colour.
 #[must_use]
 pub fn p() -> &'static Palette {
-    if LIGHT_ON.load(Ordering::Relaxed) && !DARK_HERE.with(std::cell::Cell::get) {
+    if LIGHT_ON.load(Ordering::Relaxed) {
         &LIGHT_PALETTE
     } else {
         &DARK_PALETTE
     }
 }
 
-/// Draw `add` in the dark palette whatever the theme: a screen that is dark in
-/// both, as a phone's call and camera screens are (a picture, or the dark
-/// stage a call shows before one arrives). [`p`] answers [`DARK`] on this
-/// thread until it returns; give each `Ui` drawn inside it
-/// [`use_dark_visuals`] too, since egui's own widgets read the style, not
-/// [`p`].
-pub fn dark_here<R>(add: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            DARK_HERE.with(|d| d.set(self.0));
-        }
-    }
-    let _restore = Restore(DARK_HERE.with(|d| d.replace(true)));
-    add()
-}
-
-/// Give `ui` (and what it lays out) the dark visuals, for a surface drawn in
-/// [`dark_here`]. Nothing to do while the theme is dark.
-pub fn use_dark_visuals(ui: &mut egui::Ui) {
-    if is_light() {
-        ui.style_mut().visuals = visuals_of(&DARK32);
-    }
-}
-
 /// Switch the chrome to the light theme or back. Only the palette: the egui
 /// style that holds its colours is re-applied by [`apply_visuals`], which
-/// `ui_theme::follow_the_light` calls when the answer changes.
+/// `egui_manager::follow_theme_visuals` calls when the answer changes.
 pub fn set_light(on: bool) {
     LIGHT_ON.store(on, Ordering::Relaxed);
 }

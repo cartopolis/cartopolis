@@ -39,13 +39,14 @@ capture, whose whole purpose is a picture nobody watched being taken.
 
 ## What is fixed, and what is not
 
-**Scripted captures are fixed.** `shot_harness::keep_egui_fresh` sets
-`force_next_write` every frame for the lifetime of a `ShotHarness`, so a shot run
-never takes the skip. It costs one tessellation per frame in a run that is
-already spending ~250 ms a frame on lavapipe. **Do not remove it** as a
-redundant-looking `force_next_write`: without it every `--shot`, every
-`cargo shots` README image and every `--expect` gate is a picture of an unknown
-earlier frame.
+**Scripted captures no longer meet it** (2026-11-26). `shot_harness::keep_egui_fresh`
+set `force_next_write` every frame for the lifetime of a `ShotHarness`, so a shot
+run never took the skip; it went when the last screen egui drew in a native
+capture moved to the component library. What egui still draws — the on-screen
+keyboard's egui half and the web build's cosmos sky — is in no native capture.
+**Put it back** (in `egui_manager`, gated on `shot_in_progress`) the day egui
+draws anything a `--shot` photographs again: without it that capture is a
+picture of an unknown earlier frame.
 
 **The live app still has the property**, and it is not obviously fixable for
 free. Anything read off the world and drawn into the overlay can freeze on a

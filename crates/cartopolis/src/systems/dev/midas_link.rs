@@ -39,7 +39,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::systems::high_precision::{HighPrecision, HighPrecisionLog, Recording};
-use crate::systems::theme;
 
 /// The hub this workspace runs, as a phone reaches it.
 pub const DEFAULT_HUB: &str = "midas.cartopolis.org";
@@ -223,8 +222,6 @@ impl Sense {
 pub struct Told {
     pub session: String,
     pub text: String,
-    /// When it was told, so the map repaints for a new one.
-    pub at: web_time::Instant,
     /// When it goes on its own; `None` keeps it until tapped or replaced.
     pub until: Option<web_time::Instant>,
 }
@@ -245,7 +242,6 @@ impl Told {
         Some(Self {
             session: call.session.clone(),
             text,
-            at: now,
             until,
         })
     }
@@ -281,11 +277,9 @@ pub struct MidasLink {
     /// What a session asked to tell the person (`tell`), shown beside the
     /// button until it is tapped away, replaced, or its time is up.
     pub told: Option<Told>,
-    /// The component library draws the button, the card and the bubble
-    /// (`lib_midas_link`): [`draw_link_button`] keeps deciding and draws
-    /// nothing.
-    pub lib: bool,
-    /// What the library draws, published each frame; `None` hides it all.
+    /// The button, the card and the bubble as the component library draws
+    /// them (`lib_midas_link`), published each frame by
+    /// [`drive_link_button`]; `None` hides it all.
     pub lib_view: Option<LinkView>,
     /// The library's taps, done next frame by [`MidasLink::apply`].
     pub lib_acts: Vec<LinkAct>,
@@ -294,7 +288,7 @@ pub struct MidasLink {
     jobs: Option<McpJobs>,
 }
 
-/// A tap on the Midas button, its card or the bubble, from either edition.
+/// A tap on the Midas button, its card or the bubble.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkAct {
     /// The button: opens the card, or closes it.
@@ -309,9 +303,9 @@ pub enum LinkAct {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct LinkView {
-    /// The button's right edge in from the window's, egui points.
+    /// The button's right edge in from the window's, ui points.
     pub right: f32,
-    /// Its top edge, egui points.
+    /// Its top edge, ui points.
     pub top: f32,
     /// A call just came in: the glow's strength, 1 fading to 0.
     pub glow: Option<f32>,
@@ -337,7 +331,7 @@ pub struct ToldView {
     pub text: String,
 }
 
-/// A tap in Developer tools ▸ Midas, from either edition, done by
+/// A tap in Developer tools ▸ Midas, done by
 /// [`MidasLink::apply_tab`]. The library's fields keep their own words, so
 /// the acts that use them carry them.
 #[derive(Clone, Debug, PartialEq)]
@@ -419,7 +413,6 @@ impl Default for MidasLink {
             push_shot: None,
             card_open: false,
             told: None,
-            lib: false,
             lib_view: None,
             lib_acts: Vec::new(),
             #[cfg(mcp)]
@@ -429,7 +422,7 @@ impl Default for MidasLink {
 }
 
 impl MidasLink {
-    /// A tap on the button, the card or the bubble: what both editions do.
+    /// A tap on the button, the card or the bubble.
     pub fn apply(&mut self, a: LinkAct) {
         match a {
             LinkAct::Toggle => self.card_open = !self.card_open,
@@ -438,7 +431,7 @@ impl MidasLink {
         }
     }
 
-    /// A tap in Developer tools ▸ Midas: what both editions' buttons do.
+    /// A tap in Developer tools ▸ Midas.
     /// `log` is what Precision log sends; `commands` takes a screenshot.
     pub fn apply_tab(&mut self, a: MidasAct, log: &HighPrecisionLog, commands: &mut Commands) {
         match a {
@@ -575,7 +568,6 @@ impl MidasLink {
         self.told = tell.then(|| Told {
             session: "s669".to_string(),
             text: "I am walking you to the Vismarkt. Tap the camera button when you are there, and I will take it from there.".to_string(),
-            at: web_time::Instant::now(),
             until: None,
         });
         self.config.on = true;
@@ -1420,138 +1412,30 @@ fn push(link: &mut MidasLink, text: &str, files: Vec<Value>) {
     link.pushed = link.pushed.wrapping_add(1);
 }
 
-/// Developer tools ▸ Midas, egui's edition. Its buttons do
-/// [`MidasLink::apply_tab`], as the library's do (`lib_dev_panel`).
-pub fn midas_tab(
-    ui: &mut egui::Ui,
-    link: &mut MidasLink,
-    log: &HighPrecisionLog,
-    commands: &mut Commands,
-) {
-    theme::section(ui, "Midas");
-    let message = link.shared().message.clone();
-    if !link.config.paired() {
-        theme::note(ui, PAIR_NOTE);
-        theme::note(ui, PAIR_HOW);
-        ui.horizontal(|ui| {
-            ui.label("hub");
-            ui.text_edit_singleline(&mut link.hub_draft);
-        });
-        ui.horizontal(|ui| {
-            ui.label("code");
-            ui.text_edit_singleline(&mut link.code_draft);
-        });
-        if theme::primary_button_sized(ui, "Pair", 140.0).clicked() {
-            let act = MidasAct::Pair {
-                hub: link.hub_draft.clone(),
-                code: link.code_draft.clone(),
-            };
-            link.apply_tab(act, log, commands);
-        }
-        if let Some(m) = message {
-            theme::note(ui, &m);
-        }
-        return;
-    }
-    let state = link.shared().state.clone();
-    ui.label(format!("{} · {}", link.config.name, link.config.hub));
-    let mut on = link.config.on;
-    theme::checkbox(ui, &mut on, "Link on");
-    if on != link.config.on {
-        link.apply_tab(MidasAct::LinkOn(on), log, commands);
-    }
-    theme::note(ui, if link.config.on { &state } else { OFF_NOTE });
-    if let Some((tool, session)) = link.recent_call(30.0) {
-        theme::note(ui, &format!("{session} asked for {tool}"));
-    }
-    ui.separator();
-    theme::section(ui, "Send to a session");
-    let sessions = link.shared().sessions.clone();
-    let chosen = link.config.send_to.clone();
-    let label = chosen.as_deref().map_or_else(
-        || "choose…".to_string(),
-        |id| {
-            sessions
-                .iter()
-                .find(|(s, _)| s == id)
-                .map_or_else(|| id.to_string(), |(s, t)| format!("{s} · {t}"))
-        },
-    );
-    let mut send_to = chosen.clone();
-    let mut refresh = false;
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("midas_send_to")
-            .selected_text(label)
-            .width(200.0)
-            .show_ui(ui, |ui| {
-                for (id, title) in &sessions {
-                    ui.selectable_value(&mut send_to, Some(id.clone()), format!("{id} · {title}"));
-                }
-            });
-        refresh = ui.button("Refresh").clicked();
-    });
-    if send_to != chosen {
-        link.apply_tab(MidasAct::SendTo(send_to), log, commands);
-    }
-    if refresh {
-        link.apply_tab(MidasAct::Refresh, log, commands);
-    }
-    ui.add(
-        egui::TextEdit::multiline(&mut link.text_draft)
-            .hint_text(WORDS_HINT)
-            .desired_rows(2),
-    );
-    let mut act = None;
-    ui.horizontal_wrapped(|ui| {
-        let words = link.text_draft.clone();
-        if ui.button("Precision log").clicked() {
-            act = Some(MidasAct::SendLog(words.clone()));
-        }
-        if ui.button("Screenshot").clicked() {
-            act = Some(MidasAct::SendShot(words.clone()));
-        }
-        if ui.button("Words only").clicked() {
-            act = Some(MidasAct::SendWords(words));
-        }
-    });
-    if let Some(a) = act {
-        link.apply_tab(a, log, commands);
-    }
-    if let Some(m) = message {
-        theme::note(ui, &m);
-    }
-    crate::systems::release_approval::key_section(ui);
-    ui.separator();
-    if ui.button("Unpair").clicked() {
-        link.apply_tab(MidasAct::Unpair, log, commands);
-    }
-}
-
 /// How long the button glows after a call comes in.
 const GLOW_S: f32 = 1.5;
-/// The card beside the button: fixed, because an anchored size-to-content
-/// `Area` grows a little every frame (`map-chrome.md`).
-const CARD_WIDTH: f32 = 230.0;
 
 /// The Midas disc in the top-right corner, there exactly while the link is up
 /// — not greyed when it is down, gone — because a session can then drive this
 /// app as its account: walk, talk, move the camera. A green dot says linked; a
 /// call coming in makes it glow rather than spell the call out, and a tap
-/// opens a card with which session asked for what, and as whom.
+/// opens a card with which session asked for what, and as whom. A session's
+/// `tell` shows in a bubble beside it.
 ///
 /// It replaced a text chip at the top centre and, on the phone, the editor's
 /// activity box (`mcp::overlay`), which between them covered the top of the
 /// map with a socket path and a tool name wrapped one syllable a line.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_link_button(
-    egui: crate::systems::egui_manager::EguiRef,
+///
+/// Decides all of it and publishes it in [`MidasLink::lib_view`] for
+/// `lib_midas_link`, and does that screen's taps.
+pub fn drive_link_button(
     mut link: ResMut<MidasLink>,
     identity: Option<Res<crate::resources::AuthIdentity>>,
     right_panel: Res<crate::resources::RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
-    mut seen: Local<(bool, Option<web_time::Instant>, Option<web_time::Instant>)>,
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
 ) {
-    // The library's taps of last frame, done as egui's are.
+    // The library's taps of last frame.
     if !link.lib_acts.is_empty() {
         for a in std::mem::take(&mut link.lib_acts) {
             link.apply(a);
@@ -1568,19 +1452,6 @@ pub fn draw_link_button(
     {
         link.told = None;
     }
-    // The link and the call change on the worker's thread, and a `tell` in
-    // `serve_calls`, which egui never hears of: without a repaint the button
-    // would appear, glow, or speak only at the next touch
-    // (`egui-quiet-frame-staleness.md`).
-    let now_seen = (
-        up,
-        last.as_ref().map(|(_, _, at)| *at),
-        link.told.as_ref().map(|t| t.at),
-    );
-    if *seen != now_seen {
-        *seen = now_seen;
-        egui.ctx().request_repaint();
-    }
     // Under an open panel, or in driver mode, whose trip strip has this corner.
     if !up || !right_panel.is(crate::resources::RightPanel::None) || driver.active {
         link.card_open = false;
@@ -1591,219 +1462,28 @@ pub fn draw_link_button(
     }
     let age = last.as_ref().map(|(_, _, at)| at.elapsed().as_secs_f32());
     let glow = age.filter(|a| *a < GLOW_S).map(|a| 1.0 - a / GLOW_S);
-    if glow.is_some() {
-        egui.animating();
-    }
-    let ctx = egui.ctx();
-    let size = theme::ROUND_BUTTON_SIZE;
-    let mut toggle = false;
     // A second column, left of the map's round buttons under the search bar
     // (`dock::right_column`): the top right corner is your face now.
     // On a phone on its side the column lies down as a row beside the bar,
     // and this takes the margin under the bar.
-    let view = egui.viewport_pts();
     let left_of_column =
-        crate::systems::dock::right_column(bevy::math::Vec2::new(view.x, view.y), false, false)
-            .beside();
-    if link.lib {
-        // The repaints egui's card and bubble ask for, so the library's
-        // "just now" ages and a timed bubble goes.
-        if link.card_open && age.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_secs(30));
-        }
-        if let Some(until) = link.told.as_ref().and_then(|t| t.until) {
-            ctx.request_repaint_after(until.saturating_duration_since(web_time::Instant::now()));
-        }
-        let who = identity.as_deref().and_then(|i| i.username.clone());
-        let view = LinkView {
-            right: left_of_column,
-            top: crate::systems::dock::reserved_top(),
-            glow,
-            card: link.card_open.then(|| LinkCardView {
-                call: card_call(last.as_ref(), age),
-                acts: card_acts(who),
-            }),
-            told: link.told.as_ref().map(|t| ToldView {
-                session: t.session.clone(),
-                text: t.text.clone(),
-            }),
-        };
-        if link.lib_view.as_ref() != Some(&view) {
-            link.lib_view = Some(view);
-        }
-        return;
-    }
-    egui::Area::new(egui::Id::new("midas_link_button"))
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-left_of_column, crate::systems::dock::reserved_top()),
-        )
-        .show(ctx, |ui| {
-            let (resp, face) = theme::map_disc(
-                ui,
-                size,
-                false,
-                theme::p32().accent_ring,
-                egui::Sense::click(),
-            );
-            let resp = theme::named(ui, resp, "Midas");
-            let p = ui.painter();
-            if let Some(g) = glow {
-                p.circle_stroke(
-                    face.center,
-                    face.radius + 2.0 + 6.0 * (1.0 - g),
-                    egui::Stroke::new(
-                        3.0 * g,
-                        egui::Color32::from(theme::midas_gold()).gamma_multiply(g),
-                    ),
-                );
-            }
-            theme::paint_midas_mark(p, face.center, face.radius);
-            let dot = face.center + egui::vec2(1.0, -1.0) * face.radius * 0.74;
-            p.circle_filled(dot, 5.0, theme::CALL_ACCEPT_GREEN);
-            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::p32().ink));
-            toggle = resp.on_hover_text("Midas").clicked();
-        });
-    // The card and the bubble share the place left of the button; with both
-    // up, the bubble stands under the card.
-    let beside = -(left_of_column + size + theme::OSD_GAP);
-    let top = crate::systems::dock::reserved_top();
-    let bubble_top = if link.card_open {
-        draw_link_card(
-            ctx,
-            &mut link,
-            identity.as_deref(),
-            last.as_ref(),
-            age,
-            beside,
-            top,
-            toggle,
-        ) + theme::OSD_GAP
-    } else {
-        if toggle {
-            link.apply(LinkAct::Toggle);
-        }
-        top
+        crate::systems::dock::right_column(metrics.viewport_pts(), false, false).beside();
+    let who = identity.as_deref().and_then(|i| i.username.clone());
+    let view = LinkView {
+        right: left_of_column,
+        top: crate::systems::dock::reserved_top(),
+        glow,
+        card: link.card_open.then(|| LinkCardView {
+            call: card_call(last.as_ref(), age),
+            acts: card_acts(who),
+        }),
+        told: link.told.as_ref().map(|t| ToldView {
+            session: t.session.clone(),
+            text: t.text.clone(),
+        }),
     };
-    draw_told(ctx, &mut link, beside, bubble_top, bubble_top == top, size);
-}
-
-/// The card a tap on the button opens: which session asked for what last,
-/// and as whom. Returns its bottom edge.
-#[allow(clippy::too_many_arguments)]
-fn draw_link_card(
-    ctx: &egui::Context,
-    link: &mut MidasLink,
-    identity: Option<&crate::resources::AuthIdentity>,
-    last: Option<&(String, String, web_time::Instant)>,
-    age: Option<f32>,
-    beside: f32,
-    top: f32,
-    toggle: bool,
-) -> f32 {
-    let who = identity.and_then(|i| i.username.clone());
-    let card = egui::Area::new(egui::Id::new("midas_link_card"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(beside, top))
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(CARD_WIDTH);
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(
-                    egui::RichText::new("Midas linked")
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p32().cream)
-                        .strong(),
-                );
-                ui.label(
-                    egui::RichText::new(card_call(last, age))
-                        .size(theme::SIZE_CHIP)
-                        .color(theme::midas_gold()),
-                );
-                ui.label(
-                    egui::RichText::new(card_acts(who))
-                        .size(theme::SIZE_TINY)
-                        .color(theme::p32().text_dim),
-                );
-            });
-        });
-    if age.is_some() {
-        // "just now" turns into minutes on its own.
-        ctx.request_repaint_after(std::time::Duration::from_secs(30));
-    }
-    // A second tap closes it, on the button or on the card.
-    let tap = card.response.interact(egui::Sense::click());
-    tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
-    if toggle || tap.clicked() {
-        link.apply(LinkAct::CloseCard);
-    }
-    card.response.rect.bottom()
-}
-
-/// What a session said with `tell`, in a bubble beside the button — with a
-/// tail pointing at it when nothing stands between — so the person can follow
-/// a session driving the phone without leaving the app for the Midas page. A
-/// tap takes it down.
-fn draw_told(
-    ctx: &egui::Context,
-    link: &mut MidasLink,
-    beside: f32,
-    top: f32,
-    by_the_button: bool,
-    button: f32,
-) {
-    let Some(told) = &link.told else {
-        return;
-    };
-    if let Some(until) = told.until {
-        ctx.request_repaint_after(until.saturating_duration_since(web_time::Instant::now()));
-    }
-    let bubble = egui::Area::new(egui::Id::new("midas_link_told"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(beside, top))
-        .show(ctx, |ui| {
-            theme::overlay_frame()
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from(theme::midas_gold()).gamma_multiply(0.6),
-                ))
-                .show(ui, |ui| {
-                    ui.set_width(CARD_WIDTH);
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.label(
-                        egui::RichText::new(&told.session)
-                            .size(theme::SIZE_CHIP)
-                            .color(theme::midas_gold())
-                            .strong(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&told.text)
-                                .size(theme::SIZE_BODY)
-                                .color(theme::p32().cream),
-                        )
-                        .wrap(),
-                    );
-                });
-        });
-    let rect = bubble.response.rect;
-    if by_the_button {
-        // Level with the disc's centre, across the gap to it.
-        let y = rect.top() + button / 2.0;
-        let tail = vec![
-            egui::pos2(rect.right() - 1.0, y - 7.0),
-            egui::pos2(rect.right() + theme::OSD_GAP - 1.0, y),
-            egui::pos2(rect.right() - 1.0, y + 7.0),
-        ];
-        ctx.layer_painter(bubble.response.layer_id)
-            .add(egui::Shape::convex_polygon(
-                tail,
-                theme::p32().overlay,
-                egui::Stroke::NONE,
-            ));
-    }
-    let tap = bubble.response.interact(egui::Sense::click());
-    tap.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss"));
-    if tap.clicked() {
-        link.apply(LinkAct::DismissTold);
+    if link.lib_view.as_ref() != Some(&view) {
+        link.lib_view = Some(view);
     }
 }
 

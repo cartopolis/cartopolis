@@ -187,7 +187,6 @@ pub mod scenario;
 pub mod script_editor;
 pub mod settings;
 pub mod splash;
-pub mod text_touch;
 pub mod theme;
 pub mod ui;
 pub mod ui_input;

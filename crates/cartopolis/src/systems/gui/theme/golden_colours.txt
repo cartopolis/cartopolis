@@ -123,7 +123,6 @@ super::LABEL_INK                 premul f6f3ecff  straight f6f3ecff
 super::CALL_END_RED              premul d64545ff  straight d64545ff
 super::CALL_ACCEPT_GREEN         premul 2ea05aff  straight 2ea05aff
 super::WORDMARK_TAIL_COLOR       premul fd6012ff  straight fd6012ff
-brand::MARK_CREAM                premul f2efeaff  straight f2efeaff
 brand::mark::PLATE               premul 25353fff  straight 25353fff
 brand::mark::STREET              premul 8c9295ff  straight 8c9295ff
 brand::mark::WATER               premul 626d72ff  straight 626d72ff

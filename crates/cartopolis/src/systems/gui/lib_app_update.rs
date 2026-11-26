@@ -1,20 +1,15 @@
-//! The app's own updates drawn by the component library (`lib_host`),
-//! beside egui's (`app_update::render_app_update`): the pill at the top
-//! when a newer build is downloaded, and the card over everything when the
-//! server refuses this build as too old.
+//! The app's own updates drawn by the component library (`lib_host`): the
+//! pill at the top when a newer build is downloaded, and the card over
+//! everything when the server refuses this build as too old.
 //!
-//! On with `CARTO_UI_LIB=app_update` (or `1`). egui's system steps aside
-//! (`AppUpdate::lib`) but keeps asking the updater and deciding what shows,
-//! published as `AppUpdate::lib_view` — the same `UpdateView` its own
-//! drawing reads. A tap here goes back in `AppUpdate::lib_action` and is
-//! done by `AppUpdate::act`, the code egui's buttons call.
+//! `app_update::drive_app_update` asks the updater and decides what shows,
+//! published as `AppUpdate::lib_view`. A tap here goes back in
+//! `AppUpdate::lib_action` and is done by `AppUpdate::act`.
 //!
 //! **Placement.** The pill is centred under the top chrome
-//! (`dock::reserved_top`), as egui's. The too-old card is a full-window
-//! veil that listens (so no tap reaches the map or a panel) with a column
-//! of at most [`CARD_WIDTH`] centred in it.
-//!
-//! **What differs from egui's.** Nothing but the look.
+//! (`dock::reserved_top`). The too-old card is a full-window veil that
+//! listens (so no tap reaches the map or a panel) with a column of at most
+//! [`CARD_WIDTH`] centred in it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,7 +47,7 @@ struct Placement {
 }
 
 impl Placement {
-    /// For a viewport `w` egui points wide; as DOM the page's px are
+    /// For a viewport `w` UI points wide; as DOM the page's px are
     /// `ui_scale` times larger (`lib_place_card::Placement`).
     fn of(w: f32, ui_scale: f32) -> Self {
         let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
@@ -108,13 +103,10 @@ pub fn drive_lib_app_update(
     if !lib.app_update {
         return;
     }
-    if !state.lib {
-        state.lib = true;
-    }
     let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The tap of the frame, for egui's system to do next frame.
+        // The tap of the frame, for `drive_app_update` to do next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<UpdateAction> = std::mem::take(&mut *live.acts.borrow_mut());
             if let Some(a) = acts.last() {

@@ -1,30 +1,24 @@
-//! Developer tools drawn by the component library (`lib_host`), beside
-//! egui's (`dev_panel::render_dev_panel`): the tab row, then Frame, View,
-//! Profiler, Switches, Precision or Midas — every readout, switch and button
-//! egui has, as a plain sheet of sections.
+//! Developer tools drawn by the component library (`lib_host`): the tab
+//! row, then Frame, View, Profiler, Switches, Precision or Midas — every
+//! readout, switch and button, as a plain sheet of sections.
 //!
-//! On with `CARTO_UI_LIB=dev_panel` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`DevTools::lib`) but still measures everything —
-//! the census on its throttle, the camera fix, the switches, the walk test —
-//! and publishes it in `DevTools::lib_view`. A tap here is a `DevAct`,
-//! handed back in `DevTools::lib_acts` and done by `dev_panel::apply`, the
-//! code egui's controls run.
+//! `dev_panel::drive_dev_panel` measures everything — the census on its
+//! throttle, the camera fix, the switches, the walk test — and publishes it
+//! in `DevTools::lib_view`. A tap here is a `DevAct`, handed back in
+//! `DevTools::lib_acts` and done by `dev_panel::apply`.
 //!
 //! **Midas** in the apps is `midas_link`'s: it publishes the tab as
 //! `MidasTabView` (in `DevBody::Midas`) and does its taps, `MidasAct` in
-//! `DevAct::Midas`, in `MidasLink::apply_tab`, the code egui's
-//! `midas_link::midas_tab` runs. The fields keep their own words and the
-//! acts carry them; the words field clears when a push goes
+//! `DevAct::Midas`, in `MidasLink::apply_tab`. The fields keep their own
+//! words and the acts carry them; the words field clears when a push goes
 //! (`MidasTabView::pushed`). Release key is `lib_release_approval::
 //! key_section_view`, which does its own taps. In the browser the tab is a
 //! line.
 //!
-//! **Placement.** Where egui's window opens: `DEV_PANEL_LEFT` + `OSD_GAP`
-//! in, `OSD_MARGIN` down, 300 wide. egui's window is draggable and
-//! remembered; this sheet is fixed. Where that spot does not fit (a phone,
-//! 275 pt), egui's window ran off the right edge; this one spans the width
-//! less its margins instead. Its height stops above the dock, and the
-//! body scrolls.
+//! **Placement.** `DEV_PANEL_LEFT` + `OSD_GAP` in, `OSD_MARGIN` down, 300
+//! wide, fixed. Where that spot does not fit (a phone, 275 pt), it spans
+//! the width less its margins instead. Its height stops above the dock,
+//! and the body scrolls.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -51,7 +45,7 @@ use crate::systems::{icons, theme};
 /// The sheet's name in the library's host.
 const KEY: &str = "dev_panel";
 
-/// The readout name column, px: egui's `stat`.
+/// The readout name column, px.
 const NAME_COLUMN: f32 = 88.0;
 
 /// Where the sheet stands, px in the library's root.
@@ -64,9 +58,9 @@ struct Placement {
 }
 
 impl Placement {
-    /// egui's opening spot, or the width less its margins where that spot
-    /// runs off the screen. `k` is the library's px per egui point.
-    fn of(viewport: egui::Vec2, k: f32) -> Self {
+    /// `DEV_PANEL_LEFT`, or the width less its margins where that spot
+    /// runs off the screen. `k` is the library's px per ui point.
+    fn of(viewport: bevy::math::Vec2, k: f32) -> Self {
         let mut left = DEV_PANEL_LEFT + theme::OSD_GAP;
         let mut width = DEV_PANEL_WIDTH;
         if left + width + theme::OSD_MARGIN > viewport.x {
@@ -106,6 +100,12 @@ struct Live {
     /// The tab alone, so a readout that moves does not rebuild the tab's
     /// layout (and the group field keeps its focus).
     tab: Signal<DevTab>,
+    /// The readout sections with their values blanked (`shape_of`): the
+    /// rows are rebuilt only when this moves, and a value that moves is
+    /// written into its text node in place. Frame and Profiler change every
+    /// half second, and a row rebuilt is not laid out in the frame it is
+    /// built — a capture in that frame showed the tab empty.
+    shape: Signal<Option<Vec<DevSection>>>,
     placement: Signal<Placement>,
     /// The shot preset's group field.
     group: Signal<String>,
@@ -191,6 +191,52 @@ fn log_of(v: &DevPanelView) -> Option<String> {
     }
 }
 
+/// The readout sections a view carries (Frame, Profiler, View).
+fn sections_of(v: &DevPanelView) -> Option<&Vec<DevSection>> {
+    match &v.body {
+        DevBody::Readouts(sections) | DevBody::View { sections, .. } => Some(sections),
+        _ => None,
+    }
+}
+
+/// The sections without their values: what decides which rows stand.
+fn shape_of(v: &DevPanelView) -> Option<Vec<DevSection>> {
+    sections_of(v).map(|sections| {
+        sections
+            .iter()
+            .map(|s| DevSection {
+                title: s.title,
+                rows: s
+                    .rows
+                    .iter()
+                    .map(|r| match r {
+                        DevRow::Stat { name, tone, .. } => DevRow::Stat {
+                            name: name.clone(),
+                            value: String::new(),
+                            tone: *tone,
+                        },
+                        DevRow::Mono(_, tone) => DevRow::Mono(String::new(), *tone),
+                        DevRow::Note(text) => DevRow::Note(text.clone()),
+                    })
+                    .collect(),
+            })
+            .collect()
+    })
+}
+
+/// The value of row `row` in section `section` of the view, or nothing
+/// while the view and the shape disagree (between two writes).
+fn value_at(v: &DevPanelView, section: usize, row: usize) -> String {
+    match sections_of(v)
+        .and_then(|s| s.get(section))
+        .and_then(|s| s.rows.get(row))
+    {
+        Some(DevRow::Stat { value, .. }) => value.clone(),
+        Some(DevRow::Mono(text, _)) => text.clone(),
+        _ => String::new(),
+    }
+}
+
 /// Mounts, bridges and unmounts the panel. `PostUpdate`, before `DriveUi`,
 /// as every library screen.
 pub fn drive_lib_dev_panel(
@@ -202,9 +248,6 @@ pub fn drive_lib_dev_panel(
     if !lib.dev_panel {
         return;
     }
-    if !tools.lib {
-        tools.lib = true;
-    }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
@@ -212,10 +255,10 @@ pub fn drive_lib_dev_panel(
         1.0
     };
     let viewport = metrics.viewport_pts();
-    let placement = Placement::of(egui::vec2(viewport.x, viewport.y), k);
+    let placement = Placement::of(viewport, k);
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, and the group as typed, for egui's system
+        // The taps of the frame, and the group as typed, for `drive_dev_panel`
         // to do next frame.
         if let Some(mounted) = m.as_mut() {
             let mut acts: Vec<DevAct> = std::mem::take(&mut *mounted.live.acts.borrow_mut());
@@ -251,6 +294,7 @@ pub fn drive_lib_dev_panel(
                     #[cfg(not(target_arch = "wasm32"))]
                     midas: MidasLive::of(&view),
                     tab: signal(view.tab),
+                    shape: signal(shape_of(&view)),
                     log: signal(log_of(&view)),
                     view: signal(view),
                     placement: signal(placement),
@@ -305,8 +349,14 @@ pub fn drive_lib_dev_panel(
                 if x.live.log.peek(|now| *now != log) {
                     x.live.log.set(log);
                 }
+                // The view before the shape: rows the shape rebuilds read
+                // their values from it as they are built.
+                let shape = shape_of(&view);
                 if x.live.view.peek(|now| *now != view) {
                     x.live.view.set(view);
+                }
+                if x.live.shape.peek(|now| *now != shape) {
+                    x.live.shape.set(shape);
                 }
                 if x.live.placement.get_untracked() != placement {
                     x.live.placement.set(placement);
@@ -407,11 +457,12 @@ fn note(text: impl Into<String>) -> View {
     }
 }
 
-/// One readout row: the name in a fixed column, the value monospaced (egui's
-/// `stat`). A name led by two spaces is a sub-row, indented.
-fn row_view(r: &DevRow) -> View {
+/// One readout row: the name in a fixed column, the value monospaced.
+/// A name led by two spaces is a sub-row, indented. `r` is the row's shape
+/// (`shape_of`); `value` its text, which follows the view in place.
+fn row_view(r: &DevRow, value: View) -> View {
     match r {
-        DevRow::Stat { name, value, tone } => {
+        DevRow::Stat { name, tone, .. } => {
             let (indent, name) = match name.strip_prefix("  ") {
                 Some(rest) => (12.0, rest.to_string()),
                 None => (0.0, name.clone()),
@@ -426,7 +477,6 @@ fn row_view(r: &DevRow) -> View {
                 theme::SIZE_MONO,
                 tone_css(*tone)
             );
-            let value = value.clone();
             view! {
                 <div style="display: flex; align-items: baseline; gap: 8px; min-height: 20px">
                     <span style={name_style}>{name}</span>
@@ -434,25 +484,35 @@ fn row_view(r: &DevRow) -> View {
                 </div>
             }
         }
-        DevRow::Mono(text, tone) => {
+        DevRow::Mono(_, tone) => {
             let style = format!(
                 "font-family: var(--m-font-mono); font-size: {}px; color: {}",
                 theme::SIZE_TINY,
                 tone_css(*tone)
             );
-            let text = text.clone();
-            view! { <span style={style}>{text}</span> }
+            view! { <span style={style}>{value}</span> }
         }
         DevRow::Note(text) => note(text.clone()),
     }
 }
 
-/// Readout sections, each a library `Section` of rows.
-fn sections_view(sections: &[DevSection]) -> View {
-    let views: Vec<View> = sections
+/// Readout sections, each a library `Section` of rows: built from the shape
+/// (`Live::shape`), each value a text that follows `view` in place.
+fn sections_view(shape: &[DevSection], view: &Signal<DevPanelView>) -> View {
+    let views: Vec<View> = shape
         .iter()
-        .map(|s| {
-            let rows: Vec<View> = s.rows.iter().map(row_view).collect();
+        .enumerate()
+        .map(|(si, s)| {
+            let rows: Vec<View> = s
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(ri, r)| {
+                    let view = view.clone();
+                    let value = View::DynText(Rc::new(move || view.with(|v| value_at(v, si, ri))));
+                    row_view(r, value)
+                })
+                .collect();
             let title = s.title;
             view! {
                 <Section title={title}>
@@ -464,29 +524,28 @@ fn sections_view(sections: &[DevSection]) -> View {
     View::Fragment(views)
 }
 
-/// Frame and Profiler: readouts, following the view.
-fn readouts_tab(l: &Live) -> View {
+/// The readout rows, rebuilt when their shape moves and not when a value
+/// does.
+fn readout_rows(l: &Live) -> View {
+    let shape = l.shape.clone();
     let view = l.view.clone();
     (move || -> View {
-        match &view.get().body {
-            DevBody::Readouts(sections) => sections_view(sections),
-            _ => View::Empty,
-        }
+        shape.with(|s| match s {
+            Some(s) => sections_view(s, &view),
+            None => View::Empty,
+        })
     })
     .into_view()
 }
 
+/// Frame and Profiler: readouts, following the view.
+fn readouts_tab(l: &Live) -> View {
+    readout_rows(l)
+}
+
 /// View: the camera and the avatar, then the shot preset's group and Copy.
 fn view_tab(l: &Live) -> View {
-    let readouts = {
-        let view = l.view.clone();
-        move || -> View {
-            match &view.get().body {
-                DevBody::View { sections, .. } => sections_view(sections),
-                _ => View::Empty,
-            }
-        }
-    };
+    let readouts = readout_rows(l);
     let copy = {
         let l = l.clone();
         move || -> View {
@@ -729,7 +788,7 @@ fn midas_tap(l: &Live, make: impl Fn() -> MidasAct + 'static) -> Option<Handler>
 }
 
 /// Midas in the apps: pairing until paired, then the link, Send to a
-/// session, the release key and Unpair, as egui's `midas_link::midas_tab`.
+/// session, the release key and Unpair.
 #[cfg(not(target_arch = "wasm32"))]
 fn midas_tab(l: &Live) -> View {
     let l = l.clone();

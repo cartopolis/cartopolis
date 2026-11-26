@@ -448,7 +448,7 @@ about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
   next input, so egui's own hit test decides what it reaches and a covered
   control cannot be pressed. Typed text is never read.
 - **Since 2026-11-26 both read the component library's tree while it draws**
-  (`screen::serve_lib`, `mithril_bevy::access_tree` / `press`); egui's
+  (`screen::serve`, `mithril_bevy::access_tree` / `press`); egui's
   AccessKit path is only for `CARTO_UI_LIB=0`, and a screen egui still draws
   beside the library (`CARTO_UI_LIB=<list>`, the Midas dev tab) is not listed.
   Names follow the browser's order (`aria-label`, `aria-labelledby`, `<label

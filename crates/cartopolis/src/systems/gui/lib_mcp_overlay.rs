@@ -1,23 +1,21 @@
-//! The editor's log drawn by the component library (`lib_host`), beside
-//! egui's (`mcp::overlay::render_mcp_activity`): every MCP call this client
-//! serves, in a box in the top-right corner as it happens — the tool, what
-//! it was asked, what it answered.
+//! The editor's log drawn by the component library (`lib_host`): every MCP
+//! call this client serves, in a box in the top-right corner as it happens
+//! — the tool, what it was asked, what it answered.
 //!
-//! On with `CARTO_UI_LIB=mcp_activity` (or `1`). egui's system steps aside
-//! (`McpActivityLib::lib`) but still decides what shows — nothing under an
-//! open panel or in driver mode, a finished line for `LINGER_S`, under the
-//! Midas button while the link is up — and publishes it in
+//! `mcp::overlay::publish_mcp_activity` decides what shows — nothing under
+//! an open panel or in driver mode, a finished line for `LINGER_S`, under
+//! the Midas button while the link is up — and publishes it in
 //! `McpActivityLib::view`.
 //!
 //! A readout and nothing else: no buttons, and nothing in it listens, so a
-//! tap on it reaches the map (egui's `interactable(false)`).
+//! tap on it reaches the map.
 //!
-//! **Placement.** As egui's: `OSD_MARGIN` in from the right edge and down
-//! from the top (plus the Midas button and its gap while the link is up),
-//! its content `overlay::WIDTH` wide in egui's `overlay_frame`.
+//! **Placement.** `OSD_MARGIN` in from the right edge and down from the top
+//! (plus the Midas button and its gap while the link is up), its content
+//! `overlay::WIDTH` wide in an overlay frame.
 //!
-//! Desktop only, as egui's (`cfg(mcp)`, and not registered on Android):
-//! one px per egui point.
+//! Desktop only (`cfg(mcp)`, and not registered on Android): one px per ui
+//! point.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,7 +33,7 @@ use crate::systems::theme;
 /// The box's name in the library's host.
 const KEY: &str = "mcp_activity";
 
-/// egui's `overlay_frame` across: both paddings (14) and rims (1).
+/// The overlay frame across: both paddings (14) and rims (1).
 const FRAME_X: f32 = 2.0 * 14.0 + 2.0;
 
 #[derive(Clone)]
@@ -52,13 +50,10 @@ thread_local! {
 pub fn drive_lib_mcp_activity(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    mut state: ResMut<McpActivityLib>,
+    state: Res<McpActivityLib>,
 ) {
     if !lib.mcp_activity {
         return;
-    }
-    if !state.lib {
-        state.lib = true;
     }
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

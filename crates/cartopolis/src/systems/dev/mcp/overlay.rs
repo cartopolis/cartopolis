@@ -7,12 +7,11 @@
 //! here, in a box over the map, as it happens — the tool, what it was asked for,
 //! and what it answered.
 //!
-//! It is a readout and nothing else. No buttons, `interactable(false)`, and it
-//! stands down while a right-hand panel is open, which is the rule every other
-//! floating box here follows: egui paints `Area`s above panels even at
-//! `Order::Background`, so disappearing is the only way to be *behind* one.
+//! It is a readout and nothing else: no buttons, nothing in it listens, and
+//! it stands down while a right-hand panel is open, as every other floating
+//! box over the map does. [`publish_mcp_activity`] decides what shows and
+//! `lib_mcp_overlay` draws it.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use super::{McpBridge, Outcome};
@@ -27,16 +26,17 @@ const LINGER_S: f64 = 12.0;
 
 /// The box's width. Fixed, because its content is a log: lines arrive at
 /// unpredictable lengths and a box that resized around each one would twitch its
-/// way across the corner.
+/// way across the corner. Read by the library's log (`lib_mcp_overlay`), which
+/// is not built on Android.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub const WIDTH: f32 = 268.0;
 
 /// The editor's log as the component library draws it
-/// (`lib_mcp_overlay`): with `lib` on, [`render_mcp_activity`] keeps
-/// deciding what shows and publishes it in `view`, and draws nothing.
+/// (`lib_mcp_overlay`): [`publish_mcp_activity`] decides what shows and
+/// publishes it in `view`.
 #[derive(Resource, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct McpActivityLib {
-    pub lib: bool,
     /// What shows this frame; `None` hides the box.
     pub view: Option<ActivityView>,
 }
@@ -57,8 +57,9 @@ pub struct ActivityView {
     pub lines: Vec<(String, String, Outcome)>,
 }
 
-pub fn render_mcp_activity(
-    egui: EguiRef,
+/// Decide what the editor's box shows this frame and publish it for
+/// `lib_mcp_overlay`.
+pub fn publish_mcp_activity(
     bridge: Res<McpBridge>,
     right_panel: Res<crate::resources::RightPanel>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -66,10 +67,9 @@ pub fn render_mcp_activity(
     link: Option<Res<crate::systems::midas_link::MidasLink>>,
     mut lib: Option<ResMut<McpActivityLib>>,
 ) {
-    let lib_on = lib.as_ref().is_some_and(|l| l.lib);
     // Driver mode owns the screen, and the top-right corner is where its trip
-    // strip goes. There is no ambient "driver mode is on" that hides an `Area`,
-    // so anything new that draws over the map opts out by hand — see
+    // strip goes. There is no ambient "driver mode is on" that hides a box
+    // over the map, so anything new that draws there opts out by hand — see
     // `docs/notes/map-chrome.md`, which is a list of the things that did not.
     if !right_panel.is(crate::resources::RightPanel::None) || driver.active {
         publish(&mut lib, None);
@@ -85,106 +85,28 @@ pub fn render_mcp_activity(
         publish(&mut lib, None);
         return;
     }
-    // A capture in flight repaints for the whole of its settle, and egui would
-    // otherwise re-present the frame it tessellated when the first line landed —
-    // the spinner would be a still picture of a spinner.
-    if bridge.busy() {
-        egui.animating();
-    }
     // The Midas button holds the corner while the link is up; stand under it.
     let below = if link.is_some_and(|l| l.config.on && l.linked()) {
         theme::ROUND_BUTTON_SIZE + theme::OSD_GAP
     } else {
         0.0
     };
-    if lib_on {
-        // A finished line goes on its own after `LINGER_S`: wake for it.
-        if let Some(next) = live
+    let view = ActivityView {
+        below,
+        busy: bridge.busy(),
+        listen: bridge.listen.display().to_string(),
+        lines: live
             .iter()
-            .filter(|e| e.outcome != Outcome::Working)
-            .map(|e| e.at + LINGER_S - now)
-            .min_by(f64::total_cmp)
-        {
-            egui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f64(next.max(0.0)));
-        }
-        let view = ActivityView {
-            below,
-            busy: bridge.busy(),
-            listen: bridge.listen.display().to_string(),
-            lines: live
-                .iter()
-                .map(|e| (e.label.clone(), e.detail.clone(), e.outcome))
-                .collect(),
-        };
-        publish(&mut lib, Some(view));
-        return;
-    }
-
-    egui::Area::new(egui::Id::new("mcp_activity"))
-        // Top-right: the compass, the locate button and the layers disc hold the
-        // top-left column, the dock and the stick hold the bottom, and this is
-        // the corner nothing else draws in outside driver mode.
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN + below),
-        )
-        // A readout over the map must not sense the taps meant for the world.
-        .interactable(false)
-        .show(egui.ctx(), |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(WIDTH);
-                ui.horizontal(|ui| {
-                    if bridge.busy() {
-                        ui.add(
-                            egui::Spinner::new()
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().accent),
-                        );
-                    }
-                    ui.label(
-                        egui::RichText::new("Editor")
-                            .size(theme::SIZE_CHIP)
-                            .color(theme::p32().cream)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new(bridge.listen.display().to_string())
-                            .size(theme::SIZE_TINY)
-                            .color(theme::p32().text_dim),
-                    );
-                });
-                for entry in live {
-                    let colour = match entry.outcome {
-                        Outcome::Working => theme::p32().accent,
-                        Outcome::Done => theme::p32().text_dim,
-                        Outcome::Failed => theme::p32().error,
-                    };
-                    ui.horizontal_top(|ui| {
-                        ui.label(
-                            egui::RichText::new(&entry.label)
-                                .size(theme::SIZE_TINY)
-                                .color(colour)
-                                .monospace(),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&entry.detail)
-                                    .size(theme::SIZE_TINY)
-                                    .color(theme::p32().text_dim),
-                            )
-                            .wrap(),
-                        );
-                    });
-                }
-            });
-        });
+            .map(|e| (e.label.clone(), e.detail.clone(), e.outcome))
+            .collect(),
+    };
+    publish(&mut lib, Some(view));
 }
 
 /// Hand the library what shows, writing the resource only when it moved.
 fn publish(lib: &mut Option<ResMut<McpActivityLib>>, view: Option<ActivityView>) {
     if let Some(l) = lib.as_mut() {
-        if l.lib && l.view != view {
+        if l.view != view {
             l.view = view;
         }
     }

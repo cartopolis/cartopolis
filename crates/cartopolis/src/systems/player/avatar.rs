@@ -2111,7 +2111,7 @@ pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     // The on-screen thumbstick — a finger's WASD. Written by
-    // `map_osd::render_map_osd`, which runs *after* this system (see its doc), so
+    // `map_osd::drive_map_osd`, which runs *after* this system (see its doc), so
     // this is last frame's push: a constant frame of latency on a held
     // translation control, not jitter.
     osd: Res<crate::systems::map_osd::OsdInput>,

@@ -146,7 +146,6 @@ fn table() -> String {
         super::CALL_END_RED,
         super::CALL_ACCEPT_GREEN,
         super::WORDMARK_TAIL_COLOR,
-        brand::MARK_CREAM,
         brand::mark::PLATE,
         brand::mark::STREET,
         brand::mark::WATER,

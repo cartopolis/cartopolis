@@ -20,9 +20,12 @@ the logic (each egui system publishes its screen's view and applies its
 taps), the cosmos' star fields, the Midas tab of Developer tools and the
 OSD's multi-touch.
 
-Two traps every port met: a library row rebuilt every frame is never laid out
-(the tree replaces it before layout sees it — publish ticking readouts at a
-few hertz, `dev_panel`'s `READOUT_PERIOD_S`); and the host's dark switch is one
+Two traps every port met: a node is not laid out in the frame that makes it,
+so content rebuilt while it ticks is blank on every frame it is rebuilt — a
+ticking value goes into a signal that rewrites its existing text, and only a
+change of the rows themselves rebuilds them (`lib_dev_panel`'s readouts,
+`lib_call`'s timer: a capture of either was blank or empty while they rebuilt
+whole, and a throttle like `READOUT_PERIOD_S` only made it rarer); and the host's dark switch is one
 for every screen, so a screen dark in both themes draws in `theme::DARK`'s
 colours rather than mounting dark (`lib_camera`).
 

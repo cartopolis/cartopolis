@@ -1,41 +1,38 @@
-//! The camera drawn by the component library (`lib_host`), beside egui's
-//! (`camera_screen::render_camera`): the viewfinder with the shutter, the
-//! modes, Photo | Video, the selfie flip and the upload; then the result
-//! with Post, Send, Save and Retake. Opened from the dock, a chat's + menu,
-//! the post composer or the polaroid.
+//! The camera drawn by the component library (`lib_host`): the viewfinder
+//! with the shutter, the modes, Photo | Video, the selfie flip and the
+//! upload; then the result with Post, Send, Save and Retake. Opened from the
+//! dock, a chat's + menu, the post composer or the polaroid.
 //!
-//! On with `CARTO_UI_LIB=camera` (or `1`). egui's system steps aside
-//! (`CameraScreen::lib`) but keeps every decision and the layout both
-//! editions share (`camera_screen::finder_layout`, `result_layout`), and
-//! publishes what shows in `CameraScreen::lib_view`. A tap here goes back in
-//! `CameraScreen::lib_acts` and is done by `Session::apply`, the code egui's
-//! buttons call. The app's only: the web build has no camera.
+//! `camera_screen::publish_camera` keeps every decision and the layout
+//! (`camera_screen::finder_layout`, `result_layout`), and publishes what
+//! shows in `CameraScreen::lib_view`. A tap here goes back in
+//! `CameraScreen::lib_acts` and is done by `Session::apply`. The app's only:
+//! the web build has no camera.
 //!
 //! **The pictures are live images.** The viewfinder is
 //! `<img src="bevy:camera_viewfinder">` and the result
 //! `<img src="bevy:camera_result">`: two Bevy images this system made and
 //! registered in `mithril_bevy::LiveImages` before the screen mounts, whose
-//! pixels it overwrites when egui's system hands new ones over
+//! pixels it overwrites when `publish_camera` hands new ones over
 //! (`CameraScreen::lib_pixels`) — the viewfinder's frame when one arrives,
 //! the result once, a clip's each time its player has a new picture. The
 //! handles stay, so nothing is copied into the view. There is no
 //! `object-fit`: the viewfinder fills its pane by a box larger than the pane
-//! (cover, as egui's `cover_uv`), clipped by the pane; the result is sized
-//! to fit its room in Rust.
+//! (cover), clipped by the pane; the result is sized to fit its room in
+//! Rust.
 //!
-//! **Dark in both themes**, as egui's (`theme::dark_here`): it is mounted
-//! dark and takes its colours from `theme::DARK`.
+//! **Dark in both themes**, as a phone's camera is: it is mounted dark and
+//! takes its colours from `theme::DARK`.
 //!
 //! **Out of the picture.** While the shutter's capture runs
-//! (`ScreenshotState::hide_ui`, which hides egui for that frame) the root
-//! is `display: none`: the library draws on a camera of its own over the
-//! window, and would otherwise be in the polaroid. A clip's frames are taken
-//! with the screen showing, as egui's are, which is why the recording screen
-//! shows only the shutter and the running time.
+//! (`ScreenshotState::hide_ui`) the root is `display: none`: the library
+//! draws on a camera of its own over the window, and would otherwise be in
+//! the polaroid. A clip's frames are taken with the screen showing, which is
+//! why the recording screen shows only the shutter and the running time.
 //!
-//! **Placement.** Every rect comes from egui's layout, in egui points from
-//! the window's top left — the library's px on the Bevy backend, the only
-//! one with a camera. In world only the controls' strip listens, so the map
+//! **Placement.** Every rect comes from `camera_screen`'s layout, in UI
+//! points from the window's top left — the library's px on the Bevy backend,
+//! the only one with a camera. In world only the controls' strip listens, so the map
 //! inside the frame is still the map, to be framed by dragging; in Mixed and
 //! Real, and on the result, the whole screen does.
 
@@ -43,6 +40,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy::ecs::system::NonSendMarker;
+use bevy::math::{Rect, Vec2};
 use bevy::prelude::{Res, ResMut};
 // The library's, not Bevy's: an explicit import outranks the glob.
 use mithril::prelude::*;
@@ -124,9 +122,6 @@ pub fn drive_lib_camera(
     if !lib.camera {
         return;
     }
-    if !screen.lib {
-        screen.lib = true;
-    }
     // The pictures first: an `<img>` reads its source when it is styled,
     // so both names are registered before the screen mounts.
     let pixels = std::mem::take(&mut screen.lib_pixels);
@@ -147,7 +142,7 @@ pub fn drive_lib_camera(
     let hidden = shot.hide_ui;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `publish_camera` to do next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<CameraAct> = std::mem::take(&mut *live.acts.borrow_mut());
             screen.lib_acts.extend(acts);
@@ -278,8 +273,19 @@ fn html(l: &Live) -> String {
 
 // ─── Pieces ──────────────────────────────────────────────────────────────────
 
+/// `min` to `max`, as given.
+fn span(min: Vec2, max: Vec2) -> Rect {
+    Rect { min, max }
+}
+
+/// `size` centred on `c`. Not `Rect::from_center_size`, which panics on a
+/// negative or NaN size.
+fn boxed(c: Vec2, size: Vec2) -> Rect {
+    span(c - size * 0.5, c + size * 0.5)
+}
+
 /// `r` as an absolutely placed box.
-fn at(r: egui::Rect) -> String {
+fn at(r: Rect) -> String {
     format!(
         "position: absolute; left: {:.1}px; top: {:.1}px; width: {:.1}px; height: {:.1}px",
         r.min.x,
@@ -291,14 +297,14 @@ fn at(r: egui::Rect) -> String {
 
 /// A box `w` × `h` centred on `c`, its content centred in it and
 /// listening nowhere: for a pill whose width is its words'.
-fn centred(c: egui::Pos2, w: f32, h: f32) -> String {
+fn centred(c: Vec2, w: f32, h: f32) -> String {
     format!(
         "{}; display: flex; align-items: center; justify-content: center; pointer-events: none",
-        at(egui::Rect::from_center_size(c, egui::vec2(w, h)))
+        at(boxed(c, Vec2::new(w, h)))
     )
 }
 
-/// Black at egui's `from_black_alpha(a)`.
+/// Black at `a` of 255.
 fn black(a: u8) -> String {
     alpha(theme::Rgba8::BLACK, f32::from(a) / 255.0 * 100.0)
 }
@@ -333,32 +339,32 @@ fn handler(acts: &Acts, a: CameraAct) -> Handler {
 }
 
 /// The four rectangles of `full` around `hole`.
-fn around(full: egui::Rect, hole: egui::Rect) -> [egui::Rect; 4] {
+fn around(full: Rect, hole: Rect) -> [Rect; 4] {
     [
-        egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, hole.min.y)),
-        egui::Rect::from_min_max(egui::pos2(full.min.x, hole.max.y), full.max),
-        egui::Rect::from_min_max(
-            egui::pos2(full.min.x, hole.min.y),
-            egui::pos2(hole.min.x, hole.max.y),
+        span(full.min, Vec2::new(full.max.x, hole.min.y)),
+        span(Vec2::new(full.min.x, hole.max.y), full.max),
+        span(
+            Vec2::new(full.min.x, hole.min.y),
+            Vec2::new(hole.min.x, hole.max.y),
         ),
-        egui::Rect::from_min_max(
-            egui::pos2(hole.max.x, hole.min.y),
-            egui::pos2(full.max.x, hole.max.y),
+        span(
+            Vec2::new(hole.max.x, hole.min.y),
+            Vec2::new(full.max.x, hole.max.y),
         ),
     ]
 }
 
 /// A filled box, listening nowhere.
-fn fill(r: egui::Rect, colour: &str) -> View {
+fn fill(r: Rect, colour: &str) -> View {
     el("div")
         .attr("style", format!("{}; background: {colour}", at(r)))
         .into_view()
 }
 
-/// The live image `name` filling `area` without stretching (egui's
-/// `cover_uv`): a box of the picture's shape covering the area, clipped by
-/// it. `size` is the picture's.
-fn cover(area: egui::Rect, name: &str, size: [u32; 2], listen: bool) -> View {
+/// The live image `name` filling `area` without stretching: a box of the
+/// picture's shape covering the area, clipped by it. `size` is the
+/// picture's.
+fn cover(area: Rect, name: &str, size: [u32; 2], listen: bool) -> View {
     let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
     let k = (area.width() / w).max(area.height() / h);
     let (iw, ih) = (w * k, h * k);
@@ -388,7 +394,7 @@ fn cover(area: egui::Rect, name: &str, size: [u32; 2], listen: bool) -> View {
 }
 
 /// The map's round button (`theme::round_button`), in the dark palette.
-fn plate(r: egui::Rect, icon: &'static str, hint: &str, act: CameraAct, acts: &Acts) -> View {
+fn plate(r: Rect, icon: &'static str, hint: &str, act: CameraAct, acts: &Acts) -> View {
     let d = theme::DARK;
     let style = format!(
         "{}; box-sizing: border-box; display: flex; align-items: center; justify-content: center; \
@@ -408,16 +414,9 @@ fn plate(r: egui::Rect, icon: &'static str, hint: &str, act: CameraAct, acts: &A
         .into_view()
 }
 
-/// The camera's own round button (`camera_screen::round`): a dark disc over
-/// the picture, the accent when on.
-fn round(
-    r: egui::Rect,
-    icon: &'static str,
-    on: bool,
-    hint: &str,
-    act: CameraAct,
-    acts: &Acts,
-) -> View {
+/// The camera's own round button: a dark disc over the picture, the accent
+/// when on.
+fn round(r: Rect, icon: &'static str, on: bool, hint: &str, act: CameraAct, acts: &Acts) -> View {
     let d = theme::DARK;
     let (bg, ink) = if on {
         (hex(d.accent), hex(d.ink))
@@ -440,7 +439,7 @@ fn round(
 }
 
 /// A word on a dark pill over the picture ("REAL", "CARTOPOLIS").
-fn tag(at_: egui::Pos2, text: &'static str) -> View {
+fn tag(at_: Vec2, text: &'static str) -> View {
     let style = format!(
         "position: absolute; left: {:.1}px; top: {:.1}px; padding: 3px 7px; border-radius: 7px; \
          background: {}; color: {}; font-size: {}px; line-height: 1.2; white-space: nowrap; \
@@ -530,9 +529,9 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
             }
             let rim = format!(
                 "{}; box-sizing: border-box; border: {:.0}px solid {}; pointer-events: none",
-                at(f.frame.expand(POLAROID_RIM_W)),
+                at(f.frame.inflate(POLAROID_RIM_W)),
                 POLAROID_RIM_W,
-                hex(POLAROID_RIM.into())
+                hex(POLAROID_RIM)
             );
             parts.push(el("div").attr("style", rim).into_view());
             // Only the controls' strip takes touches: the map inside the
@@ -580,10 +579,10 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
             if let Some(size) = f.photo {
                 parts.push(cover(f.pane, VIEWFINDER, size, false));
             }
-            parts.push(tag(f.pane.min + egui::vec2(10.0, 10.0), "REAL"));
+            parts.push(tag(f.pane.min + Vec2::new(10.0, 10.0), "REAL"));
             // Inside the hole only when nothing is recording it.
             if !f.recording {
-                parts.push(tag(f.hole.min + egui::vec2(10.0, 10.0), "CARTOPOLIS"));
+                parts.push(tag(f.hole.min + Vec2::new(10.0, 10.0), "CARTOPOLIS"));
             }
         }
     }
@@ -617,11 +616,11 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
     // The rest goes while a clip runs: its running time stands where the
     // upload is (`timer_view`).
     if !f.recording {
-        let disc = egui::Vec2::splat(DISC);
+        let disc = Vec2::splat(DISC);
         // Upload is a picture's: there is no clip to pick.
         if !f.video {
             parts.push(round(
-                egui::Rect::from_center_size(f.shutter_c - f.step, disc),
+                boxed(f.shutter_c - f.step, disc),
                 icons::UPLOAD,
                 false,
                 "Upload a picture from the phone",
@@ -630,7 +629,7 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
             ));
         }
         parts.push(round(
-            egui::Rect::from_center_size(f.shutter_c + f.step, disc),
+            boxed(f.shutter_c + f.step, disc),
             icons::FLIP_CAMERA,
             f.front,
             "Selfie",
@@ -647,7 +646,7 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
 /// Photo | Video, top right: a pill, the chosen side a cream plate.
 fn photo_video(f: &FinderView, acts: &Acts) -> View {
     let d = theme::DARK;
-    let r = egui::Rect::from_min_size(f.switch_at.min, SWITCH_SIZE);
+    let r = span(f.switch_at.min, f.switch_at.min + SWITCH_SIZE);
     let frame = format!(
         "{}; box-sizing: border-box; padding: 3px; display: flex; \
          border-radius: {:.0}px; background: {}; pointer-events: auto",
@@ -705,10 +704,7 @@ fn shutter(f: &FinderView, acts: &Acts) -> View {
         "{}; box-sizing: border-box; display: flex; align-items: center; justify-content: center; \
          border: 4px solid {}; border-radius: var(--m-radius-full); cursor: pointer; \
          pointer-events: auto",
-        at(egui::Rect::from_center_size(
-            f.shutter_c,
-            egui::Vec2::splat(SHUTTER)
-        )),
+        at(boxed(f.shutter_c, Vec2::splat(SHUTTER))),
         white()
     );
     let disc = |paint: String| {
@@ -720,13 +716,13 @@ fn shutter(f: &FinderView, acts: &Acts) -> View {
     let inner = if f.stoppable {
         format!(
             "flex: none; width: 28px; height: 28px; border-radius: 6px; background: {}",
-            hex(RECORD_RED.into())
+            hex(RECORD_RED)
         )
     } else if f.video {
         disc(format!(
             "background: {}",
             if f.ready {
-                hex(RECORD_RED.into())
+                hex(RECORD_RED)
             } else {
                 hex(d.text_dim)
             }
@@ -772,21 +768,18 @@ fn mode_view(f: &FinderView, i: usize, m: Mode, acts: &Acts) -> View {
     } else {
         alpha(theme::Rgba8::WHITE, 40.0)
     };
-    // Sideways the words end at `p` (egui's RIGHT_CENTER); upright they are
-    // centred on it. Each box is the touch, as egui's text rect and 8 more.
+    // Sideways the words end at `p`; upright they are centred on it. Each
+    // box is the touch: the words and 8 more round them.
     let (r, justify) = if f.sideways {
         (
-            egui::Rect::from_min_max(
-                egui::pos2(p.x - 112.0, p.y - 15.0),
-                egui::pos2(p.x, p.y + 15.0),
+            span(
+                Vec2::new(p.x - 112.0, p.y - 15.0),
+                Vec2::new(p.x, p.y + 15.0),
             ),
             "flex-end",
         )
     } else {
-        (
-            egui::Rect::from_center_size(p, egui::vec2(88.0, 30.0)),
-            "center",
-        )
+        (boxed(p, Vec2::new(88.0, 30.0)), "center")
     };
     let style = format!(
         "{}; display: flex; align-items: center; justify-content: {justify}; color: {ink}; \
@@ -804,7 +797,7 @@ fn mode_view(f: &FinderView, i: usize, m: Mode, acts: &Acts) -> View {
 }
 
 /// The pose's quality, a row of chips from `at_`.
-fn chips_view(at_: egui::Pos2, chips: &[(String, ChipTone)]) -> View {
+fn chips_view(at_: Vec2, chips: &[(String, ChipTone)]) -> View {
     if chips.is_empty() {
         return View::Empty;
     }
@@ -817,8 +810,8 @@ fn chips_view(at_: egui::Pos2, chips: &[(String, ChipTone)]) -> View {
         .iter()
         .map(|(text, tone)| {
             let ink = match tone {
-                ChipTone::Good => hex(CHIP_GOOD.into()),
-                ChipTone::Warn => hex(CHIP_WARN.into()),
+                ChipTone::Good => hex(CHIP_GOOD),
+                ChipTone::Warn => hex(CHIP_WARN),
                 ChipTone::Plain => hex(theme::DARK.cream),
             };
             let style = format!(
@@ -841,7 +834,7 @@ fn timer_view(f: &FinderView, text: String) -> View {
     let pill = format!(
         "padding: 5px 8px; border-radius: 10px; background: {}; color: {}; font-size: {}px; \
          line-height: 1.2; white-space: nowrap",
-        hex(RECORD_RED.into()),
+        hex(RECORD_RED),
         white(),
         theme::SIZE_BODY
     );
@@ -894,7 +887,7 @@ fn result_view(r: &ResultView, acts: &Acts) -> View {
         CameraAct::Close,
         acts,
     );
-    // Held sideways the column has room to spare: centred, as egui's.
+    // Held sideways the column has room to spare: centred.
     let top = if r.sideways {
         ((r.side.height() - 200.0).max(0.0) / 2.0).round()
     } else {
@@ -1025,7 +1018,7 @@ fn chat_list(r: &ResultView, acts: &Acts) -> View {
 }
 
 /// One of the result's actions: a disc with its label under it, the whole
-/// column taking the touch (`camera_screen::action`).
+/// column taking the touch.
 fn action(
     icon: &'static str,
     label: &'static str,

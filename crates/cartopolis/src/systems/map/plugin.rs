@@ -562,10 +562,10 @@ impl Plugin for MapPlugin {
                         .after(systems::transit_live::update_world_clock),
                     sky::advance_day_cycle.before(sky::apply_day_night_cycle),
                 ),
-                sky::apply_day_night_cycle.after(systems::dev_panel::render_dev_panel),
-                sky::dim_sky_reflections_under_cloud.after(systems::dev_panel::render_dev_panel),
-                sky::manage_lights.after(systems::dev_panel::render_dev_panel),
-                sky::apply_distance_fog.after(systems::dev_panel::render_dev_panel),
+                sky::apply_day_night_cycle.after(systems::dev_panel::drive_dev_panel),
+                sky::dim_sky_reflections_under_cloud.after(systems::dev_panel::drive_dev_panel),
+                sky::manage_lights.after(systems::dev_panel::drive_dev_panel),
+                sky::apply_distance_fog.after(systems::dev_panel::drive_dev_panel),
                 (
                     sky::update_window_glow,
                     // The sun the painted far tiles cast their shadows from.

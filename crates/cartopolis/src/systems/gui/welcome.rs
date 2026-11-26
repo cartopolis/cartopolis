@@ -8,27 +8,18 @@
 //! [`AppPrefs::welcome_seen`] is set by any of its three buttons, and by
 //! signing in at all.
 //!
-//! A floating `Area` above the dock, on the place card's terms and outside the
-//! panel chain for the same reason (`map-chrome.md`), and suppressed by
-//! everything that owns the bottom of the screen.
+//! The component library draws it (`systems::lib_welcome`) above the dock;
+//! [`drive_welcome`] decides whether it shows, suppressed by everything that
+//! owns the bottom of the screen, and gives its answers.
 
 use bevy::prelude::*;
 
 #[cfg(feature = "comms")]
 use crate::resources::{AppPrefs, RightPanel};
 #[cfg(feature = "comms")]
-use crate::systems::egui_manager::EguiRef;
-#[cfg(feature = "comms")]
 use crate::systems::login_screen::LoginScreen;
 #[cfg(feature = "comms")]
 use crate::systems::session::SessionState;
-#[cfg(feature = "comms")]
-use crate::systems::theme;
-
-#[cfg(feature = "comms")]
-/// Width of the card, fixed for the reason [`crate::systems::place_card`]'s is:
-/// an anchored, size-to-content `Area` grows a little every frame otherwise.
-const CARD_WIDTH: f32 = 300.0;
 
 /// What overrides the saved answer, for a scripted capture: `Some(true)` shows
 /// the card (`--ui welcome`), `Some(false)` keeps it off every other shot,
@@ -41,11 +32,9 @@ pub struct Welcome {
     /// v2-account, A1), whether or not it has been answered before. Signing
     /// in opens the Community page; "Not now" and World go back to the map.
     pub community: bool,
-    /// The component library draws the card (`systems::lib_welcome`): egui's
-    /// system then draws nothing, but still decides whether it shows
-    /// ([`Self::lib_view`]) and answers what it hands back
-    /// ([`Self::lib_action`]).
-    pub lib: bool,
+    /// Whether the card shows, for the library's edition
+    /// (`systems::lib_welcome`), which hands its answer back in
+    /// [`Self::lib_action`].
     pub lib_view: WelcomeView,
     pub lib_action: Option<WelcomeAction>,
 }
@@ -66,7 +55,7 @@ pub enum WelcomeAction {
     NotNow,
 }
 
-/// An answer, in either edition: sign in, sign up through the browser (and
+/// An answer: sign in, sign up through the browser (and
 /// come back to the card that takes the account), or just the map.
 #[cfg(feature = "comms")]
 fn answer(
@@ -92,12 +81,12 @@ fn answer(
     }
 }
 
-/// The card, while it has not been answered. The app's only (`comms`): in
-/// the web build signing in is the page's around the World tab.
+/// Whether the card shows, published for the library, and the answer it
+/// handed back. The app's only (`comms`): in the web build signing in is the
+/// page's around the World tab.
 #[cfg(feature = "comms")]
 #[allow(clippy::too_many_arguments)]
-pub fn render_welcome(
-    egui: EguiRef,
+pub fn drive_welcome(
     mut welcome: ResMut<Welcome>,
     mut prefs: ResMut<AppPrefs>,
     mut login: ResMut<LoginScreen>,
@@ -132,69 +121,11 @@ pub fn render_welcome(
         && !(driver.active || keyboard.is_open() || menu.open || !right_panel.is(RightPanel::None))
         // A card the person opened is what they are looking at.
         && !(place.place.is_some() || building.selected.is_some());
-    if welcome.lib {
-        let view = WelcomeView {
-            shown: visible,
-            register: visible && login.register_url().is_some(),
-        };
-        if welcome.lib_view != view {
-            welcome.lib_view = view;
-        }
-        return;
-    }
-    if !visible {
-        return;
-    }
-
-    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let ctx = egui.ctx();
-    let mut answer_with = None;
-    egui::Area::new(egui::Id::new("welcome_card"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-                ui.set_width(width);
-                ui.label(
-                    egui::RichText::new("Cartopolis is better with people")
-                        .size(theme::SIZE_TITLE)
-                        .color(theme::p().cream),
-                );
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Sign in to see who is around, chat, and join the communities \
-                         near you.",
-                    )
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-                );
-                ui.add_space(10.0);
-                let register = login.register_url();
-                ui.horizontal(|ui| {
-                    let half = if register.is_some() {
-                        (width - ui.spacing().item_spacing.x) / 2.0
-                    } else {
-                        width
-                    };
-                    if theme::primary_button_sized(ui, "Sign in", half).clicked() {
-                        answer_with = Some(WelcomeAction::SignIn);
-                    }
-                    if register.is_some()
-                        && theme::secondary_button(ui, "", "Create account", half).clicked()
-                    {
-                        answer_with = Some(WelcomeAction::CreateAccount);
-                    }
-                });
-                ui.add_space(6.0);
-                ui.vertical_centered(|ui| {
-                    if theme::ghost_button(ui, "", "Not now, just the map").clicked() {
-                        answer_with = Some(WelcomeAction::NotNow);
-                    }
-                });
-            });
-        });
-    if let Some(action) = answer_with {
-        answer(action, &mut welcome, &mut prefs, &mut login);
+    let view = WelcomeView {
+        shown: visible,
+        register: visible && login.register_url().is_some(),
+    };
+    if welcome.lib_view != view {
+        welcome.lib_view = view;
     }
 }

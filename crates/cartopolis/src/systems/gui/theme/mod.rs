@@ -98,14 +98,11 @@ use crate::systems::icons;
 
 mod brand;
 mod color;
-mod controls;
 mod frames;
-mod header;
 mod map_controls;
 mod metrics;
 mod palette;
 mod palette32;
-mod states;
 mod style;
 // Read by the web theme's test and by the library's backends (`ui-lib`);
 // in a lane with neither it is the table nothing reads yet.
@@ -114,14 +111,11 @@ pub mod tokens;
 
 pub use brand::*;
 pub use color::Rgba8;
-pub use controls::*;
 pub use frames::*;
-pub use header::*;
 pub use map_controls::*;
 pub use metrics::*;
 pub use palette::*;
 pub use palette32::*;
-pub use states::*;
 pub use style::*;
 // The site's tokens (`theme.css`, written by the web theme test) and the
 // app's, for the library's screens.
@@ -134,130 +128,3 @@ pub use tokens::{app_tokens, map_vars};
 mod golden;
 #[cfg(test)]
 mod tests;
-
-/// Looking at the mark, rather than reasoning about it.
-///
-/// `cargo test -p cartopolis write_mark_preview -- --ignored --nocapture` writes
-/// `/tmp/mark_<radius>.png` at the four sizes the mark is drawn at. It
-/// rasterises the **tessellated** output — the triangles egui would hand the
-/// GPU — so it shows the real thing including the minimum stroke widths and the
-/// detail cutoff, which is what a hand-written SVG of the same table would not.
-///
-/// It exists because the mark is a reduction of `assets/icon/cartopolis.svg`
-/// (see [`mark`]) and a reduction can only be judged beside its source. Ignored
-/// because it writes files and asserts nothing.
-#[cfg(test)]
-mod mark_preview {
-    use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
-
-    /// Sizes: the splash, a mid size, the sign-in card, and one below
-    /// [`mark::DETAIL_RADIUS`] to see what the cutoff leaves.
-    const PREVIEW_RADII: [f32; 4] = [84.0, 40.0, 22.0, 12.0];
-
-    #[test]
-    #[ignore = "eyeball hatch: it writes PNGs to look at, it asserts nothing"]
-    fn write_mark_preview() {
-        let ppp = 2.0_f32;
-        for radius in PREVIEW_RADII {
-            let pad = 8.0;
-            let side = radius * 2.0 + pad * 2.0;
-            let ctx = egui::Context::default();
-            install(&ctx);
-            ctx.set_pixels_per_point(ppp);
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(side, side));
-            let out = ctx.run_ui_unpainted(
-                egui::RawInput {
-                    screen_rect: Some(screen),
-                    ..Default::default()
-                },
-                |ui| {
-                    let p = ui.painter();
-                    p.rect_filled(screen, 0.0, DARK.surface);
-                    paint_mark(p, screen.center(), radius, 1.0);
-                },
-            );
-            let prims = ctx.tessellate(out.shapes, ppp);
-            let w = (side * ppp) as usize;
-            let mut buf = vec![[0.0_f32; 4]; w * w];
-            for prim in prims {
-                let egui::epaint::Primitive::Mesh(mesh) = prim.primitive else {
-                    continue;
-                };
-                for tri in mesh.indices.chunks(3) {
-                    let v: Vec<_> = tri.iter().map(|&i| mesh.vertices[i as usize]).collect();
-                    let (p0, p1, p2) = (v[0].pos * ppp, v[1].pos * ppp, v[2].pos * ppp);
-                    let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
-                    if area.abs() < 1e-6 {
-                        continue;
-                    }
-                    let minx = p0.x.min(p1.x).min(p2.x).floor().max(0.0) as usize;
-                    let maxx = (p0.x.max(p1.x).max(p2.x).ceil() as usize).min(w - 1);
-                    let miny = p0.y.min(p1.y).min(p2.y).floor().max(0.0) as usize;
-                    let maxy = (p0.y.max(p1.y).max(p2.y).ceil() as usize).min(w - 1);
-                    for y in miny..=maxy {
-                        for x in minx..=maxx {
-                            let px = egui::pos2(x as f32 + 0.5, y as f32 + 0.5);
-                            let w0 = ((p1.x - px.x) * (p2.y - px.y)
-                                - (p2.x - px.x) * (p1.y - px.y))
-                                / area;
-                            let w1 = ((p2.x - px.x) * (p0.y - px.y)
-                                - (p0.x - px.x) * (p2.y - px.y))
-                                / area;
-                            let w2 = 1.0 - w0 - w1;
-                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                                continue;
-                            }
-                            let mut src = [0.0_f32; 4];
-                            for (k, vert) in v.iter().enumerate() {
-                                let bw = [w0, w1, w2][k];
-                                let c = vert.color;
-                                // Vertex colours are premultiplied sRGB bytes.
-                                src[0] += c.r() as f32 * bw;
-                                src[1] += c.g() as f32 * bw;
-                                src[2] += c.b() as f32 * bw;
-                                src[3] += c.a() as f32 * bw;
-                            }
-                            let dst = &mut buf[y * w + x];
-                            let inv = 1.0 - src[3] / 255.0;
-                            for k in 0..4 {
-                                dst[k] = src[k] + dst[k] * inv;
-                            }
-                        }
-                    }
-                }
-            }
-            // Downsample by `ppp` so the file is the size the mark is drawn at.
-            let out_w = w / ppp as usize;
-            let mut img = image::RgbaImage::new(out_w as u32, out_w as u32);
-            let n = ppp as usize;
-            for y in 0..out_w {
-                for x in 0..out_w {
-                    let mut acc = [0.0_f32; 4];
-                    for dy in 0..n {
-                        for dx in 0..n {
-                            let s = buf[(y * n + dy) * w + x * n + dx];
-                            for k in 0..4 {
-                                acc[k] += s[k];
-                            }
-                        }
-                    }
-                    let d = (n * n) as f32;
-                    img.put_pixel(
-                        x as u32,
-                        y as u32,
-                        image::Rgba([
-                            (acc[0] / d) as u8,
-                            (acc[1] / d) as u8,
-                            (acc[2] / d) as u8,
-                            255,
-                        ]),
-                    );
-                }
-            }
-            let path = format!("/tmp/mark_{}.png", radius as i32);
-            img.save(&path).unwrap();
-            println!("wrote {path} ({out_w}px)");
-        }
-    }
-}

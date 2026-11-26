@@ -180,10 +180,6 @@ pub const RADIUS_SM: u8 = 4;
 /// ([`overlay_frame`]). A bigger surface needs a bigger radius to look equally
 /// rounded — the same value at two sizes does not.
 pub const RADIUS_LG: u8 = 14;
-/// A pill: fully rounded whatever the height. epaint clamps a corner radius to
-/// half the shortest side, so this is "as round as it can be" rather than a
-/// pixel count — which is what makes it safe on a box of any size.
-pub const RADIUS_PILL: u8 = u8::MAX;
 
 // ─── Touch targets ────────────────────────────────────────────────────────────
 

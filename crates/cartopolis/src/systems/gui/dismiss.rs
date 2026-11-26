@@ -1,24 +1,18 @@
 //! One Escape, one Back, one ladder.
 //!
 //! **Escape used to close almost nothing, and three of the four handlers written
-//! for it were unreachable code.** The cause is one line in `egui_manager`: the
-//! Bevy→egui key bridge forwards a key only while a text field has focus. That
-//! gate is right for *activation* keys — egui keeps focus on the last-clicked
-//! widget and Space activates it, so a game key as ordinary as Space was
-//! collapsing panels from across the map — and it was applied to every key
-//! rather than to those. So `ui.rs`'s "Escape closes the main menu" ran only
-//! when the menu contained a focused text field (it contains none), the sign-in
-//! card's Escape worked only in Remote mode with a field focused, and the route
-//! planner's "Escape disarms the map pick" was a comment describing a handler
-//! that was never written. Meanwhile Android's Back key *did* unwind panels
-//! (`lib.rs`), so the app's two dismissal gestures disagreed about what
+//! for it were unreachable code.** The UI toolkit's key bridge forwarded a key
+//! only while a text field had focus, so `ui.rs`'s "Escape closes the main menu"
+//! ran only when the menu contained a focused text field (it contains none), the
+//! sign-in card's Escape worked only in Remote mode with a field focused, and
+//! the route planner's "Escape disarms the map pick" was a comment describing a
+//! handler that was never written. Meanwhile Android's Back key *did* unwind
+//! panels (`lib.rs`), so the app's two dismissal gestures disagreed about what
 //! dismissing means.
 //!
-//! Escape and Tab are now forwarded to egui unconditionally (see
-//! `egui_manager::pointer_events`), which makes every one of those handlers live
-//! at once — and that is exactly why they cannot stay where they are. Four
-//! independent `key_pressed(Escape)` reads in four files, with no order between
-//! them and no way for one to stop another, would close two things per press.
+//! Four independent `key_pressed(Escape)` reads in four files, with no order
+//! between them and no way for one to stop another, would close two things per
+//! press — which is why there is one ladder, here.
 //!
 //! ## The rule
 //!
@@ -28,24 +22,24 @@
 //! difference is the only difference between the two gestures, which is why it
 //! is written down once here rather than inferred twice.
 //!
-//! ## Why a raw `ButtonInput` read and not `ctx.input`
+//! ## Why a raw `ButtonInput` read
 //!
 //! For the reason `driver.rs` already reads Escape that way: the raw reading
-//! does not depend on the forwarding gate this module exists to work around. It
-//! also runs after the whole panel chain, so every panel has already declared
-//! its state for the frame.
+//! does not depend on any toolkit's key forwarding. It also runs after the
+//! panels, so every panel has already declared its state for the frame.
 //!
-//! ## The one rung egui owns
+//! ## The one rung the text field owns
 //!
-//! `egui::Memory` consumes Escape internally to clear widget focus, and it does
-//! so whatever this system decides. So "a text field had focus when the frame
-//! began" is rung 2 *and this ladder must stop there* — otherwise a single
-//! Escape both blurs the search box and closes the panel behind it, which is
-//! two dismissals for one press and precisely the bug the single-rung rule
-//! exists to prevent.
+//! A focused text field consumes Escape itself to clear its focus, whatever
+//! this system decides. So "a text field had focus when the frame began"
+//! ([`UiInput`]'s answer) is rung 2 *and this ladder must stop there* —
+//! otherwise a single Escape both blurs the search box and closes the panel
+//! behind it, which is two dismissals for one press and precisely the bug the
+//! single-rung rule exists to prevent.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
+
+use crate::systems::ui_input::UiInput;
 
 use crate::resources::{ContextMenuState, EditDialogState, RightPanel};
 use crate::systems::driver::DriverState;
@@ -115,7 +109,7 @@ pub enum Rung {
     Keyboard,
     /// A focused text field and any dropdown hanging off it.
     ///
-    /// egui's own `Memory` consumes Escape to clear focus whatever this module
+    /// The field consumes Escape to clear its focus whatever this module
     /// decides, so this rung is not something the ladder *does* — it is the
     /// ladder declining to do anything else. Without it a single Escape would
     /// blur the search box and close the panel the box lives in.
@@ -272,9 +266,10 @@ impl OpenSurfaces {
 }
 
 impl Dismissable<'_> {
-    /// Read what is open. `text_focused` comes from the caller because egui has
-    /// already cleared the focus by the time this runs — the question is whether
-    /// a field held the keyboard when the frame *began*.
+    /// Read what is open. `text_focused` comes from the caller because the
+    /// field has already cleared its focus by the time this runs — the
+    /// question is whether a field held the keyboard when the frame *began*
+    /// ([`text_focused`]).
     #[must_use]
     pub fn surfaces(&self, text_focused: bool) -> OpenSurfaces {
         let world = OpenSurfaces {
@@ -321,7 +316,7 @@ impl Dismissable<'_> {
         let t = &mut self.spaces.talk;
         match rung {
             Rung::Keyboard => self.keyboard.dismiss(),
-            // egui already did it; claiming the press is the whole point.
+            // The field already did it; claiming the press is the whole point.
             Rung::TextFocus => {}
             #[cfg(feature = "comms")]
             Rung::CallScreen => t.calls.minimized = true,
@@ -378,12 +373,19 @@ impl Dismissable<'_> {
 /// Escape walks the ladder and stops. It never quits — that rung belongs to Back
 /// alone, and an Escape that could close the application from a bare map is a
 /// keystroke nobody wants to discover by accident.
-pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, egui: EguiRef, mut d: Dismissable) {
+pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, ui: Res<UiInput>, mut d: Dismissable) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    let text_focused = egui.ctx.text_edit_focused();
-    let _ = d.dismiss_innermost(text_focused);
+    let _ = d.dismiss_innermost(text_focused(&ui));
+}
+
+/// Did a text field that blurs itself on Escape hold the keyboard as the
+/// frame began? Only the old toolkit's fields do, as published in
+/// [`UiInput`]; a library field does not take Escape, so it is not this
+/// rung, and the press goes on to close what the field is in.
+fn text_focused(ui: &UiInput) -> bool {
+    ui.egui_verdict().text_focused
 }
 
 #[cfg(test)]
@@ -510,8 +512,8 @@ mod tests {
     }
 
     /// A field with the keyboard consumes the press and the panel behind it
-    /// stays open. This is the rung that exists *because* egui acts on Escape
-    /// whatever we decide: without it, one press would blur the search box and
+    /// stays open. This is the rung that exists *because* the field acts on
+    /// Escape whatever we decide: without it, one press would blur the search box and
     /// close the Search panel it lives in.
     #[test]
     fn a_focused_field_shields_the_panel_it_lives_in() {
@@ -592,7 +594,7 @@ mod tests {
 /// that quits on the first back press while a panel is open would be unusable.
 pub fn handle_back_gesture(
     keys: Res<ButtonInput<KeyCode>>,
-    egui: EguiRef,
+    ui: Res<UiInput>,
     mut dismissable: Dismissable,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -609,8 +611,7 @@ pub fn handle_back_gesture(
     // one ladder now (`systems::dismiss`), and the *only* difference between the
     // two gestures is this last rung, which is why it is the only thing written
     // here.
-    let text_focused = egui.ctx.text_edit_focused();
-    if dismissable.dismiss_innermost(text_focused).is_none() {
+    if dismissable.dismiss_innermost(text_focused(&ui)).is_none() {
         // On the phone the last rung is "to the background", not "quit": quitting
         // ends the process there, so coming back was a cold start that had
         // forgotten the tab, the open chat and any call (`move_task_to_back`).

@@ -1,44 +1,40 @@
-//! The launch splash drawn by the component library (`lib_host`), beside
-//! egui's (`splash::boot_splash`): Groningen's street plan on the page
-//! colour, the mark, the wordmark and motto, the progress track and the line
-//! under it, until the first tiles are up — then the whole layer fades off
-//! the world.
+//! The launch splash drawn by the component library (`lib_host`): Groningen's
+//! street plan on the page colour, the mark, the wordmark and motto, the
+//! progress track and the line under it, until the first tiles are up — then
+//! the whole layer fades off the world.
 //!
-//! On with `CARTO_UI_LIB=splash` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`BootSplash::lib`) but keeps the clock, the bar's
-//! latch, the caption and the dismissal, and publishes them in
-//! `BootSplash::lib_view`; this module only draws. Nothing on it is
-//! tapped, and it takes no input (egui's takes none either).
+//! `splash::drive_boot_splash` keeps the clock, the bar's latch, the caption
+//! and the dismissal, and publishes them in `BootSplash::lib_view`; this
+//! module only draws. Nothing on it is tapped, and it takes no input.
 //!
 //! **The street plan and the mark are pictures.** On the Bevy backend both
 //! are rasterised once, at the first frame that needs them, with
 //! `tiny-skia` into a Bevy `Image` at the window's physical pixels, and shown
 //! through `mithril_bevy::LiveImages` (`<img src="bevy:splash_streets">`):
-//! the streets as the same polylines egui strokes, at the same widths, in
-//! the same ink ([`splash::streets_ink`]); the mark from
-//! `assets/icon/cartopolis.svg`, the file egui's `theme::paint_mark` is a
-//! reduction of (the tile keeps its gradient here). On the web's DOM backend
-//! the same SVG texts go in as `data:image/svg+xml` sources. The Bevy
-//! backend does not fade an `<img>` with its box's `opacity`, so
-//! [`fade_lib_splash`] sets the two pictures' tint after the library has
-//! styled them; both are dropped when the splash goes.
+//! the streets as the plan's polylines at its widths, in one opaque ink
+//! ([`splash::streets_ink`]); the mark from `assets/icon/cartopolis.svg`
+//! (the tile keeps its gradient here). On the web's DOM backend the same SVG
+//! texts go in as `data:image/svg+xml` sources. The Bevy backend does not
+//! fade an `<img>` with its box's `opacity`, so [`fade_lib_splash`] sets the
+//! two pictures' tint after the library has styled them; both are dropped
+//! when the splash goes.
 //!
-//! **Placement.** As egui's: everything on the window's centre — the mark's
-//! middle 104 above it, the wordmark 24 below, the motto 66, the track 104
-//! and the caption 128 — and the plan covering the window
+//! **Placement.** Everything on the window's centre — the mark's middle 104
+//! above it, the wordmark 24 below, the motto 66, the track 104 and the
+//! caption 128 — and the plan covering the window
 //! ([`splash::streets_cover`]). Over every other library screen
-//! (`z-index`), as egui's is the top `Foreground` layer.
+//! (`z-index`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy::ecs::system::NonSendMarker;
-use bevy::prelude::{warn, Res, ResMut};
+use bevy::prelude::{warn, Res};
 #[cfg(all(
     feature = "ui-probe",
     not(all(feature = "ui-dom", target_arch = "wasm32"))
 ))]
-use bevy::prelude::{Assets, Color, Image, ImageNode, Query};
+use bevy::prelude::{Assets, Color, Image, ImageNode, Query, ResMut};
 use mithril::prelude::{el, signal, IntoView, Signal, View};
 
 use crate::systems::lib_settings::LibScreens;
@@ -62,7 +58,7 @@ const MARK: &str = "splash_mark";
 /// loader are made from (`tools/brand-mark.ts`).
 const ICON_SVG: &str = include_str!("../../../../../assets/icon/cartopolis.svg");
 
-/// Half the mark's square, egui's figure: 84 pt of radius.
+/// Half the mark's square: 84 pt of radius.
 const MARK_R: f32 = 84.0;
 
 /// Over every other library screen.
@@ -72,7 +68,7 @@ const Z: i32 = 1000;
 struct Live {
     view: Signal<SplashView>,
     label: Signal<String>,
-    /// The library's px per egui point: 1 on the Bevy backend, the UI scale
+    /// The library's px per UI point: 1 on the Bevy backend, the UI scale
     /// as DOM (`lib_place_card::Placement::over_the_dock` says why).
     k: f32,
 }
@@ -86,7 +82,7 @@ thread_local! {
 pub fn drive_lib_splash(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    mut splash: ResMut<BootSplash>,
+    splash: Res<BootSplash>,
     metrics: bevy::prelude::Res<UiMetrics>,
     #[cfg(all(
         feature = "ui-probe",
@@ -101,9 +97,6 @@ pub fn drive_lib_splash(
 ) {
     if !lib.splash {
         return;
-    }
-    if !splash.lib {
-        splash.lib = true;
     }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
@@ -542,9 +535,9 @@ mod raster {
     const MAX_SIDE: u32 = 4096;
 
     /// The street plan covering a `size`-point window drawn at `physical`
-    /// pixels: egui's polylines, widths and ink (`splash::paint_streets`),
-    /// with round ends and joins.
-    pub fn streets(size: egui::Vec2, physical: [u32; 2]) -> Option<Image> {
+    /// pixels: the plan's polylines, widths and ink, with round ends and
+    /// joins.
+    pub fn streets(size: bevy::math::Vec2, physical: [u32; 2]) -> Option<Image> {
         let (w, h) = (
             physical[0].clamp(1, MAX_SIDE),
             physical[1].clamp(1, MAX_SIDE),

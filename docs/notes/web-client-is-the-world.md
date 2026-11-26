@@ -39,7 +39,7 @@ frame, `lib/call.ts` on the page).
   the `panel-chain` markers, each run pinned `.after()`/`.before()` the two
   world neighbours it stood between. `every_root_ui_panel_is_in_the_chain`
   reads both. The same goes for every edge from a world system to a comms one:
-  it is written on the comms side (`render_login_screen.before(drive_session)`),
+  it is written on the comms side (`drive_login_screen.before(drive_session)`),
   so the world's registration names nothing that may not exist.
 
 ## The page signs the frame in

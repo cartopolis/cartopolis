@@ -58,7 +58,7 @@ use crate::systems::user_store::SavedScreen;
 use crate::systems::{icons, theme};
 // The discs and buttons the world draws too (`systems::discs`), named here as
 // they were before they moved out for the web build.
-pub(crate) use crate::systems::discs::{kind_of, paint_avatar, tone_for, ChatKind};
+pub(crate) use crate::systems::discs::{kind_of, tone_for, ChatKind};
 
 #[derive(Resource, Default)]
 pub struct ChatsView {

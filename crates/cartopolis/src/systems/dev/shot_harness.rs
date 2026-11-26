@@ -24,7 +24,7 @@
 //!     an offscreen image. Nothing appears on the desktop, no compositor can
 //!     occlude (and blacken) the captured frame, and the run needs no display
 //!     server. `resources::HeadlessSurface` stands in for the missing `Window`
-//!     wherever one is needed (egui layout, screen-space LOD).
+//!     wherever one is needed (UI layout, screen-space LOD).
 //!   * **Settle-on-idle.** Rather than a fixed sleep, each capture waits until
 //!     the tile streams go quiet ([`MapStream::streaming_busy`] /
 //!     [`GlobeState::streaming_busy`]) for `--settle` seconds, capped by
@@ -32,7 +32,7 @@
 //!   * **No user-store writes.** The interactive session's saved location is
 //!     neither restored nor overwritten by a scripted run.
 //!
-//! The egui overlay is part of the capture (it carries the HUD's altitude and
+//! The interface is part of the capture (it carries the HUD's altitude and
 //! coordinates, which is what makes a shot self-documenting); pass `--hide-ui`
 //! for chrome-free images. The toggle-able panels (dev lighting/weather, layers,
 //! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
@@ -289,7 +289,7 @@ pub struct ShotHarness {
     pub settle: f32,
     /// Hard cap on the wait per shot.
     pub wait: f32,
-    /// Leave the egui overlay out of the capture.
+    /// Leave the interface out of the capture.
     pub hide_ui: bool,
     /// UI panels to open for the capture (`dev`, `layers`, `bookmarks`,
     /// `avatar`, `stats`, or `all`) — see [`open_scripted_ui`]. Empty = just the
@@ -2052,7 +2052,7 @@ impl ShotHarness {
         })
     }
 
-    /// Whether shot `i` drops the egui overlay.
+    /// Whether shot `i` leaves the interface out.
     pub fn hide_ui_for(&self, i: usize) -> bool {
         self.shots
             .get(i)
@@ -2194,7 +2194,7 @@ impl ShotHarness {
 }
 
 /// Parse a `--size` string ("1280x720"). Also read in `main` to size the window
-/// to the offscreen target — egui scissors against the window, so the two must
+/// to the offscreen target — the UI scissors against the window, so the two must
 /// agree or wgpu validation kills the run (see the `shot_size` comment there).
 pub fn parse_size(size: &str) -> Option<UVec2> {
     let (w, h) = size.split_once(['x', 'X'])?;
@@ -2389,40 +2389,13 @@ pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
 /// True while the harness has a viewpoint to work on.
 ///
 /// The run condition for every system that *holds* something for the duration of
-/// a capture — the camera mode, the egui refresh, the panels a `--ui` list opens.
+/// a capture — the camera mode, the panels a `--ui` list opens.
 /// Under `--shot` it is true for the whole run, so nothing about a scripted
 /// capture changes. Under a live harness it is false between calls, which is what
 /// hands the client back to whoever is sitting in front of it: a camera mode held
 /// every frame by an idle camera operator is a camera the user cannot change.
 pub fn shot_in_progress(harness: Option<Res<ShotHarness>>, progress: Res<ShotProgress>) -> bool {
     harness.is_some_and(|h| progress.index < h.shots.len())
-}
-
-/// Keep egui's geometry in step with the world for the whole of a scripted run.
-///
-/// **A settled capture could otherwise show chrome from twenty seconds earlier.**
-/// `egui_manager::end_egui_frame` skips the tessellate → upload chain whenever
-/// egui reports `repaint_delay == Duration::MAX`, and redraws the last-written
-/// primitives instead — which is free and correct for the thing it was written
-/// for, a static menu bar under a mouse that has not moved. It is not correct
-/// for an overlay whose content comes from the **ECS**: egui's repaint signal
-/// answers "has anything I know about changed", and it knows nothing about the
-/// camera. So a run that flies somewhere and then goes quiet — which is exactly
-/// what `--settle` is — keeps painting the shapes from the last frame egui
-/// happened to consider interesting.
-///
-/// It was found the way these things are: a `--shot-mode earth` capture from
-/// 14,000 km carried a scale bar reading "200 m", the altitude the camera had on
-/// frame 2 of the run, while `drive_map_controls` had correctly drawn no bar at
-/// all for the twenty seconds since. Anything read off the world and drawn into
-/// the overlay could be that stale — the clock, the coordinates, the compass
-/// needle, an open panel's contents — and nothing about the image says so.
-///
-/// Forcing the write costs one tessellation per frame, in the one kind of run
-/// that is already spending 250 ms a frame on a software rasteriser and whose
-/// entire purpose is the picture at the end of it. The live app keeps the skip.
-pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::EguiRenderOutput>) {
-    render_output.force_next_write = true;
 }
 
 /// The two floating cards a `--ui` list can raise, plus the preferences a shot
@@ -2682,7 +2655,7 @@ const UI_ELEMENTS: &[&str] = &[
     "callfolded",
     // The Midas button as it stands while the device link is up, and its
     // card open, and a session's message beside it
-    // (`midas_link::draw_link_button`).
+    // (`midas_link::drive_link_button`).
     "midaslink",
     "midascard",
     "midastell",
@@ -2714,7 +2687,7 @@ pub fn open_scripted_ui(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut cards: ScriptedCards,
     mut store: ResMut<crate::systems::user_store::UserStore>,
-    egui: crate::systems::egui_manager::EguiRef,
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -2795,10 +2768,8 @@ pub fn open_scripted_ui(
         view_altitude_m: 9_000.0,
     });
     if want("ring") || want("placering") {
-        // The middle of the view. A headless run draws egui at scale 1, where
-        // window points and ui points are the same.
-        let size = egui.viewport_pts();
-        cards.context_menu.screen_pos = Vec2::new(size.x, size.y) / 2.0;
+        // The middle of the view, in ui points.
+        cards.context_menu.screen_pos = metrics.viewport_pts() / 2.0;
         cards.context_menu.hit_prim_id = None;
         cards.context_menu.lat_lng = harness.shots.get(progress.index).map(|s| (s.lat, s.lng));
     }
@@ -5796,8 +5767,9 @@ fn fire_capture(
     target: Option<&ShotTarget>,
     shot_state: &mut ScreenshotState,
 ) {
-    // `--hide-ui`: drop this frame's egui geometry (ui::suppress_egui_for_screenshot
-    // reads `hide_ui` in PostUpdate; ui::drive_screenshots clears it next frame).
+    // `--hide-ui`: leave the interface out of this frame (`lib_host::
+    // hide_for_snapshots` stands the library's camera down while `hide_ui` is
+    // set; ui::drive_screenshots clears it next frame).
     shot_state.hide_ui = harness.hide_ui_for(progress.index);
     progress.fired = true;
     progress.fired_at = progress.elapsed;

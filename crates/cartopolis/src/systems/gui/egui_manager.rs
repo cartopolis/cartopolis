@@ -77,12 +77,6 @@ pub struct EguiManager {
     /// fallback for a frame that has **no** surface at all — see
     /// [`begin_egui_frame`] — and a test app may run egui alone.
     metrics: UiMetrics,
-    /// A modal (currently only `systems::login_screen`) owns the screen this
-    /// frame. Pointer input takes care of itself — the modal's backdrop is a real
-    /// widget, so egui claims the pointer — but the keyboard does not: the gate
-    /// below only yields on *text* focus, which would leave WASD flying the avatar
-    /// behind a card that has the user's attention.
-    modal: bool,
     /// Events produced by something *inside* the Update schedule that wants to
     /// reach egui as if a device had produced them — currently only
     /// `systems::onscreen_keyboard`, which is a keyboard drawn in egui and
@@ -235,7 +229,6 @@ impl Default for EguiManager {
             // The primary window's default resolution in `main.rs`; only ever
             // used for the frames before the first `begin_egui_frame`.
             metrics: UiMetrics::default(),
-            modal: false,
             injected: Vec::new(),
             map_rect: None,
             ui_animating: false,
@@ -256,14 +249,6 @@ impl Default for EguiManager {
 fn geometry_still_current(repaint_delay: std::time::Duration, since_write: f32) -> bool {
     repaint_delay.as_secs_f32() > since_write
 }
-
-/// How soon [`EguiManager::animating`] asks for the next pass.
-///
-/// 250 ms because the fastest thing that animates on its own is a seconds clock
-/// and a speed readout, and a quarter of a second is quick enough that neither
-/// visibly lags while still being a fifteenth of a 60 Hz repaint. It is a *lower
-/// bound on staleness*, not a frame rate: any real input repaints immediately.
-const ANIMATING_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl EguiManager {
     /// Borrow the egui context mutably. Only valid between `begin_egui_frame`
@@ -291,28 +276,6 @@ impl EguiManager {
     /// exactly that pair of tokens.)
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
-    }
-
-    /// Declare that what was just drawn will change on its own, and ask egui for
-    /// another pass within [`ANIMATING_REDRAW`].
-    ///
-    /// **A widget whose content is a function of the clock must call this, or it
-    /// freezes.** [`end_egui_frame`] skips the whole tessellate → upload chain when
-    /// egui reports nothing to redraw, and egui decides that from *input*: events,
-    /// pointer movement, a wheel, an explicit `request_repaint`. A moving avatar, a
-    /// GPS fix and the passage of time are none of those. So on any frame nobody is
-    /// touching the screen the previously-tessellated geometry is simply
-    /// re-presented — correct for a static panel, and wrong for a clock, a speed, a
-    /// frame-rate readout or a countdown, which stop and stay stopped until
-    /// something is tapped. That is worst on the platform with no mouse to move and
-    /// on the screen whose entire job is a changing number.
-    ///
-    /// The skip is still worth having, which is why this is opt-in per site rather
-    /// than a blanket repaint: four passes a second where the UI genuinely animates
-    /// is a fifteenth of the sixty it would otherwise cost, and nothing at all where
-    /// it does not.
-    pub fn animating(&self) {
-        self.ctx.request_repaint_after(ANIMATING_REDRAW);
     }
 
     /// Whether the UI moved on its own last pass (a `motion` in progress), as
@@ -442,13 +405,6 @@ impl EguiManager {
         self.overlay_owns_keyboard
     }
 
-    /// Declare (each frame) whether a modal owns the screen — see the `modal`
-    /// field. Written by `login_screen::render_login_screen`, read through
-    /// [`Self::verdict`] by `UiInput::ui_owns_keyboard`.
-    pub fn set_modal(&mut self, modal: bool) {
-        self.modal = modal;
-    }
-
     /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
     /// systems branch on this for a responsive layout.
     pub fn compact(&self) -> bool {
@@ -471,7 +427,7 @@ impl EguiManager {
     /// egui's answers to `UiInput`'s questions this frame, for a press at the
     /// window `cursor` — see [`publish_ui_input`].
     pub fn verdict(&self, cursor: Option<Vec2>) -> EguiVerdict {
-        verdict_of(&self.ctx, self.map_rect, self.modal, &self.metrics, cursor)
+        verdict_of(&self.ctx, self.map_rect, &self.metrics, cursor)
     }
 }
 
@@ -482,7 +438,6 @@ impl EguiManager {
 pub(crate) fn verdict_of(
     ctx: &egui::Context,
     map_rect: Option<egui::Rect>,
-    modal: bool,
     metrics: &UiMetrics,
     cursor: Option<Vec2>,
 ) -> EguiVerdict {
@@ -504,7 +459,6 @@ pub(crate) fn verdict_of(
     EguiVerdict {
         wants_pointer: ctx.egui_wants_pointer_input(),
         text_focused: ctx.text_edit_focused(),
-        modal,
         map_dragged,
         cursor,
         press_over_ui,
@@ -538,6 +492,18 @@ pub fn publish_ui_animating(egui: EguiRef, mut input: ResMut<UiInput>) {
     if input.ui_animating() != egui.ui_animating() {
         input.set_ui_animating(egui.ui_animating());
     }
+}
+
+/// Re-apply the palette in force to egui's style when the theme flips
+/// (`ui_theme::follow_the_light` sets it, `theme::set_light`), and on the
+/// first frame. Only what egui still draws needs it; it goes with egui.
+pub fn follow_theme_visuals(egui: EguiRef, mut was: Local<Option<bool>>) {
+    let light = crate::systems::theme::is_light();
+    if *was == Some(light) {
+        return;
+    }
+    *was = Some(light);
+    crate::systems::theme::apply_visuals(egui.ctx());
 }
 
 // ─── Extracted render data ────────────────────────────────────────────────────

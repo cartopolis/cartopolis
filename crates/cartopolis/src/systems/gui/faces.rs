@@ -1,14 +1,12 @@
 //! People's pictures: the face a person's disc shows instead of their initial,
 //! in every list, call and map marker (`docs/notes/profile-pictures.md`).
 //!
-//! **Every disc already goes through one function**, `discs::paint_avatar`, and
-//! it takes a painter and a name — no `World`, no resource. So the pictures
-//! reach it through [`texture_for`], a small shared table this module rewrites
-//! every frame, and a disc asking for a name it has no picture for is how this
-//! module learns whom to look up. Twenty call sites draw pictures with no edit,
-//! and a new one will too. The component library's discs (`lib_chats::disc`)
-//! ask the same table by name through [`face_url`], which answers a `data:`
-//! thumbnail scaled on a worker to the disc's size.
+//! **Every disc asks one function by name**, [`face_url`] — no `World`, no
+//! resource: the component library's discs (`lib_chats::disc`) reach the
+//! pictures through a small shared table this module rewrites every frame,
+//! and a disc asking for a name it has no picture for is how this module
+//! learns whom to look up. The answer is a `data:` thumbnail scaled on a
+//! worker to the disc's size.
 //!
 //! **A picture is a hash, looked up by name.** The account names one
 //! (`PUT /api/pictures/mine`) out of the picture store everything else uses, so
@@ -33,8 +31,7 @@ use crate::components::{Avatar, FreeCamera};
 use crate::platform::photo::{Capture, Outcome, Source};
 use crate::platform::sync::Mutex;
 use crate::resources::{CameraMode, CameraState, OnlineSession, RightPanel};
-use crate::systems::egui_manager::{EguiMut, EguiRef};
-use crate::systems::{icons, theme};
+use crate::systems::icons;
 
 /// How long a name's answer is believed before it is asked again.
 const REFRESH_S: f64 = 300.0;
@@ -42,27 +39,26 @@ const REFRESH_S: f64 = 300.0;
 const RETRY_S: f64 = 30.0;
 /// At most one lookup this often, whatever is waiting.
 const LOOKUP_EVERY_S: f64 = 0.5;
-/// Pictures kept as textures before the ones nobody has drawn lately go. A
-/// 256-pixel square is 256 KB of graphics memory.
-const MAX_TEXTURES: usize = 64;
-/// A picture not drawn for this long may be let go once over [`MAX_TEXTURES`].
+/// Pictures kept before the ones nobody has drawn lately go. They come back
+/// from the disk cache when somebody is.
+const MAX_PICTURES: usize = 64;
+/// A picture not drawn for this long may be let go once over [`MAX_PICTURES`].
 const UNSEEN_S: f64 = 30.0;
 /// The viewfinder's square, as a share of the map's shorter side. The capture
 /// is cropped to the same share of the window's, so what is in the frame is
 /// what is in the picture.
 const FINDER_SHARE: f32 = 0.8;
 /// The viewfinder's buttons stand this far above the window's bottom edge.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const FINDER_CONTROLS_BOTTOM: f32 = 28.0;
 /// How far in front of your avatar Face me puts the camera, and how high.
 const FACE_ME_DISTANCE_M: f32 = 2.4;
 const FACE_ME_PITCH: f32 = 0.12;
 
-/// What `paint_avatar` reads and writes, without a `World` to reach.
+/// What [`face_url`] reads and writes, without a `World` to reach.
 #[derive(Default)]
 struct Bridge {
-    /// The texture to paint for each name that has one.
-    shown: HashMap<String, egui::TextureId>,
-    /// Names painted since the last frame, by key.
+    /// Names drawn since the last frame, by key.
     seen: HashSet<String>,
     /// This server's name, so `name@here` reads as `name` and anybody else's
     /// server is left alone: their names mean nothing to this one's accounts.
@@ -197,52 +193,6 @@ fn key_of(name: &str, server: Option<&str>) -> Option<String> {
     plausible.then_some(user)
 }
 
-/// The picture to paint for a person's disc, if they have one and it has
-/// arrived. Asking is also what gets it fetched.
-#[must_use]
-pub fn texture_for(name: &str) -> Option<egui::TextureId> {
-    let mut bridge = BRIDGE.lock().ok()?;
-    if !bridge.on {
-        return None;
-    }
-    let key = key_of(name, bridge.server.as_deref())?;
-    let texture = bridge.shown.get(&key).copied();
-    bridge.seen.insert(key);
-    texture
-}
-
-/// A picture inside a circle of radius `r`: a fan of triangles with the
-/// texture laid across it, centre-cropped (the pictures are square already).
-pub fn paint_face(p: &egui::Painter, c: egui::Pos2, r: f32, texture: egui::TextureId) {
-    const SEGMENTS: u32 = 48;
-    let mut mesh = egui::Mesh::with_texture(texture);
-    let white = egui::Color32::WHITE;
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: c,
-        uv: egui::pos2(0.5, 0.5),
-        color: white,
-    });
-    for i in 0..=SEGMENTS {
-        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-        let d = egui::vec2(a.cos(), a.sin());
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: c + r * d,
-            uv: egui::pos2(0.5 + d.x * 0.5, 0.5 + d.y * 0.5),
-            color: white,
-        });
-        if i > 0 {
-            mesh.add_triangle(0, i, i + 1);
-        }
-    }
-    p.add(mesh);
-    // The fan's edge is not anti-aliased; a hairline over it is.
-    p.circle_stroke(
-        c,
-        r - 0.5,
-        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
-    );
-}
-
 /// One person's answer: their picture's hash, or none, and when it was asked.
 struct Known {
     hash: Option<String>,
@@ -250,14 +200,11 @@ struct Known {
     seen: f64,
 }
 
-/// A picture by hash: on its way, a texture (and the JPEG it came from, for
-/// the library's thumbnails), or not to be had.
+/// A picture by hash: on its way, here (the JPEG, which the library's
+/// thumbnails are scaled from), or not to be had.
 enum Picture {
-    Loading(Task<Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String>>),
-    Ready {
-        texture: egui::TextureHandle,
-        jpeg: Vec<u8>,
-    },
+    Loading(Task<Result<Vec<u8>, String>>),
+    Ready { jpeg: Vec<u8> },
     Failed,
 }
 
@@ -271,8 +218,6 @@ enum Thumb {
 /// A picture made here and not yet chosen.
 pub struct Preview {
     jpeg: Vec<u8>,
-    pixels: Option<(Vec<u8>, [usize; 2])>,
-    texture: Option<egui::TextureHandle>,
     /// The JPEG as a `data:` URL, made with it on the worker: the library's
     /// polaroid. Already 256 px (`utils::photo::FACE_EDGE`), under twice the
     /// 168 pt it is drawn at, so it is not scaled again.
@@ -289,8 +234,8 @@ impl Preview {
 }
 
 type Prepared = Result<(Vec<u8>, (Vec<u8>, [usize; 2])), String>;
-/// [`Prepared`] with its `data:` URL.
-type Made = Result<(Vec<u8>, (Vec<u8>, [usize; 2]), String), String>;
+/// [`Prepared`]'s JPEG with its `data:` URL.
+type Made = Result<(Vec<u8>, String), String>;
 type Lookup = Result<HashMap<String, Option<String>>, String>;
 
 #[derive(Resource, Default)]
@@ -320,13 +265,8 @@ pub struct Faces {
     pub shooting: bool,
     /// The window, as `ui::drive_screenshots` captured it for the polaroid.
     pub snapshot_in: Option<(Vec<u8>, [usize; 2])>,
-    /// The component library draws the viewfinder (`lib_face_viewfinder`,
-    /// `CARTO_UI_LIB=face_viewfinder`): [`render_face_viewfinder`] draws
-    /// nothing, publishes [`Self::lib_view`] and does what comes back in
-    /// [`Self::lib_acts`].
-    pub lib: bool,
-    /// What the library's viewfinder shows, while `lib` is on and the
-    /// viewfinder is up.
+    /// What the library's viewfinder (`lib_face_viewfinder`) shows, while
+    /// the viewfinder is up ([`drive_face_viewfinder`] publishes it).
     pub lib_view: Option<FinderView>,
     /// The library's taps, done next frame by [`Faces::finder_act`].
     pub lib_acts: Vec<FinderAct>,
@@ -342,7 +282,7 @@ pub struct FinderView {
     pub shooting: bool,
 }
 
-/// A press on the viewfinder's controls, in either edition.
+/// A press on the viewfinder's controls.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FinderAct {
     Cancel,
@@ -355,9 +295,14 @@ pub enum FinderAct {
 /// The viewfinder's square on a `screen`: [`FINDER_SHARE`] of its shorter
 /// side, centred — the crop `crop_finder` takes from the capture.
 #[must_use]
-pub fn finder_rect(screen: egui::Rect) -> egui::Rect {
-    let side = screen.width().min(screen.height()) * FINDER_SHARE;
-    egui::Rect::from_center_size(screen.center(), egui::Vec2::splat(side))
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub fn finder_rect(screen: Rect) -> Rect {
+    // Not `Rect::from_center_size`, which panics on a negative or NaN size.
+    let half = Vec2::splat(screen.width().min(screen.height()) * FINDER_SHARE * 0.5);
+    Rect {
+        min: screen.center() - half,
+        max: screen.center() + half,
+    }
 }
 
 impl Faces {
@@ -401,9 +346,9 @@ impl Faces {
     fn start_prepare(&mut self, work: impl FnOnce() -> Prepared + Send + 'static) {
         self.note = None;
         self.prepare = Some(IoTaskPool::get().spawn(async move {
-            work().map(|(jpeg, pixels)| {
+            work().map(|(jpeg, _pixels)| {
                 let src = jpeg_data_url(&jpeg);
-                (jpeg, pixels, src)
+                (jpeg, src)
             })
         }));
     }
@@ -475,17 +420,14 @@ fn crop_finder(rgba: &[u8], size: [usize; 2]) -> (Vec<u8>, [usize; 2]) {
 }
 
 /// Keep the table: look up the names discs asked for, fetch their pictures,
-/// make the textures, and drive the picker.
-#[allow(clippy::too_many_arguments)]
+/// scale the thumbnails, and drive the picker.
 pub fn drive_faces(
-    egui: EguiRef,
     time: Res<Time>,
     online: Option<Res<OnlineSession>>,
     identity: Res<crate::resources::AuthIdentity>,
     mut faces: ResMut<Faces>,
 ) {
     let now = time.elapsed_secs_f64();
-    let ctx = egui.ctx();
     let signed_in = online.is_some() && crate::systems::model_assets::api_base().is_some();
     let account = identity
         .username
@@ -495,17 +437,14 @@ pub fn drive_faces(
     if faces.account != account {
         // Somebody else, or nobody: nothing known so far is theirs to see.
         if let Ok(mut b) = BRIDGE.lock() {
-            b.shown.clear();
             b.seen.clear();
             b.hashes.clear();
             b.thumbs.clear();
             b.want.clear();
             b.revision += 1;
         }
-        // The edition drawing the viewfinder is the app's, not the account's.
         *faces = Faces {
             account: account.clone(),
-            lib: faces.lib,
             ..Faces::default()
         };
     }
@@ -595,25 +534,17 @@ pub fn drive_faces(
         .collect();
     for hash in wanted {
         faces.pictures.entry(hash.clone()).or_insert_with(|| {
-            Picture::Loading(IoTaskPool::get().spawn(async move {
-                let jpeg = crate::systems::model_assets::fetch_picture(&hash).await?;
-                let pixels = crate::utils::photo::decode_rgba(&jpeg)?;
-                Ok((jpeg, pixels))
-            }))
+            Picture::Loading(
+                IoTaskPool::get()
+                    .spawn(async move { crate::systems::model_assets::fetch_picture(&hash).await }),
+            )
         });
     }
-    for (hash, picture) in &mut faces.pictures {
+    for picture in faces.pictures.values_mut() {
         if let Picture::Loading(task) = picture {
             if let Some(result) = crate::platform::http::poll_task(task) {
                 *picture = match result {
-                    Ok((jpeg, (rgba, size))) => Picture::Ready {
-                        texture: ctx.load_texture(
-                            format!("face_{}", &hash[..hash.len().min(16)]),
-                            egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
-                            egui::TextureOptions::LINEAR,
-                        ),
-                        jpeg,
-                    },
+                    Ok(jpeg) => Picture::Ready { jpeg },
                     Err(why) => {
                         tracing::warn!(error = %why, "a person's picture did not load");
                         Picture::Failed
@@ -629,7 +560,7 @@ pub fn drive_faces(
         .values()
         .filter(|p| matches!(p, Picture::Ready { .. }))
         .count();
-    if ready > MAX_TEXTURES {
+    if ready > MAX_PICTURES {
         let recent: HashSet<String> = faces
             .known
             .values()
@@ -640,20 +571,9 @@ pub fn drive_faces(
             .pictures
             .retain(|hash, p| !matches!(p, Picture::Ready { .. }) || recent.contains(hash));
     }
-    let shown: HashMap<String, egui::TextureId> = faces
-        .known
-        .iter()
-        .filter_map(|(name, k)| match faces.pictures.get(k.hash.as_ref()?) {
-            Some(Picture::Ready { texture, .. }) => Some((name.clone(), texture.id())),
-            _ => None,
-        })
-        .collect();
-    if let Ok(mut b) = BRIDGE.lock() {
-        b.shown = shown;
-    }
     drive_thumbs(&mut faces);
 
-    drive_picker(&mut faces, ctx, account.as_deref().unwrap_or_default(), now);
+    drive_picker(&mut faces, account.as_deref().unwrap_or_default(), now);
 }
 
 /// The library's discs (`face_url`): publish each name's hash, make the
@@ -740,7 +660,7 @@ fn drive_thumbs(faces: &mut Faces) {
 /// The most names one lookup asks about; the server answers up to 100.
 pub const MAX_PER_LOOKUP: usize = 100;
 
-fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
+fn drive_picker(faces: &mut Faces, me: &str, now: f64) {
     if let Some(source) = faces.pick.take() {
         match crate::platform::photo::start_from(source) {
             Ok(capture) => faces.capture = Some(capture),
@@ -772,26 +692,13 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
         if let Some(result) = crate::platform::http::poll_task(task) {
             faces.prepare = None;
             match result {
-                Ok((jpeg, pixels, src)) => {
+                Ok((jpeg, src)) => {
                     faces.preview = Some(Preview {
                         jpeg,
-                        pixels: Some(pixels),
-                        texture: None,
                         src: Arc::from(src),
                     });
                 }
                 Err(why) => faces.note = Some(why),
-            }
-        }
-    }
-    if let Some(preview) = faces.preview.as_mut() {
-        if preview.texture.is_none() {
-            if let Some((rgba, size)) = preview.pixels.as_ref() {
-                preview.texture = Some(ctx.load_texture(
-                    "face_preview",
-                    egui::ColorImage::from_rgba_unmultiplied(*size, rgba),
-                    egui::TextureOptions::LINEAR,
-                ));
             }
         }
     }
@@ -801,18 +708,12 @@ fn drive_picker(faces: &mut Faces, ctx: &egui::Context, me: &str, now: f64) {
             match result {
                 Ok(hash) => {
                     faces.note = None;
-                    // Shown at once from the preview's own pixels, rather than
+                    // Shown at once from the preview's own JPEG, rather than
                     // fetched back from where it was just sent.
                     if let (Some(h), Some(preview)) = (hash.as_ref(), faces.preview.take()) {
-                        if let Some(texture) = preview.texture {
-                            faces.pictures.insert(
-                                h.clone(),
-                                Picture::Ready {
-                                    texture,
-                                    jpeg: preview.jpeg,
-                                },
-                            );
-                        }
+                        faces
+                            .pictures
+                            .insert(h.clone(), Picture::Ready { jpeg: preview.jpeg });
                     }
                     faces.preview = None;
                     faces.known.insert(
@@ -927,24 +828,11 @@ impl Faces {
     }
 }
 
-fn pill(icon: &str, text: &str) -> egui::Button<'static> {
-    // egui's own: the camera's rounded pill, placed by the caller over the viewfinder.
-    egui::Button::new(
-        egui::RichText::new(format!("{icon} {text}"))
-            .size(12.5)
-            .color(theme::p32().text),
-    )
-    .fill(theme::p32().surface_raised)
-    .corner_radius(egui::CornerRadius::same(12))
-    .min_size(egui::vec2(0.0, 32.0))
-}
-
 /// The polaroid's viewfinder: a square over the map, the shutter, Face me and
-/// Cancel. Drawn over everything, with the panels shut so the map is the
-/// screen.
-#[allow(clippy::too_many_arguments)]
-pub fn render_face_viewfinder(
-    mut egui: EguiMut,
+/// Cancel, with the panels shut so the map is the screen. Publishes what the
+/// library's viewfinder (`lib_face_viewfinder`) shows and does the presses
+/// it handed back.
+pub fn drive_face_viewfinder(
     mut faces: ResMut<Faces>,
     mut camera_state: ResMut<CameraState>,
     avatar: Query<&Transform, (With<Avatar>, Without<FreeCamera>)>,
@@ -961,23 +849,13 @@ pub fn render_face_viewfinder(
         }
         return;
     }
-    // The presses of the frame: the library's, handed back since the last,
-    // or egui's below.
-    let mut acts: Vec<FinderAct> = Vec::new();
-    if faces.lib {
-        // `lib_face_viewfinder` draws it; this system does what it asks.
-        acts = std::mem::take(&mut faces.lib_acts);
-        let view = FinderView {
-            shooting: faces.shooting,
-        };
-        if faces.lib_view.as_ref() != Some(&view) {
-            faces.lib_view = Some(view);
-        }
-    } else {
-        if faces.lib_view.is_some() {
-            faces.lib_view = None;
-        }
-        draw_face_viewfinder(&mut egui, faces.shooting, &mut acts);
+    // The presses the library handed back since the last frame.
+    let acts = std::mem::take(&mut faces.lib_acts);
+    let view = FinderView {
+        shooting: faces.shooting,
+    };
+    if faces.lib_view.as_ref() != Some(&view) {
+        faces.lib_view = Some(view);
     }
     let body = avatar.single().ok();
     let mut done = false;
@@ -993,69 +871,6 @@ pub fn render_face_viewfinder(
             chats_view.you = true;
         }
     }
-}
-
-/// egui's viewfinder: the shade, the square's rim and the three buttons,
-/// whose presses go into `acts`.
-fn draw_face_viewfinder(egui: &mut EguiMut, shooting: bool, acts: &mut Vec<FinderAct>) {
-    let ctx = egui.ctx_mut().clone();
-    let screen = ctx.viewport_rect();
-    let frame = finder_rect(screen);
-    // The frame: the world outside it dimmed, the square itself outlined.
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("face_viewfinder_shade"),
-    ));
-    let shade = egui::Color32::from_black_alpha(110);
-    for r in [
-        egui::Rect::from_min_max(screen.min, egui::pos2(screen.max.x, frame.min.y)),
-        egui::Rect::from_min_max(egui::pos2(screen.min.x, frame.max.y), screen.max),
-        egui::Rect::from_min_max(
-            egui::pos2(screen.min.x, frame.min.y),
-            egui::pos2(frame.min.x, frame.max.y),
-        ),
-        egui::Rect::from_min_max(
-            egui::pos2(frame.max.x, frame.min.y),
-            egui::pos2(screen.max.x, frame.max.y),
-        ),
-    ] {
-        painter.rect_filled(r, egui::CornerRadius::ZERO, shade);
-    }
-    painter.rect_stroke(
-        frame,
-        egui::CornerRadius::ZERO,
-        egui::Stroke::new(2.0, theme::p32().cream),
-        egui::StrokeKind::Outside,
-    );
-    egui::Area::new(egui::Id::new("face_viewfinder_controls"))
-        .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::CENTER_BOTTOM,
-            egui::vec2(0.0, -FINDER_CONTROLS_BOTTOM),
-        )
-        .show(&ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui.add(pill(icons::CLEAR, "Cancel")).clicked() {
-                    acts.push(FinderAct::Cancel);
-                }
-                if ui.add(pill(icons::CAM_FOLLOW, "Face me")).clicked() {
-                    acts.push(FinderAct::FaceMe);
-                }
-                // egui's own: the camera shutter, a round accent pill over the viewfinder.
-                let shutter = egui::Button::new(
-                    egui::RichText::new(format!("{}  Take it", icons::CAMERA))
-                        .size(15.0)
-                        .color(theme::p32().ink)
-                        .strong(),
-                )
-                .fill(theme::p32().accent)
-                .corner_radius(egui::CornerRadius::same(18))
-                .min_size(egui::vec2(0.0, 40.0));
-                if ui.add_enabled(!shooting, shutter).clicked() {
-                    acts.push(FinderAct::Shoot);
-                }
-            });
-        });
 }
 
 #[cfg(test)]

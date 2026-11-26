@@ -41,16 +41,14 @@
 //! On the web there is no camera (`platform::camera` is not compiled there),
 //! so the dock offers none and this draws nothing.
 //!
-//! **On the component library** (`lib_camera`, `CARTO_UI_LIB=camera`): egui's
-//! `render_camera` steps aside (`CameraScreen::lib`) but keeps every decision
-//! and the layout both editions share (`finder_layout`, `result_layout`), and
-//! publishes what shows in `CameraScreen::lib_view`. The pictures go over as
-//! pixels (`CameraScreen::lib_pixels`) — the viewfinder's frame as it arrives,
-//! the result once, a clip's each time its player has a new one — which the
-//! library's system writes into the images it registered as
+//! **Drawn by the component library** (`lib_camera`): `publish_camera`
+//! keeps every decision and the layout (`finder_layout`, `result_layout`),
+//! and publishes what shows in `CameraScreen::lib_view`. The pictures go over
+//! as pixels (`CameraScreen::lib_pixels`) — the viewfinder's frame as it
+//! arrives, the result once, a clip's each time its player has a new one —
+//! which the library's system writes into the images it registered as
 //! `bevy:camera_viewfinder` and `bevy:camera_result`. A tap there comes back
-//! in `CameraScreen::lib_acts` and is done by `Session::apply`, the code
-//! egui's buttons call.
+//! in `CameraScreen::lib_acts` and is done by `Session::apply`.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use bevy::prelude::*;
@@ -155,11 +153,8 @@ pub struct CameraScreen {
     pub frame_in: Option<recorder::Grab>,
     #[cfg(not(target_arch = "wasm32"))]
     session: Option<Session>,
-    /// The library draws the screen (`lib_camera`): egui's system draws
-    /// nothing, and publishes [`lib_view`](Self::lib_view) instead.
-    pub lib: bool,
-    /// What the library's edition shows, while `lib` is on and the camera
-    /// is up.
+    /// What the library's edition (`lib_camera`) shows, while the camera is
+    /// up.
     #[cfg(not(target_arch = "wasm32"))]
     pub lib_view: Option<CameraView>,
     /// Taps on the library's edition, done next frame by `Session::apply`.
@@ -169,8 +164,9 @@ pub struct CameraScreen {
     pub lib_pixels: LibPixels,
 }
 
-/// Pixels for the library's camera (`lib_camera`), handed over by egui's
-/// system and written by the library's into the images its `<img>`s show:
+/// Pixels for the library's camera (`lib_camera`), handed over by
+/// `publish_camera` and written by the library's into the images its
+/// `<img>`s show:
 /// the viewfinder's newest frame and the result's picture, RGBA and its
 /// size. Each is taken when written, so one is there only when it is new.
 #[derive(Default)]
@@ -440,7 +436,7 @@ fn place_at(lat: f64, lng: f64) -> Option<String> {
 pub mod recorder;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{drive_camera, play_clip_sound, render_camera};
+pub use native::{drive_camera, play_clip_sound, publish_camera};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{CameraAct, CameraView};
 // What only the library's camera reads (`lib_camera`).
@@ -457,7 +453,6 @@ mod native {
         compose_mixed, crop_fraction, jpeg_with_pose, photo_fov_y_deg, pp, CameraScreen, ForPost,
         Mode, PhotoPose, Target, HOLD_FRAMES, POLAROID_ASPECT,
     };
-    use crate::systems::egui_manager::EguiMut;
     use bevy::camera::SubCameraView;
     use bevy::prelude::*;
     use big_space::prelude::GridCell;
@@ -474,6 +469,7 @@ mod native {
     use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
     use crate::systems::icons;
     use crate::systems::theme;
+    use crate::systems::ui_input::UiMetrics;
 
     /// Metres of walking after which the world camera is teleported rather than
     /// moved: the map's streaming follows a teleport, not a nudge.
@@ -524,7 +520,6 @@ mod native {
         frame: Option<I420>,
         /// Whether `frame` arrived this frame, for a clip of Real.
         fresh_frame: bool,
-        texture: Option<egui::TextureHandle>,
         /// The size of the frame last handed to the library's viewfinder.
         lib_photo: Option<[u32; 2]>,
         /// In Mixed the world camera follows the sensors (a phone). False on a
@@ -581,7 +576,6 @@ mod native {
         rgba: Vec<u8>,
         size: [u32; 2],
         pose: Option<PhotoPose>,
-        texture: Option<egui::TextureHandle>,
         /// A save in flight: where it went, or why not. Behind a mutex only
         /// because a resource must be `Sync` and a receiver is not.
         saving: Option<Mutex<Receiver<Result<String, String>>>>,
@@ -612,7 +606,6 @@ mod native {
                 rgba,
                 size,
                 pose,
-                texture: None,
                 saving: None,
                 saved: None,
                 captioned,
@@ -705,9 +698,9 @@ mod native {
             (self.mode.uses_camera() || self.front).then_some(self.front)
         }
 
-        /// What a tap on the screen does, in either edition: egui's buttons
-        /// and the library's (`CameraScreen::lib_acts`) both come here. It
-        /// only raises the flags `drive_camera` acts on next frame.
+        /// What a tap on the screen does: the library's taps
+        /// (`CameraScreen::lib_acts`) come here. It only raises the flags
+        /// `drive_camera` acts on next frame.
         fn apply(&mut self, act: CameraAct) {
             match act {
                 CameraAct::Close => {
@@ -797,9 +790,9 @@ mod native {
     }
 
     /// What the library's camera shows (`lib_camera`), published each frame
-    /// by egui's system while [`CameraScreen::lib`] is on. Every rect is in
-    /// egui points from the window's top left, the library's px on the Bevy
-    /// backend (the only one with a camera).
+    /// by [`publish_camera`]. Every rect is in UI points from the window's
+    /// top left, the library's px on the Bevy backend (the only one with a
+    /// camera).
     #[derive(Clone, Debug, PartialEq)]
     pub enum CameraView {
         Finder(FinderView),
@@ -809,22 +802,22 @@ mod native {
     /// The camera before the shutter: where each piece stands, and its state.
     #[derive(Clone, Debug, PartialEq)]
     pub struct FinderView {
-        pub full: egui::Rect,
+        pub full: Rect,
         pub mode: Mode,
         pub sideways: bool,
         /// The controls' strip: what listens In world, where the map inside
         /// the frame stays the map.
-        pub strip: egui::Rect,
-        pub close: egui::Rect,
-        pub switch_at: egui::Rect,
+        pub strip: Rect,
+        pub close: Rect,
+        pub switch_at: Rect,
         /// In world: the polaroid's frame.
-        pub frame: egui::Rect,
+        pub frame: Rect,
         /// Mixed: the photograph's pane, and the hole the world shows in.
-        pub pane: egui::Rect,
-        pub hole: egui::Rect,
-        pub shutter_c: egui::Pos2,
+        pub pane: Rect,
+        pub hole: Rect,
+        pub shutter_c: Vec2,
         /// From the shutter to the flip; the upload is the other way.
-        pub step: egui::Vec2,
+        pub step: Vec2,
         /// The viewfinder's picture's size, once one has come in this mode.
         pub photo: Option<[u32; 2]>,
         /// A clip is being recorded (or finished): only the shutter shows.
@@ -838,25 +831,25 @@ mod native {
         pub front: bool,
         pub mixed_offered: bool,
         /// The pose's quality, left to right from here.
-        pub chips_at: egui::Pos2,
+        pub chips_at: Vec2,
         pub chips: Vec<(String, ChipTone)>,
         /// The clip's running time, where the upload button is.
         pub timer: Option<String>,
         /// What it is doing or what went wrong, centred on `status_at`.
-        pub status_at: egui::Pos2,
+        pub status_at: Vec2,
         pub status: Option<String>,
     }
 
     /// The picture once it is made.
     #[derive(Clone, Debug, PartialEq)]
     pub struct ResultView {
-        pub full: egui::Rect,
+        pub full: Rect,
         pub sideways: bool,
-        pub close: egui::Rect,
+        pub close: Rect,
         /// The picture, as large as fits its room.
-        pub shown: egui::Rect,
+        pub shown: Rect,
         /// The column (sideways) or band (upright) of words and actions.
-        pub side: egui::Rect,
+        pub side: Rect,
         /// Where it was taken, when the picture has no caption of its own.
         pub place: Option<String>,
         pub choosing_chat: bool,
@@ -1009,7 +1002,6 @@ mod native {
                     compass: OrientationWatch::start(),
                     frame: None,
                     fresh_frame: false,
-                    texture: None,
                     lib_photo: None,
                     moves_world: false,
                     restore: None,
@@ -1103,7 +1095,6 @@ mod native {
             session.mode = next;
             screen.mode = next;
             session.frame = None;
-            session.texture = None;
             session.error = None;
             session.camera = next
                 .uses_camera()
@@ -1128,7 +1119,6 @@ mod native {
             if session.mode.uses_camera() {
                 session.camera = Some(Camera::open_still(session.front));
                 session.frame = None;
-                session.texture = None;
             } else if let Ok(body) = avatar.single() {
                 // In world: the Follow camera in front of your avatar, looking
                 // back at it, or behind it again.
@@ -1927,20 +1917,16 @@ mod native {
         }
     }
 
-    /// The camera's screen: the picture filling it (or, In world, the map
-    /// through the polaroid's frame), the modes beside the shutter, the flip
-    /// under it and the upload above it.
-    ///
-    /// Dark in both themes, as a phone's camera is: it is a picture, or the
-    /// map through a frame, with the controls over it.
-    pub fn render_camera(egui: EguiMut, screen: ResMut<CameraScreen>) {
-        theme::dark_here(|| render_camera_dark(egui, screen));
-    }
-
-    fn render_camera_dark(mut egui: EguiMut, mut screen: ResMut<CameraScreen>) {
+    /// The camera's screen, for the library's edition (`lib_camera`): the
+    /// picture filling it (or, In world, the map through the polaroid's
+    /// frame), the modes beside the shutter, the flip under it and the upload
+    /// above it — or the picture once it is made. Publishes it as
+    /// [`CameraScreen::lib_view`], hands the pictures over as pixels, and
+    /// does the taps that came back.
+    pub fn publish_camera(metrics: Res<UiMetrics>, mut screen: ResMut<CameraScreen>) {
         let screen = &mut *screen;
         let face_note = screen.face_note.clone();
-        // The library's taps of last frame, done as egui's are.
+        // The library's taps of last frame.
         let acts = std::mem::take(&mut screen.lib_acts);
         let Some(session) = screen.session.as_mut() else {
             screen.lib_view = None;
@@ -1949,374 +1935,15 @@ mod native {
         for act in acts {
             session.apply(act);
         }
-        let viewport = egui.viewport_pts();
-        let full = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
-        if screen.lib {
-            screen.lib_view = Some(if session.result.is_some() {
-                lib_result(full, session, &mut screen.lib_pixels)
-            } else {
-                lib_finder(full, session, face_note, &mut screen.lib_pixels)
-            });
-            return;
-        }
-        let ctx = egui.ctx_mut().clone();
-        if session.result.is_some() {
-            render_result(&ctx, full, session);
-            return;
-        }
-        // While the shutter runs the screen stays out of the picture: the
-        // capture hides every panel, and this is one.
-
-        // The newest frame as a texture, small enough to upload every frame.
-        if let Some(frame) = session
-            .frame
-            .as_ref()
-            .filter(|_| session.mode.uses_camera())
-        {
-            let (rgba, [w, h]) = viewfinder_pixels(frame, session.front);
-            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-            match session.texture.as_mut() {
-                Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    session.texture =
-                        Some(ctx.load_texture("camera", image, egui::TextureOptions::LINEAR))
-                }
-            }
-        }
-        let photo = session.texture.as_ref().map(|t| (t.id(), t.size_vec2()));
-        let lay = finder_layout(full, photo.map(|(_, s)| s));
-        let FinderLayout {
-            sideways,
-            shutter_c,
-            strip,
-            close,
-            switch_at,
-            step,
-            ..
-        } = lay;
-
-        // In world the map inside the frame stays the map, to be framed by
-        // dragging: the screen then covers only its controls' strip, and the
-        // close button and the Photo | Video switch have areas of their own.
-        let world = session.mode == Mode::World;
-        let area = if world { strip } else { full };
-        // While a clip runs, nothing is drawn where the clip is taken from:
-        // the close button, the switch, the modes and the chips step aside,
-        // and the shutter is the stop button.
-        let recording = session.recorder.is_some();
-        if world && !recording {
-            egui::Area::new(egui::Id::new("camera_close"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(close.min)
-                .show(&ctx, |ui| {
-                    theme::use_dark_visuals(ui);
-                    if theme::round_button(ui, icons::CLEAR, "Close the camera", false).clicked() {
-                        session.apply(CameraAct::Close);
-                    }
-                });
-        }
-        if world && !recording {
-            egui::Area::new(egui::Id::new("camera_photo_video"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(switch_at.min)
-                .show(&ctx, |ui| {
-                    theme::use_dark_visuals(ui);
-                    if let Some(video) = photo_video(ui, session.video) {
-                        session.apply(CameraAct::PhotoVideo(video));
-                    }
-                });
-        }
-        egui::Area::new(egui::Id::new("camera_screen"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(area.min)
-            .show(&ctx, |ui| {
-                theme::use_dark_visuals(ui);
-                ui.set_min_size(area.size());
-                let painter = ui.painter().clone();
-                match session.mode {
-                    Mode::World => {
-                        // The polaroid's frame over the map: the world outside
-                        // it dimmed, and the picture is what is inside.
-                        let frame = lay.frame;
-                        session.frame_rect = fractions(frame, viewport);
-                        let shade = egui::Color32::from_black_alpha(SHADE_ALPHA);
-                        for r in around(full, frame) {
-                            painter.rect_filled(r, 0.0, shade);
-                        }
-                        painter.rect_stroke(
-                            frame,
-                            0.0,
-                            egui::Stroke::new(POLAROID_RIM_W, POLAROID_RIM),
-                            egui::StrokeKind::Outside,
-                        );
-                        // Only the controls take touches: the map inside the
-                        // frame is still the map, to be framed by dragging.
-                    }
-                    Mode::Real => {
-                        // unnamed: the backdrop only swallows touches, it does nothing.
-                        ui.allocate_rect(full, egui::Sense::click_and_drag());
-                        painter.rect_filled(full, 0.0, theme::p32().ink);
-                        if let Some((id, size)) = photo {
-                            painter.image(
-                                id,
-                                full,
-                                cover_uv(size, full.size()),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                    }
-                    Mode::Mixed => {
-                        // unnamed: the backdrop only swallows touches, it does nothing.
-                        ui.allocate_rect(full, egui::Sense::click_and_drag());
-                        // Two panes of the photograph's shape, one in each
-                        // half: the photograph in the first, and the world,
-                        // drawn from the phone's pose, through a hole in the
-                        // second (`hole_view` aims the world camera into it).
-                        let (pane, hole) = (lay.pane, lay.hole);
-                        session.world_rect = Some(fractions(hole, viewport));
-                        for r in around(full, hole) {
-                            painter.rect_filled(r, 0.0, theme::p32().ink);
-                        }
-                        if let Some((id, size)) = photo {
-                            painter.image(
-                                id,
-                                pane,
-                                cover_uv(size, pane.size()),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        tag(&painter, pane.min + egui::vec2(10.0, 10.0), "REAL");
-                        // Inside the hole only when nothing is recording it.
-                        if !recording {
-                            tag(&painter, hole.min + egui::vec2(10.0, 10.0), "CARTOPOLIS");
-                        }
-                    }
-                }
-
-                // Close, top left.
-                if !world
-                    && !recording
-                    && round(
-                        ui,
-                        &painter,
-                        close,
-                        icons::CLEAR,
-                        false,
-                        "camera_close",
-                        "Close",
-                    )
-                    .clicked()
-                {
-                    session.apply(CameraAct::Close);
-                }
-                // Photo | Video, top right: in this area, which covers the
-                // screen in Mixed and Real and would paint over an area of
-                // its own.
-                if !world && !recording {
-                    let chose = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(switch_at), |ui| {
-                            photo_video(ui, session.video)
-                        })
-                        .inner;
-                    if let Some(video) = chose {
-                        session.apply(CameraAct::PhotoVideo(video));
-                    }
-                }
-
-                // The pose's quality, where it means something.
-                if session.mode.uses_camera() && !recording {
-                    let mut x = lay.chips_at.x;
-                    let y = lay.chips_at.y;
-                    for (text, tone) in chips(session) {
-                        x = chip(&painter, egui::pos2(x, y), &text, tone) + 8.0;
-                    }
-                }
-
-                // The shutter, the modes beside it, upload before it and the
-                // flip after it.
-                let shutter = egui::Rect::from_center_size(shutter_c, egui::vec2(72.0, 72.0));
-                let sresp = ui.interact(
-                    shutter,
-                    egui::Id::new("camera_shutter"),
-                    egui::Sense::click(),
-                );
-                let sresp = theme::named(
-                    ui,
-                    sresp,
-                    if session.recording() {
-                        "Stop"
-                    } else if session.video {
-                        "Record"
-                    } else {
-                        "Take the picture"
-                    },
-                );
-                painter.circle_stroke(
-                    shutter.center(),
-                    34.0,
-                    egui::Stroke::new(4.0, egui::Color32::WHITE),
-                );
-                let ready = session.ready();
-                let stoppable = session.recording();
-                if stoppable {
-                    // Stop: a square in the ring.
-                    painter.rect_filled(
-                        egui::Rect::from_center_size(shutter.center(), egui::vec2(28.0, 28.0)),
-                        6.0,
-                        RECORD_RED,
-                    );
-                } else if session.video {
-                    painter.circle_filled(
-                        shutter.center(),
-                        27.0,
-                        if ready {
-                            RECORD_RED
-                        } else {
-                            theme::p32().text_dim
-                        },
-                    );
-                } else {
-                    let fill = if ready {
-                        match session.mode {
-                            Mode::World => theme::BRAND.to_egui(),
-                            _ => egui::Color32::WHITE,
-                        }
-                    } else {
-                        theme::p32().text_dim
-                    };
-                    painter.circle_filled(shutter.center(), 27.0, fill);
-                    if session.mode == Mode::Mixed && ready {
-                        // Half photograph, half world: the Mixed mark.
-                        painter.add(egui::Shape::convex_polygon(
-                            half_disc(shutter.center(), 27.0),
-                            theme::BRAND.to_egui(),
-                            egui::Stroke::NONE,
-                        ));
-                    }
-                }
-                if sresp
-                    .on_hover_text(match (stoppable, session.video) {
-                        (true, _) => "Stop recording",
-                        (false, true) => "Record a clip",
-                        (false, false) => "Take the picture",
-                    })
-                    .clicked()
-                {
-                    session.apply(CameraAct::Shutter);
-                }
-
-                // The clip's running time where the upload button is: in the
-                // controls' strip, which no clip is taken from.
-                if let Some(text) = timer_line(session) {
-                    let galley = painter.layout_no_wrap(
-                        text,
-                        egui::FontId::proportional(14.0),
-                        egui::Color32::WHITE,
-                    );
-                    let r = egui::Rect::from_center_size(
-                        shutter_c - step,
-                        galley.size() + egui::vec2(16.0, 10.0),
-                    );
-                    painter.rect_filled(r, 10.0, RECORD_RED);
-                    painter.galley(r.min + egui::vec2(8.0, 5.0), galley, egui::Color32::WHITE);
-                    return;
-                }
-
-                // Upload is a picture's: there is no clip to pick.
-                if !session.video {
-                    let upload = egui::Rect::from_center_size(
-                        shutter_c - step,
-                        egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE),
-                    );
-                    let label = "Upload a picture";
-                    if round(
-                        ui,
-                        &painter,
-                        upload,
-                        icons::UPLOAD,
-                        false,
-                        "camera_upload",
-                        label,
-                    )
-                    .on_hover_text("Upload a picture from the phone")
-                    .clicked()
-                    {
-                        session.apply(CameraAct::Upload);
-                    }
-                }
-                let flip = egui::Rect::from_center_size(
-                    shutter_c + step,
-                    egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE),
-                );
-                if round(
-                    ui,
-                    &painter,
-                    flip,
-                    icons::FLIP_CAMERA,
-                    session.front,
-                    "camera_flip",
-                    "Selfie",
-                )
-                .on_hover_text("Selfie")
-                .clicked()
-                {
-                    session.apply(CameraAct::Flip);
-                }
-                // The modes: a column left of the shutter held sideways, a row
-                // above it held upright.
-                for (i, m) in Mode::ALL.into_iter().enumerate() {
-                    let at = mode_at(shutter_c, sideways, i);
-                    let align = if sideways {
-                        egui::Align2::RIGHT_CENTER
-                    } else {
-                        egui::Align2::CENTER_CENTER
-                    };
-                    let on = m == session.mode;
-                    // Mixed without the fix is shown dimmed, and says why when
-                    // pressed (`Session::mixed_offered`).
-                    let offered = m != Mode::Mixed || session.mixed_offered;
-                    let rect = painter.text(
-                        at,
-                        align,
-                        m.label(),
-                        egui::FontId::proportional(14.0),
-                        if on {
-                            theme::BRAND.to_egui()
-                        } else if offered {
-                            egui::Color32::WHITE
-                        } else {
-                            egui::Color32::WHITE.gamma_multiply(0.4)
-                        },
-                    );
-                    let hit = rect.expand(8.0);
-                    let resp =
-                        ui.interact(hit, egui::Id::new(("camera_mode", i)), egui::Sense::click());
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
-                            ui.is_enabled() && offered,
-                            on,
-                            m.label(),
-                        )
-                    });
-                    if resp.clicked() {
-                        session.apply(CameraAct::Mode(m));
-                    }
-                }
-
-                if let Some(text) = status_line(session, face_note.clone()) {
-                    let at = lay.status_at;
-                    let galley = painter.layout_no_wrap(
-                        text,
-                        egui::FontId::proportional(13.0),
-                        egui::Color32::WHITE,
-                    );
-                    let r =
-                        egui::Rect::from_center_size(at, galley.size() + egui::vec2(20.0, 10.0));
-                    painter.rect_filled(r, 10.0, egui::Color32::from_black_alpha(170));
-                    painter.galley(r.min + egui::vec2(10.0, 5.0), galley, egui::Color32::WHITE);
-                }
-            });
+        let full = Rect {
+            min: Vec2::ZERO,
+            max: metrics.viewport_pts(),
+        };
+        screen.lib_view = Some(if session.result.is_some() {
+            lib_result(full, session, &mut screen.lib_pixels)
+        } else {
+            lib_finder(full, session, face_note, &mut screen.lib_pixels)
+        });
     }
 
     impl Session {
@@ -2354,11 +1981,12 @@ mod native {
     /// Where mode `i` (of [`Mode::ALL`]) stands: a column left of the
     /// shutter held sideways (its right edge there), a row above it held
     /// upright (centred there).
-    pub fn mode_at(shutter_c: egui::Pos2, sideways: bool, i: usize) -> egui::Pos2 {
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn mode_at(shutter_c: Vec2, sideways: bool, i: usize) -> Vec2 {
         if sideways {
-            egui::pos2(shutter_c.x - 56.0, shutter_c.y + (i as f32 - 1.0) * 30.0)
+            Vec2::new(shutter_c.x - 56.0, shutter_c.y + (i as f32 - 1.0) * 30.0)
         } else {
-            egui::pos2(shutter_c.x + (i as f32 - 1.0) * 92.0, shutter_c.y - 60.0)
+            Vec2::new(shutter_c.x + (i as f32 - 1.0) * 92.0, shutter_c.y - 60.0)
         }
     }
 
@@ -2385,69 +2013,91 @@ mod native {
         (rgba, [small.width, small.height])
     }
 
-    /// Where the camera's pieces stand in a `full` window, for both
-    /// editions: egui's screen and the library's (`lib_camera`).
+    /// `min` to `max`, as given: a window too small for the layout makes an
+    /// inverted rect rather than a different one.
+    fn span(min: Vec2, max: Vec2) -> Rect {
+        Rect { min, max }
+    }
+
+    /// `size` from `min`.
+    fn sized(min: Vec2, size: Vec2) -> Rect {
+        span(min, min + size)
+    }
+
+    /// `r` with `by` taken off every side.
+    fn shrink(r: Rect, by: f32) -> Rect {
+        span(r.min + Vec2::splat(by), r.max - Vec2::splat(by))
+    }
+
+    /// `size` centred on `c`. Not `Rect::from_center_size`, which panics on
+    /// a negative or NaN size: a window too small for the layout has one.
+    fn centred(c: Vec2, size: Vec2) -> Rect {
+        span(c - size * 0.5, c + size * 0.5)
+    }
+
+    /// Where the camera's pieces stand in a `full` window, for the library's
+    /// screen (`lib_camera`) and the crop the shutter takes.
     #[derive(Clone, Copy)]
     struct FinderLayout {
         sideways: bool,
         /// The shutter's centre: the controls' column (sideways: the right
         /// edge) or row (upright: the bottom).
-        shutter_c: egui::Pos2,
+        shutter_c: Vec2,
         /// The controls' strip beside or under it.
-        strip: egui::Rect,
-        close: egui::Rect,
-        switch_at: egui::Rect,
+        strip: Rect,
+        close: Rect,
+        switch_at: Rect,
         /// From the shutter to the flip; the upload is the other way.
-        step: egui::Vec2,
+        step: Vec2,
         /// In world: the polaroid's frame.
-        frame: egui::Rect,
+        frame: Rect,
         /// Mixed: the photograph's pane and the world's hole.
-        pane: egui::Rect,
-        hole: egui::Rect,
-        chips_at: egui::Pos2,
-        status_at: egui::Pos2,
+        pane: Rect,
+        hole: Rect,
+        chips_at: Vec2,
+        status_at: Vec2,
     }
 
     /// The layout for a viewfinder whose picture is `photo` large (its
     /// shape is Mixed's panes').
-    fn finder_layout(full: egui::Rect, photo: Option<egui::Vec2>) -> FinderLayout {
+    fn finder_layout(full: Rect, photo: Option<Vec2>) -> FinderLayout {
         let sideways = full.width() > full.height();
         let shutter_c = if sideways {
-            egui::pos2(full.right() - 56.0, full.center().y)
+            Vec2::new(full.max.x - 56.0, full.center().y)
         } else {
-            egui::pos2(full.center().x, full.bottom() - 84.0)
+            Vec2::new(full.center().x, full.max.y - 84.0)
         };
         let picture = if sideways {
-            egui::Rect::from_min_max(full.min, egui::pos2(full.right() - 112.0, full.bottom()))
+            span(full.min, Vec2::new(full.max.x - 112.0, full.max.y))
         } else {
-            egui::Rect::from_min_max(full.min, egui::pos2(full.right(), full.bottom() - 168.0))
+            span(full.min, Vec2::new(full.max.x, full.max.y - 168.0))
         };
         let strip = if sideways {
-            egui::Rect::from_min_max(egui::pos2(picture.right(), full.top()), full.max)
+            span(Vec2::new(picture.max.x, full.min.y), full.max)
         } else {
-            egui::Rect::from_min_max(egui::pos2(full.left(), picture.bottom()), full.max)
+            span(Vec2::new(full.min.x, picture.max.y), full.max)
         };
-        let close = egui::Rect::from_min_size(
-            egui::pos2(full.left() + 14.0, full.top() + 14.0),
-            egui::vec2(theme::ROUND_BUTTON_SIZE, theme::ROUND_BUTTON_SIZE),
+        let close = sized(
+            Vec2::new(full.min.x + 14.0, full.min.y + 14.0),
+            Vec2::splat(theme::ROUND_BUTTON_SIZE),
         );
-        let switch_at = egui::Rect::from_min_size(
-            egui::pos2(full.right() - 14.0 - SWITCH_SIZE.x, full.top() + 14.0),
+        let switch_at = sized(
+            Vec2::new(full.max.x - 14.0 - SWITCH_SIZE.x, full.min.y + 14.0),
             SWITCH_SIZE,
         );
         let step = if sideways {
-            egui::vec2(0.0, 76.0)
+            Vec2::new(0.0, 76.0)
         } else {
-            egui::vec2(-96.0, 0.0)
+            Vec2::new(-96.0, 0.0)
         };
         // In world: the polaroid's frame, as large as fits.
-        let room = picture.shrink(24.0);
+        let room = shrink(picture, 24.0);
         let size = if room.width() / room.height() > POLAROID_ASPECT {
-            egui::vec2(room.height() * POLAROID_ASPECT, room.height())
+            Vec2::new(room.height() * POLAROID_ASPECT, room.height())
         } else {
-            egui::vec2(room.width(), room.width() / POLAROID_ASPECT)
+            Vec2::new(room.width(), room.width() / POLAROID_ASPECT)
         };
-        let frame = egui::Rect::from_center_size(room.center(), size);
+        let frame = centred(room.center(), size);
         // Mixed: two panes of the photograph's shape, one in each half.
         let shape = photo.map_or(if sideways { 4.0 / 3.0 } else { 0.75 }, |s| {
             s.x / s.y.max(1.0)
@@ -2455,37 +2105,37 @@ mod native {
         let (first, second) = if sideways {
             let mid = picture.center().x;
             (
-                egui::Rect::from_min_max(picture.min, egui::pos2(mid, picture.max.y)),
-                egui::Rect::from_min_max(egui::pos2(mid, picture.min.y), picture.max),
+                span(picture.min, Vec2::new(mid, picture.max.y)),
+                span(Vec2::new(mid, picture.min.y), picture.max),
             )
         } else {
             let mid = picture.center().y;
             (
-                egui::Rect::from_min_max(picture.min, egui::pos2(picture.max.x, mid)),
-                egui::Rect::from_min_max(egui::pos2(picture.min.x, mid), picture.max),
+                span(picture.min, Vec2::new(picture.max.x, mid)),
+                span(Vec2::new(picture.min.x, mid), picture.max),
             )
         };
-        let fit = |r: egui::Rect| {
-            let r = r.shrink(4.0);
+        let fit = |r: Rect| {
+            let r = shrink(r, 4.0);
             let size = if r.width() / r.height() > shape {
-                egui::vec2(r.height() * shape, r.height())
+                Vec2::new(r.height() * shape, r.height())
             } else {
-                egui::vec2(r.width(), r.width() / shape)
+                Vec2::new(r.width(), r.width() / shape)
             };
-            egui::Rect::from_center_size(r.center(), size)
+            centred(r.center(), size)
         };
-        let chips_at = egui::pos2(
-            full.left() + 14.0,
+        let chips_at = Vec2::new(
+            full.min.x + 14.0,
             if sideways {
-                full.bottom() - 40.0
+                full.max.y - 40.0
             } else {
-                picture.bottom() - 40.0
+                picture.max.y - 40.0
             },
         );
         let status_at = if sideways {
-            egui::pos2(picture.center().x, full.bottom() - 70.0)
+            Vec2::new(picture.center().x, full.max.y - 70.0)
         } else {
-            egui::pos2(full.center().x, shutter_c.y - 96.0)
+            Vec2::new(full.center().x, shutter_c.y - 96.0)
         };
         FinderLayout {
             sideways,
@@ -2502,12 +2152,11 @@ mod native {
         }
     }
 
-    /// The library's viewfinder (`lib_camera`): the same layout and
-    /// decisions as egui's, as data, and the newest frame handed over as
-    /// pixels when it is new. Sets the rects the shutter crops by, as
-    /// egui's screen does when it draws them.
+    /// The library's viewfinder (`lib_camera`): the layout and decisions,
+    /// as data, and the newest frame handed over as pixels when it is new.
+    /// Sets the rects the shutter crops by.
     fn lib_finder(
-        full: egui::Rect,
+        full: Rect,
         session: &mut Session,
         face_note: Option<String>,
         pixels: &mut super::LibPixels,
@@ -2530,7 +2179,7 @@ mod native {
             }
         }
         session.lib_photo = photo;
-        let lay = finder_layout(full, photo.map(|[w, h]| egui::vec2(w as f32, h as f32)));
+        let lay = finder_layout(full, photo.map(|[w, h]| Vec2::new(w as f32, h as f32)));
         match session.mode {
             Mode::World => session.frame_rect = fractions(lay.frame, viewport),
             Mode::Mixed => session.world_rect = Some(fractions(lay.hole, viewport)),
@@ -2564,7 +2213,7 @@ mod native {
             },
             timer: timer_line(session),
             status_at: lay.status_at,
-            // egui's screen stops before the status while a clip runs.
+            // No status while a clip runs: it would be in the clip.
             status: if recording {
                 None
             } else {
@@ -2576,32 +2225,32 @@ mod native {
     /// Where the result's pieces stand in a `full` window: whether it is
     /// held sideways, the close button, the picture's room and the side
     /// with the words and actions.
-    fn result_layout(full: egui::Rect) -> (bool, egui::Rect, egui::Rect, egui::Rect) {
+    fn result_layout(full: Rect) -> (bool, Rect, Rect, Rect) {
         let sideways = full.width() > full.height();
-        let close = egui::Rect::from_min_size(
-            egui::pos2(full.left() + 14.0, full.top() + 14.0),
-            egui::Vec2::splat(theme::ROUND_BUTTON_SIZE),
+        let close = sized(
+            Vec2::new(full.min.x + 14.0, full.min.y + 14.0),
+            Vec2::splat(theme::ROUND_BUTTON_SIZE),
         );
         let (room, side) = if sideways {
             (
-                egui::Rect::from_min_max(
-                    egui::pos2(close.right() + 14.0, full.top() + 16.0),
-                    egui::pos2(full.right() - 316.0, full.bottom() - 16.0),
+                span(
+                    Vec2::new(close.max.x + 14.0, full.min.y + 16.0),
+                    Vec2::new(full.max.x - 316.0, full.max.y - 16.0),
                 ),
-                egui::Rect::from_min_max(
-                    egui::pos2(full.right() - 300.0, full.top() + 16.0),
-                    full.max - egui::vec2(16.0, 16.0),
+                span(
+                    Vec2::new(full.max.x - 300.0, full.min.y + 16.0),
+                    full.max - Vec2::new(16.0, 16.0),
                 ),
             )
         } else {
             (
-                egui::Rect::from_min_max(
-                    egui::pos2(full.left() + 12.0, close.bottom() + 10.0),
-                    egui::pos2(full.right() - 12.0, full.bottom() - 212.0),
+                span(
+                    Vec2::new(full.min.x + 12.0, close.max.y + 10.0),
+                    Vec2::new(full.max.x - 12.0, full.max.y - 212.0),
                 ),
-                egui::Rect::from_min_max(
-                    egui::pos2(full.left() + 16.0, full.bottom() - 196.0),
-                    full.max - egui::vec2(16.0, 16.0),
+                span(
+                    Vec2::new(full.min.x + 16.0, full.max.y - 196.0),
+                    full.max - Vec2::new(16.0, 16.0),
                 ),
             )
         };
@@ -2609,9 +2258,9 @@ mod native {
     }
 
     /// A `size` picture as large as fits `room`, centred in it.
-    fn fit_in(size: egui::Vec2, room: egui::Rect) -> egui::Rect {
+    fn fit_in(size: Vec2, room: Rect) -> Rect {
         let scale = (room.width() / size.x.max(1.0)).min(room.height() / size.y.max(1.0));
-        egui::Rect::from_center_size(room.center(), size * scale)
+        centred(room.center(), size * scale)
     }
 
     /// The words under a result: a clip's length, where it was saved, and
@@ -2643,13 +2292,9 @@ mod native {
     }
 
     /// The library's result (`lib_camera`): the picture handed over once
-    /// (a clip's each time its player has a new one), and what egui's
-    /// result screen shows, as data.
-    fn lib_result(
-        full: egui::Rect,
-        session: &mut Session,
-        pixels: &mut super::LibPixels,
-    ) -> CameraView {
+    /// (a clip's each time its player has a new one), and what the result
+    /// screen shows, as data.
+    fn lib_result(full: Rect, session: &mut Session, pixels: &mut super::LibPixels) -> CameraView {
         let (sideways, close, room, side) = result_layout(full);
         let chats = session.chats.clone();
         let choosing_chat = session.choosing_chat;
@@ -2693,7 +2338,7 @@ mod native {
             full,
             sideways,
             close,
-            shown: fit_in(egui::vec2(w as f32, h as f32), room),
+            shown: fit_in(Vec2::new(w as f32, h as f32), room),
             side,
             place,
             choosing_chat,
@@ -2706,81 +2351,30 @@ mod native {
 
     /// The recording colour: the shutter in Video, and the running time. The
     /// call's hang-up red, the one red the chrome has.
-    pub const RECORD_RED: egui::Color32 = theme::CALL_END_RED.to_egui();
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub const RECORD_RED: theme::Rgba8 = theme::CALL_END_RED;
 
     /// The polaroid's rim over the map In world, and its width.
-    pub const POLAROID_RIM: egui::Color32 = egui::Color32::from_rgb(0xFB, 0xFA, 0xF6);
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub const POLAROID_RIM: theme::Rgba8 = theme::Rgba8::from_rgb(0xFB, 0xFA, 0xF6);
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub const POLAROID_RIM_W: f32 = 6.0;
 
     /// How dark the map round the polaroid's frame is, of 255.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub const SHADE_ALPHA: u8 = 140;
 
     /// The pose chips' ink: an RTK fix, and what still needs waiting for.
-    pub const CHIP_GOOD: egui::Color32 = egui::Color32::from_rgb(0x9f, 0xd3, 0xb4);
-    pub const CHIP_WARN: egui::Color32 = egui::Color32::from_rgb(0xff, 0xcf, 0x7a);
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub const CHIP_GOOD: theme::Rgba8 = theme::Rgba8::from_rgb(0x9f, 0xd3, 0xb4);
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub const CHIP_WARN: theme::Rgba8 = theme::Rgba8::from_rgb(0xff, 0xcf, 0x7a);
 
     /// The Photo | Video switch's size.
-    pub const SWITCH_SIZE: egui::Vec2 = egui::vec2(132.0, 34.0);
-
-    /// Photo | Video, as a pill: returns the side tapped, when it is the other.
-    fn photo_video(ui: &mut egui::Ui, video: bool) -> Option<bool> {
-        let (rect, _) = ui.allocate_exact_size(SWITCH_SIZE, egui::Sense::hover());
-        let painter = ui.painter();
-        painter.rect_filled(
-            rect,
-            SWITCH_SIZE.y / 2.0,
-            egui::Color32::from_black_alpha(150),
-        );
-        let mut chose = None;
-        for (i, (label, is_video)) in [("Photo", false), ("Video", true)].into_iter().enumerate() {
-            let half = egui::Rect::from_min_size(
-                rect.min + egui::vec2(rect.width() / 2.0 * i as f32, 0.0),
-                egui::vec2(rect.width() / 2.0, rect.height()),
-            );
-            let on = is_video == video;
-            if on {
-                painter.rect_filled(
-                    half.shrink(3.0),
-                    SWITCH_SIZE.y / 2.0 - 3.0,
-                    theme::p32().cream,
-                );
-            }
-            painter.text(
-                half.center(),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(14.0),
-                if on {
-                    theme::p32().ink
-                } else {
-                    egui::Color32::WHITE
-                },
-            );
-            let resp = ui.interact(
-                half,
-                egui::Id::new(("camera_photo_video", i)),
-                egui::Sense::click(),
-            );
-            resp.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
-            });
-            if resp
-                .on_hover_text(if is_video {
-                    "Record clips"
-                } else {
-                    "Take pictures"
-                })
-                .clicked()
-                && !on
-            {
-                chose = Some(is_video);
-            }
-        }
-        chose
-    }
+    pub const SWITCH_SIZE: Vec2 = Vec2::new(132.0, 34.0);
 
     /// `r` as fractions of a `viewport`-sized window, `[x0, y0, x1, y1]`.
-    fn fractions(r: egui::Rect, viewport: egui::Vec2) -> [f32; 4] {
+    fn fractions(r: Rect, viewport: Vec2) -> [f32; 4] {
         [
             r.min.x / viewport.x,
             r.min.y / viewport.y,
@@ -2789,191 +2383,15 @@ mod native {
         ]
     }
 
-    /// The four rectangles of `full` around `hole`.
-    fn around(full: egui::Rect, hole: egui::Rect) -> [egui::Rect; 4] {
-        [
-            egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, hole.min.y)),
-            egui::Rect::from_min_max(egui::pos2(full.min.x, hole.max.y), full.max),
-            egui::Rect::from_min_max(
-                egui::pos2(full.min.x, hole.min.y),
-                egui::pos2(hole.min.x, hole.max.y),
-            ),
-            egui::Rect::from_min_max(
-                egui::pos2(hole.max.x, hole.min.y),
-                egui::pos2(full.max.x, hole.max.y),
-            ),
-        ]
-    }
-
     /// The result's discs: larger than the map's, because they are the whole
     /// screen's choice and a thumb is reaching for them.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub const ACTION_DISC: f32 = 52.0;
-
-    /// The picture once it is made: shown as large as fits, with Post, Send,
-    /// Save and Retake under it (sideways: beside it) and a close button top
-    /// left, as on the camera. The four share the width evenly, laid out by
-    /// rect rather than by egui's row: the row grew past the screen's edge on
-    /// a phone and took Retake, the only way back, with it.
-    fn render_result(ctx: &egui::Context, full: egui::Rect, session: &mut Session) {
-        let Some(done) = session.result.as_mut() else {
-            return;
-        };
-        // A clip shows its player's newest picture, going round.
-        let next = done
-            .clip
-            .as_ref()
-            .and_then(|c| c.player.as_ref())
-            .and_then(ClipPlayer::take_picture);
-        if let Some(pic) = next {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [pic.width as usize, pic.height as usize],
-                &pic.rgba,
-            );
-            match done.texture.as_mut() {
-                Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    done.texture =
-                        Some(ctx.load_texture("camera-result", image, egui::TextureOptions::LINEAR))
-                }
-            }
-        }
-        let texture = done
-            .texture
-            .get_or_insert_with(|| {
-                let image = if done.clip.is_some() {
-                    egui::ColorImage::filled([2, 2], egui::Color32::BLACK)
-                } else {
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [done.size[0] as usize, done.size[1] as usize],
-                        &done.rgba,
-                    )
-                };
-                ctx.load_texture("camera-result", image, egui::TextureOptions::LINEAR)
-            })
-            .clone();
-        let (clip_line, save_line, place) = result_words(done);
-        let saving = done.saving.is_some();
-        let (sideways, close, room, side) = result_layout(full);
-        let chats = session.chats.clone();
-        egui::Area::new(egui::Id::new("camera_result"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::Pos2::ZERO)
-            .show(ctx, |ui| {
-                theme::use_dark_visuals(ui);
-                ui.set_min_size(full.size());
-                let painter = ui.painter().clone();
-                // unnamed: the backdrop only swallows touches, it does nothing.
-                ui.allocate_rect(full, egui::Sense::click_and_drag());
-                painter.rect_filled(full, 0.0, theme::p32().ink);
-
-                let shown = fit_in(texture.size_vec2(), room);
-                painter.image(
-                    texture.id(),
-                    shown,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-
-                if ui
-                    .put(close, |ui: &mut egui::Ui| {
-                        theme::round_button(ui, icons::CLEAR, "Close the camera", false)
-                    })
-                    .clicked()
-                {
-                    session.close = true;
-                }
-
-                let column = egui::UiBuilder::new()
-                    .max_rect(side)
-                    .layout(egui::Layout::top_down(egui::Align::Center));
-                ui.scope_builder(column, |ui| {
-                    ui.set_width(side.width());
-                    // Held sideways the column has room to spare: centre it.
-                    if sideways {
-                        ui.add_space((side.height() - 200.0).max(0.0) / 2.0);
-                    }
-                    if let Some(place) = &place {
-                        ui.label(
-                            egui::RichText::new(place)
-                                .size(theme::SIZE_TITLE)
-                                .color(theme::p32().cream),
-                        );
-                        ui.add_space(10.0);
-                    }
-                    if session.choosing_chat {
-                        ui.label(
-                            egui::RichText::new("Send to")
-                                .size(theme::SIZE_BODY)
-                                .color(theme::p32().text_dim),
-                        );
-                        egui::ScrollArea::vertical()
-                            .max_height(120.0)
-                            .show(ui, |ui| {
-                                if chats.is_empty() {
-                                    theme::note(ui, "No private chats yet.");
-                                }
-                                for (key, name) in &chats {
-                                    if theme::action_button(ui, name).clicked() {
-                                        session.apply(CameraAct::SendTo(key.clone()));
-                                    }
-                                }
-                            });
-                        if theme::action_button(ui, "Back").clicked() {
-                            session.apply(CameraAct::ChatsBack);
-                        }
-                        return;
-                    }
-
-                    let row = egui::Rect::from_min_size(
-                        ui.cursor().min,
-                        egui::vec2(side.width(), ACTION_DISC + 26.0),
-                    );
-                    if let Some(line) = &clip_line {
-                        ui.label(
-                            egui::RichText::new(line)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        );
-                        ui.add_space(8.0);
-                    }
-                    let row = egui::Rect::from_min_size(ui.cursor().min, row.size());
-                    let actions = result_actions(clip_line.is_some());
-                    let col_w = row.width() / actions.len() as f32;
-                    for (i, (icon, label, hot, act)) in actions.into_iter().enumerate() {
-                        let col = egui::Rect::from_min_size(
-                            row.min + egui::vec2(col_w * i as f32, 0.0),
-                            egui::vec2(col_w, row.height()),
-                        );
-                        let enabled = !(act == CameraAct::Save && saving);
-                        if action(ui, col, icon, label, hot, enabled) {
-                            session.apply(act);
-                        }
-                    }
-                    ui.advance_cursor_after_rect(row);
-
-                    if let Some((line, bad)) = &save_line {
-                        ui.add_space(10.0);
-                        ui.label(
-                            egui::RichText::new(line)
-                                .size(theme::SIZE_SUB)
-                                .color(if *bad {
-                                    theme::p32().error
-                                } else {
-                                    theme::p32().text_dim
-                                }),
-                        );
-                    }
-                });
-            });
-        // Retake also leaves the result: the close button is the camera's.
-        if session.retake {
-            session.choosing_chat = false;
-        }
-    }
 
     /// The result's actions, left to right: icon, label, whether it is the
     /// lit one, and what it does. A clip is kept or taken again: a chat and
     /// a post take pictures only.
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub fn result_actions(clip: bool) -> Vec<(&'static str, &'static str, bool, CameraAct)> {
         if clip {
             vec![
@@ -2988,82 +2406,6 @@ mod native {
                 (icons::CAMERA, "Retake", false, CameraAct::Retake),
             ]
         }
-    }
-
-    /// One of the result's actions: a disc with its label under it, centred in
-    /// `col`, the whole column taking the touch.
-    fn action(
-        ui: &mut egui::Ui,
-        col: egui::Rect,
-        icon: &str,
-        label: &str,
-        hot: bool,
-        enabled: bool,
-    ) -> bool {
-        let sense = if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        };
-        let resp = ui.interact(col, egui::Id::new(("camera_action", label)), sense);
-        let resp = theme::named(ui, resp, label);
-        let disc = egui::pos2(col.center().x, col.top() + ACTION_DISC / 2.0);
-        let (fill, ring, ink) = if hot {
-            (
-                theme::BRAND.to_egui(),
-                theme::BRAND.to_egui(),
-                egui::Color32::WHITE,
-            )
-        } else if enabled && resp.hovered() {
-            (
-                theme::p32().surface_hover,
-                theme::p32().accent,
-                theme::p32().cream,
-            )
-        } else {
-            (
-                theme::p32().surface_raised,
-                theme::p32().overlay_line,
-                theme::p32().text,
-            )
-        };
-        let ink = if enabled { ink } else { theme::p32().text_dim };
-        let painter = ui.painter();
-        painter.circle(
-            disc,
-            ACTION_DISC / 2.0 - 1.0,
-            fill,
-            egui::Stroke::new(1.5, ring),
-        );
-        painter.text(
-            disc,
-            egui::Align2::CENTER_CENTER,
-            icon,
-            egui::FontId::proportional(22.0),
-            ink,
-        );
-        painter.text(
-            egui::pos2(col.center().x, col.top() + ACTION_DISC + 6.0),
-            egui::Align2::CENTER_TOP,
-            label,
-            egui::FontId::proportional(theme::SIZE_BODY),
-            if enabled {
-                theme::p32().text
-            } else {
-                theme::p32().text_dim
-            },
-        );
-        enabled && resp.on_hover_text(label).clicked()
-    }
-
-    /// The right half of a disc, as a polygon.
-    fn half_disc(c: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
-        (0..=16)
-            .map(|i| {
-                let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 16.0;
-                c + egui::vec2(a.cos(), a.sin()) * r
-            })
-            .collect()
     }
 
     /// A pose chip's ink: good (an RTK fix), waiting, or plain.
@@ -3120,79 +2462,6 @@ mod native {
             (heading, ChipTone::Plain),
         ]
     }
-
-    /// A chip at `at`; returns its right edge.
-    fn chip(painter: &egui::Painter, at: egui::Pos2, text: &str, tone: ChipTone) -> f32 {
-        let color = match tone {
-            ChipTone::Good => CHIP_GOOD,
-            ChipTone::Warn => CHIP_WARN,
-            ChipTone::Plain => theme::p32().cream,
-        };
-        let galley =
-            painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.5), color);
-        let rect = egui::Rect::from_min_size(at, galley.size() + egui::vec2(20.0, 10.0));
-        painter.rect_filled(rect, 11.0, egui::Color32::from_black_alpha(170));
-        painter.galley(at + egui::vec2(10.0, 5.0), galley, color);
-        rect.right()
-    }
-
-    fn tag(painter: &egui::Painter, at: egui::Pos2, text: &str) {
-        let galley = painter.layout_no_wrap(
-            text.to_string(),
-            egui::FontId::proportional(11.0),
-            egui::Color32::WHITE,
-        );
-        let rect = egui::Rect::from_min_size(at, galley.size() + egui::vec2(14.0, 6.0));
-        painter.rect_filled(rect, 7.0, egui::Color32::from_black_alpha(180));
-        painter.galley(at + egui::vec2(7.0, 3.0), galley, egui::Color32::WHITE);
-    }
-
-    /// A round button drawn at `rect`, the same disc as `theme::round_button`.
-    fn round(
-        ui: &mut egui::Ui,
-        painter: &egui::Painter,
-        rect: egui::Rect,
-        icon: &str,
-        on: bool,
-        id: &str,
-        label: &str,
-    ) -> egui::Response {
-        let resp = ui.interact(rect, egui::Id::new(id), egui::Sense::click());
-        resp.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
-        });
-        let fill = if on {
-            theme::p32().accent
-        } else {
-            egui::Color32::from_black_alpha(150)
-        };
-        painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            egui::FontId::proportional(18.0),
-            if on {
-                theme::p32().ink
-            } else {
-                egui::Color32::WHITE
-            },
-        );
-        resp
-    }
-
-    /// The part of a `size` texture that fills `area` without stretching.
-    fn cover_uv(size: egui::Vec2, area: egui::Vec2) -> egui::Rect {
-        let (tw, th) = (size.x.max(1.0), size.y.max(1.0));
-        let (aw, ah) = (area.x.max(1.0), area.y.max(1.0));
-        if tw / th > aw / ah {
-            let u = (ah / th * tw - aw) / (ah / th * tw) / 2.0;
-            egui::Rect::from_min_max(egui::pos2(u, 0.0), egui::pos2(1.0 - u, 1.0))
-        } else {
-            let v = (aw / tw * th - ah) / (aw / tw * th) / 2.0;
-            egui::Rect::from_min_max(egui::pos2(0.0, v), egui::pos2(1.0, 1.0 - v))
-        }
-    }
 }
 
 /// On the web there is no camera, so nothing to drive or draw.
@@ -3200,7 +2469,7 @@ mod native {
 pub fn drive_camera() {}
 
 #[cfg(target_arch = "wasm32")]
-pub fn render_camera() {}
+pub fn publish_camera() {}
 
 #[cfg(target_arch = "wasm32")]
 pub fn play_clip_sound() {}

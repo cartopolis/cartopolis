@@ -1,29 +1,26 @@
-//! The polaroid's viewfinder drawn by the component library (`lib_host`),
-//! beside egui's (`faces::render_face_viewfinder`): a square over the live
-//! map, the world outside it dimmed, and Cancel, Face me and Take it under
-//! it.
+//! The polaroid's viewfinder drawn by the component library (`lib_host`): a
+//! square over the live map, the world outside it dimmed, and Cancel, Face
+//! me and Take it under it.
 //!
-//! On with `CARTO_UI_LIB=face_viewfinder` (or `1`), on the web `?ui=lib`.
-//! egui's system steps aside (`Faces::lib`) but still owns the viewfinder —
-//! when it is up, the camera Face me swings, the capture the shutter asks
-//! for — and publishes `Faces::lib_view`. A tap here goes back in
-//! `Faces::lib_acts` and is done by `Faces::finder_act`, the code egui's
-//! buttons call.
+//! `faces::drive_face_viewfinder` owns the viewfinder — when it is up, the
+//! camera Face me swings, the capture the shutter asks for — and publishes
+//! `Faces::lib_view`. A tap here goes back in `Faces::lib_acts` and is done
+//! by `Faces::finder_act`.
 //!
 //! **The square is a hole.** Nothing is drawn in it: the shade is four
 //! boxes around it and the rim a bordered box with no fill, so the map
-//! shows through and, as with egui's painted shade, every part of it but
-//! the buttons lets the pointer through to the map — framing the picture is
-//! dragging the world. **Placement.** As egui's: the square
-//! `faces::finder_rect` of the window, its 2 px cream rim outside it; the
-//! buttons in a row centred `FINDER_CONTROLS_BOTTOM` above the bottom
-//! edge, wrapping at a phone's width rather than running off both sides as
-//! egui's row does.
+//! shows through and every part of it but the buttons lets the pointer
+//! through to the map — framing the picture is dragging the world.
+//! **Placement.** The square `faces::finder_rect` of the window, its 2 px
+//! cream rim outside it; the buttons in a row centred
+//! `FINDER_CONTROLS_BOTTOM` above the bottom edge, wrapping at a phone's
+//! width.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy::ecs::system::NonSendMarker;
+use bevy::math::{Rect, Vec2};
 use bevy::prelude::{warn, Res, ResMut};
 use mithril::prelude::{el, signal, Event, IntoView, Signal, View};
 
@@ -36,29 +33,28 @@ use crate::systems::{icons, theme};
 /// The viewfinder's name in the library's host.
 const KEY: &str = "face_viewfinder";
 
-/// Over the other library screens, as egui's is a `Foreground` layer; under
-/// the launch splash (`lib_splash`).
+/// Over the other library screens; under the launch splash (`lib_splash`).
 const Z: i32 = 900;
 
-/// egui's shade: black at 110 of 255.
+/// The shade: black at 110 of 255.
 const SHADE_PCT: f32 = 110.0 / 255.0 * 100.0;
 
-/// The rim round the square, px, outside it (`StrokeKind::Outside`).
+/// The rim round the square, px, outside it.
 const RIM: f32 = 2.0;
 
 /// The window the viewfinder is placed in.
 #[derive(Clone, Copy, PartialEq, Default)]
 struct Placement {
-    /// The viewport, egui points.
+    /// The viewport, UI points.
     w: f32,
     h: f32,
-    /// The library's px per egui point: 1 on the Bevy backend, the UI scale
+    /// The library's px per UI point: 1 on the Bevy backend, the UI scale
     /// as DOM (`lib_place_card::Placement::over_the_dock` says why).
     k: f32,
 }
 
 impl Placement {
-    fn of(size: egui::Vec2, ui_scale: f32) -> Self {
+    fn of(size: Vec2, ui_scale: f32) -> Self {
         let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
             ui_scale
         } else {
@@ -76,8 +72,8 @@ impl Placement {
         format!("{:.1}px", v * self.k)
     }
 
-    /// A box at `r`, egui points.
-    fn at(&self, r: egui::Rect) -> String {
+    /// A box at `r`, UI points.
+    fn at(&self, r: Rect) -> String {
         format!(
             "position: absolute; left: {}; top: {}; width: {}; height: {}",
             self.px(r.min.x),
@@ -87,8 +83,11 @@ impl Placement {
         )
     }
 
-    fn screen(&self) -> egui::Rect {
-        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(self.w, self.h))
+    fn screen(&self) -> Rect {
+        Rect {
+            min: Vec2::ZERO,
+            max: Vec2::new(self.w, self.h),
+        }
     }
 }
 
@@ -122,14 +121,10 @@ pub fn drive_lib_face_viewfinder(
     if !lib.face_viewfinder {
         return;
     }
-    if !faces.lib {
-        faces.lib = true;
-    }
-    let viewport = metrics.viewport_pts();
-    let placement = Placement::of(egui::vec2(viewport.x, viewport.y), metrics.ui_scale());
+    let placement = Placement::of(metrics.viewport_pts(), metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `drive_face_viewfinder` to do next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<FinderAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {
@@ -203,18 +198,13 @@ fn view_of(l: &Live) -> View {
             let style = move || -> String {
                 let p = placement.get();
                 let (s, f) = (p.screen(), finder_rect(p.screen()));
-                let r = match i {
-                    0 => egui::Rect::from_min_max(s.min, egui::pos2(s.max.x, f.min.y)),
-                    1 => egui::Rect::from_min_max(egui::pos2(s.min.x, f.max.y), s.max),
-                    2 => egui::Rect::from_min_max(
-                        egui::pos2(s.min.x, f.min.y),
-                        egui::pos2(f.min.x, f.max.y),
-                    ),
-                    _ => egui::Rect::from_min_max(
-                        egui::pos2(f.max.x, f.min.y),
-                        egui::pos2(s.max.x, f.max.y),
-                    ),
+                let (min, max) = match i {
+                    0 => (s.min, Vec2::new(s.max.x, f.min.y)),
+                    1 => (Vec2::new(s.min.x, f.max.y), s.max),
+                    2 => (Vec2::new(s.min.x, f.min.y), Vec2::new(f.min.x, f.max.y)),
+                    _ => (Vec2::new(f.max.x, f.min.y), Vec2::new(s.max.x, f.max.y)),
                 };
+                let r = Rect { min, max };
                 format!("{}; background: {shade}; pointer-events: none", p.at(r))
             };
             el("div").attr("style", style).into_view()
@@ -226,7 +216,7 @@ fn view_of(l: &Live) -> View {
         let placement = l.placement.clone();
         move || -> String {
             let p = placement.get();
-            let r = finder_rect(p.screen()).expand(RIM);
+            let r = finder_rect(p.screen()).inflate(RIM);
             format!(
                 "{}; box-sizing: border-box; border: {} solid {cream}; \
                  background: transparent; pointer-events: none",
@@ -272,7 +262,7 @@ fn controls_view(v: &FinderView, p: &Placement, acts: &Acts) -> View {
         p.px(theme::OSD_MARGIN),
         p.px(8.0)
     );
-    // egui's `pill`: the raised surface, rounded 12, 32 tall, 12.5 text.
+    // A pill: the raised surface, rounded 12, 32 tall, 12.5 text.
     let pill = format!(
         "display: flex; align-items: center; gap: {}; min-height: {}; box-sizing: border-box; \
          padding: 0 {}; border-radius: {}; background: var(--m-surface-raised); \
@@ -296,8 +286,8 @@ fn controls_view(v: &FinderView, p: &Placement, acts: &Acts) -> View {
     };
     // The shutter: the accent, rounded 18, 40 tall, 15 strong — waiting
     // while a picture is on its way. Its ink is the one for an accent
-    // plate (egui's paints `ink`, the near-black the person turned down on
-    // a teal button on 2026-11-10).
+    // plate, not `ink`, the near-black the person turned down on a teal
+    // button on 2026-11-10.
     let shutter_style = format!(
         "display: flex; align-items: center; gap: {}; min-height: {}; box-sizing: border-box; \
          padding: 0 {}; border-radius: {}; background: var(--m-accent); \

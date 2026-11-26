@@ -14,7 +14,6 @@
 use bevy::prelude::*;
 
 use crate::resources::{AppPrefs, DevPanelState, UiTheme};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::theme;
 
 /// A forced theme from `CARTO_UI_THEME`: `Some(true)` light, `Some(false)` dark.
@@ -43,14 +42,14 @@ fn wants_light(theme: UiTheme, solar_hour: f32, declination_rad: f32) -> bool {
     }
 }
 
-/// Set the palette and re-apply egui's visuals, only on the frame the answer
-/// changes (and the first).
+/// Set the palette, only on the frame the answer changes (and the first).
+/// The library's screens read it (`theme::is_light`) as they mount and
+/// style.
 pub fn follow_the_light(
     prefs: Res<AppPrefs>,
     dev: Res<DevPanelState>,
     clock: Res<crate::systems::transit_live::WorldClock>,
     globe: Res<crate::systems::globe::GlobeState>,
-    egui: EguiRef,
     mut was: Local<Option<bool>>,
 ) {
     let light = forced().unwrap_or_else(|| {
@@ -64,7 +63,6 @@ pub fn follow_the_light(
     }
     *was = Some(light);
     theme::set_light(light);
-    theme::apply_visuals(egui.ctx());
 }
 
 #[cfg(test)]

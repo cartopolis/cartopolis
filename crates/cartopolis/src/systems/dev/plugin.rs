@@ -83,7 +83,7 @@ impl Plugin for DevPlugin {
                     )
                         .chain()
                         .in_set(ClientPhase::Input),
-                    systems::midas_link::draw_link_button
+                    systems::midas_link::drive_link_button
                         .in_set(ClientPhase::Present)
                         .after(systems::locate::place_locate_arrow),
                 ),
@@ -93,7 +93,7 @@ impl Plugin for DevPlugin {
             Update,
             (
                 systems::dev_panel::toggle_dev_panel_shortcut,
-                systems::dev_panel::render_dev_panel,
+                systems::dev_panel::drive_dev_panel,
             )
                 .in_set(ClientPhase::Input),
         )
@@ -206,16 +206,6 @@ impl Plugin for ShotHarnessPlugin {
             .add_systems(
                 Update,
                 (
-                    // Anywhere in Update is early enough: it only has to beat
-                    // PostUpdate's `end_egui_frame`, which is what would otherwise
-                    // reuse an older frame's tessellation for the capture.
-                    //
-                    // Gated, because in a live run this is a cost paid every frame
-                    // for a capture that may be minutes away — and between calls
-                    // the ordinary skip is what the client wants.
-                    systems::shot_harness::keep_egui_fresh
-                        .run_if(systems::shot_harness::shot_in_progress)
-                        .in_set(ClientPhase::Input),
                     systems::shot_harness::place_camera
                         .before(systems::geo_nav::apply_teleport)
                         .in_set(ClientPhase::Input),
@@ -511,8 +501,9 @@ impl Plugin for McpPlugin {
                 )
                     .in_set(ClientPhase::Input),
             );
-        // `ui_tree` and `press`: egui through a plugin of its own, so no place
-        // in the panel chain — only after the pump that queues them.
+        // `ui_tree` and `press`: answered from the component library's tree
+        // (exclusive: its host is thread-local), after the pump that queues
+        // them.
         app.init_resource::<systems::mcp::screen::ScreenPending>()
             .add_systems(
                 Update,
@@ -520,16 +511,6 @@ impl Plugin for McpPlugin {
                     .after(systems::mcp::pump)
                     .in_set(ClientPhase::Input),
             );
-        // While the component library draws, it answers them first from its
-        // own tree (exclusive: its host is thread-local).
-        #[cfg(feature = "ui-probe")]
-        app.add_systems(
-            Update,
-            systems::mcp::screen::serve_lib
-                .after(systems::mcp::pump)
-                .before(systems::mcp::screen::serve)
-                .in_set(ClientPhase::Input),
-        );
         // The map's questions: a point, a building, a stop, the sky. In
         // `Input`, where a prim's `Transform` is in the sim's flat frame
         // (`prim_geo::strip_prim_lift`), which `check_geometry` relies on.
@@ -598,7 +579,7 @@ impl Plugin for McpPlugin {
             // the Midas link, whose button says so (`midas_link`).
             app.add_systems(
                 Update,
-                systems::mcp::overlay::render_mcp_activity
+                systems::mcp::overlay::publish_mcp_activity
                     .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             );

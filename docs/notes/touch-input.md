@@ -1,6 +1,6 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "double tap", "double_tap", "Touches", "iter_just_released", "tap does nothing", "android tap", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye", picking.rs, gizmo.rs, egui_wants_pointer_input, owns_click, CameraInput, touch-action]
 updated: 2026-11-25
 ---
 
@@ -366,7 +366,7 @@ consumes — *not* `camera_controls`. That is what makes it work identically in
 every run mode: `handle_avatar_movement` owns the one speed ramp, and
 `network::send_network_intent` consumes its output rather than re-deriving one,
 so the phone's throttle reaches an authoritative sim through the same path a key
-does. It also means this is the one control read a frame late: `render_map_osd`
+does. It also means this is the one control read a frame late: `drive_map_osd`
 runs after the driver tick, which runs after the avatar has moved.
 
 Three things it inherits from elsewhere in this tree rather than inventing:

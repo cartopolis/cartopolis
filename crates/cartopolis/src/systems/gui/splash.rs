@@ -25,14 +25,10 @@
 //!
 //! Native has no such gap, so this is the whole startup screen there.
 //!
-//! Painted with egui rather than `bevy_ui` for a plain reason: egui is already
-//! wired up (`systems::egui_manager`) and ships its own fonts, while `bevy_ui`
-//! text would need a font asset the repo does not have. The mark is
-//! [`theme::paint_mark`] — a drawing, not an asset — so it is on screen on the
-//! very first frame with no decode, no texture upload and no HTTP round trip on
-//! the web, and no dependency on the icon PNG having survived Git LFS.
+//! The component library draws it (`systems::lib_splash`; on the web its DOM
+//! edition); [`drive_boot_splash`] keeps the clock, the bar, the caption and
+//! the dismissal, and publishes them in [`BootSplash::lib_view`].
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -43,10 +39,12 @@ use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::session::{SessionMode, SessionState, SessionStatus};
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The line under the wordmark. Named because `index.html` carries the same
 /// words: the two splashes are one screen handed over mid-load, and a motto that
 /// changes on the handover is the tell that they are not.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const MOTTO: &str = "Explore our world";
 
 /// Shortest time the splash stays up, in seconds — long enough to be read
@@ -125,8 +123,10 @@ pub(crate) const STREETS_SVG: &str = include_str!("../../../../atlas/web/src/img
 const STREETS_INK: f32 = 0.09;
 
 /// The streets' ink, opaque: the page colour with the streets already mixed
-/// in. One writer for egui's strokes and the library's raster
-/// (`lib_splash`).
+/// in, rather than a translucent stroke — overlapping translucent strokes
+/// darken where they cross, and a CSS mask does not, so every junction would
+/// be a dot. The library's raster (`lib_splash`) and its DOM edition use it.
+#[cfg_attr(not(any(feature = "ui-probe", feature = "ui-dom")), allow(dead_code))]
 pub(crate) fn streets_ink() -> theme::Rgba8 {
     theme::DARK.surface.lerp(theme::DARK.text_dim, STREETS_INK)
 }
@@ -134,29 +134,31 @@ pub(crate) fn streets_ink() -> theme::Rgba8 {
 /// Where the plan stands to cover a `size` box as the web's
 /// `mask: … center / cover` does: its top-left corner and the scale from the
 /// drawing's units, both in the box's own units.
-pub(crate) fn streets_cover(size: egui::Vec2) -> (egui::Pos2, f32) {
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) fn streets_cover(size: Vec2) -> (Vec2, f32) {
     let (plan, _) = streets();
     let scale = (size.x / plan.x).max(size.y / plan.y);
-    let origin = egui::pos2(size.x * 0.5, size.y * 0.5) - *plan * scale * 0.5;
+    let origin = size * 0.5 - *plan * scale * 0.5;
     (origin, scale)
 }
 
 /// One stroke width's worth of the plan, in the drawing's own units.
 pub(crate) struct StreetLayer {
     pub(crate) width: f32,
-    pub(crate) lines: Vec<Vec<egui::Pos2>>,
+    pub(crate) lines: Vec<Vec<Vec2>>,
 }
 
 /// The plan's polylines, parsed once: its `viewBox` size and each `<path>` as
 /// a stroke width and the polylines its `M`/`L` commands draw. The filled water
-/// path is drawn as its outline — egui fills only convex shapes, and a bank
-/// reads the same as a filled canal at this strength.
-pub(crate) fn streets() -> &'static (egui::Vec2, Vec<StreetLayer>) {
-    static PLAN: std::sync::OnceLock<(egui::Vec2, Vec<StreetLayer>)> = std::sync::OnceLock::new();
+/// path is drawn as its outline — a bank reads the same as a filled canal at
+/// this strength.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) fn streets() -> &'static (Vec2, Vec<StreetLayer>) {
+    static PLAN: std::sync::OnceLock<(Vec2, Vec<StreetLayer>)> = std::sync::OnceLock::new();
     PLAN.get_or_init(|| parse_streets(STREETS_SVG))
 }
 
-fn parse_streets(svg: &str) -> (egui::Vec2, Vec<StreetLayer>) {
+fn parse_streets(svg: &str) -> (Vec2, Vec<StreetLayer>) {
     let attr = |tag: &str, name: &str| -> Option<String> {
         let at = tag.find(&format!(" {name}=\""))? + name.len() + 3;
         Some(tag[at..].split('"').next()?.to_owned())
@@ -170,9 +172,9 @@ fn parse_streets(svg: &str) -> (egui::Vec2, Vec<StreetLayer>) {
                 .split_whitespace()
                 .filter_map(|x| x.parse().ok())
                 .collect();
-            (n.len() == 4).then(|| egui::vec2(n[2], n[3]))
+            (n.len() == 4).then(|| Vec2::new(n[2], n[3]))
         })
-        .unwrap_or(egui::vec2(2000.0, 2000.0));
+        .unwrap_or(Vec2::new(2000.0, 2000.0));
     let mut layers = Vec::new();
     for tag in svg.split("<path").skip(1) {
         let tag = tag.split("/>").next().unwrap_or(tag);
@@ -190,11 +192,11 @@ fn parse_streets(svg: &str) -> (egui::Vec2, Vec<StreetLayer>) {
 
 /// The polylines of an SVG path made of absolute `M`, `L` and `Z` — all the
 /// backdrop pipeline writes.
-fn parse_path(d: &str) -> Vec<Vec<egui::Pos2>> {
-    let mut lines: Vec<Vec<egui::Pos2>> = Vec::new();
-    let mut current: Vec<egui::Pos2> = Vec::new();
+fn parse_path(d: &str) -> Vec<Vec<Vec2>> {
+    let mut lines: Vec<Vec<Vec2>> = Vec::new();
+    let mut current: Vec<Vec2> = Vec::new();
     let mut numbers: Vec<f32> = Vec::new();
-    let mut flush = |current: &mut Vec<egui::Pos2>| {
+    let mut flush = |current: &mut Vec<Vec2>| {
         let line = std::mem::take(current);
         // A point drawn as a zero-length segment is nothing at this scale.
         if line.len() >= 2 && line.iter().any(|p| *p != line[0]) {
@@ -208,9 +210,9 @@ fn parse_path(d: &str) -> Vec<Vec<egui::Pos2>> {
         }
         token.clear();
     };
-    let apply = |numbers: &mut Vec<f32>, current: &mut Vec<egui::Pos2>| {
+    let apply = |numbers: &mut Vec<f32>, current: &mut Vec<Vec2>| {
         for xy in numbers.chunks_exact(2) {
-            current.push(egui::pos2(xy[0], xy[1]));
+            current.push(Vec2::new(xy[0], xy[1]));
         }
         numbers.clear();
     };
@@ -244,30 +246,6 @@ fn parse_path(d: &str) -> Vec<Vec<egui::Pos2>> {
     lines
 }
 
-/// Paint the street plan over `rect`, cropped to cover it as the web's
-/// `mask: … center / cover` does.
-///
-/// The ink is the page colour with the streets already mixed in, opaque, rather
-/// than a translucent stroke: overlapping translucent strokes darken where
-/// they cross, and a CSS mask does not, so every junction would be a dot.
-fn paint_streets(painter: &egui::Painter, rect: egui::Rect, alpha: f32) {
-    let (_, layers) = streets();
-    let (origin, scale) = streets_cover(rect.size());
-    let origin = rect.min + origin.to_vec2();
-    let ink = streets_ink();
-    let ink =
-        egui::Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), (alpha * 255.0) as u8);
-    let mut shapes = Vec::new();
-    for layer in layers {
-        let stroke = egui::Stroke::new((layer.width * scale).max(0.6), ink);
-        for line in &layer.lines {
-            let points = line.iter().map(|p| origin + p.to_vec2() * scale).collect();
-            shapes.push(egui::Shape::line(points, stroke));
-        }
-    }
-    painter.extend(shapes);
-}
-
 /// Smoothstep. Both fades run through it so the entrance and the exit are the
 /// same motion in opposite directions; a linear ramp starts and stops abruptly at
 /// exactly the two moments anyone is looking at it.
@@ -277,9 +255,11 @@ fn ease(t: f32) -> f32 {
 }
 
 /// Height of the progress track, in points (`index.html`'s `#track` is 3 px).
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const TRACK_H: f32 = 3.0;
 /// The status line under the track. Smaller than [`theme::SPLASH_MOTTO`] on
 /// purpose: the motto is the brand and this is a caption under it.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const STATUS_TEXT: f32 = 13.0;
 /// One 35 %-wide sweep of the indeterminate bar, in seconds. `index.html`'s
 /// `@keyframes sweep` runs at 1.1 s and the two splashes are one screen.
@@ -397,7 +377,7 @@ fn loading(stream: &MapStream, globe: &GlobeState, in_space: bool, tiles_ready: 
 /// run concurrently, and replacing the tile counts would hide the diagnostic
 /// half of the line for exactly the seconds a slow host makes it interesting.
 /// The streaming clause is what goes away once dismissal is decided — see
-/// [`boot_splash`] — because from then on it is a count nobody is waiting for.
+/// [`drive_boot_splash`] — because from then on it is a count nobody is waiting for.
 fn caption(signin: Option<&str>, stage: Option<&str>) -> String {
     match (signin, stage) {
         (Some(signin), Some(stage)) => format!("{signin} · {stage}"),
@@ -445,8 +425,7 @@ fn bar_closing(held: f32, t: f32) -> f32 {
 
 /// The lit part of the track, as its left edge and width in fractions of the
 /// track: a measured fill from the left, or — nothing measured yet, so no
-/// number — the segment sweeping it ([`BAR_SWEEP_BELOW`]). Both editions draw
-/// from this.
+/// number — the segment sweeping it ([`BAR_SWEEP_BELOW`]).
 fn bar_span(bar: f32, elapsed: f32) -> (f32, f32) {
     if bar > BAR_SWEEP_BELOW {
         (0.0, bar.min(1.0))
@@ -460,17 +439,17 @@ fn bar_span(bar: f32, elapsed: f32) -> (f32, f32) {
 
 /// The track's width on a `w`-point-wide screen: `index.html`'s
 /// `min(22rem, 70vw)`.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) fn track_width(w: f32) -> f32 {
     (w * 0.7).min(352.0)
 }
 
-/// What the library's splash draws this frame (`lib_splash`), while
-/// [`BootSplash::lib`] is on.
+/// What the library's splash draws this frame (`lib_splash`).
 #[derive(Clone, PartialEq, Debug)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct SplashView {
-    /// The area to fill, egui points.
-    pub size: egui::Vec2,
+    /// The area to fill, UI points.
+    pub size: Vec2,
     /// The window in physical pixels: what the street plan is rasterised at.
     pub physical: [u32; 2],
     /// The backdrop's alpha: the dismissal fade.
@@ -535,12 +514,7 @@ pub struct BootSplash {
     /// decided. [`bar_closing`] runs from here rather than from zero.
     held: f32,
     finished: bool,
-    /// The component library draws the splash (`lib_splash`,
-    /// `CARTO_UI_LIB=splash`): this system still keeps the clock, the bar
-    /// and the dismissal, and publishes [`Self::lib_view`] instead of
-    /// painting.
-    pub lib: bool,
-    /// What the library's edition shows, while `lib` is on; `None` once the
+    /// What the library's edition (`lib_splash`) shows; `None` once the
     /// splash is gone (or with no window to cover).
     pub lib_view: Option<SplashView>,
 }
@@ -552,12 +526,23 @@ impl BootSplash {
     pub fn covering(&self) -> bool {
         !self.finished
     }
+
+    /// A splash already gone, for tests of what waits behind it.
+    #[cfg(test)]
+    pub(crate) fn gone() -> Self {
+        Self {
+            finished: true,
+            ..Self::default()
+        }
+    }
 }
 
-/// Draw the splash until the first map tiles are up, then fade it out.
-pub fn boot_splash(
+/// Keep the splash up until the first map tiles are, then fade it out:
+/// publishes what the library draws each frame.
+#[allow(clippy::too_many_arguments)]
+pub fn drive_boot_splash(
     mut splash: ResMut<BootSplash>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     time: Res<Time<Real>>,
     stream: Res<MapStream>,
     globe: Res<GlobeState>,
@@ -643,26 +628,12 @@ pub fn boot_splash(
     // floor — fades out from wherever it had got to instead of snapping to full.
     let content = backdrop * ease(splash.elapsed / FADE_IN_S);
 
-    // The area to fill, in the points egui lays out in — which are the window's
-    // own only while `EguiManager::ui_scale` is 1.0. Reading `Window::width()`
-    // here instead (as this did until the touch UI scale existed) oversizes the
-    // rect by that factor on a phone, and since everything below is placed
-    // relative to its centre, the wordmark walks off the bottom-right corner.
-    let viewport = egui.viewport_pts();
-    let ctx = egui.ctx();
-    // Both fades read the clock, and egui does not know that: without this
-    // ask a quiet frame re-presents the last geometry and the fade stands
-    // still until something is touched (`egui-quiet-frame-staleness.md`).
-    if splash.fading.is_some() || splash.elapsed < FADE_IN_S {
-        ctx.request_repaint();
-    }
-
-    // A foreground layer painted directly, rather than a window or a panel: this
-    // covers everything, takes no input, and needs no layout.
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("boot_splash"),
-    ));
+    // The area to fill, in UI points — which are the window's own only while
+    // the UI scale is 1.0. Reading `Window::width()` here instead (as this did
+    // until the touch UI scale existed) oversizes the box by that factor on a
+    // phone, and since everything is placed relative to its centre, the
+    // wordmark walks off the bottom-right corner.
+    let viewport = metrics.viewport_pts();
     // The window is still queried, but only as a *gate*: a headless `--shot` run
     // has no primary window, and that is what keeps the splash out of every
     // captured image. The size comes from `viewport_pts` above.
@@ -672,88 +643,17 @@ pub fn boot_splash(
         }
         return;
     };
-    let span = bar_span(splash.bar, splash.elapsed);
-    // The library's edition: the same numbers, drawn by `lib_splash`.
-    if splash.lib {
-        let view = SplashView {
-            size: viewport,
-            physical: [window.physical_width(), window.physical_height()],
-            backdrop,
-            content,
-            bar: span,
-            label,
-        };
-        if splash.lib_view.as_ref() != Some(&view) {
-            splash.lib_view = Some(view);
-        }
-        return;
-    }
-    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), viewport);
-    // Every colour here is a brand constant faded by one of the two alphas above,
-    // so the splash and the UI it uncovers are painted from the same palette.
-    let fade = |c: egui::Color32, alpha: f32, v: f32| {
-        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (v * alpha * 255.0) as u8)
-    };
-
-    // Matches index.html's radial gradient closely enough to read as continuous;
-    // egui has no gradient primitive, so this is the gradient's middle tone.
-    painter.rect_filled(rect, 0.0, fade(theme::DARK32.surface, backdrop, 1.0));
-    // The street plan behind the web's glass, at the web's strength.
-    paint_streets(&painter, rect, backdrop);
-
-    let c = rect.center();
-    // 84 pt of radius — the 168 pt square the logo image used to occupy.
-    theme::paint_mark(&painter, egui::pos2(c.x, c.y - 104.0), 84.0, content);
-    // Cream `carto`, accent `polis` — the account GUI's split (see
-    // `theme::WORDMARK_HEAD`). The brand family is bound because
-    // `EguiManager::default` installed the theme before this context's first
-    // pass, so there is no unbound-family frame to fall back for
-    // (`theme::install` documents why that ordering holds).
-    theme::paint_wordmark(
-        &painter,
-        egui::pos2(c.x, c.y + 24.0),
-        theme::SPLASH_WORDMARK,
+    let view = SplashView {
+        size: viewport,
+        physical: [window.physical_width(), window.physical_height()],
+        backdrop,
         content,
-    );
-    painter.text(
-        egui::pos2(c.x, c.y + 66.0),
-        egui::Align2::CENTER_CENTER,
-        MOTTO,
-        egui::FontId::proportional(theme::SPLASH_MOTTO),
-        fade(theme::DARK32.text_dim, content, 0.9),
-    );
-
-    // The track and the line under it — `index.html`'s `#track` / `#bar` /
-    // `#status`, in the same order under the same motto and off the same two
-    // palette entries (`SURFACE_RAISED` is its `#263842`, `ACCENT` its `#fd6012`).
-    // The `min(22rem, 70vw)` is its sizing rule too: on a phone in portrait a
-    // fixed 352 pt track runs past both margins.
-    let track_w = track_width(viewport.x);
-    let track =
-        egui::Rect::from_center_size(egui::pos2(c.x, c.y + 104.0), egui::vec2(track_w, TRACK_H));
-    painter.rect_filled(
-        track,
-        TRACK_H * 0.5,
-        fade(theme::DARK32.surface_raised, content, 1.0),
-    );
-    // A measured fill from the left or, nothing measured yet, a segment
-    // sweeping the track. The alternative is a bar sitting at zero, which is
-    // what a *stalled* loader looks like — the one reading this screen must
-    // not give.
-    let bar = egui::Rect::from_min_size(
-        egui::pos2(track.min.x + span.0 * track_w, track.min.y),
-        egui::vec2(span.1 * track_w, TRACK_H),
-    );
-    if bar.width() > 0.0 {
-        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::DARK32.accent, content, 1.0));
+        bar: bar_span(splash.bar, splash.elapsed),
+        label,
+    };
+    if splash.lib_view.as_ref() != Some(&view) {
+        splash.lib_view = Some(view);
     }
-    painter.text(
-        egui::pos2(c.x, c.y + 128.0),
-        egui::Align2::CENTER_CENTER,
-        &label,
-        egui::FontId::proportional(STATUS_TEXT),
-        fade(theme::DARK32.text_dim, content, 0.75),
-    );
 }
 
 #[cfg(test)]
@@ -773,7 +673,7 @@ mod tests {
     #[test]
     fn the_street_plan_parses() {
         let (size, layers) = streets();
-        assert_eq!(*size, egui::vec2(2000.0, 1971.0));
+        assert_eq!(*size, Vec2::new(2000.0, 1971.0));
         assert!(layers.len() >= 5, "{} layers", layers.len());
         let lines: usize = layers.iter().map(|l| l.lines.len()).sum();
         assert!(lines > 3000, "{lines} lines");
@@ -791,15 +691,15 @@ mod tests {
             lines,
             vec![
                 vec![
-                    egui::pos2(0.0, 0.0),
-                    egui::pos2(10.0, 0.0),
-                    egui::pos2(10.0, -5.0)
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(10.0, 0.0),
+                    Vec2::new(10.0, -5.0)
                 ],
                 vec![
-                    egui::pos2(1.0, 1.0),
-                    egui::pos2(2.0, 2.0),
-                    egui::pos2(3.0, 1.0),
-                    egui::pos2(1.0, 1.0)
+                    Vec2::new(1.0, 1.0),
+                    Vec2::new(2.0, 2.0),
+                    Vec2::new(3.0, 1.0),
+                    Vec2::new(1.0, 1.0)
                 ],
             ]
         );

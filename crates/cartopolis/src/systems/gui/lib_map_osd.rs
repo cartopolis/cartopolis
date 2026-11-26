@@ -1,15 +1,14 @@
 //! The map's on-screen controls drawn by the component library (`lib_host`),
-//! beside egui's (`systems::map_osd`): the thumbstick, the climb or zoom
+//! for `systems::map_osd`: the thumbstick, the climb or zoom
 //! pair, the jump, face and hand discs, the expressions, the zoom rail with
 //! its list of scales, the hand's first-use card and the hand's menu.
 //!
-//! On unless `CARTO_UI_LIB=0`; on the web `?ui=osd`. `map_osd`'s system
-//! keeps the logic and makes no egui widget (`OsdLib::lib`): it lays every
-//! control out, works it from Bevy's input — the claimed fingers
+//! On the web `?ui=osd`. `map_osd::drive_map_osd` keeps the logic: it lays
+//! every control out, works it from Bevy's input — the claimed fingers
 //! (`TouchGestures`, several at once, where the library has one pointer)
 //! and the mouse's presses on a control, which `touch::claim_mouse` takes
 //! out of the world's input — and publishes what it laid out
-//! (`OsdLib::view`). This draws that, rect for rect, in egui's points (as
+//! (`OsdLib::view`). This draws that, rect for rect, in UI points (as
 //! DOM the page's px are `ui_scale` times larger: [`Pen`]). Nothing here
 //! listens but the hand card and the hand menu, so a press goes through to
 //! the canvas, where Bevy reads it — as DOM by `pointer-events: none`. A
@@ -24,7 +23,7 @@
 //!
 //! **The hand menu.** Opened as egui's was, by a right-click or a long
 //! press on the hand disc (`OsdLib::hand_menu`, set by
-//! `map_osd::lib_hand`); drawn
+//! `map_osd::hand_button`); drawn
 //! here as a popover over the disc, right-aligned to it. Which hand, Start
 //! again (only while the tracking is on), what is wrong, and the line on
 //! what it uses. A choice closes it, as a tap in egui's menu did; a tap
@@ -183,7 +182,7 @@ fn keep<T: Clone + PartialEq + 'static>(
 }
 
 /// Mounts, bridges and unmounts the controls. `PostUpdate`, before
-/// `DriveUi`, as every library screen — after `map_osd::render_map_osd`
+/// `DriveUi`, as every library screen — after `map_osd::drive_map_osd`
 /// (`Update`) has published the frame's view.
 #[allow(clippy::needless_pass_by_value)]
 pub fn drive_lib_map_osd(
@@ -199,16 +198,10 @@ pub fn drive_lib_map_osd(
         return;
     }
     let Some(mut osd) = osd else {
-        // Not registered: from here on, and egui's system reads it.
-        commands.insert_resource(OsdLib {
-            lib: true,
-            ..Default::default()
-        });
+        // Not registered: from here on, and `map_osd::drive_map_osd` fills it.
+        commands.insert_resource(OsdLib::default());
         return;
     };
-    if !osd.lib {
-        osd.lib = true;
-    }
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement`).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
@@ -497,7 +490,7 @@ fn disc(
         .into_view()
 }
 
-/// `map_osd::paint_mark`, stroke for stroke.
+/// A disc's mark (`map_osd::Mark`), stroke for stroke.
 fn mark(p: Pen, m: map_osd::Mark, c: (f32, f32), s: f32, ink: &str) -> Vec<View> {
     use map_osd::Mark;
     let at = |x: f32, y: f32| (c.0 + x, c.1 + y);
@@ -553,7 +546,7 @@ fn mark(p: Pen, m: map_osd::Mark, c: (f32, f32), s: f32, ink: &str) -> Vec<View>
     }
 }
 
-/// `map_osd::paint_scale`: the globe a meridian and an equator in a ring;
+/// A scale's icon: the globe a meridian and an equator in a ring;
 /// the solar system a Sun in two orbits with a planet; the Milky Way a core
 /// with two arms; the universe a web of points.
 fn scale_icon(p: Pen, c: (f32, f32), s: f32, scale: Scale, ink: &str) -> Vec<View> {
@@ -797,12 +790,20 @@ fn rail_view(shape: Signal<RailShape>, live: Signal<map_osd::RailLive>) -> View 
     .into_view()
 }
 
+/// `r` moved so that `origin` is its frame's top-left corner.
+fn shifted(r: bevy::math::Rect, origin: bevy::math::Vec2) -> bevy::math::Rect {
+    bevy::math::Rect {
+        min: r.min - origin,
+        max: r.max - origin,
+    }
+}
+
 /// The rail's discs and track, in the column's frame.
 fn rail_parts(sh: &RailShape) -> View {
     let (f, p) = (&sh.f, Pen { k: sh.k });
     let o = f.column.min;
     let local = |d: &map_osd::DiscState| map_osd::DiscState {
-        rect: d.rect.translate(-o.to_vec2()),
+        rect: shifted(d.rect, o),
         ..*d
     };
     let mut v = Vec::new();
@@ -858,19 +859,19 @@ fn rail_parts(sh: &RailShape) -> View {
 
     // The track, lilac past the Earth, plain on the globe; a faint tick
     // between steps.
-    let t = f.track.translate(-o.to_vec2());
+    let t = shifted(f.track, o);
     let x = t.center().x;
-    v.push(p.line((x, t.top()), (x, t.bottom()), 4.0, "var(--m-surface)"));
+    v.push(p.line((x, t.min.y), (x, t.max.y), 4.0, "var(--m-surface)"));
     let (tone, alpha) = if scale == Scale::Globe {
         ("var(--m-text-dim)".to_owned(), 1.0)
     } else {
         (public(), 0.8)
     };
-    let mut ticks = vec![p.line((x, t.top()), (x, t.bottom()), 1.5, &tone)];
+    let mut ticks = vec![p.line((x, t.min.y), (x, t.max.y), 1.5, &tone)];
     let n = f.steps.max(1);
     let mut faint = Vec::new();
     for k in 1..n {
-        let y = t.top() + t.height() * k as f32 / n as f32;
+        let y = t.min.y + t.height() * k as f32 / n as f32;
         faint.push(p.line((x - 3.0, y), (x + 3.0, y), 1.0, &tone));
     }
     ticks.push(p.faded(0.6, faint));
@@ -915,7 +916,7 @@ fn rail_moving(sh: &RailShape, l: &map_osd::RailLive) -> View {
         if next.is_none() || done <= 0.0 {
             continue;
         }
-        let c = d.rect.center() - o.to_vec2();
+        let c = d.rect.center() - o;
         let r = d.rect.width() * 0.5 - 1.0 + 3.5;
         let whole = (done * 4.0).floor() as usize;
         for q in 0..whole {
@@ -1004,7 +1005,7 @@ fn rail_list(sh: &RailShape) -> View {
     v.into_view()
 }
 
-/// The hand button's first tap (`map_osd::hand_card`): what it uses and who
+/// The hand button's first tap (`map_osd::hand_button`): what it uses and who
 /// feels it, said once. The veil listens, so no tap reaches the map or a
 /// control beneath; the controls step aside meanwhile.
 fn card_view(s: Signal<Card>, acts: &Rc<RefCell<Vec<CardAct>>>) -> View {
@@ -1039,7 +1040,7 @@ fn card_view(s: Signal<Card>, acts: &Rc<RefCell<Vec<CardAct>>>) -> View {
     }
 }
 
-/// The hand disc's menu (`map_osd::hand_button`'s context menu): a popover
+/// The hand disc's menu (`map_osd::hand_button`'s long press): a popover
 /// right-aligned to the disc and standing over it, and a transparent veil
 /// over the rest of the screen that closes it on a tap. The popover comes
 /// after the veil rather than inside it, so a tap on its padding does not
