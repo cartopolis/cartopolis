@@ -94,7 +94,17 @@ pub(crate) struct ShadowNode {
     pub children: Vec<NodeId>,
     pub computed: Option<Computed>,
     pub opacity: f32,
+    /// What the view said about this node changed: style it and write its
+    /// components.
     pub dirty: bool,
+    /// Something its selectors may read changed (an ancestor's class, a
+    /// hover, the focus, the window): style it, and write only if the style,
+    /// opacity or states come out different. A focus change marks the whole
+    /// tree this way, and rewriting every node respawned every decoration
+    /// and made Bevy lay out and shape every text again.
+    pub restyle: bool,
+    /// The states the components were last written with.
+    pub written_states: Option<States>,
     /// The drawn pseudo-elements, replaced on restyle.
     pub decor: Vec<Entity>,
     /// For `<select>`: the open popup, if any.
@@ -110,6 +120,12 @@ pub struct UiTree {
     /// How the host's `Env` was last seen, to restyle everything on a theme
     /// or size change.
     env_key: Option<(bool, bool, i32, i32, i32)>,
+    /// The focused node and the tree's generation when the states were
+    /// last synced with the focus.
+    focus_key: Option<(Option<NodeId>, u64)>,
+    /// Counts the inserts and removals, which can move a node under a new
+    /// ancestor.
+    generation: u64,
 }
 
 impl UiTree {
@@ -129,12 +145,26 @@ impl UiTree {
         }
     }
 
-    /// Marks a node and everything under it.
+    /// Marks a node dirty and everything under it for a restyle: its own
+    /// attributes changed, and descendants' selectors may read them.
     fn mark_subtree(&mut self, id: NodeId) {
+        self.mark_dirty(id);
+        self.restyle_subtree(id);
+    }
+
+    /// Marks a node for a restyle.
+    pub(crate) fn mark_restyle(&mut self, id: NodeId) {
+        if let Some(n) = self.nodes.get_mut(&id) {
+            n.restyle = true;
+        }
+    }
+
+    /// Marks a node and everything under it for a restyle.
+    pub(crate) fn restyle_subtree(&mut self, id: NodeId) {
         let mut stack = vec![id];
         while let Some(i) = stack.pop() {
             if let Some(n) = self.nodes.get_mut(&i) {
-                n.dirty = true;
+                n.restyle = true;
                 stack.extend(n.children.iter().copied());
             }
         }
@@ -182,6 +212,8 @@ pub(crate) fn ensure_root(world: &mut World) -> Option<Entity> {
             dirty: false,
             decor: Vec::new(),
             popup: None,
+            restyle: false,
+            written_states: None,
         },
     );
     Some(root)
@@ -191,6 +223,9 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
     // `drive_ui` made the root before the first op.
     if ensure_root(world).is_none() {
         return;
+    }
+    if matches!(op, Op::InsertBefore { .. } | Op::Remove { .. }) {
+        world.resource_mut::<UiTree>().generation += 1;
     }
     match op {
         Op::CreateElement { id, tag, .. } => {
@@ -217,6 +252,8 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                     dirty: true,
                     decor: Vec::new(),
                     popup: None,
+                    restyle: false,
+                    written_states: None,
                 },
             );
         }
@@ -241,6 +278,8 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                     dirty: true,
                     decor: Vec::new(),
                     popup: None,
+                    restyle: false,
+                    written_states: None,
                 },
             );
         }
@@ -257,6 +296,8 @@ pub(crate) fn apply_op(world: &mut World, op: Op) {
                     dirty: false,
                     decor: Vec::new(),
                     popup: None,
+                    restyle: false,
+                    written_states: None,
                 },
             );
         }
@@ -486,9 +527,17 @@ pub(crate) fn sync_states(world: &mut World) {
     let mut tree = world.resource_mut::<UiTree>();
     if tree.env_key != Some(host_key) {
         tree.env_key = Some(host_key);
-        tree.mark_subtree(ROOT);
+        tree.mark_dirty(ROOT);
+        tree.restyle_subtree(ROOT);
     }
-    // Focus: the focused node and its ancestors (focus-within) change.
+    // Focus: the focused node and its ancestors (focus-within) change. Both
+    // walks below visit every node, so only when the focus moved, or nodes
+    // were inserted or moved that have not seen it yet.
+    let focus_key = (focused_node, tree.generation);
+    if tree.focus_key == Some(focus_key) {
+        return;
+    }
+    tree.focus_key = Some(focus_key);
     let mut changed = Vec::new();
     for (id, n) in tree.nodes.iter_mut() {
         if let NodeKind::Element { states, .. } = &mut n.kind {
@@ -519,128 +568,180 @@ pub(crate) fn sync_states(world: &mut World) {
         }
     }
     for id in changed {
-        tree.mark_subtree(id);
+        tree.restyle_subtree(id);
     }
 }
 
 /// Recomputes the style of every dirty node, parents before children, and
 /// writes the components. Returns how many it styled.
 pub(crate) fn restyle(world: &mut World) -> usize {
+    if !world
+        .resource::<UiTree>()
+        .nodes
+        .values()
+        .any(|n| n.dirty || n.restyle)
+    {
+        return 0;
+    }
     let mut styled = 0;
-    // Order: depth first from the root, so a parent's computed is ready.
-    let order: Vec<NodeId> = {
+    // Order: depth first from the root, so a parent's computed is ready;
+    // with depths, so the ancestors are a stack rather than a walk up from
+    // every node.
+    let order: Vec<(NodeId, usize)> = {
         let tree = world.resource::<UiTree>();
-        let mut out = Vec::new();
-        let mut stack = vec![ROOT];
-        while let Some(id) = stack.pop() {
-            out.push(id);
+        let mut out = Vec::with_capacity(tree.nodes.len());
+        let mut stack = vec![(ROOT, 0)];
+        while let Some((id, depth)) = stack.pop() {
+            out.push((id, depth));
             if let Some(n) = tree.nodes.get(&id) {
                 for c in n.children.iter().rev() {
-                    stack.push(*c);
+                    stack.push((*c, depth + 1));
                 }
             }
         }
         out
     };
     let fonts = world.get_resource::<FontMap>().cloned();
-    for id in order {
-        let needs = world
+    // The ancestors of the node in hand, below the root, as the cascade
+    // sees them: built when a node under them first needs its chain.
+    let mut path: Vec<(NodeId, Option<Element>)> = Vec::new();
+    for (id, depth) in order {
+        path.truncate(depth.saturating_sub(1));
+        let (dirty, restyle) = world
             .resource::<UiTree>()
             .nodes
             .get(&id)
-            .is_some_and(|n| n.dirty);
-        if !needs {
+            .map_or((false, false), |n| (n.dirty, n.restyle));
+        if id != ROOT {
+            path.push((id, None));
+        }
+        if !dirty && !restyle {
             continue;
         }
         if id == ROOT {
             let root_computed = with_host(|host| host.stylist.root(&host.env));
             let mut tree = world.resource_mut::<UiTree>();
+            let changed =
+                tree.nodes.get(&ROOT).and_then(|n| n.computed.as_ref()) != Some(&root_computed);
+            if changed {
+                for c in tree
+                    .nodes
+                    .get(&ROOT)
+                    .map(|n| n.children.clone())
+                    .unwrap_or_default()
+                {
+                    tree.mark_restyle(c);
+                }
+            }
             if let Some(n) = tree.nodes.get_mut(&ROOT) {
                 n.computed = Some(root_computed);
                 n.dirty = false;
+                n.restyle = false;
                 styled += 1;
             }
             continue;
         }
-        // Build the chain.
-        let (chain_elems, element, previous, parent_computed, parent_opacity, is_text, entity) = {
+        // Style it, borrowing the parent's style where it lies.
+        let styled_node = {
             let tree = world.resource::<UiTree>();
-            let Some(node) = tree.nodes.get(&id) else {
-                continue;
-            };
-            let mut ancestors: Vec<Element> = Vec::new();
-            let mut cur = node.parent;
-            let mut parent_computed = None;
-            let mut parent_opacity = 1.0;
-            let mut first = true;
-            while let Some(p) = cur {
-                if let Some(pn) = tree.nodes.get(&p) {
-                    if first {
-                        parent_computed = pn.computed.clone();
-                        parent_opacity = pn.opacity;
-                        first = false;
-                    }
-                    if p != ROOT {
-                        ancestors.push(element_of(pn));
-                    }
-                    cur = pn.parent;
-                } else {
-                    break;
-                }
+            let ancestors = &path[..path.len() - 1];
+            // Fill the ancestors' elements this chain needs.
+            let missing: Vec<(usize, Element)> = ancestors
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, e))| e.is_none())
+                .filter_map(|(i, (a, _))| Some((i, element_of(tree.nodes.get(a)?))))
+                .collect();
+            for (i, e) in missing {
+                path[i].1 = Some(e);
             }
-            ancestors.reverse();
-            let previous = node.parent.and_then(|p| {
-                let siblings = &tree.nodes.get(&p)?.children;
-                let i = siblings.iter().position(|c| *c == id)?;
-                // The previous *element* sibling, skipping anchors and text.
-                siblings[..i].iter().rev().find_map(|s| {
-                    let sn = tree.nodes.get(s)?;
-                    matches!(sn.kind, NodeKind::Element { .. }).then(|| element_of(sn))
-                })
-            });
-            let is_text = matches!(node.kind, NodeKind::Text(_));
-            (
-                ancestors,
-                element_of(node),
-                previous,
-                parent_computed,
-                parent_opacity,
-                is_text,
-                node.entity,
-            )
+            let ancestors = &path[..path.len() - 1];
+            style_node(tree, id, ancestors)
         };
-        let Some(parent_computed) = parent_computed else {
+        let Some((computed, opacity, states, entity)) = styled_node else {
             continue;
         };
-        let computed = if is_text {
-            // Text inherits; nothing matches it.
-            Computed {
-                display: Display::Inline,
-                ..inherit_only(&parent_computed)
-            }
-        } else {
-            let refs: Vec<&Element> = chain_elems.iter().collect();
-            let chain = Chain {
-                ancestors: &refs,
-                element: &element,
-                previous_sibling: previous.as_ref(),
+        // Write the components when the view changed the node, or the
+        // style came out different; a restyle that changed nothing writes
+        // nothing.
+        let (old_same, children) = {
+            let tree = world.resource::<UiTree>();
+            let n = tree.nodes.get(&id);
+            let same = n.is_some_and(|n| {
+                n.computed.as_ref() == Some(&computed)
+                    && n.opacity == opacity
+                    && n.written_states == states
+            });
+            let children = if n.and_then(|n| n.computed.as_ref()) != Some(&computed)
+                || n.is_some_and(|n| n.opacity != opacity)
+            {
+                n.map(|n| n.children.clone()).unwrap_or_default()
+            } else {
+                Vec::new()
             };
-            with_host(|host| host.stylist.compute(&chain, &parent_computed, &host.env))
+            (same, children)
         };
-        let opacity = parent_opacity * computed.opacity;
-        // Write the components.
-        if let Some(e) = entity {
-            write_components(world, e, id, &computed, opacity, fonts.as_ref());
+        if dirty || !old_same {
+            if let Some(e) = entity {
+                write_components(world, e, id, &computed, opacity, fonts.as_ref());
+            }
         }
         let mut tree = world.resource_mut::<UiTree>();
+        // What inherits from it follows.
+        for c in children {
+            tree.mark_restyle(c);
+        }
         if let Some(n) = tree.nodes.get_mut(&id) {
             n.computed = Some(computed);
             n.opacity = opacity;
+            n.written_states = states;
             n.dirty = false;
+            n.restyle = false;
             styled += 1;
         }
     }
     styled
+}
+
+/// The style of node `id` under `ancestors` (root first, below the root),
+/// with its opacity, its states and its entity; `None` when it has no
+/// styled parent yet.
+fn style_node(
+    tree: &UiTree,
+    id: NodeId,
+    ancestors: &[(NodeId, Option<Element>)],
+) -> Option<(Computed, f32, Option<States>, Option<Entity>)> {
+    let node = tree.nodes.get(&id)?;
+    let parent = tree.nodes.get(&node.parent?)?;
+    let parent_computed = parent.computed.as_ref()?;
+    let states = match &node.kind {
+        NodeKind::Element { states, .. } => Some(*states),
+        _ => None,
+    };
+    let computed = if matches!(node.kind, NodeKind::Text(_)) {
+        // Text inherits; nothing matches it.
+        Computed {
+            display: Display::Inline,
+            ..inherit_only(parent_computed)
+        }
+    } else {
+        // The previous *element* sibling, skipping anchors and text.
+        let i = parent.children.iter().position(|c| *c == id)?;
+        let previous = parent.children[..i].iter().rev().find_map(|s| {
+            let sn = tree.nodes.get(s)?;
+            matches!(sn.kind, NodeKind::Element { .. }).then(|| element_of(sn))
+        });
+        let refs: Vec<&Element> = ancestors.iter().filter_map(|(_, e)| e.as_ref()).collect();
+        let element = element_of(node);
+        let chain = Chain {
+            ancestors: &refs,
+            element: &element,
+            previous_sibling: previous.as_ref(),
+        };
+        with_host(|host| host.stylist.compute(&chain, parent_computed, &host.env))
+    };
+    let opacity = parent.opacity * computed.opacity;
+    Some((computed, opacity, states, node.entity))
 }
 
 fn inherit_only(parent: &Computed) -> Computed {
@@ -1858,4 +1959,88 @@ pub(crate) fn dump(world: &World, limit: usize) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use bevy::input_focus::InputFocus;
+    use bevy::prelude::*;
+    use mithril::view::{el, IntoView, View};
+
+    use super::{NodeKind, UiTree};
+    use crate::{drive_ui, with_host};
+
+    fn form(rows: usize) -> View {
+        let mut panel = el("div").class("m-section");
+        for i in 0..rows {
+            panel = panel.child(
+                el("div")
+                    .class("m-field")
+                    .child(
+                        el("label")
+                            .class("m-field__label")
+                            .child(format!("Field {i}")),
+                    )
+                    .child(
+                        el("input")
+                            .class("m-input")
+                            .attr("type", "text")
+                            .prop("value", "x"),
+                    ),
+            );
+        }
+        panel.into_view()
+    }
+
+    /// Moving the focus restyles the whole tree (`:focus-within` reaches
+    /// every ancestor, and descendants' selectors read it), but writes
+    /// components only where the style came out different. Writing them
+    /// all made Bevy lay out and shape every text again on every focus
+    /// change.
+    #[test]
+    fn a_focus_change_writes_only_what_changed() {
+        let mut world = crate::testing::world();
+        with_host(|h| h.mount(form(200)));
+        drive_ui(&mut world);
+        let nodes = world.resource::<UiTree>().nodes.len();
+        assert!(nodes > 600, "{nodes} nodes");
+        let input = world
+            .resource::<UiTree>()
+            .nodes
+            .values()
+            .find_map(|n| match &n.kind {
+                NodeKind::Element { tag, .. } if tag == "input" => n.entity,
+                _ => None,
+            })
+            .expect("an input");
+        drive_ui(&mut world);
+        world.clear_trackers();
+        world
+            .resource_mut::<InputFocus>()
+            .set(input, bevy::input_focus::FocusCause::Pressed);
+        let t = Instant::now();
+        drive_ui(&mut world);
+        let took = t.elapsed();
+        let written = world
+            .query::<Ref<Node>>()
+            .iter(&world)
+            .filter(|n| n.is_changed())
+            .count();
+        eprintln!("focus change over {nodes} nodes: {took:?}, {written} nodes written");
+        assert!(written <= 12, "{written} of {nodes} nodes written");
+        // And an idle frame does nothing.
+        world.clear_trackers();
+        let t = Instant::now();
+        drive_ui(&mut world);
+        let idle = t.elapsed();
+        let written = world
+            .query::<Ref<Node>>()
+            .iter(&world)
+            .filter(|n| n.is_changed())
+            .count();
+        eprintln!("idle frame: {idle:?}");
+        assert_eq!(written, 0);
+    }
 }

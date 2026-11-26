@@ -295,7 +295,7 @@ fn set_state(tree: &mut UiTree, id: NodeId, f: impl FnOnce(&mut mithril::style::
     if let Some(n) = tree.nodes.get_mut(&id) {
         if let NodeKind::Element { states, .. } = &mut n.kind {
             f(states);
-            n.dirty = true;
+            n.restyle = true;
         }
     }
     // Descendants read `:hover` through selectors like `&:hover .x`.
@@ -305,6 +305,6 @@ fn set_state(tree: &mut UiTree, id: NodeId, f: impl FnOnce(&mut mithril::style::
         .map(|n| n.children.clone())
         .unwrap_or_default();
     for c in children {
-        tree.mark_dirty(c);
+        tree.mark_restyle(c);
     }
 }

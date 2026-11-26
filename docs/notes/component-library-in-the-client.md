@@ -36,6 +36,18 @@ trees, handlers) is **thread-local** — signals and handlers are `!Send`, and
 Bevy 0.20 has no non-send `World` resources — so a system that mounts takes
 `NonSendMarker` and reaches it with `mithril_bevy::with_host`.
 
+**A node is marked one of two ways** (`tree.rs`, 2026-11-26): `dirty` when
+the view changed it (an op), which always writes its components, and
+`restyle` when only something its selectors read changed (a hover, the
+focus, an ancestor's class, the window), which writes only if its style,
+opacity or states come out different. A focus change reaches every node
+through `:focus-within`; when every restyled node was written, a focus
+change on a 200-field form rewrote 801 of 802 nodes in 9.4 ms (and Bevy then
+laid out and shaped every text); now it writes 3, in 1.1 ms, and an idle
+frame touches nothing (`tree::tests`, Mac node). Something new that
+`write_components` reads must either come through an op (→ `dirty`) or be
+part of that comparison, or a restyle will skip writing it.
+
 Tokens: the plugin takes `theme::tokens()`, cartopolis' own `Tokens`
 (`theme/tokens.rs`) — the one table `web_theme.rs` writes the web's
 `theme.css` from, so the app's library screens and the site share a
