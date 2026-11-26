@@ -152,6 +152,20 @@ pub fn drive_lib_reminder(
     });
 }
 
+/// The demo reminder's view (`calendar::seed_demo`), for a test that reads
+/// a real screen through the library.
+#[cfg(test)]
+pub(crate) fn demo_view() -> View {
+    let mut cal = Calendar::default();
+    crate::systems::calendar::seed_demo(&mut cal, None, false, true);
+    let reminder = cal.reminder.expect("the demo has a meet-up");
+    view_of(&Live {
+        reminder,
+        placement: signal(Placement::of(800.0, 1.0)),
+        acts: Rc::new(RefCell::new(Vec::new())),
+    })
+}
+
 /// The HTML from the library's string renderer, for the browser beside a
 /// capture.
 fn html(l: &Live) -> String {

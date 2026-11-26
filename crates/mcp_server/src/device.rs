@@ -231,7 +231,8 @@ impl DeviceRequest {
         }
     }
 
-    /// Answered by the client's `mcp::screen` (the egui side), not `mcp::device`.
+    /// Answered by the client's `mcp::screen` (from the component library's
+    /// tree, or egui's), not `mcp::device`.
     pub fn is_screen(&self) -> bool {
         matches!(self, Self::UiTree(_) | Self::Press(_))
     }

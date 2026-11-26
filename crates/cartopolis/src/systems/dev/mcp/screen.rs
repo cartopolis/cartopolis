@@ -1,5 +1,13 @@
-//! The two tools about the screen itself: `ui_tree` lists the controls egui drew
-//! on the last pass, and `press` taps one the way a finger would.
+//! The two tools about the screen itself: `ui_tree` lists the controls on the
+//! screen, and `press` taps one the way a finger would.
+//!
+//! **While the component library draws the interface (the default), both read
+//! its tree** ([`serve_lib`], `mithril_bevy::access_tree` / `press`): roles,
+//! names and rects from the mounted nodes, a press as the picking backend's
+//! pointer events on what its point hits. The same [`Snapshot`], the same
+//! answers and the same six-digit refs, folded from the node's path key
+//! rather than an egui `Id`. What follows is egui's path, used only when egui
+//! draws (`CARTO_UI_LIB=0`).
 //!
 //! **The labels come from egui's AccessKit tree, switched on only while a call
 //! is waiting.** egui keeps no label with a widget's rect outside debug builds
@@ -77,11 +85,16 @@ const FINGER: egui::TouchId = egui::TouchId(u64::MAX - 7);
 // What is on the screen
 // ---------------------------------------------------------------------------
 
-/// One control egui drew, in global egui points.
+/// One control on the screen, in global egui points (the library's logical
+/// px are the same unit: both are physical px over display scale × UI scale).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
-    /// egui's `Id` value. Stable while the widget's id path is.
+    /// egui's `Id` value, or the library's path key (`AccessNode::key`).
+    /// Stable while the widget's id path, or the node's place in the tree, is.
     pub id: u64,
+    /// What the drawing side presses it by: egui's `Id` again, or the
+    /// library's `NodeId`, which a remount changes.
+    pub handle: u64,
     pub kind: &'static str,
     /// Empty when it has none (or when it is [`Self::withheld`]).
     pub label: String,
@@ -92,6 +105,8 @@ pub struct Control {
     pub selected: Option<bool>,
     /// A slider's or number field's value.
     pub value: Option<f64>,
+    /// A dropdown's chosen option (the library's; egui's says none).
+    pub choice: Option<String>,
     pub rect: egui::Rect,
     /// Where a finger lands on it: its centre, or another point of it when the
     /// centre is under another layer. `None` when all of it is covered.
@@ -327,12 +342,14 @@ fn snapshot(ctx: &egui::Context, update: &accesskit::TreeUpdate, hide_text: bool
         });
         out.controls.push(Control {
             id: w.id.value(),
+            handle: w.id.value(),
             kind,
             label,
             withheld,
             enabled: w.enabled && !node.is_some_and(|n| n.is_disabled()),
             selected,
             value: node.and_then(|n| n.numeric_value()),
+            choice: None,
             rect,
             tap,
         });
@@ -356,6 +373,153 @@ fn drop_shadows(controls: &mut Vec<Control>) {
             || c.withheld
             || !named.iter().any(|r| r.expand(1.0).contains_rect(c.rect))
     });
+}
+
+// ---------------------------------------------------------------------------
+// The library side
+// ---------------------------------------------------------------------------
+
+/// The kind a library role is shown as, egui's words for the same controls.
+#[cfg(feature = "ui-probe")]
+fn lib_kind(role: mithril_bevy::Role) -> Option<&'static str> {
+    use mithril_bevy::Role as R;
+    Some(match role {
+        R::Button => "button",
+        R::Link => "link",
+        R::CheckBox => "checkbox",
+        R::Switch => "switch",
+        R::Radio => "radio button",
+        R::Tab => "tab",
+        R::TextField => "text field",
+        R::Slider => "slider",
+        R::Select => "dropdown",
+        R::Option => "option",
+        R::MenuItem => "menu item",
+        R::Clickable => "clickable area",
+        R::Heading | R::Image | R::Text => return None,
+    })
+}
+
+/// What a library node is called, by the rules [`name_of`] keeps for egui's:
+/// a field by its label or placeholder and never by what is typed in it; a
+/// control by its own name; else by the text inside it — its own words
+/// when it is one piece in a button, a link, a tab or an option, somebody's
+/// words (withheld while `hide_text`) when it is a row of several.
+#[cfg(feature = "ui-probe")]
+fn lib_name(n: &mithril_bevy::AccessNode, hide_text: bool) -> Name {
+    use mithril_bevy::Role as R;
+    if let Some(label) = &n.label {
+        return Name::Own(label.clone());
+    }
+    if n.role == R::TextField {
+        return Name::Nothing;
+    }
+    if n.holds_controls || n.text.len() > ROW_TEXT_MAX {
+        return Name::Container;
+    }
+    if n.text.is_empty() {
+        return Name::Nothing;
+    }
+    let one_label = n.text.len() == 1
+        && matches!(
+            n.role,
+            R::Button
+                | R::Link
+                | R::Tab
+                | R::Option
+                | R::MenuItem
+                | R::CheckBox
+                | R::Radio
+                | R::Switch
+        );
+    if one_label {
+        Name::Own(n.text[0].clone())
+    } else if hide_text {
+        Name::Withheld
+    } else {
+        Name::Inner(n.text.join(" "))
+    }
+}
+
+/// The library's controls as a [`Snapshot`], from its walk of the mounted
+/// tree (`mithril_bevy::access_tree`).
+#[cfg(feature = "ui-probe")]
+fn lib_controls(
+    nodes: &[mithril_bevy::AccessNode],
+    screen: egui::Rect,
+    hide_text: bool,
+) -> Snapshot {
+    let mut out = Snapshot {
+        screen,
+        controls: Vec::new(),
+        withheld: 0,
+    };
+    let mut seen = HashSet::new();
+    for n in nodes {
+        let Some(kind) = lib_kind(n.role) else {
+            continue;
+        };
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(n.rect.min.x, n.rect.min.y),
+            egui::pos2(n.rect.max.x, n.rect.max.y),
+        )
+        .intersect(screen);
+        if !rect.is_positive() {
+            continue;
+        }
+        let (label, withheld) = match lib_name(n, hide_text) {
+            Name::Container => continue,
+            Name::Nothing if rect.area() > NAMELESS_MAX_SHARE * screen.area() => continue,
+            Name::Nothing => (String::new(), false),
+            Name::Own(text) | Name::Inner(text) => (clip(&text), false),
+            Name::Withheld => (String::new(), true),
+        };
+        // Two nodes in the same place in two mounts of one view.
+        if !seen.insert(n.key) {
+            continue;
+        }
+        out.withheld += usize::from(withheld);
+        let value = (n.role == mithril_bevy::Role::Slider)
+            .then(|| n.value.as_deref().and_then(|v| v.parse::<f64>().ok()))
+            .flatten();
+        let choice = (n.role == mithril_bevy::Role::Select)
+            .then(|| n.value.clone())
+            .flatten();
+        out.controls.push(Control {
+            id: n.key,
+            handle: n.node.0,
+            kind,
+            label,
+            withheld,
+            enabled: n.enabled,
+            selected: n.checked,
+            value,
+            choice,
+            rect,
+            tap: n
+                .tap
+                .map(|p| egui::pos2(p.x, p.y))
+                .filter(|p| screen.contains(*p)),
+        });
+    }
+    drop_shadows(&mut out.controls);
+    reading_order(&mut out.controls);
+    out
+}
+
+/// The library's screen now, or `None` when it has no root (egui draws).
+#[cfg(feature = "ui-probe")]
+fn lib_snapshot(world: &World, hide_text: bool) -> Option<Snapshot> {
+    let screen = mithril_bevy::screen_rect(world)?;
+    let screen = egui::Rect::from_min_max(
+        egui::pos2(screen.min.x, screen.min.y),
+        egui::pos2(screen.max.x, screen.max.y),
+    );
+    Some(lib_controls(
+        &mithril_bevy::access_tree(world),
+        screen,
+        hide_text,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +823,9 @@ fn line(c: &Control) -> String {
     if let Some(v) = c.value {
         s.push_str(&format!(" = {}", (v * 1000.0).round() / 1000.0));
     }
+    if let Some(choice) = &c.choice {
+        s.push_str(&format!(" = \"{choice}\""));
+    }
     if !c.enabled {
         s.push_str(" disabled");
     }
@@ -687,6 +854,7 @@ fn control_json(c: &Control, screen: egui::Rect) -> Value {
         "enabled": c.enabled,
         "selected": c.selected,
         "value": c.value,
+        "choice": c.choice,
         "rect": [round1(c.rect.min.x), round1(c.rect.min.y), round1(c.rect.max.x), round1(c.rect.max.y)],
         "centre": [frac(at.x - screen.min.x, w), frac(at.y - screen.min.y, h)],
         "covered": c.tap.is_none(),
@@ -876,11 +1044,21 @@ pub struct ScreenPending {
     jobs: VecDeque<Job>,
     hooked: bool,
     accesskit: bool,
+    /// The calls the library answers ([`serve_lib`]).
+    #[cfg(feature = "ui-probe")]
+    lib_jobs: VecDeque<LibJob>,
+    /// Frames [`serve_lib`] has seen, for a press's settling.
+    #[cfg(feature = "ui-probe")]
+    frames: u64,
 }
 
 impl ScreenPending {
     /// Something here keeps the frame rate up (`mcp::pace_idle`).
     pub fn is_working(&self) -> bool {
+        #[cfg(feature = "ui-probe")]
+        if !self.lib_jobs.is_empty() {
+            return true;
+        }
         !self.jobs.is_empty()
     }
 }
@@ -898,33 +1076,7 @@ pub fn serve(
 ) {
     let now = real.elapsed_secs_f64();
     let hide_text = session.is_online() && !audience.everyone;
-    for (request, reply) in std::mem::take(&mut bridge.screen) {
-        let label = request.label();
-        let ask = match request {
-            DeviceRequest::UiTree(UiTreeArgs { contains }) => Ask::Tree { contains },
-            DeviceRequest::Press(args) => match target_of(&args) {
-                Ok(target) => Ask::Press {
-                    target,
-                    long: args.long.unwrap_or(false),
-                },
-                Err(why) => {
-                    answer(&mut bridge, label, reply, AgentReply::refuse(why), now);
-                    continue;
-                }
-            },
-            // The pump routes only the screen's two here.
-            _ => {
-                answer(
-                    &mut bridge,
-                    label,
-                    reply,
-                    AgentReply::refuse("That is not a question about the screen."),
-                    now,
-                );
-                continue;
-            }
-        };
-        bridge.note(label.into(), "working…".into(), Outcome::Working, now);
+    for (label, ask, reply) in take_asks(&mut bridge, now) {
         pending.jobs.push_back(Job {
             label,
             ask,
@@ -961,6 +1113,217 @@ pub fn serve(
         // The next call's clock starts now, not when it was queued.
         if let Some(next) = pending.jobs.front_mut() {
             next.since = now;
+        }
+    }
+}
+
+/// The calls the pump queued, as asks, each noted as working; one that
+/// cannot be asked is answered here.
+fn take_asks(bridge: &mut McpBridge, now: f64) -> Vec<(&'static str, Ask, oneshot::Sender<Reply>)> {
+    let mut out = Vec::new();
+    for (request, reply) in std::mem::take(&mut bridge.screen) {
+        let label = request.label();
+        let ask = match request {
+            DeviceRequest::UiTree(UiTreeArgs { contains }) => Ask::Tree { contains },
+            DeviceRequest::Press(args) => match target_of(&args) {
+                Ok(target) => Ask::Press {
+                    target,
+                    long: args.long.unwrap_or(false),
+                },
+                Err(why) => {
+                    answer(bridge, label, reply, AgentReply::refuse(why), now);
+                    continue;
+                }
+            },
+            // The pump routes only the screen's two here.
+            _ => {
+                answer(
+                    bridge,
+                    label,
+                    reply,
+                    AgentReply::refuse("That is not a question about the screen."),
+                    now,
+                );
+                continue;
+            }
+        };
+        bridge.note(label.into(), "working…".into(), Outcome::Working, now);
+        out.push((label, ask, reply));
+    }
+    out
+}
+
+/// Frames a library press is given to show what it did before the screen is
+/// read again: the handler runs in the press's frame (`drive_ui`), the
+/// screen's system takes the tap in the next, the state it changes is drawn
+/// and laid out in the one after.
+#[cfg(feature = "ui-probe")]
+const LIB_SETTLE_FRAMES: u64 = 3;
+
+#[cfg(feature = "ui-probe")]
+enum LibStage {
+    Look,
+    Pressed {
+        plan: Plan,
+        before: Vec<Control>,
+        frame: u64,
+    },
+}
+
+#[cfg(feature = "ui-probe")]
+struct LibJob {
+    label: &'static str,
+    ask: Ask,
+    reply: oneshot::Sender<Reply>,
+    stage: LibStage,
+    since: f64,
+}
+
+/// Answer `ui_tree` and `press` from the component library's tree while the
+/// library draws the interface (it has a root: `CARTO_UI_LIB` is not `0`),
+/// before [`serve`] would take them to egui. Exclusive, on the main thread,
+/// because the library's host is thread-local and a press triggers pointer
+/// events in the world.
+///
+/// Unlike egui's, the library's tree is always there to read: a `ui_tree` is
+/// answered in the frame it arrives. A press triggers the pointer's down, up
+/// and click on what its point hits (`mithril_bevy::press`), so a covered
+/// control is not reached; the screen is read again [`LIB_SETTLE_FRAMES`]
+/// later. A screen drawn by egui beside the library (`CARTO_UI_LIB=<list>`)
+/// is not listed.
+#[cfg(feature = "ui-probe")]
+pub fn serve_lib(world: &mut World) {
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    let hide_text =
+        world.resource::<SessionState>().is_online() && !world.resource::<Audience>().everyone;
+    let lib_draws = mithril_bevy::screen_rect(world).is_some();
+    world.resource_scope(|world, mut pending: Mut<ScreenPending>| {
+        pending.frames += 1;
+        if lib_draws {
+            let asks = take_asks(&mut world.resource_mut::<McpBridge>(), now);
+            for (label, ask, reply) in asks {
+                pending.lib_jobs.push_back(LibJob {
+                    label,
+                    ask,
+                    reply,
+                    stage: LibStage::Look,
+                    since: now,
+                });
+            }
+        }
+        let frame = pending.frames;
+        let Some(job) = pending.lib_jobs.front_mut() else {
+            return;
+        };
+        if let Some(answered) = step_lib(world, job, now, frame, hide_text) {
+            if let Some(job) = pending.lib_jobs.pop_front() {
+                answer(
+                    &mut world.resource_mut::<McpBridge>(),
+                    job.label,
+                    job.reply,
+                    answered,
+                    now,
+                );
+            }
+            if let Some(next) = pending.lib_jobs.front_mut() {
+                next.since = now;
+            }
+        }
+    });
+}
+
+/// Move one library call on; its answer once it has one.
+#[cfg(feature = "ui-probe")]
+fn step_lib(
+    world: &mut World,
+    job: &mut LibJob,
+    now: f64,
+    frame: u64,
+    hide_text: bool,
+) -> Option<AgentReply> {
+    if now - job.since > STAGE_TIMEOUT_S {
+        return Some(AgentReply::refuse(format!(
+            "The screen drew no new frame for {STAGE_TIMEOUT_S:.0} s, so there is nothing to \
+             read; the app may be in the background."
+        )));
+    }
+    match std::mem::replace(&mut job.stage, LibStage::Look) {
+        LibStage::Look => {
+            // No root: the library stopped drawing; wait, as egui's waits.
+            let snap = lib_snapshot(world, hide_text)?;
+            let (target, long) = match &job.ask {
+                Ask::Tree { contains } => return Some(tree_reply(&snap, contains.as_deref())),
+                Ask::Press { target, long } => (target, *long),
+            };
+            let control = match resolve(&snap.controls, target) {
+                Ok(c) => c.clone(),
+                Err(why) => return Some(AgentReply::refuse(why)),
+            };
+            let name = mention(&control);
+            if long {
+                return Some(AgentReply::refuse(format!(
+                    "{name} is drawn by the component library, which has no long press yet; \
+                     press it without `long`."
+                )));
+            }
+            if !control.enabled {
+                return Some(AgentReply::refuse(format!(
+                    "{name} is disabled: pressing it would do nothing."
+                )));
+            }
+            let Some(at) = control.tap else {
+                return Some(AgentReply::refuse(format!(
+                    "{name} is covered by another window or sheet everywhere a finger \
+                     could land; close that first."
+                )));
+            };
+            let node = mithril_bevy::NodeId(control.handle);
+            match mithril_bevy::press(world, node, Vec2::new(at.x, at.y)) {
+                Ok(()) => {}
+                Err(mithril_bevy::PressError::Gone) => {
+                    return Some(AgentReply::refuse(format!(
+                        "{name} closed before it could be pressed; `ui_tree` gives what is there."
+                    )))
+                }
+                Err(mithril_bevy::PressError::Covered) => {
+                    return Some(AgentReply::refuse(format!(
+                        "{name} is covered by another window or sheet where a finger would \
+                         land; close that first."
+                    )))
+                }
+            }
+            job.stage = LibStage::Pressed {
+                plan: Plan {
+                    control,
+                    at,
+                    touch: true,
+                    long: false,
+                },
+                before: snap.controls,
+                frame,
+            };
+            job.since = now;
+            None
+        }
+        LibStage::Pressed {
+            plan,
+            before,
+            frame: pressed,
+        } => {
+            let snap = (frame >= pressed + LIB_SETTLE_FRAMES)
+                .then(|| lib_snapshot(world, hide_text))
+                .flatten();
+            match snap {
+                Some(snap) => Some(after_reply(&plan, &before, &snap)),
+                None => {
+                    job.stage = LibStage::Pressed {
+                        plan,
+                        before,
+                        frame: pressed,
+                    };
+                    None
+                }
+            }
         }
     }
 }
@@ -1106,12 +1469,14 @@ mod tests {
     fn control(id: u64, kind: &'static str, label: &str) -> Control {
         Control {
             id,
+            handle: id,
             kind,
             label: label.to_string(),
             withheld: false,
             enabled: true,
             selected: None,
             value: None,
+            choice: None,
             rect: egui::Rect::from_min_size(
                 egui::pos2(10.0, 10.0 * id as f32),
                 egui::vec2(80.0, 24.0),
@@ -1382,5 +1747,101 @@ mod tests {
         with_hook(&ctx, |h| h.inject.extend(up_events(&plan)));
         pass(&ctx, t, &mut p);
         assert_eq!(p.long_touches, 1);
+    }
+
+    // --- Through the component library's tree ----------------------------
+
+    /// A library screen mounted in a world of its own, laid out in rows
+    /// (`mithril_bevy::testing`), two physical px a point.
+    #[cfg(feature = "ui-probe")]
+    fn library(view: mithril::view::View) -> World {
+        let mut world = mithril_bevy::testing::world();
+        mithril_bevy::with_host(|h| h.mount(view));
+        mithril_bevy::drive_ui(&mut world);
+        mithril_bevy::testing::lay_out_rows(&mut world, 2.0);
+        world
+    }
+
+    #[cfg(feature = "ui-probe")]
+    #[test]
+    fn the_library_tree_lists_a_screens_buttons_by_label() {
+        let world = library(crate::systems::lib_reminder::demo_view());
+        let snap = lib_snapshot(&world, true).expect("the library has a root");
+        let reply = tree_reply(&snap, None);
+        let labels: Vec<&str> = snap.controls.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Close", "Open chat", "Walk there"],
+            "{}",
+            reply.text
+        );
+        assert!(
+            snap.controls
+                .iter()
+                .all(|c| c.kind == "button" && c.enabled),
+            "{}",
+            reply.text
+        );
+        // The card listens for clicks too, but holds the buttons: a container.
+        assert!(!reply.text.contains("clickable area"), "{}", reply.text);
+        assert!(
+            reply.text.contains("button \"Walk there\""),
+            "{}",
+            reply.text
+        );
+        // Rects in points: a row is 200 × 32 physical px.
+        let walk = &snap.controls[2];
+        assert_eq!((walk.rect.width(), walk.rect.height()), (100.0, 16.0));
+        assert_eq!(walk.tap, Some(walk.rect.center()));
+        // The ref scheme is egui's: six digits folded from the id.
+        let r = reply.data["controls"][2]["ref"].as_u64().unwrap();
+        assert_eq!(r, short_ref(walk.id));
+        assert_eq!(
+            resolve(&snap.controls, &Target::Ref(r)).unwrap().label,
+            "Walk there"
+        );
+    }
+
+    #[cfg(feature = "ui-probe")]
+    #[test]
+    fn a_library_press_runs_the_buttons_handler() {
+        use mithril::prelude::{Button, Component as _, Event};
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let saves = Rc::new(Cell::new(0));
+        let s = saves.clone();
+        let view = mithril::view::el("div")
+            .child(
+                Button {
+                    onclick: Some(Rc::new(move |_: &Event| s.set(s.get() + 1))),
+                    children: "Save".into(),
+                    ..Default::default()
+                }
+                .render(),
+            )
+            .child(
+                Button {
+                    disabled: true.into(),
+                    children: "Delete".into(),
+                    ..Default::default()
+                }
+                .render(),
+            );
+        let mut world = library(mithril::view::IntoView::into_view(view));
+        let snap = lib_snapshot(&world, false).unwrap();
+        let save = resolve(&snap.controls, &Target::Label("save".into()))
+            .unwrap()
+            .clone();
+        let at = save.tap.unwrap();
+        mithril_bevy::press(
+            &mut world,
+            mithril_bevy::NodeId(save.handle),
+            Vec2::new(at.x, at.y),
+        )
+        .unwrap();
+        mithril_bevy::drive_ui(&mut world);
+        assert_eq!(saves.get(), 1);
+        let delete = resolve(&snap.controls, &Target::Label("delete".into())).unwrap();
+        assert!(!delete.enabled);
     }
 }

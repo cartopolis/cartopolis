@@ -520,6 +520,16 @@ impl Plugin for McpPlugin {
                     .after(systems::mcp::pump)
                     .in_set(ClientPhase::Input),
             );
+        // While the component library draws, it answers them first from its
+        // own tree (exclusive: its host is thread-local).
+        #[cfg(feature = "ui-probe")]
+        app.add_systems(
+            Update,
+            systems::mcp::screen::serve_lib
+                .after(systems::mcp::pump)
+                .before(systems::mcp::screen::serve)
+                .in_set(ClientPhase::Input),
+        );
         // The map's questions: a point, a building, a stop, the sky. In
         // `Input`, where a prim's `Transform` is in the sim's flat frame
         // (`prim_geo::strip_prim_lift`), which `check_geometry` relies on.

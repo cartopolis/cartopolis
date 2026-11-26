@@ -28,14 +28,18 @@ use bevy::prelude::*;
 use mithril::style::{Env, Stylist, Tokens};
 use mithril::view::{Handler, Kind, Mounted, Renderer, View};
 
+mod access;
 mod ellipsis;
 mod events;
 mod gradients;
 mod images;
 mod popup;
+#[doc(hidden)]
+pub mod testing;
 mod tree;
 mod typing;
 
+pub use access::{access_tree, press, screen_rect, set_text, AccessNode, PressError, Role};
 pub use events::{UiEvents, UiPointer};
 pub use images::LiveImages;
 pub use tree::{FontMap, UiTree};
