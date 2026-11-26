@@ -100,6 +100,11 @@ fn resolve_app_data_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("CARTO_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    // On Pinnacle an app writes only in its own folder, `app:` (the kernel
+    // keeps it in the person's data); a relative `data/` was refused.
+    if cfg!(target_os = "pinnacle") {
+        return PathBuf::from("app:/data");
+    }
     #[cfg(target_os = "android")]
     if let Some(app) = bevy::android::ANDROID_APP.get() {
         if let Some(path) = app.internal_data_path() {

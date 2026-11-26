@@ -58,3 +58,20 @@ workspace for `std/aarch64-unknown-pinnacle.json` with `-Zbuild-std` and the
 ports' patches (Pinnacle's `xtask` has the flags). Nothing in this repo's gate
 checks it yet, so a desktop-only crate added under plain `not(wasm32)` breaks
 Pinnacle silently, as it once broke Android.
+
+## Where its files are
+
+Pinnacle installs the client as an app, `system:/apps/cartopolis/program`
+with its `assets/` beside it, and an app may write only in its own folder,
+`app:` (the kernel keeps that in the person's data). So on Pinnacle
+`ASSET_ROOT` is the relative `assets`, which Bevy reads from the program's
+folder (`current_exe`), and `app_data_root` is `app:/data`. Two traps, both
+silent but for a log line: the build machine's absolute path baked in found
+no shader, so every custom material drew nothing and the map was bare ground
+under haze (`pipeline_health`: "could not be loaded"); and an absolute
+`system:/…` root does no better, because Rust's `Path` takes `system:` for a
+relative name and Bevy joined it onto the program's folder a second time.
+
+`cargo xtask cartopolis <checkout>` in Pinnacle runs it; `PINNACLE_CLOCK`
+fixes the time of day, and the haze over the city in those shots is the live
+weather, which an offline `--shot` does not fetch.

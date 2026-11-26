@@ -67,9 +67,19 @@ mod utils;
 ///   build-machine absolute path left here would still be *read* by anyone
 ///   debugging where an asset came from, and point them at a directory that does
 ///   not exist on the device. `assets` says the true thing.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+/// - **Pinnacle** — an app is installed with its assets beside its program
+///   (`system:/apps/cartopolis/assets`), and Bevy reads a relative path from
+///   the program's folder (`current_exe`). The build machine's path is not
+///   there, and an absolute `system:/…` is no use either: Rust's `Path` takes
+///   a label for a relative name and Bevy doubled it, so every shader failed to
+///   load and the map and buildings drew nothing.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "pinnacle")
+))]
 pub(crate) const ASSET_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+#[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "pinnacle"))]
 pub(crate) const ASSET_ROOT: &str = "assets";
 
 /// Where the assets are read from at run time: [`ASSET_ROOT`], unless
