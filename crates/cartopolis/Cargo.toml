@@ -208,7 +208,7 @@ postcard = { workspace = true }
 bytes.workspace = true
 # The component library and its Bevy backend, for the `ui-probe` feature
 # (docs/mockups/component-library, phase 3); not in a shipped build yet.
-mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "40568aae", optional = true }
+mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "c76404c7", optional = true }
 mithril_bevy = { path = "../mithril_bevy", optional = true }
 # The splash's street plan and mark, rasterised once into an image for the
 # library's Bevy backend (`lib_splash`). Already in the lock through another
@@ -217,7 +217,7 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 # The library's design tokens, typed: cartopolis' own `Tokens` (`theme::tokens`)
 # are what the web's `theme.css` is written from and what the Bevy backend
 # draws with. Bevy-free and dependency-free, so every lane carries it.
-mithril_style = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "40568aae" }
+mithril_style = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "c76404c7" }
 # wgpu itself, for the adapter's `DeviceType`/`Backend` and the vendored
 # `wgpu::meter` (`upload_meter`, `shot_harness`), which bevy does not
 # re-export. The one bevy links (the `crates/wgpu` patch); `std` and `wgsl`

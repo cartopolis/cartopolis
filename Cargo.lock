@@ -6639,7 +6639,7 @@ dependencies = [
 [[package]]
 name = "mithril"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "mithril_components",
  "mithril_dom",
@@ -6664,7 +6664,7 @@ dependencies = [
 [[package]]
 name = "mithril_components"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "mithril_validation",
  "mithril_view",
@@ -6673,7 +6673,7 @@ dependencies = [
 [[package]]
 name = "mithril_dom"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "js-sys",
  "mithril_view",
@@ -6684,7 +6684,7 @@ dependencies = [
 [[package]]
 name = "mithril_macro"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6695,17 +6695,17 @@ dependencies = [
 [[package]]
 name = "mithril_signals"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 
 [[package]]
 name = "mithril_style"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 
 [[package]]
 name = "mithril_validation"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "mithril_signals",
  "unicode-segmentation",
@@ -6714,7 +6714,7 @@ dependencies = [
 [[package]]
 name = "mithril_view"
 version = "0.1.0"
-source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=40568aae#40568aae4874193b0d6e5895daad66647a66cb70"
+source = "git+https://code.garage44.eu/jeroen/mithril.git?rev=c76404c7#c76404c73fd66afc3cd80cf87d2317b5890ca471"
 dependencies = [
  "mithril_signals",
 ]

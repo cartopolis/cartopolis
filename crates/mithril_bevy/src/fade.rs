@@ -85,7 +85,9 @@ fn duration(tree: &UiTree, entity: Entity) -> f32 {
     value.map_or(0.0, |v| {
         // Only a transition that names a colour (or `all`) fades one.
         if c.other.get("transition-duration").is_none()
-            && !["background", "border", "all"].iter().any(|p| v.contains(p))
+            && !["background", "border", "all"]
+                .iter()
+                .any(|p| v.contains(p))
         {
             return 0.0;
         }
@@ -174,10 +176,16 @@ mod tests {
 
     #[test]
     fn a_transition_says_its_time_in_ms_or_s() {
-        assert_eq!(first_time("background 140ms cubic-bezier(0.2, 0, 0, 1)"), 0.14);
+        assert_eq!(
+            first_time("background 140ms cubic-bezier(0.2, 0, 0, 1)"),
+            0.14
+        );
         assert_eq!(first_time("0ms"), 0.0);
         assert_eq!(first_time("color 0.3s ease, background 1s"), 0.3);
-        assert_eq!(first_time("background var(--m-duration) var(--m-ease)"), 0.14);
+        assert_eq!(
+            first_time("background var(--m-duration) var(--m-ease)"),
+            0.14
+        );
         assert_eq!(first_time("none"), 0.0);
     }
 
@@ -198,6 +206,9 @@ mod tests {
         assert_eq!(f.shown(10.0).bg, c(0.0).bg);
         assert_eq!(f.shown(11.0).bg, c(1.0).bg);
         let mid = f.shown(10.1).bg.to_srgba().red;
-        assert!(mid > 0.5 && mid < 1.0, "fast out: past half way at half time, {mid}");
+        assert!(
+            mid > 0.5 && mid < 1.0,
+            "fast out: past half way at half time, {mid}"
+        );
     }
 }
