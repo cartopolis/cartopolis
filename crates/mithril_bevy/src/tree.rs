@@ -834,10 +834,23 @@ fn rect(r: mithril::style::cascade::Rect) -> UiRect {
     }
 }
 
-/// Parses a `rotate`/`translate`/`transform` declaration into a transform.
+/// Parses a `rotate`/`translate`/`scale`/`transform` declaration into a
+/// transform.
 fn ui_transform(c: &Computed) -> Option<UiTransform> {
     let mut t = UiTransform::default();
     let mut any = false;
+    // A pressed button shrinks a little (`scale: 0.97`); one number scales
+    // both axes, two scale them apart.
+    if let Some(s) = c.other.get("scale") {
+        let parts: Vec<f32> = s
+            .split_whitespace()
+            .filter_map(|p| p.parse::<f32>().ok())
+            .collect();
+        if let Some(x) = parts.first() {
+            t.scale = Vec2::new(*x, parts.get(1).copied().unwrap_or(*x));
+            any = true;
+        }
+    }
     if let Some(r) = c.other.get("rotate") {
         if let Some(deg) = r
             .trim()

@@ -31,6 +31,7 @@ use mithril::view::{Handler, Kind, Mounted, Renderer, View};
 mod access;
 mod ellipsis;
 mod events;
+mod fade;
 mod gradients;
 mod images;
 mod popup;
@@ -356,6 +357,9 @@ impl Plugin for MithrilUiPlugin {
                 (
                     drive_ui.in_set(DriveUi),
                     spin.after(DriveUi),
+                    fade::fade
+                        .after(DriveUi)
+                        .before(bevy::ui::UiSystems::Prepare),
                     settle_scroll.after(bevy::ui::UiSystems::Layout),
                     ellipsis::fit_ellipsis.after(bevy::ui::UiSystems::Layout),
                 ),
