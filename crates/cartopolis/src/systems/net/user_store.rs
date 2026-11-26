@@ -1449,8 +1449,7 @@ mod tests {
     /// [`Restore`].
     ///
     /// Read out of `systems/net/plugin.rs` (where the restores and the autosave
-    /// are registered) rather than run, for the reason
-    /// `egui_manager::every_root_ui_panel_is_in_the_chain` is: what has to hold
+    /// are registered) rather than run: what has to hold
     /// is a property of the *registration*, and a test that builds its own
     /// two-system schedule would only be re-testing that Bevy honours
     /// `.after()`. It would stay green with the edge deleted from the app, which

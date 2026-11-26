@@ -1,15 +1,13 @@
 //! What lies past the globe's ceiling drawn by the component library
-//! (`lib_host`), beside egui's (`cosmos::render_cosmos`): the Sun, the
-//! planets and their orbits, the Earth and the Moon lit by the real Sun, the
-//! nearest stars and the lanes between them, the light-travel rings, the
-//! edge of the observable universe, and every label and caption.
+//! (`lib_host`): the Sun, the planets and their orbits, the Earth and the
+//! Moon lit by the real Sun, the nearest stars and the lanes between them,
+//! the light-travel rings, the edge of the observable universe, and every
+//! label and caption.
 //!
-//! On with `CARTO_UI_LIB=cosmos` (or `1`). egui's system keeps all of the
-//! maths — the projection and its squeeze, the fades, which labels find
-//! room — and with `CosmosLib::lib` on paints at most the space round the
-//! globe's hole and the two star fields (below), publishing the rest of its
-//! frame in `CosmosLib::lib_view`. This mounts while that is `Some` and clears
-//! when it is `None` (below the ceiling).
+//! `cosmos::drive_cosmos` keeps all of the maths — the projection and its
+//! squeeze, the fades, which labels find room — and publishes its frame in
+//! `CosmosLib::view`. This mounts while that is `Some` and clears when it
+//! is `None` (below the ceiling).
 //!
 //! **One mount, restyled.** Every shape is one absolutely placed box and
 //! every label one text box, each keyed (`"planet 3"`, `"ring 1 light
@@ -20,28 +18,27 @@
 //! swept.
 //!
 //! **Built from boxes.** A disc is a `border-radius` box; a ring a bordered
-//! one; an orbit a bordered box as wide and high as egui's squeezed circle
-//! is across its two axes, turned by one `rotate()`; a lane a 1 px box
-//! turned onto its line. A lit sphere is one disc and one gradient: the
-//! terminator is egui's ellipse, which a circle through the same three
-//! points stands in for (through the two limb points across the Sun's
-//! direction and the point on that axis), lit inside it for a gibbous
-//! phase and outside it for a crescent — a hard edge, as egui's.
+//! one; an orbit a bordered box as wide and high as the squeezed circle is
+//! across its two axes, turned by one `rotate()`; a lane a 1 px box turned
+//! onto its line. A lit sphere is one disc and one gradient: the
+//! terminator is an ellipse, which a circle through the same three points
+//! stands in for (through the two limb points across the Sun's direction
+//! and the point on that axis), lit inside it for a gibbous phase and
+//! outside it for a crescent — a hard edge.
 //!
 //! **Not boxes**: the space behind everything (a full-screen fill with the
 //! globe's round hole, under the star fields), the Milky Way's ~7,000
 //! points and the galaxies' up to 50,000 — a node each would be the
-//! heaviest screen the library has, for one-pixel squares. On the Bevy
-//! backend `lib_cosmos_sky` draws them as two meshes on the library's own
-//! camera, under its UI; as DOM (the web) there is no such camera, and they
-//! stay painted on egui's background layer, under the DOM.
+//! heaviest screen the library has, for one-pixel squares.
+//! `lib_cosmos_sky` draws them as two meshes on a 2D camera under the
+//! library's screens, on both backends.
 //!
-//! What differs: egui's halo is four offset copies of the text in the dark
-//! theme's ink, and so is this one's. On the Bevy backend a border radius
-//! is round, never elliptical, so an orbit seen at a slant comes out a
-//! rounded oblong rather than an ellipse (the DOM draws the ellipse);
-//! orbits are drawn only once the view looks down on them (egui's
-//! `face_on`), where they are close to round.
+//! A label's halo is four offset copies of its text in the dark theme's
+//! ink. On the Bevy backend a border radius is round, never elliptical, so
+//! an orbit seen at a slant comes out a rounded oblong rather than an
+//! ellipse (the DOM draws the ellipse); orbits are drawn only once the view
+//! looks down on them (`face_on` in `cosmos`), where they are close to
+//! round.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -49,7 +46,6 @@ use std::rc::Rc;
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
-use egui::Color32;
 // The library's, not Bevy's: an explicit import outranks the two globs.
 use mithril::prelude::*;
 
@@ -58,6 +54,7 @@ use crate::systems::lib_pins::{boxed, px_scale};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
 use crate::systems::theme::tokens::hex;
+use crate::systems::theme::Rgba8;
 use crate::systems::ui_input::UiMetrics;
 
 /// The cosmos' name in the library's host.
@@ -75,7 +72,7 @@ const MAX_HIDDEN: usize = 64;
 
 /// How far out a terminator's circle may have its centre, as a share of the
 /// sphere's radius: near a half phase the terminator's circle grows without
-/// bound towards egui's straight line.
+/// bound towards the straight line of a half phase.
 const TERMINATOR_REACH: f32 = 8.0;
 
 // ─── A keyed list of restyled boxes ─────────────────────────────────────────
@@ -203,7 +200,7 @@ fn shape_box(slot: Slot) -> View {
 }
 
 /// A label: its words over four copies one pixel off in the dark theme's
-/// ink, egui's halo, so it reads over anything.
+/// ink, a halo, so it reads over anything.
 fn label_box(slot: Slot) -> View {
     let style = slot.style;
     let style = move || style.get();
@@ -237,34 +234,28 @@ thread_local! {
     static MOUNTED: RefCell<Option<Live>> = const { RefCell::new(None) };
 }
 
-/// Mounts the cosmos while egui publishes a frame of it, restyles it to
-/// each frame, and clears it below the ceiling. `PostUpdate`, before
-/// `DriveUi`, as every library screen; the cosmos' state is inserted here,
-/// the first frame.
+/// Mounts the cosmos while `cosmos::drive_cosmos` publishes a frame of it,
+/// restyles it to each frame, and clears it below the ceiling.
+/// `PostUpdate`, before `DriveUi`, as every library screen; the cosmos'
+/// state is inserted here, the first frame.
 pub fn drive_lib_cosmos(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    cosmos: Option<ResMut<CosmosLib>>,
+    cosmos: Option<Res<CosmosLib>>,
     metrics: Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.cosmos {
         return;
     }
-    let Some(mut cosmos) = cosmos else {
-        commands.insert_resource(CosmosLib {
-            lib: true,
-            ..Default::default()
-        });
+    let Some(cosmos) = cosmos else {
+        commands.insert_resource(CosmosLib::default());
         return;
     };
-    if !cosmos.lib {
-        cosmos.lib = true;
-    }
     let k = px_scale(metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        let Some(frame) = cosmos.lib_view.as_ref() else {
+        let Some(frame) = cosmos.view.as_ref() else {
             if m.take().is_some() {
                 crate::systems::lib_host::clear_keyed(KEY);
             }
@@ -309,7 +300,7 @@ pub fn drive_lib_cosmos(
 /// The root: the whole window's corner, under every other library screen
 /// (the map's names at -2 are the lowest of those), listening nowhere: a
 /// drag over the cosmos moves the map. The shapes, then the labels over
-/// them, as egui paints them.
+/// them.
 fn view_of(l: &Live) -> View {
     let shapes = l.shapes.view(0, false);
     let labels = l.labels.view(1, true);
@@ -321,11 +312,11 @@ fn view_of(l: &Live) -> View {
     }
 }
 
-/// An egui colour as CSS, opaque, and its own alpha (`ORBIT`, `LANE` and
-/// `RING` carry one), which goes into the box's opacity.
-fn solid(c: Color32) -> (String, f32) {
-    let [r, g, b, a] = c.to_srgba_unmultiplied();
-    (hex(theme::Rgba8::from_rgb(r, g, b)), f32::from(a) / 255.0)
+/// A colour as CSS, opaque, and its own alpha (`ORBIT`, `LANE` and `RING`
+/// carry one), which goes into the box's opacity.
+fn solid(c: Rgba8) -> (String, f32) {
+    let [r, g, b, a] = c.to_array();
+    (hex(Rgba8::from_rgb(r, g, b)), f32::from(a) / 255.0)
 }
 
 fn finite(v: &[f32]) -> bool {
@@ -342,7 +333,7 @@ fn round(w: f32, h: f32) -> String {
     }
 }
 
-/// One shape's box, stacked `z` in egui's paint order.
+/// One shape's box, stacked `z` in paint order.
 fn shape_style(s: &CosmosShape, z: usize, k: f32) -> String {
     let (body, ink_alpha, ok) = match &s.kind {
         ShapeKind::Disc { c, r, ink } => {
@@ -445,28 +436,20 @@ fn shape_style(s: &CosmosShape, z: usize, k: f32) -> String {
     format!("{body}; opacity: {o:.3}; z-index: {z}")
 }
 
-/// A sphere seen from the camera, lit from one side (`cosmos::paint_lit_sphere`
-/// draws the same with a mesh). `sun` is the Sun's direction on screen, x
+/// A sphere seen from the camera, lit from one side
+/// (`cosmos::ShapeKind::Sphere`). `sun` is the Sun's direction on screen, x
 /// right and y up; `toward` how far it stands towards the viewer, −1 behind
 /// the sphere to 1 behind the viewer.
 ///
-/// egui's lit part runs from the limb on the Sun's side to the terminator,
-/// an ellipse through the two limb points across the Sun's direction and
-/// the point `−toward · r` along it. The circle through those three points
-/// has its centre `x0 = r(1 − t²)/2t` along the Sun's direction: for a
-/// gibbous phase (t > 0) the lit part is inside it, for a crescent outside.
-fn sphere(
-    c: egui::Pos2,
-    r: f32,
-    sun: Vec2,
-    toward: f32,
-    day: Color32,
-    night: Color32,
-    k: f32,
-) -> String {
+/// The lit part runs from the limb on the Sun's side to the terminator, an
+/// ellipse through the two limb points across the Sun's direction and the
+/// point `−toward · r` along it. The circle through those three points has
+/// its centre `x0 = r(1 − t²)/2t` along the Sun's direction: for a gibbous
+/// phase (t > 0) the lit part is inside it, for a crescent outside.
+fn sphere(c: Vec2, r: f32, sun: Vec2, toward: f32, day: Rgba8, night: Rgba8, k: f32) -> String {
     let (day, night) = (solid(day).0, solid(night).0);
     if r < 1.5 {
-        // Too small for a phase: egui's day over its night, as one dot.
+        // Too small for a phase: the day side, as one dot.
         let r = r.max(1.0) * k;
         return boxed(
             c.x * k - r,
@@ -516,7 +499,8 @@ fn sphere(
     )
 }
 
-/// One label's box where egui measured it, its line as tall as egui's.
+/// One label's box where `cosmos` measured it, its line as tall as the
+/// measure.
 fn label_style(t: &CosmosTag, z: usize, k: f32) -> String {
     let (ink, a) = solid(t.ink);
     let o = (a * t.alpha).clamp(0.0, 1.0);

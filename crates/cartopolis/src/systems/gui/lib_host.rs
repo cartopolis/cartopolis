@@ -92,7 +92,6 @@ pub fn prepare_bevy(
             || lib.scenario
             || lib.design_room
             || lib.admin
-            || lib.keyboard
             || lib.chrome
             || lib.osd
             || lib.pins
@@ -253,6 +252,57 @@ pub fn bridge_input(
     }
 }
 
+/// The map's free area, from the library's own layout: the screen less the
+/// box of every element marked `data-reserves-map` (`ui_input::RESERVES_MAP`
+/// — the side panels and the Appearance sheet), each cut from the edge it
+/// names (`ui_input::free_map`). Written into `UiInput::map_rect` in window
+/// points, for the next frame's dock, search bar, round buttons, pins and
+/// names. `PostUpdate`, after `bevy_ui`'s layout, so the boxes are this
+/// frame's.
+#[cfg(feature = "ui-probe")]
+pub fn measure_map_room(world: &mut bevy::prelude::World) {
+    use bevy::math::{Rect, Vec2};
+
+    use crate::systems::ui_input::{free_map, MapSide, UiInput, UiMetrics, RESERVES_MAP};
+
+    if !world.contains_resource::<mithril_bevy::UiTree>() {
+        return;
+    }
+    let rooms: Vec<(MapSide, Rect)> = mithril_bevy::marked_rects(world, RESERVES_MAP)
+        .into_iter()
+        .filter_map(|(side, rect)| Some((MapSide::parse(&side)?, rect)))
+        .collect();
+    let metrics = world.resource::<UiMetrics>();
+    let k = metrics.ui_scale();
+    let map = free_map(
+        Rect::from_corners(Vec2::ZERO, metrics.viewport_pts()),
+        rooms,
+    );
+    let window = Rect::from_corners(map.min * k, map.max * k);
+    let mut input = world.resource_mut::<UiInput>();
+    if input.map_rect() != Some(window) {
+        input.set_map_rect(Some(window));
+    }
+}
+
+/// [`measure_map_room`] on the web: the marked elements' boxes as the
+/// browser laid them out (`getBoundingClientRect`), mapped from the screens'
+/// container onto the window. `PreUpdate`, reading the layout the browser
+/// made for the last frame, so nothing forces a reflow mid-frame.
+#[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
+pub fn measure_map_room_dom(
+    metrics: bevy::prelude::Res<crate::systems::ui_input::UiMetrics>,
+    mut input: bevy::prelude::ResMut<crate::systems::ui_input::UiInput>,
+) {
+    let window = metrics.viewport_pts() * metrics.ui_scale();
+    let Some(map) = dom::map_room(window) else {
+        return;
+    };
+    if input.map_rect() != Some(map) {
+        input.set_map_rect(Some(map));
+    }
+}
+
 #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
 mod dom {
     use std::cell::RefCell;
@@ -350,5 +400,83 @@ mod dom {
         for app in apps {
             app.mounted.unmount(&app.renderer, &parent);
         }
+    }
+
+    /// The map in window points (`window` its size): the container less
+    /// every `[data-reserves-map]` element's box, each mapped from the
+    /// container's CSS pixels onto the window — on the phone tier the canvas
+    /// is scaled by the render budget's stage transform, so a CSS pixel is
+    /// not a window point. `None` before anything has mounted.
+    pub fn map_room(window: bevy::math::Vec2) -> Option<bevy::math::Rect> {
+        use bevy::math::{Rect, Vec2};
+        use js_sys::Reflect;
+        use wasm_bindgen::JsValue;
+
+        use crate::systems::ui_input::{free_map, MapSide, RESERVES_MAP};
+
+        let container = document()?.get_element_by_id(CONTAINER)?;
+        let frame = client_rect(&container)?;
+        if frame.width() <= 0.0 || frame.height() <= 0.0 {
+            return None;
+        }
+        let k = Vec2::new(window.x / frame.width(), window.y / frame.height());
+        let to_window =
+            |r: Rect| Rect::from_corners((r.min - frame.min) * k, (r.max - frame.min) * k);
+        let select = Reflect::get(&container, &JsValue::from_str("querySelectorAll"))
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?;
+        let list = select
+            .call1(&container, &JsValue::from_str(&format!("[{RESERVES_MAP}]")))
+            .ok()?;
+        let len = Reflect::get(&list, &JsValue::from_str("length"))
+            .ok()?
+            .as_f64()? as u32;
+        let mut rooms = Vec::new();
+        for i in 0..len {
+            let Ok(el) = Reflect::get_u32(&list, i) else {
+                continue;
+            };
+            let el: web_sys::Element = el.unchecked_into();
+            let Some(side) = el
+                .get_attribute(RESERVES_MAP)
+                .and_then(|v| MapSide::parse(&v))
+            else {
+                continue;
+            };
+            let Some(r) = client_rect(&el) else {
+                continue;
+            };
+            if r.width() > 0.0 && r.height() > 0.0 {
+                rooms.push((side, to_window(r)));
+            }
+        }
+        Some(free_map(Rect::from_corners(Vec2::ZERO, window), rooms))
+    }
+
+    /// `getBoundingClientRect()`, in CSS pixels, through `Reflect` (the
+    /// client's web-sys carries no `DomRect`).
+    fn client_rect(el: &wasm_bindgen::JsValue) -> Option<bevy::math::Rect> {
+        use js_sys::Reflect;
+        use wasm_bindgen::JsValue;
+
+        let rect = Reflect::get(el, &JsValue::from_str("getBoundingClientRect"))
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?
+            .call0(el)
+            .ok()?;
+        let at = |name: &str| -> Option<f32> {
+            Reflect::get(&rect, &JsValue::from_str(name))
+                .ok()?
+                .as_f64()
+                .map(|v| v as f32)
+        };
+        Some(bevy::math::Rect::new(
+            at("left")?,
+            at("top")?,
+            at("right")?,
+            at("bottom")?,
+        ))
     }
 }

@@ -2,8 +2,8 @@
 //! nearest stars, the Milky Way, the galaxies round it and the edge of the
 //! observable universe — as **one map at one scale**
 //! (`docs/mockups/zoom-ladder/`). Past the ceiling the 3D camera waits over the
-//! place it left and the zoom moves `CameraState::cosmos_alt` instead; this paints
-//! what is out there, behind every panel.
+//! place it left and the zoom moves `CameraState::cosmos_alt` instead; this works
+//! out what is out there, drawn behind every panel.
 //!
 //! **To scale in the middle, squeezed towards the edge.** Every body sits at its
 //! real place in one frame (the ecliptic, metres from the Sun) and is projected
@@ -42,24 +42,34 @@
 //! moves from the Earth to the Sun to the galactic centre — each only once the
 //! next one in is too small to lose.
 //!
-//! Painted with egui on the background layer, before the panel chain, so the
-//! panels and the map's chrome stay on top. With the component library on
-//! (`CosmosLib::lib`, `lib_cosmos`) egui paints only the space and the two
-//! star fields, and every body, ring, orbit, line and label it worked out is
-//! published in `CosmosLib::lib_view` for the library to draw as boxes. Where
-//! the library has a camera of its own (`CosmosLib::sky`, the Bevy backend)
-//! egui paints nothing: the space and the star fields go out in
-//! `CosmosLib::lib_sky` for `lib_cosmos_sky` to draw as meshes under the boxes.
+//! This works the frame out and draws none of it: every body, ring, orbit,
+//! line and label goes out in `CosmosLib::view` for the component library
+//! to draw as boxes (`lib_cosmos`), and the space behind them and the two
+//! star fields in `CosmosLib::sky` for `lib_cosmos_sky` to draw as meshes
+//! under the boxes. Positions are UI points from the screen's top left
+//! corner (`UiMetrics`).
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::theme;
+use crate::systems::theme::Rgba8;
+use crate::systems::ui_input::UiMetrics;
 use crate::utils::near_stars::NEAR_STARS;
 use crate::utils::planets::{self, AU_M, LIGHT_M_S, LIGHT_YEAR_M, PLANETS};
 use bevy::math::{DMat3, DQuat, DVec2, DVec3};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
+use bevy::window::PrimaryWindow;
 use cartopolis_geo::formats::galaxies::{Catalogue, Galaxies};
-use egui::{pos2, vec2, Color32, Pos2};
+
+/// A point on screen, UI points from the top left corner, y down.
+type Pos2 = Vec2;
+
+const fn pos2(x: f32, y: f32) -> Pos2 {
+    Vec2::new(x, y)
+}
+
+const fn vec2(x: f32, y: f32) -> Vec2 {
+    Vec2::new(x, y)
+}
 
 /// The Earth's radius, metres.
 const EARTH_R_M: f64 = 6_371_000.0;
@@ -69,24 +79,24 @@ const MOON_R_M: f64 = 1_737_400.0;
 const MOON_DIST_M: f64 = 384_400_000.0;
 
 /// Deep space behind it all.
-const SPACE: Color32 = Color32::from_rgb(0x04, 0x07, 0x0A);
-const EARTH_DAY: Color32 = Color32::from_rgb(0x5D, 0x8F, 0xBF);
-const EARTH_NIGHT: Color32 = Color32::from_rgb(0x0C, 0x1A, 0x2A);
-const MOON_DAY: Color32 = Color32::from_rgb(0xD9, 0xD6, 0xCC);
-const MOON_NIGHT: Color32 = Color32::from_rgb(0x26, 0x29, 0x2C);
-const SUN: Color32 = Color32::from_rgb(0xFF, 0xE8, 0xA8);
-const ORBIT: Color32 = Color32::from_rgba_unmultiplied_const(0xA0, 0xBE, 0xC8, 70);
-const LANE: Color32 = Color32::from_rgba_unmultiplied_const(0x5C, 0xC6, 0xC0, 60);
+const SPACE: Rgba8 = Rgba8::from_rgb(0x04, 0x07, 0x0A);
+const EARTH_DAY: Rgba8 = Rgba8::from_rgb(0x5D, 0x8F, 0xBF);
+const EARTH_NIGHT: Rgba8 = Rgba8::from_rgb(0x0C, 0x1A, 0x2A);
+const MOON_DAY: Rgba8 = Rgba8::from_rgb(0xD9, 0xD6, 0xCC);
+const MOON_NIGHT: Rgba8 = Rgba8::from_rgb(0x26, 0x29, 0x2C);
+const SUN: Rgba8 = Rgba8::from_rgb(0xFF, 0xE8, 0xA8);
+const ORBIT: Rgba8 = Rgba8::from_rgba_unmultiplied(0xA0, 0xBE, 0xC8, 70);
+const LANE: Rgba8 = Rgba8::from_rgba_unmultiplied(0x5C, 0xC6, 0xC0, 60);
 /// Planet colours, Mercury to Neptune: a palette for content, not chrome.
-const PLANET_TONES: [Color32; 8] = [
-    Color32::from_rgb(0xB5, 0xAE, 0xA4),
-    Color32::from_rgb(0xF1, 0xD9, 0x9A),
+const PLANET_TONES: [Rgba8; 8] = [
+    Rgba8::from_rgb(0xB5, 0xAE, 0xA4),
+    Rgba8::from_rgb(0xF1, 0xD9, 0x9A),
     EARTH_DAY,
-    Color32::from_rgb(0xE0, 0x7A, 0x4F),
-    Color32::from_rgb(0xE8, 0xC4, 0x9A),
-    Color32::from_rgb(0xF0, 0xDC, 0xA0),
-    Color32::from_rgb(0x9F, 0xE0, 0xE6),
-    Color32::from_rgb(0x5B, 0x84, 0xE6),
+    Rgba8::from_rgb(0xE0, 0x7A, 0x4F),
+    Rgba8::from_rgb(0xE8, 0xC4, 0x9A),
+    Rgba8::from_rgb(0xF0, 0xDC, 0xA0),
+    Rgba8::from_rgb(0x9F, 0xE0, 0xE6),
+    Rgba8::from_rgb(0x5B, 0x84, 0xE6),
 ];
 
 /// 0 below `lo`, 1 above `hi`, smooth on a log scale between.
@@ -99,8 +109,95 @@ fn fade_out(alt: f64, lo: f64, hi: f64) -> f32 {
     1.0 - fade_in(alt, lo, hi)
 }
 
-fn alpha(c: Color32, a: f32) -> Color32 {
-    c.gamma_multiply(a.clamp(0.0, 1.0))
+fn alpha(c: Rgba8, a: f32) -> Rgba8 {
+    c.with_alpha_scaled(a)
+}
+
+/// A rectangle on screen, UI points, y down. Both edges count as inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Area {
+    min: Pos2,
+    max: Pos2,
+}
+
+impl Area {
+    fn from_min_size(min: Pos2, size: Vec2) -> Self {
+        Self {
+            min,
+            max: min + size,
+        }
+    }
+
+    fn width(&self) -> f32 {
+        self.max.x - self.min.x
+    }
+
+    fn height(&self) -> f32 {
+        self.max.y - self.min.y
+    }
+
+    fn left(&self) -> f32 {
+        self.min.x
+    }
+
+    fn top(&self) -> f32 {
+        self.min.y
+    }
+
+    fn bottom(&self) -> f32 {
+        self.max.y
+    }
+
+    fn center(&self) -> Pos2 {
+        (self.min + self.max) / 2.0
+    }
+
+    fn size(&self) -> Vec2 {
+        self.max - self.min
+    }
+
+    fn contains(&self, p: Pos2) -> bool {
+        self.min.x <= p.x && p.x <= self.max.x && self.min.y <= p.y && p.y <= self.max.y
+    }
+
+    fn contains_rect(&self, o: Area) -> bool {
+        self.contains(o.min) && self.contains(o.max)
+    }
+
+    fn intersects(&self, o: Area) -> bool {
+        self.min.x <= o.max.x
+            && o.min.x <= self.max.x
+            && self.min.y <= o.max.y
+            && o.min.y <= self.max.y
+    }
+
+    fn expand(&self, by: f32) -> Self {
+        self.shrink2(Vec2::splat(-by))
+    }
+
+    fn shrink2(&self, by: Vec2) -> Self {
+        Self {
+            min: self.min + by,
+            max: self.max - by,
+        }
+    }
+}
+
+/// Where a label's anchor point is on its text: `(0, 0)` its top left
+/// corner, `(0.5, 1)` the middle of its bottom edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Align(Vec2);
+
+impl Align {
+    const LEFT_BOTTOM: Self = Self(Vec2::new(0.0, 1.0));
+    const LEFT_CENTER: Self = Self(Vec2::new(0.0, 0.5));
+    const CENTER_BOTTOM: Self = Self(Vec2::new(0.5, 1.0));
+    const CENTER_TOP: Self = Self(Vec2::new(0.5, 0.0));
+
+    /// The rectangle of a `size` box anchored at `at`.
+    fn anchor_size(self, at: Pos2, size: Vec2) -> Area {
+        Area::from_min_size(at - size * self.0, size)
+    }
 }
 
 /// A distance in words: kilometres, then astronomical units, then light years.
@@ -143,69 +240,6 @@ fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
-}
-
-/// A label with a dark halo, so it reads over anything.
-fn label(p: &egui::Painter, at: Pos2, align: egui::Align2, text: &str, size: f32, ink: Color32) {
-    let font = egui::FontId::proportional(size);
-    let halo = alpha(theme::DARK32.ink, ink.a() as f32 / 255.0);
-    for d in [
-        vec2(1.0, 0.0),
-        vec2(-1.0, 0.0),
-        vec2(0.0, 1.0),
-        vec2(0.0, -1.0),
-    ] {
-        p.text(at + d, align, text, font.clone(), halo);
-    }
-    p.text(at, align, text, font, ink);
-}
-
-/// A sphere seen from the camera, lit from one side: the dark disc, then the
-/// lit part as a strip between the limb and the terminator's ellipse (a strip
-/// fills a crescent as well as a gibbous phase, which a convex polygon cannot).
-/// `sun` is the sun's direction on screen (x right, y up); `toward` how far it
-/// stands towards the viewer, −1 behind the sphere to 1 behind the viewer.
-fn paint_lit_sphere(
-    p: &egui::Painter,
-    c: Pos2,
-    r: f32,
-    sun: Vec2,
-    toward: f32,
-    day: Color32,
-    night: Color32,
-) {
-    p.circle_filled(c, r, night);
-    if r < 1.5 {
-        p.circle_filled(c, r.max(1.0), day);
-        return;
-    }
-    let u = if sun.length_squared() > 1e-8 {
-        sun.normalize()
-    } else {
-        Vec2::X
-    };
-    // Screen y runs down.
-    let (ux, uy) = (u.x, -u.y);
-    let (vx, vy) = (-uy, ux);
-    let mut mesh = egui::Mesh::default();
-    let n = 32;
-    for i in 0..=n {
-        let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / n as f32;
-        let (s, co) = a.sin_cos();
-        let limb = pos2(c.x + r * (co * ux + s * vx), c.y + r * (co * uy + s * vy));
-        let term = pos2(
-            c.x + r * (-toward * co * ux + s * vx),
-            c.y + r * (-toward * co * uy + s * vy),
-        );
-        mesh.colored_vertex(limb, day);
-        mesh.colored_vertex(term, day);
-        if i > 0 {
-            let k = 2 * i as u32;
-            mesh.add_triangle(k - 2, k - 1, k);
-            mesh.add_triangle(k - 1, k + 1, k);
-        }
-    }
-    p.add(egui::Shape::mesh(mesh));
 }
 
 /// The Sun's radius, metres.
@@ -257,11 +291,11 @@ const RINGS: [(f64, &str); 15] = [
     (LIGHT_YEAR_M * 1.0e9, "1 billion light years"),
     (LIGHT_YEAR_M * 1.0e10, "10 billion light years"),
 ];
-const GALAXY_DOT: Color32 = Color32::from_rgb(0xF2, 0xE8, 0xD8);
-const EDGE: Color32 = Color32::from_rgb(0xE8, 0xB8, 0x8A);
-const RING: Color32 = Color32::from_rgba_unmultiplied_const(0x9A, 0xB0, 0xB8, 46);
-const GALAXY_STAR: Color32 = Color32::from_rgb(0xD8, 0xE2, 0xFF);
-const GALAXY_BULGE: Color32 = Color32::from_rgb(0xFF, 0xE2, 0xAA);
+const GALAXY_DOT: Rgba8 = Rgba8::from_rgb(0xF2, 0xE8, 0xD8);
+const EDGE: Rgba8 = Rgba8::from_rgb(0xE8, 0xB8, 0x8A);
+const RING: Rgba8 = Rgba8::from_rgba_unmultiplied(0x9A, 0xB0, 0xB8, 46);
+const GALAXY_STAR: Rgba8 = Rgba8::from_rgb(0xD8, 0xE2, 0xFF);
+const GALAXY_BULGE: Rgba8 = Rgba8::from_rgb(0xFF, 0xE2, 0xAA);
 
 /// Equatorial coordinates to ecliptic ones (both with x at the March equinox).
 fn eq_to_ecl(v: DVec3) -> DVec3 {
@@ -419,7 +453,7 @@ impl View {
     }
 
     /// The Sun's direction on screen from a body, and how far it stands
-    /// towards the viewer — what `paint_lit_sphere` takes.
+    /// towards the viewer — what `ShapeKind::Sphere` takes.
     fn sunlight(&self, body: DVec3) -> (Vec2, f32) {
         let s = (-body).normalize_or_zero();
         (
@@ -440,37 +474,28 @@ fn apart(a: Pos2, b: Pos2, lo: f32, hi: f32) -> f32 {
 /// `a` how strongly it shows.
 struct Tag {
     at: Pos2,
-    align: egui::Align2,
+    align: Align,
     text: String,
     size: f32,
-    ink: Color32,
+    ink: Rgba8,
     a: f32,
 }
 
 impl Tag {
-    /// Where the label's text stands, by egui's measure of it.
-    fn rect(&self, p: &egui::Painter) -> egui::Rect {
-        let g = p.layout_no_wrap(
-            self.text.clone(),
-            egui::FontId::proportional(self.size),
-            alpha(self.ink, self.a),
-        );
-        self.align.anchor_size(self.at, g.size())
-    }
-
-    fn paint(&self, p: &egui::Painter) {
-        label(
-            p,
-            self.at,
-            self.align,
+    /// Where the label's text stands, measured over the face the library
+    /// sets it in (`place_pins::text_size`).
+    fn rect(&self) -> Area {
+        let size = crate::systems::place_pins::text_size(
             &self.text,
             self.size,
-            alpha(self.ink, self.a),
+            crate::systems::place_pins::Face::Body,
+            0.0,
         );
+        self.align.anchor_size(self.at, size)
     }
 
-    /// The label for the library, where egui measured it.
-    fn publish(&self, rect: egui::Rect) -> CosmosTag {
+    /// The label for the library, where it was measured.
+    fn publish(&self, rect: Area) -> CosmosTag {
         CosmosTag {
             min: rect.min,
             size: rect.size(),
@@ -483,14 +508,14 @@ impl Tag {
 }
 
 /// The labels that find room, each with where its text stands.
-fn place_tags(p: &egui::Painter, tags: Vec<Tag>, screen: egui::Rect) -> Vec<(Tag, egui::Rect)> {
-    let mut taken: Vec<egui::Rect> = Vec::new();
+fn place_tags(tags: Vec<Tag>, screen: Area) -> Vec<(Tag, Area)> {
+    let mut taken: Vec<Area> = Vec::new();
     let mut placed = Vec::new();
     for t in tags {
         if alpha(t.ink, t.a).a() < 4 {
             continue;
         }
-        let at = t.rect(p);
+        let at = t.rect();
         let r = at.expand(2.0);
         if !screen.contains_rect(r) || taken.iter().any(|o| o.intersects(r)) {
             continue;
@@ -505,18 +530,18 @@ fn place_tags(p: &egui::Painter, tags: Vec<Tag>, screen: egui::Rect) -> Vec<(Tag
 
 /// The cosmos for the component library: everything but the space behind
 /// it and the two star fields (the Milky Way's 7,000 points and up to
-/// 50,000 galaxies, which a box each would make a node each: `CosmosSky`),
-/// as egui would paint it this frame. Points, egui's.
+/// 50,000 galaxies, which a box each would make a node each: `CosmosSky`).
+/// UI points.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CosmosFrame {
-    /// In egui's paint order.
+    /// In paint order, the first at the bottom.
     pub shapes: Vec<CosmosShape>,
     /// The labels that found room, then the captions.
     pub tags: Vec<CosmosTag>,
 }
 
 /// One body, ring or line: `alpha` is how strongly it shows, its colours
-/// are egui's constants.
+/// this module's constants.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CosmosShape {
     /// Stays with the same thing from frame to frame.
@@ -529,171 +554,148 @@ pub struct CosmosShape {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShapeKind {
     Disc {
-        c: Pos2,
+        c: Vec2,
         r: f32,
-        ink: Color32,
+        ink: Rgba8,
     },
     /// A circle's outline, `r` to the middle of the stroke.
     Ring {
-        c: Pos2,
+        c: Vec2,
         r: f32,
         width: f32,
-        ink: Color32,
+        ink: Rgba8,
     },
     /// An orbit: an ellipse round `c`, `half` its half axes, the first
     /// turned `angle_deg` clockwise from the screen's x.
     Ellipse {
-        c: Pos2,
-        half: egui::Vec2,
+        c: Vec2,
+        half: Vec2,
         angle_deg: f32,
-        ink: Color32,
+        ink: Rgba8,
     },
     Line {
-        a: Pos2,
-        b: Pos2,
-        ink: Color32,
+        a: Vec2,
+        b: Vec2,
+        ink: Rgba8,
     },
-    /// A sphere lit from one side (`paint_lit_sphere`'s arguments).
+    /// A sphere seen from the camera, lit from one side. `sun` is the Sun's
+    /// direction on screen (x right, y up); `toward` how far it stands
+    /// towards the viewer, −1 behind the sphere to 1 behind the viewer. The
+    /// lit part runs from the limb on the Sun's side to the terminator, an
+    /// ellipse through the two limb points across the Sun's direction and
+    /// the point `−toward · r` along it.
     Sphere {
-        c: Pos2,
+        c: Vec2,
         r: f32,
         sun: Vec2,
         toward: f32,
-        day: Color32,
-        night: Color32,
+        day: Rgba8,
+        night: Rgba8,
     },
 }
 
-/// A label where egui measured it, its halo the dark theme's ink.
+/// A label where it was measured, its halo the dark theme's ink.
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct CosmosTag {
-    pub min: Pos2,
-    pub size: egui::Vec2,
+    pub min: Vec2,
+    pub size: Vec2,
     pub text: String,
     pub font: f32,
-    pub ink: Color32,
+    pub ink: Rgba8,
     pub alpha: f32,
 }
 
-/// The space behind the cosmos and its two star fields, for the library's
-/// own camera to draw as meshes (`lib_cosmos_sky`). Points, egui's.
-#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+/// The space behind the cosmos and its two star fields, for a 2D camera to
+/// draw as meshes (`lib_cosmos_sky`). UI points.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CosmosSky {
-    /// egui's points to physical pixels.
+    /// UI points to physical pixels (`UiMetrics::pixels_per_point`).
     pub pixels_per_point: f32,
     /// Space, its alpha the fade in past the ceiling, over the whole screen.
-    pub space: Color32,
-    /// The round hole the 3D globe shows through (`fill_around`): its
-    /// middle and radius, `None` once the Earth is a painted disc.
-    pub hole: Option<(Pos2, f32)>,
-    /// The Milky Way's points, then the galaxies', in egui's paint order.
+    pub space: Rgba8,
+    /// The round hole the 3D globe shows through: its middle and radius,
+    /// `None` once the Earth is a drawn disc.
+    pub hole: Option<(Vec2, f32)>,
+    /// The Milky Way's points, then the galaxies', in paint order.
     pub dots: Vec<SkyDot>,
 }
 
 /// One star field point: a square `r` each way from `at`.
-#[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkyDot {
-    pub at: Pos2,
+    pub at: Vec2,
     pub r: f32,
-    pub ink: Color32,
+    pub ink: Rgba8,
 }
 
-/// The library's edition of the cosmos (`lib_cosmos`), inserted by it: with
-/// `lib` on, egui paints only the space and the star fields and publishes
-/// the rest in `lib_view` (`None` while the view is below the ceiling).
-/// With `sky` on as well (the library has a camera of its own to draw
-/// meshes on, `lib_cosmos_sky`), egui paints nothing at all and publishes
-/// the space and the star fields in `lib_sky`, counting each change in
-/// `sky_rev` so the meshes are rebuilt only when it moved.
+/// The cosmos as this frame has it, for the library to draw: the bodies,
+/// rings, lines and labels in `view` (`lib_cosmos`, `None` while the view
+/// is below the ceiling), the space and the star fields in `sky`
+/// (`lib_cosmos_sky`), each change of which `sky_rev` counts so the meshes
+/// are rebuilt only when it moved. Inserted by `lib_cosmos`.
 #[derive(Resource, Default)]
 pub struct CosmosLib {
-    pub lib: bool,
-    pub lib_view: Option<CosmosFrame>,
-    pub sky: bool,
-    pub lib_sky: Option<CosmosSky>,
+    pub view: Option<CosmosFrame>,
+    pub sky: Option<CosmosSky>,
     pub sky_rev: u64,
 }
 
-/// Where the bodies, rings and lines go: painted by egui, or kept for the
-/// library, which draws them as boxes.
-struct Out<'a> {
-    p: &'a egui::Painter,
-    lib: Option<Vec<CosmosShape>>,
+/// The frame's bodies, rings and lines, in paint order.
+#[derive(Default)]
+struct Out {
+    shapes: Vec<CosmosShape>,
 }
 
-impl Out<'_> {
+impl Out {
     fn push(&mut self, key: String, alpha: f32, kind: ShapeKind) {
-        if let Some(v) = self.lib.as_mut() {
-            v.push(CosmosShape { key, alpha, kind });
-        }
+        self.shapes.push(CosmosShape { key, alpha, kind });
     }
 
-    fn disc(&mut self, key: impl Into<String>, c: Pos2, r: f32, ink: Color32, a: f32) {
-        if self.lib.is_some() {
-            self.push(key.into(), a, ShapeKind::Disc { c, r, ink });
-        } else {
-            self.p.circle_filled(c, r, alpha(ink, a));
-        }
+    fn disc(&mut self, key: impl Into<String>, c: Pos2, r: f32, ink: Rgba8, a: f32) {
+        self.push(key.into(), a, ShapeKind::Disc { c, r, ink });
     }
 
-    fn ring(&mut self, key: impl Into<String>, c: Pos2, r: f32, width: f32, ink: Color32, a: f32) {
-        if self.lib.is_some() {
-            self.push(key.into(), a, ShapeKind::Ring { c, r, width, ink });
-        } else {
-            self.p
-                .circle_stroke(c, r, egui::Stroke::new(width, alpha(ink, a)));
-        }
+    fn ring(&mut self, key: impl Into<String>, c: Pos2, r: f32, width: f32, ink: Rgba8, a: f32) {
+        self.push(key.into(), a, ShapeKind::Ring { c, r, width, ink });
     }
 
-    fn line(&mut self, key: impl Into<String>, from: Pos2, to: Pos2, ink: Color32, a: f32) {
-        if self.lib.is_some() {
-            self.push(
-                key.into(),
-                a,
-                ShapeKind::Line {
-                    a: from,
-                    b: to,
-                    ink,
-                },
-            );
-        } else {
-            self.p
-                .line_segment([from, to], egui::Stroke::new(1.0, alpha(ink, a)));
-        }
+    fn line(&mut self, key: impl Into<String>, from: Pos2, to: Pos2, ink: Rgba8, a: f32) {
+        self.push(
+            key.into(),
+            a,
+            ShapeKind::Line {
+                a: from,
+                b: to,
+                ink,
+            },
+        );
     }
 
-    /// A circle in the ecliptic plane round `about`: egui's polyline through
-    /// the squeeze, or for the library the ellipse through its four ends.
+    /// A circle in the ecliptic plane round `about`, as the ellipse through
+    /// its four ends.
     fn orbit(
         &mut self,
         key: impl Into<String>,
         view: &View,
         about: DVec3,
         r: f64,
-        ink: Color32,
+        ink: Rgba8,
         a: f32,
     ) {
-        if self.lib.is_some() {
-            let (c, half, angle_deg) = orbit_ellipse(view, about, r);
-            self.push(
-                key.into(),
-                a,
-                ShapeKind::Ellipse {
-                    c,
-                    half,
-                    angle_deg,
-                    ink,
-                },
-            );
-        } else {
-            self.p.add(egui::Shape::line(
-                ecliptic_circle(view, about, r),
-                egui::Stroke::new(1.0, alpha(ink, a)),
-            ));
-        }
+        let (c, half, angle_deg) = orbit_ellipse(view, about, r);
+        self.push(
+            key.into(),
+            a,
+            ShapeKind::Ellipse {
+                c,
+                half,
+                angle_deg,
+                ink,
+            },
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -704,26 +706,22 @@ impl Out<'_> {
         r: f32,
         sun: Vec2,
         toward: f32,
-        day: Color32,
-        night: Color32,
+        day: Rgba8,
+        night: Rgba8,
         a: f32,
     ) {
-        if self.lib.is_some() {
-            self.push(
-                key.into(),
-                a,
-                ShapeKind::Sphere {
-                    c,
-                    r,
-                    sun,
-                    toward,
-                    day,
-                    night,
-                },
-            );
-        } else {
-            paint_lit_sphere(self.p, c, r, sun, toward, alpha(day, a), alpha(night, a));
-        }
+        self.push(
+            key.into(),
+            a,
+            ShapeKind::Sphere {
+                c,
+                r,
+                sun,
+                toward,
+                day,
+                night,
+            },
+        );
     }
 }
 
@@ -731,7 +729,7 @@ impl Out<'_> {
 /// that come out longest and shortest without the squeeze, each taken
 /// through the squeeze end to end. The middle, the two half axes, and the
 /// first's turn clockwise from the screen's x, degrees.
-fn orbit_ellipse(view: &View, about: DVec3, r: f64) -> (Pos2, egui::Vec2, f32) {
+fn orbit_ellipse(view: &View, about: DVec3, r: f64) -> (Pos2, Vec2, f32) {
     let (a, b) = (view.plane(DVec3::X), view.plane(DVec3::Y));
     let th = 0.5 * (2.0 * a.dot(b)).atan2(a.length_squared() - b.length_squared());
     let at = |t: f64| view.at(about + DVec3::new(t.cos(), t.sin(), 0.0) * r);
@@ -740,7 +738,7 @@ fn orbit_ellipse(view: &View, about: DVec3, r: f64) -> (Pos2, egui::Vec2, f32) {
         at(th + std::f64::consts::FRAC_PI_2),
         at(th - std::f64::consts::FRAC_PI_2),
     );
-    let c = ((p0.to_vec2() + p1.to_vec2() + q0.to_vec2() + q1.to_vec2()) / 4.0).to_pos2();
+    let c = (p0 + p1 + q0 + q1) / 4.0;
     let (major, minor) = ((p0 - p1) / 2.0, (q0 - q1) / 2.0);
     (
         c,
@@ -749,82 +747,36 @@ fn orbit_ellipse(view: &View, about: DVec3, r: f64) -> (Pos2, egui::Vec2, f32) {
     )
 }
 
-/// A circle in the ecliptic plane round `about`, through the view.
-fn ecliptic_circle(view: &View, about: DVec3, r: f64) -> Vec<Pos2> {
-    (0..=128)
-        .map(|i| {
-            let a = std::f64::consts::TAU * f64::from(i) / 128.0;
-            view.at(about + DVec3::new(a.cos(), a.sin(), 0.0) * r)
-        })
-        .collect()
-}
-
-/// Space over the whole screen but a round hole, where the 3D globe shows
-/// through: the four bands round the hole's square, then the ring between the
-/// square and the circle, its rays meeting the square's corners exactly.
-fn fill_around(p: &egui::Painter, screen: egui::Rect, c: Pos2, r: f32, ink: Color32) {
-    let square = egui::Rect::from_center_size(c, vec2(2.0 * r, 2.0 * r));
-    if !screen.intersects(square) {
-        p.rect_filled(screen, 0.0, ink);
-        return;
-    }
-    for band in [
-        egui::Rect::from_min_max(screen.min, pos2(screen.max.x, square.min.y)),
-        egui::Rect::from_min_max(pos2(screen.min.x, square.max.y), screen.max),
-        egui::Rect::from_min_max(
-            pos2(screen.min.x, square.min.y),
-            pos2(square.min.x, square.max.y),
-        ),
-        egui::Rect::from_min_max(
-            pos2(square.max.x, square.min.y),
-            pos2(screen.max.x, square.max.y),
-        ),
-    ] {
-        let band = band.intersect(screen);
-        if band.width() > 0.0 && band.height() > 0.0 {
-            p.rect_filled(band, 0.0, ink);
-        }
-    }
-    let mut mesh = egui::Mesh::default();
-    // A multiple of eight, so a ray falls on each corner.
-    let n = 64;
-    for i in 0..=n {
-        let a = std::f32::consts::TAU * i as f32 / n as f32;
-        let d = Vec2::from_angle(a);
-        let edge = d / d.x.abs().max(d.y.abs());
-        mesh.colored_vertex(c + vec2(d.x, d.y) * r, ink);
-        mesh.colored_vertex(c + vec2(edge.x, edge.y) * r, ink);
-        if i > 0 {
-            let k = 2 * i as u32;
-            mesh.add_triangle(k - 2, k - 1, k);
-            mesh.add_triangle(k - 1, k + 1, k);
-        }
-    }
-    p.add(egui::Shape::mesh(mesh));
-}
-
-/// Paint what is past the ceiling, while the view is out there, and frame the
-/// 3D globe to the size and place the Earth has there.
+/// Work out what is past the ceiling, while the view is out there, for the
+/// library to draw (`CosmosLib`), move the map by this frame's drag, and
+/// frame the 3D globe to the size and place the Earth has there.
 #[allow(clippy::too_many_arguments)]
-pub fn render_cosmos(
-    egui: EguiRef,
+pub fn drive_cosmos(
+    metrics: Res<UiMetrics>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut camera_state: ResMut<crate::resources::CameraState>,
     dev: Res<crate::resources::DevPanelState>,
     clock: Res<crate::systems::transit_live::WorldClock>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
     mut camera_lens: Query<(&Projection, &mut Camera), With<crate::components::FreeCamera>>,
-    mut galaxy: Local<Vec<(DVec3, f32, Color32)>>,
+    mut galaxy: Local<Vec<(DVec3, f32, Rgba8)>>,
     catalogue: Res<GalaxyCatalogue>,
     mut lib: Option<ResMut<CosmosLib>>,
 ) {
     // Nothing for the library unless a frame below says otherwise.
     let mut published: Option<CosmosFrame> = None;
     let mut published_sky: Option<CosmosSky> = None;
-    let lib_on = lib.as_ref().is_some_and(|l| l.lib);
-    let sky_on = lib_on && lib.as_ref().is_some_and(|l| l.sky);
-    render_cosmos_frame(
-        &egui,
+    // The hand, in UI points: the touch recogniser has moved the window's
+    // cursor to the finger.
+    let pointer = windows
+        .single()
+        .ok()
+        .and_then(Window::cursor_position)
+        .map(|p| metrics.window_to_ui(p));
+    cosmos_frame(
+        &metrics,
+        pointer,
         &mut camera_state,
         &dev,
         &clock,
@@ -833,37 +785,36 @@ pub fn render_cosmos(
         &mut camera_lens,
         &mut galaxy,
         &catalogue,
-        lib_on,
-        sky_on.then_some(&mut published_sky),
+        &mut published_sky,
         &mut published,
     );
     if let Some(lib) = lib.as_mut() {
-        if lib.lib_view != published {
-            lib.lib_view = published;
+        if lib.view != published {
+            lib.view = published;
         }
-        if lib.lib_sky != published_sky {
-            lib.lib_sky = published_sky;
+        if lib.sky != published_sky {
+            lib.sky = published_sky;
             lib.sky_rev = lib.sky_rev.wrapping_add(1);
         }
     }
 }
 
-/// [`render_cosmos`]'s frame: with `lib` on, paints only the space and the
-/// star fields and leaves the rest in `published`; given `sky` as well, paints
-/// nothing and leaves the space and the star fields in it.
+/// [`drive_cosmos`]'s frame: the bodies, rings and labels into `published`,
+/// the space and the star fields into `sky_out`; both left `None` below the
+/// ceiling.
 #[allow(clippy::too_many_arguments)]
-fn render_cosmos_frame(
-    egui: &EguiRef,
+fn cosmos_frame(
+    metrics: &UiMetrics,
+    pointer: Option<Pos2>,
     camera_state: &mut crate::resources::CameraState,
     dev: &crate::resources::DevPanelState,
     clock: &crate::systems::transit_live::WorldClock,
     globe: &crate::systems::globe::GlobeState,
     camera: &Query<&Transform, With<crate::components::FreeCamera>>,
     camera_lens: &mut Query<(&Projection, &mut Camera), With<crate::components::FreeCamera>>,
-    galaxy: &mut Vec<(DVec3, f32, Color32)>,
+    galaxy: &mut Vec<(DVec3, f32, Rgba8)>,
     catalogue: &GalaxyCatalogue,
-    lib: bool,
-    sky_out: Option<&mut Option<CosmosSky>>,
+    sky_out: &mut Option<CosmosSky>,
     published: &mut Option<CosmosFrame>,
 ) {
     let alt = camera_state.cosmos_alt;
@@ -880,18 +831,13 @@ fn render_cosmos_frame(
     let Ok(tf) = camera.single() else {
         return;
     };
-    let ctx = egui.ctx();
-    let screen = ctx.content_rect();
-    let p = ctx.layer_painter(egui::LayerId::background());
-    let mut out = Out {
-        p: &p,
-        lib: lib.then(Vec::new),
-    };
-    // The space and the star fields, for the library's camera.
-    let mut sky = sky_out.is_some().then(|| CosmosSky {
-        pixels_per_point: ctx.pixels_per_point(),
+    let screen = Area::from_min_size(Pos2::ZERO, metrics.viewport_pts());
+    let mut out = Out::default();
+    // The space and the star fields, for the sky's meshes.
+    let mut sky = CosmosSky {
+        pixels_per_point: metrics.pixels_per_point(),
         ..Default::default()
-    });
+    };
     // Where the 3D camera waits, from the Earth's centre, and its height there.
     let wait_m = crate::systems::free_camera::ORBIT_MAX_DISTANCE_SPACE;
     let ceiling = wait_m - f64::from(globe.radius);
@@ -930,11 +876,11 @@ fn render_cosmos_frame(
     // ── Moving about: a drag carries the point under the hand with it ──────
     // Read through the squeeze, so a drag from the rim to the middle brings
     // what was at the rim to the middle, however far out it is.
-    let drag = std::mem::take(&mut camera_state.cosmos_drag) / ctx.zoom_factor();
+    // The drag is in the window's logical points, the map in UI points.
+    let drag = metrics.window_to_ui(std::mem::take(&mut camera_state.cosmos_drag));
     let mut pan = view.plane(camera_state.cosmos_pan);
     if drag != Vec2::ZERO {
-        let at = ctx
-            .input(|i| i.pointer.latest_pos())
+        let at = pointer
             .filter(|at| screen.contains(*at))
             .unwrap_or(view.centre);
         pan += view.under(at - vec2(drag.x, drag.y)) - view.under(at);
@@ -964,7 +910,7 @@ fn render_cosmos_frame(
         / wide) as f32;
     let solid = globe_r >= 2.0;
     let sub = lens.physical_target_size().filter(|_| solid).map(|full| {
-        let ppp = ctx.pixels_per_point();
+        let ppp = metrics.pixels_per_point();
         let e = (earth_at - screen.min) * ppp;
         let size = full.as_dvec2() * wide;
         bevy::camera::SubCameraView {
@@ -981,14 +927,8 @@ fn render_cosmos_frame(
     }
     // A little past the limb, for the atmosphere's rim.
     let hole = solid.then_some((earth_at, globe_r * 1.05));
-    if let Some(sky) = sky.as_mut() {
-        sky.space = alpha(SPACE, bd);
-        sky.hole = hole;
-    } else if let Some((c, r)) = hole {
-        fill_around(&p, screen, c, r, alpha(SPACE, bd));
-    } else {
-        p.rect_filled(screen, 0.0, alpha(SPACE, bd));
-    }
+    sky.space = alpha(SPACE, bd);
+    sky.hole = hole;
     let mut tags: Vec<Tag> = Vec::new();
 
     // ── The ruler ───────────────────────────────────────────────────────────
@@ -1004,10 +944,10 @@ fn render_cosmos_frame(
             out.ring(format!("ring {words}"), view.centre, r, 1.0, RING, a);
             ring_tags.push(Tag {
                 at: view.centre + vec2(r, -r) * std::f32::consts::FRAC_1_SQRT_2 + vec2(3.0, -2.0),
-                align: egui::Align2::LEFT_BOTTOM,
+                align: Align::LEFT_BOTTOM,
                 text: words.to_string(),
                 size: theme::SIZE_TINY,
-                ink: theme::DARK32.text_dim,
+                ink: theme::DARK.text_dim,
                 a,
             });
         }
@@ -1031,9 +971,8 @@ fn render_cosmos_frame(
         // Once the whole galaxy is a few pixels its points are one dot.
         let mw_r = view.size(gc, 50_000.0 * LIGHT_YEAR_M);
         if mw_r > 4.0 {
-            // One mesh of small squares: some 7,000 circles a frame was a
-            // tessellation's worth of work for something this small.
-            let mut mesh = egui::Mesh::default();
+            // Small squares in one mesh (`lib_cosmos_sky`): some 7,000
+            // circles a frame is a lot of work for something this small.
             let r = 0.75;
             for (pt, b, ink) in galaxy.iter() {
                 let q = view.at(*pt);
@@ -1041,37 +980,25 @@ fn render_cosmos_frame(
                     continue;
                 }
                 let ink = alpha(*ink, gx * b);
-                if let Some(sky) = sky.as_mut() {
-                    sky.dots.push(SkyDot { at: q, r, ink });
-                    continue;
-                }
-                let i = mesh.vertices.len() as u32;
-                for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
-                    mesh.colored_vertex(q + d, ink);
-                }
-                mesh.add_triangle(i, i + 1, i + 2);
-                mesh.add_triangle(i, i + 2, i + 3);
-            }
-            if !mesh.is_empty() {
-                p.add(egui::Shape::mesh(mesh));
+                sky.dots.push(SkyDot { at: q, r, ink });
             }
         } else {
             out.disc("milky way", gc_at, mw_r.max(2.5), GALAXY_STAR, gx);
         }
         tags.push(Tag {
             at: gc_at + vec2(0.0, -14.0),
-            align: egui::Align2::CENTER_BOTTOM,
+            align: Align::CENTER_BOTTOM,
             text: format!("Galactic centre · {} light years", thousands(GC_LY as u64)),
             size: theme::SIZE_SUB,
-            ink: theme::DARK32.text,
+            ink: theme::DARK.text,
             a: gx * apart(gc_at, sun_at, 30.0, 80.0) * fade_out(alt, 2.0e21, 6.0e21),
         });
         tags.push(Tag {
             at: gc_at + vec2(0.0, mw_r.max(2.5) + 8.0),
-            align: egui::Align2::CENTER_TOP,
+            align: Align::CENTER_TOP,
             text: "Milky Way · you".into(),
             size: theme::SIZE_BODY,
-            ink: theme::DARK32.cream,
+            ink: theme::DARK.cream,
             a: gx * fade_in(alt, 2.0e21, 6.0e21),
         });
     }
@@ -1103,9 +1030,8 @@ fn render_cosmos_frame(
     let names = if screen.width() < 600.0 { 12 } else { 30 };
     let mut galaxy_tags = Vec::new();
     if !catalogue.galaxies.is_empty() && near_a > 0.01 {
-        let mut named = paint_galaxies(
-            &p,
-            sky.as_mut().map(|s| &mut s.dots),
+        let mut named = place_galaxies(
+            &mut sky.dots,
             &view,
             screen,
             &catalogue.galaxies,
@@ -1127,14 +1053,14 @@ fn render_cosmos_frame(
         for (g, q, a) in named.into_iter().take(names) {
             galaxy_tags.push(Tag {
                 at: q + vec2(5.0, 0.0),
-                align: egui::Align2::LEFT_CENTER,
+                align: Align::LEFT_CENTER,
                 text: format!(
                     "{} · {}",
                     g.name,
                     distance_words(g.light_years * LIGHT_YEAR_M)
                 ),
                 size: theme::SIZE_TINY,
-                ink: theme::DARK32.text,
+                ink: theme::DARK.text,
                 // At the top the whole survey is a dot; its names would bury it.
                 a: a * fade_out(alt, 1.0e26, 6.0e26),
             });
@@ -1148,7 +1074,7 @@ fn render_cosmos_frame(
         out.ring("edge", view.centre, edge_r, 1.5, EDGE, ea);
         tags.push(Tag {
             at: view.centre + vec2(0.0, -edge_r - 6.0),
-            align: egui::Align2::CENTER_BOTTOM,
+            align: Align::CENTER_BOTTOM,
             text: "Edge of the observable universe · 46 billion light years".into(),
             size: theme::SIZE_SUB,
             ink: EDGE,
@@ -1159,10 +1085,10 @@ fn render_cosmos_frame(
         tags.push(Tag {
             // Above the middle's own "Milky Way · you".
             at: view.centre + vec2(mapped + 6.0, -6.0),
-            align: egui::Align2::LEFT_BOTTOM,
+            align: Align::LEFT_BOTTOM,
             text: "every galaxy mapped here · 2 billion light years".into(),
             size: theme::SIZE_TINY,
-            ink: theme::DARK32.text,
+            ink: theme::DARK.text,
             a: ea * fade_in(alt, 3.0e25, 3.0e26),
         });
     }
@@ -1205,15 +1131,15 @@ fn render_cosmos_frame(
             format!("star {i}"),
             q,
             if s.members > 1 { 3.5 } else { 2.5 },
-            theme::DARK32.cream,
+            theme::DARK.cream,
             a,
         );
         star_tags.push(Tag {
             at: q + vec2(5.0, 0.0),
-            align: egui::Align2::LEFT_CENTER,
+            align: Align::LEFT_CENTER,
             text: format!("{} · {:.1} ly", s.name, s.light_years),
             size: theme::SIZE_TINY,
-            ink: theme::DARK32.text,
+            ink: theme::DARK.text,
             a,
         });
     }
@@ -1255,14 +1181,14 @@ fn render_cosmos_frame(
         );
         planet_tags.push(Tag {
             at: q + vec2(0.0, 7.0),
-            align: egui::Align2::CENTER_TOP,
+            align: Align::CENTER_TOP,
             text: format!(
                 "{} · {}",
                 planet.name,
                 light_time_words(xyz.distance(earth))
             ),
             size: theme::SIZE_SUB,
-            ink: theme::DARK32.cream,
+            ink: theme::DARK.cream,
             a,
         });
     }
@@ -1320,14 +1246,7 @@ fn render_cosmos_frame(
         );
     }
     // Home: the ring stays on the Earth, wherever the Earth has shrunk to.
-    out.ring(
-        "home",
-        earth_at,
-        earth_r + 6.0,
-        2.0,
-        theme::BRAND.to_egui(),
-        bd,
-    );
+    out.ring("home", earth_at, earth_r + 6.0, 2.0, theme::BRAND, bd);
 
     // ── Labels, the nearer first ────────────────────────────────────────────
     let sun_words = if you_apart < 0.5 {
@@ -1338,15 +1257,15 @@ fn render_cosmos_frame(
     let mut ordered = vec![
         Tag {
             at: earth_at + vec2(0.0, earth_r + 10.0),
-            align: egui::Align2::CENTER_TOP,
+            align: Align::CENTER_TOP,
             text: "Earth · you".into(),
             size: theme::SIZE_BODY,
-            ink: theme::DARK32.cream,
+            ink: theme::DARK.cream,
             a: bd * you_apart,
         },
         Tag {
             at: sun_at + vec2(0.0, sun_r + 10.0),
-            align: egui::Align2::CENTER_TOP,
+            align: Align::CENTER_TOP,
             text: sun_words,
             size: theme::SIZE_BODY,
             ink: SUN,
@@ -1354,14 +1273,14 @@ fn render_cosmos_frame(
         },
         Tag {
             at: moon_at + vec2(8.0, 0.0),
-            align: egui::Align2::LEFT_CENTER,
+            align: Align::LEFT_CENTER,
             text: format!(
                 "Moon · {} · {}",
                 distance_words(MOON_DIST_M),
                 light_time_words(MOON_DIST_M)
             ),
             size: theme::SIZE_SUB,
-            ink: theme::DARK32.cream,
+            ink: theme::DARK.cream,
             a: ma,
         },
     ];
@@ -1411,7 +1330,7 @@ fn render_cosmos_frame(
     if !said.is_empty() {
         captions.push(Tag {
             at: foot,
-            align: egui::Align2::LEFT_BOTTOM,
+            align: Align::LEFT_BOTTOM,
             text: {
                 let words = said.join(" · ");
                 let mut c = words.chars();
@@ -1420,41 +1339,30 @@ fn render_cosmos_frame(
                     .unwrap_or_default()
             },
             size: theme::SIZE_SUB,
-            ink: theme::DARK32.text_dim,
+            ink: theme::DARK.text_dim,
             a: bd,
         });
     }
     captions.push(Tag {
         at: foot - vec2(0.0, 18.0),
-        align: egui::Align2::LEFT_BOTTOM,
+        align: Align::LEFT_BOTTOM,
         text: "To scale in the middle, squeezed towards the edge · rings at light-travel distances"
             .into(),
         size: theme::SIZE_SUB,
-        ink: theme::DARK32.text_dim,
+        ink: theme::DARK.text_dim,
         a: ruler,
     });
     // Clear of the rail on the right and of the captions and the bar below.
     let mut room = screen.shrink2(vec2(48.0, 8.0));
     room.max.y = foot.y - 40.0;
-    let placed = place_tags(&p, ordered, room);
-    match out.lib.take() {
-        None => {
-            for t in &captions {
-                t.paint(&p);
-            }
-            for (t, _) in &placed {
-                t.paint(&p);
-            }
-        }
-        Some(shapes) => {
-            let mut tags: Vec<CosmosTag> = placed.iter().map(|(t, r)| t.publish(*r)).collect();
-            tags.extend(captions.iter().map(|t| t.publish(t.rect(&p))));
-            *published = Some(CosmosFrame { shapes, tags });
-        }
-    }
-    if let Some(sky_out) = sky_out {
-        *sky_out = sky;
-    }
+    let placed = place_tags(ordered, room);
+    let mut tags: Vec<CosmosTag> = placed.iter().map(|(t, r)| t.publish(*r)).collect();
+    tags.extend(captions.iter().map(|t| t.publish(t.rect())));
+    *published = Some(CosmosFrame {
+        shapes: out.shapes,
+        tags,
+    });
+    *sky_out = Some(sky);
 }
 
 /// One galaxy past the Milky Way, placed in the map's frame.
@@ -1555,17 +1463,16 @@ fn galaxy_dot(log_lum: f32) -> f32 {
     (0.6 + (log_lum - 8.0) * 0.45).clamp(0.6, 2.0)
 }
 
-/// The galaxies, one mesh of small squares (forty thousand circles would each
-/// be their own shape), at most one per two-pixel bin so the survey's far shell,
-/// squeezed into the rim, is not drawn over itself many times. Answers the
-/// named ones on screen, brightest first, for labels. Given `dots`, paints
-/// nothing and leaves the squares there for the library's camera.
+/// The galaxies, as small squares into `dots` (one mesh, `lib_cosmos_sky`:
+/// forty thousand circles would each be their own shape), at most one per
+/// two-pixel bin so the survey's far shell, squeezed into the rim, is not
+/// drawn over itself many times. Answers the named ones on screen, for
+/// labels.
 #[allow(clippy::too_many_arguments)]
-fn paint_galaxies<'a>(
-    p: &egui::Painter,
-    mut dots: Option<&mut Vec<SkyDot>>,
+fn place_galaxies<'a>(
+    dots: &mut Vec<SkyDot>,
     view: &View,
-    screen: egui::Rect,
+    screen: Area,
     galaxies: &'a [PlacedGalaxy],
     fade: impl Fn(&PlacedGalaxy) -> f32,
     away_from: Pos2,
@@ -1576,7 +1483,6 @@ fn paint_galaxies<'a>(
         (screen.height() / 2.0).ceil() as usize + 1,
     );
     let mut taken = vec![0u64; (w * h).div_ceil(64)];
-    let mut mesh = egui::Mesh::default();
     let mut named = Vec::new();
     for g in galaxies {
         let a = fade(g);
@@ -1607,22 +1513,10 @@ fn paint_galaxies<'a>(
             (galaxy_dot(g.log_lum).max(1.0), 0.8)
         };
         let ink = alpha(GALAXY_DOT, a * ink);
-        if let Some(dots) = dots.as_mut() {
-            dots.push(SkyDot { at: q, r, ink });
-        } else {
-            let i = mesh.vertices.len() as u32;
-            for d in [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)] {
-                mesh.colored_vertex(q + d, ink);
-            }
-            mesh.add_triangle(i, i + 1, i + 2);
-            mesh.add_triangle(i, i + 2, i + 3);
-        }
+        dots.push(SkyDot { at: q, r, ink });
         if !g.name.is_empty() {
             named.push((g, q, a));
         }
-    }
-    if !mesh.is_empty() {
-        p.add(egui::Shape::mesh(mesh));
     }
     named
 }
@@ -1661,7 +1555,7 @@ const ARMS: [(f32, f32, f32, f32, f32, f32, f32); 7] = [
 /// fainter for it.
 const ARM_REACH_DEG: f32 = 150.0;
 /// Where H II regions glow along the arms.
-const GALAXY_HII: Color32 = Color32::from_rgb(0xFF, 0xA8, 0xC4);
+const GALAXY_HII: Rgba8 = Rgba8::from_rgb(0xFF, 0xA8, 0xC4);
 
 /// The Milky Way as points, light years from its centre in its own plane (y
 /// towards the Sun, x the way the Galaxy turns there, towards l = 90°), each
@@ -1671,7 +1565,7 @@ const GALAXY_HII: Color32 = Color32::from_rgb(0xFF, 0xA8, 0xC4);
 /// and the boxy bulge in it; and the old disc, exponential with a 2.6 kpc
 /// scale length (Bland-Hawthorn & Gerhard 2016). A fixed seed, so it is the
 /// same galaxy every time.
-fn galaxy_points() -> Vec<(Vec2, f32, Color32)> {
+fn galaxy_points() -> Vec<(Vec2, f32, Rgba8)> {
     let mut seed: u32 = 0x9E37_79B9;
     let mut rnd = move || {
         seed ^= seed << 13;
@@ -1814,7 +1708,7 @@ mod tests {
     fn a_climb_moves_home_smoothly_and_never_off_screen() {
         // The Earth (home) stays on screen from the ceiling to the top of the
         // rail, and a 5 % climb never moves it, or the Sun, by a jump.
-        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let screen = Area::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
         let mut alt = 4.0e7;
         let mut last: Option<(Pos2, Pos2)> = None;
         while alt < crate::systems::zoom_rail::TOP_M {
@@ -1866,7 +1760,7 @@ mod tests {
         // Andromeda (2.5 million ly) on the Local Group's rung, Virgo (54
         // million) on the nearby galaxies', and the survey's reach (2 billion)
         // on the cosmic web's.
-        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let screen = Area::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
         for (rung, ly) in [
             (Rung::LocalGroup, 2.5e6),
             (Rung::NearbyGalaxies, 5.4e7),
@@ -1886,7 +1780,7 @@ mod tests {
         let v = view_at(crate::systems::zoom_rail::Scale::MilkyWay.overview());
         let gc = gal_to_ecl(DVec3::X) * GC_LY * LIGHT_YEAR_M;
         assert!(v.at(gc).distance(v.centre) < 5.0);
-        let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let screen = Area::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
         let points = galaxy_points();
         assert!(points.len() > 5_000);
         for (pt, _, _) in points {

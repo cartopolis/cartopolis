@@ -113,6 +113,14 @@ impl Plugin for UiProbePlugin {
             .add_systems(
                 PostUpdate,
                 crate::systems::lib_splash::fade_lib_splash.after(mithril_bevy::DriveUi),
+            )
+            // The map's free area from the panels' laid-out boxes
+            // (`data-reserves-map`), for the next frame's chrome and pins.
+            .add_systems(
+                PostUpdate,
+                crate::systems::lib_host::measure_map_room
+                    .after(mithril_bevy::DriveUi)
+                    .after(bevy::ui::UiSystems::Layout),
             );
         // The camera and a call, the app's only: their pictures are images
         // the app writes each frame (`mithril_bevy::LiveImages`).

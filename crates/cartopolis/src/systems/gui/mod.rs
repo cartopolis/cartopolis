@@ -73,7 +73,7 @@ pub mod lib_chat_overlay;
 pub mod lib_chrome;
 #[cfg(feature = "ui-lib")]
 pub mod lib_cosmos;
-#[cfg(feature = "ui-probe")]
+#[cfg(feature = "ui-lib")]
 pub mod lib_cosmos_sky;
 #[cfg(feature = "ui-lib")]
 pub mod lib_design_room;
@@ -178,7 +178,6 @@ pub mod map_osd;
 pub mod model_library;
 pub mod motion;
 pub mod onscreen_keyboard;
-pub mod panel_slots;
 pub mod place_card;
 pub mod place_names;
 pub mod place_pins;

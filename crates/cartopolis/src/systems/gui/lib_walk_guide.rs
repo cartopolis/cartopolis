@@ -36,7 +36,7 @@ use crate::systems::{icons, theme};
 /// The walking chrome's name in the library's host.
 const KEY: &str = "walk_guide";
 
-/// egui's `overlay_frame`, as a style: the surface, its rim, 14 × 12 inside.
+/// the overlay frame egui drew, as a style: the surface, its rim, 14 × 12 inside.
 /// Border-box, so a width below is the frame's whole width.
 const FRAME: &str = "box-sizing: border-box; padding: 12px 14px; \
      background: var(--m-surface); border: 1px solid var(--m-border); \

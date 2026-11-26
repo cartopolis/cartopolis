@@ -39,7 +39,7 @@ const PROMPT_KEY: &str = "interact_prompt";
 /// The chip's name in the library's host.
 const CHIP_KEY: &str = "attach_chip";
 
-/// egui's `overlay_frame`, as a style: the surface, its rim, 14 × 12 inside.
+/// the overlay frame egui drew, as a style: the surface, its rim, 14 × 12 inside.
 const FRAME: &str = "box-sizing: border-box; padding: 12px 14px; \
      background: var(--m-surface); border: 1px solid var(--m-border); \
      border-radius: var(--m-radius-lg); box-shadow: var(--m-shadow)";

@@ -43,7 +43,7 @@ use crate::systems::{icons, theme};
 /// The navigation chrome's name in the library's host.
 const KEY: &str = "driver";
 
-/// egui's `overlay_frame` without its margin, as a style: the surface and
+/// the overlay frame egui drew without its margin, as a style: the surface and
 /// its rim. Border-box, so a width beside it is the frame's whole width.
 const SURFACE: &str = "box-sizing: border-box; background: var(--m-surface); \
      border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); \

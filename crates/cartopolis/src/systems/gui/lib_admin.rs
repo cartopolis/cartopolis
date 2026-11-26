@@ -397,7 +397,7 @@ fn panel(l: &Live) -> View {
         }
     };
     view! {
-        <div style={frame}>
+        <div style={frame} data-reserves-map="right">
             {header}
             <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 20px">
                 {notice}

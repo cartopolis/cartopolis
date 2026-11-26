@@ -2,21 +2,6 @@ use super::*;
 
 // ─── Shared frames ────────────────────────────────────────────────────────────
 
-/// The frame every box that floats *over the map* shares — the status HUD, the
-/// stats readout, the bottom action bar.
-///
-/// One function because these were three hand-rolled copies of the same
-/// `Frame::NONE.fill(...)` that had already drifted apart (two alpha values, two
-/// corner radii, three margins), and a "the overlays look inconsistent" bug is
-/// invisible until you put two of them on screen at once.
-pub fn overlay_frame() -> egui::Frame {
-    egui::Frame::NONE
-        .fill(p32().overlay)
-        .stroke(Stroke::new(1.0, p32().overlay_line))
-        .corner_radius(CornerRadius::same(RADIUS_LG))
-        .inner_margin(Margin::symmetric(14, 12))
-}
-
 /// Padding inside a label chip over the map ([`LABEL_CHIP`] behind a few
 /// words, [`RADIUS_SM`] round): the driver's chip and the lens's marks
 /// (`lib_driver`, `lib_scenario_map`) use the same two numbers.
@@ -43,19 +28,6 @@ pub fn control_height() -> f32 {
 /// opposite corner — the map's floating controls are one family. Already 60 dp on
 /// the touch tier, so it needs no finger-sized variant.
 pub const ROUND_BUTTON_SIZE: f32 = 40.0;
-
-/// Give a painted control its name, as egui's own `Button` gives its text.
-///
-/// A control allocated with `allocate_exact_size` and painted by hand is,
-/// to egui, a clickable rectangle with no name: screen readers and the MCP
-/// `ui_tree` (`mcp::screen`) saw the dock and the map controls as sixteen
-/// unlabelled areas. The name goes into egui's widget info, nowhere visible.
-pub fn named(ui: &egui::Ui, resp: egui::Response, label: &str) -> egui::Response {
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
-    resp
-}
 
 /// Hang-up red: the one control in the app that is red at rest, because
 /// ending a call is the action every phone draws in it, and a person reaching

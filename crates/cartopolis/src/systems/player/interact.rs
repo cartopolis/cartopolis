@@ -1063,8 +1063,8 @@ pub fn handle_interaction_input(
 /// (`lib_interact`), and do what was tapped on it last frame.
 ///
 /// Anchored to the bottom-centre of the *map area* rather than the window:
-/// the rect the panels left at the end of the last pass
-/// (`EguiVerdict::map_rect`), so a side panel never covers it.
+/// the rect the library's panels left at the last layout
+/// ([`UiInput::map_rect`]), so a side panel never covers it.
 ///
 /// It used to read `Sit at Bench   [E]` and not be pressable — a keyboard
 /// hint on the one platform with no keyboard, advertising an action the prompt

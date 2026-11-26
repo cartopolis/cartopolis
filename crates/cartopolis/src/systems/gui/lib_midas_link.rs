@@ -46,7 +46,7 @@ const DISC: f32 = theme::ROUND_BUTTON_SIZE;
 /// The card's and the bubble's content width, egui's figure.
 const CARD_WIDTH: f32 = 230.0;
 
-/// egui's `overlay_frame` across: both paddings (14) and rims (1).
+/// the overlay frame egui drew across: both paddings (14) and rims (1).
 const FRAME_X: f32 = 2.0 * 14.0 + 2.0;
 
 type Acts = Rc<RefCell<Vec<LinkAct>>>;
@@ -307,7 +307,7 @@ fn disc_view(l: &Live) -> View {
 
 // ─── The card and the bubble ─────────────────────────────────────────────────
 
-/// egui's `overlay_frame` in `rim`, as a style: border-box, so its width is
+/// the overlay frame egui drew in `rim`, as a style: border-box, so its width is
 /// the column's.
 fn frame(rim: &str, gap: f32) -> String {
     format!(

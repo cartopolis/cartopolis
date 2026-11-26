@@ -1,48 +1,68 @@
 //! The space behind the cosmos and its two star fields — the full-screen
 //! fill with the globe's round hole, the Milky Way's ~7,000 points and the
-//! galaxies' up to 50,000 — drawn as two Bevy 2D meshes on the library's own
-//! camera (`lib_host::LibCamera`), under the library's cosmos
-//! (`lib_cosmos`), which draws the bodies, rings and labels as boxes.
+//! galaxies' up to 50,000 — drawn as two Bevy 2D meshes under the library's
+//! cosmos (`lib_cosmos`), which draws the bodies, rings and labels as boxes.
 //!
 //! **Meshes, not nodes.** A node per one-pixel square would be the heaviest
-//! screen the library has. So `cosmos::render_cosmos` keeps the projection
-//! and publishes the frame's points (`CosmosLib::lib_sky`, egui's points),
-//! and this turns them into one mesh of small quads with vertex colours and
-//! one of the space round the hole, both on a `ColorMaterial`. Quads rather
-//! than `PrimitiveTopology::PointList`: wgpu has no point size (a point is
-//! one pixel on every backend, WebGPU and the phone's Vulkan included), and
-//! the dots are 1.5 to 4 points across.
+//! screen the library has. So `cosmos::drive_cosmos` keeps the projection
+//! and publishes the frame's points (`CosmosLib::sky`, UI points), and this
+//! turns them into one mesh of small quads with vertex colours and one of
+//! the space round the hole, both on a `ColorMaterial`. Quads rather than
+//! `PrimitiveTopology::PointList`: wgpu has no point size (a point is one
+//! pixel on every backend, WebGPU and the phone's Vulkan included), and the
+//! dots are 1.5 to 4 points across.
 //!
-//! **Under the UI.** On a `Camera2d` the UI pass runs after the 2D passes
-//! (`bevy_ui_render` puts it after `Core2dSystems::PostProcess`), so every
-//! library node, the cosmos' boxes included, draws over these. The library's
-//! camera draws over the world camera's picture, and so over egui as well:
-//! while the cosmos shows, its space covers anything egui still draws.
+//! **Which camera.** On the Bevy backend (`ui-probe`) the meshes go on the
+//! library's own camera (`lib_host::LibCamera`): there the UI pass runs
+//! after the 2D passes (`bevy_ui_render` puts it after
+//! `Core2dSystems::PostProcess`), so every library node, the cosmos' boxes
+//! included, draws over them. As DOM (the web, `ui-dom`) the library has no
+//! camera — its screens are elements over the canvas, over everything the
+//! canvas shows — so this spawns a `Camera2d` of its own for the sky
+//! ([`SkyCamera`]), drawn after the world's camera and set up as the
+//! library's is: its own texture cleared to transparent, laid over the
+//! world's picture premultiplied. It is spawned the first time the sky
+//! shows, and switched off whenever it does not, so below the ceiling it
+//! costs no pass at all. Either camera draws over the world camera's whole
+//! picture, so while the cosmos shows, its space covers anything drawn
+//! into that picture.
 //!
-//! **Rebuilt only when it moved.** egui counts each change of the published
-//! sky in `CosmosLib::sky_rev`; the meshes are rebuilt for a new count, or
-//! when the camera's size or scale changes, and only as the frame's upload
+//! **Rebuilt only when it moved.** `CosmosLib::sky_rev` counts each change
+//! of the published sky; the meshes are rebuilt for a new count, or when
+//! the camera's size or scale changes, and only as the frame's upload
 //! ledger admits them (`stream_ledger::admit`): a refused rebuild keeps the
 //! last meshes up and tries again next frame. Hidden below the ceiling.
-//!
-//! **Only where there is such a camera**: this sets `CosmosLib::sky` while
-//! the library's camera exists, which is what tells egui to stop painting the
-//! sky. As DOM (the web) there is none, and egui keeps painting it under the
-//! DOM.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::sprite_render::{AlphaMode2d, ColorMaterial, MeshMaterial2d};
-use egui::Color32;
 
 use crate::systems::cosmos::{CosmosLib, CosmosSky};
-use crate::systems::lib_host::LibCamera;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::theme::Rgba8;
 
 /// One of the two meshes.
 #[derive(Component)]
 pub struct CosmosSkyPart;
+
+/// The sky's own 2D camera, where the library has none (the web: its
+/// screens are DOM over the canvas).
+#[cfg(not(feature = "ui-probe"))]
+#[derive(Component)]
+pub struct SkyCamera;
+
+/// The camera the sky is drawn on: the library's own on the Bevy backend.
+#[cfg(feature = "ui-probe")]
+type SkyOn = crate::systems::lib_host::LibCamera;
+#[cfg(not(feature = "ui-probe"))]
+type SkyOn = SkyCamera;
+
+/// Where the sky's own camera draws among the cameras on one target: after
+/// the world's (0), before the library's (100, absent wherever this one is
+/// spawned).
+#[cfg(not(feature = "ui-probe"))]
+const SKY_CAMERA_ORDER: isize = 50;
 
 /// The meshes, their entities, and what they were last built for.
 #[derive(Default)]
@@ -50,11 +70,14 @@ pub struct SkyState {
     /// The space round the hole, and the star fields' squares.
     fill: Option<(Entity, Handle<Mesh>)>,
     dots: Option<(Entity, Handle<Mesh>)>,
-    /// The `sky_rev` and the camera (logical size, logical pixels per egui
+    /// The `sky_rev` and the camera (logical size, logical pixels per UI
     /// point) the meshes hold; `None` until built, and again once hidden.
     built: Option<(u64, Vec2, f32)>,
     /// Whether the last build had any squares.
     any_dots: bool,
+    /// The sky's own camera has been asked for ([`SkyCamera`]).
+    #[cfg(not(feature = "ui-probe"))]
+    camera_spawned: bool,
 }
 
 /// Where the space mesh and the squares sit on the camera's z: the squares
@@ -62,14 +85,18 @@ pub struct SkyState {
 const FILL_Z: f32 = 0.0;
 const DOTS_Z: f32 = 0.5;
 
-/// Draws the cosmos' space and star fields on the library's camera while
-/// egui publishes them, and hides them otherwise. `PostUpdate`, after
-/// `cosmos::render_cosmos` (`Update`) has published the frame.
+/// Draws the cosmos' space and star fields while `cosmos::drive_cosmos`
+/// publishes them, and hides them otherwise. `PostUpdate`, after
+/// `drive_cosmos` (`Update`) has published the frame.
 #[allow(clippy::too_many_arguments)]
 pub fn drive_lib_cosmos_sky(
     lib: Res<LibScreens>,
-    cosmos: Option<ResMut<CosmosLib>>,
-    cameras: Query<&Camera, With<LibCamera>>,
+    cosmos: Option<Res<CosmosLib>>,
+    mut cameras: Query<&mut Camera, With<SkyOn>>,
+    #[cfg(not(feature = "ui-probe"))] world: Query<
+        &bevy::camera::RenderTarget,
+        With<crate::components::FreeCamera>,
+    >,
     mut parts: Query<&mut Visibility, With<CosmosSkyPart>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -80,17 +107,33 @@ pub fn drive_lib_cosmos_sky(
         return;
     }
     // Inserted by `lib_cosmos` on its first frame.
-    let Some(mut cosmos) = cosmos else {
+    let Some(cosmos) = cosmos else {
         return;
     };
-    let camera = cameras.single().ok();
-    if cosmos.sky != camera.is_some() {
-        cosmos.sky = camera.is_some();
-    }
-    let target =
-        camera.and_then(|c| Some((c.logical_viewport_size()?, c.target_scaling_factor()?)));
     let rev = cosmos.sky_rev;
-    let (Some(sky), Some((size, scale_factor))) = (cosmos.lib_sky.as_ref(), target) else {
+    let sky = cosmos.sky.as_ref();
+    // Written only where the camera is the sky's own.
+    #[cfg_attr(feature = "ui-probe", allow(unused_mut))]
+    let mut camera = cameras.single_mut().ok();
+    // The sky's own camera: asked for the first time the sky shows, and on
+    // only while it does.
+    #[cfg(not(feature = "ui-probe"))]
+    {
+        if camera.is_none() && sky.is_some() && !state.camera_spawned {
+            spawn_sky_camera(&mut commands, world.single().ok().cloned());
+            state.camera_spawned = true;
+        }
+        if let Some(c) = camera.as_mut() {
+            let on = sky.is_some();
+            if c.is_active != on {
+                c.is_active = on;
+            }
+        }
+    }
+    let target = camera
+        .as_ref()
+        .and_then(|c| Some((c.logical_viewport_size()?, c.target_scaling_factor()?)));
+    let (Some(sky), Some((size, scale_factor))) = (sky, target) else {
         state.built = None;
         show(&mut parts, &state, false);
         return;
@@ -98,7 +141,7 @@ pub fn drive_lib_cosmos_sky(
     if size.x <= 0.0 || size.y <= 0.0 || scale_factor <= 0.0 || sky.pixels_per_point <= 0.0 {
         return;
     }
-    // Logical pixels of the camera's target per egui point.
+    // Logical pixels of the camera's target per UI point.
     let s = sky.pixels_per_point / scale_factor;
 
     if state.fill.is_none() {
@@ -153,6 +196,32 @@ pub fn drive_lib_cosmos_sky(
     show(&mut parts, &state, built);
 }
 
+/// The sky's own camera, on the world camera's target: a `Camera2d` drawn
+/// after the world's, set up as `lib_host`'s `LibCamera` is. It has a
+/// texture of its own, laid over the target after, so it clears that
+/// texture to transparent each frame and lays it over premultiplied;
+/// uncleared, every frame would draw onto the last's.
+#[cfg(not(feature = "ui-probe"))]
+fn spawn_sky_camera(commands: &mut Commands, target: Option<bevy::camera::RenderTarget>) {
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: SKY_CAMERA_ORDER,
+            clear_color: bevy::camera::ClearColorConfig::Custom(Color::NONE),
+            output_mode: bevy::camera::CameraOutputMode::Write {
+                blend_state: Some(
+                    bevy::render::render_resource::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                ),
+                clear_color: bevy::camera::ClearColorConfig::None,
+            },
+            ..Default::default()
+        },
+        Msaa::Off,
+        target.unwrap_or_default(),
+        SkyCamera,
+    ));
+}
+
 /// Shows or hides the two meshes; the squares only when there are any.
 fn show(parts: &mut Query<&mut Visibility, With<CosmosSkyPart>>, state: &SkyState, on: bool) {
     let mut set = |part: Option<&(Entity, Handle<Mesh>)>, on: bool| {
@@ -174,10 +243,10 @@ fn show(parts: &mut Query<&mut Visibility, With<CosmosSkyPart>>, state: &SkyStat
     set(state.dots.as_ref(), on && state.any_dots);
 }
 
-/// An egui colour (premultiplied sRGB) as the linear, straight-alpha vertex
-/// colour a `ColorMaterial` blends.
-fn linear(c: Color32) -> [f32; 4] {
-    let [r, g, b, a] = c.to_srgba_unmultiplied();
+/// A theme colour (sRGB, straight alpha) as the linear, straight-alpha
+/// vertex colour a `ColorMaterial` blends.
+fn linear(c: Rgba8) -> [f32; 4] {
+    let [r, g, b, a] = c.to_array();
     let lut = srgb_to_linear();
     [
         lut[usize::from(r)],
@@ -228,9 +297,9 @@ fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) 
 }
 
 /// Space over the whole target but the round hole the globe shows through:
-/// egui's `fill_around` — the four bands round the hole's square, then the
-/// ring between the square and the circle, its rays meeting the square's
-/// corners exactly — in the camera's pixels.
+/// the four bands round the hole's square, then the ring between the
+/// square and the circle, its rays meeting the square's corners exactly —
+/// in the camera's pixels.
 fn fill_mesh(sky: &CosmosSky, size: Vec2, s: f32) -> Mesh {
     let frame = Frame { half: size / 2.0 };
     let ink = linear(sky.space);
@@ -251,18 +320,15 @@ fn fill_mesh(sky: &CosmosSky, size: Vec2, s: f32) -> Mesh {
         ]);
         idx.extend([i, i + 1, i + 2, i, i + 2, i + 3]);
     };
-    let hole = sky
-        .hole
-        .map(|(c, r)| (Vec2::new(c.x * s, c.y * s), r * s))
-        .filter(|(c, r)| {
-            c.is_finite()
-                && r.is_finite()
-                && *r > 0.0
-                && c.x + r > 0.0
-                && c.x - r < size.x
-                && c.y + r > 0.0
-                && c.y - r < size.y
-        });
+    let hole = sky.hole.map(|(c, r)| (c * s, r * s)).filter(|(c, r)| {
+        c.is_finite()
+            && r.is_finite()
+            && *r > 0.0
+            && c.x + r > 0.0
+            && c.x - r < size.x
+            && c.y + r > 0.0
+            && c.y - r < size.y
+    });
     let Some((c, r)) = hole else {
         quad(&mut pos, 0.0, 0.0, size.x, size.y);
         let colours = vec![ink; pos.len()];
@@ -293,7 +359,7 @@ fn fill_mesh(sky: &CosmosSky, size: Vec2, s: f32) -> Mesh {
     mesh_of(pos, colours, idx)
 }
 
-/// The star fields' squares, egui's paint order, in the camera's pixels.
+/// The star fields' squares, in the published order, in the camera's pixels.
 fn dots_mesh(sky: &CosmosSky, size: Vec2, s: f32) -> Mesh {
     let frame = Frame { half: size / 2.0 };
     let n = sky.dots.len();
@@ -323,10 +389,10 @@ fn dots_mesh(sky: &CosmosSky, size: Vec2, s: f32) -> Mesh {
 mod tests {
     use super::*;
 
-    fn sky(hole: Option<(egui::Pos2, f32)>) -> CosmosSky {
+    fn sky(hole: Option<(Vec2, f32)>) -> CosmosSky {
         CosmosSky {
             pixels_per_point: 1.0,
-            space: Color32::from_rgb(4, 7, 10),
+            space: Rgba8::from_rgb(4, 7, 10),
             hole,
             dots: vec![],
         }
@@ -341,7 +407,7 @@ mod tests {
     #[test]
     fn the_hole_s_ring_meets_the_circle_and_its_square() {
         let size = Vec2::new(800.0, 600.0);
-        let mesh = fill_mesh(&sky(Some((egui::pos2(400.0, 300.0), 100.0))), size, 1.0);
+        let mesh = fill_mesh(&sky(Some((Vec2::new(400.0, 300.0), 100.0))), size, 1.0);
         // Four bands and 65 rays of two.
         assert_eq!(mesh.count_vertices(), 16 + 130);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) =
@@ -359,13 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn a_square_lands_where_egui_put_it() {
+    fn a_square_lands_where_it_was_published() {
         let mut sky = sky(None);
         sky.pixels_per_point = 2.0;
         sky.dots.push(crate::systems::cosmos::SkyDot {
-            at: egui::pos2(10.0, 20.0),
+            at: Vec2::new(10.0, 20.0),
             r: 1.0,
-            ink: Color32::WHITE,
+            ink: Rgba8::WHITE,
         });
         // Twice the pixels per point at a scale factor of 1: 2 logical px.
         let mesh = dots_mesh(&sky, Vec2::new(100.0, 100.0), 2.0);

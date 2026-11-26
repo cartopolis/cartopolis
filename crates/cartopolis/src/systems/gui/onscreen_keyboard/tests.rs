@@ -1,319 +1,24 @@
 use super::*;
-use crate::systems::egui_manager::UnpaintedPasses as _;
 
-/// The client's frame loop, minus Bevy: a sign-in card with a text field in
-/// it, the keyboard drawn after it in the same pass, and a touch bridge that
-/// produces the events `egui_manager::pointer_events` produces on a phone.
-///
-/// This exists because every bug this module has had lives in the *sequence*
-/// — focus surrendered by one tap and restored by the next, a layer raised
-/// after another one, a widget that stopped being drawn — and none of it is
-/// reachable from a test of the `press` state machine, which is pure by
-/// design.
-struct Harness {
-    ctx: egui::Context,
-    kb: OnScreenKeyboard,
-    text: String,
-    /// What the keyboard typed last frame, waiting for the next `RawInput`
-    /// exactly as `EguiManager::injected` holds it.
-    injected: Vec<egui::Event>,
-    screen: egui::Rect,
-    field: egui::Rect,
-    /// Android's touch ids only ever increase, and the bridge keys off them.
-    next_touch: u64,
-    /// How often the card's backdrop has taken a tap. Non-zero after a tap
-    /// on a key means the keyboard is no longer the top layer where it draws.
-    backdrop_clicks: usize,
-    /// Is the card's full-viewport dim drawn? Switchable so a test can make
-    /// the modal appear *after* the keyboard, which is the case that decides
-    /// the `Order` rather than the raise.
-    backdrop: bool,
-    /// Where the card sits. Centred by default; a test pins it to the bottom
-    /// edge to put the field where the keys land.
-    anchor: (egui::Align2, egui::Vec2),
+/// The phone this was sized for: 274 × 609 UI points.
+fn phone() -> Rect {
+    Rect::new(0.0, 0.0, 274.0, 609.0)
 }
 
-impl Harness {
-    fn new() -> Self {
-        let ctx = egui::Context::default();
-        crate::systems::theme::install(&ctx);
-        Self {
-            ctx,
-            // Closed, the way a run starts: the field being tapped is what
-            // opens it.
-            kb: OnScreenKeyboard {
-                open: false,
-                ..kb()
-            },
-            text: String::new(),
-            injected: Vec::new(),
-            // The phone this was sized for.
-            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0)),
-            field: egui::Rect::NOTHING,
-            next_touch: 1,
-            backdrop_clicks: 0,
-            backdrop: true,
-            anchor: (egui::Align2::CENTER_CENTER, egui::Vec2::ZERO),
-        }
-    }
-
-    /// One frame: begin the pass with these events, draw the card, run the
-    /// keyboard, end the pass.
-    fn frame(&mut self, mut events: Vec<egui::Event>) {
-        // The injected batch goes after the pointer batch, where
-        // `begin_egui_frame` puts it.
-        events.extend(std::mem::take(&mut self.injected));
-        self.ctx.begin_pass(egui::RawInput {
-            screen_rect: Some(self.screen),
-            events,
-            focused: true,
-            ..Default::default()
-        });
-
-        // The sign-in card's dim backdrop: a full-viewport click-sensing
-        // `Area` at the same `Order` as the card, raised every frame. It is
-        // in the harness because it is the layer that eats the keys when the
-        // keyboard loses its place in the stack — a bug that is invisible
-        // without something covering the slab.
-        let dim_id = egui::Id::new("sign_in_dim");
-        let mut dismissed = false;
-        if self.backdrop {
-            egui::Area::new(dim_id)
-                .order(egui::Order::Foreground)
-                .fixed_pos(egui::pos2(0.0, 0.0))
-                .show(&self.ctx, |ui| {
-                    let (_, resp) =
-                        ui.allocate_exact_size(self.screen.size(), egui::Sense::click_and_drag());
-                    dismissed = resp.clicked();
-                });
-            self.ctx
-                .move_to_top(egui::LayerId::new(egui::Order::Foreground, dim_id));
-        }
-        self.backdrop_clicks += usize::from(dismissed);
-
-        let card_id = egui::Id::new("sign_in_card");
-        let text = &mut self.text;
-        let mut field = egui::Rect::NOTHING;
-        egui::Window::new("sign in")
-            .id(card_id)
-            .order(egui::Order::Foreground)
-            .title_bar(false)
-            .resizable(false)
-            .movable(false)
-            .collapsible(false)
-            .anchor(self.anchor.0, self.anchor.1)
-            .show(&self.ctx, |ui| {
-                ui.set_width(220.0);
-                egui::ScrollArea::vertical()
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        let resp =
-                            ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                        field = resp.rect;
-                    });
-            });
-        // The card raises itself every frame; the keyboard has to raise itself
-        // after that or its keys are under the card's layer.
-        self.ctx
-            .move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
-        self.field = field;
-
-        self.injected = self.kb.pass(&self.ctx, 1.5, 2.75);
-        let _ = self.ctx.end_pass_unpainted();
-    }
-
-    /// A finger down and up at one point, then a quiet frame — the shape
-    /// `pointer_events` emits, including the `PointerGone` that a lifting
-    /// finger sends and the split of press and release across two frames.
-    fn tap(&mut self, pos: egui::Pos2) {
-        let id = egui::TouchId(self.next_touch);
-        self.next_touch += 1;
-        let touch = |phase| egui::Event::Touch {
-            device_id: egui::TouchDeviceId(0),
-            id,
-            phase,
-            pos,
-            force: None,
-        };
-        self.frame(vec![
-            touch(egui::TouchPhase::Start),
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ]);
-        self.frame(vec![
-            touch(egui::TouchPhase::End),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-            egui::Event::PointerGone,
-        ]);
-        // A frame with nothing in it, of which a real run has many.
-        self.frame(Vec::new());
-    }
-
-    /// Where the key carrying `cap` is on the slab the keyboard last drew.
-    fn key_pos(&self, want: Cap) -> egui::Pos2 {
-        let slab = self.kb.slab.expect("the keyboard is not on screen");
-        for (r, row) in rows(self.kb.layer).iter().enumerate() {
-            let used: f32 = row.iter().map(|k| k.units).sum();
-            let mut col = (COLUMNS - used) * 0.5;
-            for key in row {
-                let rect = slab.key_rect(r, col, key.units);
-                col += key.units;
-                if key.cap == want {
-                    return rect.center();
-                }
-            }
-        }
-        panic!("no {want:?} key on the {:?} layer", self.kb.layer);
-    }
-
-    fn tap_key(&mut self, cap: Cap) {
-        self.tap(self.key_pos(cap));
-    }
-}
-
-/// **The bug the phone found:** close the keyboard, tap the field again, and
-/// the keys draw but type nothing.
-#[test]
-fn the_keyboard_types_again_after_being_closed_and_reopened() {
-    let mut h = Harness::new();
-    h.frame(Vec::new());
-    h.frame(Vec::new());
-
-    let field = h.field.center();
-    h.tap(field);
-    assert!(
-        h.kb.is_open(),
-        "tapping the field did not open the keyboard"
-    );
-
-    h.tap_key(a());
-    assert_eq!(h.text, "a", "the keyboard did not type on first use");
-
-    h.tap_key(Cap::Hide);
-    assert!(!h.kb.is_open(), "the hide key did not close the keyboard");
-
-    h.tap(field);
-    assert!(h.kb.is_open(), "the keyboard did not come back");
-
-    let backdrop_before = h.backdrop_clicks;
-    h.tap_key(a());
-    assert_eq!(
-        h.backdrop_clicks, backdrop_before,
-        "the tap went to the card's backdrop, not to the key: the keyboard's \
-             layer is no longer on top"
-    );
-    assert_eq!(h.text, "aa", "the reopened keyboard typed nothing");
-}
-
-/// The other half of the same bug, and the reason the fix is a higher
-/// `Order` rather than a more insistent `move_to_top`: a rival layer created
-/// **after** the keyboard is on top from the moment it exists, and no amount
-/// of re-raising displaces it. Type into the geo search, then open the
-/// sign-in card over it, and the keys would go dead without a single one of
-/// them having been touched.
-#[test]
-fn a_modal_opened_over_the_keyboard_does_not_take_its_keys() {
-    let mut h = Harness::new();
-    h.backdrop = false;
-    h.frame(Vec::new());
-    h.frame(Vec::new());
-
-    h.tap(h.field.center());
-    assert!(h.kb.is_open());
-    h.tap_key(a());
-    assert_eq!(h.text, "a");
-
-    // The modal arrives, and it covers the whole viewport.
-    h.backdrop = true;
-    h.frame(Vec::new());
-
-    let backdrop_before = h.backdrop_clicks;
-    h.tap_key(a());
-    assert_eq!(
-        h.backdrop_clicks, backdrop_before,
-        "a modal opened later took the keyboard's taps"
-    );
-    assert_eq!(h.text, "aa", "the keyboard went dead under a new modal");
-}
-
-fn touch(id: u64, phase: egui::TouchPhase, pos: egui::Pos2) -> egui::Event {
-    egui::Event::Touch {
-        device_id: egui::TouchDeviceId(0),
-        id: egui::TouchId(id),
-        phase,
-        pos,
-        force: None,
-    }
-}
-
-/// Two thumbs: the second lands before the first lifts. Only the first
-/// finger drives egui's pointer, so a key that typed on `clicked()` lost
-/// the second letter every time.
-#[test]
-fn overlapping_thumbs_type_both_keys() {
-    use egui::TouchPhase::{End, Start};
-    let mut h = Harness::new();
-    h.frame(Vec::new());
-    h.frame(Vec::new());
-    h.tap(h.field.center());
-    let q = h.key_pos(Cap::Char {
-        base: 'q',
-        alt: 'Q',
-    });
-    let p = h.key_pos(Cap::Char {
-        base: 'p',
-        alt: 'P',
-    });
-    h.frame(vec![touch(50, Start, q)]);
-    h.frame(vec![touch(51, Start, p)]);
-    h.frame(vec![touch(50, End, q)]);
-    h.frame(vec![touch(51, End, p)]);
-    h.frame(Vec::new());
-    assert_eq!(h.text, "qp");
-}
-
-/// A finger that rolls a few points before lifting is a drag to egui, and
-/// still a keystroke here: the key under it as it lifts.
-#[test]
-fn a_drifting_finger_types_the_key_it_lifts_from() {
-    use egui::TouchPhase::{End, Move, Start};
-    let mut h = Harness::new();
-    h.frame(Vec::new());
-    h.frame(Vec::new());
-    h.tap(h.field.center());
-    let a = h.key_pos(a());
-    let drift = a + egui::vec2(3.0, 9.0);
-    h.frame(vec![touch(60, Start, a)]);
-    h.frame(vec![touch(60, Move, drift)]);
-    h.frame(vec![touch(60, End, drift)]);
-    h.frame(Vec::new());
-    assert_eq!(h.text, "a");
-}
-
+/// Up, with nothing focused yet: a keyboard as a field's focus leaves it.
 fn kb() -> OnScreenKeyboard {
-    OnScreenKeyboard {
-        enabled: true,
-        open: true,
-        target: None,
-        layer: KeyLayer::default(),
-        shift: ShiftState::default(),
-        slab: None,
-        fingers: Vec::new(),
-        touch_seen: false,
-        lib: false,
-        lib_field: false,
-        lib_blur: false,
+    let mut k = OnScreenKeyboard::new(true);
+    k.follow_focus(true);
+    k
+}
+
+/// A keyboard up and placed on the phone, at the bottom, edge decided.
+fn placed() -> OnScreenKeyboard {
+    let mut k = kb();
+    for _ in 0..SETTLE_FRAMES {
+        k.place(phone(), 48.0);
     }
+    k
 }
 
 fn a() -> Cap {
@@ -323,10 +28,213 @@ fn a() -> Cap {
     }
 }
 
+/// Where the key carrying `cap` is on the slab placed last.
+fn key_pos(k: &OnScreenKeyboard, want: Cap) -> Vec2 {
+    let slab = k.slab.expect("the keyboard is not on screen");
+    key_rects(&slab, k.layer)
+        .into_iter()
+        .find(|(_, _, cap, _)| *cap == want)
+        .map(|(_, _, _, rect)| rect.center())
+        .unwrap_or_else(|| panic!("no {want:?} key on the {:?} layer", k.layer))
+}
+
+fn finger(id: u64, phase: FingerPhase, pos: Vec2) -> FingerEvent {
+    FingerEvent { id, phase, pos }
+}
+
+/// A finger down on `cap` on one frame and up on the next.
+fn tap(k: &mut OnScreenKeyboard, cap: Cap, id: u64, now: f64) {
+    let pos = key_pos(k, cap);
+    k.track(&[finger(id, FingerPhase::Start, pos)], now);
+    k.track(&[finger(id, FingerPhase::End, pos)], now + 0.05);
+}
+
+#[test]
+fn a_tap_types_the_key_as_the_finger_lifts() {
+    let mut k = placed();
+    let pos = key_pos(&k, a());
+    k.track(&[finger(1, FingerPhase::Start, pos)], 0.0);
+    assert!(k.take_strokes().is_empty(), "typed on the way down");
+    assert_eq!(k.held().len(), 1, "the key under the finger is not pressed");
+    k.track(&[finger(1, FingerPhase::End, pos)], 0.1);
+    assert_eq!(k.take_strokes(), vec![Stroke::Text("a".into())]);
+    assert!(k.held().is_empty());
+}
+
+/// Two thumbs: the second lands before the first lifts. A key that typed on
+/// a click (one pointer) lost the second letter every time.
+#[test]
+fn overlapping_thumbs_type_both_keys() {
+    use FingerPhase::{End, Start};
+    let mut k = placed();
+    let q = key_pos(
+        &k,
+        Cap::Char {
+            base: 'q',
+            alt: 'Q',
+        },
+    );
+    let p = key_pos(
+        &k,
+        Cap::Char {
+            base: 'p',
+            alt: 'P',
+        },
+    );
+    k.track(&[finger(50, Start, q)], 0.0);
+    k.track(&[finger(51, Start, p)], 0.02);
+    assert_eq!(k.previews().len(), 2, "one preview per thumb");
+    k.track(&[finger(50, End, q)], 0.04);
+    k.track(&[finger(51, End, p)], 0.06);
+    let typed: String = k
+        .take_strokes()
+        .into_iter()
+        .map(|s| match s {
+            Stroke::Text(t) => t,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(typed, "qp");
+}
+
+/// A finger that rolls a few points before lifting is a drag to a pointer,
+/// and still a keystroke here: the key under it as it lifts.
+#[test]
+fn a_drifting_finger_types_the_key_it_lifts_from() {
+    use FingerPhase::{End, Move, Start};
+    let mut k = placed();
+    let at = key_pos(&k, a());
+    let drift = at + Vec2::new(3.0, 9.0);
+    k.track(&[finger(60, Start, at)], 0.0);
+    k.track(&[finger(60, Move, drift)], 0.02);
+    k.track(&[finger(60, End, drift)], 0.04);
+    assert_eq!(k.take_strokes(), vec![Stroke::Text("a".into())]);
+}
+
+/// Lifted off the slab altogether, the finger changed its mind.
+#[test]
+fn a_finger_lifted_off_the_keys_types_nothing() {
+    use FingerPhase::{End, Move, Start};
+    let mut k = placed();
+    let at = key_pos(&k, a());
+    let off = Vec2::new(at.x, 20.0);
+    k.track(&[finger(7, Start, at)], 0.0);
+    k.track(&[finger(7, Move, off)], 0.02);
+    k.track(&[finger(7, End, off)], 0.04);
+    assert!(k.take_strokes().is_empty());
+}
+
+/// Backspace types as the finger lands, then — held — repeats, and stops
+/// as it lifts.
+#[test]
+fn a_held_backspace_repeats() {
+    use FingerPhase::{End, Start};
+    let mut k = placed();
+    let bs = key_pos(&k, Cap::Backspace);
+    k.track(&[finger(9, Start, bs)], 0.0);
+    assert_eq!(k.take_strokes(), vec![Stroke::Backspace], "not on landing");
+    k.track(&[], REPEAT_AFTER_S * 0.5);
+    assert!(k.take_strokes().is_empty(), "repeated before the delay");
+    // A second of holding, sampled every 10 ms: one repeat per interval,
+    // give or take the sampling.
+    let mut t = REPEAT_AFTER_S;
+    let mut repeats = 0;
+    while t < REPEAT_AFTER_S + 1.0 {
+        k.track(&[], t);
+        repeats += k.take_strokes().len();
+        t += 0.01;
+    }
+    let want = (1.0 / REPEAT_EVERY_S) as usize;
+    assert!(
+        (want - 3..=want + 1).contains(&repeats),
+        "{repeats} repeats in a second, want about {want}"
+    );
+    k.track(&[finger(9, End, bs)], t);
+    k.track(&[], t + 1.0);
+    assert!(
+        k.take_strokes().is_empty(),
+        "the lift typed or kept repeating"
+    );
+}
+
+/// The preview sits above the key, shows the character in the shift state,
+/// and stays on the slab at the outer columns.
+#[test]
+fn the_key_preview_shows_the_character_above_the_key() {
+    let mut k = placed();
+    k.shift = ShiftState::Once;
+    let q = Cap::Char {
+        base: 'q',
+        alt: 'Q',
+    };
+    let at = key_pos(&k, q);
+    k.track(&[finger(3, FingerPhase::Start, at)], 0.0);
+    let previews = k.previews();
+    assert_eq!(previews.len(), 1);
+    let p = previews[0];
+    assert_eq!(p.ch, 'Q');
+    assert!(p.rect.max.y < at.y, "the preview is not above its key");
+    let slab = k.slab().unwrap();
+    assert!(p.rect.min.x >= slab.min.x, "the preview left the slab");
+    // No preview for a key that is not a character.
+    k.track(&[finger(3, FingerPhase::Cancel, at)], 0.1);
+    let space = key_pos(&k, Cap::Space);
+    k.track(&[finger(4, FingerPhase::Start, space)], 0.2);
+    assert!(k.previews().is_empty());
+}
+
+/// A click with a finger behind it is that finger's, already typed; one with
+/// none (the MCP server's `press`) types.
+#[test]
+fn a_click_types_only_without_a_finger() {
+    let mut k = placed();
+    tap(&mut k, a(), 1, 0.0);
+    assert_eq!(k.take_strokes().len(), 1);
+    // The tap's own click, on the next frame.
+    k.clicked(1, 0, 0.1);
+    assert!(k.take_strokes().is_empty(), "the tap typed twice");
+    // Row 1, column 0 is `a`.
+    k.clicked(1, 0, 5.0);
+    assert_eq!(k.take_strokes(), vec![Stroke::Text("a".into())]);
+}
+
+/// The hide key puts the keys away and the field's focus with it, and they
+/// stay down while that focus is being cleared; a fresh focus brings them
+/// back — the reopened keys type.
+#[test]
+fn the_keys_type_again_after_being_hidden_and_reopened() {
+    let mut k = placed();
+    tap(&mut k, a(), 1, 0.0);
+    assert_eq!(k.take_strokes().len(), 1);
+    tap(&mut k, Cap::Hide, 2, 0.2);
+    assert!(!k.is_open(), "the hide key did not close the keyboard");
+    assert!(k.take_blur(), "the field keeps its focus");
+    assert!(k.take_strokes().is_empty());
+    // The focus is still the field's for a frame: the keys stay down.
+    k.follow_focus(true);
+    assert!(!k.is_open(), "the keys came straight back");
+    // The focus left, then the field was tapped again.
+    k.follow_focus(false);
+    k.follow_focus(true);
+    k.place(phone(), 48.0);
+    assert!(k.is_open(), "the keyboard did not come back");
+    tap(&mut k, a(), 3, 2.0);
+    assert_eq!(k.take_strokes(), vec![Stroke::Text("a".into())]);
+}
+
+/// Back (`dismiss`) is the hide key from outside.
+#[test]
+fn dismiss_closes_and_blurs() {
+    let mut k = placed();
+    k.dismiss();
+    assert!(!k.is_open());
+    assert!(k.take_blur());
+    assert!(k.slab().is_none());
+}
+
 /// Shift is the whole reason this is a state machine: one tap arms it for a
 /// single character, a second locks it, a third clears it — and typing a
-/// character consumes the armed state but not the locked one. A boolean here
-/// makes every capital two extra taps.
+/// character consumes the armed state but not the locked one.
 #[test]
 fn shift_arms_then_locks_then_clears() {
     let mut k = kb();
@@ -343,9 +251,9 @@ fn shift_arms_then_locks_then_clears() {
 fn a_one_shot_shift_survives_exactly_one_character() {
     let mut k = kb();
     k.press(Cap::Shift);
-    assert_eq!(k.press(a()), vec![egui::Event::Text("A".to_owned())]);
+    assert_eq!(k.press(a()), vec![Stroke::Text("A".to_owned())]);
     assert_eq!(k.shift, ShiftState::Off, "one-shot shift did not release");
-    assert_eq!(k.press(a()), vec![egui::Event::Text("a".to_owned())]);
+    assert_eq!(k.press(a()), vec![Stroke::Text("a".to_owned())]);
 }
 
 #[test]
@@ -354,7 +262,7 @@ fn caps_lock_survives_every_character() {
     k.press(Cap::Shift);
     k.press(Cap::Shift);
     for _ in 0..3 {
-        assert_eq!(k.press(a()), vec![egui::Event::Text("A".to_owned())]);
+        assert_eq!(k.press(a()), vec![Stroke::Text("A".to_owned())]);
     }
     assert_eq!(k.shift, ShiftState::Lock);
 }
@@ -374,8 +282,7 @@ fn the_layer_key_toggles_and_leaves_shift_alone() {
 }
 
 /// Shift on the symbol layer is not a case mapping: the alternate of `4` is
-/// `$`. This is why a key carries both forms rather than calling
-/// `to_uppercase` at press time.
+/// `$`. This is why a key carries both forms.
 #[test]
 fn shift_on_the_symbol_layer_picks_the_alternate_not_the_uppercase() {
     let rows = rows(KeyLayer::Symbols);
@@ -390,11 +297,9 @@ fn shift_on_the_symbol_layer_picks_the_alternate_not_the_uppercase() {
     let mut k = kb();
     k.layer = KeyLayer::Symbols;
     k.shift = ShiftState::Once;
-    assert_eq!(k.press(four.cap), vec![egui::Event::Text("$".to_owned())]);
+    assert_eq!(k.press(four.cap), vec![Stroke::Text("$".to_owned())]);
 }
 
-/// The hide key closes the keyboard and emits nothing; the system then drops
-/// the field's focus so the next tap on it can bring the keyboard back.
 #[test]
 fn hide_closes_and_types_nothing() {
     let mut k = kb();
@@ -402,184 +307,50 @@ fn hide_closes_and_types_nothing() {
     assert!(!k.is_open());
 }
 
-/// The editing keys are `Event::Key` **only** (a real keyboard's `text` for
-/// them is a control character the bridge filters out) and each is a press
-/// *and* its release, so `keys_down` never accumulates a key no finger is
-/// holding.
+/// The editing keys are strokes of their own, never text.
 #[test]
-fn editing_keys_emit_a_press_and_a_release_and_no_text() {
+fn the_editing_keys_are_their_strokes() {
     let mut k = kb();
-    for (cap, want) in [
-        (Cap::Backspace, egui::Key::Backspace),
-        (Cap::Enter, egui::Key::Enter),
-        (Cap::Left, egui::Key::ArrowLeft),
-        (Cap::Right, egui::Key::ArrowRight),
-    ] {
-        let evs = k.press(cap);
-        assert_eq!(evs.len(), 2, "{cap:?} should be press+release: {evs:?}");
-        let pressed: Vec<bool> = evs
-            .iter()
-            .map(|e| match e {
-                egui::Event::Key {
-                    key,
-                    pressed,
-                    repeat,
-                    modifiers,
-                    physical_key,
-                } => {
-                    assert_eq!(*key, want);
-                    assert!(!*repeat);
-                    assert_eq!(*modifiers, egui::Modifiers::NONE);
-                    assert_eq!(*physical_key, None);
-                    *pressed
-                }
-                other => panic!("{cap:?} emitted {other:?}, expected a Key event"),
-            })
-            .collect();
-        assert_eq!(pressed, vec![true, false]);
-    }
-}
-
-/// Select-all is egui's own chord (`Key::A` + command), which is what makes
-/// it the same code path a desktop Ctrl+A takes instead of a second
-/// implementation of "select everything".
-#[test]
-fn select_all_is_the_command_a_chord() {
-    let mut k = kb();
-    let evs = k.press(Cap::SelectAll);
-    assert_eq!(evs.len(), 2);
-    let egui::Event::Key { key, modifiers, .. } = evs[0] else {
-        panic!("expected a Key event, got {:?}", evs[0]);
-    };
-    assert_eq!(key, egui::Key::A);
-    assert!(
-        modifiers.command,
-        "egui selects all on `command`, not `ctrl`"
-    );
-    // It types nothing and disturbs nothing — a selection is a state of the
-    // field, not an edit of it.
+    assert_eq!(k.press(Cap::Backspace), vec![Stroke::Backspace]);
+    assert_eq!(k.press(Cap::Enter), vec![Stroke::Enter]);
+    assert_eq!(k.press(Cap::Left), vec![Stroke::Left { select: false }]);
+    assert_eq!(k.press(Cap::Right), vec![Stroke::Right { select: false }]);
+    assert_eq!(k.press(Cap::SelectAll), vec![Stroke::SelectAll]);
+    // Select-all is a state of the field, not an edit: it disturbs nothing.
     assert_eq!(k.shift, ShiftState::Off);
 }
 
 /// Shift turns the arrows into a selection, and — unlike a character — an
-/// arrow does **not** consume a one-shot shift. A selection is grown one
-/// press at a time, so a shift that fell off after the first would have to be
-/// re-armed for every letter of the word being selected.
+/// arrow does **not** consume a one-shot shift.
 #[test]
 fn shift_makes_the_arrows_extend_a_selection_without_consuming_itself() {
     let mut k = kb();
     k.press(Cap::Shift);
     for _ in 0..3 {
-        let evs = k.press(Cap::Right);
-        let egui::Event::Key { modifiers, .. } = evs[0] else {
-            panic!("expected a Key event");
-        };
-        assert!(modifiers.shift, "arrow did not carry shift");
+        assert_eq!(k.press(Cap::Right), vec![Stroke::Right { select: true }]);
         assert_eq!(k.shift, ShiftState::Once, "shift fell off mid-selection");
     }
-    // Cleared, the same arrow moves the caret instead — which is what egui
-    // distinguishes on (`text_selection::cursor_range::on_key_press`).
     k.press(Cap::Shift);
     k.press(Cap::Shift);
-    let evs = k.press(Cap::Right);
-    let egui::Event::Key { modifiers, .. } = evs[0] else {
-        panic!("expected a Key event");
-    };
-    assert!(!modifiers.shift);
+    assert_eq!(k.press(Cap::Right), vec![Stroke::Right { select: false }]);
 }
 
-/// Space is `Text(" ")` and **not** `Key::Space`: egui activates the focused
-/// widget on Space, so a space bar that also emitted the key would
-/// occasionally press a button instead of typing.
 #[test]
-fn space_is_text_only() {
+fn space_is_text() {
     let mut k = kb();
-    assert_eq!(k.press(Cap::Space), vec![egui::Event::Text(" ".to_owned())]);
+    assert_eq!(k.press(Cap::Space), vec![Stroke::Text(" ".to_owned())]);
 }
 
-/// The cursor keys have to survive `TextEdit`'s own event filter, which is
-/// the thing that decides whether an arrow edits the text or moves focus to
-/// the next widget. Pinning it against egui's own type means an upstream
-/// change to `EventFilter::matches` fails here rather than on glass.
-#[test]
-fn the_arrows_pass_a_text_edits_event_filter() {
-    let filter = egui::EventFilter {
-        horizontal_arrows: true,
-        vertical_arrows: true,
-        tab: false,
-        escape: false,
-    };
-    let mut k = kb();
-    for cap in [Cap::Left, Cap::Right, Cap::Backspace, Cap::Enter] {
-        for ev in k.press(cap) {
-            assert!(
-                filter.matches(&ev),
-                "{cap:?} produced {ev:?}, which a focused TextEdit filters out"
-            );
-        }
-    }
-}
-
-/// End to end through egui itself: focus a single-line field, hand it the
-/// events the keyboard would have produced for a shifted `a`, and read the
-/// string back. This is the assertion that the *shape* of the events — one
-/// bare `Event::Text` carrying the already-shifted character, no modifier —
-/// is what egui expects, as opposed to merely what we decided to send.
-#[test]
-fn a_shifted_character_reaches_a_text_edit() {
-    let ctx = egui::Context::default();
-    crate::systems::theme::install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let mut text = String::new();
-
-    let mut k = kb();
-    k.press(Cap::Shift);
-    let mut queued = k.press(a());
-    queued.extend(k.press(Cap::Char {
-        base: 'b',
-        alt: 'B',
-    }));
-    queued.extend(k.press(Cap::Backspace));
-    queued.extend(k.press(Cap::Char {
-        base: 'c',
-        alt: 'C',
-    }));
-
-    for frame in 0..3 {
-        let events = if frame == 1 {
-            std::mem::take(&mut queued)
-        } else {
-            Vec::new()
-        };
-        let text_ref = &mut text;
-        let _ = ctx.run_ui_unpainted(
-            egui::RawInput {
-                screen_rect: Some(screen),
-                events,
-                focused: true,
-                ..Default::default()
-            },
-            |ui| {
-                let resp = ui.add(egui::TextEdit::singleline(text_ref));
-                if frame == 0 {
-                    resp.request_focus();
-                }
-            },
-        );
-    }
-    assert_eq!(text, "Ac", "typed {text:?}");
-}
-
-/// The phone this was sized for: 274 × 609 pt of egui viewport. The keyboard
-/// has to fit inside it, keep its 48 dp of key height, and leave most of the
-/// screen alone.
+/// The keyboard has to fit the phone, keep its 48 dp of key height, and
+/// leave most of the screen alone.
 #[test]
 fn the_keyboard_fits_a_phone_viewport() {
-    let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0));
-    let min_key_h = theme::min_touch_target_pts(theme::dp_per_point(1.5, 2.75, false));
-    let slab = layout(vp, min_key_h, None);
+    let vp = phone();
+    let min_key_h =
+        theme::min_touch_target_pts(theme::dp_per_point(1.5, 2.75, false)).max(MIN_KEY_HEIGHT_PTS);
+    let slab = layout(vp, min_key_h, Edge::Bottom);
 
-    assert!(vp.contains_rect(slab.rect), "slab {:?} escaped", slab.rect);
+    assert!(vp.contains(slab.rect.min) && vp.contains(slab.rect.max));
     assert!(
         (slab.key_h - min_key_h).abs() < 1e-3,
         "the 48 dp key height was clamped away: {}",
@@ -591,15 +362,13 @@ fn the_keyboard_fits_a_phone_viewport() {
         slab.rect.height(),
         vp.height()
     );
-    // Docked to the bottom when nothing is in the way.
-    assert!(slab.rect.bottom() > vp.bottom() - 2.0 * EDGE_MARGIN);
+    // Docked to the bottom.
+    assert!(slab.rect.max.y > vp.max.y - 2.0 * EDGE_MARGIN);
 }
 
-/// No row exceeds [`COLUMNS`] units, in either layer, so the keys line up in
-/// a grid and no key can hang off the slab. A row that does not add up is
-/// invisible in a screenshot and obvious here. It also pins the two layers to
-/// the *same* key counts per row, which is what lets a layer swap leave every
-/// key where the finger last found it.
+/// No row exceeds [`COLUMNS`] units, in either layer, and the two layers
+/// have the same key slots, so a layer swap leaves every key where the finger
+/// last found it.
 #[test]
 fn every_row_spans_the_full_width() {
     for layer in [KeyLayer::Letters, KeyLayer::Symbols] {
@@ -619,98 +388,114 @@ fn every_row_spans_the_full_width() {
         shape(&symbols),
         "the layers must have the same key slots, or swapping moves every key"
     );
-    // `layout` sizes the slab from `ROW_COUNT` before `rows` has been asked
-    // for anything, so the two must agree or the keyboard is the wrong height.
     assert_eq!(letters.len() as f32, ROW_COUNT);
 }
 
-/// Every key rect stays inside the slab, which is what makes the
-/// backdrop-first hit-test guarantee hold: a key hanging over the edge would
+/// Every key rect stays inside the slab: a key hanging over the edge would
 /// take presses the world thinks are its own.
 #[test]
 fn every_key_stays_inside_the_slab() {
-    let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0));
-    let slab = layout(vp, 32.0, None);
-    for (r, row) in rows(KeyLayer::Letters).iter().enumerate() {
-        let used: f32 = row.iter().map(|k| k.units).sum();
-        let mut col = (COLUMNS - used) * 0.5;
-        for key in row {
-            let rect = slab.key_rect(r, col, key.units);
-            col += key.units;
-            assert!(
-                slab.rect.contains_rect(rect),
-                "{:?} at row {r} escaped the slab",
-                key.cap
-            );
-            assert!(rect.width() > 0.0 && rect.height() > 0.0);
-        }
+    let slab = layout(phone(), 48.0, Edge::Bottom);
+    for (r, c, cap, rect) in key_rects(&slab, KeyLayer::Letters) {
+        assert!(
+            slab.rect.contains(rect.min) && slab.rect.contains(rect.max),
+            "{cap:?} at {r},{c} escaped the slab"
+        );
+        assert!(rect.width() > 0.0 && rect.height() > 0.0);
     }
 }
 
-/// The one layout rule that is not cosmetic: a keyboard over the map is
-/// fine, a keyboard over the field you are typing into is useless. When the
-/// field is low on the screen the slab moves to the top instead.
+/// The one layout rule that is not cosmetic: a keyboard over the field you
+/// are typing into is useless. When the field is low on the screen the slab
+/// moves to the top instead.
 #[test]
 fn the_keyboard_moves_off_the_field_it_is_serving() {
-    let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0));
+    let vp = phone();
+    let high = Rect::new(10.0, 60.0, 260.0, 84.0);
+    let low = Rect::new(10.0, 540.0, 260.0, 564.0);
 
-    let high = egui::Rect::from_min_size(egui::pos2(10.0, 60.0), egui::vec2(250.0, 24.0));
-    let low = egui::Rect::from_min_size(egui::pos2(10.0, 540.0), egui::vec2(250.0, 24.0));
-
-    let with_high = layout(vp, 32.0, Some(high));
-    assert!(
-        !with_high.rect.intersects(high),
-        "a field near the top should leave the keyboard at the bottom"
-    );
-    assert!(with_high.rect.top() > vp.center().y);
-
-    let with_low = layout(vp, 32.0, Some(low));
-    assert!(
-        !with_low.rect.intersects(low),
-        "the keyboard covered the field it exists to serve"
-    );
-    assert!(
-        with_low.rect.top() < vp.center().y,
-        "it should flip to the top"
-    );
+    assert_eq!(choose_edge(vp, 48.0, Some(high)), Edge::Bottom);
+    assert_eq!(choose_edge(vp, 48.0, None), Edge::Bottom);
+    let edge = choose_edge(vp, 48.0, Some(low));
+    assert_eq!(edge, Edge::Top, "it should flip to the top");
+    let slab = layout(vp, 48.0, edge).rect;
+    assert!(slab.intersect(low).is_empty(), "the keys cover their field");
 }
 
-/// An egui field pinned to the bottom edge cannot move out of the keys' way,
-/// so tapping it flips them to the top. (A field that lifted itself above
-/// them once claimed an exemption, the chat composer; that one is the
-/// library's now, whose fields never flip the keys.)
+/// The edge is decided once the screens have had their frames to lift, from
+/// where the field is then, and held while that field has the focus: a field
+/// that lifted clear keeps the keys at the bottom, one pinned under them
+/// flips them to the top — and a move of the field afterwards (it dropping
+/// back as the inset goes to zero) does not flip them again.
 #[test]
-fn a_field_on_the_bottom_edge_flips_the_keys_to_the_top() {
-    let mut h = Harness::new();
-    h.backdrop = false;
-    h.anchor = (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0));
-    h.frame(Vec::new());
-    h.frame(Vec::new());
+fn the_edge_is_decided_after_the_screens_settle_and_then_held() {
+    let low = Rect::new(10.0, 560.0, 260.0, 590.0);
+    let lifted = Rect::new(10.0, 300.0, 260.0, 330.0);
+    let field = Entity::from_raw_u32(7).unwrap();
 
-    h.tap(h.field.center());
+    // A composer that lifts above the keys: still at the bottom.
+    let mut k = kb();
+    k.set_field(Some((field, low)));
+    k.place(phone(), 48.0);
     assert!(
-        h.kb.is_open(),
-        "tapping the field did not open the keyboard"
+        k.inset(phone()) > 0.0,
+        "the keys publish no inset to lift by"
     );
-    let slab = h.kb.slab().expect("open keyboard has no slab");
-    assert!(slab.top() <= h.screen.center().y, "keyboard at {slab:?}");
+    k.set_field(Some((field, lifted)));
+    for _ in 0..SETTLE_FRAMES {
+        k.place(phone(), 48.0);
+    }
+    assert_eq!(k.edge, Edge::Bottom);
+
+    // A field pinned to the bottom: the keys flip, and stay flipped.
+    let mut k = kb();
+    k.set_field(Some((field, low)));
+    for _ in 0..SETTLE_FRAMES {
+        k.place(phone(), 48.0);
+    }
+    assert_eq!(k.edge, Edge::Top);
+    assert_eq!(k.inset(phone()), 0.0, "keys at the top lift nothing");
+    k.set_field(Some((field, lifted)));
+    k.place(phone(), 48.0);
+    assert_eq!(k.edge, Edge::Top, "the edge flapped");
+
+    // Another field decides afresh.
+    let other = Entity::from_raw_u32(8).unwrap();
+    k.set_field(Some((other, lifted)));
+    for _ in 0..SETTLE_FRAMES {
+        k.place(phone(), 48.0);
+    }
+    assert_eq!(k.edge, Edge::Bottom);
 }
 
 /// A viewport too short for four 48 dp rows must still produce a usable
-/// keyboard rather than one taller than the screen — a landscape phone, or a
-/// desktop window forced on with `?osk` and then dragged small.
+/// keyboard rather than one taller than the screen.
 #[test]
 fn a_short_viewport_shrinks_the_keys_instead_of_overflowing() {
-    let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 260.0));
-    let slab = layout(vp, 48.0, None);
-    assert!(vp.contains_rect(slab.rect), "slab {:?} escaped", slab.rect);
+    let vp = Rect::new(0.0, 0.0, 640.0, 260.0);
+    let slab = layout(vp, 48.0, Edge::Bottom);
+    assert!(
+        vp.contains(slab.rect.min) && vp.contains(slab.rect.max),
+        "slab {:?} escaped",
+        slab.rect
+    );
     assert!(slab.key_h < 48.0 && slab.key_h >= MIN_KEY_HEIGHT_PTS);
+}
+
+/// The prediction a composer reserves is the slab it gets.
+#[test]
+fn the_expected_height_is_the_slab_at_the_bottom() {
+    let size = Vec2::new(274.0, 609.0);
+    let mut k = kb();
+    let min_key_h = min_key_height_pts(1.5, 2.75);
+    k.place(Rect::from_corners(Vec2::ZERO, size), min_key_h);
+    let want = expected_height_in(size, 1.5, 2.75);
+    assert!((k.inset(Rect::from_corners(Vec2::ZERO, size)) - want).abs() < 1e-3);
 }
 
 /// The platform policy, without an environment. Android always (it has no
 /// IME at all), the web only on the phone tier (one binary serves phones and
-/// desktops), and the override wins both ways — `?osk` to see it on a
-/// workstation, `?osk=0` to get rid of it on a phone when it misbehaves.
+/// desktops), and the override wins both ways.
 #[test]
 fn the_platform_predicate_is_not_a_cfg() {
     // (force_on, override_present, android, web_phone) -> enabled

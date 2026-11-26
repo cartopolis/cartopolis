@@ -5,9 +5,8 @@
 //! sources rather than the types because none of them is a type error: a
 //! `Res<EguiManager>` compiles everywhere but the web, and a `NoFrustumCulling`
 //! without `NotShadowCaster` compiles and draws, just into every shadow cascade.
-//! The panel chain (`egui_manager::every_root_ui_panel_is_in_the_chain`) and the
-//! one tile fixture (`cartopolis_geo::testdata`) are held the same way, where
-//! they live.
+//! The one tile fixture (`cartopolis_geo::testdata`) is held the same way,
+//! where it lives.
 //!
 //! Comment lines are skipped, so the comments explaining a rule can name what
 //! it forbids.
@@ -138,90 +137,6 @@ fn no_frustum_culling_comes_with_not_shadow_caster() {
     );
 }
 
-/// A control painted by hand — a rect given a click sense and drawn over —
-/// carries no name of its own, so the client's `ui_tree` tool (egui's AccessKit
-/// tree, `systems/dev/mcp/screen.rs`) lists it as "clickable area (no label)"
-/// and nobody driving the client can tell it from the next one. Every such
-/// rect under `src/systems` is named where it is made: `theme::named(ui, resp,
-/// "What it does")`, or `resp.widget_info(..)` for a switch or a choice that
-/// has an on state. One that is not a control (a backdrop that only swallows
-/// touches) says so with an `// unnamed: <why>` comment on the line above.
-///
-/// Widgets that carry their own text (`Label`, `Button`, a `UiBuilder::sense`
-/// row, all `.sense(..)`) are left to it; a sense picked into a variable
-/// first is out of the scan's reach, so name those by hand all the same.
-/// `#[cfg(test)] mod`s are not scanned, nor a module's `tests.rs`.
-#[test]
-fn hand_drawn_controls_are_named() {
-    const CALLS: &[&str] = &[
-        "allocate_exact_size(",
-        "allocate_rect(",
-        "interact(",
-        "map_disc(",
-    ];
-    const SENSES: &[&str] = &["Sense::click()", "Sense::click_and_drag()"];
-    // A call split over lines names its sense up to this many lines after itself.
-    const BACK: usize = 3;
-    // The name may come this many lines after the sense.
-    const AHEAD: usize = 10;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/systems");
-    let mut bad = Vec::new();
-    for (path, text) in sources() {
-        if !path.starts_with(&root) || path.ends_with("tests.rs") {
-            continue;
-        }
-        let lines: Vec<&str> = text.lines().collect();
-        // Everything from the test module on is tests.
-        let end = (1..lines.len())
-            .find(|&j| {
-                lines[j - 1].trim_start().starts_with("#[cfg(test)]")
-                    && lines[j].trim_start().starts_with("mod ")
-            })
-            .unwrap_or(lines.len());
-        for (i, line) in lines.iter().enumerate().take(end) {
-            if is_comment(line)
-                || line.contains(".sense(")
-                || !SENSES.iter().any(|s| line.contains(s))
-            {
-                continue;
-            }
-            let Some(call) = (i.saturating_sub(BACK)..=i)
-                .rev()
-                .find(|&j| !is_comment(lines[j]) && CALLS.iter().any(|c| lines[j].contains(c)))
-            else {
-                continue;
-            };
-            let near = &lines[i.saturating_sub(BACK)..(i + AHEAD + 1).min(lines.len())];
-            let named = near
-                .iter()
-                .any(|l| l.contains("named(") || l.contains("widget_info"));
-            let marked = lines[call.saturating_sub(1)..=i]
-                .iter()
-                .any(|l| l.contains("// unnamed:"));
-            if !named && !marked {
-                let rel = path
-                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
-                    .unwrap_or(&path);
-                bad.push(format!(
-                    "{}:{}: {}",
-                    rel.display(),
-                    call + 1,
-                    lines[call].trim()
-                ));
-            }
-        }
-    }
-    assert!(
-        bad.is_empty(),
-        "a hand-drawn control has no name, so `ui_tree` shows it as \"clickable area (no \
-         label)\". Name it right after it is made, with the words a person sees on it or a \
-         short phrase for what it does: `let resp = theme::named(ui, resp, \"Send\");` (or \
-         `resp.widget_info(|| egui::WidgetInfo::selected(..))` for a switch or a choice). If \
-         it is not a control at all, put `// unnamed: <why>` on the line above it:\n{}",
-        bad.join("\n")
-    );
-}
-
 /// `std::time::Instant::now()` and `SystemTime::now()` panic on wasm32 ("time
 /// not implemented on this platform"), and a panic is `abort` there, so the
 /// browser client dies: the watchdog's clock did it to every browser at its
@@ -313,7 +228,7 @@ fn every_animation_goes_through_motion() {
         .collect();
     assert!(
         hits.is_empty(),
-        "animate through `motion::presence` / `toggle` / `value` / `press`, never egui's `animate_*` directly:\n{}",
+        "take durations and curves from `systems::motion`, never egui's `animate_*` directly:\n{}",
         hits.join("\n")
     );
 }
@@ -370,7 +285,6 @@ const EGUI_OWN_FILES: &[&str] = &[
     // The chat pill over the map and the code editor draw their own fields.
     "systems/gui/chat_overlay.rs",
     "systems/gui/script_editor.rs",
-    "systems/gui/onscreen_keyboard/",
     // The developer tools (the dev panel, the Midas link, release approval):
     // tooling, not the product's face. Bring them over when they are touched.
     "systems/dev/",

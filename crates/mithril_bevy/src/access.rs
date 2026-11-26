@@ -118,6 +118,28 @@ pub fn screen_rect(world: &World) -> Option<Rect> {
     Some(Rect::from_center_size(centre, size))
 }
 
+/// Every laid-out element carrying the attribute `name`, with its value and
+/// its box, logical px (unclipped) — the way an app finds its own marked
+/// nodes after layout (cartopolis' side panels mark the room they take
+/// from the map). Elements with no box yet, or an empty one, are left out.
+pub fn marked_rects(world: &World, name: &str) -> Vec<(String, Rect)> {
+    let tree = world.resource::<UiTree>();
+    tree.nodes
+        .values()
+        .filter_map(|n| {
+            let value = attr(n, name)?;
+            let e = n.entity?;
+            let c = world.get::<ComputedNode>(e)?;
+            let size = c.size() * c.inverse_scale_factor();
+            if size.x <= 0.0 || size.y <= 0.0 {
+                return None;
+            }
+            let centre = world.get::<UiGlobalTransform>(e)?.translation * c.inverse_scale_factor();
+            Some((value.to_owned(), Rect::from_center_size(centre, size)))
+        })
+        .collect()
+}
+
 fn attr<'a>(n: &'a ShadowNode, name: &str) -> Option<&'a str> {
     match &n.kind {
         NodeKind::Element { attrs, .. } => attrs

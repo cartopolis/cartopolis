@@ -48,9 +48,9 @@
 //! the way of that.
 //!
 //! **The sheet takes the keyboard's height on the frame the keys choose their
-//! edge.** `onscreen_keyboard::layout` picks its edge from where the focused
-//! field landed *this* frame, and flips to the **top** when the bottom slab
-//! would cover it. So the sheet reserves [`onscreen_keyboard::expected_height`]
+//! edge.** `onscreen_keyboard::choose_edge` picks its edge from where the
+//! focused field landed, and flips to the **top** when the bottom slab would
+//! cover it. So the sheet reserves [`onscreen_keyboard::expected_height_in`]
 //! while the keys are up and on the frame its field claims them.
 //!
 //! **Everything ages on [`ChatState::clock`], not on `sent_at_ms`.** See that
@@ -543,9 +543,9 @@ fn clear_of_keyboard(mut rect: Rect, slab: Option<Rect>) -> Rect {
     rect
 }
 
-/// The map's rect in UI points: what the panels left of the screen at the
-/// end of the last pass (`EguiVerdict::map_rect`, in window points), or the
-/// whole viewport before there is one, less the on-screen keyboard.
+/// The map's rect in UI points: what the library's panels left of the
+/// screen at the last layout ([`UiInput::map_rect`], in window points), or
+/// the whole viewport before there is one, less the on-screen keyboard.
 fn map_rect(
     ui_input: &UiInput,
     metrics: &UiMetrics,

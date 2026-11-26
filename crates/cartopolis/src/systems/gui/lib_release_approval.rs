@@ -42,7 +42,7 @@ const KEY: &str = "release_approval";
 /// Over every other library screen but the splash (1000).
 const Z: i32 = 900;
 
-/// egui's `overlay_frame` across: both paddings (14) and rims (1).
+/// the overlay frame egui drew across: both paddings (14) and rims (1).
 const FRAME_X: f32 = 2.0 * 14.0 + 2.0;
 
 /// The window the card is centred in, px.

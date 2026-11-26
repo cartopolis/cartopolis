@@ -72,6 +72,8 @@ impl Plugin for GuiPlugin {
                     systems::lib_locate::drive_lib_locate,
                     systems::lib_driver::drive_lib_driver,
                     systems::lib_cosmos::drive_lib_cosmos,
+                    // The sky on a camera of its own (no LibCamera on the web).
+                    systems::lib_cosmos_sky::drive_lib_cosmos_sky,
                     systems::lib_splash::drive_lib_splash,
                     systems::lib_face_viewfinder::drive_lib_face_viewfinder,
                     systems::lib_dev_panel::drive_lib_dev_panel,
@@ -85,6 +87,12 @@ impl Plugin for GuiPlugin {
                 PostUpdate,
                 systems::lib_picture_viewer::drive_lib_picture_viewer
                     .after(systems::lib_places::drive_lib_places),
+            )
+            // The map's free area from the panels' boxes as the browser laid
+            // them out last frame (`data-reserves-map`).
+            .add_systems(
+                PreUpdate,
+                systems::lib_host::measure_map_room_dom.after(systems::ui_input::update_ui_metrics),
             )
             .init_resource::<systems::picking::MarqueeLib>();
         app.init_resource::<systems::settings::SettingsState>()
@@ -275,10 +283,8 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Present),
                 // The chip that says only one community's posts are on the map
                 // (`community_posts`): its own `Area` under the search bar.
-                // A text field: drawn before the on-screen keyboard reads it.
                 systems::community_posts::drive_floating_composer
                     .after(systems::bridges::drive_share_sheet)
-                    .before(systems::onscreen_keyboard::render_onscreen_keyboard)
                     .in_set(ClientPhase::Present),
                 systems::community_posts::drive_filter_chip
                     .after(systems::dock::drive_dock)
@@ -349,7 +355,7 @@ impl Plugin for GuiPlugin {
                 // The rungs above the globe (`systems::cosmos`): painted on the
                 // background layer, so before every panel, which then draws over
                 // it as panels draw over the map.
-                systems::cosmos::render_cosmos.before(systems::ui::drive_main_menu),
+                systems::cosmos::drive_cosmos,
                 // The place card — a floating `Area` above the dock, so it stays
                 // out of the panel chain too. **Before the panels**: taking a pick
                 // out of `GeoNavState::pending_card` is also what closes the Search
@@ -524,8 +530,7 @@ impl Plugin for GuiPlugin {
         // `add_systems` calls, with the intended chain recorded only in a comment.
         // `.chain()` makes the order structural: a panel added to this tuple is
         // ordered by construction, and one added anywhere else is visibly not in
-        // the chain — `egui_manager::every_root_ui_panel_is_in_the_chain` reads
-        // the block between the two markers below and fails the build otherwise.
+        // the chain.
         // Since these systems cannot run concurrently anyway, the total order
         // costs no parallelism.
         //
@@ -553,9 +558,6 @@ impl Plugin for GuiPlugin {
                     // (the library draws them); they keep their place in the
                     // order, the route's Start feeding the drive tick.
                     systems::geo_nav::drive_search,
-                    // The room the library's open side panel takes, where the
-                    // panels' own egui strips stood (`panel_slots`).
-                    systems::panel_slots::reserve_library_panels,
                     systems::navigation::drive_route_sheet,
                 )
                     .chain()
@@ -686,32 +688,11 @@ impl Plugin for GuiPlugin {
                     .after(systems::ui::drive_main_menu)
                     .after(systems::driver::drive_driver_mode),
                 // The on-screen keyboard — the only keyboard Android and a phone
-                // browser have (`systems::onscreen_keyboard`). NativeActivity
-                // brings up no IME at all, so every text field in the client can
-                // be focused and cannot be typed into, which on a routing client
-                // means the address bar and the geo search: the front door.
-                //
-                // It draws into a floating `Area`, never the shared root `Ui`, so
-                // it is deliberately *not* in the panel chain — same as `dock` and
-                // the HUD.
-                //
-                // But it **must run after every system that can draw a text
-                // field**, and that is not a preference. egui surrenders a focused
-                // widget's focus on a click landing anywhere else, so tapping a key
-                // unfocuses the field, and putting that focus back in the same
-                // frame is most of what this system does. Registered earlier, the
-                // surrender happens *after* the restore and undoes it: the keyboard
-                // types one character into nothing and hides itself. Reading the
-                // focused field's rect — to decide whether to dock to the bottom or
-                // flip to the top — needs the same ordering, because
-                // `read_response` only sees widgets already drawn this pass.
-                //
-                // The fields are in two places: the panel chain and the sign-in
-                // card, which is ordered before it from its own side. (The prim
-                // edit dialog was a third; the library draws it now, with its
-                // own fields.)
-                systems::onscreen_keyboard::render_onscreen_keyboard
-                    .after(systems::place_pins::place_map_pins),
+                // browser have (`systems::onscreen_keyboard`): it follows a
+                // library field's focus, places the keys and queues what they
+                // type; `lib_keyboard` (PostUpdate) draws them and hands the
+                // strokes to the field, so any slot in Update will do.
+                systems::onscreen_keyboard::drive_onscreen_keyboard,
                 // Escape's single dismissal ladder. It reads state every panel has
                 // already written this frame, so it runs after the panel chain —
                 // which used to hold only because it was registered after it; the

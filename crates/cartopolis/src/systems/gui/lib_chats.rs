@@ -829,7 +829,7 @@ fn panel(l: &ChatsLive) -> View {
             }
         }
     };
-    view! { <div style={frame}>{route}</div> }
+    view! { <div style={frame} data-reserves-map="right">{route}</div> }
 }
 
 // ─── The list ────────────────────────────────────────────────────────────────

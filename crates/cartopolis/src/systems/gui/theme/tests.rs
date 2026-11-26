@@ -1187,7 +1187,7 @@ fn touch_sizes_clear_the_minimum_target() {
     assert_eq!(touch.spacing.interact_size.y, TOUCH_ROW_PTS);
     // Type does not grow with the targets: the phone's UI is already sharp,
     // and scaling the text too is what pushes the viewport under
-    // `responsive_right_panel`'s 240 pt floor.
+    // the old egui side panel's 240 pt floor.
     assert_eq!(
         touch.text_styles[&TextStyle::Body].size,
         pointer.text_styles[&TextStyle::Body].size

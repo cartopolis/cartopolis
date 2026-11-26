@@ -234,19 +234,21 @@ The "…" fit waits for a new measure after each cut (`Ellipsis::cut_from`):
 a text's `TextLayoutInfo` lags its change by a frame, and cutting by the
 stale width again took long lines down to "1…".
 
-## The on-screen keyboard: one set of keys for both kinds of field
+## The on-screen keyboard
 
-`systems::lib_keyboard` (`CARTO_UI_LIB=keyboard`, where the platform wants
-the keys at all — Android, a phone browser, `CARTO_OSK=1`) draws the keys
-for an egui field and a library field alike. egui's
-`render_onscreen_keyboard` still runs (`OnScreenKeyboard::lib_pass`): it
-follows egui's focus, puts it back after a tap on the library's keys — the
-library draws above egui, but egui reads every pointer event, so the tap is
-also a click away from the `TextEdit` — and claims the strip with an empty
-`Area`, or a key would also press the egui widget under it. It decides
-where the keys stand and publishes `onscreen_keyboard::KeyboardInset` (how
-far up from the bottom, in the library's px); a library screen with a field
-at its foot lifts by it.
+`systems::lib_keyboard` draws the keys where the platform wants them at all
+(Android, a phone browser, `CARTO_OSK=1`; only a `ui-probe` build).
+`onscreen_keyboard::drive_onscreen_keyboard` (`Update`) raises them while a
+library field has the focus (`UiInput::overlay_owns_keyboard`), follows the
+fingers on them from Bevy's `Touches` — a key types as its finger lifts,
+backspace on landing and then repeating while held — and publishes
+`onscreen_keyboard::KeyboardInset` (how far up from the bottom, in the
+library's px); a library screen with a field at its foot lifts by it. The
+keys flip to the top when they would cover their field, but that is
+decided once, `SETTLE_FRAMES` after the focus arrives: decided every frame,
+a composer lifted by the inset is clear, the keys drop back, it is covered,
+and they flip again. A click on a key types only with no finger behind it
+(the MCP server's `press`).
 
 Into a library field the keys go through `mithril_bevy::KeyEdits`, applied
 at the start of `drive_ui` to the focused `EditableText` (`queue_edit`)

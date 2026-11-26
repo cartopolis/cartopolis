@@ -8,8 +8,7 @@
 //!     per-frame root `Ui` (egui 0.35 shows panels inside a `Ui`, not the `Context`).
 //!   - `begin_egui_frame` (PreUpdate) collects Bevy input, starts the egui frame,
 //!     and builds the shared root `Ui`.
-//!   - UI systems run in Update: `egui_manager.ui_mut()` for panels,
-//!     `egui_manager.ctx_mut()` for floating windows/areas.
+//!   - What egui still draws runs in Update through `EguiRef::ctx()`.
 //!   - `end_egui_frame` (PostUpdate) finalizes the root `Ui` and tessellates the
 //!     output into `EguiRenderOutput`.
 //!   - `ExtractResourcePlugin` copies `EguiRenderOutput` to the render world.
@@ -77,19 +76,6 @@ pub struct EguiManager {
     /// fallback for a frame that has **no** surface at all — see
     /// [`begin_egui_frame`] — and a test app may run egui alone.
     metrics: UiMetrics,
-    /// Events produced by something *inside* the Update schedule that wants to
-    /// reach egui as if a device had produced them — currently only
-    /// `systems::onscreen_keyboard`, which is a keyboard drawn in egui and
-    /// therefore cannot exist before the pass it types into has begun.
-    ///
-    /// Drained by [`begin_egui_frame`] into the **next** frame's `RawInput`,
-    /// appended after the pointer batch exactly where the physical keyboard's
-    /// events go. That placement is the point: `take_pass_events` splits the
-    /// pointer stream so a press carries the position it had at its own point in
-    /// the batch (`docs/notes/touch-input.md`), and a key event spliced into the
-    /// middle of that would break the ordering contract for no gain — a key has
-    /// no position.
-    injected: Vec<egui::Event>,
     /// What the panels left of the root `Ui` at the end of the last pass — the
     /// map, in egui points. Read by [`Self::owns_click`]; `None` before the first
     /// pass has ended.
@@ -104,88 +90,10 @@ pub struct EguiManager {
     /// library's): a world click yields to it as it does to a panel. Set
     /// each frame by `lib_host::bridge_input`, for the next frame.
     overlay_owns_pointer: bool,
-    /// A text field of a screen drawn beside egui holds the keyboard, so the
-    /// game keys yield to it as to egui's own fields. Set each frame by
-    /// `lib_host::bridge_input`, for the next frame.
-    overlay_owns_keyboard: bool,
 }
 
-/// The UI's scale and compactness are `systems::ui_input`'s, shared with the
-/// `UiMetrics` resource; named here too for the callers that grew up with it.
-pub use crate::systems::ui_input::COMPACT_WIDTH_PTS;
 #[cfg(test)]
 use crate::systems::ui_input::UI_SCALE_RANGE;
-
-/// What a compact right panel is exactly as wide as: **the screen**.
-///
-/// This used to read `viewport_w.max(240.0)` — a floor written so a very narrow
-/// window could not produce a degenerate sliver of a panel. On the web phone
-/// tier the floor inverted: the render budget's stage transform leaves a
-/// Fairphone 4 with ~215 pt of viewport, so the floor docked a panel **26 pt
-/// wider than the screen it sat in**, which is the exact failure it was added to
-/// prevent (`docs/notes/touch-input.md` recorded it as open). A compact panel
-/// *is* the viewport by definition, so there is nothing for a floor to protect:
-/// a 100 pt window gets a 100 pt panel, which is useless but honest, and the
-/// only genuinely degenerate input is a viewport that is not a width at all —
-/// zero before the first surface arrives, or NaN.
-#[must_use]
-pub fn compact_panel_width(viewport_w: f32) -> f32 {
-    /// Stand-in for a viewport we do not have yet. Any positive number does;
-    /// this one matches the old floor so a run that somehow reaches it looks the
-    /// way it always did.
-    const FALLBACK_PTS: f32 = 240.0;
-    if viewport_w.is_finite() && viewport_w > 1.0 {
-        viewport_w
-    } else {
-        FALLBACK_PTS
-    }
-}
-
-/// Build a right-docked [`egui::Panel`] that adapts to the viewport: on a wide
-/// screen it docks beside the map at `wide_width` pt and stays resizable; on a
-/// compact (phone-ish) screen it fills the viewport and is fixed, since a resize
-/// handle is unusable on touch and a 320 pt dock would leave no map visible.
-///
-/// Takes `compact` / `viewport_w` as plain values (not `&EguiManager`) so it can
-/// be called after a caller has already taken `egui.ui_mut()` — building the
-/// panel then borrows nothing.
-pub fn responsive_right_panel(
-    id: impl Into<egui::Id>,
-    compact: bool,
-    viewport_w: f32,
-    wide_width: f32,
-) -> egui::Panel {
-    // The page every panel shares (`theme::Palette::panel`, the midas hub's) and its
-    // hairline, with room round the content. egui's own side-panel margin is
-    // 8 x 2 pt, which set every title and row against the panel's edge; it was
-    // 14 x 10 until 2026-11-08 ("less cramped"). The Chats screen sets its own
-    // frame over this one.
-    let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::p32().panel)
-        .stroke(egui::Stroke::new(
-            1.0,
-            crate::systems::theme::p32().panel_rim,
-        ))
-        .inner_margin(egui::Margin::symmetric(16, 14));
-    if compact {
-        egui::Panel::right(id)
-            .frame(frame)
-            .resizable(false)
-            // No separator line: it has no neighbour to separate from, and egui
-            // paints it at the panel's sliding edge on the root `Ui`, so while
-            // another panel slid shut behind this one its line kept crossing the
-            // open panel.
-            .show_separator_line(false)
-            // Fill the whole viewport — any inset leaves a strip of map peeking
-            // down the left edge of the docked panel.
-            .exact_size(compact_panel_width(viewport_w))
-    } else {
-        egui::Panel::right(id)
-            .frame(frame)
-            .resizable(true)
-            .default_size(wide_width)
-    }
-}
 
 impl Default for EguiManager {
     fn default() -> Self {
@@ -229,11 +137,9 @@ impl Default for EguiManager {
             // The primary window's default resolution in `main.rs`; only ever
             // used for the frames before the first `begin_egui_frame`.
             metrics: UiMetrics::default(),
-            injected: Vec::new(),
             map_rect: None,
             ui_animating: false,
             overlay_owns_pointer: false,
-            overlay_owns_keyboard: false,
         }
     }
 }
@@ -251,14 +157,8 @@ fn geometry_still_current(repaint_delay: std::time::Duration, since_write: f32) 
 }
 
 impl EguiManager {
-    /// Borrow the egui context mutably. Only valid between `begin_egui_frame`
-    /// and `end_egui_frame` (i.e. during the Update schedule). Use for floating
-    /// windows/areas (`egui::Window`, `egui::Area`), which still take `&Context`.
-    pub fn ctx_mut(&mut self) -> &mut egui::Context {
-        &mut self.ctx
-    }
-
-    /// Borrow the egui context *shared* — same validity window as [`Self::ctx_mut`].
+    /// Borrow the egui context *shared*. Only valid between `begin_egui_frame`
+    /// and `end_egui_frame` (i.e. during the Update schedule).
     ///
     /// `egui::Context` is `Sync` (an `Arc<RwLock<…>>` inside) and every
     /// floating-`Area` call takes `&Context`, so a system that draws only its
@@ -270,10 +170,6 @@ impl EguiManager {
     /// z-order is unaffected — each `Area` owns its own layer, ordered by
     /// egui's memory, not by which system happened to register it first this
     /// frame.
-    ///
-    /// (Worded without naming the mutable-parameter type next to the root-`Ui`
-    /// accessor: `every_root_ui_panel_is_in_the_chain` scans source chunks for
-    /// exactly that pair of tokens.)
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
     }
@@ -284,13 +180,6 @@ impl EguiManager {
     #[must_use]
     pub fn ui_animating(&self) -> bool {
         self.ui_animating
-    }
-
-    /// Logical viewport size in points (physical pixels ÷ display scale), as egui
-    /// lays out against it this frame.
-    pub fn viewport_pts(&self) -> egui::Vec2 {
-        let v = self.metrics.viewport_pts();
-        egui::vec2(v.x, v.y)
     }
 
     /// Record the surface this frame is laid out against, given the *display's*
@@ -313,27 +202,6 @@ impl EguiManager {
     #[must_use]
     pub fn metrics(&self) -> UiMetrics {
         self.metrics
-    }
-
-    /// The *display's* own scale factor, with [`Self::ui_scale`] divided back
-    /// out — physical pixels per window logical point, which is what winit
-    /// reports and what `devicePixelRatio` is on the web.
-    ///
-    /// Exposed separately from [`Self::viewport_pts`] because the two answer
-    /// different questions: layout wants points, but anything reasoning about
-    /// *physical* size (a touch target in millimetres) needs the pixel density
-    /// and the magnification apart, not multiplied together.
-    pub fn display_scale(&self) -> f32 {
-        self.metrics.display_scale()
-    }
-
-    /// Queue events for the next `RawInput` — see the `injected` field.
-    ///
-    /// Deliberately additive and un-deduplicated: the caller is producing the
-    /// events a device would have produced, and a device is allowed to repeat
-    /// itself.
-    pub fn inject_events(&mut self, events: impl IntoIterator<Item = egui::Event>) {
-        self.injected.extend(events);
     }
 
     /// Convert a position in the window's logical points — which is what
@@ -390,40 +258,6 @@ impl EguiManager {
         self.overlay_owns_pointer = owns;
     }
 
-    /// Declare (each frame) that a text field beside egui has the keyboard —
-    /// see the `overlay_owns_keyboard` field.
-    #[cfg_attr(not(feature = "ui-probe"), allow(dead_code))]
-    pub fn set_overlay_owns_keyboard(&mut self, owns: bool) {
-        if self.overlay_owns_keyboard != owns {
-            self.overlay_owns_keyboard = owns;
-        }
-    }
-
-    /// A text field beside egui has the keyboard.
-    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
-    pub fn overlay_owns_keyboard(&self) -> bool {
-        self.overlay_owns_keyboard
-    }
-
-    /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
-    /// systems branch on this for a responsive layout.
-    pub fn compact(&self) -> bool {
-        self.viewport_pts().x < COMPACT_WIDTH_PTS
-    }
-
-    /// Borrow this frame's shared root `Ui`, for showing panels
-    /// (`egui::Panel`, `egui::CentralPanel`). Only valid during Update.
-    ///
-    /// [`begin_egui_frame`] builds the root `Ui` unconditionally — including on a
-    /// frame with no window at all — so during Update this cannot fail. It still
-    /// panics rather than no-ops, because the one remaining way to reach it is a
-    /// UI system registered in the wrong schedule, and that should be loud.
-    pub fn ui_mut(&mut self) -> &mut egui::Ui {
-        self.root_ui
-            .as_mut()
-            .expect("ui_mut() called outside an egui frame")
-    }
-
     /// egui's answers to `UiInput`'s questions this frame, for a press at the
     /// window `cursor` — see [`publish_ui_input`].
     pub fn verdict(&self, cursor: Option<Vec2>) -> EguiVerdict {
@@ -478,7 +312,6 @@ pub(crate) fn verdict_of(
 /// later than when it was asked of egui directly.
 pub fn publish_ui_input(mut egui: EguiMut, mut input: ResMut<UiInput>, windows: Query<&Window>) {
     egui.set_overlay_owns_pointer(input.overlay_owns_pointer());
-    egui.set_overlay_owns_keyboard(input.overlay_owns_keyboard());
     let cursor = windows.iter().next().and_then(|w| w.cursor_position());
     let verdict = egui.verdict(cursor);
     if input.egui_verdict() != verdict {
@@ -1069,25 +902,6 @@ pub fn begin_egui_frame(
             });
         }
     }
-
-    // The in-app on-screen keyboard (`systems::onscreen_keyboard`), which is the
-    // only keyboard two of our platforms have: NativeActivity brings up no IME at
-    // all. It draws in Update, i.e. *inside* the pass it types into, so it cannot
-    // put anything into this frame's `RawInput` — it queues instead, and lands one
-    // frame later, here.
-    //
-    // Appended in the same place as the physical keyboard's events, after the
-    // pointer batch, for the same reason: `take_pass_events` owns the ordering of
-    // the pointer stream and a key event carries no position to order.
-    //
-    // Deliberately NOT behind `forward_keys`. That gate exists because egui keeps
-    // focus on the last-clicked widget and would let a game key activate it; these
-    // events are only produced while a text field is focused, and the very act of
-    // tapping a key momentarily takes that focus away (which the keyboard puts
-    // back) — so testing `text_edit_focused()` here would drop exactly the
-    // keystroke that caused it.
-    let injected = std::mem::take(&mut egui_manager.injected);
-    events.extend(injected);
 
     let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(logical_w, logical_h));
 

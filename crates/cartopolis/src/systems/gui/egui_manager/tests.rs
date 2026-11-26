@@ -100,9 +100,11 @@ fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
                 .layer_id(egui::LayerId::background())
                 .max_rect(ctx.viewport_rect()),
         );
-        responsive_right_panel("panel", false, 1280.0, 260.0).show(&mut root, |ui| {
-            ui.label("panel");
-        });
+        egui::Panel::right("panel")
+            .default_size(260.0)
+            .show(&mut root, |ui| {
+                ui.label("panel");
+            });
         map_rect = Some(root.available_rect_before_wrap());
         drop(root);
         let _ = ctx.end_pass_unpainted();
@@ -172,11 +174,6 @@ fn ui_metrics_and_ui_input_follow_the_manager() {
     let mgr = app.world().resource::<EguiManager>();
     let metrics = *app.world().resource::<UiMetrics>();
     assert_eq!(metrics, mgr.metrics());
-    assert_eq!(
-        metrics.viewport_pts(),
-        Vec2::new(mgr.viewport_pts().x, mgr.viewport_pts().y)
-    );
-    assert_eq!(metrics.compact(), mgr.compact());
 
     let input = *app.world().resource::<UiInput>();
     assert_eq!(input.egui_verdict(), mgr.verdict(None));
@@ -191,7 +188,6 @@ fn ui_metrics_and_ui_input_follow_the_manager() {
         mgr.owns_click(false, None),
         "the library's pointer reaches egui"
     );
-    assert!(mgr.overlay_owns_keyboard());
     let keys = ButtonInput::<KeyCode>::default();
     assert!(app
         .world()
@@ -511,14 +507,12 @@ fn click_checkbox_with_drift(overlay: impl Fn(&egui::Context, egui::Rect), drift
         let mut open = true;
         let rect = std::cell::Cell::new(None);
         let checked_ref = &mut checked;
-        responsive_right_panel("layers_panel", false, 1280.0, 260.0).show_collapsible(
-            &mut root,
-            &mut open,
-            |ui| {
+        egui::Panel::right("layers_panel")
+            .default_size(260.0)
+            .show_collapsible(&mut root, &mut open, |ui| {
                 let resp = ui.checkbox(checked_ref, "Buildings");
                 rect.set(Some(resp.rect));
-            },
-        );
+            });
         overlay(&ctx, root.available_rect_before_wrap());
         drop(root);
         // The pass output is the paint job; this test only reads widget state.
@@ -605,8 +599,8 @@ fn ui_app(primary_window: Option<Window>) -> App {
 }
 
 /// The first thing every panel system does.
-fn touch_root_ui(mut egui: EguiMut) {
-    let _ = egui.ui_mut();
+fn touch_root_ui(egui: EguiRef) {
+    let _ = egui.ctx();
 }
 
 /// The macOS shutdown crash (#2): Bevy despawns the window in `Last`, so the
@@ -659,10 +653,10 @@ fn a_degenerate_scale_factor_never_reaches_layout() {
     let mut mgr = EguiManager::default();
     for bad in [0.0, -1.0, f32::NAN] {
         mgr.set_surface(UVec2::new(1280, 720), bad);
-        assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
+        assert_eq!(mgr.metrics().viewport_pts(), Vec2::new(1280.0, 720.0));
     }
     mgr.set_surface(UVec2::new(2560, 1440), 2.0);
-    assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
+    assert_eq!(mgr.metrics().viewport_pts(), Vec2::new(1280.0, 720.0));
 }
 
 /// The UI scale multiplies the widgets by dividing the viewport: the same
@@ -676,20 +670,8 @@ fn ui_scale_shrinks_the_viewport_it_magnifies() {
     // Android, where a phone's whole 1080 px width reaches Bevy: 393 pt of
     // viewport at a 2.75 scale factor, 262 pt of it after the magnification.
     mgr.set_surface(UVec2::new(1080, 2280), 2.75);
-    assert!((mgr.viewport_pts().x - 261.8).abs() < 0.1);
-    assert!(mgr.compact());
-}
-
-/// A compact panel never exceeds the screen it docks in — which the old
-/// `viewport_w.max(240.0)` floor did on every web phone tier viewport under
-/// 240 pt, i.e. on the one device class the compact layout exists for.
-#[test]
-fn a_compact_panel_is_exactly_the_viewport() {
-    assert_eq!(compact_panel_width(214.0), 214.0);
-    assert_eq!(compact_panel_width(390.0), 390.0);
-    // Only a viewport that is not a width falls back.
-    assert_eq!(compact_panel_width(0.0), 240.0);
-    assert_eq!(compact_panel_width(f32::NAN), 240.0);
+    assert!((mgr.metrics().viewport_pts().x - 261.8).abs() < 0.1);
+    assert!(mgr.metrics().compact());
 }
 
 /// Why [`phone_ui_scale`] is 1.0 on the web: the render budget's stage
@@ -705,15 +687,15 @@ fn the_web_phone_tier_has_no_room_to_magnify() {
     let mut unscaled = EguiManager::default();
     unscaled.metrics = UiMetrics::with_ui_scale(1.0);
     unscaled.set_surface(surface, 2.75);
-    assert!(unscaled.viewport_pts().x > 200.0, "usable at 1.0");
+    assert!(unscaled.metrics().viewport_pts().x > 200.0, "usable at 1.0");
 
     let mut scaled = EguiManager::default();
     scaled.metrics = UiMetrics::with_ui_scale(1.5);
     scaled.set_surface(surface, 2.75);
     assert!(
-        scaled.viewport_pts().x < 240.0,
+        scaled.metrics().viewport_pts().x < 240.0,
         "1.5× would dock a 240 pt panel in a {} pt viewport",
-        scaled.viewport_pts().x
+        scaled.metrics().viewport_pts().x
     );
 }
 
@@ -748,52 +730,6 @@ fn window_to_ui_matches_the_bridge() {
     );
 }
 
-/// The seam the on-screen keyboard is built on: an event queued during
-/// `Update` must turn up in the **next** frame's `RawInput`, and the queue
-/// must be empty afterwards.
-///
-/// It cannot be the same frame — `begin_egui_frame` has already assembled
-/// `RawInput` and begun the pass by the time any UI system runs — and a queue
-/// that were not drained would replay the last character typed on every frame
-/// forever, which is the failure this pins.
-#[test]
-fn injected_events_reach_the_next_frames_input() {
-    let mut app = ui_app(Some(Window::default()));
-    app.update();
-    app.world_mut()
-        .resource_mut::<EguiManager>()
-        .inject_events([egui::Event::Text("q".to_owned())]);
-
-    let before = app
-        .world()
-        .resource::<EguiManager>()
-        .ctx
-        .input(|i| i.events.len());
-    app.update();
-
-    let mgr = app.world().resource::<EguiManager>();
-    assert!(
-        mgr.injected.is_empty(),
-        "the injection queue was not drained"
-    );
-    assert!(
-        mgr.ctx.input(|i| i
-            .events
-            .iter()
-            .any(|e| matches!(e, egui::Event::Text(t) if t == "q"))),
-        "the queued character never reached egui (had {before} events before)"
-    );
-
-    // And exactly once: a second frame with nothing queued must be quiet.
-    app.update();
-    let mgr = app.world().resource::<EguiManager>();
-    assert!(
-        !mgr.ctx
-            .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))),
-        "the injected event was replayed on a later frame"
-    );
-}
-
 /// The display scale and the UI magnification have to come apart again:
 /// `set_surface` multiplies them into one number, and anything reasoning
 /// about *physical* size (`onscreen_keyboard`'s 48 dp touch target) needs the
@@ -803,7 +739,7 @@ fn display_scale_survives_being_folded_into_the_surface() {
     let mut mgr = EguiManager::default();
     mgr.metrics = UiMetrics::with_ui_scale(1.5);
     mgr.set_surface(UVec2::new(1080, 2280), 2.75);
-    assert!((mgr.display_scale() - 2.75).abs() < 1e-4);
+    assert!((mgr.metrics().display_scale() - 2.75).abs() < 1e-4);
 }
 
 /// An out-of-range scale is clamped rather than obeyed: at 20× there is no
@@ -814,115 +750,4 @@ fn an_absurd_ui_scale_is_clamped() {
         let clamped = raw.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end());
         assert_eq!(clamped, want, "clamping {raw}");
     }
-}
-
-/// Every system that draws into the **shared root `Ui`** must be in the panel
-/// chain in `systems/gui/plugin.rs`, and this test is the guard the chain's comment used to
-/// say did not exist.
-///
-/// Leaving one out does not misplace a panel — it makes two panels swap
-/// composition order between frames, and because they share egui's single
-/// `Background` layer the one that lands underneath stops receiving clicks on
-/// those frames. The symptom is a control that ignores about half its
-/// presses; `layer_id_at` still answers `Background`, so no layer-level
-/// diagnostic sees it, and it cannot reproduce in a single-panel test.
-///
-/// This reads the sources rather than the schedule because the invariant is
-/// "draws into the root `Ui`" — a property of a function body, which the type
-/// system cannot express and a running `App` cannot be asked about.
-#[test]
-fn every_root_ui_panel_is_in_the_chain() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = Vec::new();
-    let mut stack = vec![src.join("systems")];
-    while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir)
-            .expect("systems/ is readable")
-            .flatten()
-        {
-            let p = e.path();
-            // A module's tests (`foo/tests.rs`) draw panels to test them,
-            // and their functions sit at the top level there, where this
-            // scan looks for systems.
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("tests.rs") {
-                files.push(p);
-            }
-        }
-    }
-
-    // The frame lifecycle brackets the panels by *schedule* (PreUpdate /
-    // Update / PostUpdate + the render graph), not by ordering links, so it is
-    // deliberately not in the chain.
-    const LIFECYCLE: [&str; 3] = ["begin_egui_frame", "end_egui_frame", "egui_pass"];
-
-    let mut drawers = Vec::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).expect("source is readable");
-        // Split on top-level `fn ` starts; a body owns everything up to the next one.
-        let mut idx: Vec<usize> = text
-            .match_indices("\nfn ")
-            .chain(text.match_indices("\npub fn "))
-            .map(|(i, _)| i)
-            .collect();
-        idx.sort_unstable();
-        idx.push(text.len());
-        for w in idx.windows(2) {
-            let chunk = &text[w[0]..w[1]];
-            // A *system* that draws into the root `Ui` takes the manager
-            // mutably; helpers like `responsive_right_panel` take plain
-            // arguments and only build a widget, so they order nothing.
-            if !chunk.contains("ui_mut()") || !chunk.contains("EguiMut") {
-                continue;
-            }
-            let name = chunk
-                .trim_start_matches(['\n'])
-                .trim_start_matches("pub ")
-                .trim_start_matches("fn ")
-                .split(['(', '<'])
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !name.is_empty() && !LIFECYCLE.contains(&name.as_str()) {
-                drawers.push(name);
-            }
-        }
-    }
-    // The scan works when it finds a drawer known to be one: the strip that
-    // reserves the library's side panel (`panel_slots`), the last egui panel
-    // in the root `Ui`. Not a count: egui's panels are going family by family
-    // (the library draws them), so how many are left says nothing about the
-    // scan.
-    assert!(
-        drawers.iter().any(|d| d == "reserve_library_panels"),
-        "found only {drawers:?} root-`Ui` drawers, not `reserve_library_panels` — the scan has broken, not the chain"
-    );
-
-    // The chain is two chained halves (one per `ClientPhase`) chained to each
-    // other, so it is found by its markers rather than by its first `.chain()`.
-    let plugin = std::fs::read_to_string(src.join("systems/gui/plugin.rs"))
-        .expect("systems/gui/plugin.rs is readable");
-    let chain = plugin
-        .split_once("// panel-chain:begin")
-        .and_then(|(_, rest)| rest.split_once("// panel-chain:end"))
-        .map(|(block, _)| block.to_string())
-        .expect("the panel chain still exists in systems/gui/plugin.rs");
-    assert!(
-        chain.contains("drive_main_menu") && chain.contains("drive_dock"),
-        "the chain block was extracted but looks wrong — the markers in \
-             systems/gui/plugin.rs moved"
-    );
-
-    let missing: Vec<_> = drawers
-        .iter()
-        .filter(|d| !chain.contains(d.as_str()))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "these draw into the shared root `Ui` but are not in the panel chain: \
-             {missing:?}\nAdd them to that tuple — an unordered pair swaps composition \
-             order between frames and the panel underneath stops taking clicks."
-    );
 }

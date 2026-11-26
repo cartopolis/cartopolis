@@ -5,9 +5,9 @@
 //!
 //! `ui::drive_avatar_chooser` seeds the draft, dresses the avatar in it
 //! (`HumanDraft`) and aims the camera, which it takes from
-//! `AvatarChooserState::lib_close_up` and `lib_turn`; `panel_slots` keeps
-//! the panel's room in the map's layout — a sheet over the bottom half on a
-//! phone. Every change goes through the `DesignerState` methods of
+//! `AvatarChooserState::lib_close_up` and `lib_turn`; the panel's root marks
+//! the room it takes from the map (`data-reserves-map`, `ui_input::free_map`)
+//! — a sheet over the bottom half on a phone. Every change goes through the `DesignerState` methods of
 //! `avatar_designer`.
 //!
 //! Drawn differently, because the library has no widget for them: a skin, an
@@ -1140,6 +1140,9 @@ fn panel(l: &Live) -> View {
             designer::LIB_PANEL_WIDTH
         )
     };
+    // The room it takes from the map (`ui_input::RESERVES_MAP`): the
+    // dock, the pins and the names keep above the sheet, beside the panel.
+    let side = if l.compact { "bottom" } else { "right" };
     let history = {
         let l = l.clone();
         move || -> View {
@@ -1205,7 +1208,7 @@ fn panel(l: &Live) -> View {
     };
     let close = l.act(Act::Close);
     view! {
-        <div style={frame}>
+        <div style={frame} data-reserves-map={side}>
             <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                 <span style="color: var(--m-accent)">{icon(RightPanel::Appearance.icon())}</span>
                 <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">{RightPanel::Appearance.label()}</h1>

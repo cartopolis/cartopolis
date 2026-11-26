@@ -992,7 +992,7 @@ fn the_guidance_cues_are_on_by_default() {
 #[test]
 fn the_chrome_fits_every_viewport_it_is_drawn_on() {
     for width in [274.0_f32, 320.0, 400.0, 640.0, 800.0, 1280.0] {
-        let compact = width < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
+        let compact = width < crate::systems::ui_input::COMPACT_WIDTH_PTS;
         let l = driver_layout(width, compact);
         let usable = width - 2.0 * CARD_MARGIN + 1e-3;
         assert!(l.card_width <= usable, "the card overflows {width} pt");

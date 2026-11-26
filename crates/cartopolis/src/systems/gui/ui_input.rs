@@ -12,7 +12,10 @@
 //!   verdicts together: egui's ([`EguiVerdict`], written by
 //!   `egui_manager::publish_ui_input` right after egui's pass begins) and the
 //!   component library's (`lib_host::bridge_input`, from `mithril_bevy`'s
-//!   `UiPointer` and the focused `EditableText`).
+//!   `UiPointer` and the focused `EditableText`). It also carries the map's
+//!   free area ([`UiInput::map_rect`]): the screen less the room the
+//!   library's panels mark with [`RESERVES_MAP`], measured after layout by
+//!   `lib_host::measure_map_room`.
 //!
 //! Both are ordinary `Send` resources, so a system reads them as `Res<…>` on
 //! every target — unlike `EguiManager`, which is non-send on the web
@@ -45,7 +48,7 @@ pub const COMPACT_WIDTH_PTS: f32 = 640.0;
 /// across k CSS pixels. On the reported Fairphone 4 (dpr 2.75) k ≈ 1.83, which
 /// takes a 24 pt row from 6.3 mm to **11.6 mm** on its own. Magnifying again on
 /// top of that overshoots the guideline by half and — worse — takes the viewport
-/// to 143 pt, well under the 240 pt floor `responsive_right_panel` gives a
+/// to 143 pt, well under the 240 pt floor the old egui side panel gave a
 /// compact panel, i.e. a panel wider than the screen it docks in.
 ///
 /// Native Android has no such transform: nothing there has magnified anything,
@@ -294,8 +297,8 @@ pub struct EguiVerdict {
     /// `press_over_ui`.
     pub press_over_ui: bool,
     /// What the panels left of egui's root `Ui` at the end of the last pass,
-    /// in **window** logical points: the map. Only for a cursor other than
-    /// [`Self::cursor`], which no caller passes today.
+    /// in window logical points. No longer read: the map comes from the
+    /// library's layout ([`UiInput::map_rect`]).
     pub map_rect: Option<Rect>,
 }
 
@@ -310,6 +313,10 @@ pub struct UiInput {
     /// A library text field has the keyboard (`InputFocus` on an
     /// `EditableText`). Set by `lib_host::bridge_input`, for the next frame.
     lib_keyboard: bool,
+    /// The map: the screen less the room the library's open panels take
+    /// (`data-reserves-map`), in **window** logical points, as of the last
+    /// layout. Set by `lib_host::measure_map_room` (or its DOM twin).
+    map: Option<Rect>,
     /// A modal owns the screen: the sign-in card (`LoginScreen::modal`), set
     /// each frame by `login_screen::drive_login_screen` in `Input`, before
     /// anything that moves reads the keys. Pointer input takes care of
@@ -345,7 +352,7 @@ impl UiInput {
             (true, Some(at)) if Some(at) == self.egui.cursor => self.egui.press_over_ui,
             // A point the verdict was not taken at: only the panels are known,
             // not egui's floating areas.
-            (true, Some(at)) => self.egui.map_rect.is_some_and(|map| !map.contains(at)),
+            (true, Some(at)) => self.map.is_some_and(|map| !map.contains(at)),
             _ => self.egui.wants_pointer,
         }
     }
@@ -409,11 +416,22 @@ impl UiInput {
         self.ui_animating
     }
 
-    /// The map: what the side panels left at the end of the last frame, in
-    /// **window** logical points, or `None` before the first frame.
+    /// The map: what the library's side panels and sheets left of the
+    /// screen at the last layout ([`free_map`]), in **window** logical
+    /// points, or `None` before the first measure (callers take the whole
+    /// viewport then).
     #[must_use]
     pub fn map_rect(&self) -> Option<Rect> {
-        self.egui.map_rect
+        self.map
+    }
+
+    /// The map as the library's layout left it (`lib_host::measure_map_room`).
+    #[cfg_attr(
+        not(any(feature = "ui-probe", all(feature = "ui-dom", target_arch = "wasm32"))),
+        allow(dead_code)
+    )]
+    pub fn set_map_rect(&mut self, map: Option<Rect>) {
+        self.map = map;
     }
 
     /// egui's verdict for this frame, as written.
@@ -450,6 +468,72 @@ impl UiInput {
     pub fn set_ui_animating(&mut self, animating: bool) {
         self.ui_animating = animating;
     }
+}
+
+// ─── The map's room ──────────────────────────────────────────────────────────
+
+/// The attribute a library panel or sheet sets on its root to take room from
+/// the map, valued with the edge it docks on (`right`, `left`, `top`,
+/// `bottom`; [`MapSide`]). The dock, the search bar, the round buttons, the
+/// pins and the names keep to what is left ([`UiInput::map_rect`]).
+#[cfg_attr(
+    not(any(feature = "ui-probe", all(feature = "ui-dom", target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+pub const RESERVES_MAP: &str = "data-reserves-map";
+
+/// The edge of the screen a marked panel takes its room from.
+#[cfg_attr(
+    not(any(feature = "ui-probe", all(feature = "ui-dom", target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[cfg_attr(
+    not(any(feature = "ui-probe", all(feature = "ui-dom", target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+impl MapSide {
+    /// A [`RESERVES_MAP`] value; `None` for anything else.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+}
+
+/// The map: `screen` less each marked panel's room, cut from the edge it
+/// docks on. A panel across the whole screen (a phone's) leaves an empty
+/// rect: the map is covered, as egui's full-width strip left it.
+#[cfg_attr(
+    not(any(feature = "ui-probe", all(feature = "ui-dom", target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+#[must_use]
+pub fn free_map(screen: Rect, rooms: impl IntoIterator<Item = (MapSide, Rect)>) -> Rect {
+    let mut map = screen;
+    for (side, room) in rooms {
+        match side {
+            MapSide::Right => map.max.x = map.max.x.min(room.min.x),
+            MapSide::Left => map.min.x = map.min.x.max(room.max.x),
+            MapSide::Bottom => map.max.y = map.max.y.min(room.min.y),
+            MapSide::Top => map.min.y = map.min.y.max(room.max.y),
+        }
+    }
+    map.max.x = map.max.x.max(map.min.x);
+    map.max.y = map.max.y.max(map.min.y);
+    map
 }
 
 /// Registers [`UiMetrics`] and [`UiInput`] and keeps the metrics current.
@@ -562,9 +646,9 @@ mod tests {
             wants_pointer: true,
             cursor: Some(on_map),
             press_over_ui: false,
-            map_rect: Some(Rect::new(0.0, 0.0, 1000.0, 720.0)),
             ..default()
         });
+        input.set_map_rect(Some(Rect::new(0.0, 0.0, 1000.0, 720.0)));
         assert!(
             !input.owns_click(true, Some(on_map)),
             "the map is the world's"
@@ -613,5 +697,41 @@ mod tests {
         let mut input = UiInput::default();
         input.set_modal(true);
         assert!(input.ui_owns_keyboard(false, &none), "a modal");
+    }
+
+    /// The map is the screen less each marked panel's room, cut from the
+    /// edge it docks on, as egui's strips left it: a 340-pt side panel on a
+    /// wide screen, a phone's sheet across the bottom half, and a phone's
+    /// full-screen panel, which leaves no map at all.
+    #[test]
+    fn the_map_is_what_the_marked_panels_leave() {
+        let screen = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        assert_eq!(free_map(screen, []), screen, "nothing open");
+
+        let settings = Rect::new(940.0, 0.0, 1280.0, 720.0);
+        assert_eq!(
+            free_map(screen, [(MapSide::Right, settings)]),
+            Rect::new(0.0, 0.0, 940.0, 720.0)
+        );
+
+        let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let sheet = Rect::new(0.0, 422.0, 390.0, 844.0);
+        assert_eq!(
+            free_map(phone, [(MapSide::Bottom, sheet)]),
+            Rect::new(0.0, 0.0, 390.0, 422.0)
+        );
+        let covered = free_map(phone, [(MapSide::Right, phone)]);
+        assert_eq!(covered.width(), 0.0, "a full-screen panel covers the map");
+        assert!(!covered.contains(Vec2::new(200.0, 400.0)));
+
+        let lens = Rect::new(0.0, 0.0, 300.0, 720.0);
+        assert_eq!(
+            free_map(screen, [(MapSide::Left, lens), (MapSide::Right, settings)]),
+            Rect::new(300.0, 0.0, 940.0, 720.0)
+        );
+
+        assert_eq!(MapSide::parse(" right "), Some(MapSide::Right));
+        assert_eq!(MapSide::parse("bottom"), Some(MapSide::Bottom));
+        assert_eq!(MapSide::parse("sideways"), None);
     }
 }

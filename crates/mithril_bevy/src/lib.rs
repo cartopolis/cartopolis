@@ -39,7 +39,9 @@ pub mod testing;
 mod tree;
 mod typing;
 
-pub use access::{access_tree, press, screen_rect, set_text, AccessNode, PressError, Role};
+pub use access::{
+    access_tree, marked_rects, press, screen_rect, set_text, AccessNode, PressError, Role,
+};
 pub use events::{UiEvents, UiPointer};
 pub use images::LiveImages;
 pub use tree::{FontMap, UiTree};

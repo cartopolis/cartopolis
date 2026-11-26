@@ -367,7 +367,7 @@ pub fn drive_lib_design_room(
         // A right panel (the script editor itself) takes that side. On a
         // phone the outliner and this do not fit side by side (egui's
         // covered this one): the outliner first, this when it is not up.
-        let narrow = size.x < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
+        let narrow = size.x < crate::systems::ui_input::COMPACT_WIDTH_PTS;
         let scripts = (open && right_panel.is(RightPanel::None) && !(narrow && show_outliner))
             .then(|| {
                 let rows = script_rows(&room, &prims, &editor);
@@ -1077,7 +1077,7 @@ pub fn drive_lib_design_room_overlays(
         // the outliner is up: there they took the same corner, and the gizmo
         // drew over the outliner's header (the scripts panel gives way there
         // for the same reason).
-        let narrow = metrics.viewport_pts().x < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
+        let narrow = metrics.viewport_pts().x < crate::systems::ui_input::COMPACT_WIDTH_PTS;
         let crowded = narrow && !room.tree.is_empty();
         let gizmo = (open && !crowded).then(|| {
             let c = (GIZMO_W * 0.5, GIZMO_CANVAS_H * 0.5);

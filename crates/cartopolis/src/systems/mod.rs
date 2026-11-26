@@ -61,13 +61,17 @@ pub use cartopolis_geo::{
 pub use gui::{
     action_ring, app_update, avatar_designer, bookmarks, building_card, chat, cosmos, data_layers,
     design_room, discs, dismiss, dock, egui_manager, facade_check, faces, floor_picker, hud, icons,
-    layer_tiles, map_osd, model_library, motion, onscreen_keyboard, panel_slots, place_card,
-    place_names, place_pins, plans, scenario, script_editor, settings, splash, theme, ui, ui_input,
-    ui_theme, welcome, zoom_rail,
+    layer_tiles, map_osd, model_library, motion, onscreen_keyboard, place_card, place_names,
+    place_pins, plans, scenario, script_editor, settings, splash, theme, ui, ui_input, ui_theme,
+    welcome, zoom_rail,
 };
 // Settings drawn by the component library, beside egui (`ui-probe`).
 #[cfg(all(feature = "ui-lib", feature = "comms", not(target_arch = "wasm32")))]
 pub use gui::lib_camera;
+#[cfg(feature = "ui-lib")]
+pub use gui::lib_cosmos_sky;
+#[cfg(feature = "ui-probe")]
+pub use gui::lib_keyboard;
 #[cfg(all(feature = "ui-lib", mcp, not(target_os = "android")))]
 pub use gui::lib_mcp_overlay;
 #[cfg(feature = "ui-lib")]
@@ -90,8 +94,6 @@ pub use gui::{
     lib_communities, lib_contacts, lib_dialogs, lib_filter_chip, lib_login, lib_person_card,
     lib_post_composer, lib_reminder, lib_share, lib_welcome,
 };
-#[cfg(feature = "ui-probe")]
-pub use gui::{lib_cosmos_sky, lib_keyboard};
 #[cfg(feature = "ui-lib")]
 pub use gui::{lib_dev_panel, lib_marquee, lib_object_editor, thumbs};
 #[cfg(all(feature = "ui-lib", not(target_arch = "wasm32")))]

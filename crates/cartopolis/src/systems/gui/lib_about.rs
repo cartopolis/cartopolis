@@ -120,7 +120,7 @@ fn panel(acts: &Acts, notices: &[Notice], compact: bool) -> View {
     // block somebody may be looking for in a hurry, and the licence list is
     // ~130 lines of scrolling.
     view! {
-        <div style={frame}>
+        <div style={frame} data-reserves-map="right">
             <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                 <span style="color: var(--m-accent)">{icon(icons::ABOUT)}</span>
                 <h1 style="flex: 1; margin: 0; font-size: 19px; font-weight: 600; color: var(--m-text-strong)">"About"</h1>

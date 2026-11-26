@@ -83,7 +83,6 @@ pub struct LibScreens {
     pub scenario: bool,
     pub design_room: bool,
     pub admin: bool,
-    pub keyboard: bool,
     pub chrome: bool,
     pub osd: bool,
     pub pins: bool,
@@ -170,7 +169,6 @@ impl LibScreens {
                 scenario: all || named("scenario"),
                 design_room: all || named("design_room"),
                 admin: all || named("admin"),
-                keyboard: all || named("keyboard"),
                 chrome: all || named("chrome"),
                 osd: all || named("osd"),
                 pins: all || named("pins"),
@@ -247,7 +245,6 @@ impl LibScreens {
                 scenario: named("scenario"),
                 design_room: named("design_room"),
                 admin: named("admin"),
-                keyboard: named("keyboard"),
                 chrome: named("chrome"),
                 osd: named("osd"),
                 pins: named("pins"),
@@ -1736,7 +1733,7 @@ fn panel(l: &Live, compact: bool) -> View {
         }
     };
     view! {
-        <div style={frame}>
+        <div style={frame} data-reserves-map="right">
             {header}
             <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 20px">
                 {body}

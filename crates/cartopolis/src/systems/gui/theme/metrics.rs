@@ -177,7 +177,7 @@ pub const RADIUS: u8 = 8;
 /// checkbox even [`RADIUS`] is already half the height.
 pub const RADIUS_SM: u8 = 4;
 /// Large: windows, cards, and the boxes that float over the map
-/// ([`overlay_frame`]). A bigger surface needs a bigger radius to look equally
+/// (the library's overlay surfaces). A bigger surface needs a bigger radius to look equally
 /// rounded — the same value at two sizes does not.
 pub const RADIUS_LG: u8 = 14;
 
@@ -190,7 +190,7 @@ pub const RADIUS_LG: u8 = 14;
 /// The app was under it everywhere a finger drives: [`style`]'s `interact_size`
 /// is 24 pt tall and 24 pt is ~36 dp on the phone tier, and the close button was
 /// 22 pt (~33 dp). Raising the *UI scale* is not the fix — past ~1.7× the
-/// viewport drops below `responsive_right_panel`'s 240 pt floor and a docked
+/// viewport drops below the old egui side panel's 240 pt floor and a docked
 /// panel is wider than the screen it docks in — so the interactive sizes are
 /// raised on the touch tier instead, and this is the number they are raised to.
 pub const MIN_TOUCH_TARGET_DP: f32 = 48.0;
