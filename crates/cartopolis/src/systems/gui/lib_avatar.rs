@@ -32,9 +32,9 @@ use crate::systems::avatar_designer::{
     self as designer, BodyPart, DesignerState, DesignerTab, DesignerView, FacePart, FaceSlider,
     Macro,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::user_store::{HumanLook, UserStore};
 
 /// The key this screen mounts under.
@@ -288,7 +288,7 @@ pub fn drive_lib_avatar(
     mut right_panel: ResMut<RightPanel>,
     mut chooser: ResMut<AvatarChooserState>,
     mut store: ResMut<UserStore>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     time: Res<Time>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     touches: Option<Res<Touches>>,
@@ -345,7 +345,7 @@ pub fn drive_lib_avatar(
                     sliders: Rc::new(sliders(&look)),
                     look: signal(look),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(

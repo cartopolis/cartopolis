@@ -22,11 +22,11 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::resources::RightPanel;
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::geo_nav::{
     distance_label, GeoNavState, GeoSuggestion, SearchList, SearchPick, ViewAction,
 };
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::user_store::UserStore;
 use crate::systems::{icons, theme};
 
@@ -169,7 +169,8 @@ pub fn drive_lib_search(
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
     store: Res<UserStore>,
-    egui: EguiMut,
+    metrics: Res<UiMetrics>,
+    input: Res<crate::systems::ui_input::UiInput>,
     mut opened: Local<bool>,
 ) {
     if !lib.search {
@@ -210,7 +211,7 @@ pub fn drive_lib_search(
                     searching: signal(nav.searching()),
                     nav: signal(nav_of(&nav, has_home)),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 // The field takes the keyboard only when asked (Ctrl+L, a
                 // scripted `--ui search`): on a phone a panel opened by a tap
@@ -265,7 +266,7 @@ pub fn drive_lib_search(
                     live.nav.set(n);
                 }
                 // The auto-hiding chrome stays up while the field is typed in.
-                let focused = egui.overlay_owns_keyboard();
+                let focused = input.overlay_owns_keyboard();
                 if nav.search_has_focus != focused {
                     nav.search_has_focus = focused;
                 }

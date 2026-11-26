@@ -24,12 +24,12 @@ use bevy::prelude::{Res, ResMut};
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_action_ring::{sync_ring, RingMount};
 use crate::systems::lib_pins::px_scale;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::satellites::{SatCardAct, SatCardView, SatelliteLayer};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The satellite's ring's name in the library's host.
@@ -79,7 +79,7 @@ pub fn drive_lib_satellite_menu(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     layer: Option<ResMut<SatelliteLayer>>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
 ) {
     if !lib.satellite_menu {
         return;
@@ -93,7 +93,7 @@ pub fn drive_lib_satellite_menu(
     if !layer.card_lib {
         layer.card_lib = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     RING.with(|m| sync_ring(m, RING_KEY, &mut layer.ring_lib, k));
 
     let dark = theme::p().ink == theme::DARK.ink;

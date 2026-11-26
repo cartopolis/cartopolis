@@ -27,10 +27,10 @@ use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::{warn, Res, ResMut};
 use mithril::prelude::{el, signal, Event, IntoView, Signal, View};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::faces::{finder_rect, Faces, FinderAct, FinderView, FINDER_CONTROLS_BOTTOM};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::{alpha, hex};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The viewfinder's name in the library's host.
@@ -117,7 +117,7 @@ pub fn drive_lib_face_viewfinder(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut faces: ResMut<Faces>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
 ) {
     if !lib.face_viewfinder {
         return;
@@ -125,7 +125,8 @@ pub fn drive_lib_face_viewfinder(
     if !faces.lib {
         faces.lib = true;
     }
-    let placement = Placement::of(egui.viewport_pts(), egui.ui_scale());
+    let viewport = metrics.viewport_pts();
+    let placement = Placement::of(egui::vec2(viewport.x, viewport.y), metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The taps of the frame, for egui's system to do next frame.

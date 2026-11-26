@@ -17,11 +17,11 @@ use bevy::prelude::*;
 // The library's, not Bevy's: an explicit import outranks the two globs.
 use mithril::prelude::*;
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::picking::MarqueeLib;
 use crate::systems::theme;
 use crate::systems::theme::tokens::{alpha, hex};
+use crate::systems::ui_input::UiMetrics;
 
 /// The rubber band's name in the library's host.
 const KEY: &str = "marquee";
@@ -69,7 +69,7 @@ pub fn drive_lib_marquee(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     bridge: Option<ResMut<MarqueeLib>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.marquee {
         return;
@@ -83,7 +83,7 @@ pub fn drive_lib_marquee(
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement::over_the_dock`).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

@@ -1699,7 +1699,7 @@ pub fn send_network_intent(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     camera_state: Res<crate::resources::CameraState>,
     mut avatar_state: ResMut<AvatarState>,
-    egui_manager: crate::systems::egui_manager::EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::layer_state::DataLayers>,
@@ -1744,7 +1744,7 @@ pub fn send_network_intent(
     // consumes its output. Two systems reading the same keys and deriving the same
     // velocity independently is exactly how the offline and online paths came to
     // behave differently.
-    let blocked = egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard_input);
+    let blocked = ui_input.ui_owns_keyboard(edit_dialog.visible, &keyboard_input);
 
     // The edges. Both are set by other systems (`handle_avatar_movement` for the
     // jump, the interaction/emote UI for the emote) and consumed here, so they

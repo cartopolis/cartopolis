@@ -1,8 +1,8 @@
 use crate::components::FreeCamera;
 use crate::grid::cell_origin;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::fog::*;
+use crate::systems::ui_input::UiInput;
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::{AmbientLight, Atmosphere, NotShadowCaster};
@@ -12,7 +12,6 @@ use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 use cartopolis_core::motion;
 
 use crate::resources::{AvatarState, CameraMode, CameraState};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::gizmo::GizmoState;
 
 // Simple constants
@@ -1179,7 +1178,7 @@ pub fn next_camera_mode(mode: CameraMode, follow: bool) -> CameraMode {
 
 pub fn camera_mode_toggle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    egui_manager: crate::systems::egui_manager::EguiRef,
+    ui_input: Res<UiInput>,
     mut camera_state: ResMut<CameraState>,
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -1216,7 +1215,7 @@ pub fn camera_mode_toggle(
     // since Tab is now forwarded to egui unconditionally (`egui_manager`), the
     // overlap is live on every frame rather than only on focused ones. Same
     // predicate every other key in this file uses.
-    if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
+    if ui_input.ui_owns_keyboard(false, &keyboard_input) {
         return;
     }
     let next = next_camera_mode(camera_state.mode, follow);
@@ -1478,7 +1477,7 @@ pub fn camera_controls(
     avatar_state: Res<AvatarState>,
     time: Res<Time>,
     gizmo_state: Res<GizmoState>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     globe: Res<crate::systems::globe::GlobeState>,
     windows: Query<&Window>,
     // Read-only view of the same camera for viewport→ray conversion (disjoint
@@ -1608,7 +1607,7 @@ pub fn camera_controls(
         avatar_state: &avatar_state,
         delta_time,
         gizmo_state: &gizmo_state,
-        egui_manager: &egui_manager,
+        ui_input: &ui_input,
         globe: &globe,
         window: windows.iter().next(),
         cam_render: cam_render.single().ok(),
@@ -1746,7 +1745,7 @@ struct ModeCtx<'a, 'cw, 'cs, 'ww, 'ws, 'rw, 'rs, 'p> {
     avatar_state: &'a AvatarState,
     delta_time: f32,
     gizmo_state: &'a GizmoState,
-    egui_manager: &'a EguiManager,
+    ui_input: &'a UiInput,
     globe: &'a crate::systems::globe::GlobeState,
     /// The first window, as `windows.iter().next()` answered it.
     window: Option<&'a Window>,
@@ -1778,7 +1777,7 @@ fn follow_mode(ctx: ModeCtx) {
         avatar_state,
         delta_time,
         gizmo_state,
-        egui_manager,
+        ui_input,
         avatar,
         camera_transform,
         camera_cell,
@@ -1828,7 +1827,7 @@ fn follow_mode(ctx: ModeCtx) {
         }
         // Pinch is the wheel's continuous twin: spreading the fingers
         // pulls the avatar closer, exactly as scrolling in does.
-        if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+        if touch.pair() && !touch.ui_blocked(ui_input.wants_pointer()) {
             wish /= touch.pinch;
         }
         // …and the on-screen pair is the wheel's *held* twin, for the
@@ -1898,7 +1897,7 @@ fn follow_mode(ctx: ModeCtx) {
     if locked
         || device_rotation.is_some()
         || gizmo_state.active_axis.is_some()
-        || egui_manager.ctx.egui_wants_pointer_input()
+        || ui_input.wants_pointer()
         || ctrl
     {
         camera_state.pan_offset = None;
@@ -1935,7 +1934,7 @@ fn follow_mode(ctx: ModeCtx) {
     if !locked
         && device_rotation.is_none()
         && gizmo_state.active_axis.is_none()
-        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+        && !touch.ui_blocked(ui_input.wants_pointer())
     {
         if touch.drag != Vec2::ZERO {
             camera_state.follow_rotate = false;
@@ -2308,7 +2307,7 @@ fn fly_mode(ctx: ModeCtx) {
         camera_state,
         delta_time,
         gizmo_state,
-        egui_manager,
+        ui_input,
         globe,
         terrain,
         camera_transform,
@@ -2337,7 +2336,7 @@ fn fly_mode(ctx: ModeCtx) {
     // Suppressed while egui, gizmo, or Ctrl has the pointer.
     let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
         || keyboard_input.pressed(KeyCode::ControlRight);
-    if gizmo_state.active_axis.is_some() || egui_manager.ctx.egui_wants_pointer_input() || ctrl {
+    if gizmo_state.active_axis.is_some() || ui_input.wants_pointer() || ctrl {
         camera_state.pan_offset = None;
         cursor_moved_events.clear();
     } else if mouse_input.pressed(MouseButton::Left) {
@@ -2357,8 +2356,8 @@ fn fly_mode(ctx: ModeCtx) {
     // gestures fly instead, and are handled with the keys below. Through
     // `ui_blocked` rather than egui's bare verdict, so the thumb on the
     // fly stick does not also veto the finger turning the view.
-    let touch_owns_pointer = gizmo_state.active_axis.is_none()
-        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input());
+    let touch_owns_pointer =
+        gizmo_state.active_axis.is_none() && !touch.ui_blocked(ui_input.wants_pointer());
     if touch_owns_pointer {
         rotation_delta += touch.drag;
     }
@@ -2434,7 +2433,7 @@ fn fly_mode(ctx: ModeCtx) {
     // Shift is the speed boost and *only* that — it used to also mean
     // "down, if no WASD is held", so holding it to cross a city dropped you
     // out of the sky the moment you let go of W. Ctrl, the obvious
-    // alternative, isn't available: `EguiManager::ui_owns_keyboard` reads
+    // alternative, isn't available: `UiInput::ui_owns_keyboard` reads
     // any Ctrl press as a UI chord.
     if keyboard_input.pressed(KeyCode::KeyE) {
         move_direction += Vec3::Y;
@@ -2445,7 +2444,7 @@ fn fly_mode(ctx: ModeCtx) {
 
     // Suppress keyboard-driven movement while the UI owns the keyboard (text
     // field focused or a Ctrl chord like Ctrl+Shift+A).
-    if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
+    if ui_input.ui_owns_keyboard(false, &keyboard_input) {
         move_direction = Vec3::ZERO;
     }
 
@@ -2554,7 +2553,7 @@ fn attached_mode(
         camera_state,
         delta_time,
         gizmo_state,
-        egui_manager,
+        ui_input,
         globe,
         camera_transform,
         camera_cell,
@@ -2594,9 +2593,7 @@ fn attached_mode(
 
     // Turn round the target: a plain drag, a finger, or the middle button.
     let mut rot = Vec2::ZERO;
-    if gizmo_state.active_axis.is_some()
-        || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
-    {
+    if gizmo_state.active_axis.is_some() || touch.ui_blocked(ui_input.wants_pointer()) {
         camera_state.pan_offset = None;
         cursor_moved_events.clear();
     } else {
@@ -2704,7 +2701,7 @@ fn earth_mode(ctx: ModeCtx) {
         camera_state,
         delta_time,
         gizmo_state,
-        egui_manager,
+        ui_input,
         globe,
         window,
         cam_render,
@@ -2836,9 +2833,7 @@ fn earth_mode(ctx: ModeCtx) {
     if mouse_input.any_just_pressed([MouseButton::Left, MouseButton::Middle, MouseButton::Right]) {
         camera_state.globe_fling = DVec3::ZERO;
     }
-    if gizmo_state.active_axis.is_some()
-        || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
-    {
+    if gizmo_state.active_axis.is_some() || touch.ui_blocked(ui_input.wants_pointer()) {
         camera_state.pan_offset = None;
         cursor_moved_events.clear();
         rig.smoothing.drag.step(false);
@@ -2936,7 +2931,7 @@ fn earth_mode(ctx: ModeCtx) {
     // Keys (Earth mode, while no text field has the keyboard): + and − zoom,
     // N puts north up, and over the globe the arrows turn it — Left looks
     // further west, Up further north, as if the globe were dragged that way.
-    let keys = !egui_manager.ui_owns_keyboard(false, keyboard_input);
+    let keys = !ui_input.ui_owns_keyboard(false, keyboard_input);
     let key_zoom = if keys {
         let inward = keyboard_input.any_pressed([KeyCode::Equal, KeyCode::NumpadAdd]) as i32
             - keyboard_input.any_pressed([KeyCode::Minus, KeyCode::NumpadSubtract]) as i32;
@@ -2998,7 +2993,7 @@ fn earth_mode(ctx: ModeCtx) {
     // ground half as close. Sharing `zoom_orbit_target` with the wheel is
     // what keeps the space tier's "a step is a fraction of the altitude,
     // not of the Earth's radius" rule applying to the fingers too.
-    if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
+    if touch.pair() && !touch.ui_blocked(ui_input.wants_pointer()) {
         zoom_mul /= f64::from(touch.pinch);
         camera_state.orbit_distance_target = zoom_orbit_target(
             camera_state.orbit_distance_target,
@@ -3142,10 +3137,7 @@ fn earth_mode(ctx: ModeCtx) {
     // Double-tap (or double-click) on the globe: four times closer, turning
     // onto the place tapped while the zoom glides in. A finger's verdict comes
     // from the gesture recogniser; a mouse's is measured here.
-    if space
-        && camera_state.cosmos_alt == 0.0
-        && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
-    {
+    if space && camera_state.cosmos_alt == 0.0 && !touch.ui_blocked(ui_input.wants_pointer()) {
         let pressed = mouse_input.just_pressed(MouseButton::Left);
         let cursor = window.and_then(|w| w.cursor_position());
         let asked_twice = match (pressed, cursor) {
@@ -3357,7 +3349,7 @@ fn earth_mode(ctx: ModeCtx) {
     // pull the pivot direction toward the hit by the zoom fraction. This
     // is how you dive back to a specific spot on the globe (centre-locked
     // zoom made re-finding a place nearly impossible).
-    if space && zoom_factor < 0.999 && !egui_manager.ctx.egui_wants_pointer_input() {
+    if space && zoom_factor < 0.999 && !ui_input.wants_pointer() {
         let cursor_hit = window
             .and_then(|w| w.cursor_position())
             .zip(cam_render)
@@ -4044,7 +4036,7 @@ mod tests {
             .init_resource::<SessionState>()
             .init_resource::<DriverState>()
             .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<crate::systems::egui_manager::EguiManager>()
+            .init_resource::<crate::systems::ui_input::UiInput>()
             .add_systems(Update, camera_mode_toggle);
         app.world_mut().spawn(Avatar);
         app.world_mut().resource_mut::<CameraState>().mode = CameraMode::Avatar;

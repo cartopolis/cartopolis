@@ -25,7 +25,6 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::resources::RightPanel;
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::geo_nav::{distance_label, GeoNavState, GeoSuggestion};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::navigation::{
@@ -33,6 +32,7 @@ use crate::systems::navigation::{
     RouteState, SheetDetent, SolveStatus, Trip, LIB_SHEET_HEADER_PTS,
 };
 use crate::systems::routing::{format_distance, format_duration, TravelMode};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// Where the sheet sits, in points (the library lays out in egui's scale).
@@ -347,7 +347,7 @@ pub fn drive_lib_route(
     mut right_panel: ResMut<RightPanel>,
     mut route: ResMut<RouteState>,
     mut nav: ResMut<GeoNavState>,
-    egui: EguiMut,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
     if !lib.route {
@@ -364,7 +364,7 @@ pub fn drive_lib_route(
     // `lib_host::bridge_input` says so for every library screen.
     let open = right_panel.is(RightPanel::Route);
     let viewport = {
-        let v = egui.viewport_pts();
+        let v = metrics.viewport_pts();
         [v.x, v.y]
     };
     MOUNTED.with(|m| {

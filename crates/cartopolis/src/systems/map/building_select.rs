@@ -37,7 +37,7 @@
 //! follow camera's boom coming in after it — already works without anyone naming
 //! the building.
 
-use crate::systems::egui_manager::EguiRef;
+use crate::systems::ui_input::UiInput;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -256,7 +256,7 @@ pub fn pick_building(
     keyboard: Res<ButtonInput<KeyCode>>,
     touch: Res<crate::systems::touch::TouchGestures>,
     time: Res<Time>,
-    egui: EguiRef,
+    ui_input: Res<UiInput>,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
     lod: Res<Lod22Buildings>,
@@ -276,7 +276,7 @@ pub fn pick_building(
     // `egui_wants_pointer_input()`: the second tap of a double tap is the brisk
     // one, and egui has usually seen it lift by the frame its click lands here.
     let cursor = windows.iter().next().and_then(|w| w.cursor_position());
-    if egui.owns_click(touch.touch_click(), cursor) || prim_click.took() {
+    if ui_input.owns_click(touch.touch_click(), cursor) || prim_click.took() {
         return;
     }
     // Collision matches what is drawn and so does selection: with the 3DBAG layer

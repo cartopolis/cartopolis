@@ -34,7 +34,6 @@ use bevy::prelude::{Res, ResMut};
 use mithril::prelude::Event;
 use mithril::prelude::*;
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::midas_link::{LinkAct, LinkCardView, MidasLink, ToldView};
 use crate::systems::theme;
@@ -89,8 +88,6 @@ pub fn drive_lib_midas_link(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut link: ResMut<MidasLink>,
-    // Held for the order every library screen keeps with egui's frame.
-    _egui: EguiRef,
 ) {
     if !lib.midas_link {
         return;

@@ -31,9 +31,9 @@ use mithril::prelude::{Button, Event};
 use crate::systems::data_layers::{
     open_url_supported, poi_act, DataLayers, PoiAction, PoiCard, PoiCardView, NO_BROWSER,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The card's name in the library's host.
@@ -136,7 +136,7 @@ pub fn drive_lib_poi_card(
     lib: Res<LibScreens>,
     mut card: ResMut<PoiCard>,
     mut dl: ResMut<DataLayers>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.poi_card {
         return;
@@ -165,7 +165,7 @@ pub fn drive_lib_poi_card(
         let Some(view) = view else {
             return;
         };
-        let placement = Placement::of(view.at, egui.ui_scale());
+        let placement = Placement::of(view.at, metrics.ui_scale());
         match m.as_mut() {
             None => {
                 let live = Live {

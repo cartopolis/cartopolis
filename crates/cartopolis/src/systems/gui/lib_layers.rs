@@ -22,11 +22,11 @@ use mithril::prelude::{Button, Event};
 
 use crate::resources::{GlobeCloudMode, RightPanel};
 use crate::systems::data_layers::{DataLayers, LAYER_DEFS};
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::layer_state::LayerCategory;
 use crate::systems::layers_panel::PLANS_TILE;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::plans::Period;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 const NEEDS_GROUND: &str = "Needs the ground: pick a map under Map";
@@ -432,7 +432,7 @@ pub fn drive_lib_layers(
     lib: Res<LibScreens>,
     mut right_panel: ResMut<RightPanel>,
     mut dl: ResMut<DataLayers>,
-    egui: EguiMut,
+    metrics: Res<UiMetrics>,
     layer_view: crate::systems::layers_panel::LayerView,
     mut opened: Local<bool>,
 ) {
@@ -470,7 +470,7 @@ pub fn drive_lib_layers(
                     }
                 }
                 let mounted = Mounted::new(dl.bypass_change_detection(), in_space, tdbag_available);
-                let compact = egui.compact();
+                let compact = metrics.compact();
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(
                     "layers",

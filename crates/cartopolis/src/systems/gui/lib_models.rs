@@ -27,12 +27,12 @@ use mithril::prelude::{Button, Event};
 
 use crate::platform::model_file;
 use crate::resources::{AvatarState, GameState, OnlineSession, RightPanel};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::model_library::{
     licence_label, matches, unavailable, upload_format_hint, Licence, ModelLibraryState, Tab,
     PANEL_WIDTH,
 };
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The key this screen mounts under.
@@ -181,7 +181,7 @@ pub fn drive_lib_models(
     mut game_state: ResMut<GameState>,
     avatar_state: Res<AvatarState>,
     online: Option<Res<OnlineSession>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
     if !lib.models {
@@ -218,7 +218,7 @@ pub fn drive_lib_models(
                     upload_attribution: signal(state.upload_attribution.clone()),
                     upload_share: signal(state.upload_share),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(

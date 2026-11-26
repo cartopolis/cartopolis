@@ -962,6 +962,10 @@ fn run_client() {
         // After DefaultPlugins so the render sub-app's own default is already
         // there to be replaced.
         .add_plugins(render_setup::MeshSlabCapPlugin)
+        // `UiMetrics` and `UiInput`: the UI's scale and who owns the input, as
+        // plain resources (`systems::ui_input`). Before `EguiPlugin`, which
+        // writes egui's half of `UiInput`.
+        .add_plugins(systems::ui_input::UiInputPlugin)
         .add_plugins(EguiPlugin)
         // Renders the 3D world below the screen's resolution on a tier that asks
         // for it, and no-ops entirely on the tiers that do not. Must come after

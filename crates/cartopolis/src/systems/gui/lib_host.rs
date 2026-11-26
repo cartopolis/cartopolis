@@ -50,7 +50,8 @@ pub fn clear_keyed(key: &str) {
 }
 
 /// The Bevy backend's root: the camera it draws to, the faces it draws
-/// with, and the UI scale egui lays out in — once any screen is on. Without
+/// with, and the UI scale (`UiMetrics`, the one egui lays out in too) —
+/// once any screen is on. Without
 /// it the host has no root and every operation waits.
 #[cfg(feature = "ui-probe")]
 pub fn prepare_bevy(
@@ -63,7 +64,7 @@ pub fn prepare_bevy(
     targets: bevy::prelude::Query<&bevy::camera::RenderTarget>,
     mut fonts: bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::Font>>,
     mut ui_scale: bevy::prelude::ResMut<bevy::prelude::UiScale>,
-    egui: crate::systems::egui_manager::EguiRef,
+    metrics: bevy::prelude::Res<crate::systems::ui_input::UiMetrics>,
     mut commands: bevy::prelude::Commands,
     mut ready: bevy::prelude::Local<bool>,
 ) {
@@ -126,7 +127,7 @@ pub fn prepare_bevy(
     let Ok(camera) = cameras.single() else {
         return;
     };
-    ui_scale.0 = egui.ui_scale();
+    ui_scale.0 = metrics.ui_scale();
     let body = fonts.add(bevy::prelude::Font::from_bytes(theme::BODY_TTF.to_vec()));
     // A camera of the library's own, drawing nothing but the library and
     // after the world's camera has finished — egui included, which draws
@@ -221,9 +222,11 @@ pub fn follow_world_target(
 }
 
 /// The library's screens hold the input they are under, as egui's panels
-/// do: a world click under any of them yields (`EguiManager::owns_click`),
-/// and a text field with the keyboard holds the game keys off
-/// (`ui_owns_keyboard`). As DOM the screens sit over the canvas, whose
+/// do: a world click under any of them yields (`UiInput::owns_click`), and
+/// a text field with the keyboard holds the game keys off
+/// (`UiInput::ui_owns_keyboard`). Written into `UiInput` for the next frame;
+/// `egui_manager::publish_ui_input` hands it on to the egui systems that
+/// still ask `EguiManager`. As DOM the screens sit over the canvas, whose
 /// pointer and keyboard Bevy reads, so only the Bevy backend needs telling.
 #[cfg(feature = "ui-probe")]
 pub fn bridge_input(
@@ -231,21 +234,23 @@ pub fn bridge_input(
     fields: bevy::prelude::Query<(), bevy::prelude::With<bevy::text::EditableText>>,
     mut pointer: bevy::prelude::ResMut<mithril_bevy::UiPointer>,
     live: bevy::prelude::Query<(), bevy::prelude::With<bevy::ui::Node>>,
-    mut egui: crate::systems::egui_manager::EguiMut,
+    mut input: bevy::prelude::ResMut<crate::systems::ui_input::UiInput>,
 ) {
     let owns = focus
         .and_then(|f| f.get())
         .is_some_and(|e| fields.contains(e));
-    if owns != egui.overlay_owns_keyboard() {
+    if owns != input.overlay_owns_keyboard() {
         bevy::log::debug!(owns, "lib_host: a library field has the keyboard");
     }
-    egui.set_overlay_owns_keyboard(owns);
     // A node despawned under the pointer (a card closed by its ✕) never
     // sees the pointer leave, and would hold every world click after it.
     if pointer.over.iter().any(|e| !live.contains(*e)) {
         pointer.over.retain(|e| live.contains(*e));
     }
-    egui.set_overlay_owns_pointer(pointer.owns_pointer());
+    let pointer = pointer.owns_pointer();
+    if input.overlay_owns_pointer() != pointer || input.overlay_owns_keyboard() != owns {
+        input.set_overlay(pointer, owns);
+    }
 }
 
 #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]

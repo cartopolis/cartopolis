@@ -1723,7 +1723,7 @@ fn build_and_search(
 /// reconstruction `free_camera` does when it seeds the orbit focus.
 pub fn handle_route_map_pick(
     mut route: ResMut<RouteState>,
-    egui_manager: EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
@@ -1738,7 +1738,7 @@ pub fn handle_route_map_pick(
     }
     // egui's widgets, or a screen of the library's under the pointer (its
     // route sheet, whose taps must not drop a pin on the map behind it).
-    if egui_manager.owns_click(false, None) {
+    if ui_input.owns_click(false, None) {
         return;
     }
     let (Ok(window), Ok(anchor)) = (windows.single(), map_anchor.geo.ok_or(())) else {

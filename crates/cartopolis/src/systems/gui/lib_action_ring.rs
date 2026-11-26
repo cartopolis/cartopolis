@@ -36,10 +36,10 @@ use mithril::prelude::*;
 use crate::systems::action_ring::{
     self, MapRingLib, RingLib, RingOutcome, RingView, BUTTON_R, CLOSE_R, PILL_GAP, RADIUS,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_pins::{boxed, css, px_scale};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The map's ring's name in the library's host.
 const KEY: &str = "action_ring";
@@ -71,7 +71,7 @@ pub fn drive_lib_action_ring(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     ring: Option<ResMut<MapRingLib>>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.action_ring {
@@ -87,7 +87,7 @@ pub fn drive_lib_action_ring(
     if !ring.0.on {
         ring.0.on = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     MOUNTED.with(|m| sync_ring(m, KEY, &mut ring.0, k));
 }
 

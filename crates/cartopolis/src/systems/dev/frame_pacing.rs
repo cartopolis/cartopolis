@@ -168,7 +168,7 @@ pub(crate) fn present_rate(
     driver: Res<systems::driver::DriverState>,
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
     prefs: Res<crate::resources::AppPrefs>,
-    egui: crate::systems::egui_manager::EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     mut rate: ResMut<PresentationRate>,
     mut watch: Local<IdleWatch>,
 ) {
@@ -199,7 +199,7 @@ pub(crate) fn present_rate(
         || touches.iter_just_released().next().is_some()
         // A card arriving over a still map is the moment somebody is looking
         // hardest; at the idle rate it arrived in steps.
-        || egui.ui_animating();
+        || ui_input.ui_animating();
 
     watch.quiet_s = if busy {
         0.0

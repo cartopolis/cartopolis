@@ -28,9 +28,9 @@ use crate::systems::contacts::{
     hello_fine_print, may_ask, person_facts, relation_word, Contacts, Fact, PersonAction,
     MAX_HELLO_CHARS, QUICK_HELLOS,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::{cell, icon, Placement};
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 use crate::utils::clock::unix_ms;
 
@@ -130,7 +130,7 @@ pub fn drive_lib_person_card(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut contacts: ResMut<Contacts>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.person_card {
         return;
@@ -138,9 +138,9 @@ pub fn drive_lib_person_card(
     if !contacts.lib {
         contacts.lib = true;
     }
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };
@@ -191,7 +191,7 @@ pub fn drive_lib_person_card(
         let Some(mode) = mode else {
             return;
         };
-        let mut placement = Placement::over_the_dock(size.x, size.y, egui.ui_scale());
+        let mut placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());
         if let Mode::Compose(_) = mode {
             placement.bottom += contacts.lib_view.lift * k;
         }

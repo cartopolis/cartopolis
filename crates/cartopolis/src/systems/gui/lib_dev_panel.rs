@@ -40,12 +40,12 @@ use crate::systems::dev_panel::{
     PrecisionView, SwitchRow, CLOCK_NOTE, COPY_HELP, DEV_PANEL_LEFT, DEV_PANEL_WIDTH, GROUP_HELP,
     LOG_EMPTY_NOTE, NEEDS_A_PHONE, STAND_IN_NOTE, SWITCHES_NOTE, WALK_NOTE, WALK_STEPS,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::high_precision::HandWord;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::systems::midas_link::{MidasAct, MidasTabView, PAIR_HOW, PAIR_NOTE, WORDS_HINT};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The sheet's name in the library's host.
@@ -197,7 +197,7 @@ pub fn drive_lib_dev_panel(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut tools: ResMut<DevTools>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.dev_panel {
         return;
@@ -207,11 +207,12 @@ pub fn drive_lib_dev_panel(
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };
-    let placement = Placement::of(egui.viewport_pts(), k);
+    let viewport = metrics.viewport_pts();
+    let placement = Placement::of(egui::vec2(viewport.x, viewport.y), k);
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The taps of the frame, and the group as typed, for egui's system

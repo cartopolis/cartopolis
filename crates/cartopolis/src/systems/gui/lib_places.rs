@@ -30,9 +30,9 @@ use mithril::prelude::{Button, Event};
 use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, MapAnchor, RightPanel};
 use crate::systems::bookmarks::{current_view, rows, Actions, BookmarksState, Item, Row};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::geo_nav::GeoNavState;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::user_store::{UserStore, FOLDER_PALETTE};
 use crate::systems::{icons, theme};
 
@@ -236,7 +236,7 @@ pub fn drive_lib_places(
     camera: AnchoredCamera,
     camera_state: Res<CameraState>,
     map_anchor: Res<MapAnchor>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
     // Frames left in which taps are dropped: the photo viewer is an egui
     // window over this panel, and a tap on it (its ✕ above all) must not
@@ -272,7 +272,7 @@ pub fn drive_lib_places(
                     rename: signal(String::new()),
                     armed: signal(None),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(

@@ -54,11 +54,11 @@ use egui::Color32;
 use mithril::prelude::*;
 
 use crate::systems::cosmos::{CosmosLib, CosmosShape, CosmosTag, ShapeKind};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_pins::{boxed, px_scale};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 
 /// The cosmos' name in the library's host.
 const KEY: &str = "cosmos";
@@ -245,7 +245,7 @@ pub fn drive_lib_cosmos(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     cosmos: Option<ResMut<CosmosLib>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.cosmos {
@@ -261,7 +261,7 @@ pub fn drive_lib_cosmos(
     if !cosmos.lib {
         cosmos.lib = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         let Some(frame) = cosmos.lib_view.as_ref() else {

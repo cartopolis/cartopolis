@@ -48,9 +48,9 @@ use mithril::prelude::*;
 
 use crate::systems::chat_pictures::{ChatPictures, PictureRef};
 use crate::systems::chats::ChatsView;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The viewer's name in the library's host.
 const KEY: &str = "chat_picture_viewer";
@@ -193,7 +193,7 @@ pub fn drive_lib_picture_viewer(
     lib: Res<LibScreens>,
     mut view: ResMut<ChatsView>,
     mut pictures: ResMut<ChatPictures>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
     #[cfg(all(
         feature = "ui-probe",
         not(all(feature = "ui-dom", target_arch = "wasm32"))
@@ -218,11 +218,11 @@ pub fn drive_lib_picture_viewer(
     }
     let shown: Option<PictureRef> = view.lib_viewing.take();
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     let placement = Placement {
         w: size.x,
         h: size.y,

@@ -26,10 +26,10 @@ use bevy::prelude::*;
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::{cell, Placement};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::welcome::{Welcome, WelcomeAction};
 
 /// The card's name in the library's host.
@@ -60,7 +60,7 @@ pub fn drive_lib_welcome(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut welcome: ResMut<Welcome>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.welcome {
         return;
@@ -68,8 +68,8 @@ pub fn drive_lib_welcome(
     if !welcome.lib {
         welcome.lib = true;
     }
-    let size = egui.viewport_pts();
-    let placement = Placement::over_the_dock(size.x, size.y, egui.ui_scale());
+    let size = metrics.viewport_pts();
+    let placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());
     let view = welcome.lib_view;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

@@ -32,13 +32,13 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::resources::AuthIdentity;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::external_signin::Offered;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::login_screen::{status_of, LoginScreen, StatusDot};
 use crate::systems::session::{SessionState, SessionStatus};
 use crate::systems::splash::BootSplash;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::user_store::UserStore;
 
 /// The card's name in the library's host.
@@ -220,7 +220,7 @@ pub fn drive_lib_login(
     mut store: ResMut<UserStore>,
     identity: Res<AuthIdentity>,
     splash: Res<BootSplash>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.login {
         return;
@@ -235,8 +235,8 @@ pub fn drive_lib_login(
     }
     // Wait behind the boot splash, as egui's card does.
     let open = screen.open && !splash.covering();
-    let size = egui.viewport_pts();
-    let frame = Frame::of(size.x, size.y, egui.ui_scale());
+    let size = metrics.viewport_pts();
+    let frame = Frame::of(size.x, size.y, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         if let Some(live) = m.as_ref() {

@@ -29,11 +29,11 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::systems::camera_attach::CameraAttach;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::interact::{InteractState, PromptAct, PromptItem, PromptView};
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The prompt's name in the library's host.
 const PROMPT_KEY: &str = "interact_prompt";
@@ -86,7 +86,7 @@ pub fn drive_lib_interact(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut state: ResMut<InteractState>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.interact {
         return;
@@ -94,11 +94,11 @@ pub fn drive_lib_interact(
     if !state.lib {
         state.lib = true;
     }
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     let viewport = Viewport {
         w: size.x,
         h: size.y,
-        k: px_per_point(egui.ui_scale()),
+        k: px_per_point(metrics.ui_scale()),
     };
     PROMPT.with(|m| {
         let mut m = m.borrow_mut();
@@ -267,7 +267,7 @@ pub fn drive_lib_attach_chip(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut attach: ResMut<CameraAttach>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.attach_chip {
         return;
@@ -275,10 +275,10 @@ pub fn drive_lib_attach_chip(
     if !attach.lib {
         attach.lib = true;
     }
-    let k = px_per_point(egui.ui_scale());
+    let k = px_per_point(metrics.ui_scale());
     let placement = ChipPlacement {
         top: crate::systems::dock::reserved_top() * k,
-        width: egui.viewport_pts().x * k,
+        width: metrics.viewport_pts().x * k,
     };
     CHIP.with(|m| {
         let mut m = m.borrow_mut();

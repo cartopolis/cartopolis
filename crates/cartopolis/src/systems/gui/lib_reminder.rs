@@ -21,9 +21,9 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::systems::calendar::{Calendar, Reminder, ReminderAction};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The reminder's name in the library's host.
@@ -94,7 +94,7 @@ pub fn drive_lib_reminder(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut cal: ResMut<Calendar>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.reminder {
         return;
@@ -102,7 +102,7 @@ pub fn drive_lib_reminder(
     if !cal.lib {
         cal.lib = true;
     }
-    let placement = Placement::of(egui.viewport_pts().x, egui.ui_scale());
+    let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The tap of the frame, for egui's system to do.

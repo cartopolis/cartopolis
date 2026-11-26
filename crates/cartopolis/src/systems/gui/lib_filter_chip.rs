@@ -29,9 +29,9 @@ use mithril::prelude::{Button, Event};
 use crate::resources::RightPanel;
 use crate::systems::communities::Communities;
 use crate::systems::community_posts::{chip_act, ChipAction};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The chip's name in the library's host.
@@ -97,7 +97,7 @@ pub fn drive_lib_filter_chip(
     lib: Res<LibScreens>,
     mut cs: ResMut<Communities>,
     mut right_panel: ResMut<RightPanel>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.filter_chip {
         return;
@@ -105,7 +105,7 @@ pub fn drive_lib_filter_chip(
     if !cs.posts.chip_lib {
         cs.posts.chip_lib = true;
     }
-    let placement = Placement::of(egui.viewport_pts().x, egui.ui_scale());
+    let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The taps of the frame.

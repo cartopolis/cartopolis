@@ -26,11 +26,11 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::systems::bridges::{Bridges, ShareAct, ShareView};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_chats::{group, note};
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::ui::SheetSpot;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The sheet's name in the library's host.
@@ -65,7 +65,7 @@ pub fn drive_lib_share(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut bridges: ResMut<Bridges>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.share_sheet {
         return;
@@ -75,7 +75,7 @@ pub fn drive_lib_share(
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

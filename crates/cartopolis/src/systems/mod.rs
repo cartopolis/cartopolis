@@ -63,7 +63,7 @@ pub use gui::{
     design_room, discs, dismiss, dock, egui_manager, facade_check, faces, floor_picker, hud, icons,
     js_highlight, layer_tiles, layers_panel, map_osd, model_library, motion, onscreen_keyboard,
     place_card, place_names, place_pins, plans, scenario, script_editor, settings, splash,
-    text_touch, theme, ui, ui_theme, welcome, zoom_rail,
+    text_touch, theme, ui, ui_input, ui_theme, welcome, zoom_rail,
 };
 // Settings drawn by the component library, beside egui (`ui-probe`).
 #[cfg(all(feature = "ui-lib", feature = "comms", not(target_arch = "wasm32")))]

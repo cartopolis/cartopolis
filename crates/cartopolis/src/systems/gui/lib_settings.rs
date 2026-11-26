@@ -42,10 +42,10 @@ use crate::resources::{
 };
 #[cfg(feature = "comms")]
 use crate::systems::access_tokens::{self, AccessTokens, Expiry, TokenInfo};
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::render_scale::RenderScale;
 use crate::systems::settings::{clock_hhmm, observe_peak, SettingsState, SettingsTab};
 use crate::systems::sky_dome::SkyMode;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::weather::WeatherState;
 use crate::systems::{icons, theme};
 
@@ -828,7 +828,7 @@ pub fn drive_lib_settings(
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<SettingsState>,
     mut app: AppState,
-    egui: EguiMut,
+    metrics: Res<UiMetrics>,
     mut commands: Commands,
     mut opened: Local<bool>,
 ) {
@@ -865,7 +865,7 @@ pub fn drive_lib_settings(
             }
             (true, None) => {
                 let l = Live::new(&app, &state, lib.page.as_deref(), who, signed_in);
-                let compact = egui.compact();
+                let compact = metrics.compact();
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(
                     "settings",
@@ -1027,7 +1027,9 @@ pub fn drive_lib_settings(
                         app.tokens.shown = None;
                     }
                     if let Some(text) = l.p.act.copy.borrow_mut().take() {
-                        egui.ctx().copy_text(text);
+                        // The system clipboard, which egui's copies reach
+                        // too (`end_egui_frame`).
+                        crate::utils::clipboard::set_text(&text);
                     }
                     mirror!(l.p.token_list, app.tokens.list.clone());
                     mirror!(l.p.token_shown, app.tokens.shown.clone());

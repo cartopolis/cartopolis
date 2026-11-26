@@ -53,7 +53,6 @@ use crate::systems::call_screen::{
 };
 use crate::systems::calls::{CallRequest, Calls, SELF_TILE};
 use crate::systems::discs::ChatKind;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::icons;
 use crate::systems::lib_chats::{disc, group as heading, note};
 use crate::systems::lib_pins::css;
@@ -61,6 +60,7 @@ use crate::systems::lib_place_card::{cell, icon};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::alpha;
 use crate::systems::theme::{self, CallTone, Palette, CALL_BUTTON_LARGE, CALL_BUTTON_SMALL};
+use crate::systems::ui_input::UiMetrics;
 use cartopolis_core::meeting::NoteKind;
 use cartopolis_core::{CallAction, CallSettings};
 
@@ -160,7 +160,7 @@ pub fn drive_lib_call(
     lib: Res<LibScreens>,
     bridge: Option<ResMut<CallScreenLib>>,
     mut calls: ResMut<Calls>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut pictures: Local<CallPictures>,
     #[cfg(all(
         feature = "ui-probe",
@@ -183,7 +183,7 @@ pub fn drive_lib_call(
         bridge.lib = true;
     }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

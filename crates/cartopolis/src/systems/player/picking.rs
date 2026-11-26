@@ -9,8 +9,9 @@
 use crate::components::PrimMesh;
 use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
-use crate::systems::egui_manager::{EguiMut, EguiRef};
+use crate::systems::egui_manager::EguiMut;
 use crate::systems::theme;
+use crate::systems::ui_input::UiInput;
 use bevy::prelude::*;
 use cartopolis_core::msg;
 
@@ -58,7 +59,7 @@ pub fn prim_picking(
     mut game_state: ResMut<GameState>,
     mut context_menu: ResMut<ContextMenuState>,
     mut marquee: ResMut<MarqueeState>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     keyboard: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
@@ -79,7 +80,7 @@ pub fn prim_picking(
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
     // The same gate `building_select::pick_building` uses, or `PrimClick` goes stale.
     let cursor = windows.iter().next().and_then(|w| w.cursor_position());
-    if egui_manager.owns_click(world.touch.touch_click(), cursor) {
+    if ui_input.owns_click(world.touch.touch_click(), cursor) {
         return;
     }
 
@@ -290,9 +291,9 @@ pub fn update_marquee(
     cameras: Query<(&Camera, &GlobalTransform)>,
     prim_query: Query<(Entity, &Prim, &GlobalTransform), With<PrimMesh>>,
     selected_query: Query<Entity, With<Selected>>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
 ) {
-    if egui_manager.ctx.egui_wants_pointer_input() {
+    if ui_input.wants_pointer() {
         marquee.press_pos = None;
         marquee.active = false;
         return;
@@ -439,7 +440,7 @@ pub fn render_marquee(
 pub fn handle_delete_key(
     mut game_state: ResMut<GameState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     selected_query: Query<&Prim, With<Selected>>,
 ) {
     // `ui_owns_keyboard`, not `egui_wants_keyboard_input()`. The latter is
@@ -448,7 +449,7 @@ pub fn handle_delete_key(
     // empty space first. `docs/notes/egui-shared-root-ui.md` names this exact
     // predicate as the wrong one and records that it already swallowed the
     // avatar's movement keys once.
-    if egui_manager.ui_owns_keyboard(false, &keyboard) {
+    if ui_input.ui_owns_keyboard(false, &keyboard) {
         return;
     }
 

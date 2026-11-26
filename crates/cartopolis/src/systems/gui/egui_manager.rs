@@ -33,6 +33,7 @@ use bevy::{
 };
 
 use crate::resources::HeadlessSurface;
+use crate::systems::ui_input::{EguiVerdict, UiInput, UiInputPlugin, UiMetrics};
 
 // ─── Main-world resource ─────────────────────────────────────────────────────
 
@@ -65,29 +66,17 @@ pub struct EguiManager {
     /// keeps the cooperative panel layout the old ctx-based panels had.
     root_ui: Option<egui::Ui>,
     elapsed_time: f64,
-    /// The surface egui lays out against: physical pixels + the logical→physical
-    /// scale, refreshed each frame in [`begin_egui_frame`]. UI systems read
-    /// [`Self::compact`] off [`Self::viewport_pts`] to lay out responsively —
-    /// egui has no media queries, so "responsive" is just branching on the live
-    /// viewport width every frame.
+    /// The surface egui lays out against and the UI scale, refreshed each frame
+    /// in [`begin_egui_frame`] — the same [`UiMetrics`] the `UiMetrics`
+    /// resource holds, by the same arithmetic (`systems::ui_input`), so a
+    /// system that reads the resource sees the points egui lays out in. UI
+    /// systems read [`Self::compact`] off [`Self::viewport_pts`] to lay out
+    /// responsively — egui has no media queries.
     ///
-    /// Kept here (rather than re-read from the `Window` each time) because it is
-    /// also the fallback for a frame that has **no** surface at all — see
-    /// [`begin_egui_frame`].
-    ///
-    /// The scale is the *effective* points-per-pixel — the display's own scale
-    /// factor multiplied by [`Self::ui_scale`] — so everything derived from it
-    /// ([`Self::viewport_pts`], [`Self::compact`]) is already in the same points
-    /// egui lays out in.
-    surface: (UVec2, f32),
-    /// UI magnification on top of the display's scale factor. `1.0` everywhere a
-    /// mouse is the pointer; larger on touch, where the layout is otherwise
-    /// correct and physically too small to hit. See [`resolve_ui_scale`].
-    ///
-    /// This is the *only* thing that makes egui points differ from the window's
-    /// logical points, which is why it is also the conversion factor every
-    /// window→egui position has to go through ([`Self::window_to_ui`]).
-    ui_scale: f32,
+    /// Kept here (rather than read from the resource) because it is also the
+    /// fallback for a frame that has **no** surface at all — see
+    /// [`begin_egui_frame`] — and a test app may run egui alone.
+    metrics: UiMetrics,
     /// A modal (currently only `systems::login_screen`) owns the screen this
     /// frame. Pointer input takes care of itself — the modal's backdrop is a real
     /// widget, so egui claims the pointer — but the keyboard does not: the gate
@@ -127,94 +116,11 @@ pub struct EguiManager {
     overlay_owns_keyboard: bool,
 }
 
-/// Viewport widths (in points) below this are treated as "compact" (phone-ish):
-/// the bottom bar wraps and the right-side panels expand to fill the screen
-/// instead of docking beside the map at a fixed 320 pt.
-pub const COMPACT_WIDTH_PTS: f32 = 640.0;
-
-/// Default UI magnification on the phone tier — **and why the web's is 1.0.**
-///
-/// The question is physical size, not taste. egui lays out in points, the
-/// display scale factor turns those into pixels, and a phone's UI is therefore
-/// already *sharp*; it is simply built for a mouse. `theme::style`'s
-/// `interact_size` of 40×24 pt is the target to size, against a ~7.6 mm platform
-/// guideline (Material's 48 dp) and a fingertip about that wide.
-///
-/// **On the web that has already been fixed, by something else.** The render
-/// budget's stage transform (`index.html`, `docs/notes/wasm-performance.md`)
-/// sizes the canvas to viewport ÷ k and scales it back up by k, where k is
-/// `dpr / 1.5` on the phone tier. winit measures the *untransformed* box, so
-/// Bevy's logical viewport shrinks by k and every egui point is then painted
-/// across k CSS pixels. On the reported Fairphone 4 (dpr 2.75) k ≈ 1.83, which
-/// takes a 24 pt row from 6.3 mm to **11.6 mm** on its own. Magnifying again on
-/// top of that overshoots the guideline by half and — worse — takes the viewport
-/// to 143 pt, well under the 240 pt floor `responsive_right_panel` gives a
-/// compact panel, i.e. a panel wider than the screen it docks in.
-///
-/// Native Android has no such transform: nothing there has magnified anything,
-/// and a point is a dp (1/160 in), so the same row is **3.8 mm**. That is the
-/// platform this constant is still for.
-///
-/// So the default is per-platform and the *override* is the general answer —
-/// see [`resolve_ui_scale`]. Both numbers are arguments from arithmetic, not
-/// measurements; neither has been checked on glass.
-const fn phone_ui_scale() -> f32 {
-    if cfg!(target_arch = "wasm32") {
-        1.0
-    } else {
-        1.5
-    }
-}
-
-/// Clamp for an explicitly requested scale. A typo in a URL should make the UI
-/// awkward, not unrecoverable — at 20× there is no longer a button to press to
-/// get back.
-const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
-
-/// How much to magnify the UI over the display's own scale factor.
-///
-/// Resolved once, at startup, from two sources in order:
-///
-/// 1. An explicit `?ui_scale=1.3` (web) / `CARTO_UI_SCALE=1.3` (desktop).
-///    **This is the primary interface, not an escape hatch.** The physical size
-///    of a point varies across devices with the display scale, the platform's
-///    unit and — on the web — the render budget's stage transform, and this
-///    function cannot see any of the three well enough to be right by default.
-/// 2. Otherwise [`phone_ui_scale`] on the phone tier, and 1.0 off it.
-///
-/// **The tier comes from [`crate::quality`], which is deliberately the only
-/// thing in the client that decides what kind of machine this is.** An earlier
-/// version of this asked the browser `(pointer: coarse)` directly, which was a
-/// second detector answering a nearly-identical question — and `quality`'s
-/// module note is explicit that the browser decides once, in `index.html`,
-/// because the canvas resolution is a page-layout fact Rust cannot reach. Two
-/// detectors is how the UI ends up finger-sized on a machine rendering at
-/// desktop resolution, or the reverse.
-///
-/// The cost of borrowing that answer is that `quality` asks for a coarse pointer
-/// **and** a viewport under 900 px, so a large tablet is `Desktop` and gets
-/// mouse-sized targets despite being driven by a finger. That is the wrong
-/// answer for such a device and the right one for a touchscreen laptop, and it
-/// is what `CARTO_UI_SCALE` is for until someone has a tablet to test on.
-fn resolve_ui_scale() -> f32 {
-    if let Some(raw) = crate::env_value("CARTO_UI_SCALE") {
-        match raw.trim().parse::<f32>() {
-            Ok(v) if v.is_finite() => {
-                let clamped = v.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end());
-                if clamped != v {
-                    tracing::warn!("ui scale {v} out of range, using {clamped}");
-                }
-                return clamped;
-            }
-            _ => tracing::warn!("ignoring unparseable ui scale {raw:?}"),
-        }
-    }
-    if crate::quality::is_phone() {
-        phone_ui_scale()
-    } else {
-        1.0
-    }
-}
+/// The UI's scale and compactness are `systems::ui_input`'s, shared with the
+/// `UiMetrics` resource; named here too for the callers that grew up with it.
+pub use crate::systems::ui_input::COMPACT_WIDTH_PTS;
+#[cfg(test)]
+use crate::systems::ui_input::UI_SCALE_RANGE;
 
 /// What a compact right panel is exactly as wide as: **the screen**.
 ///
@@ -407,18 +313,13 @@ impl Default for EguiManager {
             style.debug.show_expand_width = false;
             style.debug.show_expand_height = false;
         });
-        let ui_scale = resolve_ui_scale();
-        if ui_scale != 1.0 {
-            tracing::info!("UI scale {ui_scale}× (coarse pointer or CARTO_UI_SCALE)");
-        }
         Self {
             ctx,
             root_ui: None,
             elapsed_time: 0.0,
-            // Matches the primary window's default resolution in `main.rs`; only
-            // ever used for the frames before the first `begin_egui_frame`.
-            surface: (UVec2::new(1280, 720), ui_scale),
-            ui_scale,
+            // The primary window's default resolution in `main.rs`; only ever
+            // used for the frames before the first `begin_egui_frame`.
+            metrics: UiMetrics::default(),
             modal: false,
             injected: Vec::new(),
             map_rect: None,
@@ -573,31 +474,30 @@ impl EguiManager {
     /// Logical viewport size in points (physical pixels ÷ display scale), as egui
     /// lays out against it this frame.
     pub fn viewport_pts(&self) -> egui::Vec2 {
-        let (physical, scale) = self.surface;
-        egui::vec2(physical.x as f32 / scale, physical.y as f32 / scale)
+        let v = self.metrics.viewport_pts();
+        egui::vec2(v.x, v.y)
     }
 
     /// Record the surface this frame is laid out against, given the *display's*
-    /// scale factor; [`Self::ui_scale`] is folded in here so there is one place
-    /// the two are combined and no caller can use the wrong one.
-    ///
-    /// The scale is sanitised on the way in: it divides every size below, and a
-    /// display handing back 0 (or NaN) — which is what a monitor being switched
-    /// off under us looks like — would otherwise turn the whole viewport into
-    /// infinities.
+    /// scale factor — [`UiMetrics::set_surface`], which folds in the UI scale
+    /// and sanitises a zero or NaN display scale.
+    #[cfg(test)]
     fn set_surface(&mut self, physical: UVec2, display_scale: f32) {
-        let display_scale = if display_scale.is_finite() && display_scale > 0.0 {
-            display_scale
-        } else {
-            1.0
-        };
-        self.surface = (physical, display_scale * self.ui_scale);
+        self.metrics.set_surface(physical, display_scale);
     }
 
-    /// The UI magnification in force (see [`resolve_ui_scale`]). Also the factor
-    /// between the window's logical points and egui's.
+    /// The UI magnification in force (`ui_input::resolve_ui_scale`). Also the
+    /// factor between the window's logical points and egui's.
     pub fn ui_scale(&self) -> f32 {
-        self.ui_scale
+        self.metrics.ui_scale()
+    }
+
+    /// The surface and scale egui lays out against this frame — the same
+    /// value the `UiMetrics` resource holds.
+    #[cfg(test)]
+    #[must_use]
+    pub fn metrics(&self) -> UiMetrics {
+        self.metrics
     }
 
     /// The *display's* own scale factor, with [`Self::ui_scale`] divided back
@@ -609,7 +509,7 @@ impl EguiManager {
     /// *physical* size (a touch target in millimetres) needs the pixel density
     /// and the magnification apart, not multiplied together.
     pub fn display_scale(&self) -> f32 {
-        self.surface.1 / self.ui_scale.max(f32::EPSILON)
+        self.metrics.display_scale()
     }
 
     /// Queue events for the next `RawInput` — see the `injected` field.
@@ -630,7 +530,8 @@ impl EguiManager {
     /// slides away from its subject on a phone, proportionally to how far it is
     /// from the top-left corner.
     pub fn window_to_ui(&self, p: Vec2) -> egui::Pos2 {
-        egui::pos2(p.x / self.ui_scale, p.y / self.ui_scale)
+        let p = self.metrics.window_to_ui(p);
+        egui::pos2(p.x, p.y)
     }
 
     /// Does this frame's `just_pressed(Left)` belong to egui rather than to the
@@ -754,6 +655,78 @@ impl EguiManager {
             || keyboard.pressed(KeyCode::SuperLeft)
             || keyboard.pressed(KeyCode::SuperRight)
     }
+
+    /// egui's answers to `UiInput`'s questions this frame, for a press at the
+    /// window `cursor` — see [`publish_ui_input`].
+    pub fn verdict(&self, cursor: Option<Vec2>) -> EguiVerdict {
+        verdict_of(&self.ctx, self.map_rect, self.modal, &self.metrics, cursor)
+    }
+}
+
+/// [`EguiManager::verdict`] over its parts, so a test can drive a bare
+/// `Context`. Every answer is the one the manager's own method gives:
+/// `press_over_ui` for [`EguiManager::owns_click`]'s finger, the drag test of
+/// [`EguiManager::map_dragged`], the text focus of
+/// [`EguiManager::ui_owns_keyboard`].
+pub(crate) fn verdict_of(
+    ctx: &egui::Context,
+    map_rect: Option<egui::Rect>,
+    modal: bool,
+    metrics: &UiMetrics,
+    cursor: Option<Vec2>,
+) -> EguiVerdict {
+    let map_dragged = ctx
+        .input(|i| {
+            i.pointer
+                .is_decidedly_dragging()
+                .then(|| i.pointer.press_origin())
+                .flatten()
+        })
+        .is_some_and(|at| !press_over_ui(ctx, map_rect, at));
+    let press_over_ui = cursor.is_some_and(|at| {
+        let p = metrics.window_to_ui(at);
+        press_over_ui(ctx, map_rect, egui::pos2(p.x, p.y))
+    });
+    // Back into window points, by the inverse of `window_to_ui`.
+    let k = metrics.ui_scale();
+    let map_rect = map_rect.map(|r| Rect::new(r.min.x * k, r.min.y * k, r.max.x * k, r.max.y * k));
+    EguiVerdict {
+        wants_pointer: ctx.egui_wants_pointer_input(),
+        text_focused: ctx.text_edit_focused(),
+        modal,
+        map_dragged,
+        cursor,
+        press_over_ui,
+        map_rect,
+    }
+}
+
+/// Write egui's verdict into [`UiInput`] (`PreUpdate`, right after
+/// [`begin_egui_frame`] and after `touch::recognize_touch_gestures` has put
+/// the window cursor on the finger), and hand the library's verdict — set by
+/// `lib_host::bridge_input` last frame — to the egui systems that still ask
+/// the manager.
+///
+/// Taken at the start of the pass, so a system in `Update` reads what the
+/// frame began with; egui decides its pointer interaction in `begin_pass`
+/// too, so only a focus or an `Area` that changes mid-pass is seen a frame
+/// later than when it was asked of egui directly.
+pub fn publish_ui_input(mut egui: EguiMut, mut input: ResMut<UiInput>, windows: Query<&Window>) {
+    egui.set_overlay_owns_pointer(input.overlay_owns_pointer());
+    egui.set_overlay_owns_keyboard(input.overlay_owns_keyboard());
+    let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+    let verdict = egui.verdict(cursor);
+    if input.egui_verdict() != verdict {
+        input.set_egui(verdict);
+    }
+}
+
+/// Copy `ui_animating` into [`UiInput`] once [`end_egui_frame`] has decided
+/// it, for `frame_pacing::present_rate` in `Last`.
+pub fn publish_ui_animating(egui: EguiRef, mut input: ResMut<UiInput>) {
+    if input.ui_animating() != egui.ui_animating() {
+        input.set_ui_animating(egui.ui_animating());
+    }
 }
 
 // ─── Extracted render data ────────────────────────────────────────────────────
@@ -859,6 +832,19 @@ impl Plugin for EguiPlugin {
             // focus handling (fields lose focus on keypress).
             .add_systems(PreUpdate, begin_egui_frame.after(bevy::input::InputSystems))
             .add_systems(PostUpdate, end_egui_frame);
+        // egui's half of `UiInput`, which a system that only asks "who owns the
+        // input" reads instead of the manager. After the touch recogniser,
+        // which moves the window cursor onto the finger a world click reads.
+        if !app.is_plugin_added::<UiInputPlugin>() {
+            app.add_plugins(UiInputPlugin);
+        }
+        app.add_systems(
+            PreUpdate,
+            publish_ui_input
+                .after(begin_egui_frame)
+                .after(crate::systems::touch::recognize_touch_gestures),
+        )
+        .add_systems(PostUpdate, publish_ui_animating.after(end_egui_frame));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -903,23 +889,6 @@ impl Plugin for EguiPlugin {
 }
 
 // ─── Systems ──────────────────────────────────────────────────────────────────
-
-/// The surface egui lays out against: the primary window, or the offscreen
-/// target in a headless `--shot` run (see [`HeadlessSurface`]). Physical pixels
-/// plus the logical→physical scale. `None` once the window has been despawned
-/// and no headless target stands in — see [`begin_egui_frame`].
-fn egui_surface(
-    windows: &Query<&Window>,
-    headless: Option<&Res<HeadlessSurface>>,
-) -> Option<(UVec2, f32)> {
-    if let Some(w) = windows.iter().next() {
-        return Some((
-            UVec2::new(w.physical_width(), w.physical_height()),
-            w.scale_factor() as f32,
-        ));
-    }
-    headless.map(|h| (h.size, h.scale))
-}
 
 /// State the pointer bridge threads through the window-event stream.
 #[derive(Default)]
@@ -1175,10 +1144,11 @@ pub fn begin_egui_frame(
     // The cost is one laid-out, tessellated frame that is never presented; the
     // gain is that `ui_mut()`'s invariant holds by construction instead of by the
     // convention that a window exists.
-    if let Some((physical, scale)) = egui_surface(&windows, headless.as_ref()) {
-        egui_manager.set_surface(physical, scale);
-    }
-    let (physical, scale) = egui_manager.surface;
+    egui_manager.metrics.observe(&windows, headless.as_deref());
+    let (physical, scale) = (
+        egui_manager.metrics.physical(),
+        egui_manager.metrics.pixels_per_point(),
+    );
 
     egui_manager.elapsed_time += time.delta_secs_f64();
 
@@ -1193,7 +1163,7 @@ pub fn begin_egui_frame(
     // motion this frame keeps the position of the last motion ever; the fallback
     // covers a click before any `CursorMoved` has been seen (cursor already
     // inside the window at startup). Headless runs see no window events at all.
-    let ui_scale = egui_manager.ui_scale;
+    let ui_scale = egui_manager.ui_scale();
     pointer_bridge.seed(
         windows
             .iter()
@@ -1417,7 +1387,7 @@ pub fn end_egui_frame(
     // `begin_pass` needs its `end_pass`, or a windowless frame would leave the
     // pass open and the next `begin_pass` would nest inside it. `begin_egui_frame`
     // laid this frame out against `surface` — quote the same numbers back.
-    let (physical, _) = egui_manager.surface;
+    let physical = egui_manager.metrics.physical();
 
     // Drop the shared root `Ui`, finalizing its panel layers, before ending the pass.
     // What the panels left of it is the map, for `owns_click`'s next frame.

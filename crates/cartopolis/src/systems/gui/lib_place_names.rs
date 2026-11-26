@@ -29,10 +29,10 @@ use bevy::prelude::*;
 use mithril::prelude::Event;
 use mithril::prelude::*;
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_pins::{boxed, px_scale, Anchored, Spot};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::place_names::{NameLook, PlaceNames};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The names' key in the library's host.
@@ -60,7 +60,7 @@ pub fn drive_lib_place_names(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut names: ResMut<PlaceNames>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.place_names {
         return;
@@ -68,7 +68,7 @@ pub fn drive_lib_place_names(
     if !names.lib {
         names.lib = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

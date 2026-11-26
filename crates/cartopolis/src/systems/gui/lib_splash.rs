@@ -41,11 +41,11 @@ use bevy::prelude::{warn, Res, ResMut};
 use bevy::prelude::{Assets, Color, Image, ImageNode, Query};
 use mithril::prelude::{el, signal, IntoView, Signal, View};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::splash::{self, BootSplash, SplashView};
 use crate::systems::theme;
 use crate::systems::theme::tokens::{alpha, hex};
+use crate::systems::ui_input::UiMetrics;
 
 /// The splash's name in the library's host.
 const KEY: &str = "splash";
@@ -87,7 +87,7 @@ pub fn drive_lib_splash(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut splash: ResMut<BootSplash>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
     #[cfg(all(
         feature = "ui-probe",
         not(all(feature = "ui-dom", target_arch = "wasm32"))
@@ -106,7 +106,7 @@ pub fn drive_lib_splash(
         splash.lib = true;
     }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

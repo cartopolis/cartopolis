@@ -42,10 +42,10 @@ use bevy::prelude::*;
 use mithril::prelude::Event;
 use mithril::prelude::*;
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::place_pins::{PinLook, PlacePins};
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The pins' name in the library's host.
 const KEY: &str = "pins";
@@ -338,7 +338,7 @@ pub fn drive_lib_pins(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     pins: Option<ResMut<PlacePins>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.pins {
@@ -354,7 +354,7 @@ pub fn drive_lib_pins(
     if !pins.lib {
         pins.lib = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

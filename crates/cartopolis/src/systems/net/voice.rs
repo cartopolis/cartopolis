@@ -942,7 +942,7 @@ pub fn update_voice_playback(
 pub fn read_talk_key(
     mut voice: ResMut<VoiceState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: crate::systems::egui_manager::EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     edit_dialog: Res<crate::resources::EditDialogState>,
 ) {
     if voice.mode != VoiceMode::PushToTalk {
@@ -953,7 +953,7 @@ pub fn read_talk_key(
     // `docs/notes/egui-shared-root-ui.md`:
     // the latter is true whenever any widget holds focus, which would make V
     // silently dead after clicking a button.
-    if egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard) {
+    if ui_input.ui_owns_keyboard(edit_dialog.visible, &keyboard) {
         return;
     }
     if keyboard.pressed(KeyCode::KeyV) {

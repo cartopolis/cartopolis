@@ -2117,7 +2117,7 @@ pub fn handle_avatar_movement(
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
     camera_state: Res<crate::resources::CameraState>,
-    egui_manager: crate::systems::egui_manager::EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::layer_state::DataLayers>,
@@ -2145,7 +2145,7 @@ pub fn handle_avatar_movement(
     }
     // Don't move while the UI owns the keyboard (text field focused, edit dialog open,
     // or a Ctrl chord like Ctrl+Shift+A); otherwise WASD/S leak into avatar movement.
-    if egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard_input) {
+    if ui_input.ui_owns_keyboard(edit_dialog.visible, &keyboard_input) {
         avatar_state.is_walking = false;
         avatar_state.ground_speed = 0.0;
         return;

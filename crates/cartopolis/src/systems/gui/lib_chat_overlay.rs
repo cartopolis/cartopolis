@@ -38,10 +38,10 @@ use crate::systems::chat_overlay::{
     ChatOverlay, ChipAct, ChipView, RunView, SheetActs, SheetStrip, SheetView,
 };
 use crate::systems::discs::ChatKind;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_chats::{disc, icon, Typed};
 use crate::systems::lib_pins::{css, px_scale, Anchored, Spot};
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::voice::VoiceMode;
 use crate::systems::{icons, theme};
 
@@ -141,7 +141,7 @@ pub fn drive_lib_chat_overlay(
     lib: Res<LibScreens>,
     mut overlay: ResMut<ChatOverlay>,
     mut chat: ResMut<ChatState>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.chat_overlay {
         return;
@@ -149,7 +149,7 @@ pub fn drive_lib_chat_overlay(
     if !overlay.lib {
         overlay.lib = true;
     }
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

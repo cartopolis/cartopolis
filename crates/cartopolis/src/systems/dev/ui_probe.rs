@@ -20,8 +20,8 @@ use bevy::ui_widgets::TextInput;
 
 use crate::components::FreeCamera;
 use crate::phase::ClientPhase;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 pub struct UiProbePlugin;
 
@@ -251,12 +251,12 @@ impl Faces {
 }
 
 /// Spawns the probe once the world camera exists, with `UiScale` set to
-/// egui's `ui_scale` so a point here is the point egui lays out in.
+/// `UiMetrics::ui_scale` so a point here is the point egui lays out in.
 fn spawn_probe(
     mut commands: Commands,
     mut probe: ResMut<UiProbe>,
     cameras: Query<Entity, With<FreeCamera>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut fonts: ResMut<Assets<Font>>,
     mut ui_scale: ResMut<UiScale>,
     // The library's host is thread-local: this system must run where it lives.
@@ -277,12 +277,12 @@ fn spawn_probe(
         return;
     }
     probe.done = true;
-    ui_scale.0 = egui.ui_scale();
+    ui_scale.0 = metrics.ui_scale();
     let faces = Faces {
         body: fonts.add(Font::from_bytes(theme::BODY_TTF.to_vec())),
         semibold: fonts.add(Font::from_bytes(theme::BRAND_TTF.to_vec())),
     };
-    let compact = egui.compact();
+    let compact = metrics.compact();
     info!(
         ?compact,
         ui_scale = ui_scale.0,

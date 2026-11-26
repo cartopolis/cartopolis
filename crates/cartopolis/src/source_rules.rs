@@ -78,7 +78,7 @@ fn game_keys_yield_only_to_a_focused_text_field() {
     let hits = code_lines_with("egui_wants_keyboard_input");
     assert!(
         hits.is_empty(),
-        "use `EguiManager::ui_owns_keyboard`, never `egui_wants_keyboard_input()`:\n{}",
+        "use `UiInput::ui_owns_keyboard`, never `egui_wants_keyboard_input()`:\n{}",
         hits.join("\n")
     );
 }

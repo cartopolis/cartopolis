@@ -166,6 +166,104 @@ fn a_brisk_tap_on_the_map_is_the_worlds_after_egui_saw_it_lift() {
         "the map is the world's"
     );
     assert!(press_over_ui(&ctx, map_rect, on_panel), "a panel is egui's");
+
+    // The same frame through `UiInput`, which the world's click gates read:
+    // the verdict is taken at the window cursor, in window points — the
+    // egui points above at 1.0×, and half as many again at 1.5×.
+    let metrics = UiMetrics::with_ui_scale(1.0);
+    let at = |p: egui::Pos2| Vec2::new(p.x, p.y);
+    let mut input = UiInput::default();
+    input.set_egui(verdict_of(
+        &ctx,
+        map_rect,
+        false,
+        &metrics,
+        Some(at(on_map)),
+    ));
+    assert!(
+        !input.owns_click(true, Some(at(on_map))),
+        "UiInput: the map is the world's"
+    );
+    assert!(
+        input.owns_click(false, Some(at(on_map))),
+        "UiInput: a mouse asks egui, as before"
+    );
+    input.set_egui(verdict_of(
+        &ctx,
+        map_rect,
+        false,
+        &metrics,
+        Some(at(on_panel)),
+    ));
+    assert!(
+        input.owns_click(true, Some(at(on_panel))),
+        "UiInput: a panel is egui's"
+    );
+
+    let scaled = UiMetrics::with_ui_scale(1.5);
+    let window = |p: egui::Pos2| Vec2::new(p.x * 1.5, p.y * 1.5);
+    input.set_egui(verdict_of(
+        &ctx,
+        map_rect,
+        false,
+        &scaled,
+        Some(window(on_map)),
+    ));
+    assert!(!input.owns_click(true, Some(window(on_map))));
+    input.set_egui(verdict_of(
+        &ctx,
+        map_rect,
+        false,
+        &scaled,
+        Some(window(on_panel)),
+    ));
+    assert!(input.owns_click(true, Some(window(on_panel))));
+    // A cursor the verdict was not taken at falls back to the map rect,
+    // carried back into window points.
+    assert!(!input.owns_click(true, Some(window(on_map))));
+}
+
+/// The resources are what the manager says, frame by frame: `UiMetrics`
+/// lays out against the same surface, and `UiInput` carries egui's verdict
+/// and hands the library's back to the manager for the egui systems that
+/// still ask it.
+#[test]
+fn ui_metrics_and_ui_input_follow_the_manager() {
+    let mut window = Window::default();
+    window.resolution.set_physical_resolution(1080, 2280);
+    window.resolution.set_scale_factor(2.75);
+    let mut app = ui_app(Some(window));
+    app.update();
+    app.update();
+    let mgr = app.world().resource::<EguiManager>();
+    let metrics = *app.world().resource::<UiMetrics>();
+    assert_eq!(metrics, mgr.metrics());
+    assert_eq!(
+        metrics.viewport_pts(),
+        Vec2::new(mgr.viewport_pts().x, mgr.viewport_pts().y)
+    );
+    assert_eq!(metrics.compact(), mgr.compact());
+
+    let input = *app.world().resource::<UiInput>();
+    assert_eq!(input.egui_verdict(), mgr.verdict(None));
+    assert!(!input.overlay_owns_pointer());
+
+    app.world_mut()
+        .resource_mut::<UiInput>()
+        .set_overlay(true, true);
+    app.update();
+    let mgr = app.world().resource::<EguiManager>();
+    assert!(
+        mgr.owns_click(false, None),
+        "the library's pointer reaches egui"
+    );
+    assert!(mgr.overlay_owns_keyboard());
+    let keys = ButtonInput::<KeyCode>::default();
+    assert!(mgr.ui_owns_keyboard(false, &keys));
+    assert!(app
+        .world()
+        .resource::<UiInput>()
+        .ui_owns_keyboard(false, &keys));
 }
 
 /// A finger that goes down and is never lifted — the Android camera intent
@@ -641,7 +739,7 @@ fn a_degenerate_scale_factor_never_reaches_layout() {
 #[test]
 fn ui_scale_shrinks_the_viewport_it_magnifies() {
     let mut mgr = EguiManager::default();
-    mgr.ui_scale = 1.5;
+    mgr.metrics = UiMetrics::with_ui_scale(1.5);
     // Android, where a phone's whole 1080 px width reaches Bevy: 393 pt of
     // viewport at a 2.75 scale factor, 262 pt of it after the magnification.
     mgr.set_surface(UVec2::new(1080, 2280), 2.75);
@@ -672,12 +770,12 @@ fn a_compact_panel_is_exactly_the_viewport() {
 fn the_web_phone_tier_has_no_room_to_magnify() {
     let surface = UVec2::new(590, 1245); // 1080×2280 ÷ 1.83
     let mut unscaled = EguiManager::default();
-    unscaled.ui_scale = 1.0;
+    unscaled.metrics = UiMetrics::with_ui_scale(1.0);
     unscaled.set_surface(surface, 2.75);
     assert!(unscaled.viewport_pts().x > 200.0, "usable at 1.0");
 
     let mut scaled = EguiManager::default();
-    scaled.ui_scale = 1.5;
+    scaled.metrics = UiMetrics::with_ui_scale(1.5);
     scaled.set_surface(surface, 2.75);
     assert!(
         scaled.viewport_pts().x < 240.0,
@@ -710,7 +808,7 @@ fn the_pointer_bridge_converts_into_egui_points() {
 #[test]
 fn window_to_ui_matches_the_bridge() {
     let mut mgr = EguiManager::default();
-    mgr.ui_scale = 1.5;
+    mgr.metrics = UiMetrics::with_ui_scale(1.5);
     assert_eq!(
         mgr.window_to_ui(Vec2::new(300.0, 600.0)),
         egui::pos2(200.0, 400.0)
@@ -770,7 +868,7 @@ fn injected_events_reach_the_next_frames_input() {
 #[test]
 fn display_scale_survives_being_folded_into_the_surface() {
     let mut mgr = EguiManager::default();
-    mgr.ui_scale = 1.5;
+    mgr.metrics = UiMetrics::with_ui_scale(1.5);
     mgr.set_surface(UVec2::new(1080, 2280), 2.75);
     assert!((mgr.display_scale() - 2.75).abs() < 1e-4);
 }

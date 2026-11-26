@@ -26,11 +26,11 @@ use mithril::prelude::{Button, Event};
 
 use crate::resources::RightPanel;
 use crate::systems::discs::{disc_look, ChatKind};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::{cell, icon};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::hex;
 use crate::systems::ui::{MainMenu, MenuView, SheetAct, SheetSpot};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The sheet's name in the library's host.
@@ -73,7 +73,7 @@ pub fn drive_lib_main_menu(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut menu: ResMut<MainMenu>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.main_menu {
         return;
@@ -83,7 +83,7 @@ pub fn drive_lib_main_menu(
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

@@ -32,13 +32,13 @@ use bevy::prelude::*;
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::release_approval::{
     self, ApprovalAct, ApprovalView, KeyAct, KeySectionView, VerdictView, CARD_WIDTH,
     KEY_MAKE_NOTE, KEY_TOOL_NOTE, NOT_GREEN,
 };
 use crate::systems::theme::tokens::alpha;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The card's name in the library's host.
@@ -87,12 +87,16 @@ fn on(a: ApprovalAct) -> Option<Handler> {
 
 /// Mounts, bridges and unmounts the card. `PostUpdate`, before `DriveUi`,
 /// as every library screen.
-pub fn drive_lib_release_approval(_main: NonSendMarker, lib: Res<LibScreens>, egui: EguiRef) {
+pub fn drive_lib_release_approval(
+    _main: NonSendMarker,
+    lib: Res<LibScreens>,
+    metrics: Res<UiMetrics>,
+) {
     if !lib.release_approval {
         return;
     }
     release_approval::set_lib();
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     let placement = Placement {
         w: size.x,
         h: size.y,

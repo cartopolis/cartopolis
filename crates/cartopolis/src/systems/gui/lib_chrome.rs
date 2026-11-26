@@ -45,13 +45,13 @@ use crate::systems::dock::{
     BarView, ChromeAct, FaceView, LeftView, MapChrome, RightView, Space, SwitchView, FACE,
     MODE_WORD_H, SEARCH_H, SWITCH_H,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::floor_picker::FloorsView;
 use crate::systems::hud::{
     light_hint, CompassView, LightView, LocateTone, LocateView, ScaleView, LIGHTS,
 };
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The chrome's name in the library's host.
@@ -100,7 +100,7 @@ pub fn drive_lib_chrome(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut chrome: ResMut<MapChrome>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
 ) {
     if !lib.chrome {
         return;
@@ -110,7 +110,7 @@ pub fn drive_lib_chrome(
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

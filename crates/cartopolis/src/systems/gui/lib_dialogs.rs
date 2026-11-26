@@ -46,9 +46,9 @@ use crate::systems::chat::{
 };
 use crate::systems::chats::ChatsView;
 use crate::systems::communities::Communities;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// The report form's name in the library's host.
 const REPORT_KEY: &str = "report_dialog";
@@ -256,7 +256,7 @@ pub fn drive_lib_dialogs(
     mut view: ResMut<ChatsView>,
     mut communities: ResMut<Communities>,
     online: Option<Res<OnlineSession>>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.dialogs {
         return;
@@ -264,8 +264,8 @@ pub fn drive_lib_dialogs(
     if !view.lib_dialogs {
         view.lib_dialogs = true;
     }
-    let size = egui.viewport_pts();
-    let placement = Placement::of(size.x, size.y, egui.ui_scale());
+    let size = metrics.viewport_pts();
+    let placement = Placement::of(size.x, size.y, metrics.ui_scale());
     drive_report(&mut chat, online.as_deref(), placement);
     let confirm = view.lib_confirm.take();
     drive_confirm(&mut communities, confirm, placement);

@@ -15,7 +15,8 @@
 //! `docs/notes/egui-shared-root-ui.md`). It is ordered with the panel chain for
 //! that reason.
 
-use crate::systems::egui_manager::{EguiMut, EguiRef};
+use crate::systems::egui_manager::EguiMut;
+use crate::systems::ui_input::UiInput;
 use bevy::prelude::*;
 use cartopolis_core::msg;
 
@@ -902,7 +903,7 @@ fn nearest_berth(
 pub fn handle_interaction_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     camera_state: Res<CameraState>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     edit_dialog: Res<crate::resources::EditDialogState>,
     online: Option<Res<crate::resources::OnlineSession>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -934,7 +935,7 @@ pub fn handle_interaction_input(
     }
 
     if camera_state.mode != CameraMode::Avatar
-        || egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard)
+        || ui_input.ui_owns_keyboard(edit_dialog.visible, &keyboard)
     {
         return;
     }

@@ -33,8 +33,8 @@ use crate::systems::admin::{
     self, Account, AccountsDoc, AdminState, Claim, Load, Offers, Page, Report, Role,
 };
 use crate::systems::chats::ChatsView;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// What a tap asked for; done by the system, against the state as it is then.
@@ -130,7 +130,7 @@ pub fn drive_lib_admin(
     mut admin: ResMut<AdminState>,
     identity: Res<AuthIdentity>,
     mut view: ResMut<ChatsView>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
     if !lib.admin {
@@ -171,7 +171,7 @@ pub fn drive_lib_admin(
                     handled: signal(admin.show_handled),
                     armed: signal(None),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(

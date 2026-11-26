@@ -216,8 +216,8 @@ prose, so read them.
 - Every system drawing into the shared root `Ui` goes in the panel-chain `.chain()` tuple in `systems/gui/plugin.rs`, or panels steal each other's clicks — `egui-shared-root-ui.md`
 - Floating `Area`s paint over panels: a world-anchored overlay culls (not clips) itself to `place_pins::map_area` and runs at the chain's tail — `egui-shared-root-ui.md`
 - UI chrome — colour, spacing, type, overlay frames, panel headers and close buttons — comes from `systems::theme`; never a fresh `Color32` for chrome in a panel (a palette for content, people or categories, is a named const in its module) — `ui-vocabulary.md`
-- Gate a world click on `EguiManager::owns_click`; `egui_wants_pointer_input()` is only right while a button is down — `touch-input.md`
-- Game keys yield only to `EguiManager::ui_owns_keyboard` (a focused text field), never `egui_wants_keyboard_input()` — `egui-shared-root-ui.md`
+- Gate a world click on `UiInput::owns_click` (`systems::ui_input`, egui's and the library's verdict in one); `wants_pointer()` is only right while a button is down — `touch-input.md`
+- Game keys yield only to `UiInput::ui_owns_keyboard` (a focused text field), never `egui_wants_keyboard_input()`; read the UI's scale and size from `UiMetrics`, never egui — `egui-shared-root-ui.md`
 - Touch emits no mouse events: world clicks get an emulated mouse, gestures read `TouchGestures`, egui reads the event stream — `touch-input.md`
 - A clickable widget with a context menu guards its click with `!response.long_touched()`, because a long press also fires `clicked()` — `touch-input.md`
 - An anchored, size-to-content `Area` pins its content width, or it grows every frame until it spans the screen — `map-chrome.md`

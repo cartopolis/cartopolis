@@ -875,7 +875,7 @@ pub fn pick_satellite(
     mouse: Res<ButtonInput<MouseButton>>,
     touch: Res<crate::systems::touch::TouchGestures>,
     time: Res<Time>,
-    egui: EguiRef,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
     clouds: Query<(&GlobalTransform, &Visibility), With<SatelliteCloud>>,
@@ -885,7 +885,7 @@ pub fn pick_satellite(
     let cursor = windows.iter().next().and_then(|w| w.cursor_position());
     if mouse.just_pressed(MouseButton::Left) {
         layer.press = cursor
-            .filter(|_| !egui.owns_click(touch.touch_click(), cursor))
+            .filter(|_| !ui_input.owns_click(touch.touch_click(), cursor))
             .map(|c| (c, time.elapsed_secs()));
     }
     if !mouse.just_released(MouseButton::Left) {

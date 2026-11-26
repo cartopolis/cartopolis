@@ -27,9 +27,9 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::resources::{OnlineSession, RightPanel};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::script_editor::{budget_line, ScriptEditorState, PANEL_WIDTH};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The key this screen mounts under.
@@ -151,7 +151,7 @@ pub fn drive_lib_script(
     mut editor: ResMut<ScriptEditorState>,
     online: Option<Res<OnlineSession>>,
     prims: Query<&crate::components::Prim>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
     if !lib.script {
@@ -192,7 +192,7 @@ pub fn drive_lib_script(
                         editor.prim_id,
                     ))),
                     acts: Rc::new(RefCell::new(Vec::new())),
-                    compact: egui.compact(),
+                    compact: metrics.compact(),
                 };
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(

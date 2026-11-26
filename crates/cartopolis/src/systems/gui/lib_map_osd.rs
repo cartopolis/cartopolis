@@ -49,11 +49,11 @@ use mithril::prelude::{
     el, signal, view, Button, Event, Handler, IntoView, Signal, Size, Variant, View,
 };
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::map_osd::{self, BodyControls, OsdLib};
 use crate::systems::theme;
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::zoom_rail::Scale;
 
 /// The pieces' names in the library's host.
@@ -192,7 +192,7 @@ pub fn drive_lib_map_osd(
     osd: Option<ResMut<OsdLib>>,
     mut body: BodyControls,
     keys: Res<ButtonInput<KeyCode>>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.osd {
@@ -212,7 +212,7 @@ pub fn drive_lib_map_osd(
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement`).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

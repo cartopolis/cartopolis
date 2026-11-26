@@ -44,13 +44,13 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::resources::{EditDialogState, GameState, PrimTextureCache, TextureLibrary};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::gizmo::{GizmoMode, GizmoState};
 use crate::systems::lib_place_card::{header, icon};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::ui::{
     apply_edit_act, dialog_width, EditAct, ObjectEditorLib, SHAPES, SHEET_HEIGHT,
 };
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The editor's name in the library's host.
@@ -566,7 +566,7 @@ pub fn drive_lib_object_editor(
     mut gizmo: ResMut<GizmoState>,
     texture_lib: Res<TextureLibrary>,
     mut texture_cache: ResMut<PrimTextureCache>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     #[cfg(all(
         feature = "ui-probe",
         not(all(feature = "ui-dom", target_arch = "wasm32"))
@@ -583,12 +583,12 @@ pub fn drive_lib_object_editor(
         bridge.lib = true;
     }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };
-    let size = egui.viewport_pts();
-    let (editor_spot, picker_spot) = spots(size.x, size.y, egui.compact(), k);
+    let size = metrics.viewport_pts();
+    let (editor_spot, picker_spot) = spots(size.x, size.y, metrics.compact(), k);
     let dark = theme::p().ink == theme::DARK.ink;
 
     MOUNTED.with(|m| {

@@ -138,6 +138,7 @@
 use crate::components::DriverArrow;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::egui_manager::EguiRef;
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -152,7 +153,6 @@ use crate::components::{Avatar, FreeCamera};
 use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, OnlineSession};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
@@ -1945,7 +1945,8 @@ pub fn steady_driver_camera(
     mut input: DriveInput,
     mut driver: ResMut<DriverState>,
     mut camera_state: ResMut<CameraState>,
-    egui: EguiRef,
+    ui_input: Res<UiInput>,
+    metrics: Res<UiMetrics>,
     time: Res<Time>,
     avatars: Query<(), With<Avatar>>,
 ) {
@@ -1995,7 +1996,7 @@ pub fn steady_driver_camera(
     camera_state.follow_rotate = false;
 
     let ease = 1.0 - (-RIG_EASE_RATE * time.delta().as_secs_f32()).exp();
-    let gesture = read_gesture(&mut input, &egui, &mut driver.peek.drag);
+    let gesture = read_gesture(&mut input, &ui_input, &mut driver.peek.drag);
     apply_gesture(&mut driver.peek, gesture, ease);
 
     let (base, base_pitch, lookahead) = driver.orientation.rig();
@@ -2007,7 +2008,7 @@ pub fn steady_driver_camera(
         .overview_frame
         .filter(|_| driver.overview)
         .map(|frame| {
-            let v = egui.viewport_pts();
+            let v = metrics.viewport_pts();
             let aspect = if v.y > 0.0 { v.x / v.y } else { 1.0 };
             (frame.distance(aspect), frame.centre)
         });
@@ -2102,7 +2103,7 @@ impl Gesture {
 /// is only meaningful while a pointer button is *down* (see the client's known
 /// issues), so it answers correctly for a drag and would answer `true` over the
 /// bare map for a wheel notch, swallowing every zoom.
-fn read_gesture(input: &mut DriveInput, egui: &EguiManager, drag: &mut Option<Vec2>) -> Gesture {
+fn read_gesture(input: &mut DriveInput, ui_input: &UiInput, drag: &mut Option<Vec2>) -> Gesture {
     let mut g = Gesture::default();
     for event in input.wheel.read() {
         if event.y != 0.0 {
@@ -2112,7 +2113,7 @@ fn read_gesture(input: &mut DriveInput, egui: &EguiManager, drag: &mut Option<Ve
         }
     }
 
-    let ui_has_pointer = egui.ctx.egui_wants_pointer_input();
+    let ui_has_pointer = ui_input.wants_pointer();
     if input.touch.pair() {
         // A pinch is the wheel's continuous twin — spreading the fingers pulls
         // the view in, which is `1/pinch` on a distance.

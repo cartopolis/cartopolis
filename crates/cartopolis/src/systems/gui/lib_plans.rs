@@ -28,7 +28,6 @@ use bevy::prelude::*;
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::layer_state::DataLayers;
 use crate::systems::lib_place_card::{icon, Placement, CARD_WIDTH};
 use crate::systems::lib_settings::LibScreens;
@@ -37,6 +36,7 @@ use crate::systems::plans::{
     TextSize, WORK,
 };
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::user_store::UserStore;
 use crate::systems::{icons, theme};
 
@@ -142,7 +142,7 @@ pub fn drive_lib_plans(
     mut plans: ResMut<Plans>,
     mut dl: ResMut<DataLayers>,
     mut store: ResMut<UserStore>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.plans {
         return;
@@ -150,8 +150,8 @@ pub fn drive_lib_plans(
     if !plans.lib {
         plans.lib = true;
     }
-    let size = egui.viewport_pts();
-    let ui_scale = egui.ui_scale();
+    let size = metrics.viewport_pts();
+    let ui_scale = metrics.ui_scale();
     // The library's px are egui's points on the Bevy backend; as DOM they are
     // the page's (`Placement::over_the_dock` says why).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {

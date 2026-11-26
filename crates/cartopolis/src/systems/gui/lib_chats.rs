@@ -44,13 +44,13 @@ use crate::systems::chat::ChatState;
 use crate::systems::chats::{self, Actions, ChatsScreen, ChatsView, NewChoice, NewKind, YouEntry};
 use crate::systems::communities::Communities;
 use crate::systems::discs::{disc_look, ChatKind};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::faces::{FaceChoice, Faces};
 use crate::systems::lib_calendar::{self, CalendarLive};
 use crate::systems::lib_chat_conversation::{self, ConversationLive};
 use crate::systems::lib_communities::{self, CommunitiesLive};
 use crate::systems::lib_contacts::{self, ContactsLive};
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 use crate::utils::clock::unix_ms;
 
@@ -337,7 +337,7 @@ pub fn drive_lib_chats(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut w: ChatsWorld,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
 ) {
     if !lib.chats {
@@ -363,7 +363,7 @@ pub fn drive_lib_chats(
             crate::systems::lib_host::clear_keyed("chats");
         }
         (true, None) => {
-            let compact = egui.compact();
+            let compact = metrics.compact();
             let live = ChatsLive {
                 screen: signal(w.screen()),
                 me: signal(Me::default()),
@@ -429,7 +429,7 @@ pub fn drive_lib_chats(
             // Your face, where the list's header draws it, for its sheet
             // (`ui::MainMenu::face`): taken by the sheet every frame.
             if w.screen() == ChatsScreen::List {
-                let vp = egui.viewport_pts();
+                let vp = metrics.viewport_pts();
                 act.face_rect = Some(egui::Rect::from_min_size(
                     egui::pos2(vp.x - 52.0, 8.0),
                     egui::vec2(40.0, 40.0),
@@ -437,9 +437,10 @@ pub fn drive_lib_chats(
             }
             w.settle(act, now);
             mirror(&live, &mut w, now);
-            // A copy the conversation asked for: the clipboard is egui's.
+            // A copy the conversation asked for: to the system clipboard, the
+            // one egui's copies reach too (`end_egui_frame`).
             if let Some(text) = lib_chat_conversation::take_copy(&live) {
-                egui.ctx().copy_text(text);
+                crate::utils::clipboard::set_text(&text);
             }
         }
     }

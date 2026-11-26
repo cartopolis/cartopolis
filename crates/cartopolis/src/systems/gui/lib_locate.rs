@@ -33,7 +33,6 @@ use bevy::prelude::{Commands, Res, ResMut};
 // The library's, not Bevy's.
 use mithril::prelude::*;
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_pins::{css, px_scale};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::locate::{
@@ -42,6 +41,7 @@ use crate::systems::locate::{
 };
 use crate::systems::theme;
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 
 /// The arrow's name in the library's host.
 const KEY: &str = "locate";
@@ -99,7 +99,7 @@ pub fn drive_lib_locate(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     arrow: Option<ResMut<LocateArrow>>,
-    egui: EguiRef,
+    metrics: bevy::prelude::Res<UiMetrics>,
     mut commands: Commands,
 ) {
     if !lib.locate {
@@ -116,7 +116,7 @@ pub fn drive_lib_locate(
         arrow.lib = true;
     }
     let view: Option<ArrowView> = arrow.lib_view;
-    let k = px_scale(egui.ui_scale());
+    let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();

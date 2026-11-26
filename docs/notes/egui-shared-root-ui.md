@@ -1,7 +1,7 @@
 ---
 topic: egui-shared-root-ui
-triggers: [egui_manager.rs, systems::egui_manager, systems/gui/plugin.rs, place_pins.rs, systems/nav/locate.rs, hud.rs, bookmarks.rs, chat_overlay.rs, systems/player/interact.rs, "panel-chain", "panel chain", ui_mut, available_rect_before_wrap, map_area, EguiRef, EguiMut, "Res<EguiManager>", NonSend, dnd_drag_source, rename_field, rename_row, TextEdit, ui_owns_keyboard, text_edit_focused, egui_wants_keyboard_input, egui_wants_pointer_input, owns_click, TexturesDelta, TextureUpdates, run_ui_unpainted, "dead clicks", "needs several clicks", "ignores clicks", egui_pass, upscaling, Core3d]
-updated: 2026-10-17
+triggers: [egui_manager.rs, ui_input.rs, systems::ui_input, UiInput, UiMetrics, systems::egui_manager, systems/gui/plugin.rs, place_pins.rs, systems/nav/locate.rs, hud.rs, bookmarks.rs, chat_overlay.rs, systems/player/interact.rs, "panel-chain", "panel chain", ui_mut, available_rect_before_wrap, map_area, EguiRef, EguiMut, "Res<EguiManager>", NonSend, dnd_drag_source, rename_field, rename_row, TextEdit, ui_owns_keyboard, text_edit_focused, egui_wants_keyboard_input, egui_wants_pointer_input, owns_click, TexturesDelta, TextureUpdates, run_ui_unpainted, "dead clicks", "needs several clicks", "ignores clicks", egui_pass, upscaling, Core3d]
+updated: 2026-11-26
 ---
 
 # Every panel draws into one root `Ui`, and egui's hit test is decided by draw order
@@ -103,6 +103,21 @@ button or selectable in the avatar chooser kept focus after a click and silently
 swallowed WASD **and** Space/Shift until somebody clicked empty
 space. Only real text entry yields the keyboard (plus a modal, the prim edit
 dialog, or a held Ctrl/Super chord).
+
+**Since 2026-11-26 a system that only asks these questions reads
+`systems::ui_input`, not the manager** (stage S2 of taking egui out):
+`Res<UiInput>` (`owns_click`, `wants_pointer`, `map_dragged`,
+`ui_owns_keyboard`, `ui_animating`) and `Res<UiMetrics>` (`ui_scale`,
+`viewport_pts`, `compact`, `window_to_ui`), plain `Send` resources on every
+target. `egui_manager::publish_ui_input` writes egui's verdict in `PreUpdate`,
+after `begin_egui_frame` and after the touch recogniser has put the cursor on
+the finger, and `lib_host::bridge_input` the library's; the two are OR-ed as
+`EguiManager` OR-ed them. A finger's verdict is taken at the window cursor of
+that moment, which is the cursor every world click passes. Read at the start of
+the pass, a focus or `Area` that changes mid-pass is seen a frame later than when
+a system asked egui directly. `EguiManager` keeps its methods for the egui
+systems that still draw; its surface is a `UiMetrics`, so the two cannot
+disagree.
 
 ## Reaching the manager: `EguiRef` / `EguiMut`, never `Res<EguiManager>`
 

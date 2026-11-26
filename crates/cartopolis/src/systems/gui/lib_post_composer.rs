@@ -34,9 +34,9 @@ use crate::systems::communities::Communities;
 use crate::systems::community_posts::{
     composer_act, reach_words, ready_to_post, ComposerAction, Draft,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::{cell, icon};
 use crate::systems::lib_settings::LibScreens;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The composer's name in the library's host.
@@ -227,7 +227,7 @@ pub fn drive_lib_post_composer(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut cs: ResMut<Communities>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.post_composer {
         return;
@@ -235,7 +235,7 @@ pub fn drive_lib_post_composer(
     if !cs.posts.composer_lib {
         cs.posts.composer_lib = true;
     }
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         if let Some(live) = m.as_ref() {
@@ -273,7 +273,7 @@ pub fn drive_lib_post_composer(
         let (Some(view), Some(draft)) = (view, cs.posts.draft.as_ref()) else {
             return;
         };
-        let placement = Placement::of(size.x, size.y, view.sideways, egui.ui_scale());
+        let placement = Placement::of(size.x, size.y, view.sideways, metrics.ui_scale());
         let fields = Fields::of(draft);
         let info = info_of(&cs, draft);
         let reach = reach_words(view.federating, view.followers);

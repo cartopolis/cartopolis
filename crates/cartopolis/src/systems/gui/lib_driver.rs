@@ -36,9 +36,9 @@ use crate::systems::driver::{
     above_bar, bar_bottom, DriverAct, DriverBar, DriverCard, DriverPlace, DriverSpeed, DriverState,
     BAR_HEIGHT, CARD_HEIGHT, CARD_MARGIN, ROUTE_BLUE, SIGN_RED, SIGN_WHITE, SPEED_DISC, TILE,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::{alpha, hex};
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The navigation chrome's name in the library's host.
@@ -101,7 +101,7 @@ pub fn drive_lib_driver(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut driver: ResMut<DriverState>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.driver {
         return;
@@ -111,7 +111,7 @@ pub fn drive_lib_driver(
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

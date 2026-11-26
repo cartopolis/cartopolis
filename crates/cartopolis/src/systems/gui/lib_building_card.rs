@@ -27,10 +27,10 @@ use mithril::prelude::{Button, Event};
 
 use crate::systems::building_card::{CardAction, CardContent};
 use crate::systems::building_select::BuildingSelection;
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::{grabber, header, icon, Placement};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::motion::Rest;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
 /// The card's name in the library's host.
@@ -87,7 +87,7 @@ pub fn drive_lib_building_card(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut selection: ResMut<BuildingSelection>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.building_card {
         return;
@@ -95,12 +95,12 @@ pub fn drive_lib_building_card(
     if !selection.card_lib {
         selection.card_lib = true;
     }
-    let size = egui.viewport_pts();
-    let placement = Placement::over_the_dock(size.x, size.y, egui.ui_scale());
+    let size = metrics.viewport_pts();
+    let placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());
     let full_rows = size.y
         * 0.5
         * if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-            egui.ui_scale()
+            metrics.ui_scale()
         } else {
             1.0
         };

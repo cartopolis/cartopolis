@@ -26,10 +26,10 @@ use bevy::prelude::*;
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme::tokens::hex;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::walk_guide::{
     WalkAct, WalkGuide, WalkView, AUTO_TOP, BAR_GAP, BAR_WIDTH, TURN_INSET, TURN_WIDTH,
 };
@@ -139,7 +139,7 @@ pub fn drive_lib_walk_guide(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
     mut guide: ResMut<WalkGuide>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.walk_guide {
         return;
@@ -147,7 +147,7 @@ pub fn drive_lib_walk_guide(
     if !guide.lib {
         guide.lib = true;
     }
-    let placement = Placement::of(egui.viewport_pts().x, egui.ui_scale());
+    let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The taps of the frame, for egui's system to do next frame.

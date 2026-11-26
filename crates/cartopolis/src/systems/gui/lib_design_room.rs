@@ -39,11 +39,11 @@ use crate::systems::design_room::{
     DUPLICATE_TIP, GROUP_TIP, NAV_GIZMO_H, OUTLINER_W, SCRIPTS_W, SNAP_TIP, TOOLS, TOOL_COLUMN_W,
     UNGROUP_TIP,
 };
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::gizmo::{GizmoMode, GizmoState};
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::script_editor::ScriptEditorState;
+use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, model_assets, theme};
 
 /// The pieces' names in the library's host.
@@ -217,7 +217,7 @@ pub fn drive_lib_design_room(
     mut editor: ResMut<ScriptEditorState>,
     mut right_panel: ResMut<RightPanel>,
     prims: Query<&Prim>,
-    egui: EguiRef,
+    metrics: Res<UiMetrics>,
 ) {
     if !lib.design_room {
         return;
@@ -225,11 +225,11 @@ pub fn drive_lib_design_room(
     if !room.lib {
         room.lib = true;
     }
-    let size = egui.viewport_pts();
+    let size = metrics.viewport_pts();
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement::over_the_dock`).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        egui.ui_scale()
+        metrics.ui_scale()
     } else {
         1.0
     };

@@ -6,7 +6,7 @@
 
 use crate::components::{Prim, Selected};
 use crate::resources::{EditDialogState, OnlineSession};
-use crate::systems::egui_manager::EguiRef;
+use crate::systems::ui_input::UiInput;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use cartopolis_core::msg;
@@ -55,13 +55,13 @@ pub const SNAP_DEG: f32 = 15.0;
 pub fn handle_gizmo_mode_input(
     mut gizmo_state: ResMut<GizmoState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     selected: Query<(), With<Selected>>,
     room: Res<crate::systems::design_room::DesignRoom>,
 ) {
     // Ignore T/R/S when a text field is focused or a Ctrl chord is held; stays live
     // while the edit dialog is open (pass `false`) so mode switching works during editing.
-    if egui_manager.ui_owns_keyboard(false, &keyboard) {
+    if ui_input.ui_owns_keyboard(false, &keyboard) {
         return;
     }
     // …and only while something is actually selected, because two of these three
@@ -280,7 +280,7 @@ pub fn handle_gizmo_interaction(
     >,
     mut gizmo_state: ResMut<GizmoState>,
     mut edit_dialog: ResMut<EditDialogState>,
-    egui_manager: EguiRef,
+    ui_input: Res<UiInput>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<crate::components::FreeCamera>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -306,8 +306,7 @@ pub fn handle_gizmo_interaction(
     };
 
     // ── On press: hit-test axis handles (skip if egui is consuming the click) ─
-    if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.egui_wants_pointer_input()
-    {
+    if mouse_buttons.just_pressed(MouseButton::Left) && !ui_input.wants_pointer() {
         // Read prim position without a mutable borrow.
         let (prim_pos, arm, start_tr) = {
             let Ok((tr, gt, _, _)) = selected_query.single() else {
