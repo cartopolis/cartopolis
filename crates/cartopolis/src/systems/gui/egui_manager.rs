@@ -592,24 +592,9 @@ impl EguiManager {
         self.overlay_owns_keyboard
     }
 
-    /// Is a drag under way that started on the bare map — not on a panel or a
-    /// floating area? A sheet over the map steps aside for it: someone panning
-    /// is looking at the map. Decided by where the press landed, as
-    /// [`Self::owns_click`] decides a finger's tap.
-    pub fn map_dragged(&self) -> bool {
-        self.ctx
-            .input(|i| {
-                i.pointer
-                    .is_decidedly_dragging()
-                    .then(|| i.pointer.press_origin())
-                    .flatten()
-            })
-            .is_some_and(|at| !press_over_ui(&self.ctx, self.map_rect, at))
-    }
-
     /// Declare (each frame) whether a modal owns the screen — see the `modal`
-    /// field. Written by `login_screen::render_login_screen`, read by
-    /// [`Self::ui_owns_keyboard`].
+    /// field. Written by `login_screen::render_login_screen`, read through
+    /// [`Self::verdict`] by `UiInput::ui_owns_keyboard`.
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
     }
@@ -633,35 +618,6 @@ impl EguiManager {
             .expect("ui_mut() called outside an egui frame")
     }
 
-    /// True when keyboard input belongs to the UI and the game (avatar movement,
-    /// gizmo-mode keys) must ignore it: a text field is focused, the prim edit dialog
-    /// is open, or a Ctrl chord is held (e.g. Ctrl+Shift+A toggling the AI panel).
-    /// Pass `edit_dialog_open = false` for actions that should stay live while editing
-    /// a prim (e.g. the gizmo Move/Rotate/Scale keys).
-    ///
-    /// Uses `text_edit_focused()`, NOT `egui_wants_keyboard_input()`: the latter is
-    /// `memory.focused().is_some()`, i.e. true whenever *any* widget has focus — so a
-    /// button/selectable in a window (e.g. the avatar chooser) kept focus after a
-    /// click and swallowed WASD **and Space** (avatar movement + fly). We only want
-    /// to yield the keyboard when text is actually being typed.
-    pub fn ui_owns_keyboard(
-        &self,
-        edit_dialog_open: bool,
-        keyboard: &ButtonInput<KeyCode>,
-    ) -> bool {
-        self.ctx.text_edit_focused()
-            || self.overlay_owns_keyboard
-            || self.modal
-            || edit_dialog_open
-            || keyboard.pressed(KeyCode::ControlLeft)
-            || keyboard.pressed(KeyCode::ControlRight)
-            // Super for the same reason Control is: on macOS the accelerator is
-            // Cmd, so a held Cmd has to suppress the game keys or `Cmd+W` walks
-            // the avatar forward on its way to closing the window.
-            || keyboard.pressed(KeyCode::SuperLeft)
-            || keyboard.pressed(KeyCode::SuperRight)
-    }
-
     /// egui's answers to `UiInput`'s questions this frame, for a press at the
     /// window `cursor` — see [`publish_ui_input`].
     pub fn verdict(&self, cursor: Option<Vec2>) -> EguiVerdict {
@@ -670,10 +626,9 @@ impl EguiManager {
 }
 
 /// [`EguiManager::verdict`] over its parts, so a test can drive a bare
-/// `Context`. Every answer is the one the manager's own method gives:
-/// `press_over_ui` for [`EguiManager::owns_click`]'s finger, the drag test of
-/// [`EguiManager::map_dragged`], the text focus of
-/// [`EguiManager::ui_owns_keyboard`].
+/// `Context`: `press_over_ui` for [`EguiManager::owns_click`]'s finger, a
+/// drag that started on the bare map (a sheet over the map steps aside for
+/// it), and whether a text field has the keyboard.
 pub(crate) fn verdict_of(
     ctx: &egui::Context,
     map_rect: Option<egui::Rect>,

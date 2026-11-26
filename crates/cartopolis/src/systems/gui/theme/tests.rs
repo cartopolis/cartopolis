@@ -59,22 +59,6 @@ fn text_colours_clear_their_backgrounds() {
             assert!(got >= min, "{theme}: {name}: contrast {got:.2} < {min}");
         }
     }
-    // The script editor's code box is dark in both themes (`script_editor`
-    // gives it the dark visuals), so its colours are measured once, on
-    // the dark ink.
-    let ink = DARK.ink;
-    for (name, fg) in [
-        ("code text", DARK.text),
-        ("code keyword", CODE_KEYWORD),
-        ("code string", CODE_STRING),
-        ("code literal", CODE_LITERAL),
-        ("code comment", CODE_COMMENT),
-        ("code api", CODE_API),
-        ("code call", CODE_CALL),
-    ] {
-        let got = contrast(fg, ink);
-        assert!(got >= 4.5, "{name}: contrast {got:.2} < 4.5");
-    }
 }
 
 /// Composite a translucent colour over an opaque one, as egui paints it.

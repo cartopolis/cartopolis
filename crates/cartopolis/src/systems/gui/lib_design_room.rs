@@ -222,9 +222,6 @@ pub fn drive_lib_design_room(
     if !lib.design_room {
         return;
     }
-    if !room.lib {
-        room.lib = true;
-    }
     let size = metrics.viewport_pts();
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement::over_the_dock`).

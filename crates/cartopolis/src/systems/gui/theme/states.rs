@@ -657,13 +657,6 @@ pub fn busy(ui: &mut egui::Ui, label: &str) {
     });
 }
 
-/// [`busy`] with a count, for the one kind of wait that can say how far along it
-/// is. The Route panel's tile read is the only place in the client that has this
-/// number today; it should not be the only place that can show it.
-pub fn busy_progress(ui: &mut egui::Ui, label: &str, done: usize, total: usize) {
-    busy(ui, &format!("{label} {done}/{total}"));
-}
-
 /// An inline failure with a Dismiss, returning `true` when dismissed so the
 /// caller clears its own `Option<String>`.
 ///

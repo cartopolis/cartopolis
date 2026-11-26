@@ -24,10 +24,11 @@
 //! nothing is fetched or drawn, and the map ring's *Plans here* still answers
 //! for one spot — it loads the feed for that.
 //!
-//! Three systems: [`drive_plans`] fetches and takes the ring's request,
-//! [`render_plans`] draws the dots in the panel chain (it culls against the
-//! map area, as the pins do), and [`render_plans_card`] is the card a tap
-//! opens, a floating `Area` like the place card.
+//! [`drive_plans`] fetches and takes the ring's request, [`render_plans`]
+//! draws the dots in the panel chain (it culls against the map area, as the
+//! pins do), and [`drive_plans_card`] and [`drive_plans_news`] decide when
+//! the card a tap opens and the news chip stand aside; the library draws
+//! the chip, the card and the news (`lib_plans`).
 
 use cartopolis_core::msg;
 use std::sync::{Arc, Mutex};
@@ -46,7 +47,7 @@ use crate::components::FreeCamera;
 use crate::grid::anchored_position_f64;
 use crate::platform::{http, storage};
 use crate::resources::MapAnchor;
-use crate::systems::egui_manager::{EguiMut, EguiRef, WorldAnchored};
+use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
 use crate::systems::layer_state::DataLayers;
 use crate::systems::place_pins::{map_area, place_delta};
@@ -82,11 +83,9 @@ const COUNCIL_R: f32 = 9.0;
 /// How near counts as "here" for a card's "Also here", metres. The ring's
 /// *Plans here* and a followed place use the shared `HERE_M`.
 const ALSO_HERE_M: f64 = 40.0;
-/// Width of the card: fixed, as the place card's is.
-const CARD_WIDTH: f32 = 330.0;
 /// The works' colour: not something to respond to, so not the notices'
 /// orange, but something that will happen in the street (the design's v3).
-pub const WORK: egui::Color32 = egui::Color32::from_rgb(0xF5, 0xC5, 0x18);
+pub const WORK: theme::Rgba8 = theme::Rgba8::from_rgb(0xF5, 0xC5, 0x18);
 /// A work's square marker's half-size, points.
 const WORK_R: f32 = 9.0;
 /// At most this many works a frame.
@@ -326,14 +325,12 @@ pub struct Plans {
     /// Notices and works near a followed place not shown yet
     /// ([`PlansFollow::news`]).
     news: Vec<(Card, [f64; 2])>,
-    /// The library draws the chip, the card and the news (`lib_plans`):
-    /// egui's systems draw none of them, still paint the dots, and publish
-    /// what only they work out in [`lib_view`](Self::lib_view).
-    pub lib: bool,
+    /// What [`render_plans`], [`drive_plans_card`] and [`drive_plans_news`]
+    /// work out for the library's chip, card and news (`lib_plans`).
     pub lib_view: PlansView,
 }
 
-/// What egui's systems work out for the library's edition (`lib_plans`).
+/// What the plans systems work out for the library (`lib_plans`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlansView {
     /// The layer's chip, when it is up: dots drawn, how many still open,
@@ -557,12 +554,13 @@ fn shown(n: &Notice, dl: &DataLayers, today: &str, since: &str) -> bool {
 pub fn render_plans(
     mut egui: EguiMut,
     mut plans: ResMut<Plans>,
-    mut dl: ResMut<DataLayers>,
+    dl: Res<DataLayers>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    lens: Res<crate::systems::scenario::LensSlot>,
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<crate::resources::RightPanel>,
@@ -587,7 +585,7 @@ pub fn render_plans(
     let in_space = globe.in_space(cam_cell, cam_tf);
     let high = in_space || globe.altitude_m(cam_cell, cam_tf) > MAX_ALTITUDE_M;
 
-    let map_rect = map_area(&mut egui, &keyboard, &route);
+    let map_rect = map_area(&mut egui, &keyboard, &route, &lens);
     let ui_scale = egui.ui_scale();
     let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
     let ctx = egui.ctx_mut().clone();
@@ -707,14 +705,7 @@ pub fn render_plans(
     if right_panel.is(crate::resources::RightPanel::None) {
         // The library's chip (`lib_plans`) is drawn from the counts; the
         // dots stay painted here.
-        if plans.lib {
-            plans.lib_view.chip = Some((drawn, open, works, high));
-            return;
-        }
-        let top = crate::systems::dock::reserved_top() + theme::OSD_MARGIN + 52.0;
-        if chip(&ctx, top, (drawn, open, works), high) {
-            dl.plans_enabled = false;
-        }
+        plans.lib_view.chip = Some((drawn, open, works, high));
     }
 }
 
@@ -827,7 +818,7 @@ fn work_shape(
     w: &Work,
     project: &impl Fn(f64, f64) -> Option<egui::Pos2>,
 ) {
-    let stroke = egui::Stroke::new(2.0, WORK);
+    let stroke = egui::Stroke::new(2.0, WORK.to_egui());
     let path = |pts: &[[f64; 2]], closed: bool| -> Option<Vec<egui::Pos2>> {
         let mut out: Vec<egui::Pos2> = pts
             .iter()
@@ -955,7 +946,7 @@ fn work_square(
             p.rect(
                 rect,
                 egui::CornerRadius::same(5),
-                WORK,
+                WORK.to_egui(),
                 egui::Stroke::new(2.0, theme::DARK32.ink),
                 egui::StrokeKind::Middle,
             );
@@ -973,63 +964,8 @@ fn work_square(
         .clicked()
 }
 
-/// The chip at the top while the layer is on: how many notices are drawn,
-/// how many still open, and how many works. Its ✕ turns the layer off;
-/// whether it was pressed.
-fn chip(ctx: &egui::Context, top: f32, counts: (usize, usize, usize), high: bool) -> bool {
-    let (what, open, works) = chip_words(counts, high);
-    let mut off = false;
-    egui::Area::new(egui::Id::new("plans_chip"))
-        .order(egui::Order::Middle)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
-        .show(ctx, |ui| {
-            crate::systems::theme::glass_frame()
-                .corner_radius(egui::CornerRadius::same(16))
-                .inner_margin(egui::Margin::symmetric(10, 4))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.label(
-                            egui::RichText::new(icons::FLAG)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().cream),
-                        );
-                        ui.label(
-                            egui::RichText::new("Plans")
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().cream),
-                        );
-                        ui.label(
-                            egui::RichText::new(&what)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        );
-                        if let Some(open) = &open {
-                            ui.label(
-                                egui::RichText::new(open)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::BRAND.to_egui()),
-                            );
-                        }
-                        if let Some(works) = &works {
-                            ui.label(egui::RichText::new(works).size(theme::SIZE_SUB).color(WORK));
-                        }
-                        off = crate::systems::discs::circle_button(
-                            ui,
-                            icons::CLEAR,
-                            false,
-                            true,
-                            "Turn the Plans layer off",
-                        )
-                        .clicked();
-                    });
-                });
-        });
-    off
-}
-
-/// The chip's words, as both editions set them: how many are drawn (or that
-/// the view is too high), how many still open, and the works planned.
+/// The layer's chip's words (`lib_plans` draws it): how many are drawn (or
+/// that the view is too high), how many still open, and the works planned.
 #[must_use]
 pub fn chip_words(
     counts: (usize, usize, usize),
@@ -1102,51 +1038,7 @@ fn deadline(n: &Notice, today: &str) -> Option<(String, bool)> {
     })
 }
 
-/// A link: the system browser where there is one, egui's hyperlink otherwise.
-fn link(ui: &mut egui::Ui, label: &str, url: &str) {
-    if crate::systems::data_layers::open_url_supported() {
-        if ui
-            .link(egui::RichText::new(label).size(theme::SIZE_SUB))
-            .on_hover_text(url)
-            .clicked()
-        {
-            crate::systems::data_layers::open_url(url);
-        }
-    } else {
-        ui.hyperlink_to(egui::RichText::new(label).size(theme::SIZE_SUB), url);
-    }
-}
-
-/// A row naming another card, with its marker; whether it was tapped.
-fn row(ui: &mut egui::Ui, marker: Marker, text: &str) -> bool {
-    ui.horizontal(|ui| {
-        match marker {
-            Marker::Open | Marker::Closed => {
-                let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(dot.center(), 4.0, marker.colour());
-            }
-            Marker::Council | Marker::Work => {
-                let (sq, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
-                ui.painter().rect_filled(
-                    egui::Rect::from_center_size(sq.center(), egui::vec2(10.0, 10.0)),
-                    3,
-                    marker.colour(),
-                );
-            }
-        }
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(theme::SIZE_SUB))
-                .truncate()
-                .sense(egui::Sense::click()),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    })
-    .inner
-}
-
-/// A row naming a notice, as both editions show it.
+/// A row naming a notice.
 fn notice_row(n: &Notice, today: &str, go: Card) -> Block {
     Block::Row {
         marker: if n.open_on(today) {
@@ -1186,7 +1078,7 @@ fn work_row(w: &Work, go: Card) -> Block {
     }
 }
 
-/// How a line on a card is coloured, as both editions colour it.
+/// How a line on a card is coloured (`lib_plans::ink` says how).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ink {
     Strong,
@@ -1198,34 +1090,11 @@ pub enum Ink {
     Work,
 }
 
-impl Ink {
-    #[must_use]
-    pub fn colour(self) -> egui::Color32 {
-        match self {
-            Ink::Strong => theme::p32().cream,
-            Ink::Text => theme::p32().text,
-            Ink::Dim => theme::p32().text_dim,
-            Ink::Open => theme::BRAND.to_egui(),
-            Ink::Council => theme::COUNCIL_LIGHT.to_egui(),
-            Ink::Work => WORK,
-        }
-    }
-}
-
 /// How large a line on a card is set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextSize {
     Sub,
     Tiny,
-}
-
-impl TextSize {
-    fn points(self) -> f32 {
-        match self {
-            TextSize::Sub => theme::SIZE_SUB,
-            TextSize::Tiny => theme::SIZE_TINY,
-        }
-    }
 }
 
 /// The marker beside a row: a notice's dot, open or closed, a council
@@ -1240,18 +1109,18 @@ pub enum Marker {
 
 impl Marker {
     #[must_use]
-    pub fn colour(self) -> egui::Color32 {
+    pub fn colour(self) -> theme::Rgba8 {
         match self {
-            Marker::Open => theme::BRAND.to_egui(),
-            Marker::Closed => theme::DARK32.accent,
-            Marker::Council => theme::COUNCIL.to_egui(),
+            Marker::Open => theme::BRAND,
+            Marker::Closed => theme::DARK.accent,
+            Marker::Council => theme::COUNCIL,
             Marker::Work => WORK,
         }
     }
 }
 
-/// One piece of a card, as both editions draw it: the card is worked out
-/// once ([`Plans::card_model`]) and each edition only sets it.
+/// One piece of a card: the card is worked out here
+/// ([`Plans::card_model`]) and the library only sets it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
     /// The card's main line.
@@ -1297,7 +1166,7 @@ pub enum CardAct {
     Follow((f64, f64)),
 }
 
-/// A card as both editions draw it: its kicker, and its blocks — `None`
+/// A card: its kicker, and its blocks — `None`
 /// while the feed is still being read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardModel {
@@ -1321,117 +1190,13 @@ pub fn follow_explained() -> String {
     )
 }
 
-/// egui's edition of a card's blocks; what a tap asked for.
-fn draw_blocks(ui: &mut egui::Ui, blocks: &[Block]) -> Option<CardAct> {
-    let mut asked = None;
-    for b in blocks {
-        match b {
-            Block::Title(text) => {
-                ui.label(
-                    egui::RichText::new(text)
-                        .size(theme::SIZE_BODY)
-                        .color(theme::p32().cream),
-                );
-            }
-            Block::Line {
-                text,
-                ink,
-                size,
-                gap,
-            } => {
-                if *gap {
-                    ui.add_space(4.0);
-                }
-                ui.label(
-                    egui::RichText::new(text)
-                        .size(size.points())
-                        .color(ink.colour()),
-                );
-            }
-            Block::Link { label, url, note } => match note {
-                Some(note) => {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(icons::OPEN_EXTERNAL)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        );
-                        link(ui, label, url);
-                        ui.label(
-                            egui::RichText::new(note)
-                                .size(theme::SIZE_TINY)
-                                .color(theme::p32().text_dim),
-                        );
-                    });
-                }
-                None => link(ui, label, url),
-            },
-            Block::Meeting { date, label, url } => {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(date)
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p32().text_dim),
-                    );
-                    link(ui, label, url);
-                });
-            }
-            Block::Section(text) => section(ui, text),
-            Block::Row { marker, text, go } => {
-                if row(ui, *marker, text) {
-                    asked = Some(CardAct::Go(*go));
-                }
-            }
-            Block::Follow { at, followed } => {
-                ui.add_space(6.0);
-                let label = if *followed {
-                    "Following · stop"
-                } else {
-                    "Follow this place"
-                };
-                let pressed = theme::secondary_toggle(ui, icons::FLAG, label, 0.0, *followed)
-                    .on_hover_text(follow_tip())
-                    .clicked();
-                if pressed {
-                    asked = Some(CardAct::Follow(*at));
-                }
-                if *followed || pressed {
-                    ui.label(
-                        egui::RichText::new(follow_explained())
-                            .size(theme::SIZE_TINY)
-                            .color(theme::p32().text_dim),
-                    );
-                }
-            }
-        }
-    }
-    asked
-}
-
-fn kicker(ui: &mut egui::Ui, text: &str, colour: egui::Color32) {
-    ui.label(
-        egui::RichText::new(text.to_uppercase())
-            .size(theme::SIZE_TINY)
-            .color(colour),
-    );
-}
-
-fn section(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::SIZE_TINY)
-            .color(theme::p32().text_dim),
-    );
-}
-
-/// The card a tap on a dot, a square or the ring's *Plans here* opens.
-#[allow(clippy::too_many_arguments)]
-pub fn render_plans_card(
-    egui: EguiRef,
+/// The card a tap on a dot, a square or the ring's *Plans here* opens:
+/// whether it stands aside (the place card's rules, for its reasons), for
+/// the library's card (`lib_plans`); and seeing a followed place's card
+/// counts what is near it as shown.
+pub fn drive_plans_card(
     mut plans: ResMut<Plans>,
-    dl: Res<DataLayers>,
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
     right_panel: Res<crate::resources::RightPanel>,
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -1441,72 +1206,22 @@ pub fn render_plans_card(
     let Some(card) = plans.card else {
         return;
     };
-    // The place card's suppression rules, for its reasons.
     let hidden = driver.active
         || keyboard.is_open()
         || menu.open
-        || (egui.compact() && !right_panel.is(crate::resources::RightPanel::None));
-    // Seeing a followed place's card counts what is near it as shown.
+        || (metrics.compact() && !right_panel.is(crate::resources::RightPanel::None));
     if !hidden {
         if let (Card::Here { lat, lng }, Some(feed)) = (card, plans.feed.clone()) {
             see_followed(&mut store, (lat, lng), &feed);
         }
     }
-    // The library's edition is showing (`lib_plans`): it draws the card from
-    // the same model, and only needs to know whether to stand aside.
-    if plans.lib {
-        if plans.lib_view.card_hidden != hidden {
-            plans.lib_view.card_hidden = hidden;
-        }
-        return;
-    }
-    if hidden {
-        return;
-    }
-    let model = plans.card_model(card, &dl, &store.data.plans_follow);
-    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let ctx = egui.ctx();
-    let mut close = false;
-    let mut asked: Option<CardAct> = None;
-    egui::Area::new(egui::Id::new("plans_card"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN));
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::close_button(ui).clicked() {
-                            close = true;
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            if let Some((text, ink)) = &model.kicker {
-                                kicker(ui, text, ink.colour());
-                            }
-                        });
-                    });
-                });
-                match &model.blocks {
-                    Some(blocks) => asked = draw_blocks(ui, blocks),
-                    None => {
-                        ui.label(
-                            egui::RichText::new("Reading what is published…")
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        );
-                    }
-                }
-            });
-        });
-    if close {
-        plans.card = None;
-    } else if let Some(a) = asked {
-        plans.act(a, &mut store);
+    if plans.lib_view.card_hidden != hidden {
+        plans.lib_view.card_hidden = hidden;
     }
 }
 
 impl Plans {
-    /// The card `card` as both editions draw it.
+    /// The card `card`, as the library draws it.
     #[must_use]
     pub fn card_model(&self, card: Card, dl: &DataLayers, follow: &PlansFollow) -> CardModel {
         let now = now_unix();
@@ -1813,87 +1528,20 @@ fn see_followed(
     }
 }
 
-/// The chip at the top while a followed place has news: how many, and a tap
-/// opens the newest one's card. Its own `Foreground` area, as the card is.
-pub fn render_plans_news(
-    egui: EguiRef,
+/// Whether the chip at the top for a followed place's news stands aside (a
+/// card, a panel, the menu, driving), for the library's chip (`lib_plans`).
+pub fn drive_plans_news(
     mut plans: ResMut<Plans>,
-    dl: Res<DataLayers>,
     right_panel: Res<crate::resources::RightPanel>,
     menu: Res<crate::systems::ui::MainMenu>,
     driver: Res<crate::systems::driver::DriverState>,
-    mut store: ResMut<crate::systems::user_store::UserStore>,
 ) {
     let hidden = plans.card.is_some()
         || driver.active
         || menu.open
         || !right_panel.is(crate::resources::RightPanel::None);
-    // The library draws the chip (`lib_plans`) from the same lines.
-    if plans.lib {
-        if plans.lib_view.news_hidden != hidden {
-            plans.lib_view.news_hidden = hidden;
-        }
-        return;
-    }
-    if hidden {
-        return;
-    }
-    let Some((head, line)) = plans.news_lines() else {
-        return;
-    };
-    // Under the layer's own chip when that is up.
-    let chip_up = dl.plans_enabled;
-    let top = crate::systems::dock::reserved_top()
-        + theme::OSD_MARGIN
-        + 52.0
-        + if chip_up { 40.0 } else { 0.0 };
-    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-    let mut open = false;
-    egui::Area::new(egui::Id::new("plans_news"))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
-        .show(egui.ctx(), |ui| {
-            let r = crate::systems::theme::glass_frame()
-                .corner_radius(egui::CornerRadius::same(14))
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.set_width(width);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(icons::FLAG)
-                                .size(theme::SIZE_BODY)
-                                .color(theme::BRAND.to_egui()),
-                        );
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(head)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p32().cream),
-                            );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(line)
-                                        .size(theme::SIZE_TINY)
-                                        .color(theme::p32().text_dim),
-                                )
-                                .truncate(),
-                            );
-                        });
-                    });
-                });
-            let tap = ui.interact(
-                r.response.rect,
-                egui::Id::new("plans_news_tap"),
-                egui::Sense::click(),
-            );
-            let tap = theme::named(ui, tap, "New near a place you follow");
-            open = tap
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked();
-        });
-    if open {
-        // The newest notice's own card; everything near its place is shown.
-        plans.open_news(&mut store);
+    if plans.lib_view.news_hidden != hidden {
+        plans.lib_view.news_hidden = hidden;
     }
 }
 

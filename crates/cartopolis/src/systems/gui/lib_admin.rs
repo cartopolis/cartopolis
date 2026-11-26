@@ -1,16 +1,13 @@
-//! The Admin pages drawn by the component library (`lib_host`), beside
-//! egui's (`admin::render_admin_panel`): the home with the areas this account
-//! may open, the report queue and one report, the accounts and one account,
-//! the roles and the building claims.
+//! The Admin pages drawn by the component library (`lib_host`): the home
+//! with the areas this account may open, the report queue and one report,
+//! the accounts and one account, the roles and the building claims.
 //!
-//! On with `CARTO_UI_LIB=admin` (or `1`), on the web `?ui=lib`
-//! (`&panel=admin` opens it). egui's panel steps aside (`AdminState::lib`)
-//! keeping an empty strip, and still drains the HTTP replies, polls the open
-//! reports for the You page's badge and closes the panel for an account that
-//! may not run anything. Every change — mark handled, suspend, roles, delete,
-//! release — goes through the same `AdminState` methods egui's pages call,
-//! over the same operator API (`/api/admin/*`), so the two editions cannot
-//! drift apart; the server checks the permission on every call either way.
+//! `&panel=admin` on the web opens it. `admin::drive_admin` drains the HTTP
+//! replies, polls the open reports for the You page's badge and closes the
+//! panel for an account that may not run anything. Every change — mark
+//! handled, suspend, roles, delete, release — goes through `AdminState`'s
+//! methods over the operator API (`/api/admin/*`); the server checks the
+//! permission on every call.
 //!
 //! **State.** The lists are mirrored into signals each frame, and only when
 //! they differ; the two text fields (the account search, what was done about
@@ -136,11 +133,8 @@ pub fn drive_lib_admin(
     if !lib.admin {
         return;
     }
-    if !admin.lib {
-        admin.lib = true;
-    }
-    // Asked to open on Admin (`?panel=admin` on the web): once. egui's system
-    // closes it again for an account that may not run anything.
+    // Asked to open on Admin (`?panel=admin` on the web): once.
+    // `admin::drive_admin` closes it again for an account that may not run anything.
     if lib.open_admin && !*opened {
         *opened = true;
         *right_panel = RightPanel::Admin;

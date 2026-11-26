@@ -1,16 +1,14 @@
-//! The Search panel drawn by the component library (`lib_host`), beside
-//! egui's (`geo_nav::render_search_panel`) — phase 5 of
-//! `docs/mockups/component-library`, the third screen, and the first with a
-//! text field that drives the world: type, Enter flies to the top hit, a row
-//! flies there or routes to it, Back, Forward and Home above, and the three
-//! things to do with this view below.
+//! The Search panel drawn by the component library (`lib_host`) — phase 5
+//! of `docs/mockups/component-library`, the third screen, and the first with
+//! a text field that drives the world: type, Enter flies to the top hit, a
+//! row flies there or routes to it, Back, Forward and Home above, and the
+//! three things to do with this view below.
 //!
 //! On with `CARTO_UI_LIB=search` (or `1`), on the web `?ui=lib`
-//! (`&panel=search` opens it). egui's panel steps aside (`GeoNavState::lib`)
-//! keeping an empty strip, and still runs the view actions, since it holds
-//! the camera they need (`GeoNavState::lib_view`). Everything the field and
-//! the rows do goes through the same `GeoNavState` methods egui's calls, so
-//! the two editions cannot drift apart.
+//! (`&panel=search` opens it). `geo_nav::drive_search` runs the view
+//! actions, since it holds the camera they need (`GeoNavState::lib_view`).
+//! Everything the field and the rows do goes through `GeoNavState`'s
+//! methods.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -150,16 +148,6 @@ fn nav_of(nav: &GeoNavState, has_home: bool) -> Nav {
     }
 }
 
-/// Claims the panel for the library before egui's systems run (`PreUpdate`):
-/// claimed only in `drive_lib_search`, egui drew it for one frame first and
-/// took the "focus the field" a scripted run or Ctrl+L asks for, so the
-/// library's field mounted without the keyboard.
-pub fn claim(lib: Res<LibScreens>, mut nav: ResMut<GeoNavState>) {
-    if lib.search && !nav.lib {
-        nav.lib = true;
-    }
-}
-
 /// Mounts, bridges and unmounts the Search panel. `PostUpdate`, before
 /// `DriveUi`, as every library screen.
 #[allow(clippy::too_many_arguments)]
@@ -175,9 +163,6 @@ pub fn drive_lib_search(
 ) {
     if !lib.search {
         return;
-    }
-    if !nav.lib {
-        nav.lib = true;
     }
     if lib.open_search && !*opened {
         *opened = true;
@@ -269,6 +254,11 @@ pub fn drive_lib_search(
                 let focused = input.overlay_owns_keyboard();
                 if nav.search_has_focus != focused {
                     nav.search_has_focus = focused;
+                    // The field took the keyboard back: the list it answered
+                    // comes back with it.
+                    if focused {
+                        nav.query_focused();
+                    }
                 }
             }
         }

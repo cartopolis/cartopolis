@@ -1,43 +1,23 @@
-//! Places: a side panel (top bar ▸ Places) holding saved locations in a
-//! directory tree, and the machinery behind the HUD's ★ button.
+//! Places: the state behind the Places panel (top bar ▸ Places, drawn by
+//! `lib_places`) — saved locations in a directory tree — and the machinery
+//! behind it: naming a new place, taking its photo, applying what the panel
+//! asked for.
 //!
 //! A new place is named by reverse-geocoding its coordinates through Nominatim
 //! (same usage policy as the search bar: identifying User-Agent, background
-//! thread, low volume); the name is user-editable afterwards. Clicking a place
-//! teleports through the normal geo_nav path, preserving the camera mode.
+//! thread, low volume); the name is user-editable afterwards. Jumping to a
+//! place teleports through the normal geo_nav path, preserving the camera mode.
 //! Everything persists in the user store (`data/user.json`).
 //!
 //! **The tree.** Places live in nested folders ([`crate::systems::user_store::PlaceFolder`])
-//! — an ordinary directory structure, dragged and dropped like one. A folder
-//! carries a colour, and every place inside it is drawn in that colour on the
-//! map (`crate::systems::place_pins`), which is what makes a group readable at a
-//! glance instead of a list to scroll. The tree is flattened into [`Row`]s once
-//! per frame and rendered as a
-//! flat list with indentation: recursion through egui would need the store
-//! borrowed mutably inside its own draw closure, and the rows are what the drop
-//! targets are anyway.
-//!
-//! **Rows drag off their name, not off `Ui::dnd_drag_source`.** That helper
-//! interacts over the whole row with `Sense::drag()` *only*, and egui marks a
-//! drag-only widget as dragged the instant the pointer goes down — no movement
-//! threshold, because with nothing else sensing the press there is nothing to
-//! disambiguate ("this widget is just sensitive to drags, so we can mark it as
-//! dragged right away", egui's `interaction.rs`). Every button in the row was
-//! then inside a widget that began dragging on mouse-down, and the row's
-//! contents were re-drawn into an `Order::Tooltip` layer, which always yields an
-//! empty `Response` — so pressing ✏ started a drag and the click was lost.
-//!
-//! The drag therefore lives on a single widget, the row's name, declared
-//! `click_and_drag`. Sensing both, egui postpones the decision until it knows,
-//! so a click still clicks (jump, or fold the folder) and only a press-and-move
-//! starts a drag. The payload goes through `Response::dnd_set_drag_payload`,
-//! which is the alternative egui documents for this; it paints no ghost at the
-//! cursor, so [`drag_ghost`] does.
+//! — an ordinary directory structure. A folder carries a colour, and every
+//! place inside it is drawn in that colour on the map (`crate::systems::place_pins`),
+//! which is what makes a group readable at a glance instead of a list to
+//! scroll. The tree is flattened into [`Row`]s ([`rows`]) and drawn as a flat
+//! list with indentation.
 
 use crate::platform::sync::{Arc, Mutex};
 use crate::resources::MapAnchor;
-use crate::systems::egui_manager::EguiMut;
-use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
@@ -47,11 +27,9 @@ use crate::grid::AnchoredCamera;
 use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::geo_nav::{nominatim_base_url, CameraPose, GeoNavState, Teleport};
-use crate::systems::icons;
-use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
-/// What a rename or a drag is targeting — the two id spaces are separate, so it
+/// What a rename or a move is targeting — the two id spaces are separate, so it
 /// has to say which tree the id belongs to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Item {
@@ -59,41 +37,22 @@ pub enum Item {
     Folder(u64),
 }
 
-/// A rename in progress.
-struct Rename {
-    item: Item,
-    buf: String,
-    /// The field still has to be handed the keyboard — set when ✏ is clicked and
-    /// cleared on the frame the field actually takes focus. Without it, ✏ opens a
-    /// field you then have to click into before you can type.
-    focus: bool,
-}
-
 /// Places UI state + the reverse-geocode result channel.
 #[derive(Resource, Default)]
 pub struct BookmarksState {
     pub panel_open: bool,
-    /// Item being renamed, if any.
-    editing: Option<Rename>,
     /// Finished reverse lookups: (bookmark id, address).
     resolved: Arc<Mutex<Vec<(u64, String)>>>,
-    /// Thumbnails already uploaded, by photo stem. `None` means "looked and there
-    /// was nothing there" — cached just as firmly as a hit, because the lookup
-    /// runs once per row per frame and a miss that is not remembered is a file
-    /// read sixty times a second for a photo that will never arrive.
-    photo_textures: HashMap<String, Option<egui::TextureHandle>>,
     /// The capture in flight, and which place it is for. One at a time: the
     /// platform arms all put a modal in front of the user, so a second request
     /// could not be answered anyway.
     capture: Option<PendingPhoto>,
-    /// The photo being looked at full-size, if any.
-    viewing: Option<PhotoView>,
     /// Why the last photo failed, shown in the panel until the next attempt.
     photo_error: Option<String>,
-    /// The library draws the Places panel (`lib_places`): egui's panel keeps
-    /// only an empty strip of its width, and still draws the photo viewer,
-    /// which needs egui's textures.
-    pub lib: bool,
+    /// The photo open full size (`lib_picture_viewer`): the place and its
+    /// photo's stem. Outlives the panel: a photo opened from it stays up
+    /// when the panel closes behind it.
+    viewing: Option<(u64, String)>,
 }
 
 /// A photo the user asked for and has not got yet.
@@ -102,7 +61,7 @@ struct PendingPhoto {
     stage: PhotoStage,
 }
 
-/// The two waits between "take a photo" and a thumbnail in the row.
+/// The two waits between "take a photo" and a photo on the place.
 enum PhotoStage {
     /// The camera app, the file dialog or the browser's picker is up.
     Capturing(crate::platform::photo::Capture),
@@ -114,22 +73,6 @@ enum PhotoStage {
     /// frame on exactly the frame the user comes back from the camera. (On wasm
     /// the pool is the main thread, so there it is deferred rather than moved.)
     Preparing(Arc<Mutex<Option<Result<crate::utils::photo::Prepared, String>>>>),
-}
-
-/// The full-size viewer over the panel.
-struct PhotoView {
-    place: u64,
-    name: String,
-    /// Photo stem, so the viewer closes itself if the photo is replaced or
-    /// deleted underneath it.
-    stem: String,
-    /// Uploaded once the bytes are in hand.
-    texture: Option<egui::TextureHandle>,
-    /// Set when there is nothing left to wait for: no such photo, or one the
-    /// decoder cannot read. Distinct from `texture: None`, which on the web means
-    /// "the read has not come back yet" — collapsing the two is how a photo that
-    /// is merely slow ends up reported as broken.
-    unavailable: bool,
 }
 
 impl BookmarksState {
@@ -176,16 +119,33 @@ impl BookmarksState {
         self.photo_error.as_deref()
     }
 
-    /// The full-size photo is up (egui's window, over either edition).
+    /// The photo open full size, as its place's name and its stem — or
+    /// `None`, closing it, when the place is gone or its photo was removed
+    /// or replaced underneath the viewer.
     #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
-    pub(crate) fn viewing_photo(&self) -> bool {
-        self.viewing.is_some()
+    pub(crate) fn viewing_photo(&mut self, store: &UserStore) -> Option<(String, String)> {
+        let (place, stem) = self.viewing.clone()?;
+        let shown = store
+            .data
+            .bookmarks
+            .iter()
+            .find(|b| b.id == place && b.photo.as_deref() == Some(stem.as_str()))
+            .map(|b| (b.name.clone(), stem));
+        if shown.is_none() {
+            self.viewing = None;
+        }
+        shown
     }
 
-    /// Do what a panel asked for this frame: egui's and the library's both
-    /// collect an [`Actions`] and hand it here, so the two cannot drift.
-    /// `current` is where the camera is now ([`current_view`]), for a new
-    /// place and for "Update to the current view".
+    /// Close the full-size photo (the viewer's ✕).
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub(crate) fn close_photo(&mut self) {
+        self.viewing = None;
+    }
+
+    /// Do what the panel asked for this frame: it collects an [`Actions`] and
+    /// hands it here. `current` is where the camera is now ([`current_view`]),
+    /// for a new place and for "Update to the current view".
     ///
     /// Returns true when the panel jumped to a place, and so should close:
     /// jumping is the last thing anyone wants the Places list for, and on a
@@ -222,7 +182,7 @@ impl BookmarksState {
 /// world anchor exists.
 pub(crate) type CurrentView = (f64, f64, f64, CameraPose);
 
-/// The camera's [`CurrentView`], for either edition of the panel.
+/// The camera's [`CurrentView`].
 pub(crate) fn current_view(
     camera: &AnchoredCamera,
     camera_state: &CameraState,
@@ -273,17 +233,9 @@ pub fn poll_bookmark_addresses(bookmarks: Res<BookmarksState>, mut store: ResMut
 /// Name a bookmark carries until its address resolves.
 pub const PLACEHOLDER_NAME: &str = "Resolving address…";
 
-/// Points of indentation per tree level.
-const INDENT: f32 = 12.0;
-
-/// Side of the square a place row opens with — see [`marker_slot`]. The photo
-/// tile's size, because that is the one of the two that cannot be chosen freely
-/// (the stored thumbnail is cut for it).
-const MARKER_SLOT: f32 = crate::utils::photo::THUMB_POINTS;
-
 /// One line of the flattened tree. Owned copies of what the row draws, so the
-/// render loop holds no borrow of the store and can queue mutations freely —
-/// and, for the library's edition, what it compares from frame to frame.
+/// panel holds no borrow of the store and can queue mutations freely — and
+/// what it compares from frame to frame.
 #[derive(Clone, PartialEq)]
 pub(crate) enum Row {
     Folder {
@@ -309,7 +261,7 @@ pub(crate) enum Row {
     },
 }
 
-/// The tree as both editions draw it ([`flatten`] from the top).
+/// The tree as the panel draws it ([`flatten`] from the top).
 pub(crate) fn rows(store: &UserStore) -> Vec<Row> {
     let mut rows = Vec::new();
     flatten(store, None, 0, &mut rows);
@@ -359,9 +311,8 @@ fn flatten(store: &UserStore, parent: Option<u64>, depth: usize, out: &mut Vec<R
     }
 }
 
-/// Everything the panel wants done, collected while drawing (the store is
-/// borrowed immutably there) and applied afterwards by
-/// [`BookmarksState::apply_actions`] — by egui's panel and the library's alike.
+/// Everything the panel wants done, collected from its taps and applied by
+/// [`BookmarksState::apply_actions`].
 #[derive(Default)]
 pub(crate) struct Actions {
     pub(crate) new_folder: bool,
@@ -381,13 +332,14 @@ pub(crate) struct Actions {
     pub(crate) rename: Option<(Item, String)>,
     pub(crate) recolor: Option<(u64, [f32; 3])>,
     pub(crate) toggle_collapse: Option<u64>,
-    /// (what was dragged, which folder it was dropped on — `None` = top level).
+    /// (what was moved, which folder it goes into — `None` = top level).
     pub(crate) drop: Option<(Item, Option<u64>)>,
     /// Start a photo capture for this place.
     pub(crate) take_photo: Option<u64>,
     /// Forget this place's photo.
     pub(crate) clear_photo: Option<u64>,
-    /// Open the full-size viewer: the place, its name and its photo stem.
+    /// Open the full-size photo (`lib_picture_viewer`): the place, its name
+    /// and its photo stem.
     pub(crate) view_photo: Option<(u64, String, String)>,
     /// Abandon the capture in flight.
     pub(crate) cancel_photo: bool,
@@ -412,874 +364,6 @@ impl Actions {
         });
         self.teleport_label = Some(name.to_string());
     }
-}
-
-fn egui_color(c: [f32; 3]) -> egui::Color32 {
-    egui::Color32::from_rgb(
-        (c[0] * 255.0) as u8,
-        (c[1] * 255.0) as u8,
-        (c[2] * 255.0) as u8,
-    )
-}
-
-/// The fold arrow, painted rather than written: ▶/▼ are not in the bundled icon
-/// font and come out as tofu boxes next to every folder.
-fn fold_arrow(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
-    // **The target grows, the triangle does not.** 12 pt is 18 dp on a phone —
-    // the smallest control in the app, on the Places tree's fold control. The
-    // arrow is painted from `rect.center()` at a fixed 4 pt radius, so widening
-    // the allocation costs nothing visually and buys a hittable target.
-    let side = 12.0_f32.max(if theme::touch_layout() {
-        theme::row_height()
-    } else {
-        12.0
-    });
-    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
-    let response = theme::named(ui, response, if collapsed { "Expand" } else { "Collapse" });
-    if ui.is_rect_visible(rect) {
-        let c = rect.center();
-        let r = 4.0;
-        let color = if response.hovered() {
-            ui.visuals().strong_text_color()
-        } else {
-            ui.visuals().weak_text_color()
-        };
-        let points = if collapsed {
-            vec![
-                egui::pos2(c.x - r * 0.6, c.y - r),
-                egui::pos2(c.x - r * 0.6, c.y + r),
-                egui::pos2(c.x + r * 0.8, c.y),
-            ]
-        } else {
-            vec![
-                egui::pos2(c.x - r, c.y - r * 0.6),
-                egui::pos2(c.x + r, c.y - r * 0.6),
-                egui::pos2(c.x, c.y + r * 0.8),
-            ]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(
-            points,
-            color,
-            egui::Stroke::NONE,
-        ));
-    }
-    response
-}
-
-/// Draw `item`'s row as a rename field, if that is the row being renamed, and
-/// say whether it did — the caller then skips its normal row.
-fn rename_row(
-    ui: &mut egui::Ui,
-    act: &mut Actions,
-    editing: &mut Option<Rename>,
-    item: Item,
-    depth: usize,
-) -> bool {
-    let Some(edit) = editing.as_mut().filter(|e| e.item == item) else {
-        return false;
-    };
-    let mut commit = false;
-    ui.horizontal(|ui| {
-        // Line the field up with the row's name, past the fold arrow / pin dot.
-        ui.add_space(depth as f32 * INDENT + 12.0);
-        commit = rename_field(ui, item, edit);
-    });
-    if commit {
-        if let Some(edit) = editing.take() {
-            act.rename = Some((item, edit.buf));
-        }
-    }
-    true
-}
-
-/// The rename field. Given a stable id of its own — an auto-id would shift when
-/// the row swaps its label for this field, and a field whose id changes between
-/// frames loses focus on the frame it gains it. Returns true when the edit is
-/// committed (Enter or ✔).
-fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
-    let id = match item {
-        Item::Place(id) => egui::Id::new(("place_rename", id)),
-        Item::Folder(id) => egui::Id::new(("folder_rename", id)),
-    };
-    let mut commit = false;
-    // The apply button takes the right edge first, then the field is sized from what is
-    // genuinely left. Reserving a guessed width for the button instead made the
-    // row a few points wider than the panel — and a resizable `Panel` stores its
-    // size from its content rect, so the panel grew by that much *every frame*
-    // for as long as the field was open.
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        commit = theme::icon_button_small(ui, icons::CHECK, "Apply").clicked();
-        // `desired_width` is the field's *text* width; its frame padding and
-        // stroke sit outside that, so they have to come off too.
-        let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
-        let field = crate::systems::theme::text_field(
-            ui,
-            egui::TextEdit::singleline(&mut edit.buf)
-                .id(id)
-                .desired_width((ui.available_width() - margin).max(40.0)),
-        );
-        if edit.focus {
-            field.request_focus();
-            edit.focus = false;
-        }
-        commit |= field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    });
-    commit
-}
-
-/// The Places side panel: a directory tree of folders and saved locations.
-/// Click a name to jump there (camera view is preserved), ⚑ to route to it, 🔄 to
-/// update it to the current view, ✏ to rename, 🗑 to delete; drag a row onto a
-/// folder to move it, and use the folder's colour swatch to recolour its pins on
-/// the map.
-///
-/// A place's own actions are in its context menu (long-press on a phone, right-click
-/// on a desktop) rather than in the row — see [`place_row`] for why.
-#[allow(clippy::too_many_arguments)]
-pub fn render_bookmarks_panel(
-    mut egui: EguiMut,
-    mut bookmarks: ResMut<BookmarksState>,
-    mut store: ResMut<UserStore>,
-    mut nav: ResMut<GeoNavState>,
-    camera_state: Res<CameraState>,
-    camera: AnchoredCamera,
-    mut right_panel: ResMut<crate::resources::RightPanel>,
-    map_anchor: Res<MapAnchor>,
-) {
-    let open_before = right_panel.is(crate::resources::RightPanel::Places);
-    // Drawn before the early return below, so a photo opened from the panel
-    // survives the panel being closed behind it. It is a window rather than
-    // something inside the panel because on a phone the panel *is* the screen and
-    // a photo shown inside a 300 pt column is a thumbnail with extra steps.
-    photo_viewer(&egui.ctx, egui.viewport_pts(), &mut bookmarks);
-    // Nothing below this line does anything a closed panel can observe — `open`
-    // cannot become true without the panel already being open, and the closure that
-    // sets `act` never runs — but `flatten` is not free: it clones a `String` per
-    // node and, for every folder, walks all bookmarks calling `is_descendant`. That
-    // is O(folders × places × depth) plus an allocation per row, every frame, for a
-    // panel nobody is looking at. `render_route_sheet` guards itself the same way.
-    if !open_before {
-        return;
-    }
-    // The library's edition is showing (`lib_places`): keep an empty strip of
-    // the panel's width, so the dock and the pins move aside and a click
-    // there is not the world's (as Search's and Settings' do). The viewer
-    // above stays egui's, since the photos are egui textures.
-    if bookmarks.lib {
-        let compact = egui.compact();
-        let viewport_w = egui.viewport_pts().x;
-        let mut open = true;
-        let mut strip = crate::systems::egui_manager::responsive_right_panel(
-            "bookmarks_panel",
-            compact,
-            viewport_w,
-            300.0,
-        )
-        .frame(egui::Frame::NONE)
-        .show_separator_line(false);
-        if !compact {
-            strip = strip.resizable(false).exact_size(300.0);
-        }
-        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
-        return;
-    }
-
-    // Current location + view, for the per-place "update to here" action.
-    let current = current_view(&camera, &camera_state, &map_anchor);
-
-    let has_place = current.is_some();
-
-    let rows = rows(&store);
-
-    let mut act = Actions::default();
-    let mut editing = bookmarks.editing.take();
-    // Taken out and put back for the same reason `editing` is: the draw closure
-    // cannot hold a borrow of the resource it is being called from.
-    let mut thumbs = std::mem::take(&mut bookmarks.photo_textures);
-    let capturing_for = bookmarks.capturing_for();
-    let photo_error = bookmarks.photo_error().map(str::to_owned);
-
-    crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        crate::resources::RightPanel::Places,
-        "bookmarks_panel",
-        300.0,
-        |ui| {
-            // The two add buttons are a row of their own under the header, not header
-            // actions: two words plus a medallion, a title and a close button do not
-            // fit across a 300 pt panel — the header gave the buttons the right edge
-            // and truncated its own name to "Save…", which is the one thing in a
-            // header nobody can do without. They carry their icon *and* their word,
-            // because side by side the word is what tells them apart.
-            ui.horizontal(|ui| {
-                // Disabled rather than hidden before the world anchor exists: there is
-                // nowhere to save *yet*, and a button that comes and goes is harder to
-                // find again than one that is greyed.
-                if ui
-                    .add_enabled_ui(has_place, |ui| {
-                        theme::secondary_button(ui, icons::BOOKMARK_ADD, "Place", 0.0)
-                    })
-                    .inner
-                    .on_hover_text("Save where you are now, with this view")
-                    .on_disabled_hover_text("No position yet — the world is still loading")
-                    .clicked()
-                {
-                    act.new_place = true;
-                }
-                if theme::secondary_button(ui, icons::NEW_FOLDER, "Folder", 0.0)
-                    .on_hover_text("New folder — drag places into it to group them")
-                    .clicked()
-                {
-                    act.new_folder = true;
-                }
-            });
-            // A capture puts the camera (or a file dialog) in front of everything, so
-            // this strip is only seen on the way back — which is exactly when "did
-            // that work?" is the question. It is also the only place the capture can
-            // be abandoned: on Android nothing tells us the user pressed Back.
-            if let Some(place) = capturing_for {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    let waiting = rows
-                        .iter()
-                        .find_map(|row| match row {
-                            Row::Place { id, name, .. } if *id == place => Some(name.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or("this place");
-                    ui.label(
-                        egui::RichText::new(format!("Waiting for a photo for {waiting}…"))
-                            .size(12.0)
-                            .color(theme::p32().text_dim),
-                    );
-                    if theme::action_button(ui, "Cancel").clicked() {
-                        act.cancel_photo = true;
-                    }
-                });
-            }
-            if let Some(message) = &photo_error {
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(message.as_str())
-                            .size(12.0)
-                            .color(theme::p32().warn),
-                    );
-                    if theme::action_button(ui, "Dismiss").clicked() {
-                        act.dismiss_photo_error = true;
-                    }
-                });
-            }
-            if rows.is_empty() {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(
-                        "No places yet — \"+ Place\" saves where you are now, and \
-                     \"+ Folder\" makes somewhere to sort them into.",
-                    )
-                    .size(13.0)
-                    .color(theme::p32().text_dim),
-                );
-            }
-            egui::ScrollArea::vertical()
-                // `auto_shrink` defaults to true on both axes, which sizes the
-                // area to its content: on a short list the scrollbar lands in the
-                // middle of the panel and the rows do not fill the width the panel
-                // was docked at. Every other panel in the client says this; these
-                // two were written before it was the house rule.
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for row in &rows {
-                        ui.add_space(2.0);
-                        match row {
-                            Row::Folder {
-                                id,
-                                depth,
-                                name,
-                                color,
-                                collapsed,
-                                count,
-                            } => {
-                                folder_row(
-                                    ui,
-                                    &mut act,
-                                    &mut editing,
-                                    *id,
-                                    *depth,
-                                    name,
-                                    *color,
-                                    *collapsed,
-                                    *count,
-                                );
-                            }
-                            Row::Place {
-                                id,
-                                depth,
-                                name,
-                                color,
-                                lat,
-                                lng,
-                                altitude,
-                                photo,
-                            } => {
-                                place_row(
-                                    ui,
-                                    &mut act,
-                                    &mut editing,
-                                    &mut thumbs,
-                                    *id,
-                                    *depth,
-                                    name,
-                                    *color,
-                                    (*lat, *lng, *altitude),
-                                    photo.as_deref(),
-                                    current.is_some(),
-                                );
-                            }
-                        }
-                    }
-                    // Somewhere to drop a row to get it *out* of a folder. Only while a
-                    // drag is live — an always-present strip is just clutter, and the
-                    // tree has no other empty space to aim at once it fills the panel.
-                    if egui::DragAndDrop::has_payload_of_type::<Item>(ui.ctx()) {
-                        ui.add_space(6.0);
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 26.0),
-                            egui::Sense::hover(),
-                        );
-                        let hot = response.contains_pointer();
-                        let stroke = egui::Stroke::new(
-                            1.0,
-                            if hot {
-                                theme::p32().accent
-                            } else {
-                                theme::p32().line
-                            },
-                        );
-                        ui.painter().rect_stroke(
-                            rect.shrink(1.0),
-                            4.0,
-                            stroke,
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "drop here for the top level",
-                            egui::FontId::proportional(12.0),
-                            stroke.color,
-                        );
-                        if let Some(item) = response.dnd_release_payload::<Item>() {
-                            act.drop = Some((*item, None));
-                        }
-                    }
-                });
-        },
-    );
-    bookmarks.editing = editing;
-    bookmarks.photo_textures = thumbs;
-    drag_ghost(&egui.ctx, &rows);
-
-    // A jump closes the panel (`BookmarksState::apply_actions` says why) — applied
-    // after the `right_panel` borrow the draw closure held has ended.
-    if bookmarks.apply_actions(&mut store, &mut nav, current, act) {
-        *right_panel = crate::resources::RightPanel::None;
-    }
-}
-
-/// One folder row: fold arrow, colour swatch (the pin colour of everything in
-/// it), name, and the rename/delete actions. The whole row is both a drag source
-/// and a drop target, which is what makes the tree a directory structure.
-#[allow(clippy::too_many_arguments)]
-fn folder_row(
-    ui: &mut egui::Ui,
-    act: &mut Actions,
-    editing: &mut Option<Rename>,
-    id: u64,
-    depth: usize,
-    name: &str,
-    color: [f32; 3],
-    collapsed: bool,
-    count: usize,
-) {
-    if rename_row(ui, act, editing, Item::Folder(id), depth) {
-        return;
-    }
-
-    let row = ui
-        .horizontal(|ui| {
-            ui.add_space(depth as f32 * INDENT);
-            if fold_arrow(ui, collapsed).clicked() {
-                act.toggle_collapse = Some(id);
-            }
-            let mut rgb = [
-                (color[0] * 255.0) as u8,
-                (color[1] * 255.0) as u8,
-                (color[2] * 255.0) as u8,
-            ];
-            // A compact square swatch: the default colour button is as wide as a
-            // text field and would crowd the name out of a 300 pt panel.
-            ui.spacing_mut().interact_size.x = 22.0;
-            if ui
-                .color_edit_button_srgb(&mut rgb)
-                .on_hover_text("Pin colour for every place in this folder")
-                .changed()
-            {
-                act.recolor = Some((
-                    id,
-                    [
-                        rgb[0] as f32 / 255.0,
-                        rgb[1] as f32 / 255.0,
-                        rgb[2] as f32 / 255.0,
-                    ],
-                ));
-            }
-            // Buttons take the right edge first; the name then gets exactly what
-            // is left, so a long folder name truncates instead of running under
-            // them.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Confirmed, unlike its neighbours: this is one 32 pt target
-                // away from Rename, and the row it deletes may be holding a
-                // folded subtree the user cannot currently see.
-                if theme::confirm_button(
-                    ui,
-                    ui.id().with(("delete_folder", id)),
-                    icons::DELETE,
-                    "Delete?",
-                ) {
-                    act.delete_folder = Some(id);
-                }
-                if theme::action_button(ui, icons::RENAME)
-                    .on_hover_text("Rename")
-                    .clicked()
-                {
-                    *editing = Some(Rename {
-                        item: Item::Folder(id),
-                        buf: name.to_string(),
-                        focus: true,
-                    });
-                }
-                let label = if collapsed && count > 0 {
-                    format!("{name}  ({count})")
-                } else {
-                    name.to_string()
-                };
-                fill_remaining(ui, |ui| {
-                    // The name is the drag handle (see `drag_handle`). Clicking it
-                    // folds, which is what a tree row's name does everywhere else.
-                    // A `Label` applies no `interact_size` floor, so this row's
-                    // hit rect was its galley — about 18 pt, i.e. 27 dp — while
-                    // the sibling *place* row is a `Button` and gets the full
-                    // 32 pt. That made the folder name, which is both the
-                    // fold target and the drag handle, the smallest drag source
-                    // in the panel. So the row's full hit area is allocated first
-                    // and the text drawn into it.
-                    //
-                    // Allocated by hand rather than through `add_sized`, which
-                    // places its widget *centred* and justified: that left the
-                    // folder name floating in the middle of its row while every
-                    // place under it started at the left margin. `Label::halign`
-                    // does not reach it — egui centres the whole allocated rect
-                    // before the label positions its galley inside it.
-                    let (rect, name) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), theme::row_height()),
-                        egui::Sense::click_and_drag(),
-                    );
-                    let name = theme::named(ui, name, &label);
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(label)
-                                        .size(theme::SIZE_BODY)
-                                        .strong()
-                                        .color(egui_color(color)),
-                                )
-                                .truncate()
-                                .selectable(false),
-                            );
-                        },
-                    );
-                    name.dnd_set_drag_payload(Item::Folder(id));
-                    if name.clicked() {
-                        act.toggle_collapse = Some(id);
-                    }
-                });
-            });
-        })
-        .response;
-
-    // Drop target: anything released over the row lands in this folder.
-    if row.dnd_hover_payload::<Item>().is_some() {
-        ui.painter().rect_stroke(
-            row.rect.expand(1.0),
-            4.0,
-            egui::Stroke::new(1.5, egui_color(color)),
-            egui::StrokeKind::Inside,
-        );
-    }
-    if let Some(item) = row.dnd_release_payload::<Item>() {
-        act.drop = Some((*item, Some(id)));
-    }
-}
-
-/// One place row: its photo (or the pin matching the one on the map — see
-/// [`marker_slot`]), the name — click to jump — and a ⋮ that opens everything
-/// else.
-///
-/// **The actions are in a menu and not in the row, and that is a phone
-/// decision.** The row used to end in four small buttons (route, update, rename,
-/// delete). On a 300 pt panel that left about half the width for the name, which
-/// is the one thing in the row anybody reads; on a phone, where the panel is the
-/// whole screen and the buttons are still finger-sized, it left a name column too
-/// narrow for "Willem Alexander Sportpark" to be distinguishable from the next
-/// one. One menu behind one button gives the width back and costs nothing on the
-/// desktop.
-///
-/// **The ⋮ is not decoration over the long press — it is the only entrance
-/// anybody could find.** The menu shipped reachable by long press and right-click
-/// alone, and neither advertises itself: right-click is invisible by nature, a
-/// long press doubly so, and the hint was an `on_hover_text` that a touchscreen
-/// never displays. The feature read as missing on the phone build (reported
-/// 2026-08-14) — which is the ordinary fate of a gesture-only affordance, not an
-/// accident of this one. All three gestures now open the same [`place_menu`]:
-/// `Popup::menu` toggles the kebab's on a primary click, and
-/// [`egui::Response::context_menu`] keeps the other two.
-///
-/// egui reaches the long press on its own: `Response::secondary_clicked` is true
-/// for a *long touch* as well as a right-click, and this client feeds egui real
-/// `Event::Touch`es (`egui_manager::pointer_events`), which is what makes
-/// `InputState::any_touches` — the condition on the whole long-press path — true
-/// in the first place.
-#[allow(clippy::too_many_arguments)]
-fn place_row(
-    ui: &mut egui::Ui,
-    act: &mut Actions,
-    editing: &mut Option<Rename>,
-    thumbs: &mut HashMap<String, Option<egui::TextureHandle>>,
-    id: u64,
-    depth: usize,
-    name: &str,
-    color: [f32; 3],
-    (lat, lng, altitude): (f64, f64, f64),
-    photo: Option<&str>,
-    can_update: bool,
-) {
-    // Not a drag source while renaming — see `folder_row`.
-    if rename_row(ui, act, editing, Item::Place(id), depth) {
-        return;
-    }
-
-    ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * INDENT);
-        marker_slot(ui, act, thumbs, id, name, color, photo);
-        let title = name.to_string();
-        // The kebab takes the right edge first and the name gets what is left, so
-        // a long place name truncates instead of running under it — the same
-        // bargain `folder_row` makes with its action buttons.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let kebab = theme::kebab_button(ui).on_hover_text("Actions for this place");
-            // `Popup::menu` toggles on a *primary* click, so this is the same menu
-            // reached by the same code, through the one gesture a phone can see.
-            egui::Popup::menu(&kebab).show(|ui| {
-                place_menu(ui, act, editing, id, &title, (lat, lng), photo, can_update);
-            });
-
-            fill_remaining(ui, |ui| {
-                // The name is the drag handle (see `drag_handle`): one widget
-                // that senses click and drag, never a drag-only layer over a
-                // click widget (the module docs say what that did).
-                let name_response = theme::ghost_row_handle(ui, name, ui.available_width())
-                    // No longer spells out how to reach the actions: the button at
-                    // the end of the row does that, and it says so itself. The
-                    // dots cannot appear in this string in any case — the font
-                    // cannot draw them, which is why they are painted.
-                    .on_hover_text(format!(
-                        "{lat:.5}, {lng:.5}, {altitude:.0} m — click to jump, \
-                         drag into a folder"
-                    ));
-                name_response.dnd_set_drag_payload(Item::Place(id));
-
-                // A long touch sets `clicked()` *as well as* `secondary_clicked()`
-                // — egui's press-and-hold handler synthesises the click so that a
-                // widget with no menu still responds to the press
-                // (`interaction.rs`). Without this guard, opening the menu on a
-                // phone would also fly the camera to the place behind it, which is
-                // exactly the view the menu is covering.
-                if name_response.clicked() && !name_response.long_touched() {
-                    act.jump(&title, (lat, lng, altitude));
-                }
-
-                // Kept beside the kebab rather than replaced by it: right-click is
-                // where a list row's actions live on a desktop, and the long press
-                // is already load-bearing on a phone. All three open `place_menu`.
-                name_response.context_menu(|ui| {
-                    place_menu(ui, act, editing, id, &title, (lat, lng), photo, can_update);
-                });
-            });
-        });
-    });
-}
-
-/// The place row's actions. Ordered by how often they are wanted, with the
-/// destructive one last and separated.
-#[allow(clippy::too_many_arguments)]
-fn place_menu(
-    ui: &mut egui::Ui,
-    act: &mut Actions,
-    editing: &mut Option<Rename>,
-    id: u64,
-    name: &str,
-    (lat, lng): (f64, f64),
-    photo: Option<&str>,
-    can_update: bool,
-) {
-    // Wide enough that "Update to the current view" fits on one line; egui would
-    // otherwise size the menu to the longest label and wrap the rest.
-    ui.set_min_width(190.0);
-
-    // A saved place is the destination that needs no typing, which is what makes
-    // it the important one on a phone. It wears the Route panel's own icon, so
-    // the entry and the panel it opens read as one thing.
-    let flag = crate::resources::RightPanel::Route.icon();
-    if theme::menu_entry(ui, flag, "Route here").clicked() {
-        act.route = Some((name.to_string(), lat, lng));
-        ui.close();
-    }
-
-    if crate::platform::photo::is_available() {
-        let label = if photo.is_some() {
-            "Replace the photo…"
-        } else {
-            crate::platform::photo::action_label()
-        };
-        // No glyph: 📷 is not in the bundled icon font and paints as a tofu box
-        // (`theme::tests::no_painted_glyph_is_tofu` catches it), and there is no
-        // near-enough substitute that is — so the entry is words, which a menu
-        // can afford in a way a 20 pt button could not.
-        if theme::menu_entry(ui, "", label).clicked() {
-            act.take_photo = Some(id);
-            ui.close();
-        }
-    }
-    if let Some(stem) = photo {
-        if theme::menu_entry(ui, "", "View the photo").clicked() {
-            act.view_photo = Some((id, name.to_string(), stem.to_string()));
-            ui.close();
-        }
-        // A separator and a two-press confirm, because this entry sits directly
-        // under "View the photo" and removes two JPEGs from `platform::storage`
-        // with no undo — on a phone that is a ~20 pt mis-tap between looking at
-        // a picture and destroying it.
-        ui.separator();
-        if theme::confirm_button(
-            ui,
-            ui.id().with(("remove_photo", id)),
-            "Remove the photo",
-            "Remove it — this cannot be undone",
-        ) {
-            act.clear_photo = Some(id);
-            ui.close();
-        }
-    }
-
-    ui.separator();
-    if theme::menu_entry_enabled(ui, can_update, icons::REFRESH, "Update to the current view")
-        .clicked()
-    {
-        act.update = Some(id);
-        ui.close();
-    }
-    if theme::menu_entry(ui, icons::RENAME, "Rename").clicked() {
-        *editing = Some(Rename {
-            item: Item::Place(id),
-            buf: name.to_string(),
-            focus: true,
-        });
-        ui.close();
-    }
-    ui.separator();
-    if theme::confirm_button(
-        ui,
-        ui.id().with(("delete_place", id)),
-        "Delete this place",
-        "Delete it — this cannot be undone",
-    ) {
-        act.delete_place = Some(id);
-        ui.close();
-    }
-}
-
-/// Draw the photo tile at the head of a row, uploading it on first sight.
-///
-/// `None` when the place has no usable photo — which covers both "never had one"
-/// and "the file is gone", and the caller draws the pin dot for either. A photo
-/// whose files were deleted underneath the store (a wiped app-data directory, a
-/// user.json copied to another machine without the `photos/` beside it) must
-/// degrade to a place that simply has no picture, not to a broken tile.
-fn thumbnail(
-    ui: &mut egui::Ui,
-    thumbs: &mut HashMap<String, Option<egui::TextureHandle>>,
-    stem: &str,
-) -> Option<egui::TextureHandle> {
-    // Both the read and the decode happen once per photo per run, and the
-    // `None` is remembered too — see the field's own note.
-    thumbs
-        .entry(stem.to_string())
-        .or_insert_with(|| {
-            let bytes = crate::utils::photo_store::read_thumb(stem)?;
-            let (pixels, size) = crate::utils::photo::decode_rgba(&bytes)
-                .map_err(|e| tracing::warn!(stem, error = %e, "a place's thumbnail did not decode"))
-                .ok()?;
-            let image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-            Some(ui.ctx().load_texture(
-                format!("place_thumb_{stem}"),
-                image,
-                egui::TextureOptions::LINEAR,
-            ))
-        })
-        .clone()
-}
-
-/// The square every place row opens with: the photo tile when there is one, the
-/// place's map pin when there isn't.
-///
-/// **It is one fixed size for both cases, and that is the point.** The photo was a
-/// 28 pt tile and the no-photo case a 12 pt text glyph, so whether a place
-/// happened to have a photo moved its name — and the whole rest of its row —
-/// sideways by half a slot. A list whose rows do not share a left margin reads as
-/// broken before anyone works out why, and giving a place a photo is not supposed
-/// to be a layout event. The slot is as tall as an interactive row, with the
-/// square centred in it, so the rows are also the same height as each other.
-fn marker_slot(
-    ui: &mut egui::Ui,
-    act: &mut Actions,
-    thumbs: &mut HashMap<String, Option<egui::TextureHandle>>,
-    id: u64,
-    name: &str,
-    color: [f32; 3],
-    photo: Option<&str>,
-) {
-    // Sensed as a click only when there is a photo to open: a slot that senses
-    // clicks it does nothing with is a hole in the row that swallows them.
-    let texture = photo.and_then(|stem| thumbnail(ui, thumbs, stem).map(|t| (stem, t)));
-    let sense = if texture.is_some() {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (slot, response) = ui.allocate_exact_size(
-        egui::vec2(MARKER_SLOT, MARKER_SLOT.max(theme::row_height())),
-        sense,
-    );
-    if texture.is_some() {
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Open the photo")
-        });
-    }
-    let tile = egui::Rect::from_center_size(slot.center(), egui::Vec2::splat(MARKER_SLOT));
-
-    let Some((stem, texture)) = texture else {
-        // No photo (or its file is gone): the marker standing over this place on
-        // the map, in the same colour, at row size.
-        crate::systems::place_pins::paint_pin_glyph(ui.painter(), tile, egui_color(color));
-        return;
-    };
-
-    egui::Image::new(egui::load::SizedTexture::new(texture.id(), tile.size()))
-        .corner_radius(theme::RADIUS_SM)
-        .paint_at(ui, tile);
-    // The photo stands where the pin would, so the folder colour it was carrying
-    // moves to a frame around the tile — without it, giving a place a photo
-    // silently removes it from its group as far as the eye is concerned. Drawn
-    // *inside* the tile at a hairline's width: a 1.5 pt ring hung on the outside
-    // made every photo row a little wider than every pin row, which is the
-    // misalignment this slot exists to remove.
-    ui.painter().rect_stroke(
-        tile,
-        theme::RADIUS_SM,
-        egui::Stroke::new(1.0, egui_color(color)),
-        egui::StrokeKind::Inside,
-    );
-    if response.clicked() {
-        act.view_photo = Some((id, name.to_string(), stem.to_string()));
-    }
-    response.on_hover_text("Open the photo");
-}
-
-/// Follow the pointer with the name of whatever is being dragged. `dnd_drag_source`
-/// used to paint the row itself at the cursor; dragging off the name gives that
-/// up, and without any ghost a drag reads as "nothing happened" until the
-/// pointer reaches a folder that highlights.
-fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
-    let Some(item) = egui::DragAndDrop::payload::<Item>(ctx) else {
-        return;
-    };
-    let Some(pos) = ctx.pointer_interact_pos() else {
-        return;
-    };
-    let Some((name, color)) = rows.iter().find_map(|row| match (row, *item) {
-        (
-            Row::Folder {
-                id, name, color, ..
-            },
-            Item::Folder(dragged),
-        ) if *id == dragged => Some((name.as_str(), *color)),
-        (
-            Row::Place {
-                id, name, color, ..
-            },
-            Item::Place(dragged),
-        ) if *id == dragged => Some((name.as_str(), *color)),
-        _ => None,
-    }) else {
-        return;
-    };
-
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::new("place_drag_ghost"),
-    ));
-    let galley = painter.layout_no_wrap(
-        name.to_string(),
-        egui::FontId::proportional(theme::SIZE_SUB),
-        theme::DARK32.cream,
-    );
-    let pad = theme::CHIP_PADDING;
-    // Offset off the cursor so it never covers the row being dropped onto.
-    let rect = egui::Rect::from_min_size(pos + egui::vec2(12.0, 8.0), galley.size() + pad * 2.0);
-    painter.rect(
-        rect,
-        theme::RADIUS_SM,
-        theme::LABEL_CHIP,
-        egui::Stroke::new(1.0, egui_color(color)),
-        egui::StrokeKind::Inside,
-    );
-    painter.galley(rect.min + pad, galley, theme::p32().cream);
-}
-
-/// Lay `contents` out left-to-right across everything the row has left, from
-/// inside a right-to-left button strip. Without it the name would be pushed up
-/// against the buttons on the right instead of starting where the row does.
-fn fill_remaining(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-    ui.allocate_ui_with_layout(
-        size,
-        // `main_align: Min`, i.e. **left-aligned text**. `Layout::left_to_right`
-        // ships `Align::Center` there ("looks best to e.g. center text within a
-        // button"), and `Button` lays its galley out with `ui.layout()`'s
-        // horizontal align — which for a horizontal layout *is* `main_align`. The
-        // rows are full-width buttons, so that centred every place name over its
-        // own row: four names of four lengths each starting at a different x, in a
-        // list whose whole job is to be scanned down the left edge.
-        egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
-        contents,
-    );
 }
 
 /// Apply the frame's queued mutations to the store.
@@ -1396,23 +480,12 @@ fn apply_photo_actions(bookmarks: &mut BookmarksState, store: &mut UserStore, ac
         }
     }
     if let Some(id) = act.clear_photo {
-        forget_photo_textures(bookmarks, store, id);
         store.clear_bookmark_photo(id);
     }
-    if let Some(id) = act.delete_place {
-        // `apply` deletes the files; this drops the uploaded texture that was
-        // pointing at them, which would otherwise sit in the cache for the rest
-        // of the run under a stem nothing refers to.
-        forget_photo_textures(bookmarks, store, id);
-    }
-    if let Some((place, name, stem)) = &act.view_photo {
-        bookmarks.viewing = Some(PhotoView {
-            place: *place,
-            name: name.clone(),
-            stem: stem.clone(),
-            texture: None,
-            unavailable: false,
-        });
+    if let Some((place, _, stem)) = &act.view_photo {
+        // Shown by `lib_picture_viewer`, which reads it each frame
+        // (`BookmarksState::viewing_photo`) and closes it when the photo goes.
+        bookmarks.viewing = Some((*place, stem.clone()));
     }
 }
 
@@ -1420,19 +493,11 @@ fn apply_photo_actions(bookmarks: &mut BookmarksState, store: &mut UserStore, ac
 /// panel doing its job rather than its "No places yet" card.
 ///
 /// The other scripted panels seed themselves for the same reason (`--ui route`
-/// plans a route, `--ui search` types a query). This one has to reach further
-/// than they do: a photo is two files in `platform::storage` and a scripted run
-/// writes nothing, so the demo photos are *textures* put straight into the
-/// thumbnail cache under a stem no file backs. `thumbnail`'s cache is keyed by
-/// stem and only reads storage on a miss, so a pre-filled entry is the whole
-/// trick — and the row it produces is the real one, mixed in with rows that have
-/// no photo, which is the alignment case this panel gets wrong when it gets it
-/// wrong.
-pub fn seed_demo_places(
-    ctx: &egui::Context,
-    bookmarks: &mut BookmarksState,
-    store: &mut UserStore,
-) {
+/// plans a route, `--ui search` types a query). Two of the places carry a
+/// photo stem that no file backs: the row shows its photo marker from the
+/// stem alone, which is the alignment case — rows with a photo mixed in with
+/// rows without — this panel gets wrong when it gets it wrong.
+pub fn seed_demo_places(store: &mut UserStore) {
     if !store.data.bookmarks.is_empty() {
         return;
     }
@@ -1465,59 +530,9 @@ pub fn seed_demo_places(
         if !photo {
             continue;
         }
-        let stem = format!("demo-{id}");
         if let Some(b) = store.data.bookmarks.iter_mut().find(|b| b.id == id) {
-            b.photo = Some(stem.clone());
+            b.photo = Some(format!("demo-{id}"));
         }
-        bookmarks
-            .photo_textures
-            .insert(stem.clone(), Some(demo_thumb(ctx, &stem, i)));
-    }
-}
-
-/// A stand-in photo for [`seed_demo_places`]: a diagonal wash, so the tile reads
-/// as an image rather than as a flat swatch at thumbnail size.
-fn demo_thumb(ctx: &egui::Context, stem: &str, seed: usize) -> egui::TextureHandle {
-    let edge = crate::utils::photo::THUMB_EDGE as usize;
-    let mut pixels = Vec::with_capacity(edge * edge * 4);
-    for y in 0..edge {
-        for x in 0..edge {
-            let t = (x + y) as f32 / (2 * edge) as f32;
-            let (r, g, b) = match seed % 2 {
-                0 => (0.35 + 0.5 * t, 0.45 + 0.35 * t, 0.30 + 0.20 * t),
-                _ => (0.20 + 0.25 * t, 0.35 + 0.45 * t, 0.55 + 0.40 * t),
-            };
-            pixels.extend_from_slice(&[
-                (r * 255.0) as u8,
-                (g * 255.0) as u8,
-                (b * 255.0) as u8,
-                255,
-            ]);
-        }
-    }
-    let image = egui::ColorImage::from_rgba_unmultiplied([edge, edge], &pixels);
-    ctx.load_texture(
-        format!("place_thumb_{stem}"),
-        image,
-        egui::TextureOptions::LINEAR,
-    )
-}
-
-/// Drop the cached thumbnail of a place's photo, and close the viewer if it is
-/// the one being looked at.
-fn forget_photo_textures(bookmarks: &mut BookmarksState, store: &UserStore, place: u64) {
-    let Some(stem) = store
-        .data
-        .bookmarks
-        .iter()
-        .find(|b| b.id == place)
-        .and_then(|b| b.photo.clone())
-    else {
-        return;
-    };
-    bookmarks.photo_textures.remove(&stem);
-    if bookmarks.viewing.as_ref().is_some_and(|v| v.stem == stem) {
-        bookmarks.viewing = None;
     }
 }
 
@@ -1584,682 +599,21 @@ pub fn poll_place_photos(mut bookmarks: ResMut<BookmarksState>, mut store: ResMu
     }
 }
 
-/// The full-size photo, over everything.
-///
-/// Sized against the viewport rather than the image: a 1600 px photo in a window
-/// that grew to fit it would be wider than a phone screen, and egui's `Image` will
-/// letterbox into whatever it is given while keeping the aspect ratio.
-fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut BookmarksState) {
-    let Some(view) = bookmarks.viewing.as_mut() else {
-        return;
-    };
-    // Asked for each frame until it resolves, rather than read once on open. The
-    // row already had the thumbnail in hand, but the full photo is the one thing
-    // the web build does *not* preload — it is megabytes and only wanted when
-    // someone opens it — so the first ask starts an IndexedDB read and answers
-    // `Loading`. Natively the first ask is the file read and this settles on the
-    // opening frame.
-    if view.texture.is_none() && !view.unavailable {
-        match crate::utils::photo_store::read_full(&view.stem) {
-            crate::platform::storage::Cached::Ready(bytes) => {
-                match photo_texture(ctx, &view.stem, &bytes) {
-                    Some(texture) => view.texture = Some(texture),
-                    None => view.unavailable = true,
-                }
-            }
-            crate::platform::storage::Cached::Loading => {}
-            // Nothing under that key: the photo was there when the row drew a
-            // thumbnail from it and is not now.
-            crate::platform::storage::Cached::Missing => view.unavailable = true,
-        }
-    }
-
-    let mut open = true;
-    egui::Window::new(&view.name)
-        .id(egui::Id::new(("place_photo", view.place)))
-        .open(&mut open)
-        // Above the place pins, which are `Order::Middle` `Area`s — the same layer
-        // an `egui::Window` defaults to, resolved *within* a layer by creation
-        // order. `render_place_pins` is ordered last in the frame (it has to be:
-        // it culls against the leftover map area, which is only correct after
-        // every panel has taken its width), so it is created after this window and
-        // was winning the hit test over it. A pin is small, so the symptom is not
-        // "the viewer is dead" but the worse kind — a photo that ignores taps in
-        // one spot, which happens to be the middle of the screen, which is where
-        // the pin of the place you just photographed sits.
-        .order(egui::Order::Foreground)
-        .collapsible(false)
-        .resizable(true)
-        .max_size(viewport * 0.9)
-        .default_size(viewport * 0.8)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| match (&view.texture, view.unavailable) {
-            (Some(texture), _) => {
-                ui.add(
-                    egui::Image::new(egui::load::SizedTexture::new(
-                        texture.id(),
-                        texture.size_vec2(),
-                    ))
-                    .max_size(ui.available_size())
-                    .maintain_aspect_ratio(true)
-                    .corner_radius(4.0),
-                );
-            }
-            (None, false) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(
-                        egui::RichText::new("Loading the photo…")
-                            .size(13.0)
-                            .color(theme::p32().text_dim),
-                    );
-                });
-            }
-            (None, true) => {
-                ui.label(
-                    egui::RichText::new("This photo could not be opened.")
-                        .size(13.0)
-                        .color(theme::p32().warn),
-                );
-            }
-        });
-    if !open {
-        bookmarks.viewing = None;
-    }
-}
-
-/// Decode stored photo bytes and upload them as a texture.
-fn photo_texture(ctx: &egui::Context, stem: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
-    let (pixels, size) = crate::utils::photo::decode_rgba(bytes)
-        .map_err(|e| tracing::warn!(stem, error = %e, "a place's photo did not decode"))
-        .ok()?;
-    let image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Some(ctx.load_texture(
-        format!("place_photo_{stem}"),
-        image,
-        egui::TextureOptions::LINEAR,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
 
-    /// Drive `place_row` through egui for a few frames, clicking or dragging at
-    /// the row's name. Returns the actions the last frame produced and whether a
-    /// drag payload was ever left behind by a plain click.
-    fn drive(drag: bool) -> (Actions, bool) {
-        let ctx = egui::Context::default();
-        // The shipped theme, not `Visuals::dark()`: these tests are about
-        // widths and hit-testing, both of which are padding-dependent.
-        theme::install(&ctx);
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-
-        let mut target = egui::Pos2::ZERO;
-        let mut out = Actions::default();
-        let mut dragged = false;
-
-        let button = |pos, pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-
-        for frame in 0..5 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            match frame {
-                1 => raw.events.push(egui::Event::PointerMoved(target)),
-                2 => raw.events.push(button(target, true)),
-                // Either release where we pressed (a click), or drag well clear
-                // of the press origin first (egui only calls it a drag once the
-                // pointer has moved too far to still be a click).
-                3 if drag => raw
-                    .events
-                    .push(egui::Event::PointerMoved(target + egui::vec2(0.0, 80.0))),
-                3 => raw.events.push(button(target, false)),
-                _ => {}
-            }
-
-            let mut act = Actions::default();
-            let mut editing = None;
-            let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                egui::Panel::right("places_test")
-                    .default_size(300.0)
-                    .show(ui, |ui| {
-                        let top = ui.cursor().min;
-                        place_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            &mut thumbs,
-                            1,
-                            0,
-                            "Test place",
-                            [1.0, 0.2, 0.2],
-                            (1.0, 2.0, 10.0),
-                            None,
-                            true,
-                        );
-                        // The name button fills the row between the pin dot and
-                        // the action buttons — aim well inside it.
-                        target = egui::pos2(top.x + 70.0, (top.y + ui.cursor().min.y) * 0.5);
-                    });
-            });
-            if act.teleport.is_some() {
-                out.teleport = act.teleport;
-            }
-            if egui::DragAndDrop::has_payload_of_type::<Item>(&ctx) {
-                dragged = true;
-            }
-        }
-        (out, dragged)
-    }
-
-    /// Open a place row's menu from its ⋮ — a plain primary click, the one
-    /// gesture a touchscreen shows an affordance for — then click the item `dy`
-    /// below it, `dx` across.
-    ///
-    /// Aimed at the row's right edge rather than at a remembered rect: the kebab
-    /// is the last thing in a right-to-left layout, so it ends at the row's edge
-    /// whatever the panel's width or the name's length.
-    ///
-    /// `pick` of `None` presses the ⋮ and stops there, which is how the "opening
-    /// the menu does nothing else" half is asked.
-    fn click_place_kebab(pick: Option<(f32, f32)>) -> Actions {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-        let button = |pos, pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-
-        let mut kebab = egui::Pos2::ZERO;
-        let mut out = Actions::default();
-        for frame in 0..12 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            raw.time = Some(frame as f64 * 0.2);
-            raw.predicted_dt = 0.2;
-            let item = pick.map(|(dx, dy)| kebab + egui::vec2(dx, dy));
-            match (frame, item) {
-                (1, _) => raw.events.push(egui::Event::PointerMoved(kebab)),
-                (2, _) => raw.events.push(button(kebab, true)),
-                (3, _) => raw.events.push(button(kebab, false)),
-                // The menu is up from here on: move onto an item and click it.
-                (6, Some(item)) => raw.events.push(egui::Event::PointerMoved(item)),
-                (7, Some(item)) => raw.events.push(button(item, true)),
-                (8, Some(item)) => raw.events.push(button(item, false)),
-                _ => {}
-            }
-
-            let mut act = Actions::default();
-            let mut editing = None;
-            let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                egui::Panel::right("places_test")
-                    .default_size(300.0)
-                    .show(ui, |ui| {
-                        let top = ui.cursor().min;
-                        place_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            &mut thumbs,
-                            1,
-                            0,
-                            "Test place",
-                            [1.0, 0.2, 0.2],
-                            (1.0, 2.0, 10.0),
-                            None,
-                            true,
-                        );
-                        let row = ui.min_rect();
-                        kebab = egui::pos2(
-                            row.right() - theme::close_button_size() * 0.5,
-                            (top.y + ui.cursor().min.y) * 0.5,
-                        );
-                    });
-            });
-            if act.route.is_some() {
-                out.route = act.route;
-            }
-            if act.take_photo.is_some() {
-                out.take_photo = act.take_photo;
-            }
-            if act.teleport.is_some() {
-                out.teleport = act.teleport;
-            }
-        }
-        out
-    }
-
-    /// The ⋮ must open the same menu the long press does, and reach the entry
-    /// that was reported missing.
-    ///
-    /// Swept for the same reason [`sweep_for_route`] is: item heights come from
-    /// the font, and the menu may open above, below or across the button
-    /// depending on what fits.
     #[test]
-    fn the_kebab_opens_the_menu_and_reaches_the_photo_entry() {
-        let mut photo = None;
-        'sweep: for dx in [-140.0, -100.0, -60.0, -20.0] {
-            for step in 0..40 {
-                let act = click_place_kebab(Some((dx, 6.0 + step as f32 * 4.0)));
-                if act.take_photo.is_some() {
-                    photo = act.take_photo;
-                    break 'sweep;
-                }
-            }
-        }
+    fn a_short_address_keeps_the_first_three_parts() {
         assert_eq!(
-            photo,
-            Some(1),
-            "no sweep of the ⋮ menu ever reached the photo entry"
+            short_address("Grote Markt, Binnenstad, Groningen, Nederland"),
+            "Grote Markt, Binnenstad, Groningen"
         );
     }
 
-    /// Pressing the ⋮ opens the menu and does nothing else.
-    ///
-    /// The name button fills the rest of the row and jumps the camera when it is
-    /// clicked, so a kebab that leaked its press into the row would fly away from
-    /// the place while showing you a menu about it — the same failure
-    /// [`a_long_touch_opens_the_menu_without_jumping_to_the_place`] guards on the
-    /// other entrance.
     #[test]
-    fn opening_the_kebab_menu_does_not_fly_to_the_place() {
-        let act = click_place_kebab(None);
-        assert!(
-            act.teleport.is_none(),
-            "pressing ⋮ flew the camera to the place"
-        );
-        assert!(
-            act.route.is_none() && act.take_photo.is_none(),
-            "pressing ⋮ picked a menu item by itself"
-        );
-    }
-
-    /// Open a place row's context menu — with a right-click, or with a long touch
-    /// — then click a point `dy` below the press, and return what the row asked
-    /// for over the whole run.
-    ///
-    /// The menu is positioned at the pointer (`Popup::at_pointer_fixed`), so its
-    /// items run down and to the right of wherever the press landed. Swept rather
-    /// than aimed, for the same reason the old button-strip test swept in from the
-    /// right edge: the item heights come from the font.
-    fn click_place_menu(long_touch: bool, dy: f32) -> Actions {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-        let button = |pos, pressed, secondary: bool| egui::Event::PointerButton {
-            pos,
-            button: if secondary {
-                egui::PointerButton::Secondary
-            } else {
-                egui::PointerButton::Primary
-            },
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-
-        let mut name = egui::Pos2::ZERO;
-        let mut menu_x: Option<f32> = None;
-        let mut out = Actions::default();
-        for frame in 0..14 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            // Real time, because a long press is defined in seconds; a 0.2 s frame
-            // clears egui's threshold within the hold below.
-            raw.time = Some(frame as f64 * 0.2);
-            raw.predicted_dt = 0.2;
-            // Into the menu, on whichever side of the press egui opened it:
-            // the roomier menu (2026-11-08) no longer fits right of a press in
-            // a right-hand panel, so egui opens it to the left.
-            let item = egui::pos2(menu_x.unwrap_or(name.x + 30.0), name.y + dy);
-            match (long_touch, frame) {
-                // A right-click opens the menu on the release.
-                (false, 1) => raw.events.push(egui::Event::PointerMoved(name)),
-                (false, 2) => raw.events.push(button(name, true, true)),
-                (false, 3) => raw.events.push(button(name, false, true)),
-                // A long touch opens it *while the finger is still down*, and the
-                // finger must stay down past egui's `max_click_duration` (0.6 s)
-                // to get there — `is_long_press` also requires the button to be
-                // down on the frame it fires, so a release that lands on the same
-                // frame as the threshold cancels the whole thing. Hence 1.2 s of
-                // hold before the lift at frame 7. The `Event::Touch`
-                // is what makes it a touch at all: `InputState::any_touches` gates
-                // the whole press-and-hold path, and only that event sets it.
-                (true, 1) => {
-                    raw.events.push(egui::Event::Touch {
-                        device_id: egui::TouchDeviceId(0),
-                        id: egui::TouchId(0),
-                        phase: egui::TouchPhase::Start,
-                        pos: name,
-                        force: None,
-                    });
-                    raw.events.push(egui::Event::PointerMoved(name));
-                    raw.events.push(button(name, true, false));
-                }
-                (true, 7) => {
-                    raw.events.push(egui::Event::Touch {
-                        device_id: egui::TouchDeviceId(0),
-                        id: egui::TouchId(0),
-                        phase: egui::TouchPhase::End,
-                        pos: name,
-                        force: None,
-                    });
-                    raw.events.push(button(name, false, false));
-                }
-                // The menu is up from here on: move onto an item and click it.
-                (_, 10) => raw.events.push(egui::Event::PointerMoved(item)),
-                (_, 11) => raw.events.push(button(item, true, false)),
-                (_, 12) => raw.events.push(button(item, false, false)),
-                _ => {}
-            }
-
-            let mut act = Actions::default();
-            let mut editing = None;
-            let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                egui::Panel::right("places_test")
-                    .default_size(300.0)
-                    .show(ui, |ui| {
-                        let top = ui.cursor().min;
-                        place_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            &mut thumbs,
-                            1,
-                            0,
-                            "Test place",
-                            [1.0, 0.2, 0.2],
-                            (1.0, 2.0, 10.0),
-                            None,
-                            true,
-                        );
-                        // The name button fills the row after the pin dot — aim
-                        // well inside it.
-                        name = egui::pos2(top.x + 70.0, (top.y + ui.cursor().min.y) * 0.5);
-                    });
-            });
-            menu_x = ctx.memory(|m| {
-                m.areas()
-                    .visible_layer_ids()
-                    .into_iter()
-                    .filter(|l| l.order != egui::Order::Background)
-                    .find_map(|l| m.area_rect(l.id))
-                    .map(|r| r.center().x)
-            });
-            if act.route.is_some() {
-                out.route = act.route;
-            }
-            if act.teleport.is_some() {
-                out.teleport = act.teleport;
-            }
-            if act.update.is_some() {
-                out.update = act.update;
-            }
-            if act.delete_place.is_some() {
-                out.delete_place = act.delete_place;
-            }
-        }
-        out
-    }
-
-    /// Sweep the menu for the entry that routes to the place.
-    fn sweep_for_route(long_touch: bool) -> Actions {
-        for step in 0..80 {
-            let act = click_place_menu(long_touch, 6.0 + step as f32 * 4.0);
-            if act.route.is_some() {
-                return act;
-            }
-        }
-        Actions::default()
-    }
-
-    /// Routing to a place has to survive its move off the row and into the menu.
-    ///
-    /// A saved place is the destination that needs no typing, so this is the
-    /// action that matters most on a phone — and it now lives behind a popup
-    /// opened from a widget that also senses drags, which is the arrangement that
-    /// has eaten a press in this row before (see the module docs).
-    #[test]
-    fn the_context_menu_routes_to_the_place() {
-        let act = sweep_for_route(false);
-        assert_eq!(
-            act.route,
-            Some(("Test place".to_string(), 1.0, 2.0)),
-            "no sweep of the context menu ever reached Route here"
-        );
-        assert!(
-            act.teleport.is_none(),
-            "routing to a place must not also fly to it"
-        );
-    }
-
-    /// The same menu, reached the way a phone reaches it — and without the row
-    /// acting on the press that opened it.
-    ///
-    /// egui synthesises a `clicked()` alongside a long press, so that a widget
-    /// with no menu still responds to the hold (`interaction.rs`). Without
-    /// `place_row`'s `!long_touched()` guard, a long press would open the menu and
-    /// fly the camera to the place behind it at the same time — and the menu
-    /// would then be covering somewhere else entirely.
-    #[test]
-    fn a_long_touch_opens_the_menu_without_jumping_to_the_place() {
-        let act = sweep_for_route(true);
-        assert_eq!(
-            act.route,
-            Some(("Test place".to_string(), 1.0, 2.0)),
-            "a long touch never opened the context menu"
-        );
-        assert!(
-            act.teleport.is_none(),
-            "a long press opened the menu and flew to the place as well"
-        );
-    }
-
-    /// A press-and-release on a row must act on the row, and must not leave a
-    /// drag hanging off it.
-    ///
-    /// This is the guard against wrapping a row in `Ui::dnd_drag_source` again
-    /// (see the module docs): that lays a drag-*only* widget over the whole row,
-    /// which egui marks as dragged on mouse-down with no movement threshold, so
-    /// every press in the row — the name, ✏, 🗑 — became a drag and no click
-    /// ever landed.
-    #[test]
-    fn clicking_a_row_acts_on_it_and_starts_no_drag() {
-        let (act, dragged) = drive(false);
-        assert!(
-            act.teleport.is_some(),
-            "clicking the name must jump to the place"
-        );
-        assert!(!dragged, "a plain click must not start a drag");
-    }
-
-    /// The other direction: press and move *does* pick the row up, or the tree
-    /// can't be rearranged at all.
-    #[test]
-    fn dragging_a_row_by_its_name_picks_it_up() {
-        let (act, dragged) = drive(true);
-        assert!(dragged, "press-and-move must start a drag");
-        assert!(
-            act.teleport.is_none(),
-            "a drag must not also fire the row's click"
-        );
-    }
-
-    /// An open rename field must not push the panel wider — and especially not a
-    /// little wider every frame.
-    ///
-    /// A `Panel` stores its size from the rect its contents came out at, so any
-    /// row that overflows the panel widens it, which widens the row's available
-    /// width, which overflows again: the panel walks across the screen for as
-    /// long as the field is open. Renders with the field focused (the state that
-    /// triggered it) and pins the width over several frames.
-    #[test]
-    fn an_open_rename_field_does_not_widen_the_panel() {
-        let ctx = egui::Context::default();
-        // The shipped theme, not `Visuals::dark()`: these tests are about
-        // widths and hit-testing, both of which are padding-dependent.
-        theme::install(&ctx);
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-
-        let mut editing = Some(Rename {
-            item: Item::Folder(1),
-            buf: "New folder".to_string(),
-            focus: true,
-        });
-        let mut widths = Vec::new();
-
-        for _ in 0..8 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            let mut act = Actions::default();
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                let panel = crate::systems::egui_manager::responsive_right_panel(
-                    "bookmarks_panel",
-                    false,
-                    screen.width(),
-                    300.0,
-                )
-                .show(ui, |ui| {
-                    ui.heading("Places");
-                    // Long enough to overflow if the field ever asks for more
-                    // than the row has.
-                    folder_row(
-                        ui,
-                        &mut act,
-                        &mut editing,
-                        1,
-                        0,
-                        "A folder name long enough to need truncating",
-                        [0.2, 0.5, 0.9],
-                        false,
-                        0,
-                    );
-                });
-                widths.push(panel.response.rect.width());
-            });
-        }
-
-        let last = *widths.last().unwrap();
-        let prev = widths[widths.len() - 2];
-        assert!(
-            (last - prev).abs() < 0.5,
-            "panel still growing with the rename field open: {widths:?}"
-        );
-        assert!(
-            last <= 320.0,
-            "panel grew past its 300 pt width: {widths:?}"
-        );
-    }
-
-    /// The whole gesture: drag a place onto a folder row and drop it there.
-    ///
-    /// The folder's drop target is the `Ui::horizontal` response covering the
-    /// row, which only works because that response is a registered widget and so
-    /// reports `contains_pointer` — a silently dead drop target would leave the
-    /// tree looking right and refusing to be rearranged.
-    #[test]
-    fn dropping_a_place_on_a_folder_row_moves_it_there() {
-        let ctx = egui::Context::default();
-        // The shipped theme, not `Visuals::dark()`: these tests are about
-        // widths and hit-testing, both of which are padding-dependent.
-        theme::install(&ctx);
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-
-        const FOLDER: u64 = 7;
-        const PLACE: u64 = 1;
-        let mut folder_at = egui::Pos2::ZERO;
-        let mut place_at = egui::Pos2::ZERO;
-        let mut dropped = None;
-
-        let button = |pos, pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-
-        for frame in 0..6 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            match frame {
-                1 => raw.events.push(egui::Event::PointerMoved(place_at)),
-                2 => raw.events.push(button(place_at, true)),
-                // Onto the folder — far enough from the press origin that egui
-                // stops treating the gesture as a click. Twice, so the row has a
-                // frame with the pointer over it before the release.
-                3 | 4 => raw.events.push(egui::Event::PointerMoved(folder_at)),
-                5 => raw.events.push(button(folder_at, false)),
-                _ => {}
-            }
-
-            let mut act = Actions::default();
-            let mut editing = None;
-            let mut thumbs = HashMap::new();
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                egui::Panel::right("places_test")
-                    .default_size(300.0)
-                    .show(ui, |ui| {
-                        let top = ui.cursor().min;
-                        folder_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            FOLDER,
-                            0,
-                            "Folder",
-                            [0.2, 0.5, 0.9],
-                            false,
-                            0,
-                        );
-                        let mid = ui.cursor().min;
-                        // Left of the ✏/🗑 buttons, so the drop lands on the row
-                        // rather than on a button.
-                        folder_at = egui::pos2(top.x + 80.0, (top.y + mid.y) * 0.5);
-                        place_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            &mut thumbs,
-                            PLACE,
-                            0,
-                            "Test place",
-                            [1.0, 0.2, 0.2],
-                            (1.0, 2.0, 10.0),
-                            None,
-                            true,
-                        );
-                        place_at = egui::pos2(mid.x + 70.0, (mid.y + ui.cursor().min.y) * 0.5);
-                    });
-            });
-            if let Some(drop) = act.drop {
-                dropped = Some(drop);
-            }
-        }
-
-        match dropped {
-            Some((Item::Place(id), Some(folder))) => {
-                assert_eq!(id, PLACE);
-                assert_eq!(folder, FOLDER);
-            }
-            other => panic!(
-                "dragging a place onto a folder row must drop it into that folder, got {}",
-                match other {
-                    None => "no drop at all".to_string(),
-                    Some((Item::Folder(id), t)) => format!("folder {id} -> {t:?}"),
-                    Some((Item::Place(id), t)) => format!("place {id} -> {t:?}"),
-                }
-            ),
-        }
+    fn the_fallback_name_signs_the_coordinates() {
+        assert_eq!(coord_label(53.2194, -6.5671), "53.219°N, 6.567°W");
+        assert_eq!(coord_label(-1.0, 2.0), "1.000°S, 2.000°E");
     }
 }

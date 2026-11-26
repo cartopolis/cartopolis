@@ -416,23 +416,6 @@ pub const COUNCIL: Rgba8 = Rgba8::from_rgb(0x2F, 0x4A, 0x7A);
 /// blue, light enough to read.
 pub const COUNCIL_LIGHT: Rgba8 = Rgba8::from_rgb(0x9D, 0xB7, 0xE6);
 
-// Script editor syntax colours (`js_highlight`), on the code box's ink —
-// [`DARK`]'s in both themes: the script editor keeps a dark code box in the
-// light theme, so these are one set. Their own constants rather than borrowed
-// ones: a warning tone on every string would read as a page of warnings.
-/// Keywords — the accent, so the structure of a script is what stands out.
-pub const CODE_KEYWORD: Rgba8 = Rgba8::from_rgb(0x5C, 0xC6, 0xC0);
-/// String literals — a warm sand.
-pub const CODE_STRING: Rgba8 = Rgba8::from_rgb(0xE6, 0xB8, 0x86);
-/// Numbers and `true` / `false` / `nil`.
-pub const CODE_LITERAL: Rgba8 = Rgba8::from_rgb(0xC3, 0xA9, 0xFF);
-/// Comments — recede, but stay readable.
-pub const CODE_COMMENT: Rgba8 = Rgba8::from_rgb(0x86, 0x9C, 0xA0);
-/// The host's own functions and handlers.
-pub const CODE_API: Rgba8 = Rgba8::from_rgb(0x8F, 0xCB, 0xFF);
-/// Any other call.
-pub const CODE_CALL: Rgba8 = Rgba8::from_rgb(0xD6, 0xE4, 0xA8);
-
 /// Backing for the small text chips painted straight onto the map — place-pin
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
 /// [`Palette::overlay`] on purpose: these are a few words over an arbitrary tile, so

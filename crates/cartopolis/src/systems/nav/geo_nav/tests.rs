@@ -1,6 +1,5 @@
 use super::*;
 use crate::grid::WorldFrame;
-use crate::systems::egui_manager::UnpaintedPasses as _;
 use crate::systems::globe::{sub_point, GlobeState};
 
 const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
@@ -327,66 +326,6 @@ fn an_empty_answer_spends_a_pending_enter_without_jumping() {
         nav.pending_teleport.is_none(),
         "and it must not jump to a hit for an older query"
     );
-}
-
-/// Drive one row through egui and click at `aim` (computed from the row's own
-/// rect, since the layout decides where things land).
-fn click_row(aim: impl Fn(egui::Rect) -> egui::Pos2) -> (bool, bool) {
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
-    let s = GeoSuggestion::plain("Vismarkt, Groningen", 53.2194, 6.5665);
-    let button = |pos, pressed| egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-
-    let mut target = egui::Pos2::ZERO;
-    let (mut clicked, mut routed) = (false, false);
-    for frame in 0..5 {
-        let mut raw = egui::RawInput::default();
-        raw.screen_rect = Some(screen);
-        match frame {
-            1 => raw.events.push(egui::Event::PointerMoved(target)),
-            2 => raw.events.push(button(target, true)),
-            3 => raw.events.push(button(target, false)),
-            _ => {}
-        }
-        let _ = ctx.run_ui_unpainted(raw, |ui| {
-            let pick = destination_row(ui, &s, Some((53.0, 6.0)), 360.0, false);
-            target = aim(pick.response.rect);
-            clicked |= pick.clicked();
-            routed |= pick.routed();
-        });
-    }
-    (clicked, routed)
-}
-
-/// The ⚑ sits *inside* a widget that senses clicks over the whole row, which is
-/// the arrangement that eats a button's press when it goes the other way round
-/// (see `dnd_drag_source` in `docs/notes/egui-shared-root-ui.md`). It works here
-/// because egui registers a `UiBuilder::sense` scope's own widget *before* its
-/// contents and only updates it in place afterwards, so the button is on top of
-/// the row rather than under it — a fact worth a test rather than a comment,
-/// since nothing about the code says it and the failure is a dead button.
-#[test]
-fn the_route_button_is_clickable_inside_the_row() {
-    // The button is on the row's first line, hard against the right edge.
-    let hit = [6.0_f32, 10.0, 14.0].iter().any(|&dy| {
-        let (clicked, routed) = click_row(|r| egui::pos2(r.right() - 10.0, r.top() + dy));
-        routed && !clicked
-    });
-    assert!(hit, "the ⚑ never received a click");
-}
-
-/// …and the rest of the row still goes to the row, or picking a search result
-/// would have stopped working.
-#[test]
-fn clicking_the_name_still_picks_the_row() {
-    let (clicked, routed) = click_row(|r| egui::pos2(r.left() + 24.0, r.top() + 10.0));
-    assert!(clicked, "the row itself must still take a click");
-    assert!(!routed, "and must not route");
 }
 
 #[test]

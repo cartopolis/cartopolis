@@ -719,6 +719,7 @@ pub fn render_locate_arrow(
     map_anchor: Res<MapAnchor>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    lens: Res<crate::systems::scenario::LensSlot>,
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<DriverState>,
     mut arrow: Option<ResMut<LocateArrow>>,
@@ -756,7 +757,7 @@ pub fn render_locate_arrow(
         return;
     };
 
-    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route);
+    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route, &lens);
     if map_rect.width() < 4.0 * ARROW_HALF_LENGTH || map_rect.height() < 4.0 * ARROW_HALF_LENGTH {
         return; // panels have taken the screen (compact layout)
     }

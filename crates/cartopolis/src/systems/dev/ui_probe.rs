@@ -39,9 +39,6 @@ impl Plugin for UiProbePlugin {
                 tokens: theme::app_tokens(),
             })
             .add_systems(Update, spawn_probe.in_set(ClientPhase::Input))
-            // Before egui's systems: a screen claimed only in `PostUpdate` was drawn
-            // by egui for a frame first.
-            .add_systems(PreUpdate, crate::systems::lib_search::claim)
             // After every Update system has had its say on `RightPanel`, and
             // before the library applies the frame's operations.
             .add_systems(
@@ -51,6 +48,7 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_host::follow_world_target,
                     crate::systems::lib_host::hide_for_snapshots,
                     crate::systems::lib_settings::drive_lib_settings,
+                    crate::systems::lib_about::drive_lib_about,
                     crate::systems::lib_layers::drive_lib_layers,
                     crate::systems::lib_search::drive_lib_search,
                     crate::systems::lib_route::drive_lib_route,
@@ -127,13 +125,18 @@ impl Plugin for UiProbePlugin {
         app.init_resource::<crate::systems::call_screen::CallScreenLib>()
             .add_systems(
                 PostUpdate,
-                (
-                    crate::systems::lib_call::drive_lib_call,
-                    crate::systems::lib_picture_viewer::drive_lib_picture_viewer,
-                )
+                crate::systems::lib_call::drive_lib_call
                     .after(crate::systems::lib_host::prepare_bevy)
                     .before(crate::systems::lib_host::bridge_input),
             );
+        // A chat's picture or a place's photo, full size; after Places, so a
+        // photo opens in the frame of its tap.
+        app.add_systems(
+            PostUpdate,
+            crate::systems::lib_picture_viewer::drive_lib_picture_viewer
+                .after(crate::systems::lib_places::drive_lib_places)
+                .before(crate::systems::lib_host::bridge_input),
+        );
         // The object editor and the builder's marquee: their switches are
         // resources the egui systems take as an `Option`.
         app.init_resource::<crate::systems::ui::ObjectEditorLib>()

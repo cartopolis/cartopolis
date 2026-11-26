@@ -439,9 +439,6 @@ pub fn drive_lib_layers(
     if !lib.layers {
         return;
     }
-    if !dl.lib {
-        dl.lib = true;
-    }
     if lib.open_layers && !*opened {
         *opened = true;
         *right_panel = RightPanel::Layers;
@@ -690,6 +687,13 @@ fn panel(l: &Live, counts: &Signal<[u64; 6]>, compact: bool) -> View {
         on(move || to_about.set(true))
     };
     let credits = credits();
+    // The one credit that comes and goes with its layer.
+    let orbit_credit = {
+        let on = l.satellites_enabled.clone();
+        move || -> View {
+            crate::systems::satellites::attribution(on.get()).map_or(View::Empty, small)
+        }
+    };
     view! {
         <div style={frame}>
             <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
@@ -704,6 +708,7 @@ fn panel(l: &Live, counts: &Signal<[u64; 6]>, compact: bool) -> View {
                 {body}
                 <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--m-border)">
                     {credits}
+                    {orbit_credit}
                     <div><Button variant=Variant::Ghost size=Size::Sm onclick={about}>"Full credits and licences…"</Button></div>
                 </div>
             </div>

@@ -1,17 +1,15 @@
-//! The Plans layer's chrome drawn by the component library (`lib_host`),
-//! beside egui's (`systems::plans`): the chip at the top while the layer is
-//! on, the card a dot, a square or the ring's *Plans here* opens, and the
-//! chip that says a followed place has news.
+//! The Plans layer's chrome drawn by the component library (`lib_host`):
+//! the chip at the top while the layer is on, the card a dot, a square or
+//! the ring's *Plans here* opens, and the chip that says a followed place
+//! has news.
 //!
-//! On with `CARTO_UI_LIB=plans` (or `1`), on the web `?ui=lib`. egui's
-//! systems step aside (`Plans::lib`) but keep what only they can do: the
-//! dots, squares and outlines are painted over the map by `render_plans`
-//! (they stay egui's until the canvas step), which counts what it drew for
-//! the chip; the card's and the news chip's reasons to stand aside are
-//! worked out where egui's own were (`Plans::lib_view`). What a card shows
-//! is one model both editions draw (`Plans::card_model`, a list of
-//! `plans::Block`s), and a tap goes through the same `Plans::act` and
-//! `Plans::open_news`, so the two cannot drift apart.
+//! The dots, squares and outlines are still painted over the map by
+//! `plans::render_plans`, which counts what it drew for the chip; the
+//! card's and the news chip's reasons to stand aside are worked out by
+//! `plans::drive_plans_card` and `plans::drive_plans_news`
+//! (`Plans::lib_view`). What a card shows is one model
+//! (`Plans::card_model`, a list of `plans::Block`s), and a tap goes through
+//! `Plans::act` and `Plans::open_news`.
 //!
 //! **Placement.** The card stands where the place card does, centred over
 //! the dock (`lib_place_card::Placement`); the two chips are centred under
@@ -146,9 +144,6 @@ pub fn drive_lib_plans(
 ) {
     if !lib.plans {
         return;
-    }
-    if !plans.lib {
-        plans.lib = true;
     }
     let size = metrics.viewport_pts();
     let ui_scale = metrics.ui_scale();

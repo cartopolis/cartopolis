@@ -1,19 +1,15 @@
-//! The route planner drawn by the component library (`lib_host`), beside
-//! egui's (`navigation::render_route_sheet`) — the fourth screen, after
-//! Settings, Layers and Search. A bottom sheet over a map that stays
-//! visible (`route-planner-sheet.md`): the travel modes, the one line the
-//! planner exists to produce, the two ends as one card, the turns, and
-//! what to do with the route along the foot.
+//! The route planner drawn by the component library (`lib_host`). A bottom
+//! sheet over a map that stays visible (`route-planner-sheet.md`): the
+//! travel modes, the one line the planner exists to produce, the two ends as
+//! one card, the turns, and what to do with the route along the foot.
 //!
 //! On with `CARTO_UI_LIB=route` (or `1`), on the web `?ui=lib`
-//! (`&panel=route` opens it). egui's system steps aside (`RouteState::lib`)
-//! and draws nothing — the sheet floats, so there is no strip to keep — but
-//! still works out what only it can see (where "My position" is, the
-//! keyboard's lift, the arrival clock: `RouteState::lib_view`), starts the
-//! trip this sheet asks for (`RouteState::lib_trip`), and publishes the
-//! sheet's rect for the pins. Every edit goes through the same
-//! `RouteState` methods egui's sheet calls (`apply`, `edit_label`), so the
-//! two editions cannot drift apart.
+//! (`&panel=route` opens it). `navigation::drive_route_sheet` works out what
+//! this sheet cannot see itself (where "My position" is, the keyboard's
+//! lift, the arrival clock: `RouteState::lib_view`), starts the trip it asks
+//! for (`RouteState::lib_trip`), and publishes the sheet's rect for the
+//! pins. Every edit goes through `RouteState`'s methods (`apply`,
+//! `edit_label`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -352,9 +348,6 @@ pub fn drive_lib_route(
 ) {
     if !lib.route {
         return;
-    }
-    if !route.lib {
-        route.lib = true;
     }
     if lib.open_route && !*opened {
         *opened = true;

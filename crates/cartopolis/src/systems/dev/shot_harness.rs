@@ -2901,12 +2901,9 @@ pub fn open_scripted_ui(
         // the panel would capture whichever tab was last selected — which for a
         // fresh scripted world is always General, i.e. never the one being
         // reviewed.
-        // `--ui audio`: the Audio & video tab with the camera test running (on
-        // the stand-in camera under `CARTO_FAKE_CAMERA`) and a sample level on
-        // the meter, since a capture has no microphone to move it.
-        #[cfg(not(target_arch = "wasm32"))]
-        if want("audio") && !cards.settings.camera_running() {
-            cards.settings.start_camera();
+        // `--ui audio`: the Sound and voice page with a sample level on the
+        // meter, since a capture has no microphone to move it.
+        if want("audio") {
             cards.settings.demo_level = Some((0.62, 0.81));
         }
         // `--ui settings` is the list of pages; the others open one of them.
@@ -2980,7 +2977,7 @@ pub fn open_scripted_ui(
     // route: a scripted run never loads `user.json`, so the panel would otherwise
     // document its empty state. Only fills a store that has nothing in it.
     if want("places") || want("bookmarks") {
-        crate::systems::bookmarks::seed_demo_places(&egui.ctx, &mut bookmarks, &mut store);
+        crate::systems::bookmarks::seed_demo_places(&mut store);
     }
     // `--ui search` opens the Search panel (above) *and* seeds a query, so the
     // capture shows the thing the panel exists for rather than an empty field.

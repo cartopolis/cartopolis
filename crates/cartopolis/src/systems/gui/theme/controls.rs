@@ -88,13 +88,6 @@ pub fn ghost_button_wide(ui: &mut egui::Ui, icon: &str, label: &str, width: f32)
     )
 }
 
-/// [`ghost_button_wide`] that is also the row's drag handle (a saved place
-/// dragged into a folder): it senses click *and* drag, so a press-and-release
-/// clicks and only a press-and-move drags. Set the payload on its response.
-pub fn ghost_row_handle(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
-    flat_button(ui, "", label, control_height(), width, true, Dress::Ghost)
-}
-
 /// A destructive action: the web's `variant=danger`, the error tone's soft
 /// fill with the error ink. Pair it with [`confirm_button`] for anything
 /// without an undo.
@@ -102,16 +95,7 @@ pub fn danger_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Respon
     flat_button(ui, icon, label, control_height(), 0.0, false, Dress::Danger)
 }
 
-/// A square button of one icon, outlined: the web's `Button iconOnly`
-/// (`secondary`), a square of the control height. `name` is what it does,
-/// read out and shown on hover; the icon alone says nothing to a screen
-/// reader.
-pub fn icon_button(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response {
-    let resp = flat_button(ui, icon, "", control_height(), 0.0, false, Dress::Outlined);
-    named(ui, resp, name).on_hover_text(name)
-}
-
-/// [`icon_button`] at the small height, frameless: an icon action in a list
+/// A square button of one icon at the small height, frameless: an icon action in a list
 /// row (a bookmark's rename and delete), where four outlined squares beside a
 /// name read as a toolbar.
 pub fn icon_button_small(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response {

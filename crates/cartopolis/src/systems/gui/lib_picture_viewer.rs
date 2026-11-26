@@ -1,23 +1,33 @@
-//! A chat's picture open full size, drawn by the component library
-//! (`lib_host`), beside egui's (`chats::picture_viewer`).
+//! A picture open full size, drawn by the component library (`lib_host`):
+//! a chat's picture (beside egui's `chats::picture_viewer`) or a saved
+//! place's photo (Places ▸ "View the photo", whose egui window is gone).
 //!
-//! On with `CARTO_UI_LIB=picture_viewer` (or `1`). egui's system steps aside
-//! (`ChatsView::lib_picture`) but still decides when the viewer is up: a tap
-//! on a picture in the thread opens it, and `chats::egui_only` hands it over
-//! in `ChatsView::lib_viewing` on every frame egui's window would have shown
-//! (the Chats panel open). ✕ is done by `ChatsView::close_picture`, the
-//! method egui's window calls.
+//! **A chat's picture** is on with `CARTO_UI_LIB=picture_viewer` (or `1`).
+//! egui's system steps aside (`ChatsView::lib_picture`) but still decides
+//! when the viewer is up: a tap on a picture in the thread opens it, and
+//! `chats::egui_only` hands it over in `ChatsView::lib_viewing` on every
+//! frame egui's window would have shown (the Chats panel open). ✕ is done by
+//! `ChatsView::close_picture`, the method egui's window calls.
+//!
+//! **A place's photo** is up while `BookmarksState::viewing_photo` names
+//! one: set by the Places panel (`Actions::view_photo`), it outlives the
+//! panel closing behind it, and closes itself when the photo is removed or
+//! replaced or its place deleted. ✕ is `BookmarksState::close_photo`. Its
+//! bytes are `photo_store::read_full`, which on the web answers `Loading`
+//! until IndexedDB has them. A chat's picture, when one is handed over,
+//! goes before a place's photo; the photo shows again once it closes.
 //!
 //! **The picture is a live image, let go when it closes.** `mithril_bevy`'s
 //! `<img>` keeps every `data:` source it decodes for as long as the app runs,
 //! so a 1600 px picture per view would be a few MB never given back. Here
-//! the JPEG (`ChatPictures::jpeg`) is decoded on a worker
-//! (`platform::workers`, `utils::photo::decode_rgba`, EXIF turned upright),
-//! made into a Bevy `Image` once the frame's upload allowance admits it
-//! (`stream_ledger::admit`), and named [`NAME`] in `mithril_bevy::LiveImages`
-//! before the view that shows it mounts. When the viewer closes or shows
-//! another picture the view goes first, then the name, and the asset itself
-//! is removed from `Assets<Image>` the frame after — never in the frame the
+//! the JPEG is decoded on a worker (`platform::workers`,
+//! `utils::photo::decode_rgba`, EXIF turned upright), made into a Bevy
+//! `Image` once the frame's upload allowance admits it
+//! (`stream_ledger::admit`), and named — [`NAME`] for a chat's picture,
+//! [`PLACE_NAME`] for a place's photo — in `mithril_bevy::LiveImages` before
+//! the view that shows it mounts. When the viewer closes or shows another
+//! picture the view goes first, then the name, and the asset itself is
+//! removed from `Assets<Image>` the frame after — never in the frame the
 //! view last drew it. On the web's DOM backend, which has no `bevy:` source,
 //! the JPEG goes in as a `data:image/jpeg` URL, which the browser lets go
 //! with the element.
@@ -30,7 +40,8 @@
 //! be dragged to nine.
 //!
 //! **What differs from egui's.** The window cannot be dragged or resized;
-//! its title "Picture" sits in the card with its ✕, as in `lib_dialogs`.
+//! its title — "Picture", or the place's name — sits in the card with its
+//! ✕, as in `lib_dialogs`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -46,19 +57,28 @@ use bevy::prelude::{Assets, Handle, Image};
 use mithril::prelude::Event;
 use mithril::prelude::*;
 
+use crate::systems::bookmarks::BookmarksState;
+#[cfg(feature = "comms")]
 use crate::systems::chat_pictures::{ChatPictures, PictureRef};
+#[cfg(feature = "comms")]
 use crate::systems::chats::ChatsView;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::theme;
 use crate::systems::ui_input::UiMetrics;
+use crate::systems::user_store::UserStore;
 
 /// The viewer's name in the library's host.
-const KEY: &str = "chat_picture_viewer";
+const KEY: &str = "picture_viewer";
 
-/// The picture's name in `mithril_bevy::LiveImages`
+/// A chat picture's name in `mithril_bevy::LiveImages`
 /// (`<img src="bevy:chat_picture">`).
 #[cfg_attr(all(feature = "ui-dom", target_arch = "wasm32"), allow(dead_code))]
 pub const NAME: &str = "chat_picture";
+
+/// A place photo's name in `mithril_bevy::LiveImages`
+/// (`<img src="bevy:place_photo">`).
+#[cfg_attr(all(feature = "ui-dom", target_arch = "wasm32"), allow(dead_code))]
+pub const PLACE_NAME: &str = "place_photo";
 
 /// The card's padding, px.
 const PAD: f32 = 16.0;
@@ -74,6 +94,74 @@ const WAIT_WIDTH: f32 = 320.0;
 
 /// The narrowest card round a small picture, so the title and ✕ fit.
 const MIN_WIDTH: f32 = 200.0;
+
+/// What the viewer shows a picture of.
+#[derive(Clone)]
+enum Source {
+    /// A chat's picture, handed over by `chats::egui_only`.
+    #[cfg(feature = "comms")]
+    Chat(PictureRef),
+    /// A saved place's photo: the place's name and the photo's stem.
+    Place { title: String, stem: String },
+}
+
+impl Source {
+    /// Which picture: another one is let go and fetched afresh.
+    fn id(&self) -> String {
+        match self {
+            #[cfg(feature = "comms")]
+            Source::Chat(r) => format!("chat:{}", r.hash),
+            Source::Place { stem, .. } => format!("place:{stem}"),
+        }
+    }
+
+    fn kind(&self) -> Kind {
+        match self {
+            #[cfg(feature = "comms")]
+            Source::Chat(_) => Kind::Chat,
+            Source::Place { .. } => Kind::Place,
+        }
+    }
+
+    /// Its name in `mithril_bevy::LiveImages`, and its decode's label.
+    fn name(&self) -> &'static str {
+        match self.kind() {
+            Kind::Chat => NAME,
+            Kind::Place => PLACE_NAME,
+        }
+    }
+
+    /// The card's title, as egui's window's.
+    fn title(&self) -> String {
+        match self {
+            #[cfg(feature = "comms")]
+            Source::Chat(_) => "Picture".to_owned(),
+            Source::Place { title, .. } => title.clone(),
+        }
+    }
+
+    /// Its size as recorded with it, for when the browser's bytes cannot
+    /// be measured: a chat's picture carries one, a place's photo none.
+    #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
+    fn recorded_size(&self) -> Option<[usize; 2]> {
+        match self {
+            #[cfg(feature = "comms")]
+            Source::Chat(r) => Some([r.width as usize, r.height as usize]),
+            Source::Place { .. } => None,
+        }
+    }
+}
+
+/// Which wording the viewer speaks in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    #[cfg_attr(not(feature = "comms"), allow(dead_code))]
+    Chat,
+    Place,
+}
+
+/// A picture's bytes: `None` while they are on their way.
+type Read = Option<Result<Vec<u8>, String>>;
 
 /// What the viewer shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -138,13 +226,26 @@ struct Live {
     stage: Stage,
     placement: Placement,
     dark: bool,
+    kind: Kind,
+    title: String,
 }
 
 /// The picture's pixels and where they stand.
 #[derive(Default)]
 struct Pixels {
-    /// Whose: the picture's hash.
-    hash: Option<String>,
+    /// Whose: [`Source::id`].
+    shown: Option<String>,
+    /// What is shown, for the ✕ to close.
+    source: Option<Source>,
+    /// The name its image goes under in `mithril_bevy::LiveImages`.
+    #[cfg_attr(
+        not(all(
+            feature = "ui-probe",
+            not(all(feature = "ui-dom", target_arch = "wasm32"))
+        )),
+        allow(dead_code)
+    )]
+    name: &'static str,
     error: Option<String>,
     /// Width and height once ready.
     size: Option<[usize; 2]>,
@@ -154,7 +255,7 @@ struct Pixels {
         not(all(feature = "ui-dom", target_arch = "wasm32"))
     ))]
     decode: Option<Slot>,
-    /// The image named [`NAME`].
+    /// The image named [`Pixels::name`].
     #[cfg(all(
         feature = "ui-probe",
         not(all(feature = "ui-dom", target_arch = "wasm32"))
@@ -186,14 +287,16 @@ thread_local! {
 
 /// Mounts, bridges and unmounts the viewer, and makes and lets go of its
 /// picture. `PostUpdate`, before `DriveUi`, as every library screen — after
-/// `chats::render_chats_panel` (`Update`) has handed the picture over.
+/// `chats::render_chats_panel` (`Update`) has handed a chat's picture over.
 #[allow(clippy::too_many_arguments)]
 pub fn drive_lib_picture_viewer(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    mut view: ResMut<ChatsView>,
-    mut pictures: ResMut<ChatPictures>,
-    metrics: bevy::prelude::Res<UiMetrics>,
+    #[cfg(feature = "comms")] mut chats: ResMut<ChatsView>,
+    #[cfg(feature = "comms")] mut pictures: ResMut<ChatPictures>,
+    mut bookmarks: ResMut<BookmarksState>,
+    store: Res<UserStore>,
+    metrics: Res<UiMetrics>,
     #[cfg(all(
         feature = "ui-probe",
         not(all(feature = "ui-dom", target_arch = "wasm32"))
@@ -205,18 +308,69 @@ pub fn drive_lib_picture_viewer(
     ))]
     mut live_images: Option<ResMut<mithril_bevy::LiveImages>>,
 ) {
-    if !lib.picture_viewer {
-        return;
-    }
-    if !view.lib_picture {
-        view.lib_picture = true;
-    }
-    // The taps of the last frame, as egui's window does them.
+    // The taps of the last frame, as egui's window does them: ✕ closes
+    // whatever was shown.
     let acts: Vec<Act> = ACTS.with(|a| std::mem::take(&mut *a.borrow_mut()));
     if acts.iter().any(|a| matches!(a, Act::Close)) {
-        view.close_picture();
+        match PIXELS.with(|px| px.borrow().source.clone()) {
+            #[cfg(feature = "comms")]
+            Some(Source::Chat(_)) => chats.close_picture(),
+            Some(Source::Place { .. }) => bookmarks.close_photo(),
+            None => {}
+        }
     }
-    let shown: Option<PictureRef> = view.lib_viewing.take();
+
+    // A chat's picture, when its viewer is the library's.
+    #[cfg(feature = "comms")]
+    let chat: Option<Source> = if lib.picture_viewer {
+        if !chats.lib_picture {
+            chats.lib_picture = true;
+        }
+        chats.lib_viewing.take().map(Source::Chat)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "comms"))]
+    let chat: Option<Source> = {
+        let _ = &lib;
+        None
+    };
+    let shown: Option<Source> = chat.or_else(|| {
+        bookmarks
+            .viewing_photo(&store)
+            .map(|(title, stem)| Source::Place { title, stem })
+    });
+
+    // Nothing shown and nothing up: nothing to do.
+    let idle = shown.is_none()
+        && MOUNTED.with(|m| m.borrow().is_none())
+        && PIXELS.with(|px| {
+            let px = px.borrow();
+            #[cfg(all(
+                feature = "ui-probe",
+                not(all(feature = "ui-dom", target_arch = "wasm32"))
+            ))]
+            let dropping = !px.dropping.is_empty();
+            #[cfg(not(all(
+                feature = "ui-probe",
+                not(all(feature = "ui-dom", target_arch = "wasm32"))
+            )))]
+            let dropping = false;
+            px.shown.is_none() && !dropping
+        });
+    if idle {
+        return;
+    }
+
+    // The picture's bytes, from wherever it lives.
+    let mut read = |source: &Source| -> Read {
+        match source {
+            #[cfg(feature = "comms")]
+            Source::Chat(r) => pictures.jpeg(r),
+            Source::Place { stem, .. } => place_bytes(stem),
+        }
+    };
+
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
     } else {
@@ -255,28 +409,35 @@ pub fn drive_lib_picture_viewer(
         }
 
         // Closed, or another picture: the view first, then its pixels.
-        let want = shown.as_ref().map(|p| p.hash.clone());
-        if px.hash != want {
+        let want = shown.as_ref().map(Source::id);
+        if px.shown != want {
             MOUNTED.with(|m| {
                 if m.borrow_mut().take().is_some() {
                     crate::systems::lib_host::clear_keyed(KEY);
                 }
             });
             release(&mut px, &mut host);
-            px.hash = want;
+            px.shown = want;
+            px.name = shown.as_ref().map_or(NAME, Source::name);
         }
-        let Some(picture) = shown else {
+        px.source = shown.clone();
+        let Some(source) = shown else {
             return;
         };
 
         // The pixels before the view that shows them: an `<img>` reads its
         // source when it is styled.
-        let stage = fetch(&mut px, &mut pictures, &picture, &mut host);
+        let stage = fetch(&mut px, &source, &mut read, &mut host);
+        let kind = source.kind();
+        let title = source.title();
 
         MOUNTED.with(|m| {
             let mut m = m.borrow_mut();
             let stale = m.as_ref().is_some_and(|live| {
-                live.stage != stage || live.placement != placement || live.dark != dark
+                live.stage != stage
+                    || live.placement != placement
+                    || live.dark != dark
+                    || live.title != title
             });
             if stale {
                 *m = None;
@@ -287,8 +448,10 @@ pub fn drive_lib_picture_viewer(
                     stage,
                     placement,
                     dark,
+                    kind,
+                    title,
                 };
-                let src = source(&px);
+                let src = image_source(&px);
                 crate::systems::lib_host::mount_keyed(
                     KEY,
                     view_of(&live, &src),
@@ -300,6 +463,18 @@ pub fn drive_lib_picture_viewer(
             }
         });
     });
+}
+
+/// A place photo's full-size bytes (`photo_store::read_full`): on the web
+/// `None` until IndexedDB answers.
+fn place_bytes(stem: &str) -> Read {
+    match crate::utils::photo_store::read_full(stem) {
+        crate::platform::storage::Cached::Ready(bytes) => Some(Ok(bytes)),
+        crate::platform::storage::Cached::Loading => None,
+        // Nothing under that key: the photo was there when the row was
+        // drawn and is not now.
+        crate::platform::storage::Cached::Missing => Some(Err("the photo is gone".to_owned())),
+    }
 }
 
 /// What the Bevy backend makes the picture in and names it in.
@@ -328,8 +503,8 @@ fn release(px: &mut Pixels, host: &mut Host<'_>) {
     {
         if let Some(handle) = px.handle.take() {
             if let Some(live_images) = host.live_images.as_deref_mut() {
-                if live_images.0.get(NAME) == Some(&handle) {
-                    live_images.0.remove(NAME);
+                if live_images.0.get(px.name) == Some(&handle) {
+                    live_images.0.remove(px.name);
                 }
             }
             px.dropping.push(handle);
@@ -358,8 +533,8 @@ fn release(px: &mut Pixels, host: &mut Host<'_>) {
 ))]
 fn fetch(
     px: &mut Pixels,
-    pictures: &mut ChatPictures,
-    picture: &PictureRef,
+    source: &Source,
+    read: &mut dyn FnMut(&Source) -> Read,
     host: &mut Host<'_>,
 ) -> Stage {
     use bevy::asset::RenderAssetUsages;
@@ -375,15 +550,15 @@ fn fetch(
         };
     }
     let Some(slot) = px.decode.clone() else {
-        // Not asked yet: the JPEG, once the cache has it, to a worker.
-        match pictures.jpeg(picture) {
+        // Not asked yet: the JPEG, once it is in hand, to a worker.
+        match read(source) {
             None => {}
             Some(Err(why)) => px.error = Some(why),
             Some(Ok(jpeg)) => {
                 let slot: Slot = std::sync::Arc::default();
                 let out = slot.clone();
                 crate::platform::workers::submit(
-                    "chat_picture",
+                    source.name(),
                     Box::new(move || {
                         let decoded = crate::utils::photo::decode_rgba(&jpeg);
                         *out.lock()
@@ -442,7 +617,7 @@ fn fetch(
                 RenderAssetUsages::default(),
             );
             let handle = host.images.add(image);
-            live_images.0.insert(NAME.to_owned(), handle.clone());
+            live_images.0.insert(px.name.to_owned(), handle.clone());
             px.handle = Some(handle);
             px.size = Some([w, h]);
             px.decode = None;
@@ -459,8 +634,8 @@ fn fetch(
 #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
 fn fetch(
     px: &mut Pixels,
-    pictures: &mut ChatPictures,
-    picture: &PictureRef,
+    source: &Source,
+    read: &mut dyn FnMut(&Source) -> Read,
     _host: &mut Host<'_>,
 ) -> Stage {
     if let Some(why) = &px.error {
@@ -472,21 +647,23 @@ fn fetch(
             h: h as f32,
         };
     }
-    match pictures.jpeg(picture) {
+    match read(source) {
         None => Stage::Loading,
         Some(Err(why)) => {
             px.error = Some(why.clone());
             Stage::Failed(why)
         }
         Some(Ok(jpeg)) => {
-            let [w, h] = image::ImageReader::new(std::io::Cursor::new(&jpeg))
+            let measured = image::ImageReader::new(std::io::Cursor::new(&jpeg))
                 .with_guessed_format()
                 .ok()
                 .and_then(|r| r.into_dimensions().ok())
-                .map_or(
-                    [picture.width as usize, picture.height as usize],
-                    |(w, h)| [w as usize, h as usize],
-                );
+                .map(|(w, h)| [w as usize, h as usize]);
+            let Some([w, h]) = measured.or_else(|| source.recorded_size()) else {
+                let why = "the picture has no pixels".to_owned();
+                px.error = Some(why.clone());
+                return Stage::Failed(why);
+            };
             px.src = Some(format!("data:image/jpeg;base64,{}", base64(&jpeg)));
             px.size = Some([w, h]);
             Stage::Ready {
@@ -497,7 +674,8 @@ fn fetch(
     }
 }
 
-/// With neither backend nothing is drawn: the picture is only asked for.
+/// With neither backend nothing is drawn: a chat's picture is only asked
+/// for, and a place's photo, which would be a file read a frame, is not.
 #[cfg(not(any(
     all(
         feature = "ui-probe",
@@ -507,11 +685,14 @@ fn fetch(
 )))]
 fn fetch(
     px: &mut Pixels,
-    pictures: &mut ChatPictures,
-    picture: &PictureRef,
+    source: &Source,
+    read: &mut dyn FnMut(&Source) -> Read,
     _host: &mut Host<'_>,
 ) -> Stage {
-    match pictures.jpeg(picture) {
+    if source.kind() == Kind::Place {
+        return Stage::Loading;
+    }
+    match read(source) {
         Some(Err(why)) => {
             px.error = Some(why.clone());
             Stage::Failed(why)
@@ -521,15 +702,14 @@ fn fetch(
 }
 
 /// The `<img>`'s source.
-fn source(px: &Pixels) -> String {
+fn image_source(px: &Pixels) -> String {
     #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
     {
         px.src.clone().unwrap_or_default()
     }
     #[cfg(not(all(feature = "ui-dom", target_arch = "wasm32")))]
     {
-        let _ = px;
-        format!("bevy:{NAME}")
+        format!("bevy:{}", px.name)
     }
 }
 
@@ -568,8 +748,9 @@ fn close() -> Option<Handler> {
     Some(Rc::new(move |_: &Event| acts.borrow_mut().push(Act::Close)) as Handler)
 }
 
-/// The viewer: "Picture" and ✕, and under them the picture, a spinner, or
-/// why it could not be opened. The card hangs in a column of no width
+/// The viewer: its title and ✕, and under them the picture, a spinner, or
+/// why it could not be opened — a chat's picture and a place's photo each
+/// in the words egui's window used. The card hangs in a column of no width
 /// (`lib_dialogs`), so only the card holds the pointer; its own node
 /// listens, so the pointer over its padding is the library's too.
 fn view_of(l: &Live, src: &str) -> View {
@@ -591,19 +772,40 @@ fn view_of(l: &Live, src: &str) -> View {
         p.px(GAP),
         p.px(PAD)
     );
-    let title = format!(
+    let title_style = format!(
         "flex: 1; min-width: 0; margin: 0; font-size: {}; font-weight: 600; \
-         color: var(--m-text-strong)",
+         color: var(--m-text-strong); overflow: hidden; text-overflow: ellipsis; \
+         white-space: nowrap",
         p.px(theme::SIZE_TITLE)
     );
+    let title = l.title.clone();
     let body: View = match &l.stage {
-        Stage::Loading => view! {
-            <div style="display: flex; justify-content: center; padding: 24px 0">
-                <Spinner size=Size::Sm />
-            </div>
+        Stage::Loading => match l.kind {
+            Kind::Chat => view! {
+                <div style="display: flex; justify-content: center; padding: 24px 0">
+                    <Spinner size=Size::Sm />
+                </div>
+            },
+            // egui's place viewer said what it was waiting for.
+            Kind::Place => {
+                let style = format!(
+                    "display: flex; align-items: center; gap: 8px; padding: 24px 0; \
+                     color: var(--m-text-dim); font-size: {}",
+                    p.px(13.0)
+                );
+                view! {
+                    <div style={style}>
+                        <Spinner size=Size::Sm />
+                        <span>"Loading the photo…"</span>
+                    </div>
+                }
+            }
         },
         Stage::Failed(why) => {
-            let text = format!("This picture could not be opened: {why}");
+            let text = match l.kind {
+                Kind::Chat => format!("This picture could not be opened: {why}"),
+                Kind::Place => "This photo could not be opened.".to_owned(),
+            };
             let style = format!(
                 "margin: 0; color: var(--m-warning); font-size: {}",
                 p.px(13.0)
@@ -612,9 +814,13 @@ fn view_of(l: &Live, src: &str) -> View {
         }
         Stage::Ready { w, h } => {
             let (iw, ih) = p.fit(*w, *h);
+            let alt = match l.kind {
+                Kind::Chat => "The picture",
+                Kind::Place => "The photo",
+            };
             let img = el("img")
                 .attr("src", src.to_owned())
-                .attr("alt", "The picture")
+                .attr("alt", alt)
                 .attr(
                     "style",
                     format!(
@@ -633,7 +839,7 @@ fn view_of(l: &Live, src: &str) -> View {
         <div style={outer}>
             <div style={card} on:click={|_: &Event| {}}>
                 <div style="display: flex; align-items: center; gap: 12px">
-                    <h1 style={title}>"Picture"</h1>
+                    <h1 style={title_style}>{title}</h1>
                     <CloseButton onclick={close()} />
                 </div>
                 {body}

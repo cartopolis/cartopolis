@@ -4,7 +4,7 @@
 //! `lib.rs` carried before the split.
 //!
 //! Three of this group's systems are registered elsewhere, in the panel chain
-//! (`gui::plugin`): `geo_nav::render_search_panel`, `navigation::render_route_sheet`
+//! (`gui::plugin`): `geo_nav::drive_search`, `navigation::drive_route_sheet`
 //! and `locate::render_locate_arrow` draw into the shared root `Ui`, and a panel
 //! outside that one tuple is not in the chain.
 
@@ -186,7 +186,7 @@ impl Plugin for NavPlugin {
                 // and the follow camera — back toward the sim's echo of the
                 // previous fix: the irregular camera stutter while using GPS.
                 systems::driver::drive_driver_mode
-                    .after(systems::navigation::render_route_sheet)
+                    .after(systems::navigation::drive_route_sheet)
                     .after(avatar::handle_avatar_movement)
                     .after(avatar::smooth_online_avatar_display)
                     .before(systems::navigation::drive_route_solver),
@@ -231,7 +231,7 @@ impl Plugin for NavPlugin {
             (
                 // Route planner (ADR-037).
                 systems::navigation::drive_route_solver
-                    .after(systems::navigation::render_route_sheet),
+                    .after(systems::navigation::drive_route_sheet),
                 // After the camera has moved, so the cursor ray matches the frame
                 // the user actually clicked on.
                 systems::navigation::handle_route_map_pick

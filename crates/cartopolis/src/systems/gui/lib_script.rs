@@ -1,20 +1,15 @@
-//! The script editor drawn by the component library (`lib_host`), beside
-//! egui's (`script_editor::render_script_panel`): the prim and whether its
-//! script runs, the region's headroom, the API reference, the code, Save &
-//! run, Stop, Touch, and the console.
+//! The script editor drawn by the component library (`lib_host`): the prim
+//! and whether its script runs, the region's headroom, the API reference,
+//! the code, Save & run, Stop, Touch, and the console.
 //!
-//! On with `CARTO_UI_LIB=script` (or `1`), on the web `?ui=lib`
-//! (`&panel=script` opens it). egui's panel steps aside
-//! (`ScriptEditorState::lib`) keeping an empty strip. The buffer, the fetch,
-//! the guard against a broadcast eating unsaved work and every message sent
-//! are `ScriptEditorState`'s, which both editions call, so the two cannot
-//! drift apart.
+//! `&panel=script` on the web opens it. The buffer, the fetch, the guard
+//! against a broadcast eating unsaved work and every message sent are
+//! `ScriptEditorState`'s.
 //!
-//! Drawn differently: the code is a plain `FieldTextarea` in the monospace
-//! family, **without syntax highlighting** — a textarea draws one colour, and
-//! the library has no code editor (egui's colours through `js_highlight`);
-//! and a command's summary in the reference is its tooltip on the web and
-//! not shown natively, as egui shows it only on hover.
+//! The code is a plain `FieldTextarea` in the monospace family, **without
+//! syntax highlighting** — a textarea draws one colour, and the library has
+//! no code editor; a command's summary in the reference is its tooltip on
+//! the web and not shown natively.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -156,9 +151,6 @@ pub fn drive_lib_script(
 ) {
     if !lib.script {
         return;
-    }
-    if !editor.lib {
-        editor.lib = true;
     }
     if lib.open_script && !*opened {
         *opened = true;

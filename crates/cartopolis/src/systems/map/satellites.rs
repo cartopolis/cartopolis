@@ -1327,11 +1327,10 @@ fn format_period(minutes: f64) -> String {
     }
 }
 
-/// The credit line for the Layers panel, while the layer is on.
+/// The credit line for the Layers panel, while the layer (`enabled`) is on.
 #[must_use]
-pub fn attribution(dl: &DataLayers) -> Option<&'static str> {
-    dl.satellites_enabled
-        .then_some("Satellite orbits: CelesTrak (celestrak.org), propagated with SGP4")
+pub fn attribution(enabled: bool) -> Option<&'static str> {
+    enabled.then_some("Satellite orbits: CelesTrak (celestrak.org), propagated with SGP4")
 }
 
 /// Persisted kind switches → the panel's array, defaulting each to on.

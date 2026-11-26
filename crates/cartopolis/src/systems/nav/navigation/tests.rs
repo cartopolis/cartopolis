@@ -1,27 +1,29 @@
 use super::*;
+use crate::systems::routing::format_duration;
 
-/// The whole point of the sheet: whatever the screen, most of it is still map.
+/// The whole point of the sheet: whatever the screen, most of it is still map,
+/// and the sheet never reaches past the top of it.
 ///
 /// The floor is the deliberate exception — on a viewport too short to honour
-/// the fraction the body overflows visibly rather than collapsing to nothing,
+/// the fraction the sheet overflows visibly rather than collapsing to nothing,
 /// the trade every narrow control here makes.
 #[test]
 fn the_sheet_leaves_the_map_visible() {
     // A phone in portrait, a phone in landscape, a laptop, a big monitor.
-    for (viewport_h, has_route) in [640.0_f32, 320.0, 800.0, 1400.0]
-        .into_iter()
-        .flat_map(|h| [(h, true), (h, false)])
-    {
+    for viewport_h in [640.0_f32, 320.0, 800.0, 1400.0] {
         let bottom = 60.0;
-        let body = sheet_body_height(viewport_h, bottom, has_route);
-        let total = bottom + sheet_header(has_route) + body;
+        let sheet = lib_sheet_max_height(viewport_h, bottom);
         assert!(
-            total <= viewport_h * SHEET_MAX_FRACTION + 0.01 || body == SHEET_BODY_MIN_PTS,
-            "a {viewport_h} pt viewport gave the sheet {total} pt"
+            sheet <= viewport_h * SHEET_MAX_FRACTION + LIB_SHEET_HEADER_PTS + 0.01,
+            "a {viewport_h} pt viewport gave the sheet {sheet} pt"
         );
         assert!(
-            body >= SHEET_BODY_MIN_PTS,
-            "the body collapsed at {viewport_h}"
+            sheet <= viewport_h - bottom - theme::OSD_MARGIN + 0.01 || sheet == SHEET_BODY_MIN_PTS,
+            "the sheet reached past the top of a {viewport_h} pt viewport"
+        );
+        assert!(
+            sheet >= SHEET_BODY_MIN_PTS,
+            "the sheet collapsed at {viewport_h}"
         );
     }
 }

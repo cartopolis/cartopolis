@@ -49,9 +49,12 @@ pub mod faces;
 pub mod floor_picker;
 pub mod hud;
 pub mod icons;
-pub mod js_highlight;
 pub mod layer_tiles;
+// Read only by the library's Layers panel (`lib_layers`).
+#[cfg(feature = "ui-lib")]
 pub mod layers_panel;
+#[cfg(feature = "ui-lib")]
+pub mod lib_about;
 #[cfg(feature = "ui-lib")]
 pub mod lib_action_ring;
 #[cfg(feature = "ui-lib")]
@@ -108,7 +111,7 @@ pub mod lib_midas_link;
 pub mod lib_models;
 #[cfg(feature = "ui-lib")]
 pub mod lib_object_editor;
-#[cfg(all(feature = "ui-lib", feature = "comms"))]
+#[cfg(feature = "ui-lib")]
 pub mod lib_picture_viewer;
 #[cfg(feature = "ui-lib")]
 pub mod lib_pins;
@@ -171,6 +174,7 @@ pub mod map_osd;
 pub mod model_library;
 pub mod motion;
 pub mod onscreen_keyboard;
+pub mod panel_slots;
 pub mod place_card;
 pub mod place_names;
 pub mod place_pins;

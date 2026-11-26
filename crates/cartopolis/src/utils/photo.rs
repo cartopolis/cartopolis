@@ -40,7 +40,9 @@ pub const FULL_MAX_EDGE: u32 = 1600;
 /// viewer is opened on a hidpi laptop.
 pub const THUMB_EDGE: u32 = 128;
 
-/// Side of the thumbnail tile in the Places row, in egui points.
+/// Side of the thumbnail tile in the Places row, in points.
+// Unread until `lib_places` draws the thumbnail; its row shows a photo glyph.
+#[allow(dead_code)]
 pub const THUMB_POINTS: f32 = 28.0;
 
 /// JPEG quality for the stored photo and its thumbnail. 82 is the knee: the file

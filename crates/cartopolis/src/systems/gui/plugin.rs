@@ -33,11 +33,11 @@ impl Plugin for GuiPlugin {
         // plugin registers the same system behind `CARTO_UI_LIB`.
         #[cfg(all(feature = "ui-dom", target_arch = "wasm32"))]
         app.insert_resource(systems::lib_settings::LibScreens::from_env())
-            .add_systems(PreUpdate, systems::lib_search::claim)
             .add_systems(
                 PostUpdate,
                 (
                     systems::lib_settings::drive_lib_settings,
+                    systems::lib_about::drive_lib_about,
                     systems::lib_layers::drive_lib_layers,
                     systems::lib_search::drive_lib_search,
                     systems::lib_route::drive_lib_route,
@@ -76,6 +76,13 @@ impl Plugin for GuiPlugin {
                     systems::lib_object_editor::drive_lib_object_editor,
                     systems::lib_marquee::drive_lib_marquee,
                 ),
+            )
+            // A chat's picture or a place's photo, full size; after Places, so
+            // a photo opens in the frame of its tap (as `ui_probe` has it).
+            .add_systems(
+                PostUpdate,
+                systems::lib_picture_viewer::drive_lib_picture_viewer
+                    .after(systems::lib_places::drive_lib_places),
             )
             .init_resource::<systems::ui::ObjectEditorLib>()
             .init_resource::<systems::picking::MarqueeLib>();
@@ -203,12 +210,12 @@ impl Plugin for GuiPlugin {
                 systems::plans::drive_plans
                     .after(systems::ui::render_context_menu)
                     .in_set(ClientPhase::Input),
-                systems::plans::render_plans_card
+                systems::plans::drive_plans_card
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
                 // News near a followed place, at the top of the map.
-                systems::plans::render_plans_news
-                    .after(systems::plans::render_plans_card)
+                systems::plans::drive_plans_news
+                    .after(systems::plans::drive_plans_card)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -232,26 +239,19 @@ impl Plugin for GuiPlugin {
                     systems::design_room::draw_script_pulses
                         .after(systems::design_room::watch_scripts)
                         .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_scripts
-                        .after(systems::design_room::render_design_room_outliner)
-                        .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_tools
-                        .after(systems::design_room::render_design_room_outliner)
-                        .in_set(ClientPhase::Present),
+                    // What the library does not draw yet: the navigation
+                    // gizmo, the measurements and the veil (egui's).
                     systems::design_room::render_design_room_views
-                        .after(systems::design_room::render_design_room_outliner)
+                        .after(systems::design_room::render_design_room_veil)
                         .in_set(ClientPhase::Present),
                     systems::design_room::render_design_room_measures
-                        .after(systems::design_room::render_design_room_outliner)
+                        .after(systems::design_room::render_design_room_veil)
                         .in_set(ClientPhase::Present),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_bar
+                    systems::design_room::render_design_room_veil
                         .after(systems::place_pins::render_place_pins)
-                        .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_outliner
-                        .after(systems::design_room::render_design_room_bar)
                         .in_set(ClientPhase::Present),
                 ),
             );
@@ -262,7 +262,7 @@ impl Plugin for GuiPlugin {
         app.add_systems(
             Update,
             systems::mcp::overlay::render_design_room_ai
-                .after(systems::design_room::render_design_room_outliner)
+                .after(systems::design_room::render_design_room_veil)
                 .in_set(ClientPhase::Present),
         );
 
@@ -313,11 +313,17 @@ impl Plugin for GuiPlugin {
                     .before(systems::ui::render_main_menu)
                     .in_set(ClientPhase::Input),
                 systems::cosmos::drive_galaxies.in_set(ClientPhase::Stream),
-                systems::scenario::render_scenario_chrome
+                systems::scenario::drive_scenario_lens
                     .after(systems::place_pins::render_place_pins)
                     .in_set(ClientPhase::Present),
+                // The board's scale before its map layer and the lens areas
+                // read it.
+                systems::scenario::scale_scenario
+                    .before(systems::scenario::render_scenario_map)
+                    .in_set(ClientPhase::Present),
             ),
-        );
+        )
+        .init_resource::<systems::scenario::LensSlot>();
 
         // People's pictures (`systems::faces`): the table the discs read is
         // rewritten before any panel paints one, and the polaroid's viewfinder
@@ -572,27 +578,20 @@ impl Plugin for GuiPlugin {
             (
                 (
                     systems::ui::render_main_menu,
-                    systems::geo_nav::render_search_panel,
-                    systems::layers_panel::render_data_layers_panel,
-                    systems::bookmarks::render_bookmarks_panel,
-                    // The route planner draws a floating bottom sheet, not a docked
-                    // panel (`navigation::SheetDetent`), so nothing about the shared
-                    // root `Ui` puts it here. It stays in the chain because it owns
-                    // two text fields and the on-screen keyboard anchors on the
-                    // *end* of this chain to find them — registered outside it, the
-                    // endpoint fields would be undrawn when the keys go looking for
-                    // their rect.
-                    systems::navigation::render_route_sheet,
+                    // Search and the route sheet draw nothing of egui's any more
+                    // (the library draws them); they keep their place in the
+                    // order, the route's Start feeding the drive tick.
+                    systems::geo_nav::drive_search,
+                    // The room the library's open side panel takes, where the
+                    // panels' own egui strips stood (`panel_slots`).
+                    systems::panel_slots::reserve_library_panels,
+                    systems::navigation::drive_route_sheet,
                 )
                     .chain()
                     .in_set(ClientPhase::Input),
                 (
                     // (The messenger and Admin go here: `comms` below.)
-                    systems::script_editor::render_script_panel,
-                    systems::model_library::render_model_library_panel,
                     systems::ui::render_avatar_chooser,
-                    systems::settings::render_settings_panel,
-                    systems::settings::render_about_panel,
                     // Before the pins and after every panel, for the same reason
                     // both of those hold: it culls against the root `Ui`'s leftover
                     // space, which is only the map once the side panels have taken
@@ -663,11 +662,13 @@ impl Plugin for GuiPlugin {
                     systems::chats::render_chats_panel,
                     // The Admin pages (`systems::admin`), in the same
                     // right-hand slot as the Community panel.
-                    systems::admin::render_admin_panel,
+                    // Admin draws nothing of egui's; it closes the panel for an
+                    // account that may not run it, before the library reads it.
+                    systems::admin::drive_admin,
                 )
                     .chain()
-                    .after(systems::navigation::render_route_sheet)
-                    .before(systems::script_editor::render_script_panel),
+                    .after(systems::navigation::drive_route_sheet)
+                    .before(systems::ui::render_avatar_chooser),
                 (
                     // Chat over the map (`systems::chat_overlay`). In the chain
                     // because the bubbles cull against the root `Ui`'s leftover

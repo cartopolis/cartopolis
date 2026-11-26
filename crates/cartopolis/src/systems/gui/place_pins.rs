@@ -263,6 +263,7 @@ pub(crate) fn text_width(ctx: &egui::Context, text: &str, font: egui::FontId) ->
 #[derive(SystemParam)]
 pub struct PinsFrame<'w> {
     keyboard: Res<'w, crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    lens: Res<'w, crate::systems::scenario::LensSlot>,
     driver: Res<'w, crate::systems::driver::DriverState>,
     route: Res<'w, crate::systems::navigation::RouteState>,
     lib: Option<ResMut<'w, PlacePins>>,
@@ -406,7 +407,7 @@ pub fn render_place_pins(
         return;
     };
 
-    let map_rect = map_area(&mut egui, &frame.keyboard, &frame.route);
+    let map_rect = map_area(&mut egui, &frame.keyboard, &frame.route, &frame.lens);
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -900,6 +901,7 @@ pub(crate) fn map_area(
     egui: &mut EguiManager,
     keyboard: &crate::systems::onscreen_keyboard::OnScreenKeyboard,
     route: &crate::systems::navigation::RouteState,
+    lens: &crate::systems::scenario::LensSlot,
 ) -> egui::Rect {
     let mut map_rect = egui.ui_mut().available_rect_before_wrap();
     if let Some(slab) = keyboard.slab() {
@@ -912,12 +914,13 @@ pub(crate) fn map_area(
     map_rect.max.y -= crate::systems::dock::reserved_bottom();
     map_rect.min.y += crate::systems::dock::reserved_top();
     if let Some(sheet) = route.sheet_rect {
-        map_rect.max.y = map_rect.max.y.min(sheet.top());
+        map_rect.max.y = map_rect.max.y.min(sheet.min.y);
     }
-    // The lens, last frame: a sheet along the bottom, or a column on the left.
-    match crate::systems::scenario::lens_rect(egui.ctx()) {
-        Some((lens, true)) => map_rect.max.y = map_rect.max.y.min(lens.top()),
-        Some((lens, false)) => map_rect.min.x = map_rect.min.x.max(lens.right()),
+    // The lens, last frame: a sheet along the bottom, or a column on the left
+    // (`scenario::LensSlot`, in UI points).
+    match lens.0 {
+        Some((lens, true)) => map_rect.max.y = map_rect.max.y.min(lens.min.y),
+        Some((lens, false)) => map_rect.min.x = map_rect.min.x.max(lens.max.x),
         None => {}
     }
     map_rect

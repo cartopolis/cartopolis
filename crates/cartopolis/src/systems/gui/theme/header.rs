@@ -135,17 +135,6 @@ pub fn menu_entry_selected(
     menu_entry_full(ui, icon, label, selected, true, false)
 }
 
-/// [`menu_entry`] for a row that is conditionally live — Home with no Home set,
-/// Back at the start of the history.
-pub fn menu_entry_enabled(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    icon: &str,
-    label: &str,
-) -> egui::Response {
-    menu_entry_full(ui, icon, label, false, enabled, false)
-}
-
 /// [`menu_entry`] for a row that takes something away — remove, block,
 /// delete: the error ink, as the web's `data-tone=danger` entry. The red was
 /// a `RichText` colour on a raw `ui.button` until 2026-11-22, which

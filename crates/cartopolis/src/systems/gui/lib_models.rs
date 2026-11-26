@@ -1,14 +1,10 @@
-//! The Models panel drawn by the component library (`lib_host`), beside
-//! egui's (`model_library::render_model_library_panel`): your inventory and
-//! the shared library, a search over both, Place, Share, Keep and Remove on
-//! each model, and adding one.
+//! The Models panel drawn by the component library (`lib_host`): your
+//! inventory and the shared library, a search over both, Place, Share, Keep
+//! and Remove on each model, and adding one.
 //!
-//! On with `CARTO_UI_LIB=models` (or `1`), on the web `?ui=lib`
-//! (`&panel=models` opens it). egui's panel steps aside
-//! (`ModelLibraryState::lib`) keeping an empty strip; the requests, their
-//! answers and the file dialog stay `ModelLibraryState`'s
-//! (`poll_model_library`), and every button calls the same
-//! `ModelLibraryState` method egui's does, so the two cannot drift apart.
+//! `&panel=models` on the web opens it. The requests, their answers and the
+//! file dialog stay `ModelLibraryState`'s (`poll_model_library`), and every
+//! button calls a `ModelLibraryState` method.
 //!
 //! Drawn differently: a model has no picture (neither edition has one — the
 //! server cannot render, `model-assets-and-inventory.md`), so each row
@@ -186,9 +182,6 @@ pub fn drive_lib_models(
 ) {
     if !lib.models {
         return;
-    }
-    if !state.lib {
-        state.lib = true;
     }
     if lib.open_models && !*opened {
         *opened = true;

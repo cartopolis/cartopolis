@@ -1,15 +1,15 @@
-//! Settings drawn by the component library through its Bevy renderer
-//! (`mithril_bevy`), beside egui — phase 3b of
+//! Settings drawn by the component library — phase 3b of
 //! `docs/mockups/component-library`: the first real screen on the library,
-//! with the app's own state behind it.
+//! with the app's own state behind it, and since egui's panel went the only
+//! one.
 //!
-//! On with `CARTO_UI_LIB=settings` (feature `ui-probe`): egui's
-//! `render_settings_panel` steps aside (`SettingsState::lib`), keeping an
-//! empty panel of the same width so the dock and the map move over, and
-//! this module owns `RightPanel::Settings` — mounting the panel when it
-//! opens, unmounting it when it closes, closing it from its ✕. The list is
-//! the mockup's (`home-and-profile/v1`, D); every page is here, the camera
-//! test and General's receiver, storage and editor-access sections apart.
+//! This module owns `RightPanel::Settings` — mounting the panel when it
+//! opens, unmounting it when it closes, closing it from its ✕, or going
+//! back to the You page when it was opened from there. The list is the
+//! mockup's (`home-and-profile/v1`, D), and every page egui had is here,
+//! with the same sections. The camera test's picture is a Bevy image the
+//! system writes the camera's frames into (`<img src="bevy:settings_camera">`,
+//! `mithril_bevy::LiveImages`); About is its own panel (`lib_about`).
 //!
 //! **State.** The view reads signals; the app's state is Bevy resources. The
 //! bridge is a frame-by-frame diff in [`drive_lib_settings`]: a signal
@@ -42,12 +42,20 @@ use crate::resources::{
 };
 #[cfg(feature = "comms")]
 use crate::systems::access_tokens::{self, AccessTokens, Expiry, TokenInfo};
+use crate::systems::cache_reset::CacheReset;
+use crate::systems::gnss_receiver::ReceiverPrefs;
 use crate::systems::render_scale::RenderScale;
 use crate::systems::settings::{clock_hhmm, observe_peak, SettingsState, SettingsTab};
 use crate::systems::sky_dome::SkyMode;
 use crate::systems::ui_input::UiMetrics;
+use crate::systems::voice::{VoiceMode, VoiceState};
 use crate::systems::weather::WeatherState;
 use crate::systems::{icons, theme};
+
+/// The camera test's picture (`<img src="bevy:settings_camera">`), a Bevy
+/// image this module registers in `mithril_bevy::LiveImages` and writes the
+/// camera's frames into.
+const CAMERA_IMAGE: &str = "settings_camera";
 
 /// Which screens the library draws instead of egui, and what was asked of
 /// them at startup.
@@ -133,16 +141,12 @@ impl LibScreens {
     pub fn from_env() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Every screen by default since 2026-11-25; `0` (or `egui`) is
-            // egui's, a list names the screens to draw. Never in a build with
-            // no backend for the library: each egui screen it claimed would
-            // hide and nothing would draw it.
-            let v = std::env::var("CARTO_UI_LIB").unwrap_or_default();
-            let v = v.trim();
-            let backed = cfg!(feature = "ui-probe");
-            let off = !backed || v == "0" || v == "egui";
-            let all = !off && (v.is_empty() || v == "1");
-            let named = |s: &str| !off && v.split(',').any(|x| x.trim() == s);
+            // Every screen, whenever the build has the library's backend
+            // (`ui-probe`). There is no egui fallback any more: egui's
+            // screens are being deleted family by family (since 2026-11-26),
+            // so `CARTO_UI_LIB=0` would open empty panels.
+            let all = cfg!(feature = "ui-probe");
+            let named = |_: &str| all;
             LibScreens {
                 settings: all || named("settings"),
                 layers: all || named("layers"),
@@ -215,13 +219,10 @@ impl LibScreens {
                 .unwrap_or_default();
             let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
             let get = |k: &str| params.as_ref().and_then(|p| p.get(k));
-            // Every screen by default since 2026-11-25; `?ui=egui` is
-            // egui's, `?ui=a,b` names the screens to draw. Only with the
-            // DOM backend in the build (`ui-dom`).
-            let ui = get("ui").unwrap_or_default();
-            let backed = cfg!(feature = "ui-dom");
-            let all = backed && (ui.is_empty() || ui == "lib");
-            let named = |s: &str| backed && ui != "egui" && (all || ui.split(',').any(|x| x == s));
+            // Every screen, whenever the build has the DOM backend
+            // (`ui-dom`); no egui fallback any more (see the native arm).
+            let all = cfg!(feature = "ui-dom");
+            let named = |_: &str| all;
             let panel = get("panel");
             LibScreens {
                 settings: named("settings"),
@@ -311,6 +312,78 @@ pub struct AppState<'w> {
     tokens: ResMut<'w, AccessTokens>,
 }
 
+/// What the pages that came over from egui last (General's receiver,
+/// storage and editor access, Audio's voice switch and camera test, the way
+/// back to You) read and write, in a second parameter: one more field each in
+/// [`AppState`] would pass the sixteen a parameter tuple holds.
+#[derive(SystemParam)]
+pub struct MoreState<'w> {
+    /// The Storage section draws the state of the last reset and writes the
+    /// next request into it; the work is `cache_reset::apply_cache_reset`'s.
+    cache: ResMut<'w, CacheReset>,
+    /// The external GNSS receiver (`systems::gnss_receiver`), edited through a
+    /// draft in `SettingsState` and written back only on Apply or the switch.
+    receiver: ResMut<'w, ReceiverPrefs>,
+    voice: ResMut<'w, VoiceState>,
+    /// Where an editor attaches and what it must present.
+    #[cfg(mcp)]
+    mcp: crate::systems::mcp_access::EditorAccess<'w>,
+    /// Whether Settings was opened from the You page, and the way back there.
+    #[cfg(feature = "comms")]
+    view: ResMut<'w, crate::systems::chats::ChatsView>,
+    #[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+    images: ResMut<'w, Assets<Image>>,
+    #[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+    live_images: ResMut<'w, mithril_bevy::LiveImages>,
+}
+
+/// Where an editor reaches this client (`systems::mcp`), as the Editor access
+/// section shows it. Built only where there is a listener (`cfg(mcp)`).
+#[cfg_attr(not(mcp), allow(dead_code))]
+#[derive(Clone, PartialEq, Debug)]
+enum Serving {
+    /// Serving: the socket, and the line to paste into an editor.
+    At {
+        socket: String,
+        editor: String,
+    },
+    Off,
+    Failed(String),
+}
+
+/// The Editor access section, `None` on a build with no listener at all — a
+/// browser, a scripted capture — where the whole section is skipped.
+#[cfg_attr(not(mcp), allow(dead_code))]
+#[derive(Clone, PartialEq, Debug)]
+struct EditorView {
+    serving: Serving,
+    /// The phone never opens the socket: its tools go through the Midas
+    /// device link, so only whom the agent may hear is left to set.
+    phone: bool,
+    /// `--mcp-allow` fixed the list for this run.
+    allow_pinned: bool,
+}
+
+/// The camera test while it runs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Clone, PartialEq, Debug)]
+enum CameraShow {
+    /// Open, no picture yet.
+    Waiting,
+    Failed(String),
+    /// Showing `bevy:settings_camera`, this size.
+    Picture([u32; 2]),
+}
+
+/// The voice switch's readout (`chat::voice_row`).
+#[derive(Clone, PartialEq, Debug, Default)]
+struct VoiceView {
+    /// Whatever went wrong opening the device — a denied permission, usually.
+    error: Option<String>,
+    /// "Hearing 2 people — nearest 14 m", while anybody is audible.
+    hearing: Option<String>,
+}
+
 /// An `Option<bool>` preference as the library shows it: the resolved
 /// checkbox, and whether it is on Automatic. Toggling the box leaves
 /// Automatic; the "Automatic" button returns to it.
@@ -391,6 +464,15 @@ struct Actions {
     make_token: Rc<Cell<bool>>,
     token_done: Rc<Cell<bool>>,
     copy: Rc<RefCell<Option<String>>>,
+    /// The list's back arrow when Settings was opened from the You page.
+    back_to_you: Rc<Cell<bool>>,
+    toggle_camera: Rc<Cell<bool>>,
+    reset_cache: Rc<Cell<bool>>,
+    receiver_apply: Rc<Cell<bool>>,
+    receiver_revert: Rc<Cell<bool>>,
+    receiver_kadaster: Rc<Cell<bool>>,
+    receiver_report: Rc<Cell<bool>>,
+    voice_dismiss: Rc<Cell<bool>>,
 }
 
 /// The signals every page draws from, and what the app last saw of its
@@ -407,6 +489,48 @@ struct Pages {
     motion: Signal<MotionPref>,
     developer_menu: Signal<bool>,
     voice_guidance: Signal<bool>,
+    /// Android's "Stay connected in the background".
+    background_connection: Signal<bool>,
+    /// Opened from the You page: the list leads back there.
+    from_you: Signal<bool>,
+    /// The width the pages have, px: the camera's picture is fitted to it.
+    content_w: f32,
+    // General: the GNSS receiver. The switch is the applied setting; the
+    // rest is the draft (`SettingsState::receiver_draft`).
+    receiver_on: Signal<bool>,
+    /// The receiver's own account of itself, `(warn, line)`.
+    receiver_lines: Signal<Vec<(bool, String)>>,
+    /// `(path, label)` of the serial ports listed (desktop).
+    receiver_ports: Signal<Vec<(String, String)>>,
+    rx_port: Signal<Option<String>>,
+    rx_baud: Signal<Option<u32>>,
+    rx_rate: Signal<Option<u32>>,
+    rx_rate_note: Signal<Option<String>>,
+    rx_configure: Signal<bool>,
+    rx_ntrip: Signal<bool>,
+    rx_host: Signal<String>,
+    rx_ntrip_port: Signal<Option<f64>>,
+    rx_tls: Signal<bool>,
+    rx_mount: Signal<String>,
+    rx_user: Signal<String>,
+    rx_password: Signal<String>,
+    rx_send_position: Signal<bool>,
+    /// The draft differs from what is applied: Apply and Revert show.
+    rx_dirty: Signal<bool>,
+    // General: storage.
+    cache_running: Signal<bool>,
+    cache_freed: Signal<Option<u64>>,
+    cache_armed: Signal<bool>,
+    // General: editor access.
+    mcp_enabled: Signal<bool>,
+    editor: Signal<Option<EditorView>>,
+    mcp_allow: Signal<String>,
+    // Audio: voice and the camera test.
+    voice_mode: Signal<VoiceMode>,
+    voice: Signal<VoiceView>,
+    /// The voice meter, in whole percent.
+    voice_level: Signal<u8>,
+    camera: Signal<Option<CameraShow>>,
     // Graphics
     quality: Signal<QualityPreset>,
     render_scale: Scale,
@@ -431,6 +555,8 @@ struct Pages {
     cloud_cover: Signal<f64>,
     precipitation: Signal<f64>,
     fog_density: Signal<f64>,
+    /// What the weather is and where it was sampled ([`weather_reading`]).
+    weather_reading: Signal<String>,
     // Audio
     effects_volume: Signal<f64>,
     voice_volume: Signal<f64>,
@@ -490,6 +616,11 @@ struct Live {
     last_dev: DevPanelState,
     last_weather_live: bool,
     last_delete_password: String,
+    last_voice_mode: VoiceMode,
+    #[cfg(not(target_arch = "wasm32"))]
+    last_receiver_on: bool,
+    #[cfg(mcp)]
+    last_allow: String,
     #[cfg(feature = "comms")]
     last_contacts: ContactSettings,
     #[cfg(feature = "comms")]
@@ -524,6 +655,29 @@ impl Defaults {
     }
 }
 
+/// The World page's weather line. A live reading names its sample point:
+/// it is the map *anchor*'s weather, which can be a long way from where the
+/// camera looks, so a reading that disagrees with the view says why here.
+fn weather_reading(weather: &WeatherState) -> String {
+    match (weather.live, weather.latest) {
+        (true, Some(o)) => format!(
+            "Live from api.met.no at {:.3}, {:.3}: {:.0}% cloud · {:.1} mm/h · {:.0} °C · \
+             {:.0} m/s wind.",
+            o.lat,
+            o.lng,
+            o.cloud_cover * 100.0,
+            o.precipitation * crate::systems::weather::RAIN_FULL_MM,
+            o.air_temp_c,
+            o.wind_ms,
+        ),
+        (true, None) => "Fetching the conditions at the map anchor…".to_owned(),
+        (false, _) => {
+            "The sliders are the sky. Wind rides cloud cover, so the sea state moves with it."
+                .to_owned()
+        }
+    }
+}
+
 /// Whether the signed-in account may give a token its admin rights.
 #[cfg(feature = "comms")]
 fn may_elevate(identity: &AuthIdentity) -> bool {
@@ -535,12 +689,16 @@ fn may_elevate(identity: &AuthIdentity) -> bool {
 }
 
 impl Live {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         app: &AppState,
+        more: &MoreState,
         state: &SettingsState,
         page_hint: Option<&str>,
         who: Option<String>,
         signed_in: bool,
+        from_you: bool,
+        content_w: f32,
     ) -> Self {
         // The page asked for: by the capture's environment or the page's
         // query (`LibScreens::page`), else by whoever opened the panel on one
@@ -565,6 +723,43 @@ impl Live {
             motion: signal(prefs.motion),
             developer_menu: signal(prefs.developer_menu),
             voice_guidance: signal(prefs.voice_guidance),
+            background_connection: signal(prefs.background_connection),
+            from_you: signal(from_you),
+            content_w,
+            receiver_on: signal(more.receiver.enabled),
+            receiver_lines: signal(Vec::new()),
+            receiver_ports: signal(Vec::new()),
+            rx_port: signal(Some(String::new())),
+            rx_baud: signal(None),
+            rx_rate: signal(None),
+            rx_rate_note: signal(None),
+            rx_configure: signal(false),
+            rx_ntrip: signal(false),
+            rx_host: signal(String::new()),
+            rx_ntrip_port: signal(Some(f64::from(
+                state
+                    .receiver_draft
+                    .as_ref()
+                    .unwrap_or(&*more.receiver)
+                    .ntrip
+                    .port,
+            ))),
+            rx_tls: signal(false),
+            rx_mount: signal(String::new()),
+            rx_user: signal(String::new()),
+            rx_password: signal(String::new()),
+            rx_send_position: signal(false),
+            rx_dirty: signal(false),
+            cache_running: signal(more.cache.running()),
+            cache_freed: signal(more.cache.freed_bytes()),
+            cache_armed: signal(false),
+            mcp_enabled: signal(prefs.mcp_enabled),
+            editor: signal(None),
+            mcp_allow: signal(String::new()),
+            voice_mode: signal(more.voice.mode),
+            voice: signal(VoiceView::default()),
+            voice_level: signal(0),
+            camera: signal(None),
             quality: signal(prefs.quality),
             render_scale: Scale::new(prefs.render_scale, d.render_scale),
             frame_rate: signal(prefs.frame_rate),
@@ -587,6 +782,7 @@ impl Live {
             cloud_cover: signal(f64::from(dev.cloud_cover)),
             precipitation: signal(f64::from(dev.precipitation)),
             fog_density: signal(f64::from(dev.fog_density)),
+            weather_reading: signal(weather_reading(&app.weather)),
             effects_volume: signal(f64::from(prefs.effects_volume)),
             voice_volume: signal(f64::from(prefs.voice_volume)),
             mic_gain: signal(f64::from(prefs.mic_gain)),
@@ -630,6 +826,12 @@ impl Live {
             #[cfg(feature = "comms")]
             tokens_demo: signal(app.tokens.demo),
         };
+        // The draft's fields as the receiver section's controls show them.
+        if let Some(draft) = &state.receiver_draft {
+            p.show_receiver(draft);
+        } else {
+            p.show_receiver(&*more.receiver);
+        }
         Live {
             page: signal(page),
             p,
@@ -637,6 +839,12 @@ impl Live {
             last_dev: dev.clone(),
             last_weather_live: app.weather.live,
             last_delete_password: state.delete_password.clone(),
+            last_voice_mode: more.voice.mode,
+            #[cfg(not(target_arch = "wasm32"))]
+            last_receiver_on: more.receiver.enabled,
+            // Empty, so the first frame writes the list into the field.
+            #[cfg(mcp)]
+            last_allow: String::new(),
             #[cfg(feature = "comms")]
             last_contacts: app.contacts.settings.clone(),
             #[cfg(feature = "comms")]
@@ -708,6 +916,8 @@ impl Live {
         pref!(motion);
         pref!(developer_menu);
         pref!(voice_guidance);
+        pref!(background_connection);
+        pref!(mcp_enabled);
         pref!(quality);
         pref!(frame_rate);
         pref!(water_effects);
@@ -813,6 +1023,255 @@ impl Live {
         field!(token_elevated, elevated, 2);
         field!(token_password, password, 3);
     }
+
+    /// The receiver: the switch against the applied settings, the draft
+    /// against its controls, Apply / Revert / Kadaster, the readout and the
+    /// ports. Answers the settings to keep.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_receiver(
+        &mut self,
+        state: &mut SettingsState,
+        applied: &ReceiverPrefs,
+        on_general: bool,
+        now: f64,
+    ) -> ReceiverPrefs {
+        let p = &self.p;
+        let mut prefs = applied.clone();
+        // The switch applies at once.
+        let on = p.receiver_on.get();
+        if on != self.last_receiver_on {
+            state.set_receiver_enabled(&mut prefs, on);
+        } else if prefs.enabled != self.last_receiver_on {
+            p.receiver_on.set(prefs.enabled);
+        }
+        self.last_receiver_on = prefs.enabled;
+        // Everything under it waits for Apply. The controls are written from
+        // the draft at the end of every frame, so a control that differs
+        // from it now was moved by the person.
+        let draft = state.receiver_draft(&prefs);
+        p.receiver_edits(draft);
+        if p.act.receiver_kadaster.take() {
+            draft.ntrip.use_kadaster();
+        }
+        if p.act.receiver_apply.take() {
+            state.apply_receiver(&mut prefs);
+        }
+        if p.act.receiver_revert.take() {
+            state.revert_receiver(&prefs);
+        }
+        let draft = state.receiver_draft(&prefs);
+        p.show_receiver(draft);
+        put(&p.rx_dirty, *draft != prefs);
+        if p.act.receiver_report.take() {
+            crate::utils::clipboard::set_text(&crate::systems::gnss_receiver::report(&prefs));
+        }
+        if on_general && prefs.enabled {
+            let lines = crate::platform::gnss_receiver::status()
+                .map(|s| crate::systems::gnss_receiver::status_lines(&s))
+                .unwrap_or_default();
+            put(&p.receiver_lines, lines);
+            #[cfg(not(target_os = "android"))]
+            if state.refresh_receiver_ports(now) {
+                put(&p.receiver_ports, state.receiver_ports.clone());
+            }
+        }
+        #[cfg(target_os = "android")]
+        let _ = now;
+        prefs
+    }
+
+    /// The voice switch against `VoiceState`, and its readout.
+    fn sync_voice(&mut self, voice: &mut VoiceState) {
+        let p = &self.p;
+        let mode = p.voice_mode.get();
+        if mode != self.last_voice_mode {
+            voice.set_mode(mode);
+        } else if voice.mode != self.last_voice_mode {
+            p.voice_mode.set(voice.mode);
+        }
+        self.last_voice_mode = voice.mode;
+        if p.act.voice_dismiss.take() {
+            voice.error = None;
+        }
+        let audible = voice.speakers.len();
+        let hearing = (audible > 0).then(|| {
+            let nearest = voice
+                .speakers
+                .values()
+                .filter_map(|s| s.distance_m)
+                .fold(f32::INFINITY, f32::min);
+            let who = if audible == 1 {
+                "1 person".to_string()
+            } else {
+                format!("{audible} people")
+            };
+            if nearest.is_finite() {
+                format!("Hearing {who} — nearest {nearest:.0} m")
+            } else {
+                format!("Hearing {who}")
+            }
+        });
+        put(
+            &p.voice,
+            VoiceView {
+                error: voice.error.clone(),
+                hearing,
+            },
+        );
+        let level = crate::platform::audio::level_to_meter(voice.level);
+        put(
+            &p.voice_level,
+            (level.clamp(0.0, 1.0) * 100.0).round() as u8,
+        );
+    }
+
+    /// The Editor access section: where the listener is, and whom the agent
+    /// may hear, the typed list written back through `set_allow`.
+    #[cfg(mcp)]
+    fn sync_editor(&mut self, mcp: &mut crate::systems::mcp_access::EditorAccess) {
+        use crate::systems::mcp_access::Serving as S;
+        let p = &self.p;
+        let (allow, pinned) = mcp.allow();
+        let editor = mcp.serving().map(|s| EditorView {
+            serving: match s {
+                S::At(path) => Serving::At {
+                    socket: path.display().to_string(),
+                    // The `mcpServers` entry, by the binary that is running.
+                    editor: crate::systems::mcp_access::editor_config_here(&path),
+                },
+                S::Off => Serving::Off,
+                S::Failed(why) => Serving::Failed(why),
+            },
+            phone: cfg!(target_os = "android"),
+            allow_pinned: pinned,
+        });
+        put(&p.editor, editor);
+        let typed = p.mcp_allow.get();
+        if typed != self.last_allow {
+            mcp.set_allow(typed.clone());
+            self.last_allow = typed;
+        } else if allow != self.last_allow {
+            p.mcp_allow.set(allow.clone());
+            self.last_allow = allow;
+        }
+    }
+}
+
+/// Set `s` to `v` only when it differs: a set re-renders what reads it.
+fn put<T: Clone + PartialEq + 'static>(s: &Signal<T>, v: T) {
+    if s.get() != v {
+        s.set(v);
+    }
+}
+
+impl Pages {
+    /// Write the receiver draft into the section's controls, each only
+    /// where it differs.
+    fn show_receiver(&self, d: &ReceiverPrefs) {
+        put(&self.rx_port, Some(d.port.clone()));
+        put(&self.rx_baud, Some(d.baud));
+        put(&self.rx_rate, Some(d.rate_hz));
+        put(
+            &self.rx_rate_note,
+            crate::systems::settings::receiver_rate_note(d),
+        );
+        put(&self.rx_configure, d.configure);
+        let n = &d.ntrip;
+        put(&self.rx_ntrip, n.enabled);
+        put(&self.rx_host, n.host.clone());
+        // An emptied port box stays empty while it is typed into.
+        if self
+            .rx_ntrip_port
+            .get()
+            .is_some_and(|v| v != f64::from(n.port))
+        {
+            self.rx_ntrip_port.set(Some(f64::from(n.port)));
+        }
+        put(&self.rx_tls, n.tls || n.port == 443);
+        put(&self.rx_mount, n.mountpoint.clone());
+        put(&self.rx_user, n.username.clone());
+        put(&self.rx_password, n.password.clone());
+        put(&self.rx_send_position, n.send_position);
+    }
+
+    /// The receiver draft as the section's controls have it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn receiver_edits(&self, d: &mut ReceiverPrefs) {
+        if let Some(port) = self.rx_port.get() {
+            d.port = port;
+        }
+        if let Some(baud) = self.rx_baud.get() {
+            d.baud = baud;
+        }
+        if let Some(rate) = self.rx_rate.get() {
+            d.rate_hz = rate;
+        }
+        d.configure = self.rx_configure.get();
+        let n = &mut d.ntrip;
+        n.enabled = self.rx_ntrip.get();
+        n.host = self.rx_host.get();
+        if let Some(port) = self.rx_ntrip_port.get() {
+            if (1.0..=65535.0).contains(&port) {
+                n.port = port as u16;
+            }
+        }
+        // Shown on for port 443, which is TLS only; a change is the person's.
+        let tls = self.rx_tls.get();
+        if tls != (n.tls || n.port == 443) {
+            n.tls = tls;
+        }
+        n.mountpoint = self.rx_mount.get();
+        n.username = self.rx_user.get();
+        n.password = self.rx_password.get();
+        n.send_position = self.rx_send_position.get();
+    }
+}
+
+/// Keep the camera test's picture: `bevy:settings_camera` registered (an
+/// `<img>` reads its source when it is styled, so before the picture shows),
+/// and new pixels written into it. Its handle never changes: a new size is a
+/// new image under the same handle.
+#[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+fn show_camera_picture(
+    images: &mut Assets<Image>,
+    live: &mut mithril_bevy::LiveImages,
+    held: &mut Option<(Handle<Image>, [u32; 2])>,
+    pixels: Option<(Vec<u8>, [u32; 2])>,
+) {
+    let (handle, size) = held.get_or_insert_with(|| (images.add(blank([2, 2])), [2, 2]));
+    if live.0.get(CAMERA_IMAGE) != Some(&*handle) {
+        live.0.insert(CAMERA_IMAGE.to_owned(), handle.clone());
+    }
+    let Some((rgba, new)) = pixels else {
+        return;
+    };
+    if new[0] == 0 || new[1] == 0 || rgba.len() != (new[0] * new[1] * 4) as usize {
+        return;
+    }
+    if let Some(mut image) = images.get_mut(&*handle) {
+        if *size != new {
+            *image = blank(new);
+            *size = new;
+        }
+        image.data = Some(rgba);
+    }
+}
+
+/// A black RGBA image `size` large, for pixels to be written into.
+#[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+fn blank([width, height]: [u32; 2]) -> Image {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    Image::new_fill(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::default(),
+    )
 }
 
 thread_local! {
@@ -828,15 +1287,16 @@ pub fn drive_lib_settings(
     mut right_panel: ResMut<RightPanel>,
     mut state: ResMut<SettingsState>,
     mut app: AppState,
+    mut more: MoreState,
     metrics: Res<UiMetrics>,
     mut commands: Commands,
     mut opened: Local<bool>,
+    #[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))] mut picture: Local<
+        Option<(Handle<Image>, [u32; 2])>,
+    >,
 ) {
     if !lib.settings {
         return;
-    }
-    if !state.lib {
-        state.lib = true;
     }
     // Asked to open on Settings (`?panel=settings` on the web): once.
     if lib.open_settings && !*opened {
@@ -846,6 +1306,24 @@ pub fn drive_lib_settings(
     let open = right_panel.is(RightPanel::Settings);
     let signed_in = app.identity.username.is_some() && app.online.is_some();
     let who = signed_in.then(|| app.identity.username.clone()).flatten();
+    #[cfg(feature = "comms")]
+    let from_you = more.view.settings_from_you;
+    #[cfg(not(feature = "comms"))]
+    let from_you = false;
+    // The camera test's picture, registered before anything can show it.
+    #[cfg(not(target_arch = "wasm32"))]
+    let camera_pixels = state.take_camera_picture();
+    #[cfg(all(feature = "ui-probe", not(target_arch = "wasm32")))]
+    if open {
+        show_camera_picture(
+            &mut more.images,
+            &mut more.live_images,
+            &mut picture,
+            camera_pixels,
+        );
+    }
+    #[cfg(all(not(feature = "ui-probe"), not(target_arch = "wasm32")))]
+    let _ = camera_pixels;
     LIVE.with(|live| {
         let mut live = live.borrow_mut();
         match (open, live.as_mut()) {
@@ -853,19 +1331,42 @@ pub fn drive_lib_settings(
             (false, Some(_)) => {
                 *live = None;
                 crate::systems::lib_host::clear_keyed("settings");
-                // What egui's panel does on closing: the microphone off, the
-                // typed password gone, the tokens forgotten.
+                // What egui's panel does on closing: the microphone and the
+                // camera off, the typed password gone, the tokens forgotten,
+                // and the next opening on the list, with a close button.
                 state.page = None;
                 if state.mic.is_some() {
                     state.stop_mic();
                 }
+                if state.camera_running() {
+                    state.stop_camera();
+                }
                 state.delete_password.clear();
                 #[cfg(feature = "comms")]
-                app.tokens.forget();
+                {
+                    app.tokens.forget();
+                    more.view.settings_from_you = false;
+                }
             }
             (true, None) => {
-                let l = Live::new(&app, &state, lib.page.as_deref(), who, signed_in);
                 let compact = metrics.compact();
+                // The pages' width: the panel's 340 px, or the screen's,
+                // less the 20 px padding either side.
+                let content_w = if compact {
+                    metrics.viewport_pts().x - 40.0
+                } else {
+                    300.0
+                };
+                let l = Live::new(
+                    &app,
+                    &more,
+                    &state,
+                    lib.page.as_deref(),
+                    who,
+                    signed_in,
+                    from_you,
+                    content_w,
+                );
                 let p = theme::p();
                 crate::systems::lib_host::mount_keyed(
                     "settings",
@@ -891,6 +1392,72 @@ pub fn drive_lib_settings(
                 if weather_live != app.weather.live {
                     app.weather.live = weather_live;
                 }
+                let page_now = l.page.get();
+
+                // General: the receiver, storage, editor access.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let now = app.time.elapsed_secs_f64();
+                    let on_general = page_now == Some(SettingsTab::General);
+                    let kept = l.sync_receiver(&mut state, &more.receiver, on_general, now);
+                    if kept != *more.receiver {
+                        *more.receiver = kept;
+                    }
+                }
+                put(&l.p.cache_running, more.cache.running());
+                put(&l.p.cache_freed, more.cache.freed_bytes());
+                if l.p.act.reset_cache.take() && !more.cache.running() {
+                    more.cache.requested = true;
+                }
+                #[cfg(mcp)]
+                if page_now == Some(SettingsTab::General) {
+                    l.sync_editor(&mut more.mcp);
+                }
+
+                // Audio: the voice switch, and the camera test.
+                l.sync_voice(&mut more.voice);
+                if l.p.act.toggle_camera.take() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if state.camera_running() {
+                        state.stop_camera();
+                    } else {
+                        state.start_camera();
+                    }
+                }
+                // Leaving the page stops it: a camera light that stays on
+                // behind another screen is the microphone's problem, more
+                // visible.
+                if page_now != Some(SettingsTab::Audio) && state.camera_running() {
+                    state.stop_camera();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                let camera = state.camera_running().then(|| {
+                    match (state.camera_error(), state.camera_size) {
+                        (Some(why), _) => CameraShow::Failed(why),
+                        (None, Some(size)) => CameraShow::Picture(size),
+                        (None, None) => CameraShow::Waiting,
+                    }
+                });
+                #[cfg(target_arch = "wasm32")]
+                let camera = None;
+                put(&l.p.camera, camera);
+
+                // Opened from the You page: the list's back arrow returns
+                // there.
+                put(&l.p.from_you, from_you);
+                if l.p.act.back_to_you.take() {
+                    #[cfg(feature = "comms")]
+                    {
+                        more.view.you = true;
+                    }
+                    *right_panel = RightPanel::Chat;
+                }
+                // The editor line, the receiver report and a token: the
+                // system clipboard, which egui's copies reach too.
+                if let Some(text) = l.p.act.copy.borrow_mut().take() {
+                    crate::utils::clipboard::set_text(&text);
+                }
+
                 let p = &l.p;
                 macro_rules! mirror {
                     ($sig:expr, $now:expr) => {{
@@ -905,6 +1472,7 @@ pub fn drive_lib_settings(
                 mirror!(p.sky_now, app.sky.as_deref().copied());
                 mirror!(p.deleted, app.identity.deleted);
                 mirror!(p.delete_error, app.identity.delete_error.clone());
+                mirror!(p.weather_reading, weather_reading(&app.weather));
                 state.page = l.page.get();
 
                 // Audio: the microphone test and its meter.
@@ -1026,11 +1594,6 @@ pub fn drive_lib_settings(
                     if l.p.act.token_done.take() {
                         app.tokens.shown = None;
                     }
-                    if let Some(text) = l.p.act.copy.borrow_mut().take() {
-                        // The system clipboard, which egui's copies reach
-                        // too (`end_egui_frame`).
-                        crate::utils::clipboard::set_text(&text);
-                    }
                     mirror!(l.p.token_list, app.tokens.list.clone());
                     mirror!(l.p.token_shown, app.tokens.shown.clone());
                     mirror!(l.p.token_busy, app.tokens.busy);
@@ -1110,6 +1673,7 @@ fn panel(l: &Live, compact: bool) -> View {
     let header = {
         let page = l.page.clone();
         let close = l.p.act.close.clone();
+        let (from_you, back_to_you) = (l.p.from_you.clone(), l.p.act.back_to_you.clone());
         move || -> View {
             let back_to_list = {
                 let page = page.clone();
@@ -1120,6 +1684,20 @@ fn panel(l: &Live, compact: bool) -> View {
                 on(move || close.set(true))
             };
             match page.get() {
+                // Opened from the You page: the list's title leads back there.
+                None if from_you.get() => {
+                    let back = {
+                        let back_to_you = back_to_you.clone();
+                        on(move || back_to_you.set(true))
+                    };
+                    view! {
+                        <div style="display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 0 12px 0 10px; border-bottom: 1px solid var(--m-border)">
+                            <Button variant=Variant::Ghost size=Size::Sm onclick={back} aria_label="Back">{icon(icons::BACK)}</Button>
+                            <h1 style="flex: 1; margin: 0; font-size: 17px; font-weight: 600; color: var(--m-text-strong)">"Settings"</h1>
+                            <CloseButton onclick={close_panel} />
+                        </div>
+                    }
+                }
                 None => view! {
                     <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--m-border)">
                         <span style="color: var(--m-accent)">{icon(icons::SETTINGS)}</span>
@@ -1307,8 +1885,8 @@ impl Pages {
         }
     }
 
-    /// The General page's preferences (`settings::general_tab`); the
-    /// receiver, storage and editor-access sections still to come.
+    /// The General page: the app's preferences, then the receiver, storage
+    /// and editor access.
     fn general(&self) -> View {
         let themes: Vec<Opt<UiTheme>> = UiTheme::ALL
             .iter()
@@ -1342,10 +1920,314 @@ impl Pages {
             <Section title="Navigation">
                 <FieldCheckbox model={self.voice_guidance.clone()} label="Chime at turns while navigating" id="g-chime" />
             </Section>
-            <Section title="Receiver, storage, editor access">
-                {note("Still egui's: these sections come with the next pages.")}
+            {self.connection()}
+            {self.receiver()}
+            {self.storage()}
+            {self.editor_access()}
+        }
+    }
+
+    /// Android only, and **hidden rather than disabled**: a desktop holds its
+    /// socket for as long as the process lives, so the setting is already
+    /// true there; a wasm client dies with its tab, so it would be a promise
+    /// the build cannot keep.
+    fn connection(&self) -> View {
+        if !cfg!(target_os = "android") {
+            return View::Empty;
+        }
+        // Said plainly and before the fact: both consequences are things a
+        // person would otherwise discover in the notification shade and the
+        // battery breakdown.
+        view! {
+            <Section title="Connection">
+                <FieldCheckbox model={self.background_connection.clone()} label="Stay connected in the background" id="g-background" />
+                {note("Adds a permanent notification while it is on, and keeps the app running when you leave it. Only applies while signed in or linked to Midas. Off, the app stops when you leave it.")}
             </Section>
         }
+    }
+
+    /// An external GNSS receiver — an RTK rover on a cable — and the NTRIP
+    /// caster that feeds it corrections (`systems::gnss_receiver`,
+    /// `docs/notes/rtk-receiver.md`). Nothing can be plugged into a browser
+    /// tab, so not there.
+    ///
+    /// The readout under the switch is the receiver's own account of
+    /// itself: "connected" is not "fixed", and the difference between RTK
+    /// float and RTK fixed is invisible anywhere else.
+    fn receiver(&self) -> View {
+        if cfg!(target_arch = "wasm32") {
+            return View::Empty;
+        }
+        let p = self.clone();
+        move || -> View {
+            let switch = view! {
+                <FieldCheckbox model={p.receiver_on.clone()} label="Use an external receiver for my position" id="g-gnss" />
+            };
+            if !p.receiver_on.get() {
+                return view! {
+                    <Section title="GNSS receiver">
+                        {switch}
+                        {note("A GNSS receiver on a cable — an RTK rover such as the UM980 — gives this device its position: metres on its own, centimetres with corrections from an NTRIP caster.")}
+                    </Section>
+                };
+            }
+            let lines = {
+                let lines = p.receiver_lines.clone();
+                move || -> View {
+                    let rows: Vec<View> = lines
+                        .get()
+                        .into_iter()
+                        .map(|(warn, line)| {
+                            let colour = if warn { "var(--m-warning)" } else { "var(--m-text)" };
+                            let style = format!("margin: 0; font-size: var(--m-font-size-sm); color: {colour}; line-height: 1.4");
+                            view! { <p style={style}>{line}</p> }
+                        })
+                        .collect();
+                    rows.into_view()
+                }
+            };
+            let report = {
+                let act = p.act.receiver_report.clone();
+                on(move || act.set(true))
+            };
+            // The port is chosen on the desktop only: on a phone the first
+            // supported USB adapter is the receiver.
+            let port: View = if cfg!(target_os = "android") {
+                View::Empty
+            } else {
+                let (ports, model) = (p.receiver_ports.clone(), p.rx_port.clone());
+                (move || -> View {
+                    let mut options = vec![Opt::new(String::new(), "Automatic")];
+                    options.extend(
+                        ports
+                            .get()
+                            .into_iter()
+                            .map(|(path, label)| Opt::new(path, label)),
+                    );
+                    view! { <FieldSelect model={model.clone()} options={options} label="Port" id="g-gnss-port" /> }
+                })
+                .into_view()
+            };
+            let bauds: Vec<Opt<u32>> = crate::systems::settings::receiver_bauds()
+                .iter()
+                .map(|b| Opt::new(*b, b.to_string()))
+                .collect();
+            let rates: Vec<Opt<u32>> = crate::systems::settings::receiver_rates()
+                .iter()
+                .map(|r| Opt::new(*r, format!("{r} Hz")))
+                .collect();
+            let rate_note = {
+                let n = p.rx_rate_note.clone();
+                move || -> View { n.get().map_or(View::Empty, note) }
+            };
+            let ntrip = {
+                let p = p.clone();
+                move || -> View {
+                    if !p.rx_ntrip.get() {
+                        return View::Empty;
+                    }
+                    let kadaster = {
+                        let act = p.act.receiver_kadaster.clone();
+                        on(move || act.set(true))
+                    };
+                    view! {
+                        // The Netherlands' national reference stations, free
+                        // and without an account; port 443, TLS only.
+                        <div><Button variant=Variant::Ghost size=Size::Sm onclick={kadaster} title={crate::systems::gnss_receiver::KADASTER_HOST.to_owned()}>"Kadaster — free, Netherlands"</Button></div>
+                        <div style="display: flex; gap: 8px; align-items: flex-end">
+                            <div style="width: 96px"><FieldNumber model={p.rx_ntrip_port.clone()} min=Some(1.0) max=Some(65535.0) step=1.0 plain=true label="Caster" id="g-ntrip-port" /></div>
+                            <div style="flex: 1; min-width: 0"><FieldText model={p.rx_host.clone()} placeholder="caster host name" id="g-ntrip-host" /></div>
+                        </div>
+                        <FieldCheckbox model={p.rx_tls.clone()} label="Encrypted connection (TLS)" id="g-ntrip-tls" />
+                        <FieldText model={p.rx_mount.clone()} label="Mountpoint" placeholder="empty: the nearest station" id="g-ntrip-mount" />
+                        <FieldText model={p.rx_user.clone()} label="Username" placeholder="if the caster asks for one" id="g-ntrip-user" />
+                        <FieldText model={p.rx_password.clone()} r#type=TextType::Password label="Password" id="g-ntrip-pw" />
+                        <FieldCheckbox model={p.rx_send_position.clone()} label="Send my position to the caster" id="g-ntrip-send" />
+                        {note("Network (VRS) mountpoints need it to make corrections for where you are. The caster's operator sees the position.")}
+                    }
+                }
+            };
+            let apply_row = {
+                let (dirty, act) = (p.rx_dirty.clone(), p.act.clone());
+                move || -> View {
+                    if !dirty.get() {
+                        return View::Empty;
+                    }
+                    let apply = {
+                        let a = act.receiver_apply.clone();
+                        on(move || a.set(true))
+                    };
+                    let revert = {
+                        let a = act.receiver_revert.clone();
+                        on(move || a.set(true))
+                    };
+                    view! {
+                        <div style="display: flex; gap: 8px">
+                            <Button variant=Variant::Primary size=Size::Sm onclick={apply}>"Apply"</Button>
+                            <Button variant=Variant::Ghost size=Size::Sm onclick={revert}>"Revert"</Button>
+                        </div>
+                    }
+                }
+            };
+            view! {
+                <Section title="GNSS receiver">
+                    {switch}
+                    {lines}
+                    // The receiver's own account — settings, state and event
+                    // history — for pasting into a bug report.
+                    <div><Button variant=Variant::Secondary size=Size::Sm icon={icon(icons::COPY)} onclick={report}>"Copy receiver report"</Button></div>
+                    {port}
+                    <div style="display: flex; gap: 8px">
+                        <div style="flex: 1; min-width: 0"><FieldSelect model={p.rx_baud.clone()} options={bauds} label="Baud" id="g-gnss-baud" /></div>
+                        <div style="flex: 1; min-width: 0"><FieldSelect model={p.rx_rate.clone()} options={rates} label="Rate" id="g-gnss-rate" /></div>
+                    </div>
+                    {rate_note}
+                    <FieldCheckbox model={p.rx_configure.clone()} label="Set the receiver's output (Unicore receivers)" id="g-gnss-configure" />
+                    {note("Asks for position, speed and accuracy at the rate above on this port. Not saved in the receiver: unplugged, it goes back to its own settings.")}
+                    <FieldCheckbox model={p.rx_ntrip.clone()} label="RTK corrections from an NTRIP caster" id="g-ntrip" />
+                    {ntrip}
+                    {apply_row}
+                </Section>
+            }
+        }
+        .into_view()
+    }
+
+    /// The map this device has downloaded, and the button that throws it
+    /// away — behind a confirm like the account deletion: nothing is lost
+    /// that cannot be downloaded again, but on a metered connection a city
+    /// is a real cost.
+    fn storage(&self) -> View {
+        let (running, freed, armed, act) = (
+            self.cache_running.clone(),
+            self.cache_freed.clone(),
+            self.cache_armed.clone(),
+            self.act.reset_cache.clone(),
+        );
+        let button = move || -> View {
+            if running.get() {
+                // Disabled rather than hidden: a button that vanishes under
+                // the finger reads as a mis-tap.
+                return view! { <div><Button variant=Variant::Secondary size=Size::Sm disabled=true>"Clearing…"</Button></div> };
+            }
+            let fire = {
+                let act = act.clone();
+                move || act.set(true)
+            };
+            let done = freed.get().map_or(View::Empty, |b| {
+                note(crate::systems::settings::cleared_note(b))
+            });
+            view! {
+                <div>{confirm_button(armed.clone(), "Clear downloaded map data", "Clear it", Rc::new(|| true), fire)}</div>
+                {done}
+            }
+        };
+        let text = format!(
+            "margin: 0; font-size: {}px; color: var(--m-text-dim); line-height: 1.4",
+            theme::SIZE_SUB
+        );
+        view! {
+            <Section title="Storage">
+                <p style={text}>"The map, the aerial photography, the buildings and the registers are kept on this device so revisiting a place is quick. Clearing them fixes a map that has cached something wrong — tiles that flicker, a layer that will not draw, buildings or ground that look out of date. The map around you is then rebuilt from a fresh download."</p>
+                {note("Your saved places, photos and settings are not touched.")}
+                {button}
+            </Section>
+        }
+    }
+
+    /// Where an editor reaches this client (`systems::mcp`): the switch, the
+    /// socket and the line to paste into an editor's MCP configuration, and
+    /// whom the agent may hear. Nothing on a build with no listener.
+    ///
+    /// The socket and the editor line show only while it is actually
+    /// serving: copied off a client that is switched off, they are a
+    /// configuration that silently will not work.
+    fn editor_access(&self) -> View {
+        let p = self.clone();
+        move || -> View {
+            let Some(editor) = p.editor.get() else {
+                return View::Empty;
+            };
+            let listener: View = if editor.phone {
+                note("Your Midas sessions can drive this app as you while the device link is on (Developer tools ▸ Midas): walk, talk, move the camera, photograph it.")
+            } else {
+                let text = format!(
+                    "margin: 0; font-size: {}px; color: var(--m-text-dim); line-height: 1.4",
+                    theme::SIZE_SUB
+                );
+                let state: View = match &editor.serving {
+                    Serving::At { socket, editor } => {
+                        let rows: Vec<View> = [("Socket", socket.clone()), ("Editor", editor.clone())]
+                            .into_iter()
+                            .map(|(label, value)| {
+                                let copy = {
+                                    let (c, v) = (p.act.copy.clone(), value.clone());
+                                    on(move || *c.borrow_mut() = Some(v.clone()))
+                                };
+                                let k = format!("flex: none; font-size: {}px; color: var(--m-text-dim)", theme::SIZE_CHIP);
+                                let v = format!("flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--m-font-mono); font-size: {}px; color: var(--m-text-strong)", theme::SIZE_MONO);
+                                view! {
+                                    <div style="display: flex; align-items: center; gap: 8px">
+                                        <span style={k}>{label}</span>
+                                        <span style={v}>{value}</span>
+                                        <Button variant=Variant::Secondary size=Size::Sm icon={icon(icons::COPY)} onclick={copy}>"Copy"</Button>
+                                    </div>
+                                }
+                            })
+                            .collect();
+                        view! {
+                            {rows}
+                            {note("Paste the editor line into its MCP configuration. From another machine, run `ssh this-machine cartopolis mcp` as the command instead.")}
+                        }
+                    }
+                    Serving::Off => note("Switched off. Nothing is listening, and an editor cannot attach."),
+                    // Almost always a second client already serving there.
+                    Serving::Failed(why) => view! {
+                        {error_line(format!("Not listening: {why}"))}
+                        {note("Another client on this machine is probably serving there. Switch this off and on again to try once more.")}
+                    },
+                };
+                view! {
+                    <p style={text}>"An editor on this machine can drive this client — fly the camera, photograph what it sees, read what the map is doing. It listens on a socket only your own user account can open."</p>
+                    <FieldCheckbox model={p.mcp_enabled.clone()} label="Let an editor drive this client" id="g-mcp" />
+                    {state}
+                }
+            };
+            // Whose words the agent reads, only while it can read any.
+            let serving = editor.phone || matches!(editor.serving, Serving::At { .. });
+            let allow: View = if !serving {
+                View::Empty
+            } else if editor.allow_pinned {
+                let list = p.mcp_allow.get();
+                let shown = if list.is_empty() { "nobody".to_owned() } else { list };
+                let mono = format!("margin: 0; font-family: var(--m-font-mono); font-size: {}px; color: var(--m-text-strong)", theme::SIZE_MONO);
+                view! {
+                    <p style={mono}>{shown}</p>
+                    {note("Set by --mcp-allow for this run.")}
+                }
+            } else {
+                view! {
+                    <FieldText model={p.mcp_allow.clone()} placeholder="usernames, separated by commas" id="g-mcp-allow" />
+                    {note("An agent driving this client reads chat only from these accounts; everyone else's lines are withheld from it. Anything it reads can try to instruct it, so leave strangers off. * lets everyone through.")}
+                }
+            };
+            let allow: View = if serving {
+                let label = format!("margin: 8px 0 0; font-size: {}px; color: var(--m-text-dim)", theme::SIZE_CHIP);
+                view! {
+                    <p style={label}>"People the agent may hear"</p>
+                    {allow}
+                }
+            } else {
+                allow
+            };
+            view! {
+                <Section title="Editor access">
+                    {listener}
+                    {allow}
+                </Section>
+            }
+        }
+        .into_view()
     }
 
     /// Graphics (`settings::graphics_tab`): what this machine spends on the
@@ -1566,6 +2448,10 @@ impl Pages {
                 }
             }
         };
+        let reading = {
+            let reading = self.weather_reading.clone();
+            move || -> View { note(reading.get()) }
+        };
         view! {
             <Section title="Light">
                 <FieldSegmented model={self.sun_mode.clone()} options={suns} id="w-sun" />
@@ -1580,13 +2466,13 @@ impl Pages {
                 {cloud_shadows_row}
                 {note("The clouds' shadows drift over the streets and the roofs. Costs a little on every pixel of ground and building; none under a clear sky or a closed deck, where there is nothing to cast them.")}
                 {manual_weather}
+                {reading}
             </Section>
         }
     }
 
-    /// Sound and voice (`settings::audio_tab`): the chime, the levels, the
-    /// microphone test with its meter. The camera test stays egui's: it
-    /// shows a live picture, which the library has no image node for yet.
+    /// Sound and voice: the voice switch, the chime, the levels, the
+    /// microphone test with its meter, and the camera test.
     fn audio(&self) -> View {
         let has_audio = cfg!(feature = "audio");
         let play = {
@@ -1651,6 +2537,7 @@ impl Pages {
             })
         };
         view! {
+            {self.voice_section()}
             <Section title="Output">
                 {note("Play a short chime to confirm you can hear the application.")}
                 <div><Button variant=Variant::Secondary icon={icon(icons::PLAY)} onclick={play} disabled={!has_audio}>"Sound test"</Button></div>
@@ -1666,9 +2553,144 @@ impl Pages {
                 {mic_block}
             </Section>
             <Section title="Camera">
-                {note("The camera test is still egui's: it shows a live picture.")}
+                {self.camera_test()}
             </Section>
         }
+    }
+
+    /// The voice switch (`chat::voice_row`), above the levels and only while
+    /// signed in: proximity voice is the world's. The meter is the answer to
+    /// "is it hearing me", so it shows whenever the device is armed —
+    /// including while not transmitting, which is what tells an open-mic user
+    /// that the gate is closed rather than the microphone dead.
+    fn voice_section(&self) -> View {
+        let (signed_in, mode, voice, level, dismiss) = (
+            self.signed_in.clone(),
+            self.voice_mode.clone(),
+            self.voice.clone(),
+            self.voice_level.clone(),
+            self.act.voice_dismiss.clone(),
+        );
+        let modes = opts(&[
+            (VoiceMode::Off, "Off"),
+            (VoiceMode::PushToTalk, "Hold"),
+            (VoiceMode::Open, "Open mic"),
+        ]);
+        move || -> View {
+            if !signed_in.get() {
+                return View::Empty;
+            }
+            if !VoiceState::can_capture() {
+                return view! {
+                    <Section title="Voice">{note("This build has no microphone support.")}</Section>
+                };
+            }
+            let readout = {
+                let (mode, voice, level, dismiss) =
+                    (mode.clone(), voice.clone(), level.clone(), dismiss.clone());
+                move || -> View {
+                    let mode = mode.get();
+                    if mode == VoiceMode::Off {
+                        return View::Empty;
+                    }
+                    let v = voice.get();
+                    if let Some(err) = v.error {
+                        let close = {
+                            let dismiss = dismiss.clone();
+                            on(move || dismiss.set(true))
+                        };
+                        return view! {
+                            <div style="display: flex; align-items: center; gap: 8px">
+                                <div style="flex: 1; min-width: 0">{error_line(err)}</div>
+                                <CloseButton onclick={close} />
+                            </div>
+                        };
+                    }
+                    // Held, not clicked, is the chat's Hold-to-talk button;
+                    // here the V key is the way to hold it.
+                    let hold: View = if mode == VoiceMode::PushToTalk {
+                        note("Hold V to talk.")
+                    } else {
+                        View::Empty
+                    };
+                    let meter = {
+                        let level = level.clone();
+                        move || -> View {
+                            let shown = f64::from(level.get());
+                            view! { <Progress value={Some(shown)} label="Level" /> }
+                        }
+                    };
+                    let hearing = v.hearing.map_or(View::Empty, note);
+                    view! {
+                        {hold}
+                        {meter}
+                        {hearing}
+                    }
+                }
+            };
+            view! {
+                <Section title="Voice">
+                    <FieldSegmented model={mode.clone()} options={modes.clone()} id="a-voice-mode" />
+                    {readout}
+                </Section>
+            }
+        }
+        .into_view()
+    }
+
+    /// The camera test: the picture a call would send, shown mirrored as a
+    /// mirror shows you, fitted to the page and no taller than 200 px —
+    /// enough to judge framing and light without pushing the rest of the
+    /// page off the screen.
+    fn camera_test(&self) -> View {
+        if cfg!(target_arch = "wasm32") {
+            return note("In the browser, the camera is the browser's: it asks to use it when you turn the camera on in a call.");
+        }
+        let (camera, toggle, width) = (
+            self.camera.clone(),
+            self.act.toggle_camera.clone(),
+            self.content_w,
+        );
+        move || -> View {
+            let show = camera.get();
+            let click = {
+                let toggle = toggle.clone();
+                on(move || toggle.set(true))
+            };
+            let button: View = if show.is_some() {
+                view! { <Button variant=Variant::Secondary icon={icon(icons::STOP)} onclick={click}>"Stop camera"</Button> }
+            } else {
+                view! { <Button variant=Variant::Secondary icon={icon(icons::CAMERA)} onclick={click}>"Test camera"</Button> }
+            };
+            let below: View = match show {
+                None => View::Empty,
+                Some(CameraShow::Waiting) => note("Waiting for the camera…"),
+                Some(CameraShow::Failed(why)) => error_line(why),
+                Some(CameraShow::Picture([w, h])) => {
+                    let aspect = w as f32 / h.max(1) as f32;
+                    let height = (width / aspect).min(200.0);
+                    let style = format!(
+                        "display: block; width: {:.1}px; height: {:.1}px; border-radius: 6px",
+                        height * aspect,
+                        height
+                    );
+                    let picture = el("img")
+                        .attr("src", format!("bevy:{CAMERA_IMAGE}"))
+                        .attr("alt", "")
+                        .attr("style", style)
+                        .into_view();
+                    view! {
+                        {picture}
+                        {note("Mirrored, as a mirror shows you. The other person sees you the right way round.")}
+                    }
+                }
+            };
+            view! {
+                <div>{button}</div>
+                {below}
+            }
+        }
+        .into_view()
     }
 
     /// Account (`settings::account_tab`): who you are here, and the one

@@ -117,12 +117,6 @@ super::REAL_LOCATION             premul 4fb2ffff  straight 4fb2ffff
 super::PUBLIC                    premul b39dffff  straight b39dffff
 super::COUNCIL                   premul 2f4a7aff  straight 2f4a7aff
 super::COUNCIL_LIGHT             premul 9db7e6ff  straight 9db7e6ff
-super::CODE_KEYWORD              premul 5cc6c0ff  straight 5cc6c0ff
-super::CODE_STRING               premul e6b886ff  straight e6b886ff
-super::CODE_LITERAL              premul c3a9ffff  straight c3a9ffff
-super::CODE_COMMENT              premul 869ca0ff  straight 869ca0ff
-super::CODE_API                  premul 8fcbffff  straight 8fcbffff
-super::CODE_CALL                 premul d6e4a8ff  straight d6e4a8ff
 super::LABEL_CHIP                premul 0e1214eb  straight 0f1416eb
 super::LABEL_HALO                premul 101113be  straight 15171abe
 super::LABEL_INK                 premul f6f3ecff  straight f6f3ecff

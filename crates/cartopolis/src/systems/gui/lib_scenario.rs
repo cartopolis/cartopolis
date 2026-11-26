@@ -149,9 +149,6 @@ pub fn drive_lib_scenario(
     if !lib.scenario {
         return;
     }
-    if !view.lib {
-        view.lib = true;
-    }
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
         // The taps of the frame, through the same `act` egui's controls call.

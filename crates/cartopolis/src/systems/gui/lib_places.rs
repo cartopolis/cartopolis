@@ -1,22 +1,17 @@
-//! The Places panel drawn by the component library (`lib_host`), beside
-//! egui's (`bookmarks::render_bookmarks_panel`): the saved places in their
-//! folders, a tap to fly there, and each row's actions — route, photo,
-//! update, rename, move, delete — opened under it.
+//! The Places panel drawn by the component library (`lib_host`): the saved
+//! places in their folders, a tap to fly there, and each row's actions —
+//! route, photo, update, rename, move, delete — opened under it. The state
+//! behind it is `bookmarks` (`BookmarksState`); everything a row does goes
+//! through its `Actions` and `BookmarksState::apply_actions`.
 //!
 //! On with `CARTO_UI_LIB=places` (or `1`), on the web `?ui=lib`
-//! (`&panel=places` opens it). egui's panel steps aside
-//! (`BookmarksState::lib`) keeping an empty strip, and still draws the
-//! full-size photo viewer, whose picture is an egui texture. Everything a
-//! row does goes through the same `Actions` and
-//! `BookmarksState::apply_actions` egui's rows use, so the two editions
-//! cannot drift apart.
+//! (`&panel=places` opens it).
 //!
-//! Two things are drawn differently, because the library has no widget for
-//! them: a row is moved by "Move to" in its actions rather than dragged onto
-//! a folder, and a folder's colour is picked from the palette new folders
-//! are given (`FOLDER_PALETTE`) rather than from a free colour picker. A
-//! place's photo is a photo glyph in the row (the library has no image
-//! node); tapping it opens the photo, as tapping the thumbnail does.
+//! A row is moved by "Move to" in its actions rather than dragged onto a
+//! folder, and a folder's colour is picked from the palette new folders are
+//! given (`FOLDER_PALETTE`) rather than from a free colour picker. A place's
+//! photo is a photo glyph in the row; tapping it (or "View the photo") opens
+//! it full size (`Actions::view_photo`), drawn by `lib_picture_viewer`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -238,16 +233,9 @@ pub fn drive_lib_places(
     map_anchor: Res<MapAnchor>,
     metrics: Res<UiMetrics>,
     mut opened: Local<bool>,
-    // Frames left in which taps are dropped: the photo viewer is an egui
-    // window over this panel, and a tap on it (its ✕ above all) must not
-    // also land on the row underneath.
-    mut viewer_guard: Local<u8>,
 ) {
     if !lib.places {
         return;
-    }
-    if !bookmarks.lib {
-        bookmarks.lib = true;
     }
     if lib.open_places && !*opened {
         *opened = true;
@@ -287,17 +275,7 @@ pub fn drive_lib_places(
             (true, Some(live)) => {
                 let current = current_view(&camera, &camera_state, &map_anchor);
                 let has_place = current.is_some();
-                let viewing = bookmarks.viewing_photo();
-                if viewing {
-                    *viewer_guard = 2;
-                }
-                let mut acts: Vec<Act> = std::mem::take(&mut *live.acts.borrow_mut());
-                if *viewer_guard > 0 {
-                    acts.clear();
-                    if !viewing {
-                        *viewer_guard -= 1;
-                    }
-                }
+                let acts: Vec<Act> = std::mem::take(&mut *live.acts.borrow_mut());
                 if !acts.is_empty() {
                     let mut out = Actions::default();
                     let mut close = false;

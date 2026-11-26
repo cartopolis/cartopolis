@@ -5,7 +5,7 @@
 //! result in the world, and the planner.
 //!
 //! The planner is shaped like a phone map's, not like a desktop form: a **bottom
-//! sheet over a map that stays visible** ([`render_route_sheet`]), with the travel
+//! sheet over a map that stays visible** (`lib_route`, fed by [`drive_route_sheet`]), with the travel
 //! modes as one segmented row across the top, one summary line (time · distance),
 //! the two endpoint fields and the turn list in a body that collapses, and the
 //! button that starts the drive along the bottom. Each endpoint can be the current
@@ -24,7 +24,6 @@ use crate::components::FreeCamera;
 use crate::components::RouteVisual;
 use crate::grid::{anchored_position_f64, AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::sync::{Arc, Mutex};
-use crate::systems::egui_manager::EguiRef;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use web_time::Instant;
@@ -40,7 +39,6 @@ use crate::grid::{lat_lng_to_world, world_to_lat_lng};
 use crate::platform::http;
 use crate::platform::location::LocationWatch;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate, RightPanel};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
     camera_geo, nominatim_base_url, percent_encode, GeoNavState, GeoSuggestion, Teleport,
 };
@@ -48,9 +46,7 @@ use crate::systems::globe::GlobeState;
 use crate::systems::ground_stack::GroundLayer;
 use crate::systems::icons;
 use crate::systems::map_stream::MapStream;
-use crate::systems::routing::{
-    self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
-};
+use crate::systems::routing::{self, format_distance, RoadGraph, Route, RouteError, TravelMode};
 use crate::systems::theme;
 use crate::systems::tile_loader::load_tile_image;
 use cartopolis_core::TileKey;
@@ -192,14 +188,6 @@ const LAYER_LIFT_M: f32 = 0.1;
 const ROUTE_START_RGB: [f32; 3] = [0.20, 0.78, 0.35];
 const ROUTE_FINISH_RGB: [f32; 3] = [0.90, 0.25, 0.22];
 
-/// [`ROUTE_START_RGB`] / [`ROUTE_FINISH_RGB`] as an egui colour, for the panel's
-/// endpoint glyphs. egui wants sRGB bytes; `Color::srgb` takes the same numbers
-/// as floats, so this is only the unit conversion.
-fn marker_color(rgb: [f32; 3]) -> egui::Color32 {
-    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-    egui::Color32::from_rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2]))
-}
-
 /// Half-width of the thin connector drawn from a pin to where the route joins the
 /// road, and the gap below which no connector is drawn at all (the pin is on the
 /// road already). A long connector — the pin snapped across water to a drivable
@@ -336,24 +324,24 @@ pub struct RouteState {
     /// Endpoint awaiting a click on the map, if the user armed "pick on map".
     pub picking: Option<Endpoint>,
     /// The start is shown as an editable field rather than a one-line footnote.
-    /// See [`start_line`] — the destination is the primary field, and the start
+    /// The destination is the primary field, and the start
     /// only becomes one while it is being changed.
     pub from_editing: bool,
     /// How much of the planner's sheet is up. See [`SheetDetent`].
     pub sheet: SheetDetent,
     /// The finger on the sheet's grabber (`motion::grabber`).
+    // Unread until `lib_route`'s grabber drags the sheet; it only toggles
+    // the detent on a tap today.
+    #[allow(dead_code)]
     pub sheet_drag: crate::systems::motion::SheetDrag,
-    /// Where the sheet landed last frame, in egui points; `None` when it is not
-    /// up.
+    /// Where the sheet is, in UI points (y down, `min` the top-left corner);
+    /// `None` when it is not up.
     ///
-    /// Published for the reason [`crate::systems::dock::reserved_bottom`] is,
-    /// and it is not decoration: the sheet is a floating `Area`, so it takes
-    /// nothing out of the root `Ui` and `available_rect_before_wrap` cannot see
-    /// it — while the place pins are floating `Area`s at the same `Order` drawn
-    /// *later* in the frame, which is precisely what wins egui's hit test within
-    /// an order (`place_pins`' module note). A pin left under the sheet is a
-    /// teardrop nobody can see eating the taps meant for "Start".
-    pub sheet_rect: Option<egui::Rect>,
+    /// Published for the reason [`crate::systems::dock::reserved_bottom`] is:
+    /// the sheet floats over the map, so nothing else knows it covers it, and
+    /// the place pins have to stay out from under it. A pin left under the
+    /// sheet is a teardrop nobody can see eating the taps meant for "Start".
+    pub sheet_rect: Option<Rect>,
     /// Bumped whenever `route` changes, so the world visuals know to rebuild.
     pub generation: u32,
     /// What the current `route` was solved for; a change here starts a new solve.
@@ -367,21 +355,17 @@ pub struct RouteState {
     cache: Arc<GraphCache>,
     /// Reverse-geocoded names for map-picked points: `(endpoint, label)`.
     reverse: Arc<Mutex<Vec<(Endpoint, String)>>>,
-    /// The library draws the planner (`lib_route`): egui's system draws
-    /// nothing, and still does what needs the avatar, the camera, the
-    /// keyboard and the trip's resources ([`Self::lib_view`],
-    /// [`Self::lib_trip`]).
-    pub lib: bool,
-    /// What egui's system hands the library's sheet each frame while `lib`
-    /// is on.
+    /// What [`drive_route_sheet`] hands the library's sheet (`lib_route`)
+    /// each frame: what needs the avatar, the camera and the keyboard.
     pub lib_view: RouteView,
-    /// A trip the library's sheet asked to start, started by egui's system,
-    /// which holds the driver, the walk guide and the camera.
+    /// A trip the library's sheet asked to start, started by
+    /// [`drive_route_sheet`], which holds the driver, the walk guide and the
+    /// camera.
     pub lib_trip: Option<Trip>,
 }
 
-/// The side of the planner only egui's system can see, for the library's
-/// edition (`lib_route`): published each frame by [`render_route_sheet`].
+/// The side of the planner the library's sheet (`lib_route`) cannot see
+/// itself: published each frame by [`drive_route_sheet`].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct RouteView {
     /// Where "My position" is: the avatar, or the camera with no avatar.
@@ -410,7 +394,7 @@ pub enum Trip {
 }
 
 /// The library's sheet's outer width for a viewport this wide, in points:
-/// egui's sheet's content width plus a frame's padding.
+/// [`SHEET_MAX_WIDTH`] of content plus a frame's padding.
 #[must_use]
 pub fn lib_sheet_width(viewport_w: f32) -> f32 {
     (viewport_w - 2.0 * theme::OSD_MARGIN)
@@ -422,12 +406,12 @@ pub fn lib_sheet_width(viewport_w: f32) -> f32 {
 pub const LIB_SHEET_HEADER_PTS: f32 = 56.0;
 
 /// What the library's sheet at its peek is taken to cost, for the pins
-/// ([`RouteState::sheet_rect`]); it is laid out by `bevy_ui`, which egui
-/// cannot ask.
+/// ([`RouteState::sheet_rect`]); it is laid out by `bevy_ui` after this
+/// is published.
 const LIB_SHEET_PEEK_PTS: f32 = 250.0;
 
-/// The tallest the library's sheet gets: egui's body budget plus its header,
-/// and never past the top of the screen.
+/// The tallest the library's sheet gets: [`SHEET_MAX_FRACTION`] of the
+/// viewport plus its header, and never past the top of the screen.
 #[must_use]
 pub fn lib_sheet_max_height(viewport_h: f32, bottom: f32) -> f32 {
     (viewport_h * SHEET_MAX_FRACTION + LIB_SHEET_HEADER_PTS)
@@ -462,7 +446,6 @@ impl Default for RouteState {
             progress: Arc::new((AtomicUsize::new(0), AtomicUsize::new(0))),
             cache: Arc::new(Mutex::new(None)),
             reverse: Arc::new(Mutex::new(Vec::new())),
-            lib: false,
             lib_view: RouteView::default(),
             lib_trip: None,
         }
@@ -718,7 +701,7 @@ impl RouteState {
     }
 
     /// The start is a field rather than a line: it is being changed, or it is
-    /// still empty ([`start_line`]).
+    /// still empty.
     #[must_use]
     pub fn start_open(&self) -> bool {
         self.from_editing || self.from.coord.is_none()
@@ -726,7 +709,7 @@ impl RouteState {
 
     /// The end the fill chips under the card are for, if any: the start while
     /// it is open, the destination while it is empty, neither while a map
-    /// pick is armed ([`fill_chips`]).
+    /// pick is armed.
     #[must_use]
     pub fn fill_end(&self) -> Option<Endpoint> {
         if self.picking.is_some() {
@@ -806,8 +789,8 @@ impl RouteState {
         }
     }
 
-    /// Apply everything a sheet asked for in one frame — egui's and the
-    /// library's alike — except starting a trip ([`start_trip`]).
+    /// Apply everything the sheet asked for in one frame, except starting a
+    /// trip ([`start_trip`]).
     pub fn apply(
         &mut self,
         actions: &PanelActions,
@@ -839,8 +822,7 @@ impl RouteState {
         if let Some((end, s)) = actions.chose.clone() {
             self.waypoint_mut(end).set(s.label, (s.lat, s.lng));
             self.invalidate();
-            // A start with a place in it folds back to its line, as egui's
-            // field does when the tap on the suggestion takes its focus.
+            // A start with a place in it folds back to its line.
             if end == Endpoint::From {
                 self.from_editing = false;
             }
@@ -1736,8 +1718,8 @@ pub fn handle_route_map_pick(
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    // egui's widgets, or a screen of the library's under the pointer (its
-    // route sheet, whose taps must not drop a pin on the map behind it).
+    // A screen of the library's under the pointer (its route sheet, whose
+    // taps must not drop a pin on the map behind it).
     if ui_input.owns_click(false, None) {
         return;
     }
@@ -2247,8 +2229,7 @@ fn disc(radius: f32) -> Mesh {
 /// How much of the planner is up.
 ///
 /// **The planner is a bottom sheet, not a docked panel, and the detents are the
-/// reason.** A compact right panel *is* the viewport
-/// (`egui_manager::responsive_right_panel`), so asking for a route to somewhere
+/// reason.** A compact right panel *is* the viewport, so asking for a route to somewhere
 /// covered the one thing you asked for: the map, with the route drawn on it.
 /// The phone-map answer is the one taken here — the planner rises from the
 /// bottom edge over a map that stays live, and the instant a route solves it
@@ -2272,44 +2253,13 @@ pub enum SheetDetent {
 /// reaching both sides of a 2000 pt window stops reading as something sitting on
 /// the map.
 const SHEET_MAX_WIDTH: f32 = 420.0;
-/// The solved route's time, the largest type on the sheet: it is the answer.
-const SUMMARY_TIME_PTS: f32 = 26.0;
-/// The Start button never gets narrower than this, whatever Clear has taken from
-/// the row: it is the one control on the sheet you came to press.
-const START_MIN_WIDTH_PTS: f32 = 96.0;
 /// Most of the viewport height the sheet may claim. The rest is the point of the
 /// exercise.
 const SHEET_MAX_FRACTION: f32 = 0.55;
-/// What the always-up parts cost, in points — grabber, mode chips, summary,
-/// action row. An estimate, and it only has to be close: it is subtracted from
-/// the height budget to size the *scrolling* body, so being a few points out
-/// moves where that body starts scrolling, never the sheet's edge.
-const SHEET_HEADER_PTS: f32 = 150.0;
-/// The same with no route yet: the grabber and the mode chips only, since the
-/// summary and the action row are not drawn. Charged the full 150 pt, an empty
-/// planner on a 610 pt phone viewport had a 113 pt body, and the card's
-/// "Choose on map" and the reason a route failed were cut off its bottom.
-const SHEET_HEADER_BARE_PTS: f32 = 72.0;
-/// The body never shrinks below this, even on a viewport too short to honour
+/// The sheet never shrinks below this, even on a viewport too short to honour
 /// [`SHEET_MAX_FRACTION`]. The rule a narrow control follows here:
 /// overflow visibly rather than collapse a control to nothing.
 const SHEET_BODY_MIN_PTS: f32 = 96.0;
-
-/// How tall the scrolling body may be, given the viewport and how far up from
-/// the bottom edge the sheet is sitting.
-/// What the parts above and below the body cost.
-fn sheet_header(has_route: bool) -> f32 {
-    if has_route {
-        SHEET_HEADER_PTS
-    } else {
-        SHEET_HEADER_BARE_PTS
-    }
-}
-
-#[must_use]
-fn sheet_body_height(viewport_h: f32, bottom: f32, has_route: bool) -> f32 {
-    (viewport_h * SHEET_MAX_FRACTION - bottom - sheet_header(has_route)).max(SHEET_BODY_MIN_PTS)
-}
 
 /// Which detent the sheet is actually drawn at, which is not always the one the
 /// user last asked for.
@@ -2333,92 +2283,15 @@ fn effective_detent(asked: SheetDetent, has_route: bool, picking: bool) -> Sheet
 /// viewport: clear of the dock, or clear of the on-screen keyboard when that is
 /// up instead.
 ///
-/// Keyed off the keyboard being *open* rather than off `text_edit_focused()`
-/// because [`OnScreenKeyboard`](crate::systems::onscreen_keyboard::OnScreenKeyboard)
-/// holds its target across the frame egui takes focus away, so the lift does not
-/// flicker every time a tap lands between two fields. It costs one frame on the
-/// way in — the keys' own layout, which runs after this system, sees the field
-/// still down at the bottom and puts that first slab on the top edge — and
-/// self-corrects on the next frame, when the sheet has moved up and the field is
-/// clear. `chat_overlay`'s composer cannot afford even that (it never lifts, so
-/// the flip would stick) and predicts instead; a sheet that does lift can just
-/// take the frame.
-fn sheet_bottom(
-    egui: &EguiManager,
-    keyboard: &crate::systems::onscreen_keyboard::OnScreenKeyboard,
-) -> f32 {
-    if keyboard.is_open() {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui.viewport_pts());
-        return crate::systems::onscreen_keyboard::expected_height(
-            viewport,
-            egui.ui_scale(),
-            egui.display_scale(),
-        ) + theme::OSD_GAP;
+/// The keys' reach ([`KeyboardInset`](crate::systems::onscreen_keyboard::KeyboardInset))
+/// is how far they stand up from the bottom edge — the slab plus its edge
+/// inset — and 0 while they are down or docked to the top, which is when the
+/// dock is what to clear.
+fn sheet_bottom(keyboard_reach: f32) -> f32 {
+    if keyboard_reach > 0.0 {
+        return keyboard_reach + theme::OSD_GAP;
     }
     crate::systems::dock::reserved_bottom() + theme::OSD_MARGIN
-}
-
-/// The grabber: the short bar that says the sheet moves, and the control that
-/// moves it (`motion::grabber`: it follows the finger, and the finger's speed
-/// decides). Returns the detent it was asked to go to, if any; a flick down
-/// from the peek is a collapse, not a close — the planner's ✕ closes it.
-fn grabber(
-    ui: &mut egui::Ui,
-    drag: &mut crate::systems::motion::SheetDrag,
-    detent: SheetDetent,
-) -> Option<SheetDetent> {
-    use crate::systems::motion::{self, Rest, SheetMove};
-    let rest = match detent {
-        SheetDetent::Peek => Rest::Peek,
-        SheetDetent::Full => Rest::Full,
-    };
-    match motion::grabber(
-        ui,
-        drag,
-        rest,
-        &[Rest::Peek, Rest::Full],
-        "Expand or collapse",
-    ) {
-        SheetMove::Stay => None,
-        SheetMove::To(Rest::Full) => Some(SheetDetent::Full),
-        SheetMove::To(_) | SheetMove::Close => Some(SheetDetent::Peek),
-    }
-}
-
-/// The travel modes, as the theme's segmented control: one sunken track, the
-/// chosen mode a raised card on it.
-///
-/// It was three bordered chips with the chosen one filled in the accent, which
-/// read as three buttons and spent the accent — the colour of the one thing on
-/// the sheet to press, Start — on a setting (2026-11-02, "a bit like Organic
-/// Maps"). Icon *and* time: the picture is read at a glance, and the three times
-/// side by side say "walk it" or "take the bike" without another tap.
-fn mode_chips(ui: &mut egui::Ui, route: &RouteState, reserved: f32, actions: &mut PanelActions) {
-    // Walk, bike, car: the order of the default and of what needs least.
-    let labels: Vec<(TravelMode, String)> = [TravelMode::Foot, TravelMode::Bike, TravelMode::Car]
-        .into_iter()
-        .map(|m| (m, chip_label(m, route.duration_for(m))))
-        .collect();
-    let options: Vec<(TravelMode, &str)> = labels.iter().map(|(m, s)| (*m, s.as_str())).collect();
-    let mut chosen = route.mode;
-    let width = (ui.available_width() - reserved).max(108.0);
-    ui.allocate_ui(egui::vec2(width, theme::row_height().max(30.0)), |ui| {
-        if theme::segmented(ui, &mut chosen, &options) {
-            actions.mode = Some(chosen);
-        }
-    });
-}
-
-/// A mode chip's words: the mode's time once it is known, its name until then.
-///
-/// The time *is* the comparison the chips exist for — three times side by side
-/// say "walk it" or "take the bike" at a glance — and the icon already names the
-/// mode, so the word gives way to the number rather than sharing a narrow chip.
-fn chip_label(mode: TravelMode, duration_s: Option<f64>) -> String {
-    match duration_s {
-        Some(s) => format!("{}  {}", icons::travel_mode(mode), format_duration(s)),
-        None => format!("{}  {}", icons::travel_mode(mode), mode.label()),
-    }
 }
 
 /// What Start does for a mode — its word, or what is missing for it.
@@ -2443,19 +2316,23 @@ pub(crate) fn start_action(
     }
 }
 
-/// The route planner: a bottom sheet, over a map that stays visible.
+/// The route planner's state, each frame its sheet (`lib_route`) is up:
+/// where "My position" is, the start kept on the avatar, the fetch progress,
+/// what the sheet needs from the avatar, the camera and the keyboard
+/// ([`RouteState::lib_view`]), the trip it asked to start
+/// ([`RouteState::lib_trip`]), and where the sheet is for the pins
+/// ([`RouteState::sheet_rect`]).
 #[allow(clippy::too_many_arguments)]
-pub fn render_route_sheet(
-    egui: EguiRef,
+pub fn drive_route_sheet(
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
     mut route: ResMut<RouteState>,
     mut right_panel: ResMut<RightPanel>,
-    mut nav: ResMut<GeoNavState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut walk_guide: ResMut<crate::systems::walk_guide::WalkGuide>,
     mut camera_state: ResMut<crate::resources::CameraState>,
     bodies: Query<(), With<crate::components::Avatar>>,
     avatar: Res<crate::resources::AvatarState>,
-    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    keyboard: Option<Res<crate::systems::onscreen_keyboard::KeyboardInset>>,
     globe: Res<GlobeState>,
     camera: AnchoredCamera,
     map_anchor: Res<MapAnchor>,
@@ -2505,199 +2382,28 @@ pub fn render_route_sheet(
         };
     }
 
-    let viewport = egui.viewport_pts();
-    let bottom = sheet_bottom(&egui, &keyboard);
+    let viewport = metrics.viewport_pts();
+    let bottom = sheet_bottom(keyboard.map_or(0.0, |k| k.0));
 
-    // The library's edition is showing (`lib_route`): hand it what only this
-    // system can see, start the trip it asked for, and publish where its
-    // sheet is for the pins. egui draws nothing: the sheet floats, so there
-    // is no strip to keep, and a click on the library's sheet is held off
-    // the world by the pointer's ownership (`lib_route`).
-    if route.lib {
-        let arrive = route.route.as_ref().map(|r| {
-            let ((h, m, _), local) = clock.hms();
-            crate::systems::driver::arrival_clock(h, m, r.duration_s, local)
-        });
-        let view = RouteView {
-            here,
-            gps: LocationWatch::available(),
-            avatar: !bodies.is_empty(),
-            bottom,
-            viewport: [viewport.x, viewport.y],
-            arrive,
-        };
-        if route.lib_view != view {
-            route.lib_view = view;
-        }
-        if let Some(trip) = route.lib_trip.take() {
-            start_trip(
-                trip,
-                &route,
-                &mut driver,
-                &mut walk_guide,
-                &mut camera_state,
-                &mut right_panel,
-            );
-        }
-        // Estimated, not measured: `bevy_ui` lays the sheet out, and egui
-        // cannot ask it. At its peek the sheet is about the header, the
-        // modes, the summary and the actions; open it is at most its cap.
-        let width = lib_sheet_width(viewport.x);
-        let max_h = lib_sheet_max_height(viewport.y, bottom);
-        let height = match route.detent() {
-            SheetDetent::Full => max_h,
-            SheetDetent::Peek => LIB_SHEET_PEEK_PTS.min(max_h),
-        };
-        let rect = egui::Rect::from_min_max(
-            egui::pos2((viewport.x - width) / 2.0, viewport.y - bottom - height),
-            egui::pos2((viewport.x + width) / 2.0, viewport.y - bottom),
-        );
-        if route.sheet_rect != Some(rect) {
-            route.sheet_rect = Some(rect);
-        }
-        return;
-    }
-
-    let body_height = sheet_body_height(viewport.y, bottom, route.route.is_some());
-    // The width the *content* gets. The frame's own margins are outside it, so
-    // they come off first — sized against the raw viewport the sheet reaches both
-    // screen edges on a phone and reads as a slab rather than as a card lying on
-    // the map.
-    let frame = theme::overlay_frame();
-    let inset = frame.inner_margin.sum().x + 2.0 * frame.stroke.width;
-    let width = (viewport.x - 2.0 * theme::OSD_MARGIN - inset).min(SHEET_MAX_WIDTH);
-    let detent = route.detent();
-
-    let mut actions = PanelActions::default();
-    let mut close = false;
-    let mut asked_detent = None;
-    let ctx = egui.ctx();
-    // The sheet comes up from the bottom edge (`motion::follow`), and moves
-    // with the finger on its grabber.
-    let pres = crate::systems::motion::presence(ctx, egui::Id::new("route_sheet"), true);
-    let at_top = route.sheet == SheetDetent::Full;
-    let area = egui::Area::new(egui::Id::new("route_sheet"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .show(ctx, |ui| {
-            crate::systems::motion::follow(
-                ui,
-                egui::Id::new("route_sheet"),
-                pres,
-                &mut route.sheet_drag,
-                crate::systems::motion::LIFT,
-                at_top,
-            );
-            frame.show(ui, |ui| {
-                // Pin the width before anything is laid out: this is a floating
-                // `Area`, so a child reaching for the available width would grow
-                // the sheet a little every frame (the trap `hud`'s module note
-                // documents at length), and the scrolling body below has no width
-                // at all to scroll inside until something states one.
-                ui.set_width(width);
-
-                let asked_now = route.sheet;
-                asked_detent = grabber(ui, &mut route.sheet_drag, asked_now);
-
-                // Travel modes across the top, with the ✕ in the corner. Organic
-                // Maps puts the modes above the fields because the mode changes
-                // what a sensible destination even is.
-                ui.horizontal(|ui| {
-                    let reserved = theme::close_button_size() + ui.spacing().item_spacing.x;
-                    mode_chips(ui, &route, reserved, &mut actions);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = theme::close_button(ui).clicked();
-                    });
-                });
-                ui.add_space(6.0);
-
-                // The one line the planner exists to produce, or what is standing
-                // between us and it.
-                // Open, with no route, the card below is the whole question and a
-                // failure is said under it, beside the end that caused it; the
-                // summary is for a route, or for the wait for one.
-                let body_says_it = detent == SheetDetent::Full
-                    && route.route.is_none()
-                    && matches!(route.status, SolveStatus::Idle | SolveStatus::Failed(_));
-                if !body_says_it {
-                    summary_line(ui, &route, clock.hms());
-                }
-
-                // The map-pick prompt lives *outside* the body, because arming a
-                // pick is what collapses the sheet: the instruction has to survive
-                // the collapse it causes.
-                if let Some(end) = route.picking {
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(match end {
-                            Endpoint::From => "Click the map to set the starting point…",
-                            Endpoint::To => "Click the map to set the destination…",
-                        })
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p32().accent_text),
-                    );
-                }
-
-                if detent == SheetDetent::Full {
-                    ui.add_space(6.0);
-                    // One scroll for the whole body — the endpoints *and* the turn
-                    // list. Two would let the fields scroll away from under the
-                    // finger typing into them, and the sheet's height budget is a
-                    // single number to spend.
-                    egui::ScrollArea::vertical()
-                        .max_height(body_height)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            // The endpoint card. **The destination is the primary
-                            // field and the start is a footnote**, because "route to
-                            // somewhere" is the whole act and the start is almost
-                            // always "here" — which the app already knows. The first
-                            // cut gave both ends an identical full-width row, which
-                            // made every route a two-field form where one field had
-                            // an obvious answer, and left a blank start looking like
-                            // a required step.
-                            endpoint_card(ui, &mut route, here, &mut actions);
-                            if route.route.is_some() {
-                                ui.add_space(6.0);
-                                ui.separator();
-                                turn_list(ui, &route, &mut actions);
-                            }
-                        });
-                }
-
-                // Outside the scrolling body, like the action row: it is the
-                // answer to the question the card asks, and must not be the
-                // thing that scrolls out of sight.
-                if detent == SheetDetent::Full {
-                    if let SolveStatus::Failed(msg) = &route.status {
-                        ui.add_space(4.0);
-                        failure_notice(ui, msg);
-                    }
-                }
-
-                if route.route.is_some() {
-                    ui.add_space(8.0);
-                    action_row(
-                        ui,
-                        route.mode,
-                        LocationWatch::available(),
-                        !bodies.is_empty(),
-                        &mut actions,
-                    );
-                }
-            });
-        });
-
-    route.sheet_rect = Some(area.response.rect);
-    if let Some(d) = asked_detent {
-        route.sheet = d;
-    }
-    route.apply(&actions, &mut nav, here);
-    let trip = if actions.drive {
-        Some(Trip::Drive)
-    } else {
-        actions.walk.map(|auto| Trip::Walk { auto })
+    // Hand the sheet what only this system can see, start the trip it asked
+    // for, and publish where it is for the pins. A click on the sheet is held
+    // off the world by the pointer's ownership (`lib_route`).
+    let arrive = route.route.as_ref().map(|r| {
+        let ((h, m, _), local) = clock.hms();
+        crate::systems::driver::arrival_clock(h, m, r.duration_s, local)
+    });
+    let view = RouteView {
+        here,
+        gps: LocationWatch::available(),
+        avatar: !bodies.is_empty(),
+        bottom,
+        viewport: [viewport.x, viewport.y],
+        arrive,
     };
-    if let Some(trip) = trip {
+    if route.lib_view != view {
+        route.lib_view = view;
+    }
+    if let Some(trip) = route.lib_trip.take() {
         start_trip(
             trip,
             &route,
@@ -2707,161 +2413,28 @@ pub fn render_route_sheet(
             &mut right_panel,
         );
     }
-    if close {
-        *right_panel = RightPanel::None;
+    // Estimated, not measured: `bevy_ui` lays the sheet out after this runs.
+    // At its peek the sheet is about the header, the modes, the summary and
+    // the actions; open it is at most its cap.
+    let width = lib_sheet_width(viewport.x);
+    let max_h = lib_sheet_max_height(viewport.y, bottom);
+    let height = match route.detent() {
+        SheetDetent::Full => max_h,
+        SheetDetent::Peek => LIB_SHEET_PEEK_PTS.min(max_h),
+    };
+    let rect = Rect::new(
+        (viewport.x - width) / 2.0,
+        viewport.y - bottom - height,
+        (viewport.x + width) / 2.0,
+        viewport.y - bottom,
+    );
+    if route.sheet_rect != Some(rect) {
+        route.sheet_rect = Some(rect);
     }
 }
 
-/// The summary: time · distance when there is a route, and what is in the way of
-/// one when there is not.
-///
-/// A solved route also says *when* and *where to*: the arrival clock beside the
-/// distance, and the destination under them. Collapsed to its peek the sheet
-/// showed a duration the chip above already showed and nothing else, so a route
-/// on screen did not say where it went — the destination field is in the body
-/// the solve has just folded away.
-fn summary_line(ui: &mut egui::Ui, route: &RouteState, clock: ((u32, u32, u32), bool)) {
-    match (&route.status, &route.route) {
-        (SolveStatus::Fetching(done, total), _) => {
-            if *total > 0 {
-                theme::busy_progress(ui, "Reading map data…", *done, *total);
-            } else {
-                theme::busy(ui, "Reading map data…");
-            }
-        }
-        (SolveStatus::Solving, _) => theme::busy(ui, "Finding the best route…"),
-        (SolveStatus::Failed(msg), _) => failure_notice(ui, msg),
-        (SolveStatus::Idle, Some(r)) => {
-            // The reference's summary: the time big, the arrival clock opposite
-            // it, and the distance and destination as one quiet line under them.
-            let ((h, m, _), local) = clock;
-            let arrive = crate::systems::driver::arrival_clock(h, m, r.duration_s, local);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format_duration(r.duration_s))
-                        .size(SUMMARY_TIME_PTS)
-                        .family(theme::brand_family())
-                        .color(theme::p32().cream),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("arrive {arrive}"))
-                            .size(theme::SIZE_VALUE)
-                            .color(theme::p32().text),
-                    );
-                });
-            });
-            let line = route.destination_line(r);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(line)
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p32().text_dim),
-                )
-                .truncate(),
-            );
-        }
-        (SolveStatus::Idle, None) => {
-            ui.label(
-                egui::RichText::new("Set a start and a destination to plan a route.")
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p32().text_dim),
-            );
-        }
-    }
-}
-
-/// Why there is no route, on a faint error plate with the warning mark: bare
-/// salmon text above the fields read as a heading, not as the answer.
-fn failure_notice(ui: &mut egui::Ui, msg: &str) {
-    egui::Frame::NONE
-        .fill(theme::p32().error.gamma_multiply(0.12))
-        .corner_radius(egui::CornerRadius::same(theme::RADIUS_SM))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            // One text, mark and words, rather than two widgets in a row: a
-            // wrapping label in a horizontal row reserves one line, and the
-            // second was clipped off the sheet.
-            let mut job = egui::text::LayoutJob::default();
-            job.append(
-                icons::WARNING,
-                0.0,
-                egui::TextFormat::simple(
-                    egui::FontId::proportional(theme::SIZE_VALUE),
-                    theme::p32().error,
-                ),
-            );
-            job.append(
-                msg,
-                8.0,
-                egui::TextFormat::simple(
-                    egui::FontId::proportional(theme::SIZE_SUB),
-                    theme::p32().text,
-                ),
-            );
-            ui.add(egui::Label::new(job).wrap());
-        });
-}
-
-/// What a solved route affords, along the bottom of the sheet.
-///
-/// Driving is what a solved route is *for*, so it takes the primary slot and the
-/// right-hand end, where a thumb is.
-///
-/// There was a "Fit" button here. It framed the route on the map — which is what
-/// the user wanted the instant the route appeared, not one tap later, so
-/// `drive_route_solver` now does it on the solve and the button is gone. A
-/// control whose only job is to finish an action the app could have finished
-/// itself is a control that should not be on a phone's bottom sheet.
-fn action_row(
-    ui: &mut egui::Ui,
-    mode: TravelMode,
-    gps: bool,
-    avatar: bool,
-    actions: &mut PanelActions,
-) {
-    let full = ui.available_width();
-    let mut below = false;
-    ui.horizontal(|ui| {
-        if theme::ghost_button(ui, "", "Clear").clicked() {
-            actions.clear = true;
-        }
-        // Walking yourself is the secondary act beside being walked there.
-        if mode == TravelMode::Foot
-            && avatar
-            && theme::ghost_button(ui, "", "Walk")
-                .on_hover_text("Walk it yourself, with the route drawn in the street")
-                .clicked()
-        {
-            actions.walk = Some(false);
-        }
-        // The start button takes what the row has left — unless that is less
-        // than the button needs, in which case it gets a row of its own. Held at
-        // its minimum in the row instead, it overlapped Clear on a phone
-        // ("Needs a GPS position" over the word, 2026-10-31).
-        let left = ui.available_width();
-        if left >= START_MIN_WIDTH_PTS.max(start_label_width(ui, mode, gps, avatar)) {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                start_button(ui, mode, gps, avatar, actions, left);
-            });
-        } else {
-            below = true;
-        }
-    });
-    if below {
-        start_button(ui, mode, gps, avatar, actions, full);
-    }
-}
-
-/// The start button's words, as [`start_button`] writes them.
-fn start_label(mode: TravelMode, gps: bool, avatar: bool) -> String {
-    let (icon, words) = start_parts(mode, gps, avatar);
-    format!("{icon}  {words}")
-}
-
-/// The start button's glyph and words, apart — the library sets the glyph
-/// in the icon font, egui in one string ([`start_label`]).
+/// The start button's glyph and words, apart: the sheet sets the glyph in
+/// the icon font.
 pub(crate) fn start_parts(
     mode: TravelMode,
     gps: bool,
@@ -2881,110 +2454,12 @@ pub(crate) fn start_parts(
     }
 }
 
-/// How wide the start button's words are, with the button's padding.
-fn start_label_width(ui: &egui::Ui, mode: TravelMode, gps: bool, avatar: bool) -> f32 {
-    let galley = ui.painter().layout_no_wrap(
-        start_label(mode, gps, avatar),
-        egui::FontId::proportional(theme::SIZE_VALUE),
-        theme::p32().ink,
-    );
-    galley.size().x + 2.0 * ui.spacing().button_padding.x + 8.0
-}
-
-/// The sheet's one primary act: be walked there, ride or drive it, or — when
-/// this device cannot — the reason, disabled.
-fn start_button(
-    ui: &mut egui::Ui,
-    mode: TravelMode,
-    gps: bool,
-    avatar: bool,
-    actions: &mut PanelActions,
-    width: f32,
-) {
-    let label = start_label(mode, gps, avatar);
-    match start_action(mode, gps, avatar) {
-        Ok(_) if mode == TravelMode::Foot => {
-            if theme::primary_button_sized(ui, &label, width)
-                .on_hover_text("The avatar follows the route; any key takes over")
-                .clicked()
-            {
-                actions.walk = Some(true);
-            }
-        }
-        Ok(_) => {
-            if theme::primary_button_sized(ui, &label, width)
-                .on_hover_text("Follow this route and show the next turn")
-                .clicked()
-            {
-                actions.drive = true;
-            }
-        }
-        // A note, not a greyed-out button. Disabled, the primary button faded to
-        // a ghost of its words over the glass — "Needs a GPS position" at half
-        // contrast read as a rendering fault rather than as the reason.
-        // The reason is the label itself, wrapped: it was a short phrase with
-        // the explanation in a hover tooltip, which a phone never shows.
-        Err(_) => {
-            ui.allocate_ui(egui::vec2(width, theme::row_height()), |ui| {
-                ui.set_width(width);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&label)
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p32().text_dim),
-                    )
-                    .wrap(),
-                );
-            });
-        }
-    }
-}
-
-/// The turn list. Each row flies the camera to its manoeuvre.
-fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) {
-    let Some(r) = &route.route else {
-        return;
-    };
-    for (i, step) in r.steps.iter().enumerate() {
-        let resp = ui
-            .horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(icons::maneuver(step.maneuver))
-                        .size(theme::SIZE_VALUE)
-                        .color(theme::p32().accent_text),
-                );
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(step.instruction()).size(theme::SIZE_SUB));
-                    if step.distance_m >= 1.0 {
-                        ui.label(
-                            egui::RichText::new(format_distance(step.distance_m))
-                                .size(theme::SIZE_CHIP)
-                                .color(theme::p32().text_dim),
-                        );
-                    }
-                });
-            })
-            .response;
-        let resp = resp.interact(egui::Sense::click());
-        if theme::named(ui, resp, &step.instruction()).clicked() {
-            actions.goto_step = Some(i);
-        }
-        ui.add_space(3.0);
-    }
-}
-
-/// What a sheet's widgets asked for this frame — egui's or the library's
-/// (`lib_route`), applied by [`RouteState::apply`] for both. Collected rather
-/// than applied inline because egui's widgets borrow `route` while they draw.
+/// What the sheet (`lib_route`) asked for this frame, applied by
+/// [`RouteState::apply`].
 #[derive(Default, Clone)]
 pub struct PanelActions {
     pub swap: bool,
     pub clear: bool,
-    /// Start driving the solved route (`systems::driver`).
-    pub drive: bool,
-    /// Start walking it in the world (`systems::walk_guide`); `true` is "Walk me
-    /// there".
-    pub walk: Option<bool>,
     pub mode: Option<TravelMode>,
     pub goto_step: Option<usize>,
     /// Endpoint set to the current position.
@@ -2999,311 +2474,6 @@ pub struct PanelActions {
     /// Open the start as an editable field / fold it back to a footnote.
     pub edit_start: bool,
     pub collapse_start: bool,
-}
-
-/// The two ends of the route, as one card: a rail down the left (a ring for the
-/// start, a dot for the destination, dots between), the two places beside it,
-/// and one swap button for both.
-///
-/// It was two form rows with five outlined buttons on them, "use my position",
-/// "pick on the map" and "clear" on each end, which on a phone left the
-/// destination a field narrower than the word in it and read as a dashboard
-/// (2026-11-02: "lelijk"). The card is the shape every map app's planner has:
-/// the places are the content and the actions are not repeated per row. The
-/// ways to fill an end without typing are chips under the card, shown for the
-/// end that is still empty or being changed ([`fill_chips`]), and a field's
-/// clear is a small ✕ inside it.
-fn endpoint_card(
-    ui: &mut egui::Ui,
-    route: &mut RouteState,
-    here: Option<(f64, f64)>,
-    actions: &mut PanelActions,
-) {
-    let mut rows = [egui::Rect::NOTHING; 2];
-    theme::list_group(ui, |ui| {
-        ui.horizontal(|ui| {
-            let swap = theme::close_button_size();
-            let body = ui.available_width() - swap - ui.spacing().item_spacing.x - 4.0;
-            ui.allocate_ui_with_layout(
-                egui::vec2(body, 2.0 * card_line_height()),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    rows[0] = start_line(ui, route, here, actions);
-                    let y = ui.cursor().top();
-                    let left = ui.min_rect().left() + RAIL_PTS;
-                    ui.painter().hline(
-                        left..=ui.max_rect().right(),
-                        y,
-                        egui::Stroke::new(1.0, theme::p32().overlay_line.gamma_multiply(0.6)),
-                    );
-                    rows[1] = endpoint_line(ui, route, Endpoint::To, here, actions);
-                },
-            );
-            // Centred on both rows by the horizontal layout: it is one act on
-            // the pair, not a control of either.
-            if theme::action_button(ui, icons::SWAP)
-                .on_hover_text("Swap start and destination")
-                .clicked()
-            {
-                actions.swap = true;
-            }
-        });
-    });
-    paint_rail(ui, rows);
-    fill_chips(ui, route, here, actions);
-}
-
-/// The card's left gutter, where [`paint_rail`] draws.
-const RAIL_PTS: f32 = 26.0;
-/// One line of the card: tall enough for a finger on the touch tier.
-fn card_line_height() -> f32 {
-    theme::row_height().max(36.0)
-}
-
-/// The rail: start ring, destination dot, and three dots between them.
-fn paint_rail(ui: &egui::Ui, rows: [egui::Rect; 2]) {
-    if rows.iter().any(|r| !r.is_positive()) {
-        return;
-    }
-    let p = ui.painter();
-    let x = rows[0].left() + RAIL_PTS / 2.0;
-    let a = egui::pos2(x, rows[0].center().y);
-    let b = egui::pos2(x, rows[1].center().y);
-    p.circle_stroke(
-        a,
-        5.0,
-        egui::Stroke::new(2.0, marker_color(ROUTE_START_RGB)),
-    );
-    p.circle_filled(b, 5.5, marker_color(ROUTE_FINISH_RGB));
-    p.circle_stroke(b, 5.5, egui::Stroke::new(1.5, theme::p32().cream));
-    let (top, bottom) = (a.y + 9.0, b.y - 9.0);
-    for i in 0..3 {
-        let y = top + (bottom - top) * (i as f32 + 0.5) / 3.0;
-        p.circle_filled(egui::pos2(x, y), 1.3, theme::p32().text_dim);
-    }
-}
-
-/// The start. At rest one line reading where the route starts — nearly always
-/// "My position", which is a fact and not a field to fill — and a tap opens it
-/// as a field. It folds back when a place is chosen or the field lets go of
-/// focus with a place in it.
-fn start_line(
-    ui: &mut egui::Ui,
-    route: &mut RouteState,
-    here: Option<(f64, f64)>,
-    actions: &mut PanelActions,
-) -> egui::Rect {
-    if route.start_open() {
-        return endpoint_line(ui, route, Endpoint::From, here, actions);
-    }
-    let mine = route.from.label == HERE_LABEL;
-    let text = route.start_text();
-    let colour = if mine {
-        theme::p32().accent
-    } else {
-        theme::p32().text
-    };
-    let h = card_line_height();
-    let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
-    let resp = theme::named(ui, resp, "Change the starting point");
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text,
-        egui::FontId::proportional(theme::SIZE_BODY),
-        colour,
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width(w - RAIL_PTS - 4.0);
-    let galley = ui.painter().layout_job(job);
-    let at = egui::pos2(
-        rect.left() + RAIL_PTS,
-        rect.center().y - galley.size().y / 2.0,
-    );
-    ui.painter().galley(at, galley, colour);
-    if resp
-        .on_hover_text("Change the starting point")
-        .on_hover_cursor(egui::CursorIcon::Text)
-        .clicked()
-    {
-        actions.edit_start = true;
-    }
-    rect
-}
-
-/// One end as a field: frameless inside the card, with a spinner while its
-/// lookup runs and a ✕ while it holds anything.
-fn endpoint_line(
-    ui: &mut egui::Ui,
-    route: &mut RouteState,
-    end: Endpoint,
-    here: Option<(f64, f64)>,
-    actions: &mut PanelActions,
-) -> egui::Rect {
-    // Phrased as the question rather than as a field name: this is the one
-    // thing the panel asks for, and "Destination" reads like a form label.
-    let hint = match end {
-        Endpoint::From => "Choose a start",
-        Endpoint::To => "Where to?",
-    };
-    let wp = match end {
-        Endpoint::From => &mut route.from,
-        Endpoint::To => &mut route.to,
-    };
-    let h = card_line_height();
-    let mut field_rect = egui::Rect::NOTHING;
-    let line = ui
-        .allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), h),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_min_height(h);
-                ui.add_space(RAIL_PTS);
-                let clear = theme::control_height_small();
-                let trailing = if wp.label.is_empty() { 0.0 } else { clear }
-                    + if wp.in_flight { 22.0 } else { 0.0 };
-                let field = crate::systems::theme::text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut wp.label)
-                        .frame(egui::Frame::NONE)
-                        .font(egui::FontId::proportional(theme::SIZE_BODY))
-                        .desired_width((ui.available_width() - trailing).max(60.0))
-                        .hint_text(hint),
-                );
-                field_rect = field.rect;
-                if field.changed() {
-                    wp.coord = None;
-                    wp.last_edit = Some(Instant::now());
-                    actions.edited = Some(end);
-                }
-                if end == Endpoint::From && field.lost_focus() && wp.coord.is_some() {
-                    actions.collapse_start = true;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !wp.label.is_empty()
-                        && theme::icon_button_small(ui, icons::CLEAR, "Clear").clicked()
-                    {
-                        actions.cleared = Some(end);
-                    }
-                    if wp.in_flight {
-                        ui.add(
-                            egui::Spinner::new()
-                                .size(theme::SIZE_BODY)
-                                .color(theme::p32().accent),
-                        );
-                    }
-                });
-            },
-        )
-        .response
-        .rect;
-    suggestions_popup(ui, wp, end, hint, field_rect, here, actions);
-    line
-}
-
-/// The ways to fill an end without typing, under the card: "My position" for a
-/// start, "Choose on map" for either. Only for the end that is still open — the
-/// start while it is being changed, the destination while it is empty — so a
-/// planned route carries no buttons it does not need.
-fn fill_chips(
-    ui: &mut egui::Ui,
-    route: &RouteState,
-    here: Option<(f64, f64)>,
-    actions: &mut PanelActions,
-) {
-    let Some(end) = route.fill_end() else {
-        return;
-    };
-    ui.horizontal_wrapped(|ui| {
-        let mine = route.start_is_here();
-        if end == Endpoint::From
-            && here.is_some()
-            && !mine
-            && theme::chip(ui, &format!("{}  {HERE_LABEL}", icons::HERE), false).clicked()
-        {
-            actions.use_here = Some(end);
-        }
-        if theme::chip(ui, &format!("{}  Choose on map", icons::PICK_ON_MAP), false)
-            .on_hover_text("Tap the map to set this point")
-            .clicked()
-        {
-            actions.pick = Some(end);
-        }
-    });
-    ui.add_space(4.0);
-}
-
-/// The suggestions for a field, in a popup that opens away from the screen edge
-/// the field is nearest.
-fn suggestions_popup(
-    ui: &mut egui::Ui,
-    wp: &Waypoint,
-    end: Endpoint,
-    hint: &str,
-    field_rect: egui::Rect,
-    here: Option<(f64, f64)>,
-    actions: &mut PanelActions,
-) {
-    if !wp.show_suggestions || wp.suggestions.is_empty() {
-        return;
-    }
-    let mut picked = None;
-    // Clamp to the viewport, both the width and the left edge. The old
-    // `field_rect.width().max(300.0)` was an unconditional 300 pt floor, and a
-    // phone's egui viewport is 274 pt wide — so the one dropdown a routing user
-    // reads most hung 26 pt off the right edge, on the platform this release is
-    // for. `geo_nav`'s equivalent popup already does exactly this; the two are
-    // the same control in two panels and had drifted apart.
-    let screen = ui.ctx().viewport_rect();
-    let popup_width = field_rect
-        .width()
-        .max(300.0)
-        .min((screen.width() - 32.0).max(160.0));
-    // **Which way it opens depends on where the field is**, and since the planner
-    // became a bottom sheet the field is near the bottom edge — a dropdown that
-    // always drops *down* would open off the screen, i.e. the suggestions for the
-    // one control this whole panel is about would be invisible. Pivoting on the
-    // field's top edge instead of its bottom is the whole fix, and it needs no
-    // height: egui grows the box away from the pivot.
-    let drops_down = field_rect.center().y < screen.center().y;
-    let (pivot, mut popup_pos) = if drops_down {
-        (
-            egui::Align2::LEFT_TOP,
-            field_rect.left_bottom() + egui::vec2(0.0, 2.0),
-        )
-    } else {
-        (
-            egui::Align2::LEFT_BOTTOM,
-            field_rect.left_top() - egui::vec2(0.0, 2.0),
-        )
-    };
-    popup_pos.x = popup_pos
-        .x
-        .min(screen.right() - popup_width - 16.0)
-        .max(screen.left() + 16.0);
-    egui::Area::new(egui::Id::new(("route_suggestions", hint)))
-        .order(egui::Order::Foreground)
-        .pivot(pivot)
-        .fixed_pos(popup_pos)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                // Same rows as the address bar's dropdown — name, what kind of
-                // place it is, the address context and how far away it is.
-                let width = popup_width;
-                ui.set_min_width(width);
-                ui.set_max_width(width);
-                for (i, s) in wp.suggestions.iter().enumerate() {
-                    if i > 0 {
-                        ui.separator();
-                    }
-                    if crate::systems::geo_nav::suggestion_row(ui, s, here, width).clicked() {
-                        picked = Some(s.clone());
-                    }
-                }
-            });
-        });
-    if let Some(s) = picked {
-        actions.chose = Some((end, s));
-    }
 }
 
 /// Highest the framing will pull back to, in metres.

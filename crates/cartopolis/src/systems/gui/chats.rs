@@ -124,7 +124,7 @@ pub struct ChatsView {
     pub sign_out: bool,
     /// How many reports wait, for the You page's Admin row; `None` for an
     /// account that may run nothing, which then has no Admin row at all.
-    /// Written by `admin::render_admin_panel`.
+    /// Written by `admin::drive_admin`.
     pub admin: Option<usize>,
     /// Show in world was pressed on this place (`bridges::drive_bridges`
     /// takes it, with the screen it was pressed on).

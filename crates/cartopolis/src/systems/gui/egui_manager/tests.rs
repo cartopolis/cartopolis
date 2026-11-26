@@ -259,7 +259,6 @@ fn ui_metrics_and_ui_input_follow_the_manager() {
     );
     assert!(mgr.overlay_owns_keyboard());
     let keys = ButtonInput::<KeyCode>::default();
-    assert!(mgr.ui_owns_keyboard(false, &keys));
     assert!(app
         .world()
         .resource::<UiInput>()

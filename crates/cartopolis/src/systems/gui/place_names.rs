@@ -358,6 +358,7 @@ pub fn render_place_names(
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    lens: Res<crate::systems::scenario::LensSlot>,
     route: Res<crate::systems::navigation::RouteState>,
     layers: Res<crate::systems::layer_state::DataLayers>,
     driver: Res<crate::systems::driver::DriverState>,
@@ -417,7 +418,7 @@ pub fn render_place_names(
     } else {
         return;
     };
-    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route);
+    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route, &lens);
     let ui_scale = egui.ui_scale();
     let ctx = egui.ctx_mut().clone();
     let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);

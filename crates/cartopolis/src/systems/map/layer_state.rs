@@ -93,9 +93,6 @@ pub(crate) type DetailResult = Result<Vec<Poi>, String>;
 pub struct DataLayers {
     /// Whether the Data Layers panel window is open (View ▸ Data Layers).
     pub panel_open: bool,
-    /// The component library draws the Layers panel (`lib_layers`, on with
-    /// `CARTO_UI_LIB=layers`): egui's steps aside.
-    pub lib: bool,
     /// Feature toggle: the OSM 3D buildings (meshes + lit windows).
     pub buildings_enabled: bool,
     /// Feature toggle (under Buildings): the 3DBAG source — LoD2.2 real meshes

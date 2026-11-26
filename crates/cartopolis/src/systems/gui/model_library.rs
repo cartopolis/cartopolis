@@ -28,14 +28,12 @@
 //! reason: it has to work on the web, where there are no OS threads.
 
 use crate::platform::sync::{Arc, Mutex};
-use crate::systems::egui_manager::EguiMut;
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::model_file;
-use crate::resources::{AvatarState, EditDialogState, GameState, OnlineSession, RightPanel};
+use crate::resources::{AvatarState, EditDialogState, GameState};
 use crate::systems::model_assets;
-use crate::systems::{icons, theme};
 
 /// What the store accepts, said before the file dialog opens.
 ///
@@ -175,9 +173,6 @@ pub struct ModelLibraryState {
     /// rather than as a second visit to the list, and forced off for a licence
     /// that may not be handed on.
     pub upload_share: bool,
-    /// The component library draws the panel (`lib_models`): egui's keeps
-    /// an empty strip of its width.
-    pub lib: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +505,7 @@ pub fn poll_model_library(mut state: ResMut<ModelLibraryState>) {
     }
 }
 
-/// The width of the panel, egui's and the library's, in points.
+/// The width of the panel, in points.
 pub const PANEL_WIDTH: f32 = 360.0;
 
 /// Why the panel has nothing to show, when it has not: offline there is no
@@ -542,9 +537,7 @@ pub(crate) fn matches(name: &str, needle: &str) -> bool {
     needle.is_empty() || name.to_lowercase().contains(needle)
 }
 
-/// What the panel does, for both its editions: egui's
-/// (`render_model_library_panel`) and the component library's
-/// (`lib_models`), so the two cannot drift apart.
+/// What the panel does; the component library draws it (`lib_models`).
 impl ModelLibraryState {
     /// Fetch both lists the first time the panel is open in a session.
     pub fn ensure_loaded(&mut self, signed_in: bool) {
@@ -633,364 +626,6 @@ impl ModelLibraryState {
     ) {
         place_model(game_state, avatar_state, hash, name);
         self.status = format!("Placed \u{201c}{name}\u{201d}.");
-    }
-}
-
-/// The panel.
-#[allow(clippy::too_many_lines)]
-pub fn render_model_library_panel(
-    mut egui: EguiMut,
-    mut right_panel: ResMut<RightPanel>,
-    mut state: ResMut<ModelLibraryState>,
-    mut game_state: ResMut<GameState>,
-    online: Option<Res<OnlineSession>>,
-    avatar_state: Res<AvatarState>,
-) {
-    if !right_panel.is(RightPanel::Models) {
-        return;
-    }
-    let unavailable = unavailable(online.is_some());
-    let signed_in = unavailable.is_none();
-    state.ensure_loaded(signed_in);
-
-    // The library's edition is showing (`lib_models`): keep an empty strip
-    // of the panel's width, so the dock and the pins move aside and a click
-    // there is not the world's.
-    if state.lib {
-        let compact = egui.compact();
-        let viewport_w = egui.viewport_pts().x;
-        let mut open = true;
-        let mut strip = crate::systems::egui_manager::responsive_right_panel(
-            "model_library_panel",
-            compact,
-            viewport_w,
-            PANEL_WIDTH,
-        )
-        .frame(egui::Frame::NONE)
-        .show_separator_line(false);
-        if !compact {
-            strip = strip.resizable(false).exact_size(PANEL_WIDTH);
-        }
-        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
-        return;
-    }
-
-    // The panel body cannot borrow `state`: `right_panel` already holds a mutable
-    // borrow of the egui manager and the closure would need a second of the
-    // resource it is called from. So the edited fields are moved out, worked on,
-    // and put back — which also makes every action below a plain value rather
-    // than a mutation happening inside a layout pass.
-    let mut tab = state.tab;
-    let mut search = std::mem::take(&mut state.search);
-    let mut upload_name = std::mem::take(&mut state.upload_name);
-    let mut upload_attribution = std::mem::take(&mut state.upload_attribution);
-    let mut upload_licence = state.upload_licence;
-    let mut upload_share = state.upload_share;
-    let items = std::mem::take(&mut state.items);
-    let entries = std::mem::take(&mut state.entries);
-    let busy = state.busy;
-    let status = state.status.clone();
-    let has_bytes = state.has_file();
-
-    let mut want_pick = false;
-    let mut want_upload = false;
-    let mut want_refresh = false;
-    let mut place: Option<(String, String)> = None;
-    let mut share_item: Option<(i64, String)> = None;
-    let mut unshare_item: Option<(i64, String)> = None;
-    let mut discard_item: Option<(i64, String)> = None;
-    let mut take_entry: Option<(String, String)> = None;
-
-    crate::systems::egui_manager::right_panel(
-        &mut egui,
-        &mut right_panel,
-        RightPanel::Models,
-        "model_library_panel",
-        PANEL_WIDTH,
-        |ui| {
-            if let Some(message) = unavailable {
-                ui.label(egui::RichText::new(message).color(theme::p().text_dim));
-                return;
-            }
-
-            // Refresh first, from the right, so the two tabs take what is left.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::icon_button(ui, icons::REFRESH, "Fetch both lists again").clicked() {
-                    want_refresh = true;
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    theme::segmented(
-                        ui,
-                        &mut tab,
-                        &[(Tab::Mine, "Mine"), (Tab::Library, "Library")],
-                    );
-                });
-            });
-            ui.add_space(4.0);
-            theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut search).hint_text("Search"),
-            );
-            ui.add_space(4.0);
-            ui.separator();
-
-            let needle = search.to_lowercase();
-            // The upload block and the status line are laid out first, from the
-            // bottom, so the list takes what is left: a refusal that arrives while
-            // you are reading must not push the list out from under you. Same rule
-            // the script editor's console follows.
-            egui::Panel::bottom("model_library_actions")
-                .show_separator_line(false)
-                .frame(egui::Frame::NONE)
-                .show(ui, |ui| {
-                    ui.separator();
-                    if model_file::is_available() {
-                        if has_bytes {
-                            theme::text_field(
-                                ui,
-                                egui::TextEdit::singleline(&mut upload_name)
-                                    .hint_text("What is it?"),
-                            );
-                            ui.label(
-                                egui::RichText::new("Where did it come from?")
-                                    .color(theme::p().text_dim),
-                            );
-                            for licence in
-                                [Licence::Own, Licence::Cc0, Licence::CcBy, Licence::Other]
-                            {
-                                ui.radio_value(&mut upload_licence, licence, licence.label());
-                            }
-                            if upload_licence.needs_attribution() {
-                                theme::text_field(
-                                    ui,
-                                    egui::TextEdit::singleline(&mut upload_attribution)
-                                        .hint_text("Credit line, e.g. “Bench by A. N. Other”"),
-                                );
-                            }
-                            if upload_licence.may_share() {
-                                theme::checkbox(
-                                    ui,
-                                    &mut upload_share,
-                                    "Share it with everyone on this server",
-                                );
-                            } else {
-                                // Not merely disabled: a checkbox left ticked
-                                // from a previous answer would be a promise the
-                                // server is about to refuse.
-                                upload_share = false;
-                                ui.label(
-                                    egui::RichText::new(
-                                        "You will be able to use this, but not share it.",
-                                    )
-                                    .small()
-                                    .color(theme::p().text_dim),
-                                );
-                            }
-                            if theme::primary_button_sized(ui, "Upload", 0.0).clicked() {
-                                want_upload = true;
-                            }
-                        } else {
-                            if theme::primary_button_sized(ui, "Add a model…", 0.0).clicked() {
-                                want_pick = true;
-                            }
-                            // What to export before opening the dialog, because a
-                            // refusal after a 12 MB upload is a slow way to learn
-                            // it. The numbers are the server's
-                            // (`cartopolis_core::model_limits`, enforced in
-                            // `simulator::assets`) and this says the same thing
-                            // its refusals do.
-                            ui.label(
-                                egui::RichText::new(upload_format_hint())
-                                    .small()
-                                    .color(theme::p().text_dim),
-                            );
-                        }
-                    } else {
-                        // Android: no document picker (`platform::model_file`).
-                        // Said, rather than left as a panel that silently cannot
-                        // do the thing the panel is named after.
-                        ui.label(
-                            egui::RichText::new(
-                                "Adding a model needs a desktop or a browser. \
-                                 Anything in the library can be placed from here.",
-                            )
-                            .small()
-                            .color(theme::p().text_dim),
-                        );
-                    }
-                    if busy {
-                        ui.label(egui::RichText::new("Working…").color(theme::p().text_dim));
-                    } else if !status.is_empty() {
-                        ui.label(egui::RichText::new(&status).color(theme::p().text_dim));
-                    }
-                });
-
-            egui::ScrollArea::vertical().show(ui, |ui| match tab {
-                Tab::Mine => {
-                    if items.is_empty() {
-                        ui.label(
-                            egui::RichText::new("Nothing here yet.").color(theme::p().text_dim),
-                        );
-                    }
-                    for item in &items {
-                        if !matches(&item.name, &needle) {
-                            continue;
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(&item.name)
-                                    .strong()
-                                    .color(theme::p().accent_text),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{} tri", item.triangles))
-                                    .color(theme::p().text_dim),
-                            );
-                            if !item.folder.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(&item.folder)
-                                        .small()
-                                        .color(theme::p().text_dim),
-                                );
-                            }
-                        });
-                        ui.horizontal_wrapped(|ui| {
-                            if theme::secondary_button(ui, "", "Place", 0.0).clicked() {
-                                place = Some((item.asset.clone(), item.name.clone()));
-                            }
-                            if item.shared.is_some() {
-                                if theme::ghost_button(ui, "", "Unshare")
-                                    .on_hover_text(
-                                        "take it out of the shared library; anyone who \
-                                         already took a copy keeps theirs",
-                                    )
-                                    .clicked()
-                                {
-                                    unshare_item = Some((item.id, item.name.clone()));
-                                }
-                            } else {
-                                // The licence recorded at upload decides. The
-                                // server refuses either way; the panel's job is
-                                // not to offer a button that is going to be
-                                // refused, and to say why it is not offering it.
-                                let allowed = item.licence != "other";
-                                let button = ui
-                                    .add_enabled_ui(allowed, |ui| {
-                                        theme::ghost_button(ui, "", "Share")
-                                    })
-                                    .inner;
-                                let button = if allowed {
-                                    button.on_hover_text("publish it to everyone on this server")
-                                } else {
-                                    button.on_hover_text(
-                                        "you said this came from somewhere else, so it \
-                                         cannot be handed on",
-                                    )
-                                };
-                                if button.clicked() {
-                                    share_item = Some((item.id, item.name.clone()));
-                                }
-                            }
-                            if theme::icon_button_small(
-                                ui,
-                                icons::DELETE,
-                                "Remove it from your inventory",
-                            )
-                            .clicked()
-                            {
-                                discard_item = Some((item.id, item.name.clone()));
-                            }
-                        });
-                        ui.separator();
-                    }
-                }
-                Tab::Library => {
-                    if entries.is_empty() {
-                        ui.label(
-                            egui::RichText::new("Nobody has shared a model yet.")
-                                .color(theme::p().text_dim),
-                        );
-                    }
-                    for entry in &entries {
-                        if !matches(&entry.name, &needle) {
-                            continue;
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(&entry.name)
-                                    .strong()
-                                    .color(theme::p().accent_text),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} · {} tri · {}",
-                                    entry.category,
-                                    entry.triangles,
-                                    licence_label(&entry.licence)
-                                ))
-                                .color(theme::p().text_dim),
-                            );
-                        });
-                        // The credit line travels with the model. A CC-BY licence
-                        // requires that, and a list of models is where a person
-                        // meets one.
-                        if !entry.attribution.is_empty() {
-                            ui.label(
-                                egui::RichText::new(&entry.attribution)
-                                    .small()
-                                    .color(theme::p().text_dim),
-                            );
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            if theme::secondary_button(ui, "", "Place", 0.0).clicked() {
-                                place = Some((entry.asset.clone(), entry.name.clone()));
-                            }
-                            if theme::ghost_button(ui, "", "Keep")
-                                .on_hover_text("copy it into your inventory")
-                                .clicked()
-                            {
-                                take_entry = Some((entry.asset.clone(), entry.name.clone()));
-                            }
-                        });
-                        ui.separator();
-                    }
-                }
-            });
-        },
-    );
-
-    state.tab = tab;
-    state.search = search;
-    state.upload_name = upload_name;
-    state.upload_attribution = upload_attribution;
-    state.upload_licence = upload_licence;
-    state.upload_share = upload_share;
-    state.items = items;
-    state.entries = entries;
-
-    if want_refresh {
-        state.refresh();
-    }
-    if want_pick {
-        state.start_pick();
-    }
-    if want_upload {
-        state.start_upload();
-    }
-    if let Some((id, name)) = share_item {
-        state.share_item(id, name);
-    }
-    if let Some((id, name)) = unshare_item {
-        state.unshare_item(id, name);
-    }
-    if let Some((id, name)) = discard_item {
-        state.discard_item(id, name);
-    }
-    if let Some((hash, name)) = take_entry {
-        state.take_entry(hash, name);
-    }
-    if let Some((hash, name)) = place {
-        state.place(&mut game_state, &avatar_state, &hash, &name);
     }
 }
 

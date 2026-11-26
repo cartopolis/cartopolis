@@ -1,5 +1,5 @@
 //! Geo navigation: a browser-style search, in a panel of its own
-//! ([`render_search_panel`], the dock's leftmost disc or `Ctrl+L`).
+//! (`lib_search`, fed by [`drive_search`]; the dock's leftmost disc or `Ctrl+L`).
 //!
 //! Type a place name ("Groningen") to get OpenStreetMap Nominatim suggestions
 //! and click one to look at it — signed in, the camera goes and the avatar
@@ -24,7 +24,6 @@ use crate::grid::{
 };
 pub(crate) use crate::platform::http::percent_encode;
 use crate::platform::sync::{Arc, Mutex};
-use crate::systems::egui_manager::EguiMut;
 use cartopolis_core::msg;
 use std::time::Duration;
 use web_time::Instant;
@@ -38,10 +37,8 @@ use serde::{Deserialize, Serialize};
 use crate::components::Avatar;
 use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState, RightPanel};
-use crate::systems::icons;
 use crate::systems::map_stream::MapStream;
 use crate::systems::navigation::{Endpoint, RouteState};
-use crate::systems::theme;
 
 /// Geocoder base URL, Nominatim-shaped: by default atlas's own on cartopolis.org
 /// (`crates/atlas/src/geocoder.rs`). Override with `CARTO_NOMINATIM_URL`, e.g. the
@@ -313,24 +310,20 @@ pub struct GeoNavState {
     /// re-record it as a new visit.
     from_history: bool,
     /// The search field should grab keyboard focus next frame (set by `Ctrl+L`
-    /// and by [`seed_search`](Self::seed_search), consumed in [`search_ui`]);
+    /// and by [`seed_search`](Self::seed_search), consumed by `lib_search`);
     /// also *opens* the Search panel, since a field that is not drawn cannot take
     /// focus.
     pub focus_search: bool,
     /// The search field currently holds keyboard focus — read by
-    /// `ui_owns_keyboard` so typing a search doesn't also walk the avatar (set in
-    /// [`search_ui`]).
+    /// `ui_owns_keyboard` so typing a search doesn't also walk the avatar (set by
+    /// `lib_search`).
     pub search_has_focus: bool,
-    /// The library draws the Search panel (`lib_search`): egui's panel
-    /// keeps only an empty strip of its width, and still does the view
-    /// actions the library's asks for, since it holds the camera they need.
-    pub lib: bool,
-    /// What the two panels pass each other while `lib` is on.
+    /// What [`drive_search`] and the panel (`lib_search`) pass each other.
     pub lib_view: SearchView,
 }
 
-/// The camera side of the Search panel, for the library's edition: egui's
-/// panel system computes it each frame and runs the action it is handed.
+/// The camera side of the Search panel (`lib_search`): [`drive_search`]
+/// computes it each frame and runs the action it is handed.
 #[derive(Default, Clone, PartialEq)]
 pub struct SearchView {
     /// Where the camera is on Earth, for each row's distance.
@@ -341,7 +334,7 @@ pub struct SearchView {
     pub can_share: bool,
     /// The action that fired within the last moment (its ✔).
     pub done: Option<ViewAction>,
-    /// An action the library's panel asked for, run by egui's.
+    /// An action the panel asked for, run by [`drive_search`].
     pub action: Option<ViewAction>,
 }
 
@@ -497,7 +490,7 @@ impl GeoNavState {
     /// behind private fields, so a scripted run (`--ui search`) cannot reach the
     /// search path without this — and it has no pointer to click the dock's disc
     /// with either, so asking for focus is also what opens the panel
-    /// (`render_search_panel`).
+    /// ([`drive_search`]).
     pub fn seed_search(&mut self, query: impl Into<String>) {
         self.query = query.into();
         self.focus_search = true;
@@ -824,7 +817,6 @@ impl Default for GeoNavState {
             from_history: false,
             focus_search: false,
             search_has_focus: false,
-            lib: false,
             lib_view: SearchView::default(),
         }
     }
@@ -1112,167 +1104,6 @@ pub fn distance_label(from: (f64, f64), to: (f64, f64)) -> String {
     }
 }
 
-/// What a suggestion row came back with: the row was clicked (go there), or its
-/// ⚑ was (route there).
-///
-/// A struct rather than a bare `Response` because the row now carries a second
-/// verb. It keeps [`clicked`](Self::clicked) as an inherent method so a row still
-/// reads at the call site exactly as it did when it *was* a `Response`.
-pub struct SuggestionPick {
-    pub response: egui::Response,
-    routed: bool,
-}
-
-impl SuggestionPick {
-    /// The row itself was clicked — go to this place.
-    #[must_use]
-    pub fn clicked(&self) -> bool {
-        self.response.clicked()
-    }
-
-    /// The row's ⚑ was clicked — make this place the destination instead.
-    #[must_use]
-    pub fn routed(&self) -> bool {
-        self.routed
-    }
-}
-
-/// One suggestion row, shared by the Search panel and the route planner's
-/// endpoint fields so the two lists cannot drift apart.
-///
-/// Two lines: the name (plus what kind of place it is) leads, and the address
-/// context and the distance from `viewer` sit under it in the dim tone. The whole
-/// block is one click target — `UiBuilder::sense` puts a single response over the
-/// laid-out content, which a `Button` could not do without collapsing both lines
-/// into one string and losing the type hierarchy that makes the row scannable.
-///
-/// No ⚑: in the *route panel's* dropdown the row already is the endpoint setter,
-/// so a "route here" beside it would be the same click twice. Use
-/// [`destination_row`] wherever the row is only a place.
-pub fn suggestion_row(
-    ui: &mut egui::Ui,
-    s: &GeoSuggestion,
-    viewer: Option<(f64, f64)>,
-    width: f32,
-) -> SuggestionPick {
-    suggestion_row_inner(ui, s, viewer, width, false, false)
-}
-
-/// [`suggestion_row`] plus a ⚑ that routes to the place instead of flying to it.
-///
-/// `stale` dims the row: the answers on screen are for an earlier query than the
-/// one in the field (see `GeoNavState::apply_suggestions`). They are still real
-/// places and still worth clicking, so they are dimmed rather than removed or
-/// disabled.
-pub fn destination_row(
-    ui: &mut egui::Ui,
-    s: &GeoSuggestion,
-    viewer: Option<(f64, f64)>,
-    width: f32,
-    stale: bool,
-) -> SuggestionPick {
-    suggestion_row_inner(ui, s, viewer, width, true, stale)
-}
-
-fn suggestion_row_inner(
-    ui: &mut egui::Ui,
-    s: &GeoSuggestion,
-    viewer: Option<(f64, f64)>,
-    width: f32,
-    route_action: bool,
-    stale: bool,
-) -> SuggestionPick {
-    // Reserve the highlight's place in the paint list *before* the content, so the
-    // fill lands behind the text rather than over it.
-    let bg = ui.painter().add(egui::Shape::Noop);
-    let inner = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
-        ui.set_width(width);
-        ui.spacing_mut().item_spacing.y = 1.0;
-        if stale {
-            ui.set_opacity(0.55);
-        }
-        let mut routed = false;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            // The route button takes the right edge first and the name gets what
-            // is genuinely left. A `truncate()` label asks for everything
-            // available, so laid out the other way round it would push the button
-            // clean off the row — the same rule the Places rows follow.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if route_action {
-                    // The icon the Route panel itself wears, so the button and the
-                    // panel it opens are recognisably one thing.
-                    routed = theme::icon_button_small(
-                        ui,
-                        RightPanel::Route.icon(),
-                        "Route here — make this the destination",
-                    )
-                    .clicked();
-                }
-                let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-                ui.allocate_ui_with_layout(
-                    size,
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&s.name).strong())
-                                .truncate()
-                                .selectable(false),
-                        );
-                        if let Some(kind) = &s.kind {
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(kind).small().weak())
-                                    .truncate()
-                                    .selectable(false),
-                            );
-                        }
-                    },
-                );
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if let Some(here) = viewer {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(distance_label(here, (s.lat, s.lng)))
-                            .small()
-                            .color(theme::p().accent_text),
-                    )
-                    .selectable(false),
-                );
-            }
-            if !s.context.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&s.context).small().weak())
-                        .truncate()
-                        .selectable(false),
-                );
-            }
-        });
-        routed
-    });
-    let routed = inner.inner;
-    let resp = inner.response;
-    if resp.hovered() {
-        let v = ui.visuals().widgets.hovered;
-        ui.painter().set(
-            bg,
-            egui::epaint::RectShape::new(
-                resp.rect.expand2(egui::vec2(4.0, 3.0)),
-                v.corner_radius,
-                v.weak_bg_fill,
-                egui::Stroke::NONE,
-                egui::StrokeKind::Inside,
-            ),
-        );
-    }
-    SuggestionPick {
-        response: resp.on_hover_cursor(egui::CursorIcon::PointingHand),
-        routed,
-    }
-}
-
 /// Hand a queued destination to the route planner and bring its panel up.
 ///
 /// Goes through `RouteState`'s own setters and not `Waypoint::set`, for the
@@ -1396,69 +1227,6 @@ pub fn drive_geocode(
 
 // ─── The Search panel ────────────────────────────────────────────────────────
 
-/// Back / Forward / Home — the location history, as a browser's toolbar row above
-/// the field it belongs to.
-///
-/// **These were three named entries at the top of the app menu**, which put the
-/// history two taps away from the address it is a history *of* and left the menu
-/// carrying half a navigator. A back button belongs beside the thing you navigate
-/// with, and here it is one row: three glyphs, no words, at the same rank as the
-/// route panel's own icon actions.
-///
-/// Returns whether one of them fired, so the panel can drop a stale suggestion
-/// list — the hits on screen answer a query about where you *were*.
-fn history_row(
-    ui: &mut egui::Ui,
-    nav: &mut GeoNavState,
-    home: Option<&crate::systems::user_store::SavedLocation>,
-) -> bool {
-    let mut acted = false;
-    ui.horizontal(|ui| {
-        // Three outlined squares (`theme::icon_button`), as the web draws a
-        // row of icon-only buttons.
-        let square = |ui: &mut egui::Ui, on: bool, icon: &str, name: &str, off: &str| {
-            ui.add_enabled_ui(on, |ui| {
-                theme::icon_button(ui, icon, name).on_disabled_hover_text(off)
-            })
-            .inner
-            .clicked()
-        };
-        if square(
-            ui,
-            nav.can_go_back(),
-            icons::BACK,
-            "Back to the previous location",
-            "No previous location",
-        ) {
-            nav.go_back();
-            acted = true;
-        }
-        if square(
-            ui,
-            nav.can_go_forward(),
-            icons::FORWARD,
-            "Forward to the next location",
-            "No next location",
-        ) {
-            nav.go_forward();
-            acted = true;
-        }
-        if square(
-            ui,
-            home.is_some(),
-            icons::HOME,
-            "Go to your Home location",
-            "No Home set — use Set Home here, below",
-        ) {
-            if let Some(h) = home {
-                nav.go_home(h);
-                acted = true;
-            }
-        }
-    });
-    acted
-}
-
 /// What the two actions at the foot of the Search panel ask for.
 ///
 /// They were in the app menu, one separator below the history, and they came here
@@ -1476,201 +1244,9 @@ pub enum ViewAction {
     Share,
 }
 
-/// The foot of the panel: Set Home here, Copy link.
-///
-/// `done` is the action that fired within the last flash window, so the row that
-/// fired can show a ✔ — these are the two verbs in the app whose whole result is
-/// invisible (a preference written, a string on the clipboard), and both leave the
-/// panel open.
-fn view_actions_ui(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    can_send: bool,
-    done: Option<ViewAction>,
-) -> Option<ViewAction> {
-    let mut fired = None;
-    // Its own top-down block, because the caller draws this **first, in a
-    // bottom-up layout**: the results list above is an `auto_shrink([false,
-    // false])` `ScrollArea`, which takes every point of height that is left, so
-    // anything laid out after it is off the bottom of the panel. Without the
-    // block, a bottom-up parent would also stack these three in reverse.
-    ui.vertical(|ui| {
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_enabled_ui(enabled, |ui| {
-            let home_icon = if done == Some(ViewAction::SetHome) {
-                icons::CHECK
-            } else {
-                icons::HOME
-            };
-            if theme::menu_entry_enabled(ui, enabled, home_icon, "Set Home here")
-                .on_hover_text("Home (above) returns to this spot and this view")
-                .clicked()
-            {
-                fired = Some(ViewAction::SetHome);
-            }
-            let copy_icon = if done == Some(ViewAction::CopyLink) {
-                icons::CHECK
-            } else {
-                icons::COPY
-            };
-            if theme::menu_entry_enabled(ui, enabled, copy_icon, "Copy link")
-                .on_hover_text(
-                    "Copy a link to this place — position and view. It opens the app on a \
-                 phone that has it, the web client everywhere else, and pastes into the \
-                 field above.",
-                )
-                .clicked()
-            {
-                fired = Some(ViewAction::CopyLink);
-            }
-            // Only with somebody to send it to: chats and posts need a session,
-            // and Copy link above is the rest of what the sheet does.
-            // The app's only (`comms`): on the web the page holds the chats.
-            if can_send
-                && cfg!(feature = "comms")
-                && theme::menu_entry_enabled(ui, enabled, icons::SHARE, "Share this view…")
-                    .on_hover_text(
-                        "Send this place and this view to a chat or a community. Whoever \
-                         opens it sees it from exactly where you are looking.",
-                    )
-                    .clicked()
-            {
-                fired = Some(ViewAction::Share);
-            }
-        });
-        // The panel's own bottom edge is the screen's on a phone, and a row
-        // flush against it reads as cut off.
-        ui.add_space(6.0);
-    });
-    fired
-}
-
-/// Draw the search field and its results. `viewer` is where the camera is on
-/// Earth, used to say how far away each hit is; `None` before the world anchor
-/// exists, and the rows simply omit the distance.
-///
-/// **This was a floating card in the top-left corner and is a panel now**
-/// (`RightPanel::Search`, opened from the dock's 🔍 disc), which changes two
-/// things in the body below. The field takes the panel's width instead of a
-/// fixed 215 pt, and the hits are laid out *inline* rather than in an
-/// `Area` hung under the field: a dropdown over the map has to disappear the
-/// moment focus leaves it or it covers the thing you are navigating, and a panel
-/// has no such duty — the list stays until you pick from it, retype, or close the
-/// panel. That matters most on the phone, where the on-screen keyboard docks over
-/// the bottom half of the screen and a dropdown anchored to a corner card had
-/// nowhere left to be.
-pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
-    let field = theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut nav.query)
-            .desired_width(ui.available_width())
-            .hint_text("Search place, or paste \"lat, lng\"…"),
-    );
-    // Ctrl+L from the top bar asks the field to grab focus this frame.
-    if std::mem::take(&mut nav.focus_search) {
-        field.request_focus();
-    }
-    // Report focus so the auto-hiding top bar stays up while the user types.
-    nav.search_has_focus = field.has_focus();
-    if nav.searching() {
-        theme::busy(ui, "Searching…");
-    }
-
-    if field.changed() {
-        nav.query_edited();
-    }
-    if field.gained_focus() {
-        // Browser UX: select the whole query on focus so typing replaces it
-        // (and Enter re-submits the shown address without clearing it first).
-        let len = nav.query.chars().count();
-        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
-            state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(
-                    egui::text::CCursor::new(0),
-                    egui::text::CCursor::new(len),
-                )));
-            state.store(ui.ctx(), field.id);
-        }
-        nav.query_focused();
-    }
-
-    let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if submitted {
-        nav.submit_query();
-    }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        nav.dismiss_list();
-    }
-
-    let Some(list) = nav.search_list() else {
-        return;
-    };
-    // Set by the error chip below; consumed after the closure, since `nav` is
-    // borrowed for the duration of it.
-    let mut dismiss_error = false;
-    let mut pick: Option<SearchPick> = None;
-    ui.add_space(6.0);
-    // The rows can outrun a phone's viewport, and a `Panel` clips rather than
-    // scrolls — the same reason every other panel in this app wraps its body.
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let width = ui.available_width();
-            // No rules between the rows: each is a pane with its own hover
-            // plate, as the web's list rows are; the hairlines made eight
-            // results read as a form.
-            for (s, dim) in &list.hits {
-                let row = destination_row(ui, s, viewer, width, *dim);
-                if row.clicked() {
-                    pick = Some(SearchPick::Hit(s.clone()));
-                }
-                if row.routed() {
-                    pick = Some(SearchPick::Route(s.clone()));
-                }
-            }
-            if !list.recents.is_empty() {
-                ui.label(egui::RichText::new("Recent").small().weak());
-                for (idx, s) in list.recents.iter() {
-                    let row = destination_row(ui, s, viewer, width, false);
-                    if row.clicked() {
-                        pick = Some(SearchPick::Recent(*idx));
-                    }
-                    if row.routed() {
-                        pick = Some(SearchPick::Route(s.clone()));
-                    }
-                }
-            }
-            if let Some(msg) = &list.status {
-                // Was `ui.weak()` — the quietest tone in the palette, on the one
-                // string in this panel that most needs to be read. A geocoding
-                // failure and "no results" arrive through the same slot, so the
-                // chip only comes out for the failure.
-                if list.error {
-                    dismiss_error = theme::inline_error(ui, msg.as_str());
-                } else {
-                    ui.label(
-                        egui::RichText::new(msg.as_str())
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                }
-            }
-        });
-
-    if dismiss_error {
-        nav.dismiss_error();
-    }
-    if let Some(p) = pick {
-        nav.pick(p);
-    }
-}
-
-/// What the Search panel lists under its field: the hits (with whether each
-/// is dimmed as stale), the recents when the field is empty, and a status
-/// line. Built by [`GeoNavState::search_list`] for egui's panel and the
-/// library's (`lib_search`) alike.
+/// What the Search panel (`lib_search`) lists under its field: the hits (with
+/// whether each is dimmed as stale), the recents when the field is empty, and
+/// a status line. Built by [`GeoNavState::search_list`].
 pub struct SearchList {
     pub hits: Vec<(GeoSuggestion, bool)>,
     /// History index and the row it shows.
@@ -1903,9 +1479,9 @@ fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
     }
 }
 
-/// The Search panel (dock ▸ 🔍, or `Ctrl+L`). Ordered in the panel `.chain()`
-/// like every other panel — see the note there; an unordered panel loses egui's
-/// hit test at random.
+/// The Search panel's state (dock ▸ 🔍, or `Ctrl+L`; drawn by `lib_search`):
+/// the camera side it shows ([`GeoNavState::lib_view`]) and the view action
+/// it asked for, run here where the camera and the store are.
 ///
 /// The shortcut is handled here rather than where the dock is drawn because it
 /// has to work with the panel *closed*, and this is the system that owns the
@@ -1913,13 +1489,8 @@ fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
 /// panel and hands the field the keyboard on the next frame
 /// ([`GeoNavState::focus_search`], which is also how a scripted `--ui search` run
 /// asks for it).
-pub fn render_search_panel(
-    // Spelled plainly rather than through its module path on purpose: the guard
-    // that every root-`Ui` panel is in the panel chain
-    // (`egui_manager::every_root_ui_panel_is_in_the_chain`) recognises a panel
-    // system by the literal `EguiMut`, so a qualified path here would
-    // quietly opt this panel out of the one check that catches an unordered one.
-    mut egui: EguiMut,
+#[allow(clippy::too_many_arguments)]
+pub fn drive_search(
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -1966,73 +1537,26 @@ pub fn render_search_panel(
     let done = flash
         .filter(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
         .map(|(action, _)| action);
-    let mut fired = None;
-    // The library's edition is showing (`lib_search`): hand it the camera
-    // side, run what it asked for, and keep an empty strip of the panel's
-    // width, so the dock and the pins move aside and a click there is not
-    // the world's (as Settings' does).
-    if nav.lib {
-        let view = SearchView {
-            viewer,
-            place_known: place.is_some(),
-            can_share: online.is_some() && cfg!(feature = "comms"),
-            done,
-            // Read before taking, so a quiet frame leaves the resource unchanged.
-            action: if nav.lib_view.action.is_some() {
-                nav.lib_view.action.take()
-            } else {
-                None
-            },
+    // Hand the panel the camera side, and run what it asked for.
+    let view = SearchView {
+        viewer,
+        place_known: place.is_some(),
+        can_share: online.is_some() && cfg!(feature = "comms"),
+        done,
+        // Read before taking, so a quiet frame leaves the resource unchanged.
+        action: if nav.lib_view.action.is_some() {
+            nav.lib_view.action.take()
+        } else {
+            None
+        },
+    };
+    let fired = view.action;
+    if nav.lib_view != view {
+        nav.lib_view = SearchView {
+            action: None,
+            ..view
         };
-        fired = view.action;
-        if nav.lib_view != view {
-            nav.lib_view = SearchView {
-                action: None,
-                ..view
-            };
-        }
-        let compact = egui.compact();
-        let viewport_w = egui.viewport_pts().x;
-        let mut open = true;
-        let mut strip = crate::systems::egui_manager::responsive_right_panel(
-            "search_panel",
-            compact,
-            viewport_w,
-            320.0,
-        )
-        .frame(egui::Frame::NONE)
-        .show_separator_line(false);
-        if !compact {
-            strip = strip.resizable(false).exact_size(320.0);
-        }
-        strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
     }
-    let closed = !nav.lib
-        && crate::systems::egui_manager::right_panel(
-            &mut egui,
-            &mut right_panel,
-            RightPanel::Search,
-            "search_panel",
-            320.0,
-            |ui| {
-                if history_row(ui, &mut nav, store.data.home.as_ref()) {
-                    nav.close_suggestions();
-                }
-                // The foot **reserves its space before the body is laid out**, which is
-                // what a nested `TopBottomPanel` is for. The results list is an
-                // `auto_shrink([false, false])` `ScrollArea` and takes every point of
-                // height left to it, so two rows drawn after it are simply off the bottom
-                // of the panel (they were), and a bottom-up layout around both puts them
-                // over the top of it instead.
-                egui::Panel::bottom("search_view_actions")
-                    .frame(egui::Frame::NONE)
-                    .show_separator_line(false)
-                    .show(ui, |ui| {
-                        fired = view_actions_ui(ui, place.is_some(), online.is_some(), done);
-                    });
-                search_ui(ui, &mut nav, viewer);
-            },
-        );
     match (fired, place) {
         (Some(ViewAction::SetHome), Some(((lat, lng), alt))) => {
             // Capture the current view so Home returns to it exactly.
@@ -2089,10 +1613,6 @@ pub fn render_search_panel(
             *right_panel = RightPanel::None;
         }
         _ => {}
-    }
-    if closed {
-        nav.search_has_focus = false;
-        nav.close_suggestions();
     }
 }
 

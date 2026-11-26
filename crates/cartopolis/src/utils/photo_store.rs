@@ -72,6 +72,8 @@ pub fn write(stem: &str, prepared: &crate::utils::photo::Prepared) -> Result<(),
 ///
 /// Synchronous on both platforms — see the module note on why the web preloads
 /// these and not the full photos.
+// Unread until `lib_places` draws the thumbnail; its row shows a photo glyph.
+#[allow(dead_code)]
 pub fn read_thumb(stem: &str) -> Option<Vec<u8>> {
     if !is_safe_stem(stem) {
         return None;

@@ -646,6 +646,7 @@ impl Plugin for MapPlugin {
             .add_systems(
                 Update,
                 systems::lens_areas::draw_lens_areas
+                    .after(systems::scenario::scale_scenario)
                     .after(systems::scenario::render_scenario_map)
                     .in_set(ClientPhase::Present),
             );

@@ -594,7 +594,6 @@ impl Default for DataLayers {
         let detail = crate::quality::budget().detail_layers;
         Self {
             panel_open: false,
-            lib: false,
             buildings_enabled: true,
             tdbag_enabled: true,
             osm_buildings_enabled: true,
@@ -2594,8 +2593,6 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
-    use crate::systems::layers_panel::buildings_section;
 
     /// The two sources must agree about what a stop *is*, or a bus stop placed
     /// from the tile and the same stop described by Overpass end up in different
@@ -2824,130 +2821,5 @@ mod tests {
         assert_eq!(saved.cloud_cover, 0.7);
         assert_eq!(saved.precipitation, 0.2);
         assert_eq!(saved.time_of_day, Some(6.5), "Manual saves its hour");
-    }
-
-    /// Does a `request_discard` on the click frame eat a checkbox toggle
-    /// (double-fire across the repeated pass)?
-    #[test]
-    fn discard_pass_does_not_eat_the_click() {
-        let ctx = egui::Context::default();
-        crate::systems::theme::install(&ctx);
-        let mut dl = DataLayers::default();
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
-
-        let mut target: Option<egui::Pos2> = None;
-        for frame in 0..5 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            if let Some(pos) = target {
-                raw.events = match frame {
-                    1 => vec![egui::Event::PointerMoved(pos)],
-                    2 => vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                    3 => vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                    _ => vec![],
-                };
-            }
-            let mut open = true;
-            let rect = std::cell::Cell::new(None);
-            let dl_ref = &mut dl;
-            // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                // Force a second pass every frame, like an unstable Area does.
-                ui.ctx().request_discard("test");
-                crate::systems::egui_manager::responsive_right_panel(
-                    "layers_panel",
-                    false,
-                    1280.0,
-                    260.0,
-                )
-                .show_collapsible(ui, &mut open, |ui| {
-                    if let Some(resp) = buildings_section(ui, dl_ref, true) {
-                        rect.set(Some(resp.rect));
-                    }
-                });
-            });
-            if target.is_none() {
-                target = rect.get().map(|r| r.center());
-            }
-        }
-        assert!(
-            !dl.tdbag_enabled,
-            "a discarded pass ate the checkbox click (double-toggle)"
-        );
-    }
-
-    /// A click on the 3DBAG checkbox must toggle it — and only it. Drives the
-    /// real widget tree (same panel container as the live app) with synthetic
-    /// pointer events. egui resolves hits against the *previous* pass's widget
-    /// rects, so the press goes in one frame after layout and the release one
-    /// frame after that.
-    #[test]
-    fn tdbag_checkbox_toggles_on_click() {
-        let ctx = egui::Context::default();
-        crate::systems::theme::install(&ctx);
-        let mut dl = DataLayers::default();
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
-
-        let mut target: Option<egui::Pos2> = None;
-        for frame in 0..5 {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
-            if let Some(pos) = target {
-                raw.events = match frame {
-                    1 => vec![egui::Event::PointerMoved(pos)],
-                    2 => vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                    3 => vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                    _ => vec![],
-                };
-            }
-            let mut open = true;
-            let rect = std::cell::Cell::new(None);
-            let dl_ref = &mut dl;
-            // The pass output is the paint job; this test only reads widget state.
-            let _ = ctx.run_ui_unpainted(raw, |ui| {
-                crate::systems::egui_manager::responsive_right_panel(
-                    "layers_panel",
-                    false,
-                    1280.0,
-                    260.0,
-                )
-                .show_collapsible(ui, &mut open, |ui| {
-                    if let Some(resp) = buildings_section(ui, dl_ref, true) {
-                        rect.set(Some(resp.rect));
-                    }
-                });
-            });
-            if target.is_none() {
-                target = rect.get().map(|r| r.center());
-            }
-        }
-        assert!(
-            !dl.tdbag_enabled,
-            "click on the 3DBAG checkbox did not toggle it"
-        );
-        assert!(
-            dl.buildings_enabled && dl.osm_buildings_enabled,
-            "the click leaked into a sibling checkbox"
-        );
     }
 }
