@@ -13,8 +13,8 @@
 //! world is drawn through [`Anchored`]: a keyed list whose items each hold
 //! their look and their spot in signals. A marker that only moved restyles
 //! its own node (and only after moving half a pixel); one that went off the
-//! map is hidden, not unmounted; the list is rebuilt only when a marker is
-//! seen for the first time or the hidden ones are swept. `lib_place_names`
+//! map is hidden, not unmounted; one seen for the first time builds its own
+//! place in the list and nothing else. `lib_place_names`
 //! and `lib_chat_overlay` draw through the same list.
 //!
 //! **Built from nodes.** The teardrop is a square with three round corners
@@ -54,7 +54,8 @@ const MOVE_PX: f32 = 0.5;
 /// An overlay's alpha is written again only once it has changed this much.
 const FADE_STEP: f32 = 0.02;
 /// Markers hidden (off the map) are kept, so coming back costs a restyle and
-/// not a remount, until there are more than this many; then they are swept.
+/// not a remount, until there are more than this many; then a new marker
+/// takes a hidden one's place.
 const MAX_HIDDEN: usize = 64;
 
 /// The teardrop's square side, px: the head's diameter. Its point sits
@@ -98,9 +99,10 @@ impl Spot {
     }
 }
 
-/// One item: its look, and where it is (`None` hidden).
+/// One place in the list: the item it draws now (its key and look, `None`
+/// while unused), and where it is (`None` hidden).
 struct Slot<S> {
-    look: Signal<S>,
+    look: Signal<Option<(String, S)>>,
     spot: Signal<Option<Spot>>,
 }
 
@@ -113,19 +115,39 @@ impl<S> Clone for Slot<S> {
     }
 }
 
+/// Places are added this many at a time, each batch behind the last.
+const CHUNK: usize = 16;
+
+/// The places, and which item each holds.
+struct Pool<S> {
+    slots: Vec<Slot<S>>,
+    /// The key each held place draws.
+    by_key: HashMap<String, usize>,
+    /// Places holding nothing.
+    free: Vec<usize>,
+    /// Per batch, whether it is built: the last one, false, is where the
+    /// next batch goes.
+    built: Vec<Signal<bool>>,
+}
+
 /// A keyed list of things anchored to the world, as absolutely placed
 /// nodes in one mount: each item's look and spot are signals, so a frame in
 /// which the camera moved restyles the items that moved and nothing else.
+///
+/// **An item seen for the first time takes a place and builds only that
+/// place.** The places come in batches, each mounted behind the last, so a
+/// new batch builds itself alone: rebuilding the whole list for one new
+/// item blanked every name and pin on the map for a frame (a node is not
+/// laid out in the frame that makes it), which a zoom did many times a
+/// second. A hidden item keeps its place until a new one needs it.
 pub(crate) struct Anchored<S: Clone + PartialEq + 'static> {
-    keys: Signal<Vec<String>>,
-    slots: Rc<RefCell<HashMap<String, Slot<S>>>>,
+    pool: Rc<RefCell<Pool<S>>>,
 }
 
 impl<S: Clone + PartialEq + 'static> Clone for Anchored<S> {
     fn clone(&self) -> Self {
         Anchored {
-            keys: self.keys.clone(),
-            slots: self.slots.clone(),
+            pool: self.pool.clone(),
         }
     }
 }
@@ -133,28 +155,35 @@ impl<S: Clone + PartialEq + 'static> Clone for Anchored<S> {
 impl<S: Clone + PartialEq + 'static> Anchored<S> {
     pub(crate) fn new() -> Self {
         Anchored {
-            keys: signal(Vec::new()),
-            slots: Rc::new(RefCell::new(HashMap::new())),
+            pool: Rc::new(RefCell::new(Pool {
+                slots: Vec::new(),
+                by_key: HashMap::new(),
+                free: Vec::new(),
+                built: vec![signal(false)],
+            })),
         }
     }
 
-    /// This frame's items, in the order they stack (the last on top); an
-    /// item missing from them is hidden. Writes only what moved.
+    /// This frame's items; an item missing from them is hidden. Writes only
+    /// what moved. Items stack in the order of their places.
     pub(crate) fn sync(&self, items: impl IntoIterator<Item = (String, Spot, S)>) {
         // A slot, its new look, and its new spot (`Some(None)`: hide it).
         #[allow(clippy::type_complexity)]
-        let mut writes: Vec<(Slot<S>, Option<S>, Option<Option<Spot>>)> = Vec::new();
-        let mut added: Vec<String> = Vec::new();
+        let mut writes: Vec<(Slot<S>, Option<(String, S)>, Option<Option<Spot>>)> = Vec::new();
+        let mut added: Vec<(String, Spot, S)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let swept = {
-            let mut slots = self.slots.borrow_mut();
+        let mut grown: Vec<Signal<bool>> = Vec::new();
+        {
+            let mut pool = self.pool.borrow_mut();
             for (key, spot, look) in items {
                 if !seen.insert(key.clone()) {
                     continue;
                 }
-                match slots.get(&key) {
-                    Some(slot) => {
-                        let look = (slot.look.get_untracked() != look).then_some(look);
+                match pool.by_key.get(&key) {
+                    Some(&i) => {
+                        let slot = &pool.slots[i];
+                        let changed = slot.look.get_untracked().is_none_or(|(_, was)| was != look);
+                        let look = changed.then(|| (key.clone(), look));
                         let spot = match slot.spot.get_untracked() {
                             Some(was) if !was.moved(spot) => None,
                             _ => Some(Some(spot)),
@@ -163,92 +192,102 @@ impl<S: Clone + PartialEq + 'static> Anchored<S> {
                             writes.push((slot.clone(), look, spot));
                         }
                     }
-                    None => {
-                        slots.insert(
-                            key.clone(),
-                            Slot {
-                                look: signal(look),
-                                spot: signal(Some(spot)),
-                            },
-                        );
-                        added.push(key);
-                    }
+                    None => added.push((key, spot, look)),
                 }
             }
-            let mut hidden = 0usize;
-            for (key, slot) in slots.iter() {
+            let mut hidden: Vec<(String, usize)> = Vec::new();
+            for (key, &i) in pool.by_key.iter() {
                 if seen.contains(key) {
                     continue;
                 }
-                hidden += 1;
-                if slot.spot.get_untracked().is_some() {
-                    writes.push((slot.clone(), None, Some(None)));
+                hidden.push((key.clone(), i));
+                if pool.slots[i].spot.get_untracked().is_some() {
+                    writes.push((pool.slots[i].clone(), None, Some(None)));
                 }
             }
-            let swept = hidden > MAX_HIDDEN;
-            if swept {
-                slots.retain(|k, _| seen.contains(k));
+            // Past the cap, a new item takes a hidden one's place.
+            let mut evictable = hidden.len().saturating_sub(MAX_HIDDEN);
+            for (key, spot, look) in added {
+                let i = match pool.free.pop() {
+                    Some(i) => i,
+                    None if evictable > 0 => {
+                        evictable -= 1;
+                        let (old, i) = hidden.pop().expect("counted");
+                        pool.by_key.remove(&old);
+                        i
+                    }
+                    None => {
+                        let start = pool.slots.len();
+                        for _ in 0..CHUNK {
+                            pool.slots.push(Slot {
+                                look: signal(None),
+                                spot: signal(None),
+                            });
+                        }
+                        pool.free.extend((start + 1..start + CHUNK).rev());
+                        grown.push(pool.built.last().expect("one unbuilt").clone());
+                        pool.built.push(signal(false));
+                        start
+                    }
+                };
+                pool.by_key.insert(key.clone(), i);
+                writes.push((pool.slots[i].clone(), Some((key, look)), Some(Some(spot))));
             }
-            swept
-        };
-        // Written with the list released: a write runs the views that read
-        // it, and the list's own view reads the list.
+        }
+        // Written with the pool released: a write runs the views that read
+        // it, and a new batch's view reads the pool.
+        for built in grown {
+            built.set(true);
+        }
         for (slot, look, spot) in writes {
             if let Some(look) = look {
-                slot.look.set(look);
+                slot.look.set(Some(look));
             }
             if let Some(spot) = spot {
                 slot.spot.set(spot);
             }
-        }
-        if !added.is_empty() || swept {
-            let mut keys = self.keys.get_untracked();
-            if swept {
-                keys.retain(|k| seen.contains(k));
-            }
-            keys.extend(added);
-            self.keys.set(keys);
         }
     }
 
     /// The list: a 0 × 0 node at the root's corner, under every other
     /// library screen (`z`, below zero: the Plans outlines at -4, the place
     /// names at -3, the Plans marks at -2, the pins and the people at -1),
-    /// with an item per key — a 0 × 0 node at the item's
-    /// spot, holding what `look` builds for it around that point. A 0 × 0
-    /// node takes no taps; only what is drawn round it does.
+    /// with a node per place — a 0 × 0 node at its item's spot, holding what
+    /// `look` builds for it around that point. A 0 × 0 node takes no taps;
+    /// only what is drawn round it does.
     pub(crate) fn view(&self, z: i32, look: impl Fn(&str, &S) -> View + 'static) -> View {
         let look: Rc<dyn Fn(&str, &S) -> View> = Rc::new(look);
-        let keys = self.keys.clone();
-        let slots = self.slots.clone();
-        let list = move || -> View {
-            let keys = keys.get();
-            let items: Vec<(String, Slot<S>)> = {
-                let slots = slots.borrow();
-                keys.iter()
-                    .filter_map(|k| slots.get(k).map(|s| (k.clone(), s.clone())))
-                    .collect()
-            };
-            View::Fragment(
-                items
-                    .into_iter()
-                    .map(|(key, slot)| item(key, slot, look.clone()))
-                    .collect(),
-            )
-        };
         let frame =
             format!("position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: {z}");
+        let list = batch(self.pool.clone(), 0, look);
         view! {
             <div style={frame}>{list}</div>
         }
     }
 }
 
-fn item<S: Clone + PartialEq + 'static>(
-    key: String,
-    slot: Slot<S>,
+/// Batch `k` of the places once it is built, and behind it the next.
+fn batch<S: Clone + PartialEq + 'static>(
+    pool: Rc<RefCell<Pool<S>>>,
+    k: usize,
     look: Rc<dyn Fn(&str, &S) -> View>,
 ) -> View {
+    let built = pool.borrow().built[k].clone();
+    View::Dyn(Rc::new(move || -> View {
+        if !built.get() {
+            return View::Empty;
+        }
+        let slots: Vec<Slot<S>> = pool.borrow().slots[k * CHUNK..(k + 1) * CHUNK].to_vec();
+        let mut views: Vec<View> = slots
+            .into_iter()
+            .map(|slot| item(slot, look.clone()))
+            .collect();
+        views.push(batch(pool.clone(), k + 1, look.clone()));
+        View::Fragment(views)
+    }))
+}
+
+fn item<S: Clone + PartialEq + 'static>(slot: Slot<S>, look: Rc<dyn Fn(&str, &S) -> View>) -> View {
     let spot = slot.spot.clone();
     let style = move || -> String {
         match spot.get() {
@@ -264,7 +303,10 @@ fn item<S: Clone + PartialEq + 'static>(
         }
     };
     let what = slot.look.clone();
-    let inner = move || look(&key, &what.get());
+    let inner = move || match what.get() {
+        Some((key, s)) => look(&key, &s),
+        None => View::Empty,
+    };
     view! { <div style={style}>{inner}</div> }
 }
 
@@ -696,5 +738,60 @@ fn sharing_chip(l: &Live) -> View {
         <div style={row}>
             <div style={chip} on:click={|_: &Event| {}}>{rows}</div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items(keys: &[&str]) -> Vec<(String, Spot, u32)> {
+        keys.iter()
+            .map(|k| (k.to_string(), Spot::at(1.0, 2.0), 7))
+            .collect()
+    }
+
+    #[test]
+    fn a_new_item_leaves_the_others_in_their_places() {
+        let list = Anchored::<u32>::new();
+        list.sync(items(&["a", "b"]));
+        let (a, b) = {
+            let pool = list.pool.borrow();
+            (pool.by_key["a"], pool.by_key["b"])
+        };
+        list.sync(items(&["a", "b", "c"]));
+        let pool = list.pool.borrow();
+        assert_eq!((pool.by_key["a"], pool.by_key["b"]), (a, b));
+        // One batch built, the next still waiting.
+        assert_eq!(pool.built.len(), 2);
+        assert!(pool.built[0].get_untracked());
+        assert!(!pool.built[1].get_untracked());
+    }
+
+    #[test]
+    fn a_full_batch_opens_the_next() {
+        let list = Anchored::<u32>::new();
+        let keys: Vec<String> = (0..CHUNK + 1).map(|i| i.to_string()).collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        list.sync(items(&refs));
+        let pool = list.pool.borrow();
+        assert_eq!(pool.slots.len(), 2 * CHUNK);
+        assert!(pool.built[1].get_untracked());
+    }
+
+    #[test]
+    fn past_the_cap_a_new_item_takes_a_hidden_place() {
+        let list = Anchored::<u32>::new();
+        // Whole batches, so no place is free.
+        let n = CHUNK * (MAX_HIDDEN / CHUNK + 1);
+        let keys: Vec<String> = (0..n).map(|i| i.to_string()).collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        list.sync(items(&refs));
+        assert!(list.pool.borrow().free.is_empty());
+        list.sync(items(&["new"]));
+        let pool = list.pool.borrow();
+        assert_eq!(pool.slots.len(), n);
+        assert_eq!(pool.by_key.len(), n);
+        assert!(pool.by_key.contains_key("new"));
     }
 }
