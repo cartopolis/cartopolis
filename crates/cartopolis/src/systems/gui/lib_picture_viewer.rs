@@ -1,13 +1,9 @@
 //! A picture open full size, drawn by the component library (`lib_host`):
-//! a chat's picture (beside egui's `chats::picture_viewer`) or a saved
-//! place's photo (Places ▸ "View the photo", whose egui window is gone).
+//! a chat's picture or a saved place's photo (Places ▸ "View the photo").
 //!
-//! **A chat's picture** is on with `CARTO_UI_LIB=picture_viewer` (or `1`).
-//! egui's system steps aside (`ChatsView::lib_picture`) but still decides
-//! when the viewer is up: a tap on a picture in the thread opens it, and
-//! `chats::egui_only` hands it over in `ChatsView::lib_viewing` on every
-//! frame egui's window would have shown (the Chats panel open). ✕ is done by
-//! `ChatsView::close_picture`, the method egui's window calls.
+//! **A chat's picture**: a tap on a picture in the thread opens it, and
+//! `chats::drive_chats` hands it over in `ChatsView::lib_viewing` on every
+//! frame the Chats panel is open. ✕ is `ChatsView::close_picture`.
 //!
 //! **A place's photo** is up while `BookmarksState::viewing_photo` names
 //! one: set by the Places panel (`Actions::view_photo`), it outlives the
@@ -98,7 +94,7 @@ const MIN_WIDTH: f32 = 200.0;
 /// What the viewer shows a picture of.
 #[derive(Clone)]
 enum Source {
-    /// A chat's picture, handed over by `chats::egui_only`.
+    /// A chat's picture, handed over by `chats::drive_chats`.
     #[cfg(feature = "comms")]
     Chat(PictureRef),
     /// A saved place's photo: the place's name and the photo's stem.
@@ -287,7 +283,7 @@ thread_local! {
 
 /// Mounts, bridges and unmounts the viewer, and makes and lets go of its
 /// picture. `PostUpdate`, before `DriveUi`, as every library screen — after
-/// `chats::render_chats_panel` (`Update`) has handed a chat's picture over.
+/// `chats::drive_chats` (`Update`) has handed a chat's picture over.
 #[allow(clippy::too_many_arguments)]
 pub fn drive_lib_picture_viewer(
     _main: NonSendMarker,
@@ -323,9 +319,6 @@ pub fn drive_lib_picture_viewer(
     // A chat's picture, when its viewer is the library's.
     #[cfg(feature = "comms")]
     let chat: Option<Source> = if lib.picture_viewer {
-        if !chats.lib_picture {
-            chats.lib_picture = true;
-        }
         chats.lib_viewing.take().map(Source::Chat)
     } else {
         None

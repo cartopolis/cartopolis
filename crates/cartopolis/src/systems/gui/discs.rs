@@ -101,12 +101,6 @@ pub(crate) fn tone_for(name: &str) -> egui::Color32 {
     AVATAR_TONES[h as usize % AVATAR_TONES.len()]
 }
 
-/// A round initial, the stand-in for a picture of the person or the group.
-pub(crate) fn avatar(ui: &mut egui::Ui, name: &str, kind: ChatKind, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
-    paint_avatar(ui.painter(), rect.center(), name, kind, size);
-}
-
 pub(crate) fn paint_avatar(
     p: &egui::Painter,
     c: egui::Pos2,
@@ -209,10 +203,3 @@ pub(crate) fn circle_button(
     );
     resp.on_hover_text(hint)
 }
-
-/// A Polaroid's paper: warm white rather than pure white, which would glare
-/// against the ink of the panel, and the edge it leaves round the picture.
-pub(crate) const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
-
-/// What is written on it, and the time in the corner.
-pub(crate) const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);

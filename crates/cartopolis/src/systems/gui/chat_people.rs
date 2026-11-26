@@ -3,8 +3,9 @@
 //! `docs/mockups/chat-world/v5`, screen B: "the people are where they are, and
 //! new messages float over whoever said them").
 //!
-//! Drawn from `place_pins`, which is the last UI system and already projects
-//! the chat's points; this module is only the painting and the choosing.
+//! Placed by `place_pins`, which already projects the chat's points, and
+//! drawn by the library (`lib_pins`); this module is the choosing and the
+//! marker's and balloon's sizes.
 //!
 //! **Where a person is comes from the server** (`WherePeople`, protocol 30),
 //! because their avatar is usually nowhere near this client's: it may be in
@@ -19,11 +20,11 @@
 //! With no chat's World view open, the same markers show every contact
 //! (Layers ▸ Friends, on by default), without balloons.
 //!
-//! **A balloon is painted, never interactive**, for `chat_overlay`'s reason:
+//! **A balloon is drawn, never interactive**, for `chat_overlay`'s reason:
 //! it floats over the world, where a tap means something else. The marker
 //! itself can be tapped, and flies the camera to that person.
 
-use bevy::math::DVec3;
+use bevy::math::{DVec3, Rect, Vec2};
 
 use crate::systems::chat::{ChatLine, ChatState};
 use crate::systems::theme;
@@ -123,141 +124,48 @@ impl MarkerKind {
     }
 }
 
-/// The marker: the design's `.mk` — the person's disc in their colour with a
-/// ring, a short stem down to a shadow at `tip`, and their name under it. The
-/// ring and stem are orange at an avatar and blue at a phone ([`MarkerKind`]).
-/// Returns whether it was tapped.
-pub fn marker(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    tip: egui::Pos2,
-    name: &str,
-    kind: MarkerKind,
-) -> bool {
-    let font = egui::FontId::proportional(NAME_TEXT);
-    let disc_r = DISC / 2.0;
-    let height = DISC + 2.0 * RING + STEM;
-    let colour = kind.colour();
-    // Keyed by kind as well as name: somebody sharing their phone's location
-    // with a chat whose World view is open stands on the map twice.
-    let response = egui::Area::new(egui::Id::new(("chat_person", kind, name.to_lowercase())))
-        .fixed_pos(tip)
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let (_rect, response) =
-                ui.allocate_exact_size(egui::vec2(DISC + 2.0 * RING, height), egui::Sense::click());
-            let response = theme::named(ui, response, name);
-            // Painted from the exact tip, as `place_pins` paints its pins, so
-            // the marker does not step a whole pixel at a time.
-            let p = ui.painter();
-            p.add(egui::Shape::ellipse_filled(
-                tip,
-                egui::vec2(6.0, 2.5),
-                egui::Color32::from_black_alpha(90),
-            ));
-            let stem_top = tip.y - STEM;
-            p.rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(tip.x - 1.5, stem_top),
-                    egui::pos2(tip.x + 1.5, tip.y),
-                ),
-                egui::CornerRadius::ZERO,
-                colour,
-            );
-            let centre = egui::pos2(tip.x, stem_top - RING - disc_r);
-            // The glow, then the ring, then the disc (`.av.ring`).
-            p.circle_filled(
-                centre,
-                disc_r + RING + 5.0,
-                egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 70),
-            );
-            p.circle_filled(centre, disc_r + RING, colour);
-            crate::systems::chats::paint_avatar(
-                p,
-                centre,
-                name,
-                crate::systems::chats::ChatKind::Private,
-                DISC,
-            );
-            if response.hovered() {
-                p.circle_stroke(
-                    centre,
-                    disc_r + RING,
-                    egui::Stroke::new(1.5, theme::p32().cream),
-                );
-            }
-            // The name, in a dark chip just under the tip.
-            let galley = p.layout_no_wrap(name.to_string(), font.clone(), egui::Color32::WHITE);
-            let chip = egui::Rect::from_center_size(
-                egui::pos2(tip.x, tip.y + 5.0 + galley.size().y / 2.0),
-                galley.size() + egui::vec2(14.0, 2.0),
-            );
-            p.rect_filled(
-                chip,
-                egui::CornerRadius::same(8),
-                egui::Color32::from_rgba_unmultiplied(10, 14, 16, 200),
-            );
-            p.galley(
-                chip.center() - galley.size() / 2.0,
-                galley,
-                egui::Color32::WHITE,
-            );
-            response
-        })
-        .inner;
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    // The colour says which position this is; the hover says it in words, as
-    // the teardrop this replaced did.
-    let response = match kind {
-        MarkerKind::Avatar => response,
-        MarkerKind::Phone => response.on_hover_text("Where their phone is"),
-    };
-    response.clicked()
-}
-
-/// The height of a [`marker`] above its tip, so a balloon can sit over it.
+/// The height of a person's marker (`lib_pins::person`: the disc on its ring
+/// and the stem) above its tip, so a balloon can sit over it.
 #[must_use]
 pub fn marker_height() -> f32 {
     DISC + 2.0 * RING + STEM
 }
 
-/// The width of a [`marker`]'s name chip, as egui lays the name out: the
-/// library's edition centres the chip under the tip by it.
+/// The width of a marker's name chip, from the name's width at
+/// [`NAME_TEXT`]: the library's edition centres the chip under the tip by it.
 #[must_use]
-pub fn chip_width(ctx: &egui::Context, name: &str) -> f32 {
-    crate::systems::place_pins::text_width(ctx, name, egui::FontId::proportional(NAME_TEXT)) + 14.0
+pub fn chip_width(name_width: f32) -> f32 {
+    name_width + 14.0
 }
 
-/// A [`balloon`] placed for the library's edition (`lib_pins`): as egui's
-/// `Area` places it — its bottom-left corner [`BALLOON_TAIL_X`] left of the
-/// person and [`BALLOON_TAIL`] over them, its width the words' wrapped at
-/// [`BALLOON_WIDTH`], and kept on the map.
+/// How wide a balloon's words may wrap, in points: [`BALLOON_WIDTH`] less
+/// its margins. The caller measures the words at [`BALLOON_TEXT`] wrapped at
+/// this, for [`balloon_item`].
+pub const BALLOON_WRAP: f32 = BALLOON_WIDTH - 22.0;
+
+/// A speech balloon (the design's `.bub`) placed for the library's edition
+/// (`lib_pins`): its bottom-left corner [`BALLOON_TAIL_X`] left of the person
+/// and [`BALLOON_TAIL`] over them, its size the words' (`words`, measured at
+/// [`BALLOON_TEXT`] wrapped at [`BALLOON_WRAP`]) plus the margins, and kept
+/// on the map. In the accent colour when it is your own line (`.bub.me`).
 #[must_use]
 pub fn balloon_item(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
+    words: Vec2,
+    map_rect: Rect,
     key: &str,
-    anchor: egui::Pos2,
+    anchor: Vec2,
     text: &str,
     alpha: f32,
     mine: bool,
 ) -> crate::systems::place_pins::BalloonItem {
-    let words = ctx.layer_painter(egui::LayerId::background()).layout(
-        text.to_string(),
-        egui::FontId::proportional(BALLOON_TEXT),
-        egui::Color32::WHITE,
-        BALLOON_WIDTH - 22.0,
-    );
-    let width = words.size().x + 22.0;
-    let height = words.size().y + 14.0;
+    let width = words.x + 22.0;
+    let height = words.y + 14.0;
     let left = (anchor.x - BALLOON_TAIL_X)
-        .min(map_rect.right() - width)
-        .max(map_rect.left());
+        .min(map_rect.max.x - width)
+        .max(map_rect.min.x);
     let bottom = (anchor.y - BALLOON_TAIL)
-        .max(map_rect.top() + height)
-        .min(map_rect.bottom());
+        .max(map_rect.min.y + height)
+        .min(map_rect.max.y);
     crate::systems::place_pins::BalloonItem {
         key: if mine {
             "balloon-mine".to_string()
@@ -272,70 +180,6 @@ pub fn balloon_item(
         alpha,
         mine,
     }
-}
-
-/// A speech balloon (the design's `.bub`): white with ink text, the tail at its
-/// lower left pointing down at `anchor`; in the accent colour when it is your
-/// own line (`.bub.me`). Never interactive.
-pub fn balloon(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    key: &str,
-    anchor: egui::Pos2,
-    text: &str,
-    alpha: f32,
-    mine: bool,
-) {
-    const TAIL_X: f32 = BALLOON_TAIL_X;
-    const TAIL: f32 = BALLOON_TAIL;
-    let fill = if mine {
-        theme::p32().accent
-    } else {
-        egui::Color32::WHITE
-    };
-    egui::Area::new(egui::Id::new(("chat_person_balloon", key.to_lowercase())))
-        .order(egui::Order::Middle)
-        .interactable(false)
-        // Pivoted on the bottom left, so a balloon that grows a line grows
-        // upwards and its tail stays on the person.
-        .pivot(egui::Align2::LEFT_BOTTOM)
-        .fixed_pos(egui::pos2(anchor.x - TAIL_X, anchor.y - TAIL))
-        .constrain_to(map_rect)
-        .show(ctx, |ui| {
-            ui.set_opacity(alpha);
-            let frame = egui::Frame::new()
-                .fill(fill)
-                .corner_radius(14.0)
-                .inner_margin(egui::Margin::symmetric(11, 7))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 6],
-                    blur: 16,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(75),
-                })
-                .show(ui, |ui| {
-                    ui.set_max_width(BALLOON_WIDTH - 22.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(text)
-                                .size(BALLOON_TEXT)
-                                .color(theme::p32().on_accent),
-                        )
-                        .wrap(),
-                    );
-                });
-            let r = frame.response.rect;
-            let x = r.left() + TAIL_X;
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(x - TAIL, r.bottom() - 0.5),
-                    egui::pos2(x + TAIL, r.bottom() - 0.5),
-                    egui::pos2(x, r.bottom() + TAIL),
-                ],
-                fill,
-                egui::Stroke::NONE,
-            ));
-        });
 }
 
 /// Whether an avatar this client is drawing is the one the server placed at

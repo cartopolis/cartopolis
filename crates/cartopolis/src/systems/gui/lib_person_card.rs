@@ -135,9 +135,6 @@ pub fn drive_lib_person_card(
     if !lib.person_card {
         return;
     }
-    if !contacts.lib {
-        contacts.lib = true;
-    }
     let size = metrics.viewport_pts();
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()

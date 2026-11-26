@@ -559,6 +559,10 @@ impl EguiManager {
     /// map, and the building card never opened. So a finger's click is decided by
     /// *where it landed* instead: on a floating area or modal, or on the root
     /// layer outside the map (a panel), it is egui's — [`press_over_ui`].
+    ///
+    /// The world's clicks ask `UiInput::owns_click`, which carries this
+    /// verdict over; this one stays for its tests, which pin the rule.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn owns_click(&self, touch_click: bool, cursor: Option<Vec2>) -> bool {
         if self.overlay_owns_pointer {
             return true;

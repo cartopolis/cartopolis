@@ -605,14 +605,6 @@ pub fn paint_raised(painter: &egui::Painter, rect: egui::Rect, corner: CornerRad
     painter.rect_filled(rect, corner, p32().surface_raised);
 }
 
-/// A card in a panel, painted: its [`card_shadow`] and then its fill. For the
-/// rows that are painted rather than laid out in a `Frame` (a `Frame` takes
-/// `.shadow(card_shadow())`).
-pub fn paint_card(p: &egui::Painter, rect: egui::Rect, corner: CornerRadius, fill: Color32) {
-    p.add(card_shadow().as_shape(rect, corner));
-    p.rect_filled(rect, corner, fill);
-}
-
 /// A shadow (or glow) under a disc. Painted before the disc itself.
 pub(super) fn paint_disc_shadow(
     p: &egui::Painter,

@@ -58,14 +58,24 @@ enum Held {
     Loading(Task<Result<Decoded, String>>),
     Ready {
         jpeg: Vec<u8>,
-        /// Pixels until the texture is made, then gone.
+        /// Pixels until the texture is made, then gone. Read only by
+        /// [`ChatPictures::show`], which is kept for its gap.
+        #[allow(dead_code)]
         rgba: Option<(Vec<u8>, [usize; 2])>,
+        #[allow(dead_code)]
         texture: Option<egui::TextureHandle>,
     },
     Failed(String),
 }
 
 /// What the UI and the agent ask about one picture.
+///
+/// **Kept for a gap, not drawn**: egui's thread drew each picture inline
+/// through [`ChatPictures::show`]; the library's thread
+/// (`lib_chat_conversation::picture_view`) draws a tile naming it, and only
+/// the full-size viewer (`lib_picture_viewer`, from [`ChatPictures::jpeg`])
+/// shows the pixels. Delete this and `show` once the thread draws them.
+#[allow(dead_code)]
 pub enum Shown {
     Loading,
     Ready(egui::TextureHandle),
@@ -199,7 +209,9 @@ impl ChatPictures {
         }
     }
 
-    /// The picture as a texture, fetching it on first sight.
+    /// The picture as a texture, fetching it on first sight. Kept for
+    /// [`Shown`]'s gap.
+    #[allow(dead_code)]
     pub fn show(&mut self, ctx: &egui::Context, r: &PictureRef) -> Shown {
         self.want(r);
         match self.held.get_mut(&r.hash) {
@@ -279,6 +291,12 @@ pub fn demo_picture() -> PictureRef {
 pub const DEMO_HASH_PORTRAIT: &str = "demo-picture-portrait";
 
 /// The demo picture's JPEG, for a cache that draws the demo hashes itself.
+///
+/// Its one user, egui's community-picture cache (`Communities::picture`),
+/// went with egui's screens: the library draws a community's picture as its
+/// initial and a post's photo as a tile naming it. Kept for when it draws
+/// them, which a scripted capture needs this for.
+#[allow(dead_code)]
 pub(crate) fn demo_jpeg_for(hash: &str) -> Option<Result<Vec<u8>, String>> {
     match hash {
         DEMO_HASH => Some(demo_jpeg()),

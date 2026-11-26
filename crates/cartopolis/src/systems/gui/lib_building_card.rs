@@ -1,20 +1,17 @@
-//! The building card drawn by the component library (`lib_host`), beside
-//! egui's (`building_card::render_building_card`): what the registers say
-//! about the building you clicked, a card over the map rather than a panel.
+//! The building card drawn by the component library (`lib_host`): what the
+//! registers say about the building you clicked, a card over the map rather
+//! than a panel.
 //!
-//! On with `CARTO_UI_LIB=building_card` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`BuildingSelection::card_lib`) but keeps working out
-//! what the card shows — `building_card::CardContent`, the same struct its
-//! own card is drawn from — and whether something else owns the bottom of
-//! the screen, and hands both over in `BuildingSelection::card_bridge`. A
-//! verb tapped here goes back the same way and is done by
-//! `building_card::run`, the code egui's buttons call.
+//! `building_card::drive_building_card` works out what the card shows —
+//! `building_card::CardContent` — and whether something else owns the
+//! bottom of the screen, and hands both over in
+//! `BuildingSelection::card_bridge`. A verb tapped here goes back the same
+//! way and is done by `building_card::run`.
 //!
 //! Placed as the place card is (`lib_place_card::Placement`): centred over
 //! the bottom edge, above the dock. The grabber is a tap that steps through
 //! the three rests (the name and the ways in; the facts; all of them), as
-//! the library has no sheet gesture; the card appears and goes without
-//! egui's rise.
+//! the library has no sheet gesture.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,14 +33,13 @@ use crate::systems::{icons, theme};
 /// The card's name in the library's host.
 const KEY: &str = "building_card";
 
-/// How tall the facts may grow at the middle rest before they scroll, px:
-/// egui's figure.
+/// How tall the facts may grow at the middle rest before they scroll, px.
 const HALF_ROWS: f32 = 260.0;
 
 /// What a tap asked for; done by the system.
 #[derive(Clone, Copy)]
 enum Act {
-    /// A verb, handed to egui's system (`CardBridge::action`).
+    /// A verb, handed to `drive_building_card` (`CardBridge::action`).
     Do(CardAction),
     /// The grabber: the next rest up, and from the top back to the peek.
     Toggle,
@@ -92,9 +88,6 @@ pub fn drive_lib_building_card(
     if !lib.building_card {
         return;
     }
-    if !selection.card_lib {
-        selection.card_lib = true;
-    }
     let size = metrics.viewport_pts();
     let placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());
     let full_rows = size.y
@@ -123,7 +116,7 @@ pub fn drive_lib_building_card(
                 }
             }
         }
-        // What egui's system published for this frame; nothing once the
+        // What `drive_building_card` published for this frame; nothing once the
         // selection is gone (the ✕ above takes effect next frame there).
         let content = selection
             .card_bridge
@@ -196,7 +189,7 @@ fn html(l: &Live) -> String {
     out
 }
 
-/// One verb's button, as egui's card names and explains it.
+/// One verb's button, named and explained.
 fn verb(l: &Live, c: &CardContent, action: CardAction) -> View {
     let click = l.act(Act::Do(action));
     match action {

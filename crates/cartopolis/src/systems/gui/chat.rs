@@ -5,7 +5,10 @@
 //! draws a speech bubble above whoever said it nearby, an ambient transcript and
 //! a composer pill. **The messenger**, [`crate::systems::chats`], is the chat
 //! list and one chat at a time in a Chat and a World view (the v5 design). This
-//! module draws only the person menu and the report form both of them use.
+//! module draws nothing: the person menu and the report form both of them use
+//! are the library's (`lib_chat_conversation`, `lib_chat_overlay`,
+//! `lib_dialogs`), and what their taps ask for is done here
+//! ([`PersonAction`], [`report_act`]).
 //!
 //! Geo tiers (country/province/municipality) land with `cartopolis_geo`; they slot in as
 //! extra channels with no change to any of this.
@@ -14,10 +17,6 @@ use bevy::prelude::*;
 use cartopolis_core::msg;
 use cartopolis_core::{ChatScope, NetMessage, ReportReason};
 use std::collections::HashMap;
-
-use crate::systems::egui_manager::EguiManager;
-use crate::systems::icons;
-use crate::systems::theme;
 
 /// Per-channel scrollback cap on the client.
 const MAX_LINES: usize = 200;
@@ -798,184 +797,6 @@ pub enum PersonAction {
     DeleteAccount,
 }
 
-/// What else the person menu offers, by who is looking (`docs/mockups/
-/// communities/v3.html`): one menu, with a section per role, and nothing
-/// greyed out — what you cannot do is not there.
-#[derive(Default)]
-pub struct PersonExtras {
-    /// The line is in a topic: its community's name, for "Report to the
-    /// moderators".
-    pub community: Option<String>,
-    /// This person moderates that community: the topic's name.
-    pub moderate_topic: Option<String>,
-    /// This person may suspend and delete accounts on this server.
-    pub admin: bool,
-}
-
-/// The menu behind a speaker's name: block them, or report them.
-///
-/// One function because it hangs off three different widgets now — a name in the
-/// panel's log, a name in the transcript, and a speech bubble over an avatar's
-/// head — and "the moderation menu differs depending on where you found the
-/// person" is not a difference anyone wants to discover while being harassed.
-pub fn person_menu(
-    response: &egui::Response,
-    sender: &str,
-    message: Option<&str>,
-    extras: &PersonExtras,
-    mut act: impl FnMut(PersonAction),
-) {
-    // Clicks inside keep the menu open, so the acts that arm first
-    // (`theme::confirm_button`) can show their second step; every act closes
-    // it explicitly.
-    egui::Popup::context_menu(response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.label(egui::RichText::new(sender).strong().color(theme::p().cream));
-            ui.separator();
-            if theme::menu_entry(ui, icons::CHAT, "Message privately").clicked() {
-                act(PersonAction::Message);
-                ui.close();
-            }
-            // Arms first, like every other act that changes what someone else can
-            // do (`theme::confirm_button`): a block sat one row under "Message
-            // privately" and took effect on a mis-tap.
-            if theme::confirm_button(ui, ui.id().with(("block", sender)), "Block", "Block them?") {
-                act(PersonAction::Block);
-                ui.close();
-            }
-            if extras.community.is_some() && message.is_some() {
-                if theme::menu_entry(ui, icons::FLAG, "Report to the moderators…").clicked() {
-                    act(PersonAction::ReportToModerators(
-                        message.map(str::to_string),
-                    ));
-                    ui.close();
-                }
-            }
-            if theme::menu_entry(ui, icons::FLAG, "Report to the server…").clicked() {
-                act(PersonAction::Report(message.map(str::to_string)));
-                ui.close();
-            }
-            if let (Some(topic), Some(community)) = (&extras.moderate_topic, &extras.community) {
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("Moderator · {community}"))
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
-                );
-                if message.is_some()
-                    && theme::confirm_button(
-                        ui,
-                        ui.id().with(("delete-for-everyone", sender)),
-                        "Delete for everyone",
-                        "Delete it for everyone?",
-                    )
-                {
-                    act(PersonAction::DeleteForEveryone);
-                    ui.close();
-                }
-                if theme::menu_entry_danger(
-                    ui,
-                    icons::PERSON_REMOVE,
-                    &format!("Remove from {topic}"),
-                )
-                .clicked()
-                {
-                    act(PersonAction::RemoveFromTopic);
-                    ui.close();
-                }
-                if theme::menu_entry_danger(ui, icons::PERSON_REMOVE, "Remove from the community")
-                    .clicked()
-                {
-                    act(PersonAction::RemoveFromCommunity);
-                    ui.close();
-                }
-            }
-            if extras.admin {
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("On this server · you are an admin")
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
-                );
-                if theme::confirm_button(
-                    ui,
-                    ui.id().with(("suspend", sender)),
-                    "Suspend account",
-                    "Suspend them?",
-                ) {
-                    act(PersonAction::Suspend);
-                    ui.close();
-                }
-                if theme::menu_entry_danger(ui, icons::DELETE, "Delete account…").clicked() {
-                    act(PersonAction::DeleteAccount);
-                    ui.close();
-                }
-            }
-        });
-}
-
-/// The report form: who, why, and anything the reporter wants to add.
-///
-/// A `Window` rather than a section of the chat panel, for two reasons. Reporting
-/// is a considered act, and it interrupts — a form that scrolls away with the
-/// backlog is one you lose halfway through writing. And a report is raised from
-/// places other than the chat panel eventually (an avatar's context menu, a
-/// prim's), so it cannot live inside one panel's layout.
-pub(crate) fn render_report_dialog(
-    egui: &mut EguiManager,
-    chat: &mut ChatState,
-    online: &crate::resources::OnlineSession,
-) {
-    let Some(draft) = chat.report.as_mut() else {
-        return;
-    };
-    let mut open = true;
-    let mut submit = false;
-    let mut cancel = false;
-
-    egui::Window::new("Report a person")
-        .collapsible(false)
-        .resizable(false)
-        .default_width(320.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .open(&mut open)
-        .show(egui.ui_mut().ctx(), |ui| {
-            ui.label(
-                egui::RichText::new(&draft.username)
-                    .strong()
-                    .color(theme::p().cream),
-            );
-            if let Some(message) = &draft.message {
-                theme::note(ui, &format!("“{message}”"));
-            }
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("What happened?").color(theme::p().text));
-            for reason in ReportReason::ALL {
-                ui.radio_value(&mut draft.reason, *reason, reason.label());
-            }
-            ui.add_space(6.0);
-            theme::text_field(
-                ui,
-                egui::TextEdit::multiline(&mut draft.note)
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(REPORT_NOTE_HINT),
-            );
-            theme::note(ui, report_goes_to(draft));
-            ui.horizontal(|ui| {
-                submit = theme::action_button(ui, "Send report").clicked();
-                cancel = theme::action_button(ui, "Cancel").clicked();
-            });
-        });
-
-    if submit {
-        report_act(chat, online, ReportAction::Send);
-    } else if cancel || !open {
-        report_act(chat, online, ReportAction::Cancel);
-    }
-}
-
 /// The report form's hint in its note field.
 pub(crate) const REPORT_NOTE_HINT: &str = "Anything else we should know (optional)";
 
@@ -999,9 +820,8 @@ pub enum ReportAction {
     Cancel,
 }
 
-/// Do what the report form asked for, whichever edition drew it
-/// (`lib_dialogs` draws it beside egui): send the draft as it stands to the
-/// community's moderators or the world's operators, or drop it.
+/// Do what the report form (`lib_dialogs`) asked for: send the draft as it
+/// stands to the community's moderators or the world's operators, or drop it.
 pub(crate) fn report_act(
     chat: &mut ChatState,
     online: &crate::resources::OnlineSession,

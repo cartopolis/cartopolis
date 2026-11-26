@@ -3,7 +3,7 @@
 //!
 //! A community page has two halves: **Posts**, public and on the fediverse, and
 //! **Topics**, encrypted and members-only, as before. The two are told apart in
-//! words and in colour everywhere ([`theme::PUBLIC`] against the topics'
+//! words and in colour everywhere ([`crate::systems::theme::PUBLIC`] against the topics'
 //! padlock), because writing in the wrong one is the mistake that matters.
 //!
 //! Posts are HTTP, not the wire (`cartopolis_core::posts` says why), so nothing
@@ -17,18 +17,16 @@ use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use cartopolis_core::point::{Point, PointView};
 use cartopolis_core::posts::{
-    suggest_handle, EditPost, NewPost, NewReply, NewReport, NoticeKind, PostDto, PostNotices,
-    PostPlace, PostReport, PostThread, PublicInfo, PublicSettings, ReadNotices, ReportAction,
-    SourceKind, Toggle, WhoPosts, MAX_PICTURE_ALT, MAX_POST_TEXT, MAX_WARNING,
+    suggest_handle, EditPost, NewPost, NewReply, NewReport, PostDto, PostNotices, PostPlace,
+    PostReport, PostThread, PublicInfo, PublicSettings, ReadNotices, ReportAction, SourceKind,
+    Toggle, WhoPosts,
 };
-use cartopolis_core::{CommunityDto, CommunityRole};
+use cartopolis_core::CommunityDto;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use crate::systems::chats::{avatar, raised_frame, ChatKind};
 use crate::systems::communities::{Communities, Out};
 use crate::systems::model_assets::{api_delete, api_get, api_post};
-use crate::systems::{icons, theme};
 
 /// Which half of a community page is showing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +119,7 @@ pub struct Posts {
     pub on_map: Option<Uuid>,
     /// Only this community's posts are on the map, whatever the layer says:
     /// picking a community in the list goes to the World with this set, and the
-    /// chip under the switch clears it (`render_filter_chip`).
+    /// chip under the switch clears it (`drive_filter_chip`).
     pub only: Option<Uuid>,
     /// The community whose page last asked for its posts.
     loaded: Option<Uuid>,
@@ -153,22 +151,15 @@ pub struct Posts {
     /// A picture from the camera waiting for a draft to hold it, then uploaded
     /// as the post's picture.
     pub pending_picture: Option<Vec<u8>>,
-    /// The draft is written over the map (`render_floating_composer`), not in
+    /// The draft is written over the map (`drive_floating_composer`), not in
     /// the panel: it started from the map (Post here, the camera), and the
     /// place it is about should stay in sight.
     pub over_map: bool,
-    /// The library draws the filter chip (`lib_filter_chip`):
-    /// [`render_filter_chip`] still decides whether it shows, and publishes
-    /// what it says in [`chip_view`](Self::chip_view), but draws nothing.
-    pub chip_lib: bool,
-    /// The chip as egui's system last worked it out; `None` while hidden.
+    /// The filter chip (`lib_filter_chip`) as [`drive_filter_chip`] last
+    /// worked it out; `None` while hidden.
     pub chip_view: Option<ChipView>,
-    /// The library draws the composer over the map (`lib_post_composer`):
-    /// [`render_floating_composer`] still decides whether it shows, and
-    /// publishes [`composer_view`](Self::composer_view), but draws nothing.
-    pub composer_lib: bool,
-    /// The floating composer as egui's system last worked it out; `None`
-    /// while hidden.
+    /// The composer over the map (`lib_post_composer`) as
+    /// [`drive_floating_composer`] last worked it out; `None` while hidden.
     pub composer_view: Option<ComposerView>,
 }
 
@@ -201,7 +192,7 @@ pub enum ChipAction {
     Clear,
 }
 
-/// Do a tap on the filter chip, for egui's and the library's.
+/// Do a tap on the filter chip (`lib_filter_chip`).
 pub fn chip_act(
     cs: &mut Communities,
     right_panel: &mut crate::resources::RightPanel,
@@ -262,7 +253,7 @@ pub enum ComposerAction {
     RemovePicture,
 }
 
-/// Do a tap in the composer, for egui's and the library's.
+/// Do a tap in the composer (`lib_post_composer`, `lib_communities`).
 pub fn composer_act(cs: &mut Communities, action: ComposerAction) {
     let busy = !cs.picture_for_post_idle() || cs.posts.snapshot_busy;
     match action {
@@ -443,8 +434,8 @@ impl Posts {
                 }
             }
         }
-        // A stable order, so a pin keeps its id (and egui its area) from one
-        // frame to the next whatever the map's iteration order.
+        // A stable order, so a pin keeps its key from one frame to the next
+        // whatever the map's iteration order.
         out.sort_by_key(|(c, p, _, _)| (*c, *p));
         out
     }
@@ -721,8 +712,8 @@ pub fn read_notices(cs: &mut Communities) {
 }
 
 /// A tap in a community's public half (its posts, a thread, the settings,
-/// Activity, Post to) that is not typing: one set for egui's drawing and
-/// the component library's (`lib_communities`), done by [`post_tap`].
+/// Activity, Post to) that is not typing, from the component library
+/// (`lib_communities`), done by [`post_tap`].
 #[derive(Debug, Clone)]
 pub enum PostTap {
     /// Posts or Topics.
@@ -811,7 +802,7 @@ pub fn follow_ready(cs: &Communities) -> bool {
     typed.contains('@') || typed.starts_with("https://")
 }
 
-/// Do a tap in a community's public half, for egui's and the library's.
+/// Do a tap in a community's public half (`lib_communities`).
 #[allow(clippy::too_many_lines)]
 pub fn post_tap(cs: &mut Communities, t: PostTap, out: &mut Out) {
     match t {
@@ -1032,820 +1023,6 @@ pub fn post_tap(cs: &mut Communities, t: PostTap, out: &mut Out) {
     }
 }
 
-/// The two halves of a community page, side by side. Answers which is showing.
-pub fn tabs(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, topics: usize) -> Tab {
-    load(cs, id);
-    let mut tab = cs.posts.tab;
-    let posts = format!("{}  Posts · public", icons::SHARE);
-    let topics = format!("{}  Topics · {topics}", icons::LOCK);
-    if theme::segmented(
-        ui,
-        &mut tab,
-        &[(Tab::Posts, &posts), (Tab::Topics, &topics)],
-    ) {
-        post_tap(cs, PostTap::Tab(tab), &mut Out::default());
-    }
-    tab
-}
-
-/// The Posts half of a community page.
-pub fn posts_tab(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &mut Out) {
-    let id = c.id;
-    let role = c.role.unwrap_or(CommunityRole::Member);
-    if let Some(note) = cs.posts.note.clone() {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new(note)
-                    .color(theme::p().error)
-                    .size(theme::SIZE_SUB),
-            );
-            if theme::icon_button_small(ui, icons::CLEAR, "Dismiss").clicked() {
-                post_tap(cs, PostTap::DismissNote, &mut Out::default());
-            }
-        });
-    }
-    if let Some(post) = cs.posts.thread_open {
-        thread_view(ui, cs, c, post, out);
-        return;
-    }
-    let Some(info) = cs.posts.info.get(&id).cloned() else {
-        theme::busy(ui, "Reading the posts…");
-        return;
-    };
-    if !info.settings.enabled {
-        theme::note(
-            ui,
-            "This community has no public posts. With them on, anybody can read what members post here, on the map and on the fediverse (Mastodon, Lemmy and others), and reply.",
-        );
-        if role.moderates() {
-            settings_form(ui, cs, c, &info);
-        }
-        return;
-    }
-    ui.label(
-        egui::RichText::new(format!(
-            "{}  Anyone can read these, on any server · {} follower{}",
-            icons::SHARE,
-            info.followers,
-            if info.followers == 1 { "" } else { "s" }
-        ))
-        .color(theme::PUBLIC)
-        .size(theme::SIZE_SUB),
-    );
-    if let Some(address) = &info.address {
-        ui.label(
-            egui::RichText::new(format!("@{address}"))
-                .color(theme::p().text_dim)
-                .size(theme::SIZE_SUB),
-        );
-    }
-    ui.add_space(6.0);
-    if info.may_post {
-        let waiting = cs.posts.draft.as_ref().is_some_and(|d| d.community == id);
-        if waiting {
-            // A draft left by Back: pick it up, or let it go.
-            ui.horizontal(|ui| {
-                let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-                let gap = ui.spacing().item_spacing.x;
-                let wide = (ui.available_width() - side - gap).floor();
-                if theme::primary_button_sized(
-                    ui,
-                    &format!("{}  Continue your post", icons::RENAME),
-                    wide,
-                )
-                .clicked()
-                {
-                    post_tap(cs, PostTap::ContinueDraft, &mut Out::default());
-                }
-                let drop = theme::secondary_button(ui, icons::CLEAR, "", side);
-                if theme::named(ui, drop, "Discard the draft")
-                    .on_hover_text("Discard the draft")
-                    .clicked()
-                {
-                    post_tap(cs, PostTap::DiscardDraft, &mut Out::default());
-                }
-            });
-        } else {
-            let width = ui.available_width();
-            if theme::primary_button_sized(ui, &format!("{}  Write a post", icons::RENAME), width)
-                .clicked()
-            {
-                post_tap(cs, PostTap::Write(id), out);
-            }
-        }
-        ui.add_space(4.0);
-    }
-    ui.horizontal(|ui| {
-        let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-        let squares = if role.moderates() { 2.0 } else { 1.0 };
-        let gap = ui.spacing().item_spacing.x;
-        let wide = (ui.available_width() - squares * (side + gap)).floor();
-        let pins = cs.posts.on_map == Some(id);
-        if theme::secondary_toggle(
-            ui,
-            icons::PIN,
-            if pins {
-                "Pinned on the map"
-            } else {
-                "Show on the map"
-            },
-            wide,
-            pins,
-        )
-        .on_hover_text("Pin this community's posts where they were written")
-        .clicked()
-        {
-            post_tap(cs, PostTap::TogglePins(id), &mut Out::default());
-        }
-        let again = theme::secondary_button(ui, icons::REFRESH, "", side);
-        if theme::named(ui, again, "Read again")
-            .on_hover_text("Read again")
-            .clicked()
-        {
-            post_tap(cs, PostTap::Refresh(id), &mut Out::default());
-        }
-        if role.moderates() {
-            let open = cs.posts.settings_open;
-            let settings = theme::secondary_toggle(ui, icons::SETTINGS, "", side, open);
-            settings.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::Button,
-                    ui.is_enabled(),
-                    open,
-                    "Settings",
-                )
-            });
-            if settings.on_hover_text("Settings").clicked() {
-                post_tap(cs, PostTap::ToggleSettings, &mut Out::default());
-            }
-        }
-    });
-    ui.add_space(4.0);
-    if cs.posts.settings_open && role.moderates() {
-        settings_form(ui, cs, c, &info);
-    }
-    if role.moderates() {
-        reports_list(ui, cs, id);
-    }
-    let feed = cs.posts.feeds.get(&id).cloned().unwrap_or_default();
-    if feed.is_empty() {
-        theme::empty_state(
-            ui,
-            "No posts yet",
-            if info.may_post {
-                "Write the first: it is pinned where you are looking."
-            } else {
-                "Posts from members and from the fediverse appear here."
-            },
-        );
-    }
-    let now = now_ms();
-    for p in &feed {
-        if post_card(ui, cs, c, p, now, out, true) {
-            post_tap(cs, PostTap::OpenThread(p.id), out);
-        }
-        ui.add_space(6.0);
-    }
-}
-
-/// Reports from other servers waiting for a moderator: each post with who
-/// reported it and why, to hide or to leave.
-fn reports_list(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid) {
-    let Some(reports) = cs.posts.reports.get(&id).cloned().filter(|r| !r.is_empty()) else {
-        return;
-    };
-    theme::section(
-        ui,
-        &format!(
-            "{}  {} report{} from other servers",
-            icons::FLAG,
-            reports.len(),
-            if reports.len() == 1 { "" } else { "s" }
-        ),
-    );
-    for r in &reports {
-        raised_frame().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(format!("{} · {}", r.reporter, ago(r.created_ms, now_ms())))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::PUBLIC),
-            );
-            if !r.reason.is_empty() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&r.reason).color(theme::p().cream)).wrap(),
-                );
-            }
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}: {}",
-                    r.post.author.address,
-                    first_line(&r.post.text, 120)
-                ))
-                .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
-            );
-            ui.horizontal_wrapped(|ui| {
-                for (action, label) in [
-                    (
-                        ReportAction::Hide,
-                        format!("{} Hide the post", icons::DELETE),
-                    ),
-                    (ReportAction::Dismiss, "Leave it".to_string()),
-                ] {
-                    if theme::action_button(ui, label).clicked() {
-                        post_tap(
-                            cs,
-                            PostTap::Resolve {
-                                community: id,
-                                report: r.id,
-                                action,
-                            },
-                            &mut Out::default(),
-                        );
-                    }
-                }
-            });
-        });
-        ui.add_space(4.0);
-    }
-}
-
-/// Below a draft's pictures: a content warning, and for a photo what it shows
-/// in words and whether to blur it.
-fn draft_extras(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, has_picture: bool) {
-    let Some(d) = cs.posts.draft.as_mut() else {
-        return;
-    };
-    let mut warn = d.warning.is_some();
-    if theme::checkbox(ui, &mut warn, "Content warning")
-        .on_hover_text("Readers see only the warning until they open the post")
-        .changed()
-    {
-        d.warning = warn.then(String::new);
-    }
-    if let Some(w) = d.warning.as_mut() {
-        crate::systems::theme::text_field(
-            ui,
-            egui::TextEdit::singleline(w)
-                .id(egui::Id::new(("post_warning", community)))
-                .desired_width(ui.available_width())
-                .char_limit(MAX_WARNING)
-                .hint_text("What readers see before they open it"),
-        );
-    }
-    if has_picture {
-        crate::systems::theme::text_field(
-            ui,
-            egui::TextEdit::singleline(&mut d.alt)
-                .id(egui::Id::new(("post_alt", community)))
-                .desired_width(ui.available_width())
-                .char_limit(MAX_PICTURE_ALT)
-                .hint_text("What the photo shows, in words"),
-        );
-        theme::checkbox(
-            ui,
-            &mut d.sensitive,
-            "Sensitive: blur the photo until opened",
-        );
-    }
-}
-
-/// Like, pass on, and answer a post or reply. Counts include what other
-/// servers sent: Mastodon's favourites and boosts, Lemmy's votes.
-fn actions_row(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) {
-    let likes = if p.dislikes > 0 {
-        format!("{}  {} · {} down", icons::STAR, p.likes, p.dislikes)
-    } else {
-        format!("{}  {}", icons::STAR, p.likes)
-    };
-    if theme::chip(ui, &likes, p.liked)
-        .on_hover_text(if p.liked {
-            "Take your like back"
-        } else {
-            "Like"
-        })
-        .clicked()
-    {
-        post_tap(cs, PostTap::Like(p.id, !p.liked), &mut Out::default());
-    }
-    if p.parent.is_none() {
-        let boosts = format!("{}  {}", icons::SHARE, p.boosts);
-        if p.mine {
-            if p.boosts > 0 {
-                ui.label(
-                    egui::RichText::new(boosts)
-                        .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
-                );
-            }
-        } else if theme::chip(ui, &boosts, p.boosted)
-            .on_hover_text(if p.boosted {
-                "Stop passing it on"
-            } else {
-                "Pass it on to the people who follow you"
-            })
-            .clicked()
-        {
-            post_tap(cs, PostTap::Boost(p.id, !p.boosted), &mut Out::default());
-        }
-    } else if theme::chip(ui, &format!("{}  Reply", icons::CHAT), false)
-        .on_hover_text(format!("Answer {}", p.author.name))
-        .clicked()
-    {
-        post_tap(
-            cs,
-            PostTap::ReplyTo {
-                post: p.id,
-                name: p.author.name.clone(),
-                address: p.author.address.clone(),
-                local: p.author.local,
-            },
-            &mut Out::default(),
-        );
-    }
-}
-
-/// A post behind a content warning: the warning, and Show or Hide. Answers
-/// whether the post's words and pictures are hidden.
-fn warning_gate(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) -> bool {
-    let Some(w) = &p.warning else {
-        return false;
-    };
-    let hidden = !p.mine && !cs.posts.shown.contains(&p.id);
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(format!("{}  {w}", icons::WARNING)).color(theme::p().warn));
-        if !p.mine && theme::chip(ui, if hidden { "Show" } else { "Hide" }, false).clicked() {
-            post_tap(cs, PostTap::ToggleShown(p.id), &mut Out::default());
-        }
-    });
-    hidden
-}
-
-/// A sensitive picture stays a button until it is asked for. Answers whether
-/// the picture may be drawn.
-fn sensitive_gate(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) -> bool {
-    if !p.sensitive || p.mine || cs.posts.shown.contains(&p.id) {
-        return true;
-    }
-    if theme::chip(ui, "Sensitive photo: tap to show", false).clicked() {
-        post_tap(cs, PostTap::ToggleShown(p.id), &mut Out::default());
-    }
-    false
-}
-
-/// What somebody reporting a post says, and whether it goes to its own server.
-fn report_box(ui: &mut egui::Ui, cs: &mut Communities, p: &PostDto) {
-    let Some((_, reason, forward)) = cs.posts.reporting.as_mut().filter(|r| r.0 == p.id) else {
-        return;
-    };
-    ui.separator();
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::multiline(reason)
-            .id(egui::Id::new(("post_report", p.id)))
-            .desired_rows(2)
-            .desired_width(ui.available_width())
-            .char_limit(1000)
-            .hint_text("What is wrong with it? (optional)"),
-    );
-    if !p.author.local {
-        let server = p.author.address.split('@').nth(1).unwrap_or("its server");
-        theme::checkbox(
-            ui,
-            forward,
-            format!("Also tell {server}, without your name"),
-        );
-    }
-    ui.horizontal(|ui| {
-        if theme::action_button(ui, format!("{} Report", icons::FLAG)).clicked() {
-            post_tap(cs, PostTap::SendReport(p.id), &mut Out::default());
-        }
-        if theme::action_button(ui, "Cancel").clicked() {
-            post_tap(cs, PostTap::CancelReport, &mut Out::default());
-        }
-    });
-}
-
-/// Replies, mentions, likes, boosts and new followers on this account's public
-/// posts, here and from other servers, newest first. Drawing it marks them
-/// read; a notice about a post answers that post and its community.
-pub fn notices_list(ui: &mut egui::Ui, cs: &mut Communities) -> Option<(Uuid, Uuid)> {
-    read_notices(cs);
-    let Some(list) = cs.posts.notices.clone() else {
-        theme::busy(ui, "Reading what happened…");
-        return None;
-    };
-    if list.items.is_empty() {
-        theme::note(
-            ui,
-            "Nothing yet. Replies, likes and followers on your public posts show here.",
-        );
-    }
-    let now = now_ms();
-    let mut open = None;
-    for n in &list.items {
-        let (icon, words) = match n.kind {
-            NoticeKind::Reply => (icons::CHAT, "replied"),
-            NoticeKind::Mention => (icons::LABEL, "mentioned you"),
-            NoticeKind::Like => (icons::STAR, "likes your post"),
-            NoticeKind::Boost => (icons::SHARE, "passed on your post"),
-            NoticeKind::Follow => (icons::FOLLOW, "follows you"),
-        };
-        let card = raised_frame().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                avatar(ui, &n.who.name, ChatKind::Private, 28.0);
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{icon}  {} {words}", n.who.name)).color(
-                            if n.read {
-                                theme::p().text
-                            } else {
-                                theme::p().cream
-                            },
-                        ),
-                    );
-                    let mut line = ago(n.created_ms, now);
-                    if !n.who.local {
-                        line = format!("{} · {line}", n.who.address);
-                    }
-                    ui.label(egui::RichText::new(line).size(theme::SIZE_SUB).color(
-                        if n.who.local {
-                            theme::p().text_dim
-                        } else {
-                            theme::PUBLIC
-                        },
-                    ));
-                    if let Some(e) = &n.excerpt {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(e)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                            )
-                            .truncate(),
-                        );
-                    }
-                });
-            });
-        });
-        if let (Some(post), Some(community)) = (n.post, n.community) {
-            let r = card.response.interact(egui::Sense::click());
-            if theme::named(ui, r, &n.who.name)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                open = Some((community, post));
-            }
-        }
-        ui.add_space(4.0);
-    }
-    open
-}
-
-/// One post, as a card. Answers whether it was tapped (to open its thread).
-fn post_card(
-    ui: &mut egui::Ui,
-    cs: &mut Communities,
-    c: &CommunityDto,
-    p: &PostDto,
-    now: i64,
-    out: &mut Out,
-    tappable: bool,
-) -> bool {
-    let moderates = c.role.is_some_and(CommunityRole::moderates);
-    let picture = p
-        .picture
-        .as_deref()
-        .and_then(|h| cs.picture(ui.ctx(), Some(h)));
-    let snapshot = p
-        .snapshot
-        .as_deref()
-        .and_then(|h| cs.picture(ui.ctx(), Some(h)));
-    let mut tapped = false;
-    let frame = raised_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            avatar(ui, &p.author.name, ChatKind::Private, 32.0);
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new(&p.author.name).color(theme::p().cream));
-                let mut line = if p.author.local {
-                    "member".to_string()
-                } else {
-                    p.author.address.clone()
-                };
-                if let Some(via) = &p.via {
-                    line.push_str(&format!(" · via {via}"));
-                }
-                line.push_str(&format!(" · {}", ago(p.created_ms, now)));
-                if p.edited_ms.is_some() {
-                    line.push_str(" · edited");
-                }
-                ui.label(
-                    egui::RichText::new(line)
-                        .size(theme::SIZE_SUB)
-                        .color(if p.author.local { theme::p().text_dim } else { theme::PUBLIC }),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Anybody may report what is not theirs.
-                if theme::kebab_button(ui).clicked()
-                {
-                    post_tap(cs, PostTap::ToggleMenu(p.id), &mut Out::default());
-                }
-            });
-        });
-        if let Some(to) = &p.answers {
-            ui.label(
-                egui::RichText::new(format!("{}  to {to}", icons::CHAT))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-            );
-        }
-        let hidden = warning_gate(ui, cs, p);
-        if hidden {
-            // Behind its warning: the words and pictures wait.
-        } else if cs.posts.editing.as_ref().is_some_and(|(e, _)| *e == p.id) {
-            edit_box(ui, cs, c.id, p.id);
-        } else {
-            ui.add(egui::Label::new(egui::RichText::new(&p.text).color(theme::p().text)).wrap());
-        }
-        let pictures_shown = !hidden && sensitive_gate(ui, cs, p);
-        // The polaroid keeps its own proportions: its frame is
-        // part of the picture, and a crop would cut them off.
-        if let Some(t) = snapshot.as_ref().filter(|_| !hidden) {
-            let w = ui.available_width().min(420.0);
-            let size = t.size_vec2();
-            ui.add(
-                egui::Image::new(t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))),
-            );
-        }
-        let more = p
-            .more_pictures
-            .iter()
-            .filter_map(|x| cs.picture(ui.ctx(), Some(&x.hash)).map(|t| (t, x.alt.clone())));
-        let pictures: Vec<_> = picture
-            .into_iter()
-            .map(|t| (t, p.picture_alt.clone()))
-            .chain(more)
-            .collect();
-        for (t, alt) in pictures.iter().filter(|_| pictures_shown) {
-            let w = ui.available_width();
-            let size = t.size_vec2();
-            let h = (w * size.y / size.x.max(1.0)).min(220.0);
-            let shown = ui.add(
-                egui::Image::new(t)
-                    .fit_to_exact_size(egui::vec2(w, h))
-                    .corner_radius(10.0),
-            );
-            if let Some(alt) = alt {
-                shown.on_hover_text(alt);
-            }
-        }
-        ui.horizontal_wrapped(|ui| {
-            match &p.place {
-                Some(place) => {
-                    let label = place.name.clone().unwrap_or_else(|| "On the map".into());
-                    ui.label(
-                        egui::RichText::new(format!("{}  {label}", icons::PIN))
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                    // Show in world (`bridges`): the map, at where it was
-                    // written, and a way back to this post.
-                    if theme::chip(ui, &format!("{}  Show in world", icons::CAM_EARTH), false)
-                        .on_hover_text("Open where it was written, on the map")
-                        .clicked()
-                    {
-                        post_tap(cs, PostTap::ShowInWorld(c.id, point_of(place, &p.text)), out);
-                    }
-                }
-                None => {
-                    ui.label(
-                        egui::RichText::new("No place: listed, not pinned")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                }
-            }
-            actions_row(ui, cs, p);
-            if p.parent.is_none() && tappable {
-                let n = p.replies;
-                if theme::chip(
-                    ui,
-                    &format!("{}  {n} {}", icons::CHAT, if n == 1 { "reply" } else { "replies" }),
-                    false,
-                )
-                .clicked()
-                {
-                    tapped = true;
-                }
-            }
-        });
-        if cs.posts.menu_for == Some(p.id) {
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                if p.mine && theme::action_button(ui, format!("{} Edit", icons::RENAME)).clicked() {
-                    post_tap(cs, PostTap::Edit(p.id, p.text.clone()), &mut Out::default());
-                }
-                if p.mine
-                    && theme::confirm_button(
-                        ui,
-                        egui::Id::new(("post_delete", p.id)),
-                        &format!("{} Delete", icons::DELETE),
-                        "Delete: tap again",
-                    )
-                {
-                    post_tap(cs, PostTap::Delete(c.id, p.id), &mut Out::default());
-                }
-                if moderates && !p.mine {
-                    if theme::action_button(ui, format!("{} Hide from this community", icons::DELETE))
-                        .clicked()
-                    {
-                        post_tap(cs, PostTap::Hide(c.id, p.id), &mut Out::default());
-                    }
-                    if !p.author.local
-                        && theme::action_button(
-                            ui,
-                            format!("{} Block {}", icons::FLAG, p.author.address),
-                        )
-                        .on_hover_text("They can't post here again, and what they wrote here is hidden")
-                        .clicked()
-                    {
-                        post_tap(cs, PostTap::Block(c.id, p.author.address.clone()), &mut Out::default());
-                    }
-                }
-            });
-            if !p.mine
-                && theme::action_button(ui, format!("{} Report", icons::FLAG))
-                    .on_hover_text("To this community's moderators")
-                    .clicked()
-            {
-                post_tap(cs, PostTap::Report(p.id), &mut Out::default());
-            }
-            if moderates && !p.author.local {
-                theme::note(
-                    ui,
-                    "A server that sends nothing but trouble is the server admin's to block, for every community at once.",
-                );
-            }
-        }
-        report_box(ui, cs, p);
-    });
-    if tappable {
-        let card = frame.response.interact(egui::Sense::click());
-        if theme::named(ui, card, &p.author.name)
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
-            tapped = true;
-        }
-    }
-    tapped
-}
-
-/// The words of a post being edited, with Save and Cancel. A change reaches
-/// other servers as an edit, as Mastodon's own do.
-fn edit_box(ui: &mut egui::Ui, cs: &mut Communities, community: Uuid, post: Uuid) {
-    let Some((_, text)) = cs.posts.editing.as_mut() else {
-        return;
-    };
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::multiline(text)
-            .id(egui::Id::new(("post_edit", post)))
-            .desired_rows(3)
-            .desired_width(ui.available_width())
-            .char_limit(MAX_POST_TEXT),
-    );
-    let ready = !text.trim().is_empty();
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled_ui(ready, |ui| {
-                theme::action_button(ui, format!("{} Save", icons::RENAME))
-            })
-            .inner
-            .clicked()
-        {
-            post_tap(cs, PostTap::SaveEdit(community, post), &mut Out::default());
-        }
-        if theme::action_button(ui, "Cancel").clicked() {
-            post_tap(cs, PostTap::CancelEdit, &mut Out::default());
-        }
-    });
-}
-
-fn thread_view(
-    ui: &mut egui::Ui,
-    cs: &mut Communities,
-    c: &CommunityDto,
-    post: Uuid,
-    out: &mut Out,
-) {
-    let clicked = theme::ghost_button(ui, icons::CHEVRON_LEFT, "Posts").clicked();
-    if theme::page_back(ui.ctx(), clicked) {
-        post_tap(cs, PostTap::CloseThread, out);
-        return;
-    }
-    let Some(t) = cs.posts.thread.clone().filter(|t| t.post.id == post) else {
-        theme::busy(ui, "Reading the thread…");
-        return;
-    };
-    let now = now_ms();
-    post_card(ui, cs, c, &t.post, now, out, false);
-    theme::section(
-        ui,
-        &format!(
-            "{} {}",
-            t.replies.len(),
-            if t.replies.len() == 1 {
-                "reply"
-            } else {
-                "replies"
-            }
-        ),
-    );
-    for r in &t.replies {
-        post_card(ui, cs, c, r, now, out, false);
-        ui.add_space(4.0);
-    }
-    ui.add_space(6.0);
-    if let Some((_, name)) = cs.posts.reply_to.clone() {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("{}  To {name}", icons::CHAT))
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-            );
-            if theme::close_button(ui)
-                .on_hover_text("Answer the post instead")
-                .clicked()
-            {
-                post_tap(cs, PostTap::ReplyToPost, &mut Out::default());
-            }
-        });
-    }
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::multiline(&mut cs.posts.reply)
-            .id(egui::Id::new(("post_reply", post)))
-            .desired_rows(2)
-            .desired_width(ui.available_width())
-            .char_limit(MAX_POST_TEXT)
-            .hint_text("Reply in public"),
-    );
-    let ready = reply_ready(cs);
-    let width = ui.available_width();
-    if ui
-        .add_enabled_ui(ready, |ui| {
-            theme::primary_button_sized(ui, &format!("{}  Reply", icons::SEND), width)
-        })
-        .inner
-        .clicked()
-    {
-        post_tap(cs, PostTap::SendReply(t.post.id), out);
-    }
-    theme::note(
-        ui,
-        "Replies are public, like the post, and reach its author wherever they are.",
-    );
-}
-
-/// The composer over the map (`render_floating_composer`), with its own title
-/// row — Post, and a ✕ that discards: over the map there is no page to go
-/// back to.
-fn composer(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
-    let ready = ready_to_post(cs);
-    let label = if cs.posts.sending {
-        "Posting…"
-    } else {
-        "Post"
-    };
-    let mut send = false;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("New post")
-                .size(theme::SIZE_TITLE)
-                .color(theme::p().cream),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::close_button(ui).on_hover_text("Discard").clicked() {
-                composer_act(cs, ComposerAction::Discard);
-            }
-            send = ui
-                .add_enabled_ui(ready, |ui| theme::header_action(ui, label))
-                .inner
-                .clicked();
-        });
-    });
-    if send {
-        composer_act(cs, ComposerAction::Post);
-    }
-    ui.add_space(4.0);
-    compose_page(ui, cs, c);
-}
-
 /// Whether the draft can go: text and a place, nothing still uploading.
 #[must_use]
 pub fn ready_to_post(cs: &Communities) -> bool {
@@ -1913,361 +1090,6 @@ pub fn leave_compose_page(cs: &mut Communities) {
     if empty {
         cs.posts.draft = None;
         cs.picture_for_post = false;
-    }
-}
-
-/// The composer as the community's own page, under the page's title row
-/// (`communities::community_screen`). It used to sit in the Posts tab, under
-/// the community's picture, name, action strip and tabs: on a phone that is a
-/// whole screen before the text field, and Post was two screens down.
-pub fn compose_page(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto) {
-    let followers = cs.posts.info.get(&c.id).map_or(0, |i| i.followers);
-    let federating = cs.posts.info.get(&c.id).is_some_and(|i| i.federating);
-    let Some(draft) = cs.posts.draft.as_mut() else {
-        return;
-    };
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::multiline(&mut draft.text)
-            .id(egui::Id::new(("post_text", c.id)))
-            .desired_rows(4)
-            .desired_width(ui.available_width())
-            .char_limit(MAX_POST_TEXT)
-            .hint_text("What's happening here?"),
-    );
-    let used = draft.text.chars().count();
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-        ui.label(
-            egui::RichText::new(format!("{used} / {MAX_POST_TEXT}"))
-                .size(theme::SIZE_TINY)
-                .color(if used + 20 >= MAX_POST_TEXT {
-                    theme::p().warn
-                } else {
-                    theme::p().text_dim
-                }),
-        );
-    });
-    let picture = draft.picture.clone();
-    let snapshot = draft.snapshot.clone();
-    let place = draft.place.clone();
-
-    // Where: one line, and the one thing to do about it.
-    raised_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        row(
-            ui,
-            40.0,
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                // On a phone the words leave the place one line of three
-                // letters; the icon alone, square, as the review row does.
-                let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-                let (word, w) = if ui.available_width() < 300.0 {
-                    ("", side)
-                } else {
-                    ("Use view", 0.0)
-                };
-                let again = theme::secondary_button(ui, icons::HERE, word, w);
-                if theme::named(ui, again, "Use view")
-                    .on_hover_text("Close the panel, look somewhere else, come back and press this")
-                    .clicked()
-                {
-                    composer_act(cs, ComposerAction::UseView);
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(icons::PIN)
-                            .size(20.0)
-                            .color(theme::p().accent),
-                    );
-                    ui.vertical(|ui| match &place {
-                        Some(p) => {
-                            let name = p.name.clone().unwrap_or_else(|| {
-                                format!("{:.5}, {:.5}", p.latitude, p.longitude)
-                            });
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(name).color(theme::p().cream))
-                                    .truncate(),
-                            );
-                            ui.label(
-                                egui::RichText::new("Pinned where you are looking")
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                            );
-                        }
-                        None => theme::busy(ui, "Taking the view…"),
-                    });
-                });
-            },
-        );
-    });
-
-    // What goes with it: each attachment as it will look, with its own remove.
-    // The snapshot first, as it goes out first.
-    if let Some(t) = snapshot
-        .as_deref()
-        .and_then(|h| cs.picture(ui.ctx(), Some(h)))
-    {
-        let w = ui.available_width().min(300.0);
-        let size = t.size_vec2();
-        let shown = ui.add(
-            egui::Image::new(&t).fit_to_exact_size(egui::vec2(w, w * size.y / size.x.max(1.0))),
-        );
-        if remove_badge(ui, shown.rect, "Remove the polaroid") {
-            composer_act(cs, ComposerAction::RemoveSnapshot);
-        }
-    }
-    if let Some(t) = picture
-        .as_deref()
-        .and_then(|h| cs.picture(ui.ctx(), Some(h)))
-    {
-        // As wide as the text, or as tall as the text field for an upright
-        // picture from a phone, which at the width would take the screen.
-        let w = ui.available_width();
-        let shown = ui.add(
-            egui::Image::new(&t)
-                .fit_to_exact_size(egui::vec2(w, 200.0))
-                .corner_radius(10.0),
-        );
-        if remove_badge(ui, shown.rect, "Remove the picture") {
-            composer_act(cs, ComposerAction::RemovePicture);
-        }
-    }
-    draft_extras(ui, cs, c.id, picture.is_some());
-    ui.add_space(6.0);
-    // Camera and Upload, the same two round buttons wherever a picture can be
-    // added (`docs/mockups/social-camera/`). The camera's In world mode is
-    // the polaroid this row used to have a button of its own for.
-    // With a picture on the post, the same two buttons replace it. The words
-    // under them say so; a sentence beside them ran off a phone's edge and,
-    // being unwrapped, widened everything under it past the screen too.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 18.0;
-        let busy = !cs.picture_for_post_idle() || cs.posts.snapshot_busy;
-        for (icon, label, hint) in [
-            (
-                icons::CAMERA,
-                if picture.is_some() {
-                    "Retake"
-                } else {
-                    "Camera"
-                },
-                "Take a picture for this post",
-            ),
-            (
-                icons::UPLOAD,
-                if picture.is_some() {
-                    "Replace"
-                } else {
-                    "Upload"
-                },
-                "A picture from this device",
-            ),
-        ] {
-            // An exact cell at the cursor: `vertical_centered` with a
-            // `set_width` inside centres the narrowed cell in the rest of the
-            // row, which put Camera mid-screen and Upload at the right edge.
-            let cell = egui::vec2(
-                theme::ROUND_BUTTON_SIZE + 24.0,
-                theme::ROUND_BUTTON_SIZE + 22.0,
-            );
-            ui.allocate_ui_with_layout(cell, egui::Layout::top_down(egui::Align::Center), |ui| {
-                if theme::round_button(ui, icon, hint, false).clicked() && !busy {
-                    composer_act(
-                        cs,
-                        if icon == icons::CAMERA {
-                            ComposerAction::Camera
-                        } else {
-                            ComposerAction::Upload
-                        },
-                    );
-                }
-                ui.label(egui::RichText::new(label).size(12.0).color(theme::p().text));
-            });
-        }
-    });
-    if let Some(note) = &cs.picture_note {
-        theme::note(ui, note);
-    }
-    ui.add_space(6.0);
-    let reach = format!("{}  {}", icons::SHARE, reach_words(federating, followers));
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(reach)
-                .size(theme::SIZE_SUB)
-                .color(theme::PUBLIC),
-        )
-        .wrap(),
-    );
-    if cs
-        .posts
-        .draft
-        .as_ref()
-        .is_some_and(|d| d.text.trim().is_empty())
-    {
-        theme::note(ui, "Write something, and Post above goes live.");
-    }
-}
-
-/// A row of a stated height, its contents centred on it. `ui.horizontal`
-/// centres on the row's *starting* height, which is shorter than a button, so
-/// a word beside one sat level with its top.
-fn row<R>(
-    ui: &mut egui::Ui,
-    height: f32,
-    layout: egui::Layout,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), layout, add)
-        .inner
-}
-
-/// A small round ✕ over the top-right corner of an attachment's preview.
-/// Answers whether it was pressed.
-///
-/// Drawn in a child `Ui` that allocates nothing in the parent: `scope_builder`
-/// hands the badge's rect back to the parent as a widget of its own, and a
-/// top-down layout then puts its cursor under *that* — 50 pt below the top of
-/// the picture — so the warning box, the alt field and the sensitive tick were
-/// written over the picture (seen on the phone, 2026-11-22).
-fn remove_badge(ui: &mut egui::Ui, over: egui::Rect, tooltip: &str) -> bool {
-    let side = theme::ROUND_BUTTON_SIZE;
-    let rect = egui::Rect::from_min_size(
-        over.right_top() + egui::vec2(-side - 6.0, 6.0),
-        egui::Vec2::splat(side),
-    );
-    let mut badge = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    theme::round_button(&mut badge, icons::CLEAR, tooltip, false).clicked()
-}
-
-fn settings_form(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, info: &PublicInfo) {
-    raised_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        let id = c.id;
-        let first = info.settings.handle.is_none();
-        if first {
-            suggest_first_handle(cs, c);
-            ui.label(egui::RichText::new("The community's fediverse address").color(theme::p().cream));
-            crate::systems::theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut cs.posts.handle)
-                    .id(egui::Id::new(("post_handle", id)))
-                    .desired_width(ui.available_width())
-                    .char_limit(cartopolis_core::posts::MAX_HANDLE),
-            );
-            theme::note(
-                ui,
-                &format!(
-                    "People elsewhere find it as @{}@{}. It can't be changed later: their servers know the community by it.",
-                    cs.posts.handle.trim(),
-                    c.home
-                ),
-            );
-        } else if let Some(address) = &info.address {
-            ui.label(egui::RichText::new(format!("@{address}")).color(theme::p().cream));
-        }
-        let mut who = info.settings.who_posts;
-        ui.label(egui::RichText::new("Who can post").size(theme::SIZE_SUB).color(theme::p().text_dim));
-        let changed = theme::segmented(
-            ui,
-            &mut who,
-            &[(WhoPosts::Members, "Every member"), (WhoPosts::Moderators, "Moderators only")],
-        );
-        let switch = if info.settings.enabled {
-            theme::action_button(ui, "Switch public posts off").clicked().then_some(false)
-        } else {
-            theme::action_button(ui, format!("{} Switch public posts on", icons::SHARE))
-                .clicked()
-                .then_some(true)
-        };
-        if changed || switch.is_some() {
-            post_tap(
-                cs,
-                PostTap::Public {
-                    community: id,
-                    enabled: switch,
-                    who: Some(who),
-                },
-                &mut Out::default(),
-            );
-        }
-        if !info.settings.enabled {
-            return;
-        }
-        ui.separator();
-        ui.label(egui::RichText::new("This community follows").size(theme::SIZE_SUB).color(theme::p().text_dim));
-        if !info.federating {
-            theme::note(ui, "This server does not talk to other servers, so it follows nothing.");
-            return;
-        }
-        if info.follows.is_empty() {
-            theme::note(ui, "Nothing yet. Their posts would appear here, marked with where they came from.");
-        }
-        for f in &info.follows {
-            ui.horizontal(|ui| {
-                let kind = match f.kind {
-                    SourceKind::Community => "community",
-                    SourceKind::Account => "account",
-                };
-                let state = if f.accepted { "" } else { " · waiting for their server" };
-                ui.label(egui::RichText::new(format!("{}  {}", icons::SHARE, f.address)).color(theme::PUBLIC));
-                ui.label(egui::RichText::new(format!("{kind}{state}")).size(theme::SIZE_SUB).color(theme::p().text_dim));
-                if theme::icon_button_small(ui, icons::CLEAR, "Stop following").clicked() {
-                    post_tap(cs, PostTap::Unfollow(id, f.address.clone()), &mut Out::default());
-                }
-            });
-        }
-        crate::systems::theme::text_field(
-            ui,
-            egui::TextEdit::singleline(&mut cs.posts.follow)
-                .id(egui::Id::new(("post_follow", id)))
-                .desired_width(ui.available_width())
-                .hint_text("groningen@feddit.nl, someone@mastodon.social, or a relay's address"),
-        );
-        if theme::action_button(ui, format!("{} Follow", icons::ADD)).clicked() {
-            post_tap(cs, PostTap::Follow(id), &mut Out::default());
-        }
-    });
-}
-
-/// "Post this view": the communities this account is in, to choose one.
-pub fn pick_community(ui: &mut egui::Ui, cs: &mut Communities) {
-    ui.label(
-        egui::RichText::new("Post this view publicly, to")
-            .size(theme::SIZE_TITLE)
-            .color(theme::p().cream),
-    );
-    if let Some(p) = &cs.posts.from_view {
-        ui.label(
-            egui::RichText::new(format!(
-                "{}  {}",
-                icons::PIN,
-                p.name
-                    .clone()
-                    .unwrap_or_else(|| format!("{:.5}, {:.5}", p.latitude, p.longitude))
-            ))
-            .color(theme::p().text_dim),
-        );
-    }
-    let mine: Vec<(Uuid, String)> = cs
-        .list
-        .iter()
-        .filter(|c| c.role.is_some())
-        .map(|c| (c.id, c.settings.name.clone()))
-        .collect();
-    if mine.is_empty() {
-        theme::note(
-            ui,
-            "You're not in a community yet. Find one, or start one, first.",
-        );
-    }
-    for (id, name) in mine {
-        if theme::action_button(ui, format!("{}  {name}", icons::GROUP)).clicked() {
-            post_tap(cs, PostTap::PostIn(id), &mut Out::default());
-        }
-    }
-    if theme::action_button(ui, "Cancel").clicked() {
-        post_tap(cs, PostTap::CancelPostTo, &mut Out::default());
     }
 }
 
@@ -2360,11 +1182,13 @@ pub fn view_place(
 /// Nothing of the community's chat is on the map with it (2026-10-18, the
 /// user: "we don't need the chat prominent on the screen by default"). The
 /// dock's chat disc and this chip's name are the two ways in.
-#[allow(clippy::too_many_arguments)]
-pub fn render_filter_chip(
-    mut egui: crate::systems::egui_manager::EguiMut,
+///
+/// This works out whether the chip shows and what it says, for the library's
+/// chip (`lib_filter_chip`), which does its two taps itself through
+/// [`chip_act`].
+pub fn drive_filter_chip(
     mut cs: ResMut<Communities>,
-    mut right_panel: ResMut<crate::resources::RightPanel>,
+    right_panel: Res<crate::resources::RightPanel>,
     chat: Res<crate::systems::chat::ChatState>,
     driver: Res<crate::systems::driver::DriverState>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
@@ -2375,78 +1199,8 @@ pub fn render_filter_chip(
     if forget {
         cs.posts.only = None;
     }
-    // The library's edition is showing (`lib_filter_chip`): hand it what the
-    // chip says, draw nothing. Its taps it does itself, through `chip_act`.
-    if cs.posts.chip_lib {
-        if cs.posts.chip_view != shown {
-            cs.posts.chip_view = shown;
-        }
-        return;
-    }
-    let Some(ChipView { name, pinned, .. }) = shown else {
-        return;
-    };
-    // Under the search bar, between the two columns of round buttons that
-    // come down the edges under it (`dock`), and truncated to fit there.
-    let top = crate::systems::dock::reserved_top();
-    let between = egui.viewport_pts().x
-        - 2.0 * (theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GAP);
-    let ctx = egui.ctx_mut().clone();
-    let mut asked: Option<ChipAction> = None;
-    egui::Area::new(egui::Id::new("community_filter_chip"))
-        .order(egui::Order::Middle)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
-        .show(&ctx, |ui| {
-            crate::systems::theme::glass_frame()
-                .corner_radius(egui::CornerRadius::same(16))
-                .inner_margin(egui::Margin::symmetric(10, 4))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        let (dot, _) =
-                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 5.0, theme::PUBLIC);
-                        let posts = if pinned == 1 { "post" } else { "posts" };
-                        // Room for the dot, the ✕ and the gaps beside it.
-                        let words = (between - 20.0 - 10.0 - 38.0 - 2.0 * 8.0 - 20.0).max(40.0);
-                        if ui
-                            .scope(|ui| {
-                                ui.set_max_width(words);
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!(
-                                            "Only {name} · {pinned} {posts}"
-                                        ))
-                                        .size(theme::SIZE_SUB)
-                                        .color(theme::p().cream),
-                                    )
-                                    .truncate()
-                                    .sense(egui::Sense::click()),
-                                )
-                            })
-                            .inner
-                            .on_hover_text("Open the community's page")
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            asked = Some(ChipAction::Open);
-                        }
-                        if crate::systems::chats::circle_button(
-                            ui,
-                            icons::CLEAR,
-                            false,
-                            true,
-                            "Show every community's posts",
-                        )
-                        .clicked()
-                        {
-                            asked = Some(ChipAction::Clear);
-                        }
-                    });
-                });
-        });
-    if let Some(a) = asked {
-        chip_act(&mut cs, &mut right_panel, a);
+    if cs.posts.chip_view != shown {
+        cs.posts.chip_view = shown;
     }
 }
 
@@ -2493,8 +1247,12 @@ fn filter_chip_shown(
 /// sideways, along the bottom held upright, with the place still in sight
 /// (`docs/mockups/social-camera/`, "Post from the long press"). The same
 /// composer the community page has.
-pub fn render_floating_composer(
-    mut egui: crate::systems::egui_manager::EguiMut,
+///
+/// This decides whether it shows and publishes where it stands and who the
+/// post reaches, for the library's composer (`lib_post_composer`), which
+/// edits the draft itself and does its taps through [`composer_act`].
+pub fn drive_floating_composer(
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
     mut cs: ResMut<Communities>,
     right_panel: Res<crate::resources::RightPanel>,
     camera: Res<crate::systems::camera_screen::CameraScreen>,
@@ -2517,56 +1275,17 @@ pub fn render_floating_composer(
         return;
     };
     let hidden = !right_panel.is(crate::resources::RightPanel::None) || camera.is_open();
-    let viewport = egui.viewport_pts();
+    let viewport = metrics.viewport_pts();
     let sideways = viewport.x > viewport.y;
-    // The library's edition is showing (`lib_post_composer`): hand it where
-    // the composer stands and who the post reaches, draw nothing. The draft
-    // it edits itself, its taps go through `composer_act`.
-    if cs.posts.composer_lib {
-        let info = cs.posts.info.get(&community.id);
-        let view = (!hidden).then(|| ComposerView {
-            community: community.id,
-            sideways,
-            followers: info.map_or(0, |i| i.followers),
-            federating: info.is_some_and(|i| i.federating),
-        });
-        if cs.posts.composer_view != view {
-            cs.posts.composer_view = view;
-        }
-        return;
-    }
-    if hidden {
-        return;
-    }
-    let (anchor, offset, width, height) = if sideways {
-        (
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
-            380.0_f32.min(viewport.x * 0.5),
-            viewport.y - 2.0 * theme::OSD_MARGIN,
-        )
-    } else {
-        (
-            egui::Align2::CENTER_BOTTOM,
-            egui::vec2(0.0, -theme::OSD_MARGIN),
-            viewport.x - 2.0 * theme::OSD_MARGIN,
-            viewport.y * 0.55,
-        )
-    };
-    let ctx = egui.ctx_mut().clone();
-    egui::Area::new(egui::Id::new("floating_post_composer"))
-        .order(egui::Order::Foreground)
-        .anchor(anchor, offset)
-        .show(&ctx, |ui| {
-            crate::systems::theme::glass_frame().show(ui, |ui| {
-                ui.set_width(width - 24.0);
-                egui::ScrollArea::vertical()
-                    .max_height(height - 24.0)
-                    .show(ui, |ui| composer(ui, &mut cs, &community));
-            });
-        });
-    if cs.posts.draft.is_none() {
-        cs.posts.over_map = false;
+    let info = cs.posts.info.get(&community.id);
+    let view = (!hidden).then(|| ComposerView {
+        community: community.id,
+        sideways,
+        followers: info.map_or(0, |i| i.followers),
+        federating: info.is_some_and(|i| i.federating),
+    });
+    if cs.posts.composer_view != view {
+        cs.posts.composer_view = view;
     }
 }
 
@@ -2795,42 +1514,9 @@ mod tests {
         assert_eq!(posts.map_posts().len(), 2);
     }
 }
-/// Activity: what happened to this account's public posts, as a screen of its
-/// own over the chat list. A notice about a post opens that post's thread on
-/// its community's page.
-pub fn activity_screen(ui: &mut egui::Ui, cs: &mut Communities) {
-    let clicked = theme::ghost_button(ui, icons::CHEVRON_LEFT, "Chats").clicked();
-    if theme::page_back(ui.ctx(), clicked) {
-        cs.screen = None;
-        return;
-    }
-    ui.label(
-        egui::RichText::new("Activity")
-            .size(theme::SIZE_TITLE)
-            .color(theme::p().cream),
-    );
-    theme::note(
-        ui,
-        "Replies, mentions, likes and followers on your public posts, here and on other servers.",
-    );
-    ui.add_space(6.0);
-    if let Some((community, post)) = notices_list(ui, cs) {
-        post_tap(cs, PostTap::Notice(community, post), &mut Out::default());
-    }
-}
-
-/// The way into Activity from the chat list, while there is any. Answers
-/// whether it was tapped.
-pub fn activity_entry(ui: &mut egui::Ui, cs: &mut Communities) -> bool {
-    let Some((label, new)) = activity_label(cs) else {
-        return false;
-    };
-    theme::chip(ui, &format!("{}  {label}", icons::STAR), new).clicked()
-}
-
 /// What the way into Activity says, and whether anything in it is new;
 /// `None` while there is nothing to show. Reads the notices again when they
-/// are due, so call it only while the list shows (both editions do).
+/// are due, so call it only while the list shows (`lib_chats` does).
 pub fn activity_label(cs: &mut Communities) -> Option<(String, bool)> {
     cs.posts.refresh_notices(false);
     let n = cs.posts.notices.as_ref().filter(|n| !n.items.is_empty())?;

@@ -11,8 +11,7 @@
 //!   chosen goes into the draft each frame; Send report and Cancel are done
 //!   by `chat::report_act`, the code egui's buttons call.
 //! - **The confirmation** is handed over in `ChatsView::lib_confirm` by
-//!   `chats::egui_only`, which runs only while the panel is (egui's window
-//!   showed on the same frames). Yes asks the admin pages to delete, as
+//!   `chats::drive_chats` on every frame the Chats panel is up. Yes asks the admin pages to delete, as
 //!   egui's does.
 //!
 //! What stays egui's: the community picture's picker has nothing to draw
@@ -260,9 +259,6 @@ pub fn drive_lib_dialogs(
 ) {
     if !lib.dialogs {
         return;
-    }
-    if !view.lib_dialogs {
-        view.lib_dialogs = true;
     }
     let size = metrics.viewport_pts();
     let placement = Placement::of(size.x, size.y, metrics.ui_scale());

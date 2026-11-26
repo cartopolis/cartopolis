@@ -3,9 +3,11 @@
 //!
 //! A community is a named set of people with a few topics, and being in it is
 //! being in every topic. The topics themselves are ordinary private chats —
-//! `chats` draws them as it draws any other — so this module draws only what is
-//! around them: the communities in the list, the screens for finding, starting,
-//! running and editing one, and the people in it with their roles.
+//! the library shows them as it shows any other — so this module holds only
+//! what is around them: the communities in the list, the screens for finding,
+//! starting, running and editing one, and the people in it with their roles.
+//! The component library draws those screens (`lib_communities`); this is
+//! their state and what their taps do ([`tap`]).
 //!
 //! Like the rest of the panel it never touches the engine. Everything it wants
 //! done goes on [`Communities::ops`], which `private_chat::drive_private_chats`
@@ -19,14 +21,12 @@ use cartopolis_core::{
     CommunityDto, CommunityListing, CommunityPlace, CommunityRole, CommunitySettings,
     DirectoryOrder, JoinRule, ListingState, TopicDto,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::systems::chat::ChatState;
-use crate::systems::chats::{avatar, raised_frame, ChatKind};
 use crate::systems::private_chat::{channel_key, group_of};
-use crate::systems::{icons, theme};
 
 /// Something for the engine to do, queued by the panel.
 #[derive(Debug, Clone)]
@@ -150,14 +150,6 @@ impl Draft {
 /// An admin's account action finished, in words for the notice line.
 type AdminInbox = Arc<Mutex<Vec<String>>>;
 
-/// A community picture: loading, decoded (pixels until the texture is made), or
-/// not there.
-enum Picture {
-    Loading(Task<Result<(Vec<u8>, [usize; 2]), String>>),
-    Ready(Option<(Vec<u8>, [usize; 2])>, Option<egui::TextureHandle>),
-    Failed,
-}
-
 #[derive(Resource, Default)]
 pub struct Communities {
     /// Every community this account is in or waiting for, as last pushed.
@@ -207,7 +199,6 @@ pub struct Communities {
     pub(crate) upload: Option<Task<Result<String, String>>>,
     /// Something went wrong with the picture, in words.
     pub picture_note: Option<String>,
-    pictures: HashMap<String, Picture>,
     /// Seeded for a scripted capture (`seed_demo`), to be cleared after.
     demo: bool,
     /// The public half of each community (`community_posts`).
@@ -309,7 +300,7 @@ impl Communities {
         self.upload.is_none()
     }
 
-    /// Fold in a finished upload and any picture that finished loading.
+    /// Fold in a finished upload.
     pub fn poll_pictures(&mut self) {
         if let Some(task) = self.upload.as_mut() {
             if let Some(result) = crate::platform::http::poll_task(task) {
@@ -329,54 +320,6 @@ impl Communities {
                     Err(why) => self.picture_note = Some(why),
                 }
             }
-        }
-        for p in self.pictures.values_mut() {
-            if let Picture::Loading(task) = p {
-                if let Some(result) = crate::platform::http::poll_task(task) {
-                    *p = match result {
-                        Ok(pixels) => Picture::Ready(Some(pixels), None),
-                        Err(why) => {
-                            tracing::warn!(error = %why, "a community picture did not load");
-                            Picture::Failed
-                        }
-                    };
-                }
-            }
-        }
-    }
-
-    /// A community's picture as a texture, fetching it on first sight.
-    pub fn picture(
-        &mut self,
-        ctx: &egui::Context,
-        hash: Option<&str>,
-    ) -> Option<egui::TextureHandle> {
-        let hash = hash?;
-        let slot = self.pictures.entry(hash.to_string()).or_insert_with(|| {
-            let h = hash.to_string();
-            Picture::Loading(IoTaskPool::get().spawn(async move {
-                // A scripted capture's picture is drawn here, never fetched.
-                let jpeg = match crate::systems::chat_pictures::demo_jpeg_for(&h) {
-                    Some(demo) => demo?,
-                    None => crate::systems::model_assets::fetch_picture(&h).await?,
-                };
-                crate::utils::photo::decode_rgba(&jpeg)
-            }))
-        });
-        match slot {
-            Picture::Ready(pixels, texture) => {
-                if texture.is_none() {
-                    let (rgba, size) = pixels.take()?;
-                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
-                    *texture = Some(ctx.load_texture(
-                        format!("community_picture_{}", &hash[..hash.len().min(16)]),
-                        image,
-                        egui::TextureOptions::LINEAR,
-                    ));
-                }
-                texture.clone()
-            }
-            _ => None,
         }
     }
 
@@ -447,12 +390,7 @@ pub fn sync_device(
             cs.open_invite(code);
         }
     }
-    if cs.upload.is_some()
-        || cs
-            .pictures
-            .values()
-            .any(|p| matches!(p, Picture::Loading(_)))
-    {
+    if cs.upload.is_some() {
         cs.poll_pictures();
     }
 }
@@ -515,9 +453,8 @@ pub struct Out {
     pub close: bool,
 }
 
-/// A tap on a community screen that is not typing: one set for egui's
-/// screens and the component library's (`lib_communities`), done by [`tap`],
-/// so the two cannot come to mean different things.
+/// A tap on a community screen that is not typing, from the component
+/// library's screens (`lib_communities`), done by [`tap`].
 #[derive(Debug, Clone)]
 pub enum Tap {
     /// Back: one screen up, as each screen's back goes ([`tap`] says where).
@@ -593,7 +530,7 @@ pub fn create_ready(cs: &Communities) -> bool {
     !cs.draft.name.trim().is_empty()
 }
 
-/// Do a tap on a community screen, for egui's screens and the library's.
+/// Do a tap on a community screen.
 #[allow(clippy::too_many_lines)]
 pub fn tap(cs: &mut Communities, t: Tap, out: &mut Out) {
     match t {
@@ -778,14 +715,6 @@ pub(crate) fn rule_word(r: JoinRule) -> &'static str {
     }
 }
 
-fn rule_tone(r: JoinRule) -> egui::Color32 {
-    match r {
-        JoinRule::Open => egui::Color32::from_rgb(0x9F, 0xD3, 0xB4),
-        JoinRule::Ask => theme::p32().warn,
-        JoinRule::Invite => theme::p32().text_dim,
-    }
-}
-
 /// `name@server` as a person on this server reads it.
 pub(crate) fn shown(address: &str, home: &str) -> String {
     cartopolis_core::address::display(address, home).to_string()
@@ -799,218 +728,6 @@ fn people(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// The back chevron, a title and the ✕, as every sub-screen of the panel has.
-/// Answers whether back was pressed; the ✕ goes into `out`.
-///
-/// The ✕ is not a second back. Each of these screens replaces the whole panel,
-/// the Community | World switch included, so without it a community page had
-/// one way to the map: back to the list, then World. A page opened from a
-/// post's pin on the map is the case that showed it, because the person is
-/// looking at the map and has no reason to think of the list at all.
-fn title_row(ui: &mut egui::Ui, title: &str, out: &mut Out) -> bool {
-    title_row_with(ui, title, out, |_| {})
-}
-
-/// A community's page head: the back chevron, its picture, its name over a
-/// line of facts, and the close — one row, as the communities mockup draws
-/// it. Answers whether back was pressed.
-fn page_head(
-    ui: &mut egui::Ui,
-    name: &str,
-    picture: Option<&egui::TextureHandle>,
-    facts: &str,
-    out: &mut Out,
-) -> bool {
-    let mut back = false;
-    let face_size = 40.0;
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), face_size + 4.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let chevron = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(icons::CHEVRON_LEFT)
-                        .size(26.0)
-                        .color(theme::p32().text),
-                )
-                .sense(egui::Sense::click()),
-            );
-            let clicked = theme::named(ui, chevron, "Back")
-                .on_hover_text("Back")
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked();
-            back = theme::page_back(ui.ctx(), clicked);
-            face(ui, name, ChatKind::Community, picture, face_size);
-            ui.add_space(2.0);
-            // The close takes its corner first; the name and facts get what
-            // is left and truncate, as every title row here does.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::close_button(ui).clicked() {
-                    out.close = true;
-                }
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(name)
-                                .font(egui::FontId::new(theme::SIZE_TITLE, theme::brand_family()))
-                                .color(theme::p32().cream),
-                        )
-                        .truncate(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(facts)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        )
-                        .truncate(),
-                    );
-                });
-            });
-        },
-    );
-    ui.add_space(8.0);
-    back
-}
-
-/// [`title_row`] plus the page's own action beside the close, laid out
-/// right-to-left from it (the composer's Post).
-fn title_row_with(
-    ui: &mut egui::Ui,
-    title: &str,
-    out: &mut Out,
-    extra: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    let mut back = false;
-    ui.horizontal(|ui| {
-        let chevron = ui.add(
-            egui::Label::new(
-                egui::RichText::new(icons::CHEVRON_LEFT)
-                    .size(26.0)
-                    .color(theme::p32().text),
-            )
-            .sense(egui::Sense::click()),
-        );
-        // The glyph is its only text, so it is named for what it does.
-        let clicked = theme::named(ui, chevron, "Back")
-            .on_hover_text("Back")
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked();
-        back = theme::page_back(ui.ctx(), clicked);
-        ui.label(
-            egui::RichText::new(title)
-                .font(egui::FontId::new(
-                    theme::SIZE_PANEL_TITLE,
-                    theme::brand_family(),
-                ))
-                .color(theme::p32().cream),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::close_button(ui).clicked() {
-                out.close = true;
-            }
-            extra(ui);
-        });
-    });
-    ui.add_space(8.0);
-    back
-}
-
-/// A tappable card row: a rounded-square avatar, a name and a line under it,
-/// and something on the right.
-fn card_row(
-    ui: &mut egui::Ui,
-    salt: impl std::hash::Hash + std::fmt::Debug,
-    name: &str,
-    kind: ChatKind,
-    sub: &str,
-    sub_tone: egui::Color32,
-    right: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
-    card_row_with(ui, salt, name, kind, None, sub, sub_tone, right)
-}
-
-/// A community's picture where it has one, its lettered square where not.
-fn face(
-    ui: &mut egui::Ui,
-    name: &str,
-    kind: ChatKind,
-    picture: Option<&egui::TextureHandle>,
-    size: f32,
-) {
-    match picture {
-        Some(t) => {
-            ui.add(
-                egui::Image::new(t)
-                    .fit_to_exact_size(egui::Vec2::splat(size))
-                    .corner_radius(egui::CornerRadius::same((size * 0.28) as u8)),
-            );
-        }
-        None => avatar(ui, name, kind, size),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn card_row_with(
-    ui: &mut egui::Ui,
-    salt: impl std::hash::Hash + std::fmt::Debug,
-    name: &str,
-    kind: ChatKind,
-    picture: Option<&egui::TextureHandle>,
-    sub: &str,
-    sub_tone: egui::Color32,
-    right: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
-    let id = egui::Id::new(("community_row", salt));
-    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
-    let inner = egui::Frame::NONE
-        .fill(if hovered {
-            theme::p32().surface_hover
-        } else {
-            crate::systems::chats::row_card()
-        })
-        .shadow(theme::card_shadow())
-        .corner_radius(egui::CornerRadius::same(14))
-        .inner_margin(egui::Margin::symmetric(8, 7))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                face(ui, name, kind, picture, 40.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    right(ui);
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(name)
-                                    .size(15.0)
-                                    .color(theme::p32().cream),
-                            )
-                            .truncate(),
-                        );
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(sub).size(12.5).color(sub_tone))
-                                .wrap(),
-                        );
-                    });
-                });
-            });
-        });
-    ui.add_space(6.0);
-    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
-    theme::named(ui, resp, name)
-}
-
-fn badge(ui: &mut egui::Ui, text: &str, tone: egui::Color32) {
-    egui::Frame::NONE
-        .fill(tone.gamma_multiply(0.18))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(7, 2))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(11.5).color(tone));
-        });
-}
-
 // ── The communities in the Community list ─────────────────────────────────
 
 /// One community as a row of the Community list: one row per community,
@@ -1021,7 +738,6 @@ fn badge(ui: &mut egui::Ui, text: &str, tone: egui::Color32) {
 pub struct CommunityRow {
     pub id: Uuid,
     pub name: String,
-    pub picture: Option<egui::TextureHandle>,
     /// "# bankjes · Anna: de nieuwe bank staat er", or what the community is
     /// waiting for.
     pub preview: String,
@@ -1032,17 +748,14 @@ pub struct CommunityRow {
 }
 
 /// Every community this account is in or asked to join, as list rows.
-/// `unread` counts a chat's unread lines. `ctx` loads their pictures; the
-/// component library's list (`lib_chats`), which draws none, passes `None`.
+/// `unread` counts a chat's unread lines.
 pub fn list_rows(
-    ctx: Option<&egui::Context>,
-    communities: &mut Communities,
+    communities: &Communities,
     chat: &ChatState,
     unread: &dyn Fn(&str) -> usize,
 ) -> Vec<CommunityRow> {
     let mut out = Vec::new();
-    for c in communities.list.clone() {
-        let picture = ctx.and_then(|ctx| communities.picture(ctx, c.settings.picture.as_deref()));
+    for c in &communities.list {
         let joined: Vec<_> = c
             .topics
             .iter()
@@ -1104,147 +817,12 @@ pub fn list_rows(
         out.push(CommunityRow {
             id: c.id,
             name: c.settings.name.clone(),
-            picture,
             preview,
             at_ms,
             unread: waiting,
         });
     }
     out
-}
-
-// ── The screens ───────────────────────────────────────────────────────────
-
-/// Draw whichever community screen is up. `me` is this account's full
-/// address.
-pub fn screen(ui: &mut egui::Ui, communities: &mut Communities, me: &str) -> Out {
-    let mut out = Out::default();
-    let Some(screen) = communities.screen.clone() else {
-        return out;
-    };
-    // How deep a screen is, for the turn's direction: a community under the
-    // list, its people and its form under the community.
-    let depth = |s: &Screen| match s {
-        Screen::Find | Screen::Create | Screen::Invite(_) | Screen::PostTo | Screen::Activity => 1,
-        Screen::Preview(_) | Screen::Community(_) => 2,
-        Screen::Edit(_) | Screen::People(_) => 3,
-    };
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            crate::systems::motion::page_turn(
-                ui,
-                egui::Id::new("community_screen"),
-                screen.clone(),
-                depth(&screen),
-                |ui, screen| match screen {
-                    Screen::Find => find_screen(ui, communities, &mut out),
-                    Screen::Preview(id) => preview_screen(ui, communities, id, &mut out),
-                    Screen::Create => create_screen(ui, communities, &mut out),
-                    Screen::Community(id) => {
-                        community_screen(ui, communities, id, me, &mut out);
-                    }
-                    Screen::Edit(id) => edit_screen(ui, communities, id, &mut out),
-                    Screen::People(id) => people_screen(ui, communities, id, me, &mut out),
-                    Screen::Invite(code) => invite_screen(ui, communities, &code, &mut out),
-                    Screen::PostTo => {
-                        crate::systems::community_posts::pick_community(ui, communities);
-                    }
-                    Screen::Activity => {
-                        crate::systems::community_posts::activity_screen(ui, communities);
-                    }
-                },
-            );
-        });
-    out
-}
-
-fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
-    if title_row(ui, "Find a community", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    let field = crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut cs.query)
-            .id(egui::Id::new("communities_find"))
-            .desired_width(ui.available_width())
-            .hint_text("Search names and descriptions"),
-    );
-    let mut order = cs.order.unwrap_or(DirectoryOrder::Popular);
-    let changed = theme::segmented(
-        ui,
-        &mut order,
-        &[
-            (DirectoryOrder::Popular, "Popular"),
-            (DirectoryOrder::Near, "Near you"),
-            (DirectoryOrder::New, "New"),
-        ],
-    );
-    if changed || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-        tap(cs, Tap::Find(order), out);
-    }
-    if order == DirectoryOrder::Near {
-        theme::note(
-            ui,
-            "Communities pinned to a place, nearest to where the map is first.",
-        );
-    }
-    ui.add_space(6.0);
-    if cs.directory.is_empty() {
-        theme::empty_state(
-            ui,
-            "No communities found",
-            "Only communities that chose to be listed appear here. Start one with the + on the chat list.",
-        );
-    }
-    for l in cs.directory.clone() {
-        let mut sub = format!(
-            "{} · {} {}",
-            if l.about.is_empty() {
-                "No description"
-            } else {
-                &l.about
-            },
-            l.members,
-            if l.members == 1 { "person" } else { "people" },
-        );
-        if let Some(d) = l.distance_m {
-            sub = format!("{} · {sub}", distance_words(d));
-        }
-        let picture = cs.picture(ui.ctx(), l.picture.as_deref());
-        let resp = card_row_with(
-            ui,
-            ("find", l.id),
-            &l.name,
-            ChatKind::Community,
-            picture.as_ref(),
-            &sub,
-            theme::p32().text_dim,
-            |ui| match l.mine {
-                ListingState::Member => badge(ui, "You're in", theme::p32().accent),
-                ListingState::Asked => badge(ui, "Asked", theme::p32().text_dim),
-                ListingState::Refused => badge(ui, "Can't join", theme::p32().error),
-                ListingState::Outside => badge(ui, rule_word(l.join), rule_tone(l.join)),
-            },
-        );
-        if resp.clicked() {
-            tap(cs, Tap::Listing(l.id, l.mine), out);
-        }
-    }
-    theme::section(ui, "Have an invite?");
-    ui.horizontal(|ui| {
-        crate::systems::theme::text_field(
-            ui,
-            egui::TextEdit::singleline(&mut cs.invite_input)
-                .id(egui::Id::new("communities_invite_input"))
-                .desired_width(ui.available_width() - 70.0)
-                .hint_text("Paste the link or the code"),
-        );
-        if theme::action_button(ui, "Open").clicked() {
-            tap(cs, Tap::OpenTypedInvite, out);
-        }
-    });
 }
 
 /// "350 m away", "4.2 km away".
@@ -1258,52 +836,6 @@ pub(crate) fn distance_words(m: f64) -> String {
     }
 }
 
-fn hero(
-    ui: &mut egui::Ui,
-    name: &str,
-    picture: Option<&egui::TextureHandle>,
-    about: &str,
-    line: &str,
-) {
-    ui.vertical_centered(|ui| {
-        face(ui, name, ChatKind::Community, picture, 64.0);
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(name)
-                .size(21.0)
-                .color(theme::p32().cream),
-        );
-        if !about.is_empty() {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(about)
-                        .size(13.5)
-                        .color(theme::p32().text_dim),
-                )
-                .wrap(),
-            );
-        }
-        if !line.is_empty() {
-            ui.label(
-                egui::RichText::new(line)
-                    .size(12.5)
-                    .color(theme::p32().text_dim),
-            );
-        }
-    });
-    ui.add_space(8.0);
-}
-
-/// A listing's picture, name, description, size and place.
-fn listing_hero(ui: &mut egui::Ui, cs: &mut Communities, l: &CommunityListing) {
-    let picture = cs.picture(ui.ctx(), l.picture.as_deref());
-    let mut line = format!("{} people · {}", l.members, rule_word(l.join));
-    if let Some(p) = &l.place {
-        line = format!("{line}\n{} {}", icons::PIN, place_words(p));
-    }
-    hero(ui, &l.name, picture.as_ref(), &l.about, &line);
-}
-
 /// "Grote Markt, Groningen" or the coordinates, when it was given no name.
 pub(crate) fn place_words(p: &CommunityPlace) -> String {
     if p.name.trim().is_empty() {
@@ -1311,890 +843,6 @@ pub(crate) fn place_words(p: &CommunityPlace) -> String {
     } else {
         p.name.clone()
     }
-}
-
-/// Somebody opened an invite link: the community it names, and Join.
-fn invite_screen(ui: &mut egui::Ui, cs: &mut Communities, code: &str, out: &mut Out) {
-    if title_row(ui, "Invitation", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    let Some(l) = cs.directory.first().cloned() else {
-        if cs.invite_refused {
-            theme::note(
-                ui,
-                "This invite does not work any more. Ask whoever sent it for a new one.",
-            );
-        } else {
-            theme::note(ui, "Looking the invite up…");
-        }
-        return;
-    };
-    listing_hero(ui, cs, &l);
-    if l.mine == ListingState::Member {
-        if theme::primary_button_sized(ui, "Open", ui.available_width()).clicked() {
-            tap(cs, Tap::Show(l.id), out);
-        }
-        return;
-    }
-    theme::note(ui, "You were invited, so you join straight away.");
-    if theme::primary_button_sized(ui, "Join", ui.available_width()).clicked() {
-        tap(cs, Tap::JoinInvite(code.to_string(), l.id), out);
-    }
-}
-
-fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
-    if title_row(ui, "Community", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    let Some(l) = cs.directory.iter().find(|l| l.id == id).cloned() else {
-        theme::note(ui, "This community is no longer listed.");
-        return;
-    };
-    listing_hero(ui, cs, &l);
-    if !l.topics.is_empty() {
-        theme::section(ui, "Topics");
-        ui.horizontal_wrapped(|ui| {
-            for t in &l.topics {
-                badge(ui, &format!("# {t}"), theme::p32().text_dim);
-            }
-        });
-    }
-    theme::section(ui, "Moderators");
-    for m in &l.moderators {
-        let who = shown(&m.address, "");
-        let r = card_row(
-            ui,
-            ("mod", &m.address),
-            &who,
-            ChatKind::Private,
-            role_word(m.role),
-            theme::p32().text_dim,
-            |_| {},
-        );
-        if r.clicked() {
-            tap(cs, Tap::Message(m.address.clone()), out);
-        }
-    }
-    ui.add_space(8.0);
-    match (l.mine, l.join) {
-        (ListingState::Member, _) => {
-            if theme::primary_button_sized(ui, "Open", ui.available_width()).clicked() {
-                tap(cs, Tap::Show(id), out);
-            }
-        }
-        (ListingState::Asked, _) => {
-            theme::note(ui, "You asked to join. A moderator will answer.");
-            if theme::action_button(ui, "Withdraw the request").clicked() {
-                tap(cs, Tap::Withdraw(id, true), out);
-            }
-        }
-        (ListingState::Refused, _) => {
-            theme::note(ui, "You can't ask to join this community again yet.");
-        }
-        (ListingState::Outside, JoinRule::Invite) => {
-            theme::note(ui, "Only people a moderator adds can join this community.");
-        }
-        (ListingState::Outside, JoinRule::Open) => {
-            if theme::primary_button_sized(ui, "Join", ui.available_width()).clicked() {
-                tap(cs, Tap::Join(id), out);
-            }
-        }
-        (ListingState::Outside, JoinRule::Ask) => {
-            raised_frame().show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("A moderator confirms new members.")
-                        .color(theme::p32().cream),
-                );
-                theme::note(
-                    ui,
-                    "Say who you are; they see your name and this message, nothing else.",
-                );
-                crate::systems::theme::text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut cs.join_message)
-                        .id(egui::Id::new("communities_join_message"))
-                        .desired_width(ui.available_width())
-                        .hint_text("A line to the moderators (optional)"),
-                );
-            });
-            ui.add_space(6.0);
-            if theme::primary_button_sized(ui, "Ask to join", ui.available_width()).clicked() {
-                tap(cs, Tap::AskToJoin(id), out);
-            }
-        }
-    }
-}
-
-fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
-    ui.label(
-        egui::RichText::new("Name")
-            .size(12.5)
-            .color(theme::p32().text_dim),
-    );
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut d.name)
-            .id(egui::Id::new("communities_name"))
-            .desired_width(ui.available_width())
-            .hint_text("Garage 44"),
-    );
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("What is it for? (optional)")
-            .size(12.5)
-            .color(theme::p32().text_dim),
-    );
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut d.about)
-            .id(egui::Id::new("communities_about"))
-            .desired_width(ui.available_width())
-            .hint_text("Building cartopolis together"),
-    );
-    theme::section(ui, "Who can join");
-    theme::segmented(
-        ui,
-        &mut d.join,
-        &[
-            (JoinRule::Open, "Anyone"),
-            (JoinRule::Ask, "Asks first"),
-            (JoinRule::Invite, "Invite only"),
-        ],
-    );
-    theme::note(
-        ui,
-        match d.join {
-            JoinRule::Open => "Anyone who finds it joins straight away.",
-            JoinRule::Ask => "Anyone may ask; a moderator confirms.",
-            JoinRule::Invite => "Only people a moderator adds.",
-        },
-    );
-    ui.add_space(4.0);
-    theme::checkbox(ui, &mut d.listed, "Show in Find a community");
-    theme::note(
-        ui,
-        "Listed: its name, description, topic names, moderators and size are public on this server.",
-    );
-    theme::checkbox(ui, &mut d.members_start_topics, "Members may start topics");
-}
-
-/// The picture and the place, under the settings when starting or editing.
-fn picture_and_place(ui: &mut egui::Ui, cs: &mut Communities) {
-    theme::section(ui, "Picture");
-    let picture = cs.picture(ui.ctx(), cs.draft.picture.clone().as_deref());
-    ui.horizontal(|ui| {
-        face(
-            ui,
-            &cs.draft.name,
-            ChatKind::Community,
-            picture.as_ref(),
-            48.0,
-        );
-        let busy = picture_busy(cs);
-        if crate::platform::photo::is_available()
-            && !busy
-            && theme::action_button(ui, format!("{} Choose", icons::CAMERA)).clicked()
-        {
-            tap(cs, Tap::ChoosePicture, &mut Out::default());
-        }
-        if cs.draft.picture.is_some() && !busy && theme::action_button(ui, "Remove").clicked() {
-            tap(cs, Tap::RemovePicture, &mut Out::default());
-        }
-    });
-    if let Some(note) = &cs.picture_note {
-        theme::note(ui, note);
-    }
-    theme::section(ui, "Place");
-    match cs.draft.place.clone() {
-        Some(mut p) => {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(icons::PIN).color(theme::BRAND));
-                crate::systems::theme::text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut p.name)
-                        .id(egui::Id::new("communities_place_name"))
-                        .desired_width(ui.available_width() - 80.0)
-                        .hint_text("Name the place"),
-                );
-                if theme::action_button(ui, "Remove").clicked() {
-                    tap(cs, Tap::RemovePlace, &mut Out::default());
-                } else {
-                    cs.draft.place = Some(p.clone());
-                }
-            });
-            theme::note(
-                ui,
-                &format!(
-                    "Pinned at {:.4}, {:.4}. Near you lists it for people around here.",
-                    p.latitude, p.longitude
-                ),
-            );
-        }
-        None => {
-            if cs.here.is_some()
-                && theme::action_button(ui, format!("{} Pin it where the map is", icons::PIN))
-                    .clicked()
-            {
-                tap(cs, Tap::PinPlace, &mut Out::default());
-            }
-            theme::note(
-                ui,
-                "A community about somewhere can be pinned there, so people nearby find it.",
-            );
-        }
-    }
-}
-
-fn create_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
-    if title_row(ui, "New community", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    settings_form(ui, &mut cs.draft);
-    picture_and_place(ui, cs);
-    theme::section(ui, "Topics to start with");
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut cs.draft.topics)
-            .id(egui::Id::new("communities_topics"))
-            .desired_width(ui.available_width())
-            .hint_text("general, meet-ups (separated by commas)"),
-    );
-    theme::section(ui, "People");
-    crate::systems::theme::text_field(
-        ui,
-        egui::TextEdit::singleline(&mut cs.draft.people)
-            .id(egui::Id::new("communities_people"))
-            .desired_width(ui.available_width())
-            .hint_text("Usernames, separated by commas (optional)"),
-    );
-    ui.add_space(10.0);
-    let ready = create_ready(cs);
-    if theme::action_enabled_because(ui, ready, "Start the community", "Give it a name first")
-        .clicked()
-    {
-        tap(cs, Tap::Create, out);
-    }
-    theme::note(
-        ui,
-        "What is said in a community is end-to-end encrypted, like every private chat.",
-    );
-}
-
-#[allow(clippy::too_many_lines)]
-fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
-    use crate::systems::community_posts as posts;
-    // Writing a post is the page: its title row, then the text field first
-    // (`posts::compose_page`). Post sits in the row, as the mockup draws it
-    // (`docs/mockups/communities/`, B), so it is in sight from the start.
-    let composing = posts::composing(cs, id);
-    if composing {
-        let ready = posts::ready_to_post(cs);
-        let mut send = false;
-        let label = if cs.posts.sending {
-            "Posting…"
-        } else {
-            "Post"
-        };
-        let back = title_row_with(ui, "New post", out, |ui| {
-            send = ui
-                .add_enabled_ui(ready, |ui| theme::header_action(ui, label))
-                .inner
-                .clicked();
-        });
-        if back {
-            tap(cs, Tap::Back, out);
-            return;
-        }
-        if send {
-            posts::composer_act(cs, posts::ComposerAction::Post);
-        }
-    }
-    let Some(c) = cs.get(id).cloned() else {
-        if title_row(ui, "", out) {
-            tap(cs, Tap::Back, out);
-            return;
-        }
-        theme::note(ui, "You are no longer in this community.");
-        return;
-    };
-    if composing {
-        posts::compose_page(ui, cs, &c);
-        return;
-    }
-    let picture = cs.picture(ui.ctx(), c.settings.picture.as_deref());
-    let Some(role) = c.role else {
-        if title_row(ui, "", out) {
-            tap(cs, Tap::Back, out);
-            return;
-        }
-        hero(
-            ui,
-            &c.settings.name,
-            picture.as_ref(),
-            &c.settings.about,
-            "",
-        );
-        theme::note(ui, "You asked to join. A moderator will answer.");
-        if theme::action_button(ui, "Withdraw the request").clicked() {
-            tap(cs, Tap::Withdraw(id, false), out);
-        }
-        return;
-    };
-    let moderates = role.moderates();
-    // The page's head as the communities mockup draws it (`docs/mockups/
-    // communities/`, A): the picture beside the name with the facts under
-    // it, in one row with the back chevron and the close — not a 64 pt
-    // portrait centred over three lines, which on a phone was the whole first
-    // screen before the first post (the composer had the same fault).
-    let place = c
-        .settings
-        .place
-        .as_ref()
-        .map(|p| format!(" · {} {}", icons::PIN, place_words(p)))
-        .unwrap_or_default();
-    let facts = format!(
-        "{} people · {} · {}{place}",
-        c.members.len(),
-        rule_word(c.settings.join),
-        if c.settings.listed {
-            "listed"
-        } else {
-            "unlisted"
-        }
-    );
-    if page_head(ui, &c.settings.name, picture.as_ref(), &facts, out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    if !c.settings.about.trim().is_empty() {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(c.settings.about.trim())
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p32().text_dim),
-            )
-            .wrap(),
-        );
-        ui.add_space(4.0);
-    }
-    let may_start = moderates || c.settings.members_start_topics;
-    // One card of actions (`theme::action_strip`), each an icon over its word.
-    // "Invite", not "People": two cells that read "People" did two different
-    // things; the people are "People 5".
-    #[derive(Clone, Copy)]
-    enum Act {
-        Invite,
-        Topic,
-        People,
-        Edit,
-    }
-    let people_word = format!("People {}", c.members.len());
-    let mut acts: Vec<(Act, (&str, &str, bool))> = Vec::new();
-    if moderates {
-        acts.push((Act::Invite, (icons::ADD, "Invite", cs.adding)));
-    }
-    if may_start {
-        acts.push((Act::Topic, (icons::ADD, "New topic", cs.starting_topic)));
-    }
-    acts.push((Act::People, (icons::GROUP, people_word.as_str(), false)));
-    if moderates {
-        acts.push((Act::Edit, (icons::SETTINGS, "Edit", false)));
-    }
-    let cells: Vec<_> = acts.iter().map(|(_, cell)| *cell).collect();
-    match theme::action_strip(ui, &cells).map(|i| acts[i].0) {
-        Some(Act::Invite) => tap(cs, Tap::ToggleAdding, out),
-        Some(Act::Topic) => tap(cs, Tap::ToggleTopic, out),
-        Some(Act::People) => tap(cs, Tap::People(id), out),
-        Some(Act::Edit) => tap(cs, Tap::Edit(id), out),
-        None => {}
-    }
-    if cs.adding {
-        raised_frame().show(ui, |ui| {
-            crate::systems::theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut cs.add_people)
-                    .id(egui::Id::new("communities_add_people"))
-                    .desired_width(ui.available_width())
-                    .hint_text("Usernames, separated by commas"),
-            );
-            theme::note(
-                ui,
-                "They'll be in every topic, and get the recent history from whoever adds them.",
-            );
-            if theme::action_button(ui, "Add").clicked() {
-                tap(cs, Tap::AddPeople(id), out);
-            }
-            ui.separator();
-            match cs.invite.clone().filter(|(i, _)| *i == id) {
-                Some((_, code)) => {
-                    let link = crate::systems::place_link::invite_link(&code);
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&link).color(theme::p32().cream).size(13.0))
-                            .wrap(),
-                    );
-                    ui.horizontal(|ui| {
-                        if theme::action_button(ui, format!("{} Copy", icons::COPY)).clicked() {
-                            tap(cs, Tap::CopyInvite(link.clone()), out);
-                        }
-                        if theme::action_button(ui, "New link").clicked() {
-                            tap(cs, Tap::Ops(vec![CommunityOp::CreateInvite(id)]), out);
-                        }
-                    });
-                    theme::note(
-                        ui,
-                        &format!(
-                            "Whoever has the link joins straight away, for {} days. People you removed with a block still can't.",
-                            cartopolis_core::COMMUNITY_INVITE_DAYS
-                        ),
-                    );
-                }
-                None => {
-                    if theme::action_button(ui, format!("{} Make an invite link", icons::SHARE))
-                        .clicked()
-                    {
-                        tap(cs, Tap::Ops(vec![CommunityOp::CreateInvite(id)]), out);
-                    }
-                }
-            }
-        });
-    }
-    if cs.starting_topic {
-        raised_frame().show(ui, |ui| {
-            crate::systems::theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut cs.new_topic)
-                    .id(egui::Id::new("communities_new_topic"))
-                    .desired_width(ui.available_width())
-                    .hint_text("Topic name, e.g. meet-ups"),
-            );
-            if theme::action_button(ui, "Start topic").clicked() {
-                tap(cs, Tap::StartTopic(id), out);
-            }
-        });
-    }
-    // What waits for a moderator, as one row: the queue opened the page,
-    // and the posts the page is for started below the fold
-    // (`docs/mockups/ux-review`). Members never see it.
-    let waiting = if moderates {
-        c.requests.len() + c.reports.len()
-    } else {
-        0
-    };
-    if waiting > 0 {
-        review_row(ui, cs, &c, waiting);
-    }
-    let reviewing = cs.reviewing && waiting > 0;
-    if reviewing && !c.requests.is_empty() {
-        theme::section(ui, &format!("Asking to join ({})", c.requests.len()));
-        for r in &c.requests {
-            let who = shown(&r.address, &c.home);
-            let line = if r.message.is_empty() {
-                "No message".to_string()
-            } else {
-                format!("\u{201c}{}\u{201d}", r.message)
-            };
-            card_row(
-                ui,
-                ("req", &r.address),
-                &who,
-                ChatKind::Private,
-                &line,
-                theme::p32().text_dim,
-                |ui| {
-                    // On a phone the word leaves the request's own message one
-                    // word per line; the tick beside the cross says it alone.
-                    let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-                    let (word, w) = if ui.available_width() < 300.0 {
-                        ("", side)
-                    } else {
-                        ("Let in", 0.0)
-                    };
-                    if theme::secondary_button(ui, icons::CHECK, word, w)
-                        .on_hover_text("Let in")
-                        .clicked()
-                    {
-                        cs.ops
-                            .push(CommunityOp::Decide(id, r.address.clone(), true));
-                    }
-                    let side = theme::PRIMARY_BUTTON_HEIGHT.max(theme::row_height());
-                    let turn_down = theme::secondary_button(ui, icons::CLEAR, "", side);
-                    if theme::named(ui, turn_down, "Turn down")
-                        .on_hover_text("Turn down")
-                        .clicked()
-                    {
-                        cs.ops
-                            .push(CommunityOp::Decide(id, r.address.clone(), false));
-                    }
-                },
-            );
-        }
-        theme::note(
-            ui,
-            "Letting someone in adds them to every topic. A refusal stands for a week.",
-        );
-    }
-    if reviewing && !c.reports.is_empty() {
-        theme::section(ui, &format!("Reports ({})", c.reports.len()));
-        for r in &c.reports {
-            raised_frame().show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} reported {} · {}",
-                        shown(&r.reporter, &c.home),
-                        shown(&r.reported, &c.home),
-                        r.reason.label()
-                    ))
-                    .size(12.5)
-                    .color(theme::p32().text_dim),
-                );
-                if !r.line.is_empty() {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("\u{201c}{}\u{201d}", r.line))
-                                .color(theme::p32().cream),
-                        )
-                        .wrap(),
-                    );
-                }
-                if !r.note.is_empty() {
-                    theme::note(ui, &r.note);
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let w = theme::equal_width(ui, 3);
-                    if theme::secondary_button(ui, icons::DELETE, "Message", w)
-                        .on_hover_text("Delete the message")
-                        .clicked()
-                    {
-                        cs.ops
-                            .push(CommunityOp::ModerateDelete(r.group.clone(), r.seq));
-                        cs.ops.push(CommunityOp::ResolveReport(id, r.id));
-                    }
-                    if theme::confirm_button(
-                        ui,
-                        egui::Id::new(("report_remove", r.id)),
-                        "Remove",
-                        "Remove them?",
-                    ) {
-                        cs.ops.push(CommunityOp::Remove {
-                            id,
-                            who: r.reported.clone(),
-                            topic: None,
-                            block: false,
-                        });
-                        cs.ops.push(CommunityOp::ResolveReport(id, r.id));
-                    }
-                    if theme::secondary_button(ui, icons::CHECK, "Dismiss", w)
-                        .on_hover_text("Nothing to do: close the report")
-                        .clicked()
-                    {
-                        cs.ops.push(CommunityOp::ResolveReport(id, r.id));
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        }
-    }
-    // The two halves: public posts and the encrypted topics
-    // (`community_posts`).
-    ui.add_space(8.0);
-    let tab = crate::systems::community_posts::tabs(ui, cs, id, c.topics.len());
-    ui.add_space(6.0);
-    if tab == crate::systems::community_posts::Tab::Posts {
-        crate::systems::community_posts::posts_tab(ui, cs, &c, out);
-    } else {
-        topics_list(ui, cs, &c, out);
-    }
-    ui.add_space(10.0);
-    if role == CommunityRole::Owner {
-        theme::note(
-            ui,
-            "You own this community. Hand it over on People before leaving.",
-        );
-    } else if theme::confirm_button(
-        ui,
-        egui::Id::new(("communities_leave", id)),
-        "Leave the community",
-        "Leave: tap again",
-    ) {
-        tap(cs, Tap::Leave(id), out);
-    }
-    let _ = me;
-}
-
-/// The one row that stands for a moderator's queue: how much waits, of what,
-/// and the button that opens it.
-fn review_row(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, waiting: usize) {
-    let mut parts = Vec::new();
-    match c.requests.len() {
-        0 => {}
-        1 => parts.push("1 asking to join".to_string()),
-        n => parts.push(format!("{n} asking to join")),
-    }
-    match c.reports.len() {
-        0 => {}
-        1 => parts.push("1 report".to_string()),
-        n => parts.push(format!("{n} reports")),
-    }
-    ui.add_space(8.0);
-    raised_frame().show(ui, |ui| {
-        ui.horizontal(|ui| {
-            let side = theme::PRIMARY_BUTTON_HEIGHT;
-            let label = if cs.reviewing { "Hide" } else { "Review" };
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::secondary_toggle(ui, "", label, 0.0, cs.reviewing).clicked() {
-                    tap(cs, Tap::ToggleReview, &mut Out::default());
-                }
-                ui.add_space(4.0);
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.set_min_height(side);
-                    let title = if waiting == 1 {
-                        "1 thing waits for you".to_string()
-                    } else {
-                        format!("{waiting} things wait for you")
-                    };
-                    ui.label(
-                        egui::RichText::new(title)
-                            .size(theme::SIZE_BODY)
-                            .color(theme::p32().warn),
-                    );
-                    ui.label(
-                        egui::RichText::new(parts.join(" · "))
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p32().text_dim),
-                    );
-                });
-            });
-        });
-    });
-}
-
-/// The encrypted half of a community page.
-fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &mut Out) {
-    ui.label(
-        egui::RichText::new(format!(
-            "{}  Members only, end-to-end encrypted. Never on the fediverse.",
-            icons::LOCK
-        ))
-        .size(theme::SIZE_SUB)
-        .color(theme::p32().text_dim),
-    );
-    for t in &c.topics {
-        let key = channel_key(&t.group);
-        let sub = if t.archived {
-            "Archived: its history stays, nothing new"
-        } else if t.joined {
-            "Open"
-        } else {
-            "Being added…"
-        };
-        let r = card_row(
-            ui,
-            ("topic", &key),
-            &format!("# {}", t.name),
-            ChatKind::Topic,
-            sub,
-            theme::p32().text_dim,
-            |ui| {
-                if t.joined {
-                    let muted = cs.is_muted(&key);
-                    if theme::action_button(ui, if muted { "Unmute" } else { "Mute" })
-                        .on_hover_text("Muted topics show no count. Only this device knows.")
-                        .clicked()
-                    {
-                        tap(cs, Tap::Mute(key.clone(), !muted), &mut Out::default());
-                    }
-                }
-            },
-        );
-        if r.clicked() && t.joined {
-            tap(cs, Tap::Open(key), out);
-        }
-    }
-    theme::note(
-        ui,
-        "Everyone here is in every topic. Somebody added later is given the last 300 messages of each by whoever adds them.",
-    );
-}
-
-fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out) {
-    if title_row(ui, "Edit community", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    let Some(c) = cs.get(id).cloned() else {
-        cs.screen = None;
-        return;
-    };
-    settings_form(ui, &mut cs.draft);
-    picture_and_place(ui, cs);
-    if !cs.draft.topic_edits.is_empty() {
-        theme::section(ui, "Topics");
-        for (i, t) in cs.draft.topic_edits.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("#").color(theme::p32().text_dim));
-                crate::systems::theme::text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut t.name)
-                        .id(egui::Id::new(("communities_topic_edit", i)))
-                        .desired_width(ui.available_width() - 110.0),
-                );
-                theme::checkbox(ui, &mut t.archived, "Archived");
-            });
-        }
-    }
-    ui.add_space(10.0);
-    if theme::primary_button_sized(ui, "Save", ui.available_width()).clicked() {
-        tap(cs, Tap::Save(id), out);
-    }
-    if c.role == Some(CommunityRole::Owner) {
-        theme::section(ui, "Danger");
-        if theme::confirm_button(
-            ui,
-            egui::Id::new(("communities_delete", id)),
-            "Delete the community",
-            "Delete it and every topic: tap again",
-        ) {
-            tap(cs, Tap::Delete(id), out);
-        }
-    }
-}
-
-fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, out: &mut Out) {
-    if title_row(ui, "People", out) {
-        tap(cs, Tap::Back, out);
-        return;
-    }
-    let Some(c) = cs.get(id).cloned() else {
-        cs.screen = None;
-        return;
-    };
-    let mine = c.role.unwrap_or(CommunityRole::Member);
-    let mut section = |ui: &mut egui::Ui, title: &str, running: bool| {
-        theme::section(ui, title);
-        for m in c.members.iter().filter(|m| m.role.moderates() == running) {
-            let who = shown(&m.address, &c.home);
-            let is_me = m.address.eq_ignore_ascii_case(me);
-            let row = card_row(
-                ui,
-                ("person", &m.address),
-                &who,
-                ChatKind::Private,
-                if is_me { "You" } else { role_word(m.role) },
-                theme::p32().text_dim,
-                |ui| {
-                    if !is_me {
-                        ui.label(egui::RichText::new(icons::MORE).color(theme::p32().text_dim));
-                    }
-                },
-            );
-            if is_me {
-                continue;
-            }
-            row.context_menu(|ui| {
-                ui.label(egui::RichText::new(&who).strong().color(theme::p32().cream));
-                ui.separator();
-                if theme::menu_entry(ui, icons::CHAT, "Message").clicked() {
-                    out.message = Some(m.address.clone());
-                    ui.close();
-                }
-                if mine == CommunityRole::Owner {
-                    if m.role == CommunityRole::Member
-                        && theme::menu_entry(ui, icons::HOST, "Make moderator").clicked()
-                    {
-                        cs.ops.push(CommunityOp::SetRole(
-                            id,
-                            m.address.clone(),
-                            CommunityRole::Moderator,
-                        ));
-                        ui.close();
-                    }
-                    if m.role == CommunityRole::Moderator
-                        && theme::menu_entry(ui, icons::HOST, "Stop being a moderator").clicked()
-                    {
-                        cs.ops.push(CommunityOp::SetRole(
-                            id,
-                            m.address.clone(),
-                            CommunityRole::Member,
-                        ));
-                        ui.close();
-                    }
-                    if theme::menu_entry(ui, icons::KEY, "Hand the community over").clicked() {
-                        cs.ops.push(CommunityOp::SetRole(
-                            id,
-                            m.address.clone(),
-                            CommunityRole::Owner,
-                        ));
-                        ui.close();
-                    }
-                }
-                let may_remove = match m.role {
-                    CommunityRole::Owner => false,
-                    CommunityRole::Moderator => mine == CommunityRole::Owner,
-                    CommunityRole::Member => mine.moderates(),
-                };
-                if may_remove {
-                    ui.separator();
-                    for t in c.topics.iter().filter(|t| !t.archived) {
-                        if theme::menu_entry_danger(
-                            ui,
-                            icons::PERSON_REMOVE,
-                            &format!("Remove from # {}", t.name),
-                        )
-                        .clicked()
-                        {
-                            cs.ops.push(CommunityOp::Remove {
-                                id,
-                                who: m.address.clone(),
-                                topic: Some(t.group.clone()),
-                                block: false,
-                            });
-                            ui.close();
-                        }
-                    }
-                    if theme::menu_entry_danger(
-                        ui,
-                        icons::PERSON_REMOVE,
-                        "Remove from the community",
-                    )
-                    .clicked()
-                    {
-                        cs.ops.push(CommunityOp::Remove {
-                            id,
-                            who: m.address.clone(),
-                            topic: None,
-                            block: false,
-                        });
-                        ui.close();
-                    }
-                    if theme::menu_entry_danger(
-                        ui,
-                        icons::PERSON_REMOVE,
-                        "Remove and block from rejoining",
-                    )
-                    .clicked()
-                    {
-                        cs.ops.push(CommunityOp::Remove {
-                            id,
-                            who: m.address.clone(),
-                            topic: None,
-                            block: true,
-                        });
-                        ui.close();
-                    }
-                }
-            });
-        }
-    };
-    section(ui, "Running it", true);
-    section(ui, "Members", false);
-    theme::note(
-        ui,
-        "Tap and hold a person for what you can do. Only the owner appoints moderators.",
-    );
 }
 
 /// What a topic's chat header says under its name, and the community it opens.
@@ -2211,43 +859,6 @@ pub fn topic_header(communities: &Communities, key: &str) -> Option<(String, Str
         ),
         c.id,
     ))
-}
-
-/// "Delete this account?" for a server admin, over everything: deleting an
-/// account cannot be undone, so it is never one tap in a context menu.
-pub fn confirm_account_delete(ctx: &egui::Context, cs: &mut Communities) {
-    let Some(who) = cs.confirm_delete.clone() else {
-        return;
-    };
-    let mut yes = false;
-    let mut no = false;
-    egui::Window::new("Delete account")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Delete {who}'s account? Their devices, memberships and contacts go, \
-                     and it cannot be undone."
-                ))
-                .color(theme::p32().cream),
-            );
-            ui.horizontal(|ui| {
-                yes = theme::action_button(
-                    ui,
-                    egui::RichText::new("Delete the account").color(theme::p32().error),
-                )
-                .clicked();
-                no = theme::action_button(ui, "Cancel").clicked();
-            });
-        });
-    if yes {
-        cs.admin_act(who, true);
-    }
-    if yes || no {
-        cs.confirm_delete = None;
-    }
 }
 
 /// Communities for a scripted capture (`--ui communities` / `community` /
@@ -2452,53 +1063,26 @@ pub fn clear_demo(cs: &mut Communities) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
-
-    /// Run one frame of `title_row` with `events`, answering where its row
-    /// landed, whether back was pressed and what went into `out`.
-    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (egui::Rect, bool, bool) {
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 200.0));
-        let mut row = egui::Rect::NOTHING;
-        let mut back = false;
-        let mut out = Out::default();
-        let _ = ctx.run_ui_unpainted(
-            egui::RawInput {
-                screen_rect: Some(screen),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                let r = ui.scope(|ui| title_row(ui, "People", &mut out));
-                back = r.inner;
-                row = r.response.rect;
-            },
-        );
-        (row, back, out.close)
-    }
 
     /// Every community screen replaces the whole panel, the Community | World
-    /// switch with it, so its title row is the only way back to the map. A
-    /// page opened from a post's pin had a back chevron and nothing else.
+    /// switch with it, so its ✕ is the only way back to the map. A page
+    /// opened from a post's pin had a back chevron and nothing else. The ✕
+    /// closes without going back; back goes one screen up.
     #[test]
-    fn the_title_row_closes_the_panel_without_going_back() {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let (row, _, _) = frame(&ctx, Vec::new());
-        // The ✕ is the last thing on the row, against its right edge; the
-        // 8 pt under the row is spacing, not row.
-        let at = egui::pos2(
-            row.right() - theme::close_button_size() / 2.0,
-            (row.top() + row.bottom() - 8.0) / 2.0,
-        );
-        let button = |pressed| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
+    fn close_leaves_the_screen_and_back_goes_up() {
+        let mut cs = Communities {
+            screen: Some(Screen::Preview(Uuid::nil())),
+            ..Default::default()
         };
-        frame(&ctx, vec![egui::Event::PointerMoved(at), button(true)]);
-        let (_, back, close) = frame(&ctx, vec![button(false)]);
-        assert!(close, "the ✕ did not ask the panel to close");
-        assert!(!back, "the ✕ also went back");
+        let mut out = Out::default();
+        tap(&mut cs, Tap::Close, &mut out);
+        assert!(out.close, "the ✕ did not ask the panel to close");
+        assert_eq!(
+            cs.screen,
+            Some(Screen::Preview(Uuid::nil())),
+            "the ✕ also went back"
+        );
+        tap(&mut cs, Tap::Back, &mut out);
+        assert_eq!(cs.screen, Some(Screen::Find), "back from a preview is Find");
     }
 }

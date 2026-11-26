@@ -329,11 +329,6 @@ pub struct RouteState {
     pub from_editing: bool,
     /// How much of the planner's sheet is up. See [`SheetDetent`].
     pub sheet: SheetDetent,
-    /// The finger on the sheet's grabber (`motion::grabber`).
-    // Unread until `lib_route`'s grabber drags the sheet; it only toggles
-    // the detent on a tap today.
-    #[allow(dead_code)]
-    pub sheet_drag: crate::systems::motion::SheetDrag,
     /// Where the sheet is, in UI points (y down, `min` the top-left corner);
     /// `None` when it is not up.
     ///
@@ -437,7 +432,6 @@ impl Default for RouteState {
             picking: None,
             from_editing: false,
             sheet: SheetDetent::default(),
-            sheet_drag: Default::default(),
             sheet_rect: None,
             generation: 0,
             solved_for: None,

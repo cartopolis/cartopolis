@@ -19,26 +19,23 @@
 //!   the place to itself. Offline the pick moves the view and the local avatar
 //!   with it, as there is no body in a shared world to keep apart from it.
 //!
-//! It is a floating `Area` like the dock and the main menu, deliberately not in
-//! the panel chain, and it follows the dock's suppression rules: driver
-//! mode, the on-screen keyboard and (on a compact viewport) an open panel each
-//! own the screen the card would float over. Suppression *hides* the card rather
-//! than closing it — the place survives a trip through the Route panel.
+//! It follows the dock's suppression rules: driver mode, the on-screen
+//! keyboard and (on a compact viewport) an open panel each own the screen the
+//! card would float over. Suppression *hides* the card rather than closing it
+//! — the place survives a trip through the Route panel.
 //!
-//! The component library draws it too (`lib_place_card`, `CARTO_UI_LIB=place_card`):
-//! with [`PlaceCard::lib`] on this system draws nothing, but still spends the
-//! pick, works out the suppression and the camera's side ([`PlaceView`]) and
-//! does the verb the library's card asks for — through [`PlaceCard::act`],
-//! the same code egui's buttons call.
+//! The component library draws it (`lib_place_card`); [`drive_place_card`]
+//! spends the pick, works out the suppression and the camera's side
+//! ([`PlaceView`]) and does the verb the library's card asks for, through
+//! [`PlaceCard::act`].
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::grid::AnchoredCamera;
 use crate::resources::{CameraState, RightPanel};
 use crate::systems::geo_nav::{self, GeoNavState, Teleport};
 use crate::systems::icons;
-use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 use uuid::Uuid;
 use web_time::Instant;
 
@@ -108,19 +105,13 @@ pub struct PlaceCard {
     pub place: Option<CardPlace>,
     /// How much of the card is up: the name and Route here, or the rest too.
     pub rest: crate::systems::motion::Rest,
-    /// The finger on its grabber.
-    pub drag: crate::systems::motion::SheetDrag,
     /// When Save last saved this place: its ✔ for a moment.
     saved_at: Option<Instant>,
-    /// The library draws the card (`lib_place_card`): egui's system draws
-    /// nothing, and publishes [`lib_view`](Self::lib_view) instead.
-    pub lib: bool,
-    /// What egui's system and the library's card pass each other while
-    /// `lib` is on.
+    /// What [`drive_place_card`] and the library's card pass each other.
     pub lib_view: PlaceView,
 }
 
-/// A verb on the place shown: one set, for both editions of the card.
+/// A verb on the place shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaceAction {
     /// Route here — to a person sharing their location, follow them.
@@ -137,8 +128,8 @@ pub enum PlaceAction {
     OpenOrigin,
 }
 
-/// The side of the card only egui's system can work out — the camera, the
-/// session, what owns the bottom of the screen — for the library's edition.
+/// The side of the card the library cannot work out itself — the camera, the
+/// session, what owns the bottom of the screen.
 #[derive(Default, Clone, PartialEq, Debug)]
 pub struct PlaceView {
     /// Something owns the bottom of the screen: the card steps aside.
@@ -149,7 +140,7 @@ pub struct PlaceView {
     pub online: bool,
     /// Save just saved it (its ✔).
     pub saved: bool,
-    /// A verb the library's card asked for, done by egui's system.
+    /// A verb the library's card asked for, done by [`drive_place_card`].
     pub action: Option<PlaceAction>,
 }
 
@@ -158,7 +149,6 @@ impl PlaceCard {
     pub fn open(&mut self, place: CardPlace) {
         self.place = Some(place);
         self.rest = crate::systems::motion::Rest::Peek;
-        self.drag = Default::default();
         self.saved_at = None;
     }
 
@@ -244,21 +234,11 @@ pub fn to_bridges(
     }
 }
 
-/// The card's two rests: there is not enough on a place for a third.
-const RESTS: [crate::systems::motion::Rest; 2] = [
-    crate::systems::motion::Rest::Peek,
-    crate::systems::motion::Rest::Full,
-];
-
-/// Width of the card. Fixed for the reason the main menu's is: this is an
-/// anchored, size-to-content `Area`, and content that reaches for the available
-/// width grows the card a little every frame.
-const CARD_WIDTH: f32 = 300.0;
-
-/// The place card, above the dock. See the module note.
+/// The place card's state, for the library's card above the dock: spends a
+/// pick, publishes [`PlaceView`], does the verb asked for. See the module note.
 #[allow(clippy::too_many_arguments)]
-pub fn render_place_card(
-    egui: EguiRef,
+pub fn drive_place_card(
+    metrics: Res<UiMetrics>,
     mut card: ResMut<PlaceCard>,
     mut nav: ResMut<GeoNavState>,
     mut right_panel: ResMut<RightPanel>,
@@ -300,7 +280,7 @@ pub fn render_place_card(
     let hidden = driver.active
         || keyboard.is_open()
         || menu.open
-        || (egui.compact() && !right_panel.is(RightPanel::None))
+        || (metrics.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
         || sharing;
     let cam = camera.get();
@@ -309,257 +289,31 @@ pub fn render_place_card(
         .map(|((cell, tf), anchor)| geo_nav::camera_geo(anchor, &globe, cell, tf));
     let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
 
-    // The library's edition is showing (`lib_place_card`): hand it the side
-    // only this system can work out, do the verb it asked for, draw nothing.
-    if card.lib {
-        // Read before taking, so a quiet frame leaves the resource unchanged.
-        let action = if card.lib_view.action.is_some() {
-            card.lib_view.action.take()
-        } else {
-            None
-        };
-        let view = PlaceView {
-            hidden,
-            distance: card
-                .place
-                .as_ref()
-                .zip(viewer)
-                .map(|(p, here)| geo_nav::distance_label(here, (p.lat, p.lng))),
-            online: session.is_online(),
-            saved: card.saved(),
-            action: None,
-        };
-        if card.lib_view != view {
-            card.lib_view = view;
-        }
-        if let (Some(a), Some(place)) = (action, card.place.clone()) {
-            card.act(a, &place, &mut nav, &mut store, &camera_state, altitude);
-            #[cfg(feature = "comms")]
-            to_bridges(a, &place, &mut bridges);
-        }
-        return;
-    }
-
-    // The card rises from the dock and sinks back (`motion::linger`): the place
-    // it was showing is still drawn, untouchable, for the last `motion::LEAVE`
-    // after `card.place` is cleared.
-    let ctx = egui.ctx();
-    let Some((place, pres)) = crate::systems::motion::linger(
-        ctx,
-        egui::Id::new("place_card"),
-        if hidden { None } else { card.place.clone() },
-    ) else {
-        return;
+    // Hand the library's card the side only this system can work out, and do
+    // the verb it asked for. Read before taking, so a quiet frame leaves the
+    // resource unchanged.
+    let action = if card.lib_view.action.is_some() {
+        card.lib_view.action.take()
+    } else {
+        None
     };
-
-    let saved = card.saved();
-    let mut asked: Option<PlaceAction> = None;
-    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let mut close = false;
-    egui::Area::new(egui::Id::new("place_card"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .interactable(pres.open)
-        .show(ctx, |ui| {
-            use crate::systems::motion::{self, Rest, SheetMove};
-            let rest = card.rest;
-            motion::follow(
-                ui,
-                egui::Id::new("place_card"),
-                pres,
-                &mut card.drag,
-                motion::LIFT,
-                rest == Rest::Full,
-            );
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN));
-                // The grabber: a pull up shows the rest, a pull or a flick down
-                // puts the card away.
-                match motion::grabber(ui, &mut card.drag, rest, &RESTS, "Expand or collapse") {
-                    SheetMove::Stay => {}
-                    SheetMove::To(rest) => card.rest = rest,
-                    SheetMove::Close => close = true,
-                }
-                // Where a Community marker's place comes from, on top: the card
-                // says which space it belongs to before what it is (N3).
-                if let Some(from) = &place.from {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&from.line)
-                                .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                                .color(theme::p().accent_text),
-                        )
-                        .truncate()
-                        .selectable(false),
-                    );
-                }
-                // Header: the name leads, the close button takes the corner. The
-                // close button first — a truncating label asks for every point
-                // available, so laid out the other way it pushes the ✕ off the
-                // card (the rule every panel row here follows).
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = theme::close_button(ui).clicked();
-                        let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-                        ui.allocate_ui_with_layout(
-                            size,
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&place.name)
-                                            .size(theme::SIZE_TITLE)
-                                            .color(theme::p().cream),
-                                    )
-                                    .truncate()
-                                    .selectable(false),
-                                );
-                                if let Some(kind) = &place.kind {
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(kind).small().weak())
-                                            .truncate()
-                                            .selectable(false),
-                                    );
-                                }
-                            },
-                        );
-                    });
-                });
-                // Context and distance share the dim line under the name, the
-                // same shape the suggestion row used, so the card reads as the
-                // row it came from.
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if let Some(here) = viewer {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(geo_nav::distance_label(
-                                    here,
-                                    (place.lat, place.lng),
-                                ))
-                                .small()
-                                .color(theme::p().accent_text),
-                            )
-                            .selectable(false),
-                        );
-                    }
-                    if !place.context.is_empty() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&place.context).small().weak())
-                                .truncate()
-                                .selectable(false),
-                        );
-                    }
-                });
-                ui.add_space(6.0);
-
-                // The verbs: one that is plainly the next step, and the rest
-                // behind ⋯. They were four equal plates — From · To · Save ·
-                // Beam — with From first, though getting *to* a place is what a
-                // search for it is nearly always for (`docs/mockups/ux-review`).
-                // A Community marker: the way into Community is the main verb,
-                // and the way there the other (N3). No Save, no Share: it is
-                // somebody else's thing, not a place of the map's.
-                if let Some(from) = &place.from {
-                    let w = ui.available_width();
-                    if theme::primary_button_sized(
-                        ui,
-                        &format!("{}  {}", from.open.icon(), from.open.verb()),
-                        w,
-                    )
-                    .clicked()
-                    {
-                        asked = Some(PlaceAction::OpenOrigin);
-                    }
-                    ui.add_space(2.0);
-                    if theme::secondary_button(ui, icons::ROUTE, "Route here", w).clicked() {
-                        asked = Some(PlaceAction::RouteHere);
-                    }
-                    return;
-                }
-                // Route here across the card, and the place's own verbs as a row
-                // of named buttons under it (N2): with Share beside Save and ⋯,
-                // four in one row left "Route here" too narrow for its words on
-                // a phone, and the card grew past the screen.
-                let w = ui.available_width();
-                if theme::primary_button_sized(ui, &format!("{}  Route here", icons::FINISH), w)
-                    .clicked()
-                {
-                    asked = Some(PlaceAction::RouteHere);
-                }
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    // Save, Share and More; the web build has no Share, whose
-                    // chats are the page's (`comms`).
-                    let cell = theme::equal_width(ui, if cfg!(feature = "comms") { 3 } else { 2 });
-                    let save_icon = if saved {
-                        icons::CHECK
-                    } else {
-                        icons::BOOKMARK_ADD
-                    };
-                    let save = theme::secondary_button(
-                        ui,
-                        save_icon,
-                        if saved { "Saved" } else { "Save" },
-                        cell,
-                    );
-                    if save.on_hover_text("Save this place").clicked() && !saved {
-                        asked = Some(PlaceAction::Save);
-                    }
-                    // Share (bridge ③): the one way a place goes to people.
-                    // No orange dot on it, as N2 drew one: the person asked
-                    // for little colour, and the word says it (2026-11-11).
-                    #[cfg(feature = "comms")]
-                    if theme::secondary_button(ui, icons::SHARE, "Share", cell)
-                        .on_hover_text("Send this place to a chat or community")
-                        .clicked()
-                    {
-                        asked = Some(PlaceAction::Share);
-                    }
-                    let more = theme::secondary_button(ui, icons::MORE, "More", cell);
-                    egui::Popup::menu(&more).show(|ui| {
-                        if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
-                            asked = Some(PlaceAction::RouteFrom);
-                            ui.close();
-                        }
-                        // Signed in only: a body in a shared world is what makes
-                        // "go there" distinct from looking. Offline the pick has
-                        // already moved the view. "Jump there", the ring's word
-                        // for it too, rather than "Beam".
-                        if session.is_online()
-                            && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
-                        {
-                            asked = Some(PlaceAction::Jump);
-                            ui.close();
-                        }
-                    });
-                });
-                // Pulled up: what ⋯ holds, as rows, and where the place is.
-                if card.rest == Rest::Full {
-                    ui.add_space(6.0);
-                    ui.separator();
-                    if theme::menu_entry(ui, icons::START, "Start a route here").clicked() {
-                        asked = Some(PlaceAction::RouteFrom);
-                    }
-                    if session.is_online()
-                        && theme::menu_entry(ui, icons::CAM_FOLLOW, "Jump there").clicked()
-                    {
-                        asked = Some(PlaceAction::Jump);
-                    }
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(format!("{:.5}, {:.5}", place.lat, place.lng))
-                            .size(theme::SIZE_TINY)
-                            .color(theme::p().text_dim),
-                    );
-                }
-            });
-        });
-    if let Some(a) = asked {
+    let view = PlaceView {
+        hidden,
+        distance: card
+            .place
+            .as_ref()
+            .zip(viewer)
+            .map(|(p, here)| geo_nav::distance_label(here, (p.lat, p.lng))),
+        online: session.is_online(),
+        saved: card.saved(),
+        action: None,
+    };
+    if card.lib_view != view {
+        card.lib_view = view;
+    }
+    if let (Some(a), Some(place)) = (action, card.place.clone()) {
         card.act(a, &place, &mut nav, &mut store, &camera_state, altitude);
         #[cfg(feature = "comms")]
         to_bridges(a, &place, &mut bridges);
-    }
-    if close {
-        card.close();
     }
 }

@@ -1,23 +1,19 @@
 //! The card on a tapped point of interest drawn by the component library
-//! (`lib_host`), beside egui's (`data_layers::render_poi_popup`): its name,
-//! what it is and where, and the way to its website and to its OSM node.
+//! (`lib_host`): its name, what it is and where, and the way to its website
+//! and to its OSM node.
 //!
-//! On with `CARTO_UI_LIB=poi_card` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`PoiCard::lib`) but still projects the POI onto the
-//! screen each frame and publishes the card in `PoiCard::view` (`None` when
-//! there is none, or while the POI is behind the camera). A tap here is done
-//! by `data_layers::poi_act`, the code egui's buttons call.
+//! `data_layers::drive_poi_card` projects the POI onto the screen each frame
+//! and publishes the card in `PoiCard::view` (`None` when there is none, or
+//! while the POI is behind the camera). A tap here is done by
+//! `data_layers::poi_act`.
 //!
-//! **Placement.** As egui's: its bottom centre on the point above the POI's
-//! pole. The card hangs off a box of no size on that point (as `lib_pins`'
-//! markers do), so it needs no measuring and nothing but the card can hold
-//! the pointer — a box under the other screens would block their taps in
-//! `bevy_ui`'s picking.
-//!
-//! **What differs from egui's.** egui's is the dark map-label chip in both
-//! themes, as wide as its words up to 240 of content; this one takes the
-//! theme's card surface, as the library's place names do, and is always
-//! 260 px wide with its padding (centring it needs its width).
+//! **Placement.** Its bottom centre on the point above the POI's pole. The
+//! card hangs off a box of no size on that point (as `lib_pins`' markers
+//! do), so it needs no measuring and nothing but the card can hold the
+//! pointer — a box under the other screens would block their taps in
+//! `bevy_ui`'s picking. It takes the theme's card surface, as the library's
+//! place names do, and is always 260 px wide with its padding (centring it
+//! needs its width).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,8 +35,8 @@ use crate::systems::{icons, theme};
 /// The card's name in the library's host.
 const KEY: &str = "poi_card";
 
-/// The card's width, px, its padding included: egui's widest, 240 of
-/// content and 10 a side.
+/// The card's width, px, its padding included: 240 of content and 10 a
+/// side.
 const WIDTH: f32 = 260.0;
 
 /// Where the card stands, px in the library's root: the point its bottom
@@ -53,9 +49,8 @@ struct Placement {
 }
 
 impl Placement {
-    /// For the point `at`, egui points. The library's px are egui's points
-    /// on the Bevy backend; as DOM they are the page's, `ui_scale` times
-    /// larger.
+    /// For the point `at`, UI points. The library's px are UI points on the
+    /// Bevy backend; as DOM they are the page's, `ui_scale` times larger.
     fn of(at: (f32, f32), ui_scale: f32) -> Self {
         let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
             ui_scale
@@ -134,26 +129,24 @@ thread_local! {
 pub fn drive_lib_poi_card(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    mut card: ResMut<PoiCard>,
+    card: Res<PoiCard>,
     mut dl: ResMut<DataLayers>,
     metrics: Res<UiMetrics>,
 ) {
     if !lib.poi_card {
         return;
     }
-    if !card.lib {
-        card.lib = true;
-    }
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, done as egui's buttons do them.
+        // The taps of the frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<PoiAction> = std::mem::take(&mut *live.acts.borrow_mut());
             for a in acts {
                 poi_act(&mut dl, a);
             }
         }
-        // A tap may have closed it: egui's system publishes again next frame.
+        // A tap may have closed it: `data_layers::drive_poi_card` publishes
+        // again next frame.
         let view = card.view.clone().filter(|_| dl.popup.is_some());
         let stale = m
             .as_ref()

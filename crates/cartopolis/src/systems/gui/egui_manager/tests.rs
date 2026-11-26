@@ -962,9 +962,12 @@ fn every_root_ui_panel_is_in_the_chain() {
             }
         }
     }
+    // The scan works when it finds a drawer known to be one. Not a count:
+    // egui's panels are going family by family (the library draws them), so
+    // how many are left says nothing about the scan.
     assert!(
-        drawers.len() >= 5,
-        "found only {drawers:?} root-`Ui` drawers — the scan has broken, not the chain"
+        drawers.iter().any(|d| d == "render_dock"),
+        "found only {drawers:?} root-`Ui` drawers, not `render_dock` — the scan has broken, not the chain"
     );
 
     // The chain is two chained halves (one per `ClientPhase`) chained to each

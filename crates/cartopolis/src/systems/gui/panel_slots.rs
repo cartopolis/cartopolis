@@ -25,6 +25,8 @@ fn slot(panel: &RightPanel) -> Option<(&'static str, f32)> {
         RightPanel::Models => ("model_library_panel", 360.0),
         RightPanel::Script => ("script_panel", 420.0),
         RightPanel::About => ("about_panel", 320.0),
+        // The Community panel (`lib_chats`).
+        RightPanel::Chat => ("chats_panel", 360.0),
         _ => return None,
     })
 }

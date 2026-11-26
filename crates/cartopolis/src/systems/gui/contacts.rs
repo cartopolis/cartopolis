@@ -4,8 +4,9 @@
 //! A contact is somebody you accepted. Anybody else's first message arrives as
 //! a **request**, held apart from your chats until you accept it. The server
 //! enforces every rule (`cartopolis_simulator::contacts`); this module only
-//! draws what it last said and asks it for changes, the way the block list
-//! does. The screens:
+//! keeps what it last said and asks it for changes, the way the block list
+//! does. The screens, drawn by the component library (`lib_person_card`,
+//! `lib_contacts`):
 //!
 //!  * **The person card**, over the map, when an avatar is tapped: who it is,
 //!    how near, whether the account is new, and *Say hi* / *Add contact*.
@@ -21,7 +22,7 @@
 //! because the server refuses to hand out somebody's keys to a person with no
 //! request to them — starting the chat first would race the request and lose.
 
-use crate::systems::egui_manager::{EguiMut, EguiRef};
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use crate::utils::clock::unix_ms;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -36,9 +37,7 @@ use std::collections::HashSet;
 use crate::components::{FreeCamera, RemoteAvatar};
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::chat::{ChatNotice, ChatState, ReportDraft};
-use crate::systems::chats::{avatar, raised_frame, ChatKind, ChatsView};
-use crate::systems::theme::glass_frame;
-use crate::systems::{icons, theme};
+use crate::systems::chats::ChatsView;
 
 /// Request ids for contact traffic live in their own range, so a refusal
 /// (`ServerError`) finds its way here and not to the prim editor.
@@ -139,9 +138,6 @@ fn friends_to_ask(contacts: &[ContactDto]) -> Vec<String> {
 /// A tap this close to an avatar's feet, in points, is a tap on the avatar.
 const TAP_RADIUS_PTS: f32 = 36.0;
 
-/// Width of the person card and the first-message sheet on a wide window.
-const CARD_WIDTH: f32 = 380.0;
-
 /// Longest first message, in characters. A knock, not a letter.
 pub(crate) const MAX_HELLO_CHARS: usize = 500;
 
@@ -202,7 +198,6 @@ pub struct Compose {
     pub username: String,
     pub text: String,
     pub link_code: Option<String>,
-    claim_focus: bool,
 }
 
 /// A first message waiting for its request to be on record.
@@ -252,17 +247,13 @@ pub struct Contacts {
     seen_incoming: HashSet<String>,
     /// A demo capture with no session behind it (`--ui contacts`).
     pub demo: bool,
-    /// The library draws the person card and the first-message sheet
-    /// (`lib_person_card`): [`render_person_card`] draws nothing, and
-    /// publishes [`lib_view`](Self::lib_view) instead.
-    pub lib: bool,
-    /// What egui's system and the library's card pass each other while
-    /// `lib` is on.
+    /// What [`drive_person_card`] and the library's card and sheet
+    /// (`lib_person_card`) pass each other.
     pub lib_view: PersonView,
 }
 
-/// A tap on the person card or the first-message sheet: one set, for both
-/// editions, done by [`person_act`].
+/// A tap on the person card or the first-message sheet, done by
+/// [`person_act`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersonAction {
     /// ✕, or dismissing the card's error.
@@ -287,9 +278,9 @@ pub enum PersonAction {
     Cancel,
 }
 
-/// The side of the person card only egui's system works out — the session,
-/// the driver bar, the panels, the on-screen keyboard — for the library's
-/// edition.
+/// The side of the person card only [`drive_person_card`] works out — the
+/// session, the driver bar, the panels, the on-screen keyboard — for the
+/// library's card.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonView {
     /// Neither the card nor the sheet shows (no session, driving).
@@ -300,7 +291,7 @@ pub struct PersonView {
     pub online: bool,
     /// How far the on-screen keyboard lifts the sheet, points.
     pub lift: f32,
-    /// A tap the library's card handed back, done by egui's system.
+    /// A tap the library's card handed back, done by [`drive_person_card`].
     pub action: Option<PersonAction>,
 }
 
@@ -850,7 +841,8 @@ fn refresh_card_relation(contacts: &mut Contacts) {
 /// not also a tap on the building behind it.
 #[allow(clippy::too_many_arguments)]
 pub fn tap_avatar(
-    egui: EguiRef,
+    ui_input: Res<UiInput>,
+    metrics: Res<UiMetrics>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     touch: Res<crate::systems::touch::TouchGestures>,
@@ -866,7 +858,7 @@ pub fn tap_avatar(
     let Some(cursor) = windows.iter().next().and_then(Window::cursor_position) else {
         return;
     };
-    if egui.owns_click(touch.touch_click(), Some(cursor)) {
+    if ui_input.owns_click(touch.touch_click(), Some(cursor)) {
         return;
     }
     let Ok((cam, cell, tf)) = camera.single() else {
@@ -874,7 +866,7 @@ pub fn tap_avatar(
     };
     let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);
     let view = GlobalTransform::from(Transform::from_rotation(tf.rotation));
-    let scale = egui.ui_scale();
+    let scale = metrics.ui_scale();
     // Nearest avatar to the tap, measured at mid-body so a tap on the head or
     // the feet both count.
     let hit = remotes
@@ -895,12 +887,13 @@ pub fn tap_avatar(
 
 // ─── Over the map: the person card and the first-message sheet ─────────────
 
-/// The person card and the first-message sheet. In the panel chain, next to
-/// the other chat overlays, because the sheet owns a text field the
-/// on-screen keyboard has to find.
+/// The person card and the first-message sheet, drawn by the library
+/// (`lib_person_card`): hands it the side only this system works out —
+/// whether the session, the driver bar or an open panel hides them, how far
+/// the on-screen keyboard lifts the sheet — and does the tap it handed back.
 #[allow(clippy::too_many_arguments)]
-pub fn render_person_card(
-    egui: EguiMut,
+pub fn drive_person_card(
+    metrics: Res<UiMetrics>,
     mut contacts: ResMut<Contacts>,
     mut chat: ResMut<ChatState>,
     mut view: ResMut<ChatsView>,
@@ -913,347 +906,24 @@ pub fn render_person_card(
 ) {
     let hidden = (online.is_none() && !contacts.demo) || driver.active;
     // On a phone an open panel is the whole screen; the card waits behind it.
-    let card_hidden = egui.compact() && !right_panel.is(RightPanel::None);
-
-    // The library's edition is showing (`lib_person_card`): hand it the side
-    // only this system works out, do the tap it handed back, draw nothing.
-    if contacts.lib {
-        // Read before taking, so a quiet frame leaves the resource unchanged.
-        let action = if contacts.lib_view.action.is_some() {
-            contacts.lib_view.action.take()
-        } else {
-            None
-        };
-        let view_now = PersonView {
-            hidden,
-            card_hidden,
-            online: online.is_some(),
-            lift: crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open()),
-            action: None,
-        };
-        if contacts.lib_view != view_now {
-            contacts.lib_view = view_now;
-        }
-        if let Some(a) = action {
-            person_act(
-                a,
-                &mut contacts,
-                &mut chat,
-                &mut view,
-                &mut right_panel,
-                online.as_deref(),
-                &mut greetings,
-                &mut interact,
-            );
-        }
-        return;
-    }
-
-    if hidden {
-        return;
-    }
-    // The content's width: the frame's own 12 pt a side comes on top, so it
-    // is taken off here too, or the card meets the screen's edges on a phone.
-    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * (theme::OSD_MARGIN + 12.0));
-    let lift = crate::systems::chat_overlay::keyboard_reserve(&egui, keyboard.is_open());
-    let ctx = egui.ctx().clone();
-    let now = unix_ms();
-
-    if contacts.compose.is_some() {
-        let mut send = false;
-        let mut cancel = false;
-        let error = contacts.error.clone();
-        let Some(compose) = contacts.compose.as_mut() else {
-            return;
-        };
-        egui::Area::new(egui::Id::new("contacts_compose"))
-            .order(egui::Order::Foreground)
-            .anchor(
-                egui::Align2::CENTER_BOTTOM,
-                egui::vec2(0.0, -(crate::systems::dock::reserved_bottom() + 8.0 + lift)),
-            )
-            .show(&ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(theme::p32().surface)
-                    .stroke(egui::Stroke::new(1.0, theme::p32().overlay_line))
-                    .corner_radius(egui::CornerRadius::same(22))
-                    .inner_margin(egui::Margin::same(14))
-                    .show(ui, |ui| {
-                        ui.set_width(width);
-                        ui.horizontal(|ui| {
-                            avatar(ui, &compose.username, ChatKind::Private, 34.0);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "First message to {}",
-                                        compose.username
-                                    ))
-                                    .size(17.0)
-                                    .color(theme::p32().cream),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Goes to their requests")
-                                        .size(12.5)
-                                        .color(theme::p32().text_dim),
-                                );
-                            });
-                        });
-                        ui.add_space(8.0);
-                        let field = crate::systems::theme::text_field(
-                            ui,
-                            egui::TextEdit::multiline(&mut compose.text)
-                                .id(egui::Id::new("contacts_compose_text"))
-                                .desired_rows(3)
-                                .desired_width(f32::INFINITY)
-                                .char_limit(MAX_HELLO_CHARS)
-                                .hint_text("Say hi"),
-                        );
-                        if !compose.claim_focus {
-                            compose.claim_focus = true;
-                            field.request_focus();
-                        }
-                        ui.add_space(6.0);
-                        ui.horizontal_wrapped(|ui| {
-                            for quick in QUICK_HELLOS {
-                                if theme::chip(ui, quick, false).clicked() {
-                                    compose.text = quick.to_string();
-                                }
-                            }
-                        });
-                        ui.add_space(6.0);
-                        raised_frame().show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    egui::RichText::new(icons::LOCK)
-                                        .color(theme::p32().text_dim)
-                                        .size(14.0),
-                                );
-                                ui.label(
-                                    egui::RichText::new(hello_fine_print(&compose.username))
-                                        .size(12.5)
-                                        .color(theme::p32().text_dim),
-                                );
-                            });
-                        });
-                        if let Some(e) = &error {
-                            ui.add_space(6.0);
-                            if theme::inline_error(ui, e) {
-                                cancel = true;
-                            }
-                        }
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if theme::action_button(ui, "Cancel").clicked() {
-                                cancel = true;
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let ready = !compose.text.trim().is_empty();
-                                    if theme::action_enabled_because(
-                                        ui,
-                                        ready,
-                                        format!("{} Send request", icons::SEND),
-                                        "Write something first",
-                                    )
-                                    .clicked()
-                                        && ready
-                                    {
-                                        send = true;
-                                    }
-                                },
-                            );
-                        });
-                    });
-            });
-        let asked = if send {
-            Some(PersonAction::Send)
-        } else if cancel {
-            Some(PersonAction::Cancel)
-        } else {
-            None
-        };
-        if let Some(a) = asked {
-            person_act(
-                a,
-                &mut contacts,
-                &mut chat,
-                &mut view,
-                &mut right_panel,
-                online.as_deref(),
-                &mut greetings,
-                &mut interact,
-            );
-        }
-        return;
-    }
-
-    let Some(card) = contacts.card.clone() else {
-        return;
+    let card_hidden = metrics.compact() && !right_panel.is(RightPanel::None);
+    // Read before taking, so a quiet frame leaves the resource unchanged.
+    let action = if contacts.lib_view.action.is_some() {
+        contacts.lib_view.action.take()
+    } else {
+        None
     };
-    if card_hidden {
-        return;
+    let view_now = PersonView {
+        hidden,
+        card_hidden,
+        online: online.is_some(),
+        lift: crate::systems::chat_overlay::keyboard_reserve(&metrics, keyboard.is_open()),
+        action: None,
+    };
+    if contacts.lib_view != view_now {
+        contacts.lib_view = view_now;
     }
-    let mut asked: Option<PersonAction> = None;
-    let error = contacts.error.clone();
-    egui::Area::new(egui::Id::new("contacts_person_card"))
-        .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::CENTER_BOTTOM,
-            egui::vec2(0.0, -(crate::systems::dock::reserved_bottom() + 8.0)),
-        )
-        .show(&ctx, |ui| {
-            glass_frame().show(ui, |ui| {
-                ui.set_width(width);
-                let Some(p) = card.person.as_ref() else {
-                    ui.horizontal(|ui| {
-                        if card.looking {
-                            ui.spinner();
-                            ui.label(egui::RichText::new("Looking…").color(theme::p32().text_dim));
-                        } else {
-                            ui.label(
-                                egui::RichText::new(
-                                    error.as_deref().unwrap_or("Nobody to show here."),
-                                )
-                                .color(theme::p32().text_dim),
-                            );
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::close_button(ui).clicked() {
-                                asked = Some(PersonAction::Close);
-                            }
-                        });
-                    });
-                    return;
-                };
-                ui.horizontal(|ui| {
-                    avatar(ui, &p.username, ChatKind::Private, 48.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::close_button(ui).clicked() {
-                            asked = Some(PersonAction::Close);
-                        }
-                        if theme::kebab_button(ui).clicked() {
-                            asked = Some(PersonAction::ToggleMenu);
-                        }
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            ui.label(
-                                egui::RichText::new(&p.username)
-                                    .size(18.0)
-                                    .color(theme::p32().cream),
-                            );
-                            ui.label(
-                                egui::RichText::new(relation_word(p.relation))
-                                    .size(12.5)
-                                    .color(theme::p32().text_dim),
-                            );
-                        });
-                    });
-                });
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    for f in person_facts(p, now) {
-                        let text = if f.pin {
-                            format!("{} {}", icons::PIN, f.text)
-                        } else {
-                            f.text
-                        };
-                        fact(ui, &text, f.new);
-                    }
-                });
-                if card.menu {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if theme::action_button(ui, format!("{} Block", icons::CLEAR)).clicked() {
-                            asked = Some(PersonAction::Block);
-                        }
-                        if theme::action_button(ui, format!("{} Report…", icons::FLAG)).clicked()
-                        {
-                            asked = Some(PersonAction::Report);
-                        }
-                    });
-                }
-                if let Some(e) = &error {
-                    ui.add_space(4.0);
-                    if theme::inline_error(ui, e) {
-                        asked = Some(PersonAction::Close);
-                    }
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let half = (ui.available_width() - 8.0) / 2.0;
-                    match p.relation {
-                        Relation::Nobody if may_ask(p, &card) => {
-                            if theme::primary_button_sized(
-                                ui,
-                                &format!("{} Say hi", icons::CHAT),
-                                half,
-                            )
-                            .clicked()
-                            {
-                                asked = Some(PersonAction::SayHi);
-                            }
-                            if theme::primary_button_sized(
-                                ui,
-                                &format!("{} Add contact", icons::ADD),
-                                half,
-                            )
-                            .clicked()
-                            {
-                                asked = Some(PersonAction::Add);
-                            }
-                        }
-                        Relation::Nobody => {
-                            theme::note(ui, "Not taking requests from you right now.");
-                        }
-                        Relation::Contact => {
-                            if theme::primary_button_sized(
-                                ui,
-                                &format!("{} Message", icons::CHAT),
-                                ui.available_width(),
-                            )
-                            .clicked()
-                            {
-                                asked = Some(PersonAction::Message);
-                            }
-                        }
-                        Relation::RequestReceived => {
-                            if theme::primary_button_sized(
-                                ui,
-                                "See their request",
-                                ui.available_width(),
-                            )
-                            .clicked()
-                            {
-                                asked = Some(PersonAction::SeeRequest);
-                            }
-                        }
-                        Relation::RequestSent => {
-                            theme::note(ui, "They'll see your request in their tray.");
-                        }
-                        Relation::Me => {}
-                    }
-                });
-                // Greeting them (protocol 49): anybody standing near you,
-                // contact or not. The sim checks the reach and the blocks.
-                if card.avatar_id.is_some() && p.relation != Relation::Me && online.is_some() {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        for g in cartopolis_core::Greeting::ALL {
-                            if theme::action_button(ui, format!("{} {}", icons::HAND, g.label()))
-                                .on_hover_text(
-                                    "Offer it: within two paces, they take it with E or a tap",
-                                )
-                                .clicked()
-                            {
-                                asked = Some(PersonAction::Greet(g));
-                            }
-                        }
-                    });
-                }
-            });
-        });
-
-    if let Some(a) = asked {
+    if let Some(a) = action {
         person_act(
             a,
             &mut contacts,
@@ -1267,9 +937,9 @@ pub fn render_person_card(
     }
 }
 
-/// Do a tap on the person card or the first-message sheet: egui's buttons
-/// and the library's (`lib_person_card`, through [`PersonView::action`]) both
-/// come here. The person is the one the card shows now.
+/// Do a tap on the person card or the first-message sheet: the library's
+/// (`lib_person_card`) hands it over through [`PersonView::action`]. The
+/// person is the one the card shows now.
 #[allow(clippy::too_many_arguments)]
 pub fn person_act(
     action: PersonAction,
@@ -1384,45 +1054,6 @@ pub fn person_act(
     }
 }
 
-/// One of the small facts on a card (`.facts div`), a teal tag as the midas
-/// hub and the web draw them ([`theme::Palette::accent_ring`] on [`theme::Palette::accent_muted`],
-/// 7.4:1); `new` is the amber "new account" one.
-fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
-    let (fill, ink) = if new {
-        // A pale gold on the dark theme; the warning tone on the light one,
-        // where the pale gold is unreadable on white.
-        let gold = if theme::p32().dark {
-            egui::Color32::from_rgb(0xFF, 0xD2, 0x7A)
-        } else {
-            theme::p32().warn
-        };
-        (
-            egui::Color32::from_rgba_unmultiplied(gold.r(), gold.g(), gold.b(), 36),
-            gold,
-        )
-    } else {
-        (theme::p32().accent_muted, theme::p32().accent_word)
-    };
-    let text_w = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), ink)
-        .size()
-        .x;
-    theme::wrap_before(ui, text_w + 18.0);
-    egui::Frame::NONE
-        .fill(fill)
-        .corner_radius(egui::CornerRadius::same(9))
-        .inner_margin(egui::Margin::symmetric(9, 3))
-        .show(ui, |ui| {
-            // One line: in a wrapped row a chip that wraps its own text
-            // collapses into a column one letter wide.
-            ui.add(
-                egui::Label::new(egui::RichText::new(text).size(12.0).color(ink))
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-        });
-}
-
 /// A request's line in the tray: where you met, or when it was sent.
 #[must_use]
 pub(crate) fn request_line(r: &ContactRequestDto, now: u64) -> String {
@@ -1509,59 +1140,8 @@ fn open_direct(
 
 // ─── In the Chats panel ─────────────────────────────────────────────────────
 
-/// The requests row at the top of the chat list (`.reqrow`). Returns whether it
-/// was tapped.
-pub fn requests_row(ui: &mut egui::Ui, contacts: &Contacts) -> bool {
-    let n = contacts.incoming.len();
-    if n == 0 {
-        return false;
-    }
-    let amber = egui::Color32::from_rgb(0xFF, 0xD2, 0x7A);
-    let resp = egui::Frame::NONE
-        .fill(egui::Color32::from_rgba_unmultiplied(0xFF, 0xD2, 0x7A, 36))
-        .stroke(egui::Stroke::new(1.0, amber.gamma_multiply(0.35)))
-        .corner_radius(egui::CornerRadius::same(16))
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                for r in contacts.incoming.iter().take(2) {
-                    avatar(ui, &r.username, ChatKind::Private, 34.0);
-                }
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(if n == 1 {
-                            "1 message request".to_string()
-                        } else {
-                            format!("{n} message requests")
-                        })
-                        .size(15.0)
-                        .color(theme::p32().cream),
-                    );
-                    let first = &contacts.incoming[0];
-                    let more = if n > 1 {
-                        format!(" · {} more", n - 1)
-                    } else {
-                        String::new()
-                    };
-                    ui.label(
-                        egui::RichText::new(format!("{}{more}", first.username))
-                            .size(12.5)
-                            .color(theme::p32().text_dim),
-                    );
-                });
-            });
-        })
-        .response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let resp = theme::named(ui, resp, "Message requests");
-    ui.add_space(6.0);
-    resp.clicked()
-}
-
-/// What a contacts screen decided: egui's drawing and the library's taps
-/// (`lib_contacts`) both fill one, and [`act`] does it.
+/// What a contacts screen decided: the library's taps (`lib_contacts`) fill
+/// one, and [`act`] does it.
 #[derive(Default)]
 pub(crate) struct Act {
     pub(crate) back: bool,
@@ -1583,41 +1163,7 @@ pub(crate) struct Act {
     pub(crate) share_link: bool,
 }
 
-/// Draw one contacts screen in the Chats panel, and act on it.
-#[allow(clippy::too_many_arguments)]
-pub fn screen(
-    ui: &mut egui::Ui,
-    sub: &Sub,
-    contacts: &mut Contacts,
-    chat: &mut ChatState,
-    view: &mut ChatsView,
-    online: Option<&OnlineSession>,
-    me: &str,
-) {
-    let mut act = Act::default();
-    let now = unix_ms();
-    let depth = match sub {
-        Sub::Requests | Sub::Contacts => 1,
-        Sub::Request(_) | Sub::Add | Sub::Privacy => 2,
-    };
-    crate::systems::motion::page_turn(
-        ui,
-        egui::Id::new("contacts_screen"),
-        sub.clone(),
-        depth,
-        |ui, sub| match &sub {
-            Sub::Requests => requests_screen(ui, contacts, &mut act, now),
-            Sub::Request(name) => request_screen(ui, contacts, chat, name, &mut act, now),
-            Sub::Contacts => contacts_screen(ui, contacts, &mut act, now),
-            Sub::Add => add_screen(ui, contacts, me, &mut act),
-            Sub::Privacy => privacy_screen(ui, contacts, &mut act),
-        },
-    );
-    self::act(sub, act, contacts, chat, view, online, me);
-}
-
-/// Do what a contacts screen asked for: egui's [`screen`] and the library's
-/// (`lib_contacts`) both end here, so a tap means the same in either.
+/// Do what a contacts screen (`lib_contacts`) asked for.
 pub(crate) fn act(
     sub: &Sub,
     act: Act,
@@ -1744,533 +1290,6 @@ pub(crate) fn share(text: &str) {
     crate::utils::clipboard::set_text(text);
 }
 
-/// A screen's title row: a back chevron, a title, and room on the right.
-fn title_row(
-    ui: &mut egui::Ui,
-    title: &str,
-    act: &mut Act,
-    right: impl FnOnce(&mut egui::Ui, &mut Act),
-) {
-    ui.horizontal(|ui| {
-        let back = ui.add(
-            egui::Label::new(
-                egui::RichText::new(icons::CHEVRON_LEFT)
-                    .size(26.0)
-                    .color(theme::p32().text),
-            )
-            .sense(egui::Sense::click()),
-        );
-        // The glyph is its only text, so it is named for what it does.
-        let clicked = theme::named(ui, back, "Back")
-            .on_hover_text("Back")
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked();
-        if theme::page_back(ui.ctx(), clicked) {
-            act.back = true;
-        }
-        ui.label(
-            egui::RichText::new(title)
-                .font(egui::FontId::new(
-                    theme::SIZE_PANEL_TITLE,
-                    theme::brand_family(),
-                ))
-                .color(theme::p32().cream),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // The panel's close, as every page title carries (`theme::back_title`):
-            // these pages fill a phone, and the chevron alone took a tap per level
-            // to get back to the map.
-            if theme::close_button(ui).clicked() {
-                theme::request_panel_close(ui.ctx());
-            }
-            right(ui, act);
-        });
-    });
-    ui.add_space(8.0);
-}
-
-fn section_label(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(text)
-                .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                .color(theme::p32().text_dim),
-        );
-        if let Some(n) = count {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(n.to_string())
-                        .size(12.0)
-                        .color(theme::p32().text_dim),
-                );
-            });
-        }
-    });
-    ui.add_space(2.0);
-}
-
-/// One person row (`.crow`): avatar, name, a line under it, and whatever the
-/// caller puts on the right. Returns the row's response, for a tap and a menu.
-fn person_row(
-    ui: &mut egui::Ui,
-    name: &str,
-    sub: &str,
-    sub_color: egui::Color32,
-    online: bool,
-    right: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
-    // A soft card per person, as the chat list draws its rows
-    // (`chats::ROW_CARD`), lit on hover.
-    // By position, not by name: one person is listed under both "Online now"
-    // and "All contacts".
-    let id = ui.next_auto_id().with("person_row");
-    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
-    let inner = egui::Frame::NONE
-        .fill(if hovered {
-            theme::p32().surface_hover
-        } else {
-            crate::systems::chats::row_card()
-        })
-        .shadow(theme::card_shadow())
-        .corner_radius(egui::CornerRadius::same(14))
-        .inner_margin(egui::Margin::symmetric(8, 7))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            person_row_body(ui, name, sub, sub_color, online, right);
-        });
-    ui.add_space(6.0);
-    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
-    theme::named(ui, resp, name)
-}
-
-fn person_row_body(
-    ui: &mut egui::Ui,
-    name: &str,
-    sub: &str,
-    sub_color: egui::Color32,
-    online: bool,
-    right: impl FnOnce(&mut egui::Ui),
-) {
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-        avatar(&mut child, name, ChatKind::Private, 44.0);
-        if online {
-            let c = rect.right_bottom() - egui::vec2(6.0, 6.0);
-            ui.painter().circle_filled(c, 7.0, theme::p32().ink);
-            ui.painter()
-                .circle_filled(c, 5.0, egui::Color32::from_rgb(0x5F, 0xD3, 0x8D));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            right(ui);
-            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.label(
-                    egui::RichText::new(name)
-                        .size(15.0)
-                        .color(theme::p32().cream),
-                );
-                ui.label(egui::RichText::new(sub).size(12.5).color(sub_color));
-            });
-        });
-    });
-}
-
-fn requests_screen(ui: &mut egui::Ui, contacts: &Contacts, act: &mut Act, now: u64) {
-    title_row(ui, "Message requests", act, |_, _| {});
-    theme::note(
-        ui,
-        "People who aren't contacts yet. They can't tell whether you've read a request.",
-    );
-    if contacts.incoming.is_empty() {
-        theme::empty_state(
-            ui,
-            "No requests",
-            "When somebody new says hi, it waits here.",
-        );
-        return;
-    }
-    let (new, rest): (Vec<&ContactRequestDto>, Vec<&ContactRequestDto>) = contacts
-        .incoming
-        .iter()
-        .partition(|r| contacts.settings.separate_new_accounts && r.new_account);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (title, list) in [("Requests", &rest), ("From new accounts", &new)] {
-                if list.is_empty() {
-                    continue;
-                }
-                section_label(ui, title, Some(list.len()));
-                for r in list.iter() {
-                    let line = request_line(r, now);
-                    if person_row(ui, &r.username, &line, theme::p32().text_dim, false, |_| {})
-                        .clicked()
-                    {
-                        act.to = Some(Sub::Request(r.username.clone()));
-                    }
-                }
-            }
-        });
-}
-
-fn request_screen(
-    ui: &mut egui::Ui,
-    contacts: &Contacts,
-    chat: &ChatState,
-    name: &str,
-    act: &mut Act,
-    now: u64,
-) {
-    title_row(ui, "Message request", act, |_, _| {});
-    let Some(r) = contacts.incoming_from(name) else {
-        theme::empty_state(ui, "No request", "It was answered, or withdrawn.");
-        return;
-    };
-    ui.vertical_centered(|ui| {
-        avatar(ui, &r.username, ChatKind::Private, 72.0);
-        ui.label(
-            egui::RichText::new(&r.username)
-                .size(20.0)
-                .color(theme::p32().cream),
-        );
-    });
-    ui.add_space(6.0);
-    ui.horizontal_wrapped(|ui| {
-        if let Some(m) = &r.met {
-            fact(ui, &format!("{} {}", icons::PIN, met_text(m, now)), false);
-        }
-        fact(ui, &joined(r.joined_ms, r.new_account, now), r.new_account);
-        fact(ui, &in_common_text(&r.in_common), false);
-    });
-    ui.add_space(8.0);
-    ui.separator();
-    // What they wrote, from the private chat that goes with the request. A
-    // point is held back until you accept: from a stranger, a place and a
-    // camera pose is exactly the kind of thing not to open unasked.
-    let lines = request_lines(chat, &r.username);
-    let bottom_h = 112.0;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .max_height((ui.available_height() - bottom_h).max(60.0))
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            if lines.is_empty() {
-                theme::note(ui, "No message: they only asked to be contacts.");
-            }
-            for l in &lines {
-                if l.point.is_some() {
-                    raised_frame().show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} A point is held back until you accept",
-                                icons::PIN
-                            ))
-                            .size(12.5)
-                            .color(theme::p32().text_dim),
-                        );
-                    });
-                } else {
-                    let resp = egui::Frame::NONE
-                        .fill(theme::p32().surface_raised)
-                        .corner_radius(egui::CornerRadius {
-                            nw: 18,
-                            ne: 18,
-                            sw: 6,
-                            se: 18,
-                        })
-                        .inner_margin(egui::Margin::symmetric(12, 8))
-                        .show(ui, |ui| {
-                            ui.set_max_width(ui.available_width() * 0.8);
-                            ui.label(
-                                egui::RichText::new(&l.body)
-                                    .size(14.5)
-                                    .color(theme::p32().text),
-                            );
-                        })
-                        .response;
-                    let _ = resp;
-                }
-                ui.add_space(4.0);
-            }
-        });
-    ui.add_space(6.0);
-    ui.vertical_centered(|ui| {
-        theme::note(
-            ui,
-            &format!(
-                "{} won't know you've seen this unless you accept.",
-                r.username
-            ),
-        );
-    });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let half = (ui.available_width() - 8.0) / 2.0;
-        if theme::primary_button_sized(ui, &format!("{} Decline", icons::CLEAR), half).clicked() {
-            act.decline = Some(r.username.clone());
-        }
-        if theme::primary_button_sized(ui, &format!("{} Accept", icons::CHECK), half).clicked() {
-            act.accept = Some(r.username.clone());
-        }
-    });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space((ui.available_width() - 180.0).max(0.0) / 2.0);
-        if theme::action_button(ui, "Block").clicked() {
-            act.block = Some(r.username.clone());
-        }
-        if theme::action_button(ui, format!("{} Report", icons::FLAG)).clicked() {
-            let line = lines.last().map(|l| l.body.clone());
-            act.report = Some((r.username.clone(), line));
-        }
-    });
-}
-
-fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, now: u64) {
-    contacts.want_nearby = true;
-    title_row(ui, "Contacts", act, |ui, act| {
-        if theme::round_button(ui, icons::SETTINGS, "Who can reach you", false).clicked() {
-            act.to = Some(Sub::Privacy);
-        }
-        if theme::round_button(ui, icons::ADD, "Add a contact", false).clicked() {
-            act.to = Some(Sub::Add);
-        }
-    });
-    if let Some(e) = &contacts.error {
-        if theme::inline_error(ui, e) {
-            contacts.error = None;
-        }
-    }
-    let empty = contacts.contacts.is_empty() && contacts.outgoing.is_empty();
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if empty {
-                theme::empty_state(
-                    ui,
-                    "No contacts yet",
-                    "Say hi to someone near you, or send your link to a friend who's already here.",
-                );
-            }
-            if !contacts.incoming.is_empty() && requests_row(ui, contacts) {
-                act.to = Some(Sub::Requests);
-            }
-            let online: Vec<&ContactDto> = contacts
-                .contacts
-                .iter()
-                .filter(|c| c.online == Some(true))
-                .collect();
-            if !online.is_empty() {
-                section_label(ui, "Online now", Some(online.len()));
-                for c in online {
-                    let line = online_line(c);
-                    if person_row(ui, &c.username, &line, theme::p32().text_dim, true, |ui| {
-                        ui.label(egui::RichText::new(icons::CHAT).color(theme::p32().text_dim));
-                    })
-                    .clicked()
-                    {
-                        act.open_chat = Some(c.username.clone());
-                    }
-                }
-            }
-            if !contacts.contacts.is_empty() {
-                section_label(ui, "All contacts", Some(contacts.contacts.len()));
-                for c in &contacts.contacts {
-                    let line = contact_line(c, now);
-                    let resp = person_row(
-                        ui,
-                        &c.username,
-                        &line,
-                        theme::p32().text_dim,
-                        c.online == Some(true),
-                        |ui| {
-                            ui.label(egui::RichText::new(icons::CHAT).color(theme::p32().text_dim));
-                        },
-                    );
-                    if resp.clicked() {
-                        act.open_chat = Some(c.username.clone());
-                    }
-                    resp.context_menu(|ui| {
-                        if theme::menu_entry(ui, icons::CHAT, "Message").clicked() {
-                            act.open_chat = Some(c.username.clone());
-                            ui.close();
-                        }
-                        if theme::menu_entry_danger(ui, icons::PERSON_REMOVE, "Remove contact")
-                            .clicked()
-                        {
-                            act.remove = Some(c.username.clone());
-                            ui.close();
-                        }
-                    });
-                }
-            }
-            if !contacts.outgoing.is_empty() {
-                section_label(ui, "Sent requests", Some(contacts.outgoing.len()));
-                for r in &contacts.outgoing {
-                    let mut withdraw = false;
-                    person_row(
-                        ui,
-                        &r.username,
-                        &format!("waiting · sent {}", ago(r.sent_at_ms, now)),
-                        theme::p32().line,
-                        false,
-                        |ui| {
-                            withdraw = theme::action_button(ui, "Withdraw").clicked();
-                        },
-                    );
-                    if withdraw {
-                        act.withdraw = Some(r.username.clone());
-                    }
-                }
-            }
-            let near: Vec<&NearbyPersonDto> = contacts
-                .nearby
-                .iter()
-                .filter(|p| p.relation == Relation::Nobody && p.may_request)
-                .collect();
-            if !near.is_empty() {
-                section_label(ui, "Near you now", None);
-                for p in near {
-                    let mut hi = false;
-                    let resp = person_row(
-                        ui,
-                        &p.username,
-                        &format!("{:.0} m", p.distance_m),
-                        theme::p32().text_dim,
-                        false,
-                        |ui| {
-                            hi = theme::action_button(ui, "Say hi").clicked();
-                        },
-                    );
-                    if hi {
-                        act.hi = Some(p.username.clone());
-                    } else if resp.clicked() {
-                        act.card = Some(p.username.clone());
-                    }
-                }
-            }
-            if empty {
-                section_label(ui, "Places to meet people", None);
-                theme::note(
-                    ui,
-                    "Here: whoever is talking around your avatar. Global: everyone on this \
-                     server. Both are public.",
-                );
-                ui.add_space(8.0);
-                if theme::primary_button_sized(
-                    ui,
-                    &format!("{} Share my link", icons::OPEN_EXTERNAL),
-                    ui.available_width(),
-                )
-                .clicked()
-                {
-                    act.share_link = true;
-                }
-            }
-            ui.add_space(40.0);
-        });
-}
-
-fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Act) {
-    title_row(ui, "Add a contact", act, |_, _| {});
-    let link = contacts.my_link(me);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                paint_qr(ui, &link, 190.0);
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(me).size(20.0).color(theme::p32().cream));
-            });
-            ui.add_space(8.0);
-            raised_frame().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&link)
-                                .size(13.0)
-                                .color(theme::p32().text),
-                        )
-                        .truncate(),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    if theme::action_button(ui, format!("{} Copy", icons::COPY)).clicked() {
-                        crate::utils::clipboard::set_text(&link);
-                    }
-                    if theme::action_button(ui, format!("{} Share", icons::OPEN_EXTERNAL)).clicked()
-                    {
-                        act.share_link = true;
-                    }
-                    if theme::confirm_button(
-                        ui,
-                        egui::Id::new("contacts_reset_link"),
-                        &format!("{} Reset link", icons::REFRESH),
-                        "Old links stop working",
-                    ) {
-                        act.reset_link = true;
-                    }
-                });
-            });
-            theme::note(
-                ui,
-                "Somebody who opens your link or scans this can send you a request, whatever \
-                 your privacy setting. Reset link stops old copies working.",
-            );
-            ui.add_space(12.0);
-            ui.label(egui::RichText::new("Or find a username").color(theme::p32().cream));
-            ui.horizontal(|ui| {
-                let field = crate::systems::theme::text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut contacts.search)
-                        .id(egui::Id::new("contacts_search"))
-                        .desired_width(ui.available_width() * 0.65)
-                        .hint_text("Exact username, or a contact link"),
-                );
-                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let ready = !contacts.search.trim().is_empty();
-                if (theme::action_enabled_because(ui, ready, "Find", "Type a username first")
-                    .clicked()
-                    || entered)
-                    && ready
-                {
-                    act.search = true;
-                }
-            });
-            match &contacts.found {
-                None if contacts.searching() => {
-                    ui.spinner();
-                }
-                None => {}
-                Some(None) => theme::note(ui, "Nobody by that name."),
-                Some(Some(p)) => {
-                    let line = found_line(p);
-                    let p = p.clone();
-                    let mut request = false;
-                    person_row(ui, &p.username, line, theme::p32().text_dim, false, |ui| {
-                        if p.relation == Relation::Nobody && p.may_request {
-                            request = theme::action_button(ui, "Request").clicked();
-                        }
-                    });
-                    if request {
-                        act.add = Some(p.username.clone());
-                    }
-                }
-            }
-            if let Some(e) = contacts.error.clone() {
-                if theme::inline_error(ui, &e) {
-                    contacts.error = None;
-                }
-            }
-            theme::note(
-                ui,
-                "Only an exact username finds someone: there's no list of everybody to browse.",
-            );
-        });
-}
-
 /// A request policy in a few words, as the You page's row says it.
 #[must_use]
 pub fn policy_word(policy: RequestPolicy) -> &'static str {
@@ -2278,167 +1297,6 @@ pub fn policy_word(policy: RequestPolicy) -> &'static str {
         RequestPolicy::Anyone => "Anyone",
         RequestPolicy::Near => "People you've been near",
         RequestPolicy::LinkOnly => "Only with my link",
-    }
-}
-
-fn privacy_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act) {
-    title_row(ui, "Privacy", act, |_, _| {});
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if privacy_body(ui, contacts) {
-                act.settings = true;
-            }
-        });
-}
-
-/// Who may send a request, how requests arrive, and what contacts see: the
-/// body of the Privacy screen here and of Settings ▸ Privacy and safety.
-/// Answers whether a setting changed, for [`Contacts::push_settings`].
-pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
-    let mut act = Act::default();
-    ui.label(egui::RichText::new("Who can send you a request").color(theme::p32().cream));
-    theme::note(
-        ui,
-        "Your contacts can always message you. Anyone with your link can always send \
-                 a request.",
-    );
-    ui.add_space(4.0);
-    let s = &mut contacts.settings;
-    for (policy, title, sub) in [
-        (RequestPolicy::Anyone, "Anyone", "including by username"),
-        (
-            RequestPolicy::Near,
-            "People you've been near",
-            "in the world in the last hour, or who share a contact with you",
-        ),
-        (
-            RequestPolicy::LinkOnly,
-            "Only with my link",
-            "nobody finds you by name or in the world",
-        ),
-    ] {
-        let on = s.policy == policy;
-        let resp = egui::Frame::NONE
-            .fill(if on {
-                theme::BRAND.to_egui().gamma_multiply(0.12)
-            } else {
-                theme::p32().surface
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                if on {
-                    theme::BRAND.to_egui()
-                } else {
-                    theme::p32().overlay_line
-                },
-            ))
-            .corner_radius(egui::CornerRadius::same(12))
-            .inner_margin(egui::Margin::symmetric(12, 9))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(18.0), egui::Sense::hover());
-                    let c = rect.center();
-                    ui.painter().circle_stroke(
-                        c,
-                        8.0,
-                        egui::Stroke::new(
-                            2.0,
-                            if on {
-                                theme::BRAND.to_egui()
-                            } else {
-                                theme::p32().line
-                            },
-                        ),
-                    );
-                    if on {
-                        ui.painter().circle_filled(c, 4.5, theme::BRAND.to_egui());
-                    }
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(14.0)
-                                .color(theme::p32().text),
-                        );
-                        ui.label(
-                            egui::RichText::new(sub)
-                                .size(12.0)
-                                .color(theme::p32().text_dim),
-                        );
-                    });
-                });
-            })
-            .response
-            .interact(egui::Sense::click());
-        resp.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, title)
-        });
-        if resp.clicked() && !on {
-            s.policy = policy;
-            act.settings = true;
-        }
-        ui.add_space(4.0);
-    }
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new("Requests").color(theme::p32().cream));
-    if theme::checkbox(
-        ui,
-        &mut s.separate_new_accounts,
-        "Requests from accounts younger than a week wait in their own section",
-    )
-    .changed()
-    {
-        act.settings = true;
-    }
-    if theme::checkbox(
-        ui,
-        &mut s.notify_requests,
-        "Say so when a request arrives (off: they wait quietly in the tray)",
-    )
-    .changed()
-    {
-        act.settings = true;
-    }
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new("Contacts can see").color(theme::p32().cream));
-    if theme::checkbox(ui, &mut s.show_online, "That I'm online").changed() {
-        act.settings = true;
-    }
-    ui.add_space(8.0);
-    theme::note(
-        ui,
-        "Where your avatar is stays per chat and until a time you set, as before. \
-                 Being a contact doesn't show it.",
-    );
-    act.settings
-}
-
-/// Draw `text` as a QR code, `size` points square, on a white card.
-fn paint_qr(ui: &mut egui::Ui, text: &str, size: f32) {
-    let Ok(code) = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Medium) else {
-        return;
-    };
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, egui::CornerRadius::same(16), egui::Color32::WHITE);
-    // Four modules of quiet zone, as the standard asks.
-    let n = code.size();
-    let quiet = 4;
-    let module = size / (n + 2 * quiet) as f32;
-    for y in 0..n {
-        for x in 0..n {
-            if code.get_module(x, y) {
-                let min =
-                    rect.min + egui::vec2((x + quiet) as f32 * module, (y + quiet) as f32 * module);
-                p.rect_filled(
-                    egui::Rect::from_min_size(min, egui::Vec2::splat(module + 0.3)),
-                    egui::CornerRadius::ZERO,
-                    theme::DARK.ink,
-                );
-            }
-        }
     }
 }
 

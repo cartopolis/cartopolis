@@ -1,17 +1,15 @@
-//! The community filter chip drawn by the component library (`lib_host`),
-//! beside egui's (`community_posts::render_filter_chip`): while only one
-//! community's posts are on the map, whose they are and how many, the
-//! community's page a tap on its name, and ✕ to show every community's
-//! again.
+//! The community filter chip drawn by the component library (`lib_host`):
+//! while only one community's posts are on the map, whose they are and how
+//! many, the community's page a tap on its name, and ✕ to show every
+//! community's again.
 //!
-//! On with `CARTO_UI_LIB=filter_chip` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`Posts::chip_lib`) but still decides whether the
-//! chip shows — the driver bar, the camera, the World view and an open panel
-//! each hide it, and a filter that cannot hold is forgotten — and publishes
-//! what it says in `Posts::chip_view`. Its two taps are done here, through
-//! `community_posts::chip_act`, the code egui's chip calls.
+//! `community_posts::drive_filter_chip` decides whether the chip shows —
+//! the driver bar, the camera, the World view and an open panel each hide
+//! it, and a filter that cannot hold is forgotten — and publishes what it
+//! says in `Posts::chip_view`. Its two taps are done here, through
+//! `community_posts::chip_act`.
 //!
-//! **Placement.** As egui's: under the search bar, centred between the two
+//! **Placement.** Under the search bar, centred between the two
 //! columns of round buttons that come down the edges (`dock`), the name cut
 //! to fit there. The band it is centred in does not listen, so a tap beside
 //! the chip reaches the map (on the web, `pointer-events: none` on it).
@@ -102,9 +100,6 @@ pub fn drive_lib_filter_chip(
     if !lib.filter_chip {
         return;
     }
-    if !cs.posts.chip_lib {
-        cs.posts.chip_lib = true;
-    }
     let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
@@ -115,7 +110,7 @@ pub fn drive_lib_filter_chip(
                 chip_act(&mut cs, &mut right_panel, a);
             }
         }
-        // Cleared by a tap just now, or hidden by egui's system.
+        // Cleared by a tap just now, or hidden by `drive_filter_chip`.
         let shown = cs
             .posts
             .chip_view

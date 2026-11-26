@@ -146,9 +146,6 @@ pub fn drive_lib_chat_overlay(
     if !lib.chat_overlay {
         return;
     }
-    if !overlay.lib {
-        overlay.lib = true;
-    }
     let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {

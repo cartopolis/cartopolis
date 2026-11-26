@@ -15,42 +15,25 @@
 //! them instead, in the pass that was already walking the soup. Nothing on this
 //! card needs a new request, a new field on the wire or a re-run of anything.
 //!
-//! It is a floating `Area` above the dock, deliberately outside the
-//! panel chain, and it follows `place_card`'s suppression rules for
-//! `place_card`'s reasons — driver mode, the on-screen keyboard and (on a compact
-//! viewport) an open panel each own the screen it would float over. Suppression
-//! *hides* it: the building stays selected, and its glass stays on the map.
+//! It follows `place_card`'s suppression rules for `place_card`'s reasons —
+//! driver mode, the on-screen keyboard and (on a compact viewport) an open
+//! panel each own the screen it would float over. Suppression *hides* it: the
+//! building stays selected, and its glass stays on the map.
 //!
-//! The component library draws it too (`lib_building_card`,
-//! `CARTO_UI_LIB=building_card`): with `BuildingSelection::card_lib` on this system
-//! draws nothing, but still works out what the card shows ([`CardContent`],
-//! the same struct egui's card is drawn from) and does the verb the library's
-//! card asks for, through [`run`] — the same code egui's buttons call.
+//! The component library draws it (`lib_building_card`);
+//! [`drive_building_card`] works out what the card shows ([`CardContent`])
+//! and does the verb the library's card asks for, through [`run`].
 
 use std::sync::Arc;
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::RightPanel;
 use crate::systems::building_facts::{use_labels, AddressFact, BuildingFact, BuildingFacts};
 use crate::systems::building_select::BuildingSelection;
 use crate::systems::data_layers::{open_url, open_url_supported};
-use crate::systems::icons;
 use crate::systems::lod22::{Lod22Buildings, ShellMeasure};
-use crate::systems::theme;
-
-/// Width of the card, points. The same as the place card's, so the two floating
-/// surfaces that rise from the same edge are the same object at different times.
-const CARD_WIDTH: f32 = 320.0;
-
-/// The card's three rests: the name and the ways in; the first facts; all of
-/// them, with the map a strip above.
-const RESTS: [crate::systems::motion::Rest; 3] = [
-    crate::systems::motion::Rest::Peek,
-    crate::systems::motion::Rest::Half,
-    crate::systems::motion::Rest::Full,
-];
+use crate::systems::ui_input::UiMetrics;
 
 /// How many addresses are listed before the rest become a count.
 ///
@@ -93,7 +76,7 @@ pub(crate) fn override_url(id: &str) -> String {
     )
 }
 
-/// A verb on the building card: one set, for both editions of the card.
+/// A verb on the building card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardAction {
     /// Send the building to a chat or community (`bridges`, the app only).
@@ -114,8 +97,8 @@ pub enum CardAction {
     Record,
 }
 
-/// What the card shows of one building, worked out once and drawn by either
-/// edition (egui's below, the library's in `lib_building_card`).
+/// What the card shows of one building, worked out here and drawn by
+/// `lib_building_card`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct CardContent {
     pub id: Arc<str>,
@@ -196,14 +179,13 @@ impl CardContent {
     }
 }
 
-/// What egui's card system and the library's card pass each other while
-/// `BuildingSelection::card_lib` is on.
+/// What [`drive_building_card`] and the library's card pass each other.
 #[derive(Default, Clone, PartialEq, Debug)]
 pub struct CardBridge {
     /// The building as shown; `None` while nothing is selected, or while
     /// something else owns the bottom of the screen.
     pub content: Option<CardContent>,
-    /// A verb the library's card asked for, done by egui's system.
+    /// A verb the library's card asked for, done by [`drive_building_card`].
     pub action: Option<CardAction>,
 }
 
@@ -291,10 +273,11 @@ pub fn share_building(
     });
 }
 
-/// Draw the card for the selected building.
+/// The selected building's card state, for the library's card: publishes
+/// [`CardBridge::content`], does the verb asked for.
 #[allow(clippy::too_many_arguments)]
-pub fn render_building_card(
-    egui: EguiRef,
+pub fn drive_building_card(
+    metrics: Res<UiMetrics>,
     mut selection: ResMut<BuildingSelection>,
     facts: Res<BuildingFacts>,
     lod: Res<Lod22Buildings>,
@@ -309,7 +292,7 @@ pub fn render_building_card(
     mut facade: ResMut<crate::systems::facade_check::FacadeCheck>,
 ) {
     // The dock's suppression rules, and the place card's — each of these owns the
-    // bottom of the screen, and an `Area` cannot be put behind a panel. Hidden,
+    // bottom of the screen. Hidden,
     // not cleared: the building is still the subject, and its glass is still on
     // the map, when the keyboard or the panel goes away.
     // The Share sheet stands where the card does, and is about it.
@@ -320,337 +303,64 @@ pub fn render_building_card(
     let hidden = driver.active
         || menu.open
         || keyboard.is_open()
-        || (egui.compact() && !right_panel.is(RightPanel::None))
+        || (metrics.compact() && !right_panel.is(RightPanel::None))
         || right_panel.is(RightPanel::Route)
         || sharing;
     // A new building starts at the peek, however far the last one was pulled.
     if let Some(id) = selection.selected.clone() {
         if last_shown.as_deref() != Some(&*id) {
             selection.card_rest = Default::default();
-            selection.card_drag = Default::default();
             *last_shown = Some(id);
         }
     }
 
-    // The library's edition is showing (`lib_building_card`): hand it what
-    // the card shows, do the verb it asked for, draw nothing.
-    if selection.card_lib {
-        // Read before taking, so a quiet frame leaves the resource unchanged.
-        let action = if selection.card_bridge.action.is_some() {
-            selection.card_bridge.action.take()
-        } else {
-            None
-        };
-        let selected = selection.selected.clone();
-        let fact = selected
-            .as_deref()
-            .and_then(|id| facts.building(id).cloned());
-        // A building whose cell has streamed out from under the selection:
-        // the card goes, and the selection with it (as below).
-        if !hidden && selected.is_some() && fact.is_none() {
-            selection.clear();
-        }
-        let shown = selected.zip(fact).map(|(id, fact)| {
-            let addresses = addresses_of(&facts, &id);
-            (id, fact, addresses)
-        });
-        let content = if hidden {
-            None
-        } else {
-            shown.as_ref().map(|(id, fact, addresses)| {
-                CardContent::of(
-                    id,
-                    fact,
-                    lod.shell_measure(id),
-                    addresses,
-                    &cutaway,
-                    &identity,
-                    &facade,
-                )
-            })
-        };
-        if selection.card_bridge.content != content {
-            selection.card_bridge.content = content;
-        }
-        if let (Some(a), Some((id, fact, addresses))) = (action, shown.as_ref()) {
-            run(a, id, fact, &mut cutaway, &mut facade);
-            #[cfg(feature = "comms")]
-            if a == CardAction::Share {
-                share_building(fact, addresses, &mut bridges);
-            }
-            #[cfg(not(feature = "comms"))]
-            let _ = addresses;
-        }
-        return;
+    // Hand the library's card what it shows, and do the verb it asked for.
+    // Read before taking, so a quiet frame leaves the resource unchanged.
+    let action = if selection.card_bridge.action.is_some() {
+        selection.card_bridge.action.take()
+    } else {
+        None
+    };
+    let selected = selection.selected.clone();
+    let fact = selected
+        .as_deref()
+        .and_then(|id| facts.building(id).cloned());
+    // A building whose cell has streamed out from under the selection. The
+    // card goes rather than showing a row of blanks — and so does the
+    // selection, since there is nothing left to draw glass around either.
+    if !hidden && selected.is_some() && fact.is_none() {
+        selection.clear();
     }
-
-    // The card rises from the dock and sinks back (`motion::linger`): the
-    // building it was showing is still drawn, untouchable, for the last
-    // `motion::LEAVE` after the selection is cleared.
-    let ctx = egui.ctx();
-    let Some((id, pres)) = crate::systems::motion::linger(
-        ctx,
-        egui::Id::new("building_card"),
-        if hidden {
-            None
-        } else {
-            selection.selected.clone()
-        },
-    ) else {
-        return;
+    let shown = selected.zip(fact).map(|(id, fact)| {
+        let addresses = addresses_of(&facts, &id);
+        (id, fact, addresses)
+    });
+    let content = if hidden {
+        None
+    } else {
+        shown.as_ref().map(|(id, fact, addresses)| {
+            CardContent::of(
+                id,
+                fact,
+                lod.shell_measure(id),
+                addresses,
+                &cutaway,
+                &identity,
+                &facade,
+            )
+        })
     };
-
-    // A building whose cell has streamed out from under the selection. The card
-    // goes rather than showing a row of blanks — and so does the selection, since
-    // there is nothing left to draw glass around either.
-    let Some(fact) = facts.building(&id).cloned() else {
-        if pres.open {
-            selection.clear();
-        }
-        return;
-    };
-    let shell = lod.shell_measure(&id);
-    let addresses = addresses_of(&facts, &id);
-    let content = CardContent::of(&id, &fact, shell, &addresses, &cutaway, &identity, &facade);
-
-    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
-    let width = CARD_WIDTH.min(egui.viewport_pts().x - 2.0 * theme::OSD_MARGIN);
-    let full_h = egui.viewport_pts().y * 0.5;
-    let mut close = false;
-    let mut asked: Option<CardAction> = None;
-    egui::Area::new(egui::Id::new("building_card"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .interactable(pres.open)
-        .show(ctx, |ui| {
-            use crate::systems::motion::{self, Rest, SheetMove};
-            let rest = selection.card_rest;
-            motion::follow(
-                ui,
-                egui::Id::new("building_card"),
-                pres,
-                &mut selection.card_drag,
-                motion::LIFT,
-                rest == Rest::Full,
-            );
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(width);
-                // The grabber: a pull up shows the facts, then all of them; a
-                // pull or a flick down puts the card away.
-                match motion::grabber(
-                    ui,
-                    &mut selection.card_drag,
-                    rest,
-                    &RESTS,
-                    "Expand or collapse",
-                ) {
-                    SheetMove::Stay => {}
-                    SheetMove::To(rest) => selection.card_rest = rest,
-                    SheetMove::Close => close = true,
-                }
-                let rest = selection.card_rest;
-                header(ui, &content.title, &content.subtitle, &mut close);
-                ui.add_space(4.0);
-                if rest >= Rest::Half {
-                    egui::ScrollArea::vertical()
-                        // A block of flats has more rows than a phone has screen.
-                        // The card keeps its own height and scrolls inside it
-                        // rather than growing until it swallows the map — the
-                        // failure `driver`'s bottom bar hit when it sized to
-                        // content. Full takes half the screen; the map stays a
-                        // strip above it.
-                        .max_height(if rest == Rest::Full { full_h } else { 260.0 })
-                        .show(ui, |ui| {
-                            rows(ui, &content.rows);
-                        });
-                }
-                ui.add_space(6.0);
-                // The two ways into the building: look inside it here, or open its
-                // floor plan in the editor — where its owner changes it, and
-                // anybody else sees what they drew. The verbs and their order
-                // are `CardContent::of`'s.
-                let can_open = content.can_open;
-                let busy = content.busy;
-                let looking = content.looking;
-                for pair in content.actions.chunks(2) {
-                    ui.horizontal(|ui| {
-                        let w = theme::equal_width(ui, 2);
-                        for act in pair {
-                            match act {
-                                CardAction::Share => {
-                                    if theme::secondary_button(ui, icons::SHARE, "Share", w)
-                                        .on_hover_text("Send this building to a chat or community")
-                                        .clicked()
-                                    {
-                                        asked = Some(CardAction::Share);
-                                    }
-                                }
-                                CardAction::Inside => {
-                                    if theme::secondary_toggle(
-                                        ui,
-                                        icons::BUILDINGS,
-                                        "Look inside",
-                                        w,
-                                        looking,
-                                    )
-                                    .on_hover_text(if looking {
-                                        "Stop looking inside"
-                                    } else {
-                                        "See the floors inside"
-                                    })
-                                    .clicked()
-                                    {
-                                        asked = Some(CardAction::Inside);
-                                    }
-                                }
-                                CardAction::Plan => {
-                                    let resp = ui.add_enabled_ui(can_open, |ui| {
-                                        theme::secondary_button(
-                                            ui,
-                                            icons::OPEN_EXTERNAL,
-                                            "Floor plan",
-                                            w,
-                                        )
-                                    });
-                                    if resp
-                                        .inner
-                                        .on_hover_text(
-                                            "Open this building in the floor-plan editor",
-                                        )
-                                        .clicked()
-                                    {
-                                        asked = Some(CardAction::Plan);
-                                    }
-                                }
-                                CardAction::Wrong => {
-                                    let resp = ui.add_enabled_ui(!busy, |ui| {
-                                        theme::secondary_button(ui, icons::FLAG, "Facade wrong", w)
-                                    });
-                                    if resp
-                                        .inner
-                                        .on_hover_text(
-                                            "The walls' colour or material is not right: \
-                                             measure them again from street photos",
-                                        )
-                                        .clicked()
-                                    {
-                                        asked = Some(CardAction::Wrong);
-                                    }
-                                }
-                                CardAction::Photo => {
-                                    let resp = ui.add_enabled_ui(!busy, |ui| {
-                                        theme::secondary_button(
-                                            ui,
-                                            icons::CAMERA,
-                                            "Facade photo",
-                                            w,
-                                        )
-                                    });
-                                    if resp
-                                        .inner
-                                        .on_hover_text(
-                                            "Take a photo of the front: its colour and \
-                                             material are measured from it, and the photo \
-                                             is not kept",
-                                        )
-                                        .clicked()
-                                    {
-                                        asked = Some(CardAction::Photo);
-                                    }
-                                }
-                                CardAction::Replace => {
-                                    let resp = ui.add_enabled_ui(can_open, |ui| {
-                                        theme::secondary_button(
-                                            ui,
-                                            icons::OPEN_EXTERNAL,
-                                            "Replace",
-                                            w,
-                                        )
-                                    });
-                                    if resp
-                                        .inner
-                                        .on_hover_text(
-                                            "Open this building in the Overrides tab, to put a \
-                                             model in its place",
-                                        )
-                                        .clicked()
-                                    {
-                                        asked = Some(CardAction::Replace);
-                                    }
-                                }
-                                // Not among the paired buttons.
-                                CardAction::CancelPhoto | CardAction::Record => {}
-                            }
-                        }
-                    });
-                }
-                if let Some(note) = &content.note {
-                    ui.horizontal(|ui| {
-                        if busy {
-                            ui.spinner();
-                        }
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(note)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                            )
-                            .wrap(),
-                        );
-                        if content.capturing && theme::ghost_button(ui, "", "Cancel").clicked() {
-                            asked = Some(CardAction::CancelPhoto);
-                        }
-                    });
-                }
-                ui.add_space(4.0);
-                if rest == Rest::Peek {
-                    return;
-                }
-                ui.horizontal(|ui| {
-                    /// Shown on hover where the button is dead, so the greying is
-                    /// explained rather than merely observed — `data_layers`'
-                    /// POI popup states the same thing the same way.
-                    const NO_BROWSER: &str = "Opening links isn't available on this platform";
-                    if ui
-                        .add_enabled_ui(can_open, |ui| {
-                            theme::secondary_button(
-                                ui,
-                                icons::OPEN_EXTERNAL,
-                                "Official record",
-                                0.0,
-                            )
-                        })
-                        .inner
-                        .on_disabled_hover_text(NO_BROWSER)
-                        .clicked()
-                    {
-                        asked = Some(CardAction::Record);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // The id itself, small and selectable — it is the join to
-                        // every other Dutch register and to any BIM model of this
-                        // building, and somebody will want to copy it.
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&*id)
-                                    .size(theme::SIZE_TINY)
-                                    .color(theme::p().text_dim),
-                            )
-                            .truncate(),
-                        );
-                    });
-                });
-            });
-        });
-
-    if let Some(a) = asked {
-        run(a, &id, &fact, &mut cutaway, &mut facade);
+    if selection.card_bridge.content != content {
+        selection.card_bridge.content = content;
+    }
+    if let (Some(a), Some((id, fact, addresses))) = (action, shown.as_ref()) {
+        run(a, id, fact, &mut cutaway, &mut facade);
         #[cfg(feature = "comms")]
         if a == CardAction::Share {
-            share_building(&fact, &addresses, &mut bridges);
+            share_building(fact, addresses, &mut bridges);
         }
-    }
-    if close {
-        selection.clear();
+        #[cfg(not(feature = "comms"))]
+        let _ = addresses;
     }
 }
 
@@ -665,46 +375,6 @@ pub(crate) fn titles(fact: &BuildingFact, addresses: &[AddressFact]) -> (String,
         uses.join(" · ")
     };
     (title, subtitle)
-}
-
-/// The header: the title, and the uses under it.
-///
-/// The close button is laid out **first**, because a truncating label asks for
-/// every point available and the other way round it pushes the ✕ off the card —
-/// the rule every header row in this tree follows.
-fn header(ui: &mut egui::Ui, title: &str, subtitle: &str, close: &mut bool) {
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            *close = theme::close_button(ui).clicked();
-            let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-            ui.allocate_ui_with_layout(
-                size,
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(title)
-                                .size(theme::SIZE_TITLE)
-                                .color(theme::p().cream),
-                        )
-                        .truncate()
-                        .selectable(false),
-                    );
-                },
-            );
-        });
-    });
-    if !subtitle.is_empty() {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(subtitle)
-                    .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
-            )
-            .truncate()
-            .selectable(false),
-        );
-    }
 }
 
 /// "Herestraat 12–20" out of the addresses registered against this building.
@@ -808,21 +478,6 @@ pub(crate) fn fact_rows(
     out
 }
 
-/// The facts as egui's card draws them.
-fn rows(ui: &mut egui::Ui, rows: &[(&'static str, String)]) {
-    egui::Grid::new("building_facts")
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        // No stripes: a band behind only the two columns stopped half way
-        // across the card and read as a spreadsheet pasted into it.
-        .striped(false)
-        .show(ui, |ui| {
-            for (name, value) in rows {
-                row(ui, name, value);
-            }
-        });
-}
-
 /// The addresses in the building, capped — see [`MAX_ADDRESSES`].
 fn address_list(addresses: &[AddressFact]) -> String {
     let mut shown: Vec<String> = addresses
@@ -834,17 +489,6 @@ fn address_list(addresses: &[AddressFact]) -> String {
         shown.push(format!("+{} more", addresses.len() - shown.len()));
     }
     shown.join("\n")
-}
-
-/// One name/value row, in the Grid the caller opened.
-fn row(ui: &mut egui::Ui, name: &str, value: &str) {
-    ui.label(
-        egui::RichText::new(name)
-            .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
-    );
-    ui.label(egui::RichText::new(value).size(theme::SIZE_SUB));
-    ui.end_row();
 }
 
 #[cfg(test)]

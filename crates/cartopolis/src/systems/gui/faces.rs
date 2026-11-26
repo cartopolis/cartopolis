@@ -688,6 +688,12 @@ impl Faces {
 
 /// Your picture on the You page: the disc, or the preview as a polaroid, and
 /// the ways to change it.
+///
+/// **Kept for a gap, not drawn**: the library's You page (`lib_chats`) shows
+/// the preview as a line ("Your new picture is ready") and every face as its
+/// initial, because it has no edition of a picture from `Faces` yet. This and
+/// [`polaroid`] are what to port when it does; delete them then.
+#[allow(dead_code)]
 pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut Option<RightPanel>) {
     if let Some(preview) = faces.preview.as_ref() {
         if let Some(texture) = preview.texture.as_ref() {
@@ -756,6 +762,7 @@ fn pill(icon: &str, text: &str) -> egui::Button<'static> {
 }
 
 /// A row of buttons, centred as a group of about `width` points.
+#[allow(dead_code)]
 fn centred_row(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
     let w = ui.available_width();
     ui.allocate_ui_with_layout(
@@ -769,8 +776,14 @@ fn centred_row(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The picture as a polaroid: warm white card, narrow edge, deep foot with
-/// your name written on it.
+/// your name written on it. Kept with [`you_picture`], for its gap.
+#[allow(dead_code)]
 fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
+    /// A Polaroid's paper: warm white rather than pure white, which would
+    /// glare against the ink of the panel.
+    const POLAROID_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF4, 0xF2, 0xEC);
+    /// What is written on it.
+    const POLAROID_INK: egui::Color32 = egui::Color32::from_rgb(0x2A, 0x2E, 0x33);
     const PHOTO: f32 = 168.0;
     const EDGE: f32 = 10.0;
     const FOOT: f32 = 36.0;
@@ -782,11 +795,7 @@ fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
         egui::CornerRadius::same(3),
         egui::Color32::from_black_alpha(70),
     );
-    p.rect_filled(
-        rect,
-        egui::CornerRadius::same(2),
-        crate::systems::discs::POLAROID_WHITE,
-    );
+    p.rect_filled(rect, egui::CornerRadius::same(2), POLAROID_WHITE);
     let photo =
         egui::Rect::from_min_size(rect.min + egui::vec2(EDGE, EDGE), egui::Vec2::splat(PHOTO));
     egui::Image::new(texture).paint_at(ui, photo);
@@ -795,7 +804,7 @@ fn polaroid(ui: &mut egui::Ui, texture: &egui::TextureHandle, me: &str) {
         egui::Align2::CENTER_CENTER,
         me,
         egui::FontId::proportional(15.0),
-        crate::systems::discs::POLAROID_INK,
+        POLAROID_INK,
     );
 }
 

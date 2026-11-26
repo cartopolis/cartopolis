@@ -296,7 +296,7 @@ pub struct GeoNavState {
     /// [`RouteRequest`]; spent by `apply_route_request`.
     pub route_request: Option<RouteRequest>,
     /// A place picked in the Search panel, waiting for the place card
-    /// (`place_card::render_place_card`, which also closes the panel). The same
+    /// (`place_card::drive_place_card`, which also closes the panel). The same
     /// queue shape as [`route_request`](Self::route_request), for the same
     /// reason: the row that was tapped is drawn by a panel system that does not
     /// own the card.

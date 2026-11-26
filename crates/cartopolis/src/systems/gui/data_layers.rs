@@ -34,7 +34,6 @@ use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
 use crate::grid::{AnchoredCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::platform::fetch_gate;
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::layer_state::*;
 pub use crate::systems::layer_state::{CellBuild, DataLayers, LayerRuntime, PoiInstance, PoiPopup};
 use std::collections::HashMap;
@@ -48,10 +47,9 @@ use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::coverage::CoverageSlot;
-use crate::systems::icons;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
-use crate::systems::theme;
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use cartopolis_core::world::{tile_to_lat_lng, tile_to_meters};
 use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
 
@@ -1204,7 +1202,7 @@ pub fn update_data_layers(
 /// world-space ray against thin, short poles.
 pub fn handle_poi_click(
     mouse: Res<ButtonInput<MouseButton>>,
-    egui: EguiMut,
+    ui_input: Res<UiInput>,
     mut dl: ResMut<DataLayers>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
@@ -1212,10 +1210,9 @@ pub fn handle_poi_click(
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    // Clicks on the UI (panels, the popup itself) are egui's, not the world's
-    // — or the component library's (`lib_poi_card`), which `owns_click` asks
-    // after too.
-    if egui.owns_click(false, None) {
+    // Clicks on the UI (panels, the card itself — `lib_poi_card`) are the
+    // interface's, not the world's.
+    if ui_input.owns_click(false, None) {
         return;
     }
     let Some(cursor) = windows.iter().next().and_then(|w| w.cursor_position()) else {
@@ -1293,14 +1290,12 @@ pub fn handle_poi_click(
     });
 }
 
-/// The POI card as the component library draws it (`lib_poi_card`,
-/// `CARTO_UI_LIB=poi_card`): while `lib` is on, [`render_poi_popup`] still
-/// projects the POI and publishes the frame's card in `view` — `None` when
-/// there is none or it is behind the camera — and paints nothing. A tap there
-/// is done by [`poi_act`], the code egui's buttons call.
+/// The POI card as the component library draws it (`lib_poi_card`):
+/// [`drive_poi_card`] projects the POI and publishes the frame's card in
+/// `view` — `None` when there is none or it is behind the camera. A tap there
+/// is done by [`poi_act`].
 #[derive(Resource, Default)]
 pub struct PoiCard {
-    pub lib: bool,
     #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub view: Option<PoiCardView>,
 }
@@ -1309,7 +1304,7 @@ pub struct PoiCard {
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 #[derive(Clone, PartialEq, Debug)]
 pub struct PoiCardView {
-    /// The point under the card's bottom centre, egui points.
+    /// The point under the card's bottom centre, UI points.
     pub at: (f32, f32),
     pub title: String,
     pub subtitle: String,
@@ -1336,7 +1331,7 @@ pub fn osm_url(osm_id: i64) -> String {
     format!("https://www.openstreetmap.org/node/{osm_id}")
 }
 
-/// Do what a tap on the POI card asked for, whichever edition drew it.
+/// Do what a tap on the POI card asked for.
 pub fn poi_act(dl: &mut DataLayers, a: PoiAction) {
     match a {
         PoiAction::Close => dl.popup = None,
@@ -1353,11 +1348,12 @@ pub fn poi_act(dl: &mut DataLayers, a: PoiAction) {
     }
 }
 
-/// The clicked-POI info card: name, category/address, and Website / OSM
-/// buttons. Anchored above the POI's pole; closes via ✕ or a click elsewhere.
-pub fn render_poi_popup(
-    mut egui: EguiMut,
-    mut dl: ResMut<DataLayers>,
+/// The clicked-POI info card's frame, for `lib_poi_card`: where it stands
+/// (above the POI's pole) and what it says. Closes via ✕ or a click
+/// elsewhere ([`handle_poi_click`]).
+pub fn drive_poi_card(
+    metrics: Res<UiMetrics>,
+    dl: Res<DataLayers>,
     mut card: ResMut<PoiCard>,
     camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
 ) {
@@ -1383,95 +1379,15 @@ pub fn render_poi_popup(
     let Ok(screen) = cam.world_to_viewport(cam_gt, world) else {
         return; // behind the camera; keep the popup for when we turn back
     };
-    // Window points out of the projection, egui points into the `Area`.
-    let anchor = egui.window_to_ui(screen);
-    // The library draws the card: hand it this frame's, and paint nothing.
-    if card.lib {
-        card.view = Some(PoiCardView {
-            at: (anchor.x, anchor.y),
-            title: popup.title.clone(),
-            subtitle: popup.subtitle.clone(),
-            website: popup.website.clone(),
-            osm_id: popup.osm_id,
-        });
-        return;
-    }
-
-    let mut act: Option<PoiAction> = None;
-    egui::Area::new(egui::Id::new("poi_popup"))
-        .fixed_pos(anchor)
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .show(egui.ctx_mut(), |ui| {
-            theme::dark_here(|| {
-                // Dark in both themes: it is a map label's chip (`LABEL_CHIP`).
-                theme::use_dark_visuals(ui);
-                // A chip that happens to carry controls: the fill and the radius are
-                // `chip_frame`'s so it matches the pin labels it appears beside, and
-                // only the margin opens up — six points of padding around a close
-                // button and two actions reads as a cramped box, not as a chip.
-                theme::chip_frame()
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        ui.set_max_width(240.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&popup.title)
-                                    .strong()
-                                    .color(theme::p().cream),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if theme::close_button(ui).clicked() {
-                                        act = Some(PoiAction::Close);
-                                    }
-                                },
-                            );
-                        });
-                        ui.label(
-                            egui::RichText::new(&popup.subtitle)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
-                        );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            // Both buttons hand their URL to `open_url`, which cannot
-                            // reach a browser on every platform. Grey them out there
-                            // rather than let a press do nothing — a control that
-                            // swallows a tap is indistinguishable from a broken app.
-                            let can_open = open_url_supported();
-                            if popup.website.is_some() {
-                                if ui
-                                    .add_enabled_ui(can_open, |ui| {
-                                        theme::secondary_button(
-                                            ui,
-                                            icons::OPEN_EXTERNAL,
-                                            "Website",
-                                            0.0,
-                                        )
-                                    })
-                                    .inner
-                                    .on_disabled_hover_text(NO_BROWSER)
-                                    .clicked()
-                                {
-                                    act = Some(PoiAction::Website);
-                                }
-                            }
-                            if ui
-                                .add_enabled_ui(can_open, |ui| theme::ghost_button(ui, "", "OSM"))
-                                .inner
-                                .on_disabled_hover_text(NO_BROWSER)
-                                .clicked()
-                            {
-                                act = Some(PoiAction::Osm);
-                            }
-                        });
-                    });
-            })
-        });
-    if let Some(a) = act {
-        poi_act(&mut dl, a);
-    }
+    // Window points out of the projection, UI points into the card.
+    let anchor = metrics.window_to_ui(screen);
+    card.view = Some(PoiCardView {
+        at: (anchor.x, anchor.y),
+        title: popup.title.clone(),
+        subtitle: popup.subtitle.clone(),
+        website: popup.website.clone(),
+        osm_id: popup.osm_id,
+    });
 }
 
 /// Whether [`open_url`] can actually open anything on this platform.

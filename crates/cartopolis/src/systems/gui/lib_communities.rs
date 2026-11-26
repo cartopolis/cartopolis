@@ -18,10 +18,9 @@
 //! does through the same functions (`community_posts::load`,
 //! `read_notices`).
 //!
-//! **What stays egui's.** The picture picker and its upload, and the
-//! account-delete confirmation (`chats::egui_only` runs them whichever
-//! edition has the panel): Choose sets `Communities::pick_picture` as
-//! egui's does.
+//! **Elsewhere.** The picture picker and its upload are run by
+//! `chats::drive_chats` (Choose sets `Communities::pick_picture`), and the
+//! account-delete confirmation is `lib_dialogs`'.
 //!
 //! **What differs from egui's.** The library has no image node: a
 //! community's picture is its disc (`lib_chats::disc`), a post's photo and

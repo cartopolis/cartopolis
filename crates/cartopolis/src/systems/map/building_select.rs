@@ -133,17 +133,12 @@ pub struct BuildingSelection {
     /// The building the user picked, if any. Cleared by a click on empty world,
     /// by the card's close button, and by a re-anchor.
     pub selected: Option<Arc<str>>,
-    /// How much of the building card is up, and the finger on its grabber
-    /// (`building_card`, `motion::grabber`). Here rather than in the card
-    /// because the selection is the state the card is a view of.
+    /// How much of the building card is up (`lib_building_card`'s grabber).
+    /// Here rather than in the card because the selection is the state the
+    /// card is a view of.
     pub card_rest: crate::systems::motion::Rest,
-    pub card_drag: crate::systems::motion::SheetDrag,
-    /// The library draws the card (`lib_building_card`): egui's
-    /// `render_building_card` draws nothing, and publishes
-    /// [`card_bridge`](Self::card_bridge) instead.
-    pub card_lib: bool,
-    /// What egui's card system and the library's card pass each other while
-    /// `card_lib` is on.
+    /// What `building_card::drive_building_card` and the library's card pass
+    /// each other.
     pub card_bridge: crate::systems::building_card::CardBridge,
     /// The building the avatar is standing in, from
     /// [`InteriorFloors::building_at`].

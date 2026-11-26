@@ -1,23 +1,21 @@
 //! The post composer over the map drawn by the component library
-//! (`lib_host`), beside egui's (`community_posts::render_floating_composer`):
-//! a post started from the map (Post here, the camera), written with the
-//! place it is about still in sight.
+//! (`lib_host`): a post started from the map (Post here, the camera),
+//! written with the place it is about still in sight.
 //!
-//! On with `CARTO_UI_LIB=post_composer` (or `1`), on the web `?ui=lib`.
-//! egui's system steps aside (`Posts::composer_lib`) but still decides
-//! whether the composer shows (an open panel or the camera hide it, a draft
-//! gone ends it) and publishes where it stands and who the post reaches in
+//! `community_posts::drive_floating_composer` decides whether the composer
+//! shows (an open panel or the camera hide it, a draft gone ends it) and
+//! publishes where it stands and who the post reaches in
 //! `Posts::composer_view`. The draft's words are diffed into `Posts::draft`
 //! each frame, both ways; every other tap goes through
-//! `community_posts::composer_act`, the code egui's composer calls.
+//! `community_posts::composer_act`.
 //!
-//! **Placement.** As egui's: held sideways, beside the map at the right,
-//! 380 px or half the screen wide and the screen's height; held upright,
-//! along the bottom, the screen's width and at most 55 % of its height.
+//! **Placement.** Held sideways, beside the map at the right, 380 px or half
+//! the screen wide and the screen's height; held upright, along the bottom,
+//! the screen's width and at most 55 % of its height.
 //!
-//! **What differs from egui's.** The library has no image node, so the
-//! polaroid and the picture are rows naming them, each with its remove; the
-//! public colour is the library's info tone, the nearest token.
+//! The library has no image node, so the polaroid and the picture are rows
+//! naming them, each with its remove; the public colour is the library's
+//! info tone, the nearest token.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -232,9 +230,6 @@ pub fn drive_lib_post_composer(
     if !lib.post_composer {
         return;
     }
-    if !cs.posts.composer_lib {
-        cs.posts.composer_lib = true;
-    }
     let size = metrics.viewport_pts();
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
@@ -256,7 +251,7 @@ pub fn drive_lib_post_composer(
                 composer_act(&mut cs, a);
             }
         }
-        // Shown by egui's system, and the draft still there.
+        // Shown by `drive_floating_composer`, and the draft still there.
         let view = cs.posts.composer_view.clone().filter(|v| {
             cs.posts
                 .draft
@@ -346,7 +341,7 @@ fn html(l: &Live) -> String {
     out
 }
 
-/// A quiet sentence where egui has `theme::note`.
+/// A quiet sentence, as `theme::note` was.
 fn note_line(text: String) -> View {
     view! {
         <p style="margin: 0; color: var(--m-text-dim); font-size: var(--m-font-size-sm)">{text}</p>

@@ -1,21 +1,17 @@
-//! The Chats panel (Community) drawn by the component library (`lib_host`),
-//! beside egui's (`chats::render_chats_panel`): the panel's frame and its
-//! routing, the list (the public tiles, the requests row, "Coming up", the
-//! Activity entry, the conversations and communities), the New sheet and
-//! the You page.
+//! The Chats panel (Community) drawn by the component library (`lib_host`):
+//! the panel's frame and its routing, the list (the public tiles, the
+//! requests row, "Coming up", the Activity entry, the conversations and
+//! communities), the New sheet and the You page.
 //!
-//! On with `CARTO_UI_LIB=chats` (or `1`), on the web `?ui=lib`
-//! (`&panel=chats` opens it). egui's panel steps aside (`ChatsView::lib`)
-//! on the screens the library draws (`ChatsScreen::on_library`), keeping an
-//! empty strip, and still does what only it can: the picture picker, the
-//! full-size picture viewer, the report and account-delete dialogs. Every
-//! screen of the panel is on the library: the contacts screens
-//! (`lib_contacts`) and the calendar (`lib_calendar`) were the last.
+//! `chats::drive_chats` keeps the panel's state beside it: what is read,
+//! the picture picker, and what the picture viewer (`lib_picture_viewer`)
+//! and the report and account-delete dialogs (`lib_dialogs`) are handed.
+//! Every screen of the panel is on the library (`ChatsScreen::on_library`).
 //!
-//! **One set of logic, two editions.** Which screen shows is
-//! `ChatsView::screen`; the list's rows are `chats::list_model`; a tap fills
-//! the same `chats::Actions` egui's drawing fills, and the frame ends in the
-//! same `chats::settle` (→ `apply`). Nothing here decides what a tap means.
+//! **The logic is `chats`'.** Which screen shows is `ChatsView::screen`;
+//! the list's rows are `chats::list_model`; a tap fills a `chats::Actions`,
+//! and the frame ends in `chats::settle` (→ `apply`). Nothing here decides
+//! what a tap means.
 //!
 //! **The shell is shared.** The conversation (`lib_chat_conversation`), the
 //! communities screens (`lib_communities`), the contacts screens
@@ -343,9 +339,6 @@ pub fn drive_lib_chats(
     if !lib.chats {
         return;
     }
-    if !w.view.lib {
-        w.view.lib = true;
-    }
     if lib.open_chats && !*opened {
         *opened = true;
         *w.right_panel = RightPanel::Chat;
@@ -430,7 +423,7 @@ pub fn drive_lib_chats(
             // (`ui::MainMenu::face`): taken by the sheet every frame.
             if w.screen() == ChatsScreen::List {
                 let vp = metrics.viewport_pts();
-                act.face_rect = Some(egui::Rect::from_min_size(
+                w.menu.face = Some(egui::Rect::from_min_size(
                     egui::pos2(vp.x - 52.0, 8.0),
                     egui::vec2(40.0, 40.0),
                 ));
@@ -503,7 +496,7 @@ fn mirror(live: &ChatsLive, w: &mut ChatsWorld, now: u64) {
 
 /// The list as it stands, from the same model egui draws.
 fn list_state(w: &mut ChatsWorld, now: u64) -> ListState {
-    let model = chats::list_model(None, &w.chat, &w.view, &w.contacts, &mut w.communities);
+    let model = chats::list_model(&w.chat, &w.view, &w.contacts, &mut w.communities);
     let quiet = !model.searching && !model.sending;
     let coming = quiet.then(|| {
         let c = crate::systems::calendar::coming_up_list(&w.calendar, &w.chat, &w.communities, now);

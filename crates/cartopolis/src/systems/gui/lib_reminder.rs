@@ -1,15 +1,13 @@
-//! The calendar's reminder drawn by the component library (`lib_host`),
-//! beside egui's (`calendar::render_reminder`): time to leave for a meet-up,
-//! or a meeting about to start, over whatever is open.
+//! The calendar's reminder drawn by the component library (`lib_host`):
+//! time to leave for a meet-up, or a meeting about to start, over whatever
+//! is open.
 //!
-//! On with `CARTO_UI_LIB=reminder` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`Calendar::lib`) but still works out when a reminder
-//! is due and when it goes; a tap here is handed back in
-//! `Calendar::lib_action` and done by `calendar::reminder_act`, the code
-//! egui's buttons call.
+//! `calendar::drive_reminder` works out when a reminder is due and when it
+//! goes; a tap here is handed back in `Calendar::lib_action` and done by
+//! `calendar::reminder_act`.
 //!
-//! **Placement.** As egui's: centred over the top edge, 64 px down, as wide
-//! as 420 px or the screen less its margins.
+//! **Placement.** Centred over the top edge, 64 px down, as wide as 420 px
+//! or the screen less its margins.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,7 +27,7 @@ use crate::systems::{icons, theme};
 /// The reminder's name in the library's host.
 const KEY: &str = "reminder";
 
-/// How far below the top edge it stands, px: egui's figure.
+/// How far below the top edge it stands, px.
 const TOP: f32 = 64.0;
 
 /// Its widest, px.
@@ -99,13 +97,10 @@ pub fn drive_lib_reminder(
     if !lib.reminder {
         return;
     }
-    if !cal.lib {
-        cal.lib = true;
-    }
     let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The tap of the frame, for egui's system to do.
+        // The tap of the frame, for `calendar::drive_reminder` to do.
         if let Some(live) = m.as_ref() {
             let acts: Vec<ReminderAction> = std::mem::take(&mut *live.acts.borrow_mut());
             if let Some(a) = acts.last() {

@@ -1,28 +1,23 @@
-//! The place card drawn by the component library (`lib_host`), beside
-//! egui's (`place_card::render_place_card`): what a picked search result
-//! opens, a card over the map rather than a panel.
+//! The place card drawn by the component library (`lib_host`): what a
+//! picked search result opens, a card over the map rather than a panel.
 //!
-//! On with `CARTO_UI_LIB=place_card` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`PlaceCard::lib`) but keeps the work only it can do —
-//! spending the pick, the suppression (the keyboard, the driver bar, the
-//! menu, an open panel on a phone, the route planner, the Share sheet), the
-//! camera's distance and the session — and hands it over in
-//! `PlaceCard::lib_view`. A verb tapped here goes back the same way and is
-//! done by `PlaceCard::act`, the code egui's buttons call, so the two
-//! editions cannot drift apart.
+//! `place_card::drive_place_card` does the work the card cannot — spending
+//! the pick, the suppression (the keyboard, the driver bar, the menu, an
+//! open panel on a phone, the route planner, the Share sheet), the camera's
+//! distance and the session — and hands it over in `PlaceCard::lib_view`. A
+//! verb tapped here goes back the same way and is done by `PlaceCard::act`.
 //!
-//! **Placement.** As egui's: centred over the bottom edge, above the dock
+//! **Placement.** Centred over the bottom edge, above the dock
 //! (`dock::reserved_bottom`), as wide as the card or the screen less its
 //! margins. The library's root is the whole window, so the card is one
 //! absolutely placed node whose left, bottom and width follow the viewport
-//! each frame ([`Placement`]). It takes no egui strip: a click on it is held
-//! off the world by `lib_host::bridge_input` (`UiPointer`), and the card's
-//! own node listens, so its padding counts as well as its buttons.
+//! each frame ([`Placement`]). A click on it is held off the world by
+//! `lib_host::bridge_input` (`UiPointer`), and the card's own node listens,
+//! so its padding counts as well as its buttons.
 //!
-//! **What differs from egui's.** The grabber is a tap, not a drag (the
-//! library has no sheet gesture): it and More both raise the card to its
-//! full rest, where More's two entries are rows — egui's ⋯ popup has no
-//! library counterpart. The card appears and goes without egui's rise.
+//! The grabber is a tap, not a drag (the library has no sheet gesture): it
+//! and More both raise the card to its full rest, where More's two entries
+//! are rows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,8 +37,8 @@ use crate::systems::{icons, theme};
 /// The card's name in the library's host.
 const KEY: &str = "place_card";
 
-/// Width of the card, px, before the screen narrows it. Wider than egui's
-/// 300: the owner asked for calm, roomy cards, and 20 px edges inside.
+/// Width of the card, px, before the screen narrows it: the owner asked for
+/// calm, roomy cards, and 20 px edges inside.
 pub(crate) const CARD_WIDTH: f32 = 360.0;
 
 /// Where a card over the map stands, px in the library's root: centred over
@@ -57,9 +52,10 @@ pub(crate) struct Placement {
 }
 
 impl Placement {
-    /// For a viewport of `w` × `h` egui points. The library's px are egui's
-    /// points on the Bevy backend (`lib_host::prepare_bevy` sets `UiScale`
-    /// to egui's); as DOM they are the page's, `ui_scale` times larger.
+    /// For a viewport of `w` × `h` UI points (`UiMetrics`). The library's px
+    /// are UI points on the Bevy backend (`lib_host::prepare_bevy` sets
+    /// `UiScale` to the UI scale); as DOM they are the page's, `ui_scale`
+    /// times larger.
     pub(crate) fn over_the_dock(w: f32, h: f32, ui_scale: f32) -> Self {
         let width = CARD_WIDTH.min(w - 2.0 * theme::OSD_MARGIN).max(0.0);
         let bottom = crate::systems::dock::reserved_bottom() + 8.0;
@@ -126,7 +122,7 @@ pub(crate) fn cell(button: View) -> View {
 /// What a tap asked for; done by the system.
 #[derive(Clone, Copy)]
 enum Act {
-    /// A verb, handed to egui's system (`PlaceView::action`).
+    /// A verb, handed to `drive_place_card` (`PlaceView::action`).
     Do(PlaceAction),
     /// The grabber or More: the full rest, or back to the peek.
     Toggle,
@@ -185,9 +181,6 @@ pub fn drive_lib_place_card(
 ) {
     if !lib.place_card {
         return;
-    }
-    if !card.lib {
-        card.lib = true;
     }
     let size = metrics.viewport_pts();
     let placement = Placement::over_the_dock(size.x, size.y, metrics.ui_scale());

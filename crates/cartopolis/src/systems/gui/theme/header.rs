@@ -135,14 +135,6 @@ pub fn menu_entry_selected(
     menu_entry_full(ui, icon, label, selected, true, false)
 }
 
-/// [`menu_entry`] for a row that takes something away — remove, block,
-/// delete: the error ink, as the web's `data-tone=danger` entry. The red was
-/// a `RichText` colour on a raw `ui.button` until 2026-11-22, which
-/// `menu_entry` could not carry.
-pub fn menu_entry_danger(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
-    menu_entry_full(ui, icon, label, false, true, true)
-}
-
 pub(super) fn menu_entry_full(
     ui: &mut egui::Ui,
     icon: &str,
@@ -233,20 +225,6 @@ pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     ui.add(chip_button(label, selected))
 }
 
-/// [`chip`] at a stated size — for a segmented row whose segments have to be
-/// equal width whatever their words are (the route sheet's travel modes).
-///
-/// Three chips sized to "Car", "Bike" and "Walk" read as three unrelated
-/// buttons; one control with three positions has one width per position.
-pub fn chip_sized(
-    ui: &mut egui::Ui,
-    label: &str,
-    selected: bool,
-    size: egui::Vec2,
-) -> egui::Response {
-    ui.add_sized(size, chip_button(label, selected))
-}
-
 pub(super) fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
     let (fill, stroke, ink) = if selected {
         (p32().accent, p32().accent_ring, p32().on_accent)
@@ -296,56 +274,6 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     p.line_segment([x.right_top(), x.left_bottom()], stroke);
     paint_focus_ring(ui, &resp, rect, false);
     resp.on_hover_text("Close")
-}
-
-/// The ⋮ that opens a row's own actions — **painted, not typed**, and unlike
-/// [`close_button`] it carries its frame at rest.
-///
-/// Painted for the reason the close button is, only more so: *every* vertical
-/// ellipsis is missing from the bundled font. `⋮` (U+22EE), `︙` (U+FE19), `⁝`
-/// (U+205D), `⠇` (braille) and even the horizontal `⋯` all fail
-/// a probe of the loaded fonts, so there is no fallback chain to write here —
-/// the survivors are `…` and `☰`, and neither of those is this control. Three
-/// dots on the pixel grid have no font subset to depend on.
-///
-/// **Framed at rest is the whole point.** A place row's actions were reachable
-/// only by long-pressing the row, and a long press advertises itself nowhere: the
-/// hint was an `on_hover_text`, which a touchscreen never shows. The close button
-/// can afford to be frameless because a panel header has one obvious action and a
-/// box around it reads as a second panel; a list row is the opposite case, where
-/// the affordance *is* the feature.
-pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
-    let side = close_button_size();
-    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
-    let resp = named(ui, resp, "More");
-    let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (p32().accent_muted, p32().accent_ring, p32().cream)
-    } else if resp.hovered() {
-        (p32().surface_hover, p32().accent, p32().cream)
-    } else {
-        (p32().surface_raised, p32().control_edge, p32().text_dim)
-    };
-    let p = ui.painter();
-    p.rect(
-        rect,
-        CornerRadius::same(RADIUS_SM),
-        fill,
-        Stroke::new(1.0, ring),
-        egui::StrokeKind::Inside,
-    );
-    // Proportional to the target, for the reason the ✕'s inset is: the same
-    // absolute dot on a 32 pt finger button and a 22 pt pointer one reads as two
-    // different controls rather than as one at two sizes.
-    let radius = (side * 0.055).max(1.0);
-    let gap = side * 0.22;
-    for step in [-1.0, 0.0, 1.0] {
-        p.circle_filled(rect.center() + egui::vec2(0.0, step * gap), radius, ink);
-    }
-    paint_focus_ring(ui, &resp, rect, false);
-    // Baked in rather than left to the caller for the reason `close_button`'s is:
-    // this control's whole job is to advertise that a row has actions, and its
-    // one caller supplying the words is not the same as the control carrying them.
-    resp.on_hover_text("Actions")
 }
 
 /// The header every right-hand panel opens with: a raised band carrying the

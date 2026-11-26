@@ -192,8 +192,8 @@ impl Plugin for GuiPlugin {
                     systems::calendar::track_here,
                 )
                     .in_set(ClientPhase::Input)
-                    .before(systems::chats::render_chats_panel),
-                systems::calendar::render_reminder
+                    .before(systems::chats::drive_chats),
+                systems::calendar::drive_reminder
                     .after(systems::place_pins::render_place_pins)
                     .before(systems::app_update::render_app_update)
                     .in_set(ClientPhase::Present),
@@ -293,11 +293,11 @@ impl Plugin for GuiPlugin {
                 // The chip that says only one community's posts are on the map
                 // (`community_posts`): its own `Area` under the search bar.
                 // A text field: drawn before the on-screen keyboard reads it.
-                systems::community_posts::render_floating_composer
+                systems::community_posts::drive_floating_composer
                     .after(systems::bridges::render_share_sheet)
                     .before(systems::onscreen_keyboard::render_onscreen_keyboard)
                     .in_set(ClientPhase::Present),
-                systems::community_posts::render_filter_chip
+                systems::community_posts::drive_filter_chip
                     .after(systems::dock::render_dock)
                     .in_set(ClientPhase::Present),
             ),
@@ -357,7 +357,7 @@ impl Plugin for GuiPlugin {
             )
                 .chain()
                 .in_set(ClientPhase::Input)
-                .before(systems::chats::render_chats_panel),
+                .before(systems::chats::drive_chats),
         );
 
         // Drop egui geometry for the screenshot frame, after end_egui_frame has
@@ -379,7 +379,7 @@ impl Plugin for GuiPlugin {
                 // out of `GeoNavState::pending_card` is also what closes the Search
                 // panel, and doing it before the chain runs means the panel never
                 // draws a frame over the card it just opened.
-                systems::place_card::render_place_card.before(systems::ui::render_main_menu),
+                systems::place_card::drive_place_card.before(systems::ui::render_main_menu),
                 // The building card, on the same terms and for the same reasons: a
                 // floating `Area` above the dock, outside the panel chain,
                 // suppressed by whatever owns the bottom of the screen. **After**
@@ -387,26 +387,26 @@ impl Plugin for GuiPlugin {
                 // they are never both up (one comes from a search pick, the other
                 // from a click on the map) and the order makes that definite rather
                 // than a race if they ever are.
-                systems::building_card::render_building_card
-                    .after(systems::place_card::render_place_card)
+                systems::building_card::drive_building_card
+                    .after(systems::place_card::drive_place_card)
                     .before(systems::ui::render_main_menu),
                 // Its facade buttons' photograph and answer (`facade_check`),
                 // carried on whether or not the card is up: the camera app
                 // hides the whole client while it runs.
                 systems::facade_check::drive_facade_check
-                    .before(systems::building_card::render_building_card),
+                    .before(systems::building_card::drive_building_card),
                 // The floor picker (`systems::cutaway`): a floating column at the
                 // right edge, outside the panel chain on the card's terms. After
                 // the card, whose Look inside it answers in the same frame.
                 systems::floor_picker::render_floor_picker
-                    .after(systems::building_card::render_building_card)
+                    .after(systems::building_card::drive_building_card)
                     .before(systems::ui::render_main_menu),
                 // The menu a tap on a satellite opens, and the chip that says what the
                 // camera is riding: both floating, outside the panel chain on the
                 // card's terms. The menu first, so attaching from it puts the chip up
                 // in the same frame.
                 systems::satellites::render_satellite_menu
-                    .after(systems::building_card::render_building_card)
+                    .after(systems::building_card::drive_building_card)
                     .before(systems::ui::render_main_menu),
                 systems::camera_attach::render_attach_chip
                     .after(systems::satellites::render_satellite_menu)
@@ -509,13 +509,13 @@ impl Plugin for GuiPlugin {
                 // carries out in the same frame, and before every panel, which
                 // then draws the screen it switched to.
                 systems::bridges::drive_bridges
-                    .after(systems::place_card::render_place_card)
+                    .after(systems::place_card::drive_place_card)
                     .before(systems::ui::render_main_menu),
                 // The first-launch card (`systems::welcome`): floating above the
                 // dock on the place card's terms. After it, since it stands
                 // aside for an open card.
                 systems::welcome::render_welcome
-                    .after(systems::place_card::render_place_card)
+                    .after(systems::place_card::drive_place_card)
                     .before(systems::ui::render_main_menu),
                 // The sign-in screen (`systems::login_screen`). It draws into its
                 // own floating `Area` (a modal must sit above the main menu, which
@@ -626,7 +626,7 @@ impl Plugin for GuiPlugin {
                     // Also after the camera has moved, so pins project onto this
                     // frame's view.
                     // And after the people it stands markers on have moved
-                    // (`render_chat_bubbles` says why).
+                    // (`place_chat_bubbles` says why).
                     systems::place_pins::render_place_pins
                         .after(systems::free_camera::camera_controls)
                         .after(systems::avatar::smooth_remote_avatars),
@@ -659,7 +659,7 @@ impl Plugin for GuiPlugin {
                     // The messenger: the chat list and one chat's Chat view
                     // (`systems::chats`). Its World view and the Chats | World
                     // switch are drawn over the map, after the composer below.
-                    systems::chats::render_chats_panel,
+                    systems::chats::drive_chats,
                     // The Admin pages (`systems::admin`), in the same
                     // right-hand slot as the Community panel.
                     // Admin draws nothing of egui's; it closes the panel for an
@@ -680,11 +680,11 @@ impl Plugin for GuiPlugin {
                     // And after the other people have been moved this frame: the
                     // two were unordered, so a balloon hung over where its
                     // speaker was on whichever frames the scheduler ran it first.
-                    systems::chat_overlay::render_chat_bubbles
+                    systems::chat_overlay::place_chat_bubbles
                         .after(systems::free_camera::camera_controls)
                         .after(systems::avatar::smooth_remote_avatars),
-                    systems::chat_overlay::render_chat_chip,
-                    systems::chat_overlay::render_chat_sheet,
+                    systems::chat_overlay::drive_chat_chip,
+                    systems::chat_overlay::drive_chat_sheet,
                     // A chat's World view has a text field, so it is ordered
                     // before the on-screen keyboard for the composer's reason.
                     systems::chats::render_chat_world,
@@ -694,7 +694,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::dock::render_dock),
                 // The person card and the first-message sheet
                 // (`systems::contacts`): the sheet is a text field too.
-                systems::contacts::render_person_card
+                systems::contacts::drive_person_card
                     .after(systems::dock::render_dock)
                     .before(systems::scenario::render_scenario_map),
             )
@@ -705,7 +705,7 @@ impl Plugin for GuiPlugin {
         app.add_systems(
             Update,
             (
-                systems::data_layers::render_poi_popup
+                systems::data_layers::drive_poi_card
                     .after(systems::ui::render_main_menu)
                     .after(systems::free_camera::camera_controls),
                 // The compass/locate column, which driver mode repurposes.

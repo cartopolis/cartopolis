@@ -86,17 +86,13 @@ pub(super) fn sentence_case(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// What a [`list_row`] carries at its right-hand end.
+/// What a [`list_row_sized`] carries at its right-hand end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RowEnd<'a> {
+pub enum RowEnd {
     /// Opens a page: a chevron.
     Chevron,
-    /// A plain count before the chevron ("Contacts 14").
-    Count(usize),
     /// Something waiting: the brand-orange pill before the chevron.
     Badge(usize),
-    /// A word in place of the chevron ("web page", "Unblock").
-    Word(&'a str),
     /// Nothing: an action row.
     Nothing,
 }
@@ -120,99 +116,11 @@ pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
     out
 }
 
-/// A row of a page's actions as one card: equal cells split by hairlines,
-/// each an icon over its word — the actions under a community's name. Returns
-/// the cell tapped. `on` cells (a form that is open below) wear the accent.
-///
-/// It replaces a row of separate outlined buttons, which beside the grouped
-/// lists of the Settings panel looked "cheap" (2026-11-10): one card with
-/// quiet dividers is the same family as [`list_group`].
-pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<usize> {
-    if cells.is_empty() {
-        return None;
-    }
-    let w = ui.available_width();
-    let (card, _) = ui.allocate_exact_size(egui::vec2(w, 60.0), egui::Sense::hover());
-    let corner = CornerRadius::same(16);
-    ui.painter().add(card_shadow().as_shape(card, corner));
-    ui.painter().rect(
-        card,
-        corner,
-        p32().card,
-        Stroke::new(1.0, p32().list_line),
-        egui::StrokeKind::Inside,
-    );
-    let cell_w = w / cells.len() as f32;
-    let mut picked = None;
-    for (i, (icon, label, on)) in cells.iter().enumerate() {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(card.left() + i as f32 * cell_w, card.top()),
-            egui::vec2(cell_w, card.height()),
-        );
-        let resp = ui.interact(
-            rect,
-            ui.id().with(("action_strip", i)),
-            egui::Sense::click(),
-        );
-        let resp = named(ui, resp, label);
-        if resp.clicked() {
-            picked = Some(i);
-        }
-        let painter = ui.painter();
-        if resp.hovered() || *on {
-            painter.rect_filled(
-                rect.shrink(3.0),
-                CornerRadius::same(12),
-                if *on {
-                    p32().accent_muted
-                } else {
-                    p32().surface_raised
-                },
-            );
-        }
-        if i > 0 {
-            painter.vline(
-                rect.left(),
-                (rect.top() + 12.0)..=(rect.bottom() - 12.0),
-                Stroke::new(1.0, p32().list_line),
-            );
-        }
-        painter.text(
-            egui::pos2(rect.center().x, rect.top() + 21.0),
-            egui::Align2::CENTER_CENTER,
-            *icon,
-            FontId::proportional(18.0),
-            p32().accent_word,
-        );
-        painter.text(
-            egui::pos2(rect.center().x, rect.bottom() - 15.0),
-            egui::Align2::CENTER_CENTER,
-            *label,
-            FontId::proportional(SIZE_SUB),
-            p32().text,
-        );
-        paint_focus_ring(ui, &resp, rect, false);
-    }
-    ui.add_space(8.0);
-    picked
-}
-
 /// One row of a [`list_group`]: an icon on a small raised square, a title, an
 /// optional line under it, and `end` on the right. `tone` is the icon's ink
-/// ([`Palette::accent`] for most, [`Palette::warn`] on the admin pages, [`Palette::error`] for a row that
-/// destroys something, whose title takes the same colour).
-pub fn list_row(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    sub: Option<&str>,
-    end: RowEnd<'_>,
-    tone: Color32,
-) -> egui::Response {
-    list_row_sized(ui, None, icon, title, sub, end, tone)
-}
-
-/// [`list_row`] at a stated height, for a sheet that has to fit a phone
+/// ([`Palette::accent`] for most, [`Palette::warn`] on the admin pages,
+/// [`Palette::error`] for a row that destroys something, whose title takes
+/// the same colour). At a stated height, for a sheet that has to fit a phone
 /// above the World | Community switch (your face's sheet, 44 pt rows: still
 /// 66 dp, over [`MIN_TOUCH_TARGET_DP`]). `None` is the list's own 50 / 58.
 pub fn list_row_sized(
@@ -221,7 +129,7 @@ pub fn list_row_sized(
     icon: &str,
     title: &str,
     sub: Option<&str>,
-    end: RowEnd<'_>,
+    end: RowEnd,
     tone: Color32,
 ) -> egui::Response {
     let h = height.unwrap_or(if sub.is_some() { 58.0 } else { 50.0 });
@@ -271,17 +179,6 @@ pub fn list_row_sized(
     };
     match end {
         RowEnd::Chevron => chevron(p, &mut right),
-        RowEnd::Count(n) => {
-            chevron(p, &mut right);
-            let r = p.text(
-                egui::pos2(right, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                n.to_string(),
-                egui::FontId::proportional(13.0),
-                self::p32().text_dim,
-            );
-            right = r.left() - 8.0;
-        }
         RowEnd::Badge(n) => {
             chevron(p, &mut right);
             if n > 0 {
@@ -299,16 +196,6 @@ pub fn list_row_sized(
                 p.galley(pill.center() - gs / 2.0, g, Color32::WHITE);
                 right = pill.left() - 8.0;
             }
-        }
-        RowEnd::Word(word) => {
-            let r = p.text(
-                egui::pos2(right, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                word,
-                egui::FontId::proportional(12.5),
-                self::p32().text_dim,
-            );
-            right = r.left() - 8.0;
         }
         RowEnd::Nothing => {}
     }
@@ -340,102 +227,6 @@ pub fn list_row_sized(
     }
     paint_focus_ring(ui, &resp, rect, false);
     resp
-}
-
-/// A page's title with a way back: the chevron and the name, at the top of a
-/// screen inside a panel (You, a Settings page, an Admin page). Answers whether
-/// back was pressed.
-///
-/// It also carries the panel's close, on the right, as [`panel_header`] does.
-/// A page several levels deep (Community ▸ You ▸ Settings ▸ Graphics) is the
-/// whole screen on a phone, and with only a chevron the way back to the map was
-/// one tap per level. The close cannot be returned from here, since the page
-/// does not know which panel it is in; it is raised with
-/// [`request_panel_close`] and the panel that owns the page reads it back with
-/// [`take_panel_close`] after its body has drawn.
-pub fn back_title(ui: &mut egui::Ui, title: &str) -> bool {
-    back_title_with(ui, title, |_| {})
-}
-
-/// [`back_title`] plus room for a page's own actions, laid out right-to-left
-/// from the close (the calendar's + and ⋯).
-pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut egui::Ui)) -> bool {
-    let mut back = false;
-    let row_h = close_button_size().max(30.0);
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), row_h),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            // The close is placed first and the title takes what is left, for
-            // the reason `panel_header_with` gives: a truncating label laid out
-            // first claims the whole row.
-            if close_button(ui).clicked() {
-                request_panel_close(ui.ctx());
-            }
-            extra(ui);
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let resp = ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(crate::systems::icons::BACK)
-                                .size(22.0)
-                                .color(p32().cream),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(row_h, row_h)),
-                    )
-                    .on_hover_text("Back");
-                back = page_back(ui.ctx(), resp.clicked());
-                ui.add(
-                    egui::Label::new(egui::RichText::new(title).size(18.0).color(p32().cream))
-                        .truncate()
-                        .selectable(false),
-                );
-            });
-        },
-    );
-    ui.add_space(6.0);
-    back
-}
-
-/// Start a new row of a `horizontal_wrapped` layout if something `width` wide
-/// will not fit in what is left of this one.
-///
-/// A wrapped layout wraps a *widget*, which knows its size before it is placed.
-/// A `Frame` is placed first and measured after, so a row of framed chips never
-/// wraps: it runs off the side and pushes whatever holds it wider. The person
-/// card's three facts grew the card to 456 pt on a 275 pt phone (2026-10-31),
-/// half of it off the screen on each side.
-pub fn wrap_before(ui: &mut egui::Ui, width: f32) {
-    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 0.5;
-    // `available_width` is the whole row in a wrapping layout; what is left of
-    // this one is `before_wrap`.
-    if !at_row_start && ui.available_size_before_wrap().x < width {
-        ui.end_row();
-    }
-}
-
-/// Where [`request_panel_close`] leaves its request: the pass it was made in.
-pub(super) fn panel_close_id() -> egui::Id {
-    egui::Id::new("theme::panel_close")
-}
-
-/// Ask the panel this page is drawn in to close — the close of a page header
-/// that cannot name its panel ([`back_title`]).
-pub fn request_panel_close(ctx: &egui::Context) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(panel_close_id(), pass));
-}
-
-/// Whether a page in this pass asked its panel to close, consuming the ask.
-///
-/// Keyed to the pass, so a request no panel read (the page was drawn by
-/// something that does not call this) dies with its frame instead of closing
-/// whichever panel asks next.
-pub fn take_panel_close(ctx: &egui::Context) -> bool {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.remove_temp::<u64>(panel_close_id()))
-        .is_some_and(|asked| asked == pass)
 }
 
 /// Where a page's back chevron says it was drawn, and where the dismissal
@@ -611,52 +402,6 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// The body of a list with nothing in it.
-///
-/// `hint` is **not optional**, and that is the whole design: "No places yet" on
-/// its own is a dead end, and the Places panel's existing empty state — which
-/// names the two buttons and says what each does — is the model this generalises.
-/// Three lists in the client currently draw literally nothing when empty (an
-/// empty chat channel, an empty folder, the texture library), which is
-/// indistinguishable from a panel that failed to load.
-pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
-    ui.add_space(12.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new(headline)
-                .size(SIZE_BODY)
-                .color(p32().text_dim),
-        );
-        ui.add_space(4.0);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(hint)
-                    .size(SIZE_SUB)
-                    .color(p32().text_dim),
-            )
-            .wrap(),
-        );
-    });
-    ui.add_space(12.0);
-}
-
-/// One in-progress row: spinner plus what is being waited for.
-///
-/// **The** spinner idiom. A bare `ui.spinner()` takes its colour from
-/// `noninteractive.fg_stroke` and its size from the row, which is why the sign-in
-/// card hand-rolled a themed one and the other seven sites did not — two
-/// spinners, in one app, for one meaning.
-pub fn busy(ui: &mut egui::Ui, label: &str) {
-    ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(SIZE_BODY).color(p32().accent));
-        ui.label(
-            egui::RichText::new(label)
-                .size(SIZE_SUB)
-                .color(p32().text_dim),
-        );
-    });
-}
-
 /// An inline failure with a Dismiss, returning `true` when dismissed so the
 /// caller clears its own `Option<String>`.
 ///
@@ -695,31 +440,6 @@ pub fn inline_error(ui: &mut egui::Ui, message: &str) -> bool {
             );
         });
     dismissed
-}
-
-/// A control that cannot act, and the reason — **in a form a phone can read.**
-///
-/// Under a pointer this is `on_disabled_hover_text`, which is what the ten
-/// existing `add_enabled` sites do (where they explain themselves at all — most
-/// grey a control and say nothing). Under a finger the reason is drawn as a
-/// [`note`] beneath the control instead, because a tooltip on a touchscreen is a
-/// sentence addressed to nobody. One helper, so that answer is decided once.
-pub fn action_enabled_because(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    label: impl Into<egui::WidgetText>,
-    why_disabled: &str,
-) -> egui::Response {
-    let resp = action_enabled(ui, enabled, label);
-    if enabled {
-        return resp;
-    }
-    if touch_layout() {
-        note(ui, why_disabled);
-        resp
-    } else {
-        resp.on_disabled_hover_text(why_disabled)
-    }
 }
 
 /// How long an armed [`confirm_button`] waits before disarming itself.

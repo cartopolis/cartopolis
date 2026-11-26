@@ -477,6 +477,17 @@ pub fn expected_height(viewport: egui::Rect, ui_scale: f32, display_scale: f32) 
         + EDGE_MARGIN
 }
 
+/// [`expected_height`] on a viewport `size` points in size, from its top-left:
+/// for callers that hold no egui rect (`chat_overlay::keyboard_reserve`).
+#[must_use]
+pub fn expected_height_in(size: bevy::math::Vec2, ui_scale: f32, display_scale: f32) -> f32 {
+    expected_height(
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.x, size.y)),
+        ui_scale,
+        display_scale,
+    )
+}
+
 /// Declare, for this pass, that `field` lifts itself above the keys while they
 /// are up, so the keyboard stays on the bottom edge instead of flipping to the
 /// top to dodge it.

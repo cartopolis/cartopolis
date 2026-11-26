@@ -530,7 +530,14 @@ pub fn render_place_pins(
         // The width of a person's name chip, for the library's edition.
         let chip = |name: &str| {
             if for_lib {
-                chat_people::chip_width(&ctx, name)
+                chat_people::chip_width(
+                    crate::systems::chat_overlay::text_size(
+                        name,
+                        chat_people::NAME_TEXT,
+                        f32::INFINITY,
+                    )
+                    .x,
+                )
             } else {
                 0.0
             }
@@ -665,10 +672,29 @@ pub fn render_place_pins(
             }
             #[cfg(feature = "comms")]
             {
+                let map = Rect::new(
+                    map_rect.min.x,
+                    map_rect.min.y,
+                    map_rect.max.x,
+                    map_rect.max.y,
+                );
                 l.lib_view.balloons = balloons
                     .iter()
                     .map(|(who, over, text, alpha, mine)| {
-                        chat_people::balloon_item(&ctx, map_rect, who, *over, text, *alpha, *mine)
+                        let words = crate::systems::chat_overlay::text_size(
+                            text,
+                            chat_people::BALLOON_TEXT,
+                            chat_people::BALLOON_WRAP,
+                        );
+                        chat_people::balloon_item(
+                            words,
+                            map,
+                            who,
+                            Vec2::new(over.x, over.y),
+                            text,
+                            *alpha,
+                            *mine,
+                        )
                     })
                     .collect();
             }
@@ -683,19 +709,14 @@ pub fn render_place_pins(
                     PinLook::Point { number, .. } => {
                         point_pin(&ctx, map_rect, &p.key, p.tip, number, &p.name)
                     }
+                    // People and their balloons are the library's alone
+                    // (`lib_pins`); egui's marker is gone.
                     #[cfg(feature = "comms")]
-                    PinLook::Person { kind, .. } => {
-                        chat_people::marker(&ctx, map_rect, p.tip, &p.name, *kind)
-                    }
+                    PinLook::Person { .. } => false,
                 };
                 if hit {
                     tapped = Some(tap.clone());
                 }
-            }
-            // After every marker, so a balloon is never under somebody's disc.
-            #[cfg(feature = "comms")]
-            for (who, over, text, alpha, mine) in &balloons {
-                chat_people::balloon(&ctx, map_rect, who, *over, text, *alpha, *mine);
             }
         }
     }
@@ -1182,37 +1203,6 @@ fn point_pin(
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
-}
-
-/// Paint the pin's silhouette to fit `rect`, in the folder colour — the same
-/// marker [`pin`] puts on the map, at whatever size the caller has room for.
-///
-/// The Places panel's rows use it for a place with no photo. That slot used to be
-/// a `first_drawable(&["📍", "⌖", "•"])` text glyph, which is a probe for
-/// *whatever the bundled font happens to draw*: it resolved to `⌖`, a crosshair
-/// with no relationship to the teardrop standing over the same place on the map.
-/// A painted pin cannot fall back to the wrong picture, and the list and the map
-/// then show one marker rather than two unrelated ones.
-pub fn paint_pin_glyph(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
-    // Fit the whole silhouette — `2r` wide by `(HEAD_LIFT + 1) r` tall — inside
-    // the slot, then stand it on the bottom of the fitted box.
-    let r = (rect.width() * 0.5).min(rect.height() / (HEAD_LIFT + 1.0));
-    let tip = egui::pos2(
-        rect.center().x,
-        rect.center().y + (HEAD_LIFT + 1.0) * r * 0.5,
-    );
-    let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
-    let rim = egui::Color32::from_rgb(
-        (f32::from(color.r()) * 0.57) as u8,
-        (f32::from(color.g()) * 0.57) as u8,
-        (f32::from(color.b()) * 0.57) as u8,
-    );
-    painter.add(egui::Shape::convex_polygon(
-        teardrop(tip, centre, r),
-        color,
-        egui::Stroke::new(1.0, rim),
-    ));
-    painter.circle_filled(centre, r * HOLE_R, theme::DARK32.cream);
 }
 
 /// Outline of the pin: the tip, then the head circle's arc from one tangent
